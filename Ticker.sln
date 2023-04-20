@@ -1,0 +1,44 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.4.33403.182
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TickerQ", "Ticker\TickerQ.csproj", "{7D2F91D5-E22A-456A-A53D-33B256A58387}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TickerQ.EntityFrameworkCore", "Ticker.EntityFramework\TickerQ.EntityFrameworkCore.csproj", "{248CBDA2-B665-46FC-B4ED-E4B5D0CF3C02}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "TickerSources", "TickerSources", "{26A562EA-137C-4B42-93B0-0D7E0DB0AA32}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TickerQ.Utilities", "Ticker.Utilities\TickerQ.Utilities.csproj", "{0A8E72F2-7725-4F17-AF3C-2C9B895BF0A3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7D2F91D5-E22A-456A-A53D-33B256A58387}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7D2F91D5-E22A-456A-A53D-33B256A58387}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7D2F91D5-E22A-456A-A53D-33B256A58387}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7D2F91D5-E22A-456A-A53D-33B256A58387}.Release|Any CPU.Build.0 = Release|Any CPU
+		{248CBDA2-B665-46FC-B4ED-E4B5D0CF3C02}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{248CBDA2-B665-46FC-B4ED-E4B5D0CF3C02}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{248CBDA2-B665-46FC-B4ED-E4B5D0CF3C02}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{248CBDA2-B665-46FC-B4ED-E4B5D0CF3C02}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0A8E72F2-7725-4F17-AF3C-2C9B895BF0A3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0A8E72F2-7725-4F17-AF3C-2C9B895BF0A3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0A8E72F2-7725-4F17-AF3C-2C9B895BF0A3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0A8E72F2-7725-4F17-AF3C-2C9B895BF0A3}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{7D2F91D5-E22A-456A-A53D-33B256A58387} = {26A562EA-137C-4B42-93B0-0D7E0DB0AA32}
+		{248CBDA2-B665-46FC-B4ED-E4B5D0CF3C02} = {26A562EA-137C-4B42-93B0-0D7E0DB0AA32}
+		{0A8E72F2-7725-4F17-AF3C-2C9B895BF0A3} = {26A562EA-137C-4B42-93B0-0D7E0DB0AA32}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {38FD60CB-B028-4817-972B-C00B6C23FA42}
+	EndGlobalSection
+EndGlobal
