@@ -12,6 +12,6 @@ namespace TickerQ.EntityFrameworkCore.Entities
         public Guid CronTickerId { get; set; }
         public DateTimeOffset? LockedAt { get; set; }
         public DateTimeOffset? ExcecutedAt { get; set; }
-        public CronTicker CronTicker { get; set; }
+        public TCronTicker CronTicker { get; set; }
     }
 }
