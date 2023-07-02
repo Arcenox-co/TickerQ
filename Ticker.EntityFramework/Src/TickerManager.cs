@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.EntityFrameworkCore.Entities.BaseEntity;
+using TickerQ.EntityFrameworkCore.Src;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Exceptios;
@@ -14,12 +15,30 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore
 {
-    internal class TickerManager<TDbContext> : InternalTickerManager<TDbContext>, ITickerManager where TDbContext : DbContext
+    internal class TickerManager<TDbContext, TTimeTicker, TCronTicker> : InternalTickerManager<TDbContext, TTimeTicker, TCronTicker>, ICronTickerManager<TCronTicker>, ITimeTickerManager<TTimeTicker> where TDbContext : DbContext where TTimeTicker : TimeTicker where TCronTicker : CronTicker
     {
         public TickerManager(TDbContext dbContext, ITickerCollection tickerCollection, ITickerHost tickerHost, IClock clock, TickerOptionsBuilder tickerOptions)
             : base(dbContext, tickerCollection, tickerHost, clock, tickerOptions) { }
 
-        public async Task<TickerResult<TEntity>> AddTickerAsync<TEntity>(TEntity entity, CancellationToken cancellationToken = default) where TEntity : BaseTickerEntity
+        Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.AddAsync(TCronTicker entity, CancellationToken cancellationToken)
+            => AddAsync(entity, cancellationToken);
+
+        Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddAsync(TTimeTicker entity, CancellationToken cancellationToken)
+            => AddAsync(entity, cancellationToken);
+
+        Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.UpdateAsync(TCronTicker entity, CancellationToken cancellationToken)
+            => UpdateAsync(entity, cancellationToken);
+
+        Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.UpdateAsync(TTimeTicker entity, CancellationToken cancellationToken)
+            => UpdateAsync(entity, cancellationToken);
+
+        Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.DeleteAsync(Guid Id, CancellationToken cancellationToken)
+            => DeleteAsync<TCronTicker>(Id, cancellationToken);
+
+        Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.DeleteAsync(Guid Id, CancellationToken cancellationToken)
+         => DeleteAsync<TTimeTicker>(Id, cancellationToken);
+
+        public async Task<TickerResult<TEntity>> AddAsync<TEntity>(TEntity entity, CancellationToken cancellationToken) where TEntity : BaseTickerEntity
         {
             var nextOccurrence = ValidateAndGetNextOccurrenceTicker(entity, out Exception exception);
 
@@ -46,42 +65,7 @@ namespace TickerQ.EntityFrameworkCore
             }
         }
 
-        public async Task<TickerResult<TEntity>> DeleteTickerAsync<TEntity>(Guid id, CancellationToken cancellationToken = default) where TEntity : BaseTickerEntity
-        {
-            var originalEntity = await DbContext.Set<TEntity>().FirstOrDefaultAsync(x => x.Id == id, cancellationToken).ConfigureAwait(false);
-
-            if (originalEntity == default)
-                return new TickerResult<TEntity>(new TickerValidatorException($"Cannot find enitity with id {id}!"));
-
-            try
-            {
-                bool mustRestart = false;
-
-                if (originalEntity is CronTicker originalCronTickerEntity)
-                    mustRestart = await GetQueuedNextCronOccurrences(originalCronTickerEntity, cancellationToken)
-                        .AnyAsync(cancellationToken)
-                        .ConfigureAwait(false);
-
-                else if (originalEntity is TimeTicker originalTimeTickerEntity)
-                    mustRestart = originalTimeTickerEntity.Status == TickerStatus.Queued;
-
-                DbContext.Remove(originalEntity);
-
-                await DbContext.SaveChangesAsync(cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (mustRestart)
-                    TickerHost.Restart();
-
-                return new TickerResult<TEntity>(originalEntity);
-            }
-            catch (Exception e)
-            {
-                return new TickerResult<TEntity>(e);
-            }
-        }
-
-        public async Task<TickerResult<TEntity>> UpdateTickerAsync<TEntity>(TEntity entity, CancellationToken cancellationToken = default) where TEntity : BaseTickerEntity
+        public async Task<TickerResult<TEntity>> UpdateAsync<TEntity>(TEntity entity, CancellationToken cancellationToken = default) where TEntity : BaseTickerEntity
         {
             var nextOccurrence = ValidateAndGetNextOccurrenceTicker(entity, out Exception exception);
 
@@ -103,7 +87,7 @@ namespace TickerQ.EntityFrameworkCore
                     originalCronTickerEntity.Request = newCronTickerEntity.Request;
                     originalCronTickerEntity.Function = newCronTickerEntity.Function;
 
-                    var queuedNextOccurrences = await GetQueuedNextCronOccurrences(originalCronTickerEntity, cancellationToken)
+                    var queuedNextOccurrences = await GetQueuedNextCronOccurrences(originalCronTickerEntity)
                         .ToListAsync(cancellationToken)
                         .ConfigureAwait(false);
 
@@ -145,7 +129,42 @@ namespace TickerQ.EntityFrameworkCore
             }
         }
 
-        private IQueryable<CronTickerOccurrence> GetQueuedNextCronOccurrences(CronTicker cronTicker, CancellationToken cancellationToken)
+        public async Task<TickerResult<TEntity>> DeleteAsync<TEntity>(Guid id, CancellationToken cancellationToken = default) where TEntity : BaseTickerEntity
+        {
+            var originalEntity = await DbContext.Set<TEntity>().FirstOrDefaultAsync(x => x.Id == id, cancellationToken).ConfigureAwait(false);
+
+            if (originalEntity == default)
+                return new TickerResult<TEntity>(new TickerValidatorException($"Cannot find enitity with id {id}!"));
+
+            try
+            {
+                bool mustRestart = false;
+
+                if (originalEntity is CronTicker originalCronTickerEntity)
+                    mustRestart = await GetQueuedNextCronOccurrences(originalCronTickerEntity)
+                        .AnyAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                else if (originalEntity is TimeTicker originalTimeTickerEntity)
+                    mustRestart = originalTimeTickerEntity.Status == TickerStatus.Queued;
+
+                DbContext.Remove(originalEntity);
+
+                await DbContext.SaveChangesAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (mustRestart)
+                    TickerHost.Restart();
+
+                return new TickerResult<TEntity>(originalEntity);
+            }
+            catch (Exception e)
+            {
+                return new TickerResult<TEntity>(e);
+            }
+        }
+
+        private IQueryable<CronTickerOccurrence<TCronTicker>> GetQueuedNextCronOccurrences(CronTicker cronTicker)
         {
             var nextCronOccurrences = CronTickerOccurrences
                 .Where(x => x.CronTickerId == cronTicker.Id)

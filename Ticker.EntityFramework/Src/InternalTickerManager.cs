@@ -13,7 +13,7 @@ using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.EntityFrameworkCore
 {
-    internal abstract class InternalTickerManager<TDbContext> : IInternalTickerManager where TDbContext : DbContext
+    internal abstract class InternalTickerManager<TDbContext, TTimeTicker, TCronTicker> : IInternalTickerManager where TDbContext : DbContext where TTimeTicker : TimeTicker where TCronTicker : CronTicker
     {
         protected readonly TDbContext DbContext;
         protected readonly ITickerCollection TickerCollection;
@@ -21,9 +21,9 @@ namespace TickerQ.EntityFrameworkCore
         protected readonly IClock Clock;
         protected readonly TickerOptionsBuilder TickerOptionsBuilder;
         private string LockHolder => TickerOptionsBuilder.InstanceIdentifier ?? Environment.MachineName;
-        public DbSet<TimeTicker> TimeTickers => DbContext.Set<TimeTicker>();
-        public DbSet<CronTicker> CronTickers => DbContext.Set<CronTicker>();
-        public DbSet<CronTickerOccurrence> CronTickerOccurrences => DbContext.Set<CronTickerOccurrence>();
+        public DbSet<TTimeTicker> TimeTickers => DbContext.Set<TTimeTicker>();
+        public DbSet<TCronTicker> CronTickers => DbContext.Set<TCronTicker>();
+        public DbSet<CronTickerOccurrence<TCronTicker>> CronTickerOccurrences => DbContext.Set<CronTickerOccurrence<TCronTicker>>();
 
         protected InternalTickerManager(TDbContext dbContext, ITickerCollection tickerCollection, ITickerHost tickerHost, IClock clock, TickerOptionsBuilder tickerOptionsBuilder)
         {
@@ -42,7 +42,7 @@ namespace TickerQ.EntityFrameworkCore
             var minTimeRemaining = GetMinTimeRemaining(minCronTicker, minTimeTicker);
 
             if (minTimeRemaining == Timeout.InfiniteTimeSpan)
-                return (Timeout.InfiniteTimeSpan, new (string, Guid, TickerType)[0]);
+                return (Timeout.InfiniteTimeSpan, Array.Empty<(string, Guid, TickerType)>());
 
             var nextTickers = await GetNextTickersAsync(minCronTicker, minTimeTicker).ConfigureAwait(false);
 
@@ -115,35 +115,40 @@ namespace TickerQ.EntityFrameworkCore
         {
             var now = Clock.Now;
 
-            var cronTimeOccurrences = new List<CronTickerOccurrence>();
+            var nextTickerOccurrences = new List<(string, Guid)>();
 
             var cronTickers = await CronTickers
-                .Include(x => x.CronTickerOccurences)
+                .AsNoTracking()
                 .Where(cronTicker => expressions.Contains(cronTicker.Expression))
-                .ToListAsync(cancellationToken)
+                .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
+
+            var cronTickerOccurrences = await CronTickerOccurrences
+                .Where(x => cronTickers.Contains(x.CronTicker))
+                .ToListAsync(cancellationToken);
 
             foreach (var cronTicker in cronTickers)
             {
-                var nextOccurrence = CrontabSchedule.Parse(cronTicker.Expression).GetNextOccurrence(now);
+                var nextOccurrence = CrontabSchedule
+                    .Parse(cronTicker.Expression)
+                    .GetNextOccurrence(now);
 
-                var existOccurrence = cronTicker.CronTickerOccurences.FirstOrDefault(x => (x.CronTickerId == cronTicker.Id && x.ExecutionTime.DateTime == nextOccurrence));
+                var existOccurrence = cronTickerOccurrences.FirstOrDefault(x => (x.CronTickerId == cronTicker.Id && x.ExecutionTime.DateTime == nextOccurrence));
 
                 if (existOccurrence == default)
                 {
-                    var newOccurrence = new CronTickerOccurrence
+                    var newOccurrence = new CronTickerOccurrence<TCronTicker>
                     {
                         Id = new Guid(),
                         Status = TickerStatus.Queued,
                         ExecutionTime = new DateTimeOffset(nextOccurrence, Clock.TimeZone.GetUtcOffset(DateTimeOffset.UtcNow)),
                         LockedAt = Clock.OffsetNow,
                         LockHolder = LockHolder,
-                        CronTickerId = cronTicker.Id,
-                        CronTicker = cronTicker
+                        CronTickerId = cronTicker.Id
                     };
 
-                    cronTicker.CronTickerOccurences.Add(newOccurrence);
-                    cronTimeOccurrences.Add(newOccurrence);
+                    CronTickerOccurrences.Add(newOccurrence);
+                    nextTickerOccurrences.Add((cronTicker.Function, newOccurrence.Id));
                 }
                 else
                 {
@@ -151,18 +156,15 @@ namespace TickerQ.EntityFrameworkCore
                     existOccurrence.LockHolder = LockHolder;
                     existOccurrence.LockedAt = Clock.OffsetNow;
 
-                    cronTicker.CronTickerOccurences.Add(existOccurrence);
-                    cronTimeOccurrences.Add(existOccurrence);
+                    CronTickerOccurrences.Update(existOccurrence);
+                    nextTickerOccurrences.Add((cronTicker.Function, existOccurrence.Id));
                 }
-
             }
-
-            DbContext.UpdateRange(cronTickers);
 
             await DbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-            return cronTimeOccurrences
-               .Select(x => (x.CronTicker.Function, x.Id, TickerType.CronExpression))
+            return nextTickerOccurrences
+               .Select(x => (x.Item1, x.Item2, TickerType.CronExpression))
                .ToArray();
         }
 
@@ -228,7 +230,6 @@ namespace TickerQ.EntityFrameworkCore
 
             await DbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
-
 
         public async Task ReleaseAcquiredResources(IEnumerable<(Guid TickerId, TickerType type)> resources, CancellationToken cancellationToken = default)
         {
@@ -326,48 +327,69 @@ namespace TickerQ.EntityFrameworkCore
 
         public async Task<(string, Guid, TickerType)[]> GetTimeoutedFunctions(CancellationToken cancellationToken = default)
         {
+            IEnumerable<(string, Guid, TickerType)> timeTickerFunctionDetails = await GetTimeoutedTimeTickers(cancellationToken).ConfigureAwait(false);
+            IEnumerable<(string, Guid, TickerType)> cronTickerFunctionDetails = await GetTimeoutedCronTickerOccurrences(cancellationToken).ConfigureAwait(false);
+
+            if(!timeTickerFunctionDetails.Any() && !cronTickerFunctionDetails.Any())
+                return Array.Empty<(string, Guid, TickerType)>();
+
+            await DbContext.SaveChangesAsync(cancellationToken);
+
+            return timeTickerFunctionDetails.Concat(cronTickerFunctionDetails).ToArray();
+        }
+
+        private async Task<IEnumerable<(string, Guid, TickerType)>> GetTimeoutedCronTickerOccurrences(CancellationToken cancellationToken)
+        {
+            var cronTickerOccurrences = await CronTickerOccurrences
+                            .Where(x => !x.ExcecutedAt.HasValue && x.Status != TickerStatus.Inprogress)
+                            .Where(x => x.ExecutionTime.AddMinutes(TickerOptionsBuilder.TimeOutChecker.TotalMinutes) <= Clock.OffsetNow)
+                            .ToArrayAsync(cancellationToken)
+                            .ConfigureAwait(false);
+
+            if (!cronTickerOccurrences.Any())
+                return Enumerable.Empty<(string, Guid, TickerType)>();
+
+            foreach (var cronTickeOccurrence in cronTickerOccurrences)
+            {
+                cronTickeOccurrence.Status = TickerStatus.Inprogress;
+                cronTickeOccurrence.LockHolder = LockHolder;
+            }
+
+            DbContext.UpdateRange(cronTickerOccurrences);
+
+            var cronTickerOccurennceIds = cronTickerOccurrences
+                .Select(x => x.CronTickerId)
+                .ToArray();
+
+            var cronTickerFunctions = await CronTickers
+                .AsNoTracking()
+                .Where(x => cronTickerOccurennceIds.Contains(x.Id))
+                .Select(x => new { x.Function, x.Id })
+                .ToListAsync(cancellationToken);
+
+            return cronTickerOccurrences.Select(x => (cronTickerFunctions.First(y => y.Id == x.CronTickerId).Function, x.Id, TickerType.CronExpression));
+        }
+
+        private async Task<IEnumerable<(string, Guid, TickerType)>> GetTimeoutedTimeTickers(CancellationToken cancellationToken)
+        {
             var timeTickers = await TimeTickers
                 .Where(x => !x.ExcecutedAt.HasValue && x.Status != TickerStatus.Inprogress)
                 .Where(x => x.ExecutionTime.AddMinutes(TickerOptionsBuilder.TimeOutChecker.TotalMinutes) <= Clock.OffsetNow)
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            if (timeTickers.Any())
-            {
-                foreach (var timeTicker in timeTickers)
-                {
-                    timeTicker.Status = TickerStatus.Inprogress;
-                    timeTicker.LockHolder = LockHolder;
-                }
+            if (!timeTickers.Any())
+                return Enumerable.Empty<(string, Guid, TickerType)>();
 
-                DbContext.UpdateRange(timeTickers);
+            foreach (var timeTicker in timeTickers)
+            {
+                timeTicker.Status = TickerStatus.Inprogress;
+                timeTicker.LockHolder = LockHolder;
             }
 
-            var cronTickers = await CronTickerOccurrences
-                .Include(x => x.CronTicker)
-                .Where(x => !x.ExcecutedAt.HasValue && x.Status != TickerStatus.Inprogress)
-                .Where(x => x.ExecutionTime.AddMinutes(TickerOptionsBuilder.TimeOutChecker.TotalMinutes) <= Clock.OffsetNow)
-                .ToArrayAsync(cancellationToken)
-                .ConfigureAwait(false);
+            DbContext.UpdateRange(timeTickers);
 
-            if (cronTickers.Any())
-            {
-                foreach (var cronTicker in cronTickers)
-                {
-                    cronTicker.Status = TickerStatus.Inprogress;
-                    cronTicker.LockHolder = LockHolder;
-                }
-
-                DbContext.UpdateRange(cronTickers);
-            }
-
-            await DbContext.SaveChangesAsync(cancellationToken);
-
-            var timeTickerFunctionDetails = timeTickers.Select(x => new ValueTuple<string, Guid, TickerType>(x.Function, x.Id, TickerType.Timer));
-
-            var cronTickerFunctionDetails = cronTickers.Select(x => new ValueTuple<string, Guid, TickerType>(x.CronTicker.Function, x.Id, TickerType.CronExpression));
-
-            return timeTickerFunctionDetails.Concat(cronTickerFunctionDetails).ToArray();
+            return timeTickers.Select(x => (x.Function, x.Id, TickerType.Timer));
         }
     }
 }
