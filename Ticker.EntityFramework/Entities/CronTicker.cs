@@ -5,8 +5,7 @@ namespace TickerQ.EntityFrameworkCore.Entities
 {
     public class CronTicker : BaseTickerEntity
     {
-        public string Expression { get; set; }
-        public byte[] Request { get; set; }
-        public ICollection<CronTickerOccurrence> CronTickerOccurences { get; set; }
+        public virtual string Expression { get; set; }
+        public virtual byte[] Request { get; set; }
     }
 }

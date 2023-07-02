@@ -6,11 +6,11 @@ namespace TickerQ.EntityFrameworkCore.Entities
 {
     public class TimeTicker : BaseTickerEntity
     {
-        public TickerStatus Status { get; set; }
-        public string LockHolder { get; set; }
-        public byte[] Request { get; set; }
-        public DateTimeOffset ExecutionTime { get; set; }
-        public DateTimeOffset? LockedAt { get; set; }
-        public DateTimeOffset? ExcecutedAt { get; set; }
+        public virtual TickerStatus Status { get; set; }
+        public virtual string LockHolder { get; set; }
+        public virtual byte[] Request { get; set; }
+        public virtual DateTimeOffset ExecutionTime { get; set; }
+        public virtual DateTimeOffset? LockedAt { get; set; }
+        public virtual DateTimeOffset? ExcecutedAt { get; set; }
     }
 }

@@ -3,7 +3,7 @@ using TickerQ.Utilities.Enums;
 
 namespace TickerQ.EntityFrameworkCore.Entities
 {
-    public class CronTickerOccurrence
+    public class CronTickerOccurrence<TCronTicker> where TCronTicker : CronTicker
     {
         public Guid Id { get; set; }
         public TickerStatus Status { get; set; }

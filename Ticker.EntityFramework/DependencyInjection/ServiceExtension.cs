@@ -4,7 +4,8 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Linq;
-using TickerQ.EntityFrameworkCore.Configurations.Base;
+using TickerQ.EntityFrameworkCore.Configurations;
+using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 
@@ -20,6 +21,16 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
         /// <returns></returns>
         /// <exception cref="Exception"></exception>
         public static TickerOptionsBuilder AddOperationalStore<TContext>(this TickerOptionsBuilder tickerConfiguration) where TContext : DbContext
+            => AddOperationalStore<TContext, TimeTicker, CronTicker>(tickerConfiguration);
+
+        /// <summary>
+        /// Add the operational store for Ticker, OperationalStore will consume the DbContextOptions from the original configuration.
+        /// </summary>
+        /// <typeparam name="TContext"></typeparam>
+        /// <param name="tickerConfiguration"></param>
+        /// <returns></returns>
+        /// <exception cref="Exception"></exception>
+        public static TickerOptionsBuilder AddOperationalStore<TContext, TTimeTicker, TCronTicker>(this TickerOptionsBuilder tickerConfiguration) where TContext : DbContext where TTimeTicker : TimeTicker where TCronTicker : CronTicker
         {
             tickerConfiguration.EfCoreConfigAction = (IServiceCollection services) =>
             {
@@ -30,14 +41,14 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
 
                 var newDescriptor = new ServiceDescriptor(
                         typeof(DbContextOptions<TContext>),
-                        provider => UpdateDbContextOptionsService<TContext>(provider, originalDescriptor.ImplementationFactory),
+                        provider => UpdateDbContextOptionsService<TContext, TTimeTicker, TCronTicker>(provider, originalDescriptor.ImplementationFactory),
                         originalDescriptor.Lifetime
                     );
 
                 services.Remove(originalDescriptor);
                 services.Add(newDescriptor);
-                services.AddScoped<ITickerManager, TickerManager<TContext>>();
-                services.AddScoped<IInternalTickerManager, TickerManager<TContext>>();
+                services.AddScoped<ICronTickerManager<TCronTicker>, TickerManager<TContext, TTimeTicker, TCronTicker>>();
+                services.AddScoped<IInternalTickerManager, TickerManager<TContext, TTimeTicker, TCronTicker>>();
             };
 
             return tickerConfiguration;
@@ -64,12 +75,12 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
             return tickerConfiguration;
         }
 
-        private static DbContextOptions<TContext> UpdateDbContextOptionsService<TContext>(IServiceProvider serviceProvider, Func<IServiceProvider, object> oldFactory) where TContext : DbContext
+        private static DbContextOptions<TContext> UpdateDbContextOptionsService<TContext, TTimeTicker, TCronTicker>(IServiceProvider serviceProvider, Func<IServiceProvider, object> oldFactory) where TContext : DbContext where TTimeTicker : TimeTicker where TCronTicker : CronTicker
         {
             var factory = (DbContextOptions<TContext>)oldFactory(serviceProvider);
 
             return new DbContextOptionsBuilder<TContext>(factory)
-                        .ReplaceService<IModelCustomizer, TickerModelCostumizer>()
+                        .ReplaceService<IModelCustomizer, TickerModelCostumizer<TTimeTicker, TCronTicker>>()
                         .Options;
         }
     }
