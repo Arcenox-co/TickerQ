@@ -3,7 +3,7 @@ using TickerQ.Utilities.Enums;
 
 namespace TickerQ.EntityFrameworkCore.Entities
 {
-    public class CronTickerOccurrence
+    public class CronTickerOccurrence<TCronTicker> where TCronTicker : CronTicker
     {
         public Guid Id { get; set; }
         public TickerStatus Status { get; set; }
@@ -12,6 +12,6 @@ namespace TickerQ.EntityFrameworkCore.Entities
         public Guid CronTickerId { get; set; }
         public DateTimeOffset? LockedAt { get; set; }
         public DateTimeOffset? ExcecutedAt { get; set; }
-        public CronTicker CronTicker { get; set; }
+        public TCronTicker CronTicker { get; set; }
     }
 }
