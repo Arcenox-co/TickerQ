@@ -11,12 +11,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
-
+    - uses: actions/checkout@v3
+    
     - name: Setup .NET
       uses: actions/setup-dotnet@v1
       with:
-        dotnet-version: '5.5.x' # update with your .NET version
+        dotnet-version: '3.1.x' # Change this to your .NET Core version that implements the .NET Standard 2.1
 
     - name: Restore dependencies
       run: dotnet restore
