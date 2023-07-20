@@ -26,4 +26,4 @@ jobs:
 
      # ClassLibrary1
     - name: Push TickerQ
-      run: dotnet nuget push TickerQ/Ticker/bin/Release/TickerQ.*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
+      run: dotnet nuget push Ticker/bin/Release/TickerQ.*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
