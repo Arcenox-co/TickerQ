@@ -36,7 +36,7 @@ namespace TickerQ.Utilities
         /// <param name="timeZoneInfo"></param>
         public void SetClockTimeZone(TimeZoneInfo timeZoneInfo)
             => TimeZoneInfo = timeZoneInfo;
-
+         
         /// <summary>
         /// Set Ticker Exception Handler
         /// </summary>
