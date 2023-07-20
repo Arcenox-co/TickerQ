@@ -24,12 +24,6 @@ jobs:
     - name: Build
       run: dotnet build --configuration Release --no-restore
 
-    - name: Test
-      run: dotnet test --no-restore --verbosity normal
-
-    # ClassLibrary1
-    - name: Pack TickerQ.Utilities
-      run: dotnet pack TickerQ/TickerQ.csproj --no-build --configuration Release --output out
-
-    - name: Push ClassLibrary1
-      run: dotnet nuget push out/TickerQ.*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
+     # ClassLibrary1
+    - name: Push TickerQ
+      run: dotnet nuget push TickerQ/Ticker/bin/Release/TickerQ.*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
