@@ -1,0 +1,35 @@
+name: Build and Publish NuGet
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: '2.2.x' # update with your .NET version
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --configuration Release --no-restore
+
+    - name: Test
+      run: dotnet test --no-restore --verbosity normal
+
+    # ClassLibrary1
+    - name: Pack TickerQ.Utilities
+      run: dotnet pack TickerQ/TickerQ.csproj --no-build --configuration Release --output out
+
+    - name: Push ClassLibrary1
+      run: dotnet nuget push out/TickerQ.*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
