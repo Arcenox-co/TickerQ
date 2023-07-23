@@ -4,7 +4,10 @@ on:
   push:
     branches:
       - main
-
+      - develop
+      - /tickerq/**
+      - /efcore/**
+      - /utilities/**
 jobs:
   build:
 
@@ -26,4 +29,13 @@ jobs:
 
      # ClassLibrary1
     - name: Push TickerQ
+      if: startsWith(github.ref, 'refs/heads/tickerq/')
       run: dotnet nuget push Ticker/bin/Release/TickerQ.*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
+      
+    - name: Push TickerQ
+      if: startsWith(github.ref, 'refs/heads/efcore/')
+      run: dotnet nuget push Ticker.EntityFramework/bin/Release/TickerQ.EntityFrameworkCore.*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
+
+    - name: Push TickerQ
+      if: startsWith(github.ref, 'refs/heads/utilities/')
+      run: dotnet nuget push Ticker.Utilities/bin/Release/TickerQ.Utilities.*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
