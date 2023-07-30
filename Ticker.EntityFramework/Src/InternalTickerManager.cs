@@ -193,6 +193,7 @@ namespace TickerQ.EntityFrameworkCore
                 .Distinct()
                 .ToListAsync(cancellationToken).ConfigureAwait(false))
                     .GroupBy(expression => CrontabSchedule.Parse(expression).GetNextOccurrence(now))
+                    .OrderBy(group => group.Key)
                     .FirstOrDefault();
         }
 
