@@ -5,9 +5,9 @@ on:
     branches:
       - main
       - develop
-      - /tickerq/**
-      - /efcore/**
-      - /utilities/**
+      - /tickerq/*
+      - /efcore/*
+      - /utilities/*
 jobs:
   build:
 
