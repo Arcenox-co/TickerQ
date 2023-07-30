@@ -1,13 +1,8 @@
 name: Build and Publish NuGet
 
 on:
-  push:
-    branches:
-      - main
-      - develop
-      - /tickerq/*
-      - /efcore/*
-      - /utilities/*
+  push: # Trigger the workflow on any push event to any branch
+    
 jobs:
   build:
 
