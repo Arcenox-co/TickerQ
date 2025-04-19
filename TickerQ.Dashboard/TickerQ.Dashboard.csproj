@@ -1,0 +1,76 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFrameworks>netstandard2.1;netcoreapp3.0;net5.0;net6.0;net7.0;net8.0;net9.0</TargetFrameworks>
+        <PackageId>TickerQ.Dashboard</PackageId>
+        <Version>2.0.0</Version>
+        <Authors>Albert Kunushevci</Authors>
+        <Company>Arcenox LLC</Company>
+        <Description>Dashboard UI for visualizing and monitoring TickerQ scheduled jobs, status, and system metrics.</Description>
+        <PackageTags>ticker;dashboard;monitoring;cron;queue;scheduler;status;job;ui</PackageTags>
+        <RepositoryUrl>https://github.com/arcenox/TickerQ</RepositoryUrl>
+        <PackageProjectUrl>https://tickerq.arcenox.com/</PackageProjectUrl>
+        <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+        <Copyright>
+            Copyright 2025 Arcenox LLC
+        </Copyright>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageIcon>icon.jpg</PackageIcon>
+    </PropertyGroup>
+    
+    <ItemGroup>
+        <None Include="README.md" Pack="true" PackagePath="" />
+        <None Include="..\icon.jpg" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1' OR '$(TargetFramework)' == 'netcoreapp2.2' OR '$(TargetFramework)' == 'netcoreapp3.0'">
+        <PackageReference Include="Microsoft.AspNetCore.SignalR" Version="1.0.4"/>
+        <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.2.0"/>
+        <PackageReference Include="Microsoft.AspNetCore.SpaServices" Version="2.2.7"/>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="2.2.0"/>
+        <PackageReference Include="Microsoft.AspNetCore.Mvc" Version="2.2.0"/>
+        <PackageReference Include="Microsoft.AspNetCore.StaticFiles" Version="2.2.0"/>
+        <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="2.2.0"/>
+        <PackageReference Include="Microsoft.Extensions.FileProviders.Physical" Version="2.2.0"/>
+        <PackageReference Include="System.Text.Json" Version="4.6.0"/>
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(TargetFramework)' != 'netstandard2.1' AND '$(TargetFramework)' != 'netcoreapp2.2' AND '$(TargetFramework)' != 'netcoreapp3.0'">
+        <PackageReference Include="Microsoft.AspNetCore.SignalR.Core" Version="[1.0.0,)"/>
+        <PackageReference Include="Microsoft.AspNetCore.SpaServices" Version="[2.2.7,)"/>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="[3.1.0,)"/>
+        <PackageReference Include="Microsoft.AspNetCore.StaticFiles" Version="[2.2.0,)"/>
+        <PackageReference Include="Microsoft.AspNetCore.Cors" Version="[2.2.0,)" />
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+    
+    <ItemGroup>
+        <PackageReference Include="TickerQ.Utilities" Version="2.0.0"/>
+    </ItemGroup>
+    
+    <PropertyGroup Condition="'$(TargetFramework)' != 'netstandard2.1' AND '$(TargetFramework)' != 'netcoreapp2.2' AND '$(TargetFramework)' != 'netcoreapp3.0'">
+        <DefineConstants>$(DefineConstants);NETCOREAPP3_1_OR_GREATER</DefineConstants>
+    </PropertyGroup>
+
+    <Target Name="BuildVueApp" BeforeTargets="Pack" Condition="'$(IsPackable)' == 'true'">
+        <Exec Command="npm run build" WorkingDirectory="wwwroot" />
+    </Target>
+
+    <ItemGroup>
+        <EmbeddedResource Include="wwwroot\dist\**\*" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Remove="wwwroot\src\**\*" />
+        <None Remove="wwwroot\node_modules\**\*" />
+        <None Remove="wwwroot\**\.vite\**\*" />
+        <None Remove="wwwroot\**\*.map" />
+        <None Remove="wwwroot\*" />
+        <None Remove="wwwroot\public\*" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="2.2.0" />
+        <PackageReference Include="Microsoft.AspNetCore.StaticFiles" Version="2.2.0" />
+    </ItemGroup>
+</Project>

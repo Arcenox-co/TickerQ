@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.dot-carousel {
+    position: relative;
+    left: -9999px;
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    background-color: #2196f3;
+    color: #2196f3;
+    box-shadow:
+      9984px 0 0 0 #2196f3,
+      9999px 0 0 0 #2196f3,
+      10014px 0 0 0 #2196f3;
+    animation: dot-carousel 1.5s infinite linear;
+  }
+  
+  @keyframes dot-carousel {
+    0% {
+      box-shadow:
+        9984px 0 0 -1px #2196f3,
+        9999px 0 0 1px #2196f3,
+        10014px 0 0 -1px #2196f3;
+    }
+    50% {
+      box-shadow:
+        10014px 0 0 -1px #2196f3,
+        9984px 0 0 -1px #2196f3,
+        9999px 0 0 1px #2196f3;
+    }
+    100% {
+      box-shadow:
+        9999px 0 0 1px #2196f3,
+        10014px 0 0 -1px #2196f3,
+        9984px 0 0 -1px #2196f3;
+    }
+  }
+  
+  .snippet {
+    position: relative;
+    box-shadow:
+      0 4px 12px -2px rgba(0, 32, 128, 0.1),
+      0 0 0 1px rgba(60, 80, 120, 0.1);
+    border-radius: 16px;
+  }
+  
+  .stage {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+    margin: 0 -5%;
+    overflow: hidden;
+  }
