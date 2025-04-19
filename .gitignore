@@ -30,3 +30,4 @@ msbuild.log
 msbuild.err
 msbuild.wrn
 .vs/
+.idea/
