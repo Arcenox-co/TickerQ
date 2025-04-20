@@ -13,7 +13,7 @@ TickerQ is a high-performance, modular background job scheduler for .NET applica
 
 ---
 Dashboard:
-![TickerQ Dashboard](https://tickerq.arcenox.com/Screenshot_14-4-2025_155111_localhost.jpeg)
+![TickerQ Dashboard](https://tickerq.arcenox.com/Screenshot_14-4-2025_155111_localhost.jpeg?v=2)
 
 
 ## ✨ Features
