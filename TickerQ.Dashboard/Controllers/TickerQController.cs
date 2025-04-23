@@ -110,7 +110,7 @@ namespace TickerQ.Dashboard.Controllers
             return BadRequest();
         }
 
-        [HttpDelete("/time-ticker/:delete")]
+        [HttpDelete("time-ticker/:delete")]
         public async Task<IActionResult> DeleteTimeTickerAsync([FromQuery] Guid id)
         {
             await TickerDashboardRepository.DeleteTimeTickerByIdAsync(id);
@@ -182,7 +182,7 @@ namespace TickerQ.Dashboard.Controllers
             return Ok();
         }
 
-        [HttpPut("/cron-ticker/:update")]
+        [HttpPut("cron-ticker/:update")]
         public async Task<IActionResult> UpdateCronTickerAsync([FromQuery] Guid id, [FromBody] JsonElement json)
         {
             var jsonString = json.GetRawText();
