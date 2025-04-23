@@ -32,9 +32,9 @@
 
     <Target Name="CopyAnalyzer" AfterTargets="Build">
         <MakeDir Directories="$(OutputPath)analyzers/dotnet/cs" />
-        <Copy SourceFiles="..\TickerQ.SourceGenerator\TickerQ.SourceGenerator\bin\$(Configuration)\netstandard2.0\TickerQ.SourceGenerator.dll"
+        <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\netstandard2.0\TickerQ.SourceGenerator.dll"
               DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
-        <Copy SourceFiles="..\TickerQ.SourceGenerator\TickerQ.SourceGenerator\bin\$(Configuration)\net6.0\TickerQ.SourceGenerator.dll"
+        <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\net6.0\TickerQ.SourceGenerator.dll"
               DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
     </Target>
 
