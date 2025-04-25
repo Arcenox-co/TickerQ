@@ -14,23 +14,23 @@ using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure.Dashboard
 {
-    internal class TickerTickerDashboardRepository<TDbContext, TTimeTicker, TCronTicker> : ITickerDashboardRepository
-        where TDbContext : DbContext where TTimeTicker : TimeTickerEntity, new() where TCronTicker : CronTickerEntity, new()
+    internal class TickerEFCoreDashboardRepository<TDbContext, TTimeTickerEntity, TCronTickerEntity> : ITickerDashboardRepository
+        where TDbContext : DbContext where TTimeTickerEntity : TimeTickerEntity, new() where TCronTickerEntity : CronTickerEntity, new()
     {
         private readonly TDbContext _dbContext;
-        private readonly DbSet<TTimeTicker> _timeTickerContext;
-        private readonly DbSet<TCronTicker> _cronTickerContext;
-        private readonly DbSet<CronTickerOccurrenceEntity<TCronTicker>> _cronTickerOccurrenceContext;
+        private readonly DbSet<TTimeTickerEntity> _timeTickerContext;
+        private readonly DbSet<TCronTickerEntity> _cronTickerContext;
+        private readonly DbSet<CronTickerOccurrenceEntity<TCronTickerEntity>> _cronTickerOccurrenceContext;
         private readonly ITickerHost _tickerHost;
         private readonly ITickerQNotificationHubSender _notificationHubSender;
 
-        public TickerTickerDashboardRepository(TDbContext dbContext,
+        public TickerEFCoreDashboardRepository(TDbContext dbContext,
             ITickerHost tickerHost, ITickerQNotificationHubSender notificationHubSender)
         {
             _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
-            _timeTickerContext = dbContext.Set<TTimeTicker>();
-            _cronTickerContext = dbContext.Set<TCronTicker>();
-            _cronTickerOccurrenceContext = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>();
+            _timeTickerContext = dbContext.Set<TTimeTickerEntity>();
+            _cronTickerContext = dbContext.Set<TCronTickerEntity>();
+            _cronTickerOccurrenceContext = dbContext.Set<CronTickerOccurrenceEntity<TCronTickerEntity>>();
             _tickerHost = tickerHost ?? throw new ArgumentNullException(nameof(tickerHost));
             _notificationHubSender = notificationHubSender;
         }
@@ -709,7 +709,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure.Dashboard
             var newTimeTicker = JsonSerializer.Deserialize<JsonElement>(jsonBody);
             var requestType = string.Empty;
 
-            var timeTicker = new TTimeTicker
+            var timeTicker = new TTimeTickerEntity
             {
                 Status = TickerStatus.Idle,
                 CreatedAt = DateTime.UtcNow,
@@ -749,7 +749,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure.Dashboard
             var requestType = string.Empty;
             var newCronTicker = JsonSerializer.Deserialize<JsonElement>(jsonBody);
 
-            var cronTicker = new TCronTicker
+            var cronTicker = new TCronTickerEntity
             {
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
@@ -857,7 +857,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure.Dashboard
             {
                 switch (ticker)
                 {
-                    case TTimeTicker timeTicker:
+                    case TTimeTickerEntity timeTicker:
                     {
                         var timeTickerDto = new TimeTickerDto
                         {
@@ -878,7 +878,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure.Dashboard
                             await _notificationHubSender.UpdateTimeTickerNotifyAsync(timeTickerDto);
                         break;
                     }
-                    case TCronTicker cronTicker:
+                    case TCronTickerEntity cronTicker:
                     {
                         var cronTickerDto = new CronTickerDto
                         {

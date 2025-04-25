@@ -5,7 +5,7 @@ using TickerQ.EntityFrameworkCore.Entities;
 namespace TickerQ.EntityFrameworkCore.Configurations
 {
     internal class TickerModelCustomizer<TTimeTicker, TCronTicker> : RelationalModelCustomizer
-        where TTimeTicker : TimeTicker where TCronTicker : CronTicker
+        where TTimeTicker : TimeTickerEntity where TCronTicker : CronTickerEntity
     {
         public TickerModelCustomizer(ModelCustomizerDependencies dependencies)
             : base(dependencies)
@@ -37,7 +37,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
                 cronTicker.ToTable("CronTickers", "ticker");
             });
 
-            builder.Entity<CronTickerOccurrence<TCronTicker>>(cronTickerOccurrence =>
+            builder.Entity<CronTickerOccurrenceEntity<TCronTicker>>(cronTickerOccurrence =>
             {
                 cronTickerOccurrence.HasKey("Id");
 

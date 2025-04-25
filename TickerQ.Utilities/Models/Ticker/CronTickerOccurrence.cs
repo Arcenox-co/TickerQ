@@ -1,7 +1,7 @@
 ﻿using System;
 using TickerQ.Utilities.Enums;
 
-namespace TickerQ.EntityFrameworkCore.Entities
+namespace TickerQ.Utilities.Models.Ticker
 {
     public class CronTickerOccurrence<TCronTicker> where TCronTicker : CronTicker
     {
