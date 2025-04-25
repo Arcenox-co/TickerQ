@@ -67,7 +67,7 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
                 services.AddScoped<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerEFCorePersistenceProvider<TContext, TimeTicker, CronTicker>>();
 
                 services
-                    .AddScoped<ITickerDashboardRepository, TickerEFCoreDashboardRepository<TContext, TTimeTickerEntity, TCronTickerEntity>>();
+                    .AddScoped<ITickerDashboardRepository, TickerTickerDashboardRepository<TContext, TTimeTickerEntity, TCronTickerEntity>>();
             };
 
             return tickerConfiguration;
