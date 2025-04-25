@@ -12,7 +12,7 @@
         <Copyright>Copyright © Arcenox</Copyright>
         <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <Version>2.0.0</Version>
+        <Version>2.0.1</Version>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageIcon>icon.jpg</PackageIcon>
     </PropertyGroup>
@@ -35,6 +35,12 @@
         <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\netstandard2.0\TickerQ.SourceGenerator.dll"
               DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
         <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\net6.0\TickerQ.SourceGenerator.dll"
+              DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
+        <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\net7.0\TickerQ.SourceGenerator.dll"
+              DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
+        <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\net8.0\TickerQ.SourceGenerator.dll"
+              DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
+        <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\net9.0\TickerQ.SourceGenerator.dll"
               DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
     </Target>
 

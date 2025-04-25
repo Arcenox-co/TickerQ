@@ -1,5 +1,9 @@
 # TickerQ
 
+[![NuGet](https://img.shields.io/nuget/dt/tickerq.svg)](https://www.nuget.org/packages/tickerq) 
+[![NuGet](https://img.shields.io/nuget/vpre/tickerq.svg)](https://www.nuget.org/packages/tickerq)
+[![Documentation](https://img.shields.io/badge/docs%20-official%20web-blue)](https://tickerq.arcenox.com)
+
 **Robust. Adaptive. Precise.**  
 TickerQ is a high-performance, modular background job scheduler for .NET applications. It supports cron-based and one-time jobs, integrates with Entity Framework Core for persistence, and offers a live dashboard UI powered by SignalR.
 
@@ -9,7 +13,7 @@ TickerQ is a high-performance, modular background job scheduler for .NET applica
 
 ---
 Dashboard:
-![TickerQ Dashboard](https://tickerq.arcenox.com/Screenshot_14-4-2025_155111_localhost.jpeg)
+![TickerQ Dashboard](https://tickerq.arcenox.com/Screenshot_14-4-2025_155111_localhost.jpeg?v=2)
 
 
 ## ✨ Features
