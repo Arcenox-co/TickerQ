@@ -28,7 +28,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
             var cronTickerOccurrences = await cronTickerOccurrenceContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x => ids.Contains(x.Id))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -41,7 +41,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
             var request = await cronTickerOccurrenceContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x => x.Id == tickerId)
                 .Select(x => x.CronTicker.Request)
                 .FirstOrDefaultAsync(cancellationToken)
@@ -72,7 +72,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
 
             var request = await timeTickerContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x => x.Id == tickerId)
                 .Select(x => x.Request)
                 .FirstOrDefaultAsync(cancellationToken)
@@ -114,7 +114,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerContext = GetDbSet<CronTickerEntity>();
 
             var existingCronTickers = await cronTickerContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x => !string.IsNullOrEmpty(x.InitIdentifier) && x.InitIdentifier.StartsWith("MemoryTicker_Seed"))
                 .ToListAsync(cancellationToken).ConfigureAwait(false);
 
@@ -139,7 +139,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
 
             var timeTickers = await timeTickerContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x => x.Status == TickerStatus.Queued || x.Status == TickerStatus.Inprogress)
                 .Where(x => x.LockHolder == lockHolder)
                 .ToArrayAsync(cancellationToken);
@@ -152,7 +152,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
             var occurrenceList = await cronTickerOccurrenceContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x =>
                     cronTickerIds.Contains(x.CronTickerId) &&
                     ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
@@ -179,7 +179,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
 
             var timeTickers = await timeTickerContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x =>
                     ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
                      (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)) &&
@@ -196,7 +196,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
             var nextCronOccurrences = await cronTickerOccurrenceContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x => x.CronTickerId == tickerId)
                 .Where(x => x.Status == TickerStatus.Queued)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
@@ -209,7 +209,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
             var cronTickerOccurrences = await cronTickerOccurrenceContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Include(x => x.CronTicker)
                 .Where(x => !x.ExecutedAt.HasValue && x.Status != TickerStatus.Inprogress &&
                             x.Status != TickerStatus.Cancelled)
@@ -225,7 +225,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
 
             var timeTickers = await timeTickerContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x =>
                     (x.Status == TickerStatus.Idle && x.ExecutionTime.AddSeconds(1) < now) ||
                     (x.Status == TickerStatus.Queued && x.ExecutionTime.AddSeconds(3) < now))
@@ -289,7 +289,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
 
             var timeTicker = await timeTickerContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -301,7 +301,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
 
             var timeTickers = await timeTickerContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x => ids.Contains(x.Id))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -314,7 +314,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerContext = GetDbSet<CronTickerEntity>();
 
             var cronTicker = await cronTickerContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -326,7 +326,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerContext = GetDbSet<CronTickerEntity>();
 
             var cronTickers = await cronTickerContext
-                //.AsNoTracking()
+                .AsNoTracking()
                 .Where(x => ids.Contains(x.Id))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
