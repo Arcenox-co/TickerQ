@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Interfaces.Managers;
 
 namespace TickerQ.Base
 {
@@ -124,7 +125,7 @@ namespace TickerQ.Base
                             await Task.Delay(sleepDuration, CtsTickerDelayAwaiter.Token).ConfigureAwait(false);
                         
                         if (TickerOptionsBuilder.UseEfCore && functions?.Length != 0)
-                            await internalTickerManager.SetTickersInprogress(functions, CtsTickerChecker.Token)
+                            await internalTickerManager.SetTickersInProgress(functions, CtsTickerChecker.Token)
                                 .ConfigureAwait(false);
 
                         if (functions?.Length != 0)

@@ -11,6 +11,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Interfaces.Managers;
 
 namespace TickerQ
 {

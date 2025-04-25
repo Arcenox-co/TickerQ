@@ -3,7 +3,7 @@
 	<PropertyGroup>
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<PackageId>TickerQ.Utilities</PackageId>
-		<Version>2.0.0</Version>
+		<Version>2.0.2</Version>
 		<Authors>Albert Kunushevci</Authors>
 		<Company>Arcenox</Company>
 		<Description>Simple utilities for queuing and executing cron/time-based jobs in the background.</Description>

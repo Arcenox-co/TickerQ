@@ -1,8 +1,8 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <TargetFrameworks>netstandard2.1;netcoreapp3.0;net5.0;net6.0;net7.0;net8.0;net9.0</TargetFrameworks>
         <PackageId>TickerQ.Dashboard</PackageId>
-        <Version>2.0.1</Version>
+        <Version>2.0.2</Version>
         <Authors>Albert Kunushevci</Authors>
         <Company>Arcenox LLC</Company>
         <Description>Dashboard UI for visualizing and monitoring TickerQ scheduled jobs, status, and system metrics.</Description>
@@ -45,7 +45,7 @@
     </ItemGroup>
     
     <ItemGroup>
-        <PackageReference Include="TickerQ.Utilities" Version="2.0.0"/>
+        <PackageReference Include="TickerQ.Utilities" Version="2.0.2"/>
     </ItemGroup>
     
     <PropertyGroup Condition="'$(TargetFramework)' != 'netstandard2.1' AND '$(TargetFramework)' != 'netcoreapp2.2' AND '$(TargetFramework)' != 'netcoreapp3.0'">
