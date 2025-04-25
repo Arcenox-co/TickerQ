@@ -36,6 +36,12 @@
               DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
         <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\net6.0\TickerQ.SourceGenerator.dll"
               DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
+        <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\net7.0\TickerQ.SourceGenerator.dll"
+              DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
+        <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\net8.0\TickerQ.SourceGenerator.dll"
+              DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
+        <Copy SourceFiles="..\TickerQ.SourceGenerator\bin\$(Configuration)\net9.0\TickerQ.SourceGenerator.dll"
+              DestinationFolder="$(OutputPath)analyzers/dotnet/cs" />
     </Target>
 
     <ItemGroup>
