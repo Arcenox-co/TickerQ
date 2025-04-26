@@ -99,7 +99,7 @@ namespace TickerQ.Utilities.Managers
         {
             var roundedMinDate = new DateTime(minDate.Ticks - minDate.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
 
-            var timeTickers = await PersistenceProvider.RetrieveNextTimeTickers(_lockHolder, roundedMinDate, cancellationToken).ConfigureAwait(false);
+            var timeTickers = await PersistenceProvider.GetNextTimeTickers(_lockHolder, roundedMinDate, cancellationToken).ConfigureAwait(false);
 
             var lockedAndQueuedTimeTickers = LockAndQueueTimeTickers(timeTickers).ToArray();
 
@@ -138,11 +138,11 @@ namespace TickerQ.Utilities.Managers
         {
             var now = Clock.UtcNow;
 
-            var cronTickers = await PersistenceProvider.RetrieveNextCronTickers(expressions, cancellationToken).ConfigureAwait(false);
+            var cronTickers = await PersistenceProvider.GetNextCronTickers(expressions, cancellationToken).ConfigureAwait(false);
 
             var cronTickerIdSet = cronTickers.Select(t => t.Id).ToArray();
 
-            var occurrenceList = await PersistenceProvider.RetrieveNextCronTickerOccurences(_lockHolder, cronTickerIdSet, cancellationToken).ConfigureAwait(false);
+            var occurrenceList = await PersistenceProvider.GetNextCronTickerOccurences(_lockHolder, cronTickerIdSet, cancellationToken).ConfigureAwait(false);
 
             var result = new List<InternalFunctionContext>();
 
@@ -270,7 +270,7 @@ namespace TickerQ.Utilities.Managers
         public async Task ReleaseOrCancelAllAcquiredResources(bool terminateExpiredTickers,
             CancellationToken cancellationToken = default)
         {
-            var timeTickers = await PersistenceProvider.RetrieveLockedTimeTickers(_lockHolder, cancellationToken).ConfigureAwait(false);
+            var timeTickers = await PersistenceProvider.GetLockedTimeTickers(_lockHolder, cancellationToken).ConfigureAwait(false);
 
             foreach (var timeTicker in timeTickers)
             {
@@ -291,7 +291,7 @@ namespace TickerQ.Utilities.Managers
 
             await PersistenceProvider.UpdateTimeTickers(timeTickers, cancellationToken).ConfigureAwait(false);
 
-            var cronTickerOccurrences = await PersistenceProvider.RetrieveLockedCronTickerOccurences(_lockHolder, cancellationToken).ConfigureAwait(false);
+            var cronTickerOccurrences = await PersistenceProvider.GetLockedCronTickerOccurences(_lockHolder, cancellationToken).ConfigureAwait(false);
 
             foreach (var cronTickerOccurrence in cronTickerOccurrences)
             {
@@ -437,7 +437,7 @@ namespace TickerQ.Utilities.Managers
         private async Task<InternalFunctionContext[]> RetrieveTimedOutCronTickersAsync(
             CancellationToken cancellationToken)
         {
-            var cronTickerOccurrences = await PersistenceProvider.RetrieveTimedOutCronTickerOccurrences(Clock.UtcNow, cancellationToken).ConfigureAwait(false);
+            var cronTickerOccurrences = await PersistenceProvider.GetTimedOutCronTickerOccurrences(Clock.UtcNow, cancellationToken).ConfigureAwait(false);
 
             if (cronTickerOccurrences.Length == 0)
                 return Array.Empty<InternalFunctionContext>();
@@ -480,7 +480,7 @@ namespace TickerQ.Utilities.Managers
         private async Task<InternalFunctionContext[]> RetrieveTimedOutTimeTickersAsync(
             CancellationToken cancellationToken)
         {
-            var timeTickers = await PersistenceProvider.RetrieveTimedOutTimeTickers(Clock.UtcNow, cancellationToken).ConfigureAwait(false);
+            var timeTickers = await PersistenceProvider.GetTimedOutTimeTickers(Clock.UtcNow, cancellationToken).ConfigureAwait(false);
 
             if (timeTickers.Length == 0)
                 return Array.Empty<InternalFunctionContext>();
@@ -524,7 +524,7 @@ namespace TickerQ.Utilities.Managers
         {
             var existingFunctions = new HashSet<Guid>();
 
-            var existingCronTickers = await PersistenceProvider.RetrieveAllExistingInitializedCronTickers(cancellationToken).ConfigureAwait(false);
+            var existingCronTickers = await PersistenceProvider.GetAllExistingInitializedCronTickers(cancellationToken).ConfigureAwait(false);
 
             var newCronTickers = new List<TCronTicker>();
 

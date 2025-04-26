@@ -304,7 +304,7 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<CronTickerOccurrence<TCronTicker>[]> GetQueuedNextCronOccurrences(CronTicker cronTicker, CancellationToken cancellationToken)
         {
-            return await PersistenceProvider.RetrieveQueuedNextCronOccurrences(cronTicker.Id, cancellationToken).ConfigureAwait(false);
+            return await PersistenceProvider.GetQueuedNextCronOccurrences(cronTicker.Id, cancellationToken).ConfigureAwait(false);
         }
 
         private DateTime ValidateAndGetNextOccurrenceTicker<TTicker>(TTicker ticker, out Exception exception)
