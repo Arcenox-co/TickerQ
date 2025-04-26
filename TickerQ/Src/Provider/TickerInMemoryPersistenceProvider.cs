@@ -7,7 +7,7 @@ using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models.Ticker;
 
-namespace TickerQ.Src
+namespace TickerQ.Src.Provider
 {
     public class TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker> : ITickerPersistenceProvider<TTimeTicker, TCronTicker>
         where TTimeTicker : TimeTicker, new()

@@ -10,8 +10,6 @@ using TickerQ.EntityFrameworkCore.Infrastructure;
 using TickerQ.EntityFrameworkCore.Infrastructure.Dashboard;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
-using TickerQ.Utilities.Interfaces.Managers;
-using TickerQ.Utilities.Managers;
 using TickerQ.Utilities.Models.Ticker;
 
 namespace TickerQ.EntityFrameworkCore.DependencyInjection
@@ -57,12 +55,6 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
 
                 services.Remove(originalDescriptor);
                 services.Add(newDescriptor);
-
-                //TODO: Registration of TickerManager should be moved to a more general place for registration by us
-                //so that storage providers don't have to register it themselves since it is no longer tied to EFCore
-                services.AddScoped<ICronTickerManager<CronTicker>, TickerManager<TimeTicker, CronTicker>>();
-                services.AddScoped<ITimeTickerManager<TimeTicker>, TickerManager<TimeTicker, CronTicker>>();
-                services.AddScoped<IInternalTickerManager, TickerManager<TimeTicker, CronTicker>>();
 
                 services.AddScoped<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerEFCorePersistenceProvider<TContext, TimeTicker, CronTicker>>();
 
