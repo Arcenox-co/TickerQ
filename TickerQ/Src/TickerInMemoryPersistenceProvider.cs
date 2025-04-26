@@ -13,9 +13,9 @@ namespace TickerQ.Src
         where TTimeTicker : TimeTicker, new()
         where TCronTicker : CronTicker, new()
     {
-        private readonly Dictionary<Guid, TTimeTicker> _timeTickers = new Dictionary<Guid, TTimeTicker>();
-        private readonly Dictionary<Guid, TCronTicker> _cronTickers = new Dictionary<Guid, TCronTicker>();
-        private readonly Dictionary<Guid, CronTickerOccurrence<TCronTicker>> _cronOccurrences = new Dictionary<Guid, CronTickerOccurrence<TCronTicker>>();
+        private static readonly Dictionary<Guid, TTimeTicker> _timeTickers = new Dictionary<Guid, TTimeTicker>();
+        private static readonly Dictionary<Guid, TCronTicker> _cronTickers = new Dictionary<Guid, TCronTicker>();
+        private static readonly Dictionary<Guid, CronTickerOccurrence<TCronTicker>> _cronOccurrences = new Dictionary<Guid, CronTickerOccurrence<TCronTicker>>();
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurencesByIds(Guid[] ids, CancellationToken cancellationToken = default)
         {
