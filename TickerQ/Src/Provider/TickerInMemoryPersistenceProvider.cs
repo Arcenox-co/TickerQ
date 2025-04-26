@@ -120,6 +120,7 @@ namespace TickerQ.Src.Provider
         public Task<TCronTicker> GetCronTickerById(Guid id, CancellationToken cancellationToken = default)
         {
             var result = _cronTickers.GetValueOrDefault(id);
+
             return Task.FromResult(result);
         }
 
@@ -128,6 +129,7 @@ namespace TickerQ.Src.Provider
             var result = _cronTickers.Values
                 .Where(t => ids.Contains(t.Id))
                 .ToArray();
+
             return Task.FromResult(result);
         }
 
@@ -186,6 +188,13 @@ namespace TickerQ.Src.Provider
         #endregion
 
         #region Cron Ticker Occurrence Operations
+
+        public Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurenceById(Guid id, CancellationToken cancellationToken = default)
+        {
+            var result = _cronOccurrences.GetValueOrDefault(id);
+
+            return Task.FromResult(result);
+        }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurencesByIds(Guid[] ids, CancellationToken cancellationToken = default)
         {
