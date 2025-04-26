@@ -214,7 +214,7 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<DateTime?> GetEarliestTimeTickerAsync(CancellationToken cancellationToken = default)
         {
-            return await PersistenceProvider.GetEarliestTimeTickerTime(Clock.UtcNow, cancellationToken).ConfigureAwait(false);
+            return await PersistenceProvider.GetEarliestTimeTickerTime(Clock.UtcNow, new[] { TickerStatus.Idle }, cancellationToken).ConfigureAwait(false);
         }
 
         private async Task<IGrouping<DateTime, string>> GetEarliestCronTickerGroupAsync(
@@ -270,7 +270,7 @@ namespace TickerQ.Utilities.Managers
         public async Task ReleaseOrCancelAllAcquiredResources(bool terminateExpiredTickers,
             CancellationToken cancellationToken = default)
         {
-            var timeTickers = await PersistenceProvider.GetLockedTimeTickers(_lockHolder, cancellationToken).ConfigureAwait(false);
+            var timeTickers = await PersistenceProvider.GetLockedTimeTickers(_lockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress }, cancellationToken).ConfigureAwait(false);
 
             foreach (var timeTicker in timeTickers)
             {
@@ -291,7 +291,7 @@ namespace TickerQ.Utilities.Managers
 
             await PersistenceProvider.UpdateTimeTickers(timeTickers, cancellationToken).ConfigureAwait(false);
 
-            var cronTickerOccurrences = await PersistenceProvider.GetLockedCronTickerOccurences(_lockHolder, cancellationToken).ConfigureAwait(false);
+            var cronTickerOccurrences = await PersistenceProvider.GetLockedCronTickerOccurences(_lockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress }, cancellationToken).ConfigureAwait(false);
 
             foreach (var cronTickerOccurrence in cronTickerOccurrences)
             {

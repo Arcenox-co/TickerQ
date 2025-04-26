@@ -48,10 +48,10 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<TTimeTicker[]> GetLockedTimeTickers(string lockHolder, CancellationToken cancellationToken = default)
+        public Task<TTimeTicker[]> GetLockedTimeTickers(string lockHolder, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
         {
             var result = _timeTickers.Values
-                .Where(x => x.Status == TickerStatus.Queued || x.Status == TickerStatus.Inprogress)
+                .Where(x => tickerStatuses.Contains(x.Status))
                 .Where(x => x.LockHolder == lockHolder)
                 .ToArray();
 
@@ -76,11 +76,11 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<DateTime?> GetEarliestTimeTickerTime(DateTime now, CancellationToken cancellationToken = default)
+        public Task<DateTime?> GetEarliestTimeTickerTime(DateTime now, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
         {
             var result = _timeTickers.Values
                 .Where(x => x.LockHolder == null
-                            && x.Status == TickerStatus.Idle
+                            && tickerStatuses.Contains(x.Status)
                             && x.ExecutionTime > now)
                 .OrderBy(x => x.ExecutionTime)
                 .Select(x => x.ExecutionTime)
@@ -217,10 +217,10 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurences(string lockHolder, CancellationToken cancellationToken = default)
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurences(string lockHolder, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
         {
             var result = _cronOccurrences.Values
-                .Where(x => x.Status == TickerStatus.Queued || x.Status == TickerStatus.Inprogress)
+                .Where(x => tickerStatuses.Contains(x.Status))
                 .Where(x => x.LockHolder == lockHolder)
                 .ToArray();
 

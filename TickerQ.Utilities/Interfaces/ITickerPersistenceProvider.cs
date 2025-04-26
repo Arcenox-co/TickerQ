@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models.Ticker;
 
 namespace TickerQ.Utilities.Interfaces
@@ -15,11 +16,11 @@ namespace TickerQ.Utilities.Interfaces
         Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default);
         Task<TTimeTicker[]> GetTimeTickersByIds(Guid[] ids, CancellationToken cancellationToken = default);
         Task<TTimeTicker[]> GetNextTimeTickers(string lockHolder, DateTime roundedMinDate, CancellationToken cancellationToken = default);
-        Task<TTimeTicker[]> GetLockedTimeTickers(string lockHolder, CancellationToken cancellationToken = default);
+        Task<TTimeTicker[]> GetLockedTimeTickers(string lockHolder, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default);
         Task<TTimeTicker[]> GetTimedOutTimeTickers(DateTime now, CancellationToken cancellationToken = default);
 
         Task<byte[]> GetTimeTickerRequest(Guid tickerId, CancellationToken cancellationToken = default);
-        Task<DateTime?> GetEarliestTimeTickerTime(DateTime now, CancellationToken cancellationToken = default);
+        Task<DateTime?> GetEarliestTimeTickerTime(DateTime now, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default);
 
         Task InsertTimeTickers(IEnumerable<TTimeTicker> tickers, CancellationToken cancellationToken = default);
         Task UpdateTimeTickers(IEnumerable<TTimeTicker> tickers, CancellationToken cancellationToken = default);
@@ -47,7 +48,7 @@ namespace TickerQ.Utilities.Interfaces
         Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurenceById(Guid id, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurencesByIds(Guid[] ids, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurences(string lockHolder, Guid[] cronTickerIds, CancellationToken cancellationToken = default);
-        Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurences(string lockHolder, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurences(string lockHolder, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetTimedOutCronTickerOccurrences(DateTime now, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetQueuedNextCronOccurrences(Guid tickerId, CancellationToken cancellationToken = default);
 
