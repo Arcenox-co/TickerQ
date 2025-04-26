@@ -5,7 +5,7 @@ namespace TickerQ.Utilities.Models.Ticker
 {
     public class CronTickerOccurrence<TCronTicker> where TCronTicker : CronTicker
     {
-        public Guid Id { get; set; }
+        public Guid Id { get; set; } = Guid.NewGuid();
         public TickerStatus Status { get; set; }
         public string LockHolder { get; set; }
         public DateTime ExecutionTime { get; set; }
