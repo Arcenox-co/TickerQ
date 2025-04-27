@@ -1,10 +1,9 @@
 ﻿using System;
-using TickerQ.EntityFrameworkCore.Entities.BaseEntity;
 using TickerQ.Utilities.Enums;
 
-namespace TickerQ.EntityFrameworkCore.Entities
+namespace TickerQ.Utilities.Models.Ticker
 {
-    public class TimeTicker : BaseTickerEntity
+    public class TimeTicker : BaseTicker
     {
         public TickerStatus Status { get; internal set; }
         public string LockHolder { get; internal set; }

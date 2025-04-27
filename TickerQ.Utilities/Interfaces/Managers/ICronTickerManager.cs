@@ -1,10 +1,10 @@
 ﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
-using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Models.Ticker;
 
-namespace TickerQ.EntityFrameworkCore
+namespace TickerQ.Utilities.Interfaces.Managers
 {
     public interface ICronTickerManager<TCronTicker> where TCronTicker : CronTicker
     {

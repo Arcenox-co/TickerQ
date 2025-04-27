@@ -4,7 +4,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text.Json;
 
-namespace TickerQ.EntityFrameworkCore
+namespace TickerQ.Utilities
 {
     public static class TickerHelper
     {
