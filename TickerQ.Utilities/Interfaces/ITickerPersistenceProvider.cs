@@ -45,18 +45,38 @@ namespace TickerQ.Utilities.Interfaces
 
         #region Cron Ticker Occurrence Operations
 
-        Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurenceById(Guid id, CancellationToken cancellationToken = default);
-        Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurencesByIds(Guid[] ids, CancellationToken cancellationToken = default);
-        Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurences(string lockHolder, Guid[] cronTickerIds, CancellationToken cancellationToken = default);
-        Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurences(string lockHolder, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurrenceById(Guid id, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByIds(Guid[] ids, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder, Guid[] cronTickerIds, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurrences(string lockHolder, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetTimedOutCronTickerOccurrences(DateTime now, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetQueuedNextCronOccurrences(Guid tickerId, CancellationToken cancellationToken = default);
 
-        Task<byte[]> GetCronTickerRequestViaOccurence(Guid tickerId, CancellationToken cancellationToken = default);
+        Task<byte[]> GetCronTickerRequestViaOccurrence(Guid tickerId, CancellationToken cancellationToken = default);
 
-        Task InsertCronTickerOccurences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default);
-        Task UpdateCronTickerOccurences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default);
-        Task RemoveCronTickerOccurences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default);
+        Task InsertCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default);
+        Task UpdateCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default);
+        Task RemoveCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default);
+
+        #endregion
+
+        #region Dashboard Operations
+
+        Task<TTimeTicker[]> GetAllTimeTickers(CancellationToken cancellationToken = default);
+        Task<TTimeTicker[]> GetAllLockedTimeTickers(CancellationToken cancellationToken = default);
+        Task<TTimeTicker[]> GetTimeTickersWithin(DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default);
+
+        Task<TCronTicker[]> GetAllCronTickers(CancellationToken cancellationToken = default);
+
+        Task<DateTime> GetEarliestCronTickerOccurrenceById(Guid id, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetAllCronTickerOccurrences(CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetAllLockedCronTickerOccurrences(CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerId(Guid cronTickerId, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesWithin(DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerIdWithin(Guid cronTickerId, DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetPastCronTickerOccurrencesByCronTickerId(Guid cronTickerId, DateTime today, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetTodayCronTickerOccurrencesByCronTickerId(Guid cronTickerId, DateTime today, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetFutureCronTickerOccurrencesByCronTickerId(Guid cronTickerId, DateTime today, CancellationToken cancellationToken = default);
 
         #endregion
     }

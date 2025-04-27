@@ -49,10 +49,7 @@ namespace TickerQ.DependencyInjection
 
             if (optionInstance.DashboardServiceAction != null)
             {
-                if (optionInstance.UseEfCore)
-                    optionInstance.DashboardServiceAction(services);
-                else
-                    throw new Exception("TickerQ Dashboard service can be used only with EF Core");
+                optionInstance.DashboardServiceAction(services);
             }
             else
                 services.AddSingleton<ITickerQNotificationHubSender, TempTickerQNotificationHubSender>();

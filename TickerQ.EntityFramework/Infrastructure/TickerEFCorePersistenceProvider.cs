@@ -239,7 +239,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         #region Cron Ticker Occurrence Operations
 
-        public async Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurenceById(Guid id, CancellationToken cancellationToken = default)
+        public async Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurrenceById(Guid id, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
@@ -251,7 +251,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return cronTickerOccurrence.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>();
         }
 
-        public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurencesByIds(Guid[] ids, CancellationToken cancellationToken = default)
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByIds(Guid[] ids, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
@@ -264,7 +264,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return cronTickerOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
         }
 
-        public async Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurences(string lockHolder, Guid[] cronTickerIds, CancellationToken cancellationToken = default)
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder, Guid[] cronTickerIds, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
@@ -279,7 +279,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return occurrenceList.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
         }
 
-        public async Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurences(string lockHolder, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurrences(string lockHolder, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
@@ -321,7 +321,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return nextCronOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
         }
 
-        public async Task<byte[]> GetCronTickerRequestViaOccurence(Guid tickerId, CancellationToken cancellationToken = default)
+        public async Task<byte[]> GetCronTickerRequestViaOccurrence(Guid tickerId, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
@@ -335,25 +335,200 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return request;
         }
 
-        public async Task InsertCronTickerOccurences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
+        public async Task InsertCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
             await cronTickerOccurrenceContext.AddRangeAsync(cronTickerOccurrences.Select(x => x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()));
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
-        public async Task UpdateCronTickerOccurences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
+        public async Task UpdateCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
             cronTickerOccurrenceContext.UpdateRange(cronTickerOccurrences.Select(x => x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()));
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
-        public async Task RemoveCronTickerOccurences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
+        public async Task RemoveCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
             cronTickerOccurrenceContext.RemoveRange(cronTickerOccurrences.Select(x => x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()));
             await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        #endregion
+
+        #region Dashboard Operations
+
+        public async Task<TTimeTicker[]> GetAllTimeTickers(CancellationToken cancellationToken = default)
+        {
+            var timeTickerContext = GetDbSet<TimeTickerEntity>();
+
+            var timeTickers = await timeTickerContext
+                .AsNoTracking()
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return timeTickers.Select(x => x.ToTimeTicker<TTimeTicker>()).ToArray();
+        }
+
+        public async Task<TTimeTicker[]> GetAllLockedTimeTickers(CancellationToken cancellationToken = default)
+        {
+            var timeTickerContext = GetDbSet<TimeTickerEntity>();
+
+            var timeTickers = await timeTickerContext
+                .AsNoTracking()
+                .Where(x => x.LockHolder != null)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return timeTickers.Select(x => x.ToTimeTicker<TTimeTicker>()).ToArray();
+        }
+
+        public async Task<TTimeTicker[]> GetTimeTickersWithin(DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default)
+        {
+            var timeTickerContext = GetDbSet<TimeTickerEntity>();
+
+            var timeTickers = await timeTickerContext
+                .AsNoTracking()
+                .Where(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return timeTickers.Select(x => x.ToTimeTicker<TTimeTicker>()).ToArray();
+        }
+
+        public async Task<TCronTicker[]> GetAllCronTickers(CancellationToken cancellationToken = default)
+        {
+            var cronTickerContext = GetDbSet<CronTickerEntity>();
+
+            var cronTickers = await cronTickerContext
+                .AsNoTracking()
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return cronTickers.Select(x => x.ToCronTicker<TCronTicker>()).ToArray();
+        }
+
+        public async Task<DateTime> GetEarliestCronTickerOccurrenceById(Guid id, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var earliestCronTickerOccurrence = await cronTickerOccurrenceContext
+                .AsNoTracking()
+                .Where(x => x.Id == id)
+                .Where(x => tickerStatuses.Contains(x.Status))
+                .MinAsync(x => x.ExecutionTime, cancellationToken)
+                .ConfigureAwait(false);
+
+            return earliestCronTickerOccurrence;
+        }
+
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetAllCronTickerOccurrences(CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var cronTickerOccurrences = await cronTickerOccurrenceContext
+                .AsNoTracking()
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return cronTickerOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
+        }
+
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetAllLockedCronTickerOccurrences(CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var cronTickerOccurrences = await cronTickerOccurrenceContext
+                .AsNoTracking()
+                .Where(x => x.LockHolder != null)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return cronTickerOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
+        }
+
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerId(Guid cronTickerId, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var cronTickerOccurrences = await cronTickerOccurrenceContext
+                .AsNoTracking()
+                .Where(x => x.CronTickerId == cronTickerId)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return cronTickerOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
+        }
+
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesWithin(DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var cronTickerOccurrences = await cronTickerOccurrenceContext
+                .AsNoTracking()
+                .Where(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return cronTickerOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
+        }
+
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerIdWithin(Guid cronTickerId, DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var cronTickerOccurrences = await cronTickerOccurrenceContext
+                .AsNoTracking()
+                .Where(x => x.CronTickerId == cronTickerId)
+                .Where(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return cronTickerOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
+        }
+
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetPastCronTickerOccurrencesByCronTickerId(Guid cronTickerId, DateTime today, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var cronTickerOccurrences = await cronTickerOccurrenceContext
+                .AsNoTracking()
+                .Where(x => x.CronTicker.Id == cronTickerId)
+                .Where(x => x.ExecutionTime.Date < today)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return cronTickerOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
+        }
+
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetTodayCronTickerOccurrencesByCronTickerId(Guid cronTickerId, DateTime today, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var cronTickerOccurrences = await cronTickerOccurrenceContext
+                .AsNoTracking()
+                .Where(x => x.CronTicker.Id == cronTickerId)
+                .Where(x => x.ExecutionTime.Date == today)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return cronTickerOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
+        }
+
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetFutureCronTickerOccurrencesByCronTickerId(Guid cronTickerId, DateTime today, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var cronTickerOccurrences = await cronTickerOccurrenceContext
+                .AsNoTracking()
+                .Where(x => x.CronTicker.Id == cronTickerId)
+                .Where(x => x.ExecutionTime.Date > today)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return cronTickerOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
         }
 
         #endregion

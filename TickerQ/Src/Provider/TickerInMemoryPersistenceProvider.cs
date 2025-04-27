@@ -189,14 +189,14 @@ namespace TickerQ.Src.Provider
 
         #region Cron Ticker Occurrence Operations
 
-        public Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurenceById(Guid id, CancellationToken cancellationToken = default)
+        public Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurrenceById(Guid id, CancellationToken cancellationToken = default)
         {
             var result = _cronOccurrences.GetValueOrDefault(id);
 
             return Task.FromResult(result);
         }
 
-        public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurencesByIds(Guid[] ids, CancellationToken cancellationToken = default)
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByIds(Guid[] ids, CancellationToken cancellationToken = default)
         {
             var result = _cronOccurrences.Values
                 .Where(o => ids.Contains(o.Id))
@@ -205,7 +205,7 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurences(string lockHolder, Guid[] cronTickerIds, CancellationToken cancellationToken = default)
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder, Guid[] cronTickerIds, CancellationToken cancellationToken = default)
         {
             var result = _cronOccurrences.Values
                 .Where(x =>
@@ -217,7 +217,7 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurences(string lockHolder, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurrences(string lockHolder, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
         {
             var result = _cronOccurrences.Values
                 .Where(x => tickerStatuses.Contains(x.Status))
@@ -248,14 +248,14 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<byte[]> GetCronTickerRequestViaOccurence(Guid tickerId, CancellationToken cancellationToken = default)
+        public Task<byte[]> GetCronTickerRequestViaOccurrence(Guid tickerId, CancellationToken cancellationToken = default)
         {
             var result = _cronOccurrences.TryGetValue(tickerId, out var t) ? t.CronTicker.Request : null;
 
             return Task.FromResult(result);
         }
 
-        public Task InsertCronTickerOccurences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
+        public Task InsertCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
             foreach (var o in cronTickerOccurrences)
                 _cronOccurrences.Add(o.Id, o);
@@ -263,7 +263,7 @@ namespace TickerQ.Src.Provider
             return Task.CompletedTask;
         }
 
-        public Task RemoveCronTickerOccurences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
+        public Task RemoveCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
             foreach (var o in cronTickerOccurrences)
                 _cronOccurrences.Remove(o.Id);
@@ -271,12 +271,134 @@ namespace TickerQ.Src.Provider
             return Task.CompletedTask;
         }
 
-        public Task UpdateCronTickerOccurences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
+        public Task UpdateCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
             foreach (var o in cronTickerOccurrences)
                 _cronOccurrences[o.Id] = o;
 
             return Task.CompletedTask;
+        }
+
+        #endregion
+
+        #region Dashboard Operations
+
+        public Task<TTimeTicker[]> GetAllTimeTickers(CancellationToken cancellationToken = default)
+        {
+            var timeTickers = _timeTickers.Values.ToArray();
+
+            return Task.FromResult(timeTickers);
+        }
+
+        public Task<TTimeTicker[]> GetAllLockedTimeTickers(CancellationToken cancellationToken = default)
+        {
+            var timeTickers = _timeTickers.Values
+                .Where(x => x.LockHolder != null)
+                .ToArray();
+
+            return Task.FromResult(timeTickers);
+        }
+
+        public Task<TTimeTicker[]> GetTimeTickersWithin(DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default)
+        {
+            var timeTickers = _timeTickers.Values
+                .Where(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate)
+                .ToArray();
+
+            return Task.FromResult(timeTickers);
+        }
+
+        public Task<TCronTicker[]> GetAllCronTickers(CancellationToken cancellationToken = default)
+        {
+            var cronTickers = _cronTickers.Values
+                .ToArray();
+
+            return Task.FromResult(cronTickers);
+        }
+
+        public Task<DateTime> GetEarliestCronTickerOccurrenceById(Guid id, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
+        {
+            var earliestCronTickerOccurrence = _cronOccurrences.Values
+                .Where(x => x.Id == id)
+                .Where(x => tickerStatuses.Contains(x.Status))
+                .Min(x => x.ExecutionTime);
+
+            return Task.FromResult(earliestCronTickerOccurrence);
+        }
+
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetAllCronTickerOccurrences(CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrences = _cronOccurrences.Values
+                .ToArray();
+
+            return Task.FromResult(cronTickerOccurrences);
+        }
+
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetAllLockedCronTickerOccurrences(CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrences = _cronOccurrences.Values
+                .Where(x => x.LockHolder != null)
+                .ToArray();
+
+            return Task.FromResult(cronTickerOccurrences);
+        }
+
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerId(Guid cronTickerId, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrences = _cronOccurrences.Values
+                .Where(x => x.CronTickerId == cronTickerId)
+                .ToArray();
+
+            return Task.FromResult(cronTickerOccurrences);
+        }
+
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesWithin(DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrences = _cronOccurrences.Values
+                .Where(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate)
+                .ToArray();
+
+            return Task.FromResult(cronTickerOccurrences);
+        }
+
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerIdWithin(Guid cronTickerId, DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrences = _cronOccurrences.Values
+                .Where(x => x.CronTickerId == cronTickerId)
+                .Where(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate)
+                .ToArray();
+
+            return Task.FromResult(cronTickerOccurrences);
+        }
+
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetPastCronTickerOccurrencesByCronTickerId(Guid cronTickerId, DateTime today, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrences = _cronOccurrences.Values
+                .Where(x => x.CronTicker.Id == cronTickerId)
+                .Where(x => x.ExecutionTime.Date < today)
+                .ToArray();
+
+            return Task.FromResult(cronTickerOccurrences);
+        }
+
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetTodayCronTickerOccurrencesByCronTickerId(Guid cronTickerId, DateTime today, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrences = _cronOccurrences.Values
+                .Where(x => x.CronTicker.Id == cronTickerId)
+                .Where(x => x.ExecutionTime.Date == today)
+                .ToArray();
+
+            return Task.FromResult(cronTickerOccurrences);
+        }
+
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetFutureCronTickerOccurrencesByCronTickerId(Guid cronTickerId, DateTime today, CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrences = _cronOccurrences.Values
+                .Where(x => x.CronTicker.Id == cronTickerId)
+                .Where(x => x.ExecutionTime.Date > today)
+                .ToArray();
+
+            return Task.FromResult(cronTickerOccurrences);
         }
 
         #endregion

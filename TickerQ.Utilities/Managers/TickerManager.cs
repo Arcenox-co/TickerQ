@@ -228,7 +228,7 @@ namespace TickerQ.Utilities.Managers
 
                 if (queuedOccurrences.Length > 0)
                 {
-                    await PersistenceProvider.RemoveCronTickerOccurences(queuedOccurrences, cancellationToken).ConfigureAwait(false);
+                    await PersistenceProvider.RemoveCronTickerOccurrences(queuedOccurrences, cancellationToken).ConfigureAwait(false);
                     return true;
                 }
 

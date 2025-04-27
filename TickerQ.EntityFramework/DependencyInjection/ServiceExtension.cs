@@ -7,7 +7,6 @@ using System.Linq;
 using TickerQ.EntityFrameworkCore.Configurations;
 using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.EntityFrameworkCore.Infrastructure;
-using TickerQ.EntityFrameworkCore.Infrastructure.Dashboard;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models.Ticker;
@@ -57,9 +56,6 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
                 services.Add(newDescriptor);
 
                 services.AddScoped<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerEFCorePersistenceProvider<TContext, TimeTicker, CronTicker>>();
-
-                services
-                    .AddScoped<ITickerDashboardRepository, TickerTickerDashboardRepository<TContext, TTimeTickerEntity, TCronTickerEntity>>();
             };
 
             return tickerConfiguration;

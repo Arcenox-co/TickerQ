@@ -1,7 +1,9 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Dashboard.Hubs;
+using TickerQ.Dashboard.Infrastructure.Dashboard;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Models.Ticker;
 
 namespace TickerQ.Dashboard.DependencyInjection
 {
@@ -19,6 +21,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             tickerConfiguration.DashboardLunchUrl = basePath;
             tickerConfiguration.DashboardServiceAction = (services) =>
             {
+                services.AddScoped<ITickerDashboardRepository, TickerDashboardRepository<TimeTicker, CronTicker>>();
                 services.AddSingleton<ITickerQNotificationHubSender, TickerQNotificationHubSender>();
                 
 #if NETCOREAPP3_1_OR_GREATER

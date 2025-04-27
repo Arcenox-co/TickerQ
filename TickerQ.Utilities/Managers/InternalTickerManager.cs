@@ -142,7 +142,7 @@ namespace TickerQ.Utilities.Managers
 
             var cronTickerIdSet = cronTickers.Select(t => t.Id).ToArray();
 
-            var occurrenceList = await PersistenceProvider.GetNextCronTickerOccurences(_lockHolder, cronTickerIdSet, cancellationToken).ConfigureAwait(false);
+            var occurrenceList = await PersistenceProvider.GetNextCronTickerOccurrences(_lockHolder, cronTickerIdSet, cancellationToken).ConfigureAwait(false);
 
             var result = new List<InternalFunctionContext>();
 
@@ -204,10 +204,10 @@ namespace TickerQ.Utilities.Managers
                 }
             }
 
-            await PersistenceProvider.UpdateCronTickerOccurences(occurrenceList, cancellationToken).ConfigureAwait(false);
+            await PersistenceProvider.UpdateCronTickerOccurrences(occurrenceList, cancellationToken).ConfigureAwait(false);
 
             if (result.Count > 0)
-                await PersistenceProvider.InsertCronTickerOccurences(newOccurrences, cancellationToken).ConfigureAwait(false);
+                await PersistenceProvider.InsertCronTickerOccurrences(newOccurrences, cancellationToken).ConfigureAwait(false);
 
             return result.ToArray();
         }
@@ -291,7 +291,7 @@ namespace TickerQ.Utilities.Managers
 
             await PersistenceProvider.UpdateTimeTickers(timeTickers, cancellationToken).ConfigureAwait(false);
 
-            var cronTickerOccurrences = await PersistenceProvider.GetLockedCronTickerOccurences(_lockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress }, cancellationToken).ConfigureAwait(false);
+            var cronTickerOccurrences = await PersistenceProvider.GetLockedCronTickerOccurrences(_lockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress }, cancellationToken).ConfigureAwait(false);
 
             foreach (var cronTickerOccurrence in cronTickerOccurrences)
             {
@@ -310,7 +310,7 @@ namespace TickerQ.Utilities.Managers
                 }
             }
 
-            await PersistenceProvider.UpdateCronTickerOccurences(cronTickerOccurrences, cancellationToken).ConfigureAwait(false);
+            await PersistenceProvider.UpdateCronTickerOccurrences(cronTickerOccurrences, cancellationToken).ConfigureAwait(false);
         }
 
         private async Task UpdateTickersAsync(
@@ -346,7 +346,7 @@ namespace TickerQ.Utilities.Managers
                     {
                         var cronOccurrenceIds = resourceType.Select(x => x.TickerId).ToArray();
 
-                        var cronTickerOccurrences = await PersistenceProvider.GetCronTickerOccurencesByIds(cronOccurrenceIds, cancellationToken).ConfigureAwait(false);
+                        var cronTickerOccurrences = await PersistenceProvider.GetCronTickerOccurrencesByIds(cronOccurrenceIds, cancellationToken).ConfigureAwait(false);
 
                         foreach (var cronTickerOccurrence in cronTickerOccurrences)
                         {
@@ -356,7 +356,7 @@ namespace TickerQ.Utilities.Managers
                                 await NotificationHubSender.UpdateCronOccurrenceAsync(cronTickerOccurrence.CronTickerId, cronTickerOccurrence);
                         }
 
-                        await PersistenceProvider.UpdateCronTickerOccurences(cronTickerOccurrences, cancellationToken).ConfigureAwait(false);
+                        await PersistenceProvider.UpdateCronTickerOccurrences(cronTickerOccurrences, cancellationToken).ConfigureAwait(false);
                     }
                 }
                 else if (resourceType.Key == TickerType.Timer)
@@ -416,7 +416,7 @@ namespace TickerQ.Utilities.Managers
             CancellationToken cancellationToken = default)
         {
             byte[] request = type == TickerType.CronExpression
-                ? await PersistenceProvider.GetCronTickerRequestViaOccurence(tickerId, cancellationToken).ConfigureAwait(false)
+                ? await PersistenceProvider.GetCronTickerRequestViaOccurrence(tickerId, cancellationToken).ConfigureAwait(false)
                 : await PersistenceProvider.GetTimeTickerRequest(tickerId, cancellationToken).ConfigureAwait(false);
 
             return request == null ? default : TickerHelper.ReadTickerRequest<T>(request);
@@ -446,7 +446,7 @@ namespace TickerQ.Utilities.Managers
 
             if (updatedCronTickers.Length > 0)
             {
-                await PersistenceProvider.UpdateCronTickerOccurences(cronTickerOccurrences, cancellationToken).ConfigureAwait(false);
+                await PersistenceProvider.UpdateCronTickerOccurrences(cronTickerOccurrences, cancellationToken).ConfigureAwait(false);
 
                 foreach (var updatedOccurrence in cronTickerOccurrences)
                 {
