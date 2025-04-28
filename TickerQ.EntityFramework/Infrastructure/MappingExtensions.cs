@@ -53,10 +53,10 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             where TCronTicker : CronTicker, new()
             where TCronTickerOccurrence : CronTickerOccurrence<TCronTicker>, new()
         {
-            return new TCronTickerOccurrence
+            var cronTickerOccurrence = new TCronTickerOccurrence
             {
                 Id = entity.Id,
-                CronTickerId = entity.CronTicker.Id,
+                CronTickerId = entity.CronTickerId,
                 ExecutionTime = entity.ExecutionTime,
                 ElapsedTime = entity.ElapsedTime,
                 LockedAt = entity.LockedAt,
@@ -64,8 +64,11 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 LockHolder = entity.LockHolder,
                 ExecutedAt = entity.ExecutedAt,
                 RetryCount = entity.RetryCount,
-                Exception = entity.Exception,
-                CronTicker = new TCronTicker
+                Exception = entity.Exception
+            };
+
+            if (entity.CronTicker != null)
+                cronTickerOccurrence.CronTicker = new TCronTicker
                 {
                     Id = entity.CronTicker.Id,
                     Expression = entity.CronTicker.Expression,
@@ -77,8 +80,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     CreatedAt = entity.CronTicker.CreatedAt,
                     UpdatedAt = entity.CronTicker.UpdatedAt,
                     InitIdentifier = entity.CronTicker.InitIdentifier
-                }
-            };
+                };
+
+            return cronTickerOccurrence;
         }
 
         internal static CronTickerEntity ToCronTickerEntity(this CronTicker ticker)
@@ -122,12 +126,13 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             };
         }
 
-        internal static CronTickerOccurrenceEntity<CronTickerEntity> ToCronTickerOccurrenceEntity<TCronTicker, TCronTickerOccurrence>(
+        internal static CronTickerOccurrenceEntity<CronTickerEntity> ToCronTickerOccurrenceEntity<TCronTicker,
+            TCronTickerOccurrence>(
             this TCronTickerOccurrence occurrence)
             where TCronTicker : CronTicker
             where TCronTickerOccurrence : CronTickerOccurrence<TCronTicker>
         {
-            return new CronTickerOccurrenceEntity<CronTickerEntity>
+            var cronTickerOccurrenceEntity = new CronTickerOccurrenceEntity<CronTickerEntity>
             {
                 Id = occurrence.Id,
                 CronTickerId = occurrence.CronTickerId,
@@ -139,7 +144,10 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 ExecutedAt = occurrence.ExecutedAt,
                 RetryCount = occurrence.RetryCount,
                 Exception = occurrence.Exception,
-                CronTicker = new CronTickerEntity
+            };
+
+            if (occurrence.CronTicker != null)
+                cronTickerOccurrenceEntity.CronTicker = new CronTickerEntity
                 {
                     Id = occurrence.CronTicker.Id,
                     Expression = occurrence.CronTicker.Expression,
@@ -151,9 +159,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     CreatedAt = occurrence.CronTicker.CreatedAt,
                     UpdatedAt = occurrence.CronTicker.UpdatedAt,
                     InitIdentifier = occurrence.CronTicker.InitIdentifier
-                }
-            };
-        }
+                };
 
+            return cronTickerOccurrenceEntity;
+        }
     }
 }

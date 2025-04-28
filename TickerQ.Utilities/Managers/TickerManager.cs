@@ -19,7 +19,8 @@ namespace TickerQ.Utilities.Managers
         ITimeTickerManager<TTimeTicker>
         where TTimeTicker : TimeTicker, new() where TCronTicker : CronTicker, new()
     {
-        public TickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider, ITickerHost tickerHost, ITickerClock clock,
+        public TickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
+            ITickerHost tickerHost, ITickerClock clock,
             TickerOptionsBuilder tickerOptions, ITickerQNotificationHubSender notificationHubSender)
             : base(persistenceProvider, tickerHost, clock, tickerOptions, notificationHubSender)
         {
@@ -33,9 +34,9 @@ namespace TickerQ.Utilities.Managers
             CancellationToken cancellationToken)
             => AddTimeTickerAsync(entity, cancellationToken);
 
-        Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.UpdateAsync(TCronTicker entity,
-            CancellationToken cancellationToken)
-            => UpdateAsync(entity, cancellationToken);
+        Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.UpdateAsync(Guid id,
+            Action<TCronTicker> updateAction, CancellationToken cancellationToken)
+            => UpdateCronTickerAsync(id, updateAction, cancellationToken);
 
         Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.UpdateAsync(Guid id, Action<TTimeTicker> action,
             CancellationToken cancellationToken)
@@ -43,15 +44,19 @@ namespace TickerQ.Utilities.Managers
 
         Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.DeleteAsync(Guid id,
             CancellationToken cancellationToken)
-            => DeleteAsync<TCronTicker>(id, cancellationToken);
+            => DeleteCronTickerAsync(id, cancellationToken);
 
         Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.DeleteAsync(Guid id,
             CancellationToken cancellationToken)
-            => DeleteAsync<TTimeTicker>(id, cancellationToken);
+            => DeleteTimeTickerAsync(id, cancellationToken);
 
         private async Task<TickerResult<TTimeTicker>> AddTimeTickerAsync(TTimeTicker entity,
             CancellationToken cancellationToken)
         {
+            if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity?.Function))
+                return new TickerResult<TTimeTicker>(
+                    new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
+
             try
             {
                 if (entity.ExecutionTime == default)
@@ -59,6 +64,9 @@ namespace TickerQ.Utilities.Managers
 
                 entity.CreatedAt = Clock.UtcNow;
                 entity.UpdatedAt = Clock.UtcNow;
+                entity.Status = TickerStatus.Idle;
+                entity.LockHolder = LockHolder;
+                entity.LockedAt = Clock.UtcNow;
                 entity.ExecutionTime = entity.ExecutionTime.ToUniversalTime();
 
                 await PersistenceProvider.InsertTimeTickers(new[] { entity }, cancellationToken).ConfigureAwait(false);
@@ -98,6 +106,10 @@ namespace TickerQ.Utilities.Managers
         {
             try
             {
+                if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity?.Function))
+                    return new TickerResult<TCronTicker>(
+                        new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
+
                 if (!(CrontabSchedule.TryParse(entity.Expression) is { } crontabSchedule))
                     return new TickerResult<TCronTicker>(
                         new TickerValidatorException($"Cannot parse expression {entity.Expression}"));
@@ -108,6 +120,20 @@ namespace TickerQ.Utilities.Managers
                 entity.UpdatedAt = Clock.UtcNow;
 
                 await PersistenceProvider.InsertCronTickers(new[] { entity }, cancellationToken).ConfigureAwait(false);
+
+                var generateNextOccurrence = new CronTickerOccurrence<TCronTicker>
+                {
+                    CronTicker = entity,
+                    Status = TickerStatus.Idle,
+                    ExecutionTime = nextOccurrence,
+                    LockedAt = Clock.UtcNow,
+                    LockHolder = LockHolder,
+                    CronTickerId = entity.Id
+                };
+
+                await PersistenceProvider
+                    .InsertCronTickerOccurrences(new[] { generateNextOccurrence }, cancellationToken)
+                    .ConfigureAwait(false);
 
                 TickerHost.RestartIfNeeded(nextOccurrence);
 
@@ -136,11 +162,12 @@ namespace TickerQ.Utilities.Managers
         {
             try
             {
-                var timeTicker = await PersistenceProvider.GetTimeTickerById(id, cancellationToken).ConfigureAwait(false);
+                var timeTicker = await PersistenceProvider.GetTimeTickerById(id, cancellationToken)
+                    .ConfigureAwait(false);
 
                 if (timeTicker == null)
                     return new TickerResult<TTimeTicker>(
-                        new TickerValidatorException($"Cannot find Entity with id {id}!"));
+                        new TickerValidatorException($"Cannot find TimeTicker with id {id}!"));
 
                 updateAction(timeTicker);
 
@@ -152,7 +179,8 @@ namespace TickerQ.Utilities.Managers
                 else
                     TickerHost.RestartIfNeeded(timeTicker.ExecutionTime);
 
-                await PersistenceProvider.UpdateTimeTickers(new[] { timeTicker }, cancellationToken).ConfigureAwait(false);
+                await PersistenceProvider.UpdateTimeTickers(new[] { timeTicker }, cancellationToken)
+                    .ConfigureAwait(false);
 
                 return new TickerResult<TTimeTicker>(timeTicker);
             }
@@ -162,183 +190,122 @@ namespace TickerQ.Utilities.Managers
             }
         }
 
-        private async Task<TickerResult<TTicker>> UpdateAsync<TTicker>(TTicker entity,
-            CancellationToken cancellationToken = default) where TTicker : BaseTicker
+        private async Task<TickerResult<TCronTicker>> UpdateCronTickerAsync(Guid id,
+            Action<TCronTicker> updateAction,
+            CancellationToken cancellationToken = default)
         {
-            var nextOccurrence = ValidateAndGetNextOccurrenceTicker(entity, out var exception);
+            var cronTicker = await PersistenceProvider.GetCronTickerById(id, cancellationToken).ConfigureAwait(false);
 
-            if (exception != null)
-                return new TickerResult<TTicker>(exception);
+            if (cronTicker == null)
+                return new TickerResult<TCronTicker>(new Exception($"Cannot find CronTicker with id {id}!"));
 
-            var originalTicker = await GetOriginalTicker(entity, cancellationToken);
-
-            if (originalTicker is null)
-                return new TickerResult<TTicker>(new Exception($"Cannot find Entity with id {entity.Id}!"));
+            if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != cronTicker?.Function))
+                return new TickerResult<TCronTicker>(
+                    new TickerValidatorException($"Cannot find TickerFunction with name {cronTicker?.Function}"));
 
             try
             {
-                var mustRestart = false;
+                var cronTickerExpression = cronTicker.Expression;
+                var function = cronTicker.Function;
 
-                switch (originalTicker)
+                updateAction(cronTicker);
+
+                var coreChanges = (cronTickerExpression != cronTicker.Expression) || function != cronTicker.Function;
+
+                if (!(CrontabSchedule.TryParse(cronTicker.Expression) is { } crontabSchedule))
+                    return new TickerResult<TCronTicker>(
+                        new TickerValidatorException($"Cannot parse expression {cronTicker.Expression}"));
+
+                cronTicker.UpdatedAt = Clock.UtcNow;
+
+                await PersistenceProvider.UpdateCronTickers(new[] { cronTicker }, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (coreChanges)
                 {
-                    case TCronTicker originalCron when entity is TCronTicker newCron:
-                        MapCronTickerChanges(originalCron, newCron);
-                        mustRestart = await HandleCronRescheduling(originalCron, cancellationToken);
-                        await PersistenceProvider.UpdateCronTickers(new[] { originalCron }, cancellationToken);
-                        break;
+                    var occurrencesToRemove = await PersistenceProvider.GetCronOccurrencesByStatusFlag(cronTicker.Id,
+                        new[]
+                        {
+                            TickerStatus.Idle,
+                            TickerStatus.Queued
+                        }, cancellationToken).ConfigureAwait(false);
 
-                    case TTimeTicker originalTime when entity is TTimeTicker newTime:
-                        MapTimeTickerChanges(originalTime, newTime);
-                        mustRestart = originalTime.Status == TickerStatus.Queued;
-                        await PersistenceProvider.UpdateTimeTickers(new[] { originalTime }, cancellationToken);
-                        break;
+                    if (occurrencesToRemove.Length > 0)
+                        await PersistenceProvider.RemoveCronTickerOccurrences(occurrencesToRemove, cancellationToken)
+                            .ConfigureAwait(false);
+
+                    var generateNextOccurrence = new CronTickerOccurrence<TCronTicker>
+                    {
+                        CronTicker = cronTicker,
+                        Status = TickerStatus.Idle,
+                        ExecutionTime = crontabSchedule.GetNextOccurrence(Clock.UtcNow),
+                        LockedAt = Clock.UtcNow,
+                        LockHolder = LockHolder
+                    };
+
+                    await PersistenceProvider
+                        .InsertCronTickerOccurrences(new[] { generateNextOccurrence }, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    TickerHost.Restart();
                 }
 
-                RestartTickerHost(mustRestart, nextOccurrence);
-
-                return new TickerResult<TTicker>(originalTicker);
+                return new TickerResult<TCronTicker>(cronTicker);
             }
             catch (Exception e)
             {
-                return new TickerResult<TTicker>(e);
-            }
-
-            void MapCronTickerChanges(TCronTicker original, TCronTicker updated)
-            {
-                original.Expression = updated.Expression;
-                original.Request = updated.Request;
-                original.Function = updated.Function;
-                original.UpdatedAt = Clock.UtcNow;
-            }
-
-            void MapTimeTickerChanges(TTimeTicker original, TTimeTicker updated)
-            {
-                original.Function = updated.Function;
-                original.ExecutionTime = updated.ExecutionTime;
-                original.Request = updated.Request;
-                original.LockHolder = updated.LockHolder;
-                original.Status = updated.Status;
-                original.LockedAt = updated.LockedAt;
-                original.UpdatedAt = Clock.UtcNow;
-            }
-
-            async Task<bool> HandleCronRescheduling(TCronTicker ticker, CancellationToken cancellationToken)
-            {
-                var queuedOccurrences = await GetQueuedNextCronOccurrences(ticker, cancellationToken).ConfigureAwait(false);
-
-                if (queuedOccurrences.Length > 0)
-                {
-                    await PersistenceProvider.RemoveCronTickerOccurrences(queuedOccurrences, cancellationToken).ConfigureAwait(false);
-                    return true;
-                }
-
-                return false;
-            }
-
-            void RestartTickerHost(bool mustRestart, DateTime nextOccurrence)
-            {
-                if (mustRestart)
-                    TickerHost.Restart();
-                else
-                    TickerHost.RestartIfNeeded(nextOccurrence);
-            }
-
-            async Task<TTicker> GetOriginalTicker(TTicker entity, CancellationToken cancellationToken)
-            {
-                return entity switch
-                {
-                    CronTicker _ => (TTicker)(BaseTicker)(await PersistenceProvider.GetCronTickerById(entity.Id, cancellationToken).ConfigureAwait(false)),
-                    TimeTicker _ => (TTicker)(BaseTicker)(await PersistenceProvider.GetTimeTickerById(entity.Id, cancellationToken).ConfigureAwait(false)),
-                    _ => default,
-                };
+                return new TickerResult<TCronTicker>(e);
             }
         }
-
-        private async Task<TickerResult<TTicker>> DeleteAsync<TTicker>(Guid id,
-            CancellationToken cancellationToken = default) where TTicker : BaseTicker
+        
+        private async Task<TickerResult<TCronTicker>> DeleteCronTickerAsync(Guid id,
+            CancellationToken cancellationToken = default)
         {
-            var originalTicker = await GetOriginalTicker(id, cancellationToken);
+            var cronTicker = await PersistenceProvider.GetCronTickerById(id, cancellationToken).ConfigureAwait(false);
 
-            if (originalTicker == null)
-                return new TickerResult<TTicker>(new TickerValidatorException($"Cannot find Entity with id {id}!"));
+            if (cronTicker == null)
+                return new TickerResult<TCronTicker>(new TickerValidatorException($"Cannot find CronTicker with id {id}!"));
 
             try
             {
-                var mustRestart = false;
+                var queuedCronOccurrences =
+                    await PersistenceProvider.GetQueuedNextCronOccurrences(cronTicker.Id, cancellationToken);
 
+                await PersistenceProvider.RemoveCronTickers(new[] { cronTicker }, cancellationToken);
 
-                switch (originalTicker)
-                {
-                    case TCronTicker cron:
-                        var queued = await GetQueuedNextCronOccurrences(cron, cancellationToken).ConfigureAwait(false);
-                        mustRestart = queued.Any();
-                        await PersistenceProvider.RemoveCronTickers(new[] { cron }, cancellationToken).ConfigureAwait(false);
-                        break;
-
-                    case TTimeTicker time:
-                        mustRestart = time.Status == TickerStatus.Queued;
-                        await PersistenceProvider.RemoveTimeTickers(new[] { time }, cancellationToken).ConfigureAwait(false);
-                        break;
-                }
-
-                if (mustRestart)
+                if (queuedCronOccurrences.Any())
                     TickerHost.Restart();
 
-                return new TickerResult<TTicker>(originalTicker);
+                return new TickerResult<TCronTicker>(cronTicker);
             }
             catch (Exception e)
             {
-                return new TickerResult<TTicker>(e);
-            }
-
-            async Task<TTicker> GetOriginalTicker(Guid id, CancellationToken cancellationToken)
-            {
-                return typeof(TTicker) switch
-                {
-                    Type t when t == typeof(CronTicker) => (TTicker)(BaseTicker)(await PersistenceProvider.GetCronTickerById(id, cancellationToken).ConfigureAwait(false)),
-                    Type t when t == typeof(TimeTicker) => (TTicker)(BaseTicker)(await PersistenceProvider.GetTimeTickerById(id, cancellationToken).ConfigureAwait(false)),
-                    _ => default,
-                };
+                return new TickerResult<TCronTicker>(e);
             }
         }
 
-        private async Task<CronTickerOccurrence<TCronTicker>[]> GetQueuedNextCronOccurrences(CronTicker cronTicker, CancellationToken cancellationToken)
+
+        private async Task<TickerResult<TTimeTicker>> DeleteTimeTickerAsync(Guid id,
+            CancellationToken cancellationToken = default)
         {
-            return await PersistenceProvider.GetQueuedNextCronOccurrences(cronTicker.Id, cancellationToken).ConfigureAwait(false);
-        }
+            var timeTicker = await PersistenceProvider.GetTimeTickerById(id, cancellationToken);
 
-        private DateTime ValidateAndGetNextOccurrenceTicker<TTicker>(TTicker ticker, out Exception exception)
-            where TTicker : BaseTicker
-        {
-            exception = null;
+            if (timeTicker == null)
+                return new TickerResult<TTimeTicker>(new TickerValidatorException($"Cannot find TimeTicker with id {id}!"));
 
-            DateTime nextOccurrence = default;
-
-            if (ticker == null)
+            try
             {
-                exception = new TickerValidatorException($"No such entity is known in Ticker!");
+                await PersistenceProvider.RemoveTimeTickers(new[] { timeTicker }, cancellationToken);
+
+                if (timeTicker.Status == TickerStatus.Queued)
+                    TickerHost.Restart();
+
+                return new TickerResult<TTimeTicker>(timeTicker);
             }
-
-            if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != ticker?.Function))
-                exception = new TickerValidatorException($"Cannot find Ticker with name {ticker?.Function}");
-
-            if (ticker is CronTicker cronTicker)
+            catch (Exception e)
             {
-                if (CrontabSchedule.TryParse(cronTicker.Expression) is { } crontabSchedule)
-                    nextOccurrence = crontabSchedule.GetNextOccurrence(Clock.UtcNow);
-                else
-                    exception = new TickerValidatorException($"Cannot parse expression {cronTicker.Expression}");
+                return new TickerResult<TTimeTicker>(e);
             }
-
-            else if (ticker is TimeTicker timeTicker)
-            {
-                if (timeTicker.ExecutionTime == default)
-                    exception = new TickerValidatorException($"Invalid ExecutionTime!");
-                else
-                    nextOccurrence = timeTicker.ExecutionTime;
-            }
-
-            return nextOccurrence;
         }
     }
 }

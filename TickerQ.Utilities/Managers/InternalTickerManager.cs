@@ -15,7 +15,7 @@ namespace TickerQ.Utilities.Managers
     internal abstract class InternalTickerManager<TTimeTicker, TCronTicker> : IInternalTickerManager
     where TTimeTicker : TimeTicker, new() where TCronTicker : CronTicker, new()
     {
-        private readonly string _lockHolder;
+        protected readonly string LockHolder;
         protected readonly ITickerPersistenceProvider<TTimeTicker, TCronTicker> PersistenceProvider;
         protected readonly ITickerHost TickerHost;
         protected readonly ITickerClock Clock;
@@ -25,7 +25,7 @@ namespace TickerQ.Utilities.Managers
             ITickerHost tickerHost, ITickerClock clock, TickerOptionsBuilder tickerOptionsBuilder,
             ITickerQNotificationHubSender notificationHubSender)
         {
-            _lockHolder = tickerOptionsBuilder?.InstanceIdentifier ?? Environment.MachineName;
+            LockHolder = tickerOptionsBuilder?.InstanceIdentifier ?? Environment.MachineName;
             PersistenceProvider = persistenceProvider;
             TickerHost = tickerHost ?? throw new ArgumentNullException(nameof(tickerHost));
             Clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -99,7 +99,7 @@ namespace TickerQ.Utilities.Managers
         {
             var roundedMinDate = new DateTime(minDate.Ticks - minDate.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
 
-            var timeTickers = await PersistenceProvider.GetNextTimeTickers(_lockHolder, roundedMinDate, cancellationToken).ConfigureAwait(false);
+            var timeTickers = await PersistenceProvider.GetNextTimeTickers(LockHolder, roundedMinDate, cancellationToken).ConfigureAwait(false);
 
             var lockedAndQueuedTimeTickers = LockAndQueueTimeTickers(timeTickers).ToArray();
 
@@ -118,7 +118,7 @@ namespace TickerQ.Utilities.Managers
                 foreach (var timeTicker in scopeTimeTickers)
                 {
                     timeTicker.Status = TickerStatus.Queued;
-                    timeTicker.LockHolder = _lockHolder;
+                    timeTicker.LockHolder = LockHolder;
                     timeTicker.LockedAt = now;
 
                     yield return new InternalFunctionContext()
@@ -142,7 +142,7 @@ namespace TickerQ.Utilities.Managers
 
             var cronTickerIdSet = cronTickers.Select(t => t.Id).ToArray();
 
-            var occurrenceList = await PersistenceProvider.GetNextCronTickerOccurrences(_lockHolder, cronTickerIdSet, cancellationToken).ConfigureAwait(false);
+            var occurrenceList = await PersistenceProvider.GetNextCronTickerOccurrences(LockHolder, cronTickerIdSet, cancellationToken).ConfigureAwait(false);
 
             var result = new List<InternalFunctionContext>();
 
@@ -161,7 +161,7 @@ namespace TickerQ.Utilities.Managers
                 if (existing != null)
                 {
                     existing.Status = TickerStatus.Queued;
-                    existing.LockHolder = _lockHolder;
+                    existing.LockHolder = LockHolder;
                     existing.LockedAt = now;
 
                     result.Add(new InternalFunctionContext
@@ -184,7 +184,7 @@ namespace TickerQ.Utilities.Managers
                         Status = TickerStatus.Queued,
                         ExecutionTime = nextOccurrence,
                         LockedAt = now,
-                        LockHolder = _lockHolder,
+                        LockHolder = LockHolder,
                         CronTickerId = cronTicker.Id
                     };
 
@@ -270,7 +270,7 @@ namespace TickerQ.Utilities.Managers
         public async Task ReleaseOrCancelAllAcquiredResources(bool terminateExpiredTickers,
             CancellationToken cancellationToken = default)
         {
-            var timeTickers = await PersistenceProvider.GetLockedTimeTickers(_lockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress }, cancellationToken).ConfigureAwait(false);
+            var timeTickers = await PersistenceProvider.GetLockedTimeTickers(LockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress }, cancellationToken).ConfigureAwait(false);
 
             foreach (var timeTicker in timeTickers)
             {
@@ -279,7 +279,7 @@ namespace TickerQ.Utilities.Managers
                 {
                     timeTicker.Status = TickerStatus.Cancelled;
                     timeTicker.LockedAt = Clock.UtcNow;
-                    timeTicker.LockHolder = _lockHolder;
+                    timeTicker.LockHolder = LockHolder;
                 }
                 else
                 {
@@ -291,7 +291,7 @@ namespace TickerQ.Utilities.Managers
 
             await PersistenceProvider.UpdateTimeTickers(timeTickers, cancellationToken).ConfigureAwait(false);
 
-            var cronTickerOccurrences = await PersistenceProvider.GetLockedCronTickerOccurrences(_lockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress }, cancellationToken).ConfigureAwait(false);
+            var cronTickerOccurrences = await PersistenceProvider.GetLockedCronTickerOccurrences(LockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress }, cancellationToken).ConfigureAwait(false);
 
             foreach (var cronTickerOccurrence in cronTickerOccurrences)
             {
@@ -300,7 +300,7 @@ namespace TickerQ.Utilities.Managers
                 {
                     cronTickerOccurrence.Status = TickerStatus.Cancelled;
                     cronTickerOccurrence.LockedAt = Clock.UtcNow;
-                    cronTickerOccurrence.LockHolder = _lockHolder;
+                    cronTickerOccurrence.LockHolder = LockHolder;
                 }
                 else
                 {
@@ -463,7 +463,7 @@ namespace TickerQ.Utilities.Managers
                 foreach (var cronTickerOccurrence in scopeCronTickerOccurrences)
                 {
                     cronTickerOccurrence.Status = TickerStatus.Inprogress;
-                    cronTickerOccurrence.LockHolder = _lockHolder;
+                    cronTickerOccurrence.LockHolder = LockHolder;
 
                     yield return new InternalFunctionContext()
                     {
@@ -497,7 +497,7 @@ namespace TickerQ.Utilities.Managers
                 foreach (var timeTicker in scopeTimeTickers)
                 {
                     timeTicker.Status = TickerStatus.Inprogress;
-                    timeTicker.LockHolder = _lockHolder;
+                    timeTicker.LockHolder = LockHolder;
 
                     yield return new InternalFunctionContext
                     {

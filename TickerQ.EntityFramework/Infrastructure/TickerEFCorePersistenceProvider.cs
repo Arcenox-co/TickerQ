@@ -136,8 +136,10 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         public async Task InsertTimeTickers(IEnumerable<TTimeTicker> tickers, CancellationToken cancellationToken = default)
         {
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
-            await timeTickerContext.AddRangeAsync(tickers.Select(x => x.ToTimeTickerEntity()));
+            await timeTickerContext.AddRangeAsync(tickers.Select(x => x.ToTimeTickerEntity()), cancellationToken);
             await _dbContext.SaveChangesAsync(cancellationToken);
+            
+            DetachTrackingEntries<TimeTickerEntity>();
         }
 
         public async Task UpdateTimeTickers(IEnumerable<TTimeTicker> tickers, CancellationToken cancellationToken = default)
@@ -145,6 +147,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
             timeTickerContext.UpdateRange(tickers.Select(x => x.ToTimeTickerEntity()));
             await _dbContext.SaveChangesAsync(cancellationToken);
+            
+            DetachTrackingEntries<TimeTickerEntity>();
         }
 
         public async Task RemoveTimeTickers(IEnumerable<TTimeTicker> tickers, CancellationToken cancellationToken = default)
@@ -152,6 +156,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
             timeTickerContext.RemoveRange(tickers.Select(x => x.ToTimeTickerEntity()));
             await _dbContext.SaveChangesAsync(cancellationToken);
+            
+            DetachTrackingEntries<TimeTickerEntity>();
         }
 
         public async Task<byte[]> GetTimeTickerRequest(Guid tickerId, CancellationToken cancellationToken = default)
@@ -371,6 +377,20 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return nextCronOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
         }
 
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronOccurrencesByStatusFlag(Guid tickerId, TickerStatus[] tickerStatuses,
+            CancellationToken cancellationToken = default)
+        {
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var nextCronOccurrences = await cronTickerOccurrenceContext
+                .AsNoTracking()
+                .Where(x => x.CronTickerId == tickerId)
+                .Where(x => tickerStatuses.Contains(x.Status))
+                .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            return nextCronOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
+        }
+
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetAllCronTickerOccurrences(CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
@@ -441,6 +461,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
             var cronTickerOccurrences = await cronTickerOccurrenceContext
+                .Include(x => x.CronTicker)
                 .AsNoTracking()
                 .Where(x => x.CronTicker.Id == cronTickerId)
                 .Where(x => x.ExecutionTime.Date < today)
@@ -509,8 +530,10 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         public async Task InsertCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
-            await cronTickerOccurrenceContext.AddRangeAsync(cronTickerOccurrences.Select(x => x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()));
+            await cronTickerOccurrenceContext.AddRangeAsync(cronTickerOccurrences.Select(x => x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()), cancellationToken);
             await _dbContext.SaveChangesAsync(cancellationToken);
+            
+            DetachTrackingEntries<CronTickerOccurrenceEntity<CronTickerEntity>>();
         }
 
         public async Task UpdateCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
@@ -518,6 +541,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
             cronTickerOccurrenceContext.UpdateRange(cronTickerOccurrences.Select(x => x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()));
             await _dbContext.SaveChangesAsync(cancellationToken);
+
+            DetachTrackingEntries<CronTickerOccurrenceEntity<CronTickerEntity>>();
         }
 
         public async Task RemoveCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
@@ -525,6 +550,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
             cronTickerOccurrenceContext.RemoveRange(cronTickerOccurrences.Select(x => x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()));
             await _dbContext.SaveChangesAsync(cancellationToken);
+            
+            DetachTrackingEntries<CronTickerOccurrenceEntity<CronTickerEntity>>();
         }
 
         #endregion
@@ -533,6 +560,11 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         private DbSet<T> GetDbSet<T>() where T : class => _dbContext.Set<T>();
 
+        private void DetachTrackingEntries<TEntry>() where TEntry : class
+        {
+            foreach (var entry in _dbContext.ChangeTracker.Entries<TEntry>())
+                entry.State = EntityState.Detached;
+        }
         #endregion
     }
 }

@@ -281,6 +281,17 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetCronOccurrencesByStatusFlag(Guid tickerId, TickerStatus[] tickerStatuses,
+            CancellationToken cancellationToken = default)
+        {
+            var result = _cronOccurrences.Values
+                .Where(x => x.CronTickerId == tickerId)
+                .Where(x => tickerStatuses.Contains(x.Status))
+                .ToArray();
+
+            return Task.FromResult(result);
+        }
+
         public Task<CronTickerOccurrence<TCronTicker>[]> GetAllCronTickerOccurrences(CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrences = _cronOccurrences.Values
