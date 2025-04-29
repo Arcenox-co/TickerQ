@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -9,13 +10,18 @@ using TickerQ.Utilities.Models.Ticker;
 
 namespace TickerQ.Src.Provider
 {
-    public class TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker> : ITickerPersistenceProvider<TTimeTicker, TCronTicker>
+    internal class TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker> : ITickerPersistenceProvider<TTimeTicker, TCronTicker>
         where TTimeTicker : TimeTicker, new()
         where TCronTicker : CronTicker, new()
     {
-        private static readonly Dictionary<Guid, TTimeTicker> _timeTickers = new Dictionary<Guid, TTimeTicker>();
-        private static readonly Dictionary<Guid, TCronTicker> _cronTickers = new Dictionary<Guid, TCronTicker>();
-        private static readonly Dictionary<Guid, CronTickerOccurrence<TCronTicker>> _cronOccurrences = new Dictionary<Guid, CronTickerOccurrence<TCronTicker>>();
+        private static readonly ConcurrentDictionary<Guid, TTimeTicker> _timeTickers = 
+            new ConcurrentDictionary<Guid, TTimeTicker>(new Dictionary<Guid, TTimeTicker>());
+        
+        private static readonly ConcurrentDictionary<Guid, TCronTicker> _cronTickers = 
+            new ConcurrentDictionary<Guid, TCronTicker>(new Dictionary<Guid, TCronTicker>());
+        
+        private static readonly ConcurrentDictionary<Guid, CronTickerOccurrence<TCronTicker>> _cronOccurrences = 
+            new ConcurrentDictionary<Guid, CronTickerOccurrence<TCronTicker>>(new Dictionary<Guid, CronTickerOccurrence<TCronTicker>>());
 
         #region Time Ticker Operations
 
@@ -39,7 +45,7 @@ namespace TickerQ.Src.Provider
         {
             var result = _timeTickers.Values
                 .Where(x =>
-                    ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
+                    (x.Status == TickerStatus.Idle ||
                      (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)) &&
                     x.ExecutionTime >= roundedMinDate &&
                     x.ExecutionTime < roundedMinDate.AddSeconds(1))
@@ -104,8 +110,7 @@ namespace TickerQ.Src.Provider
         public Task<DateTime?> GetEarliestTimeTickerTime(DateTime now, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
         {
             var result = _timeTickers.Values
-                .Where(x => x.LockHolder == null
-                            && tickerStatuses.Contains(x.Status)
+                .Where(x => tickerStatuses.Contains(x.Status)
                             && x.ExecutionTime > now)
                 .OrderBy(x => x.ExecutionTime)
                 .Select(x => x.ExecutionTime)
@@ -117,7 +122,7 @@ namespace TickerQ.Src.Provider
         public Task InsertTimeTickers(IEnumerable<TTimeTicker> tickers, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
-                _timeTickers.Add(t.Id, t);
+                _timeTickers.TryAdd(t.Id, t);
 
             return Task.CompletedTask;
         }
@@ -133,7 +138,7 @@ namespace TickerQ.Src.Provider
         public Task RemoveTimeTickers(IEnumerable<TTimeTicker> tickers, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
-                _timeTickers.Remove(t.Id);
+                _timeTickers.Remove(t.Id, out _);
 
             return Task.CompletedTask;
         }
@@ -197,7 +202,7 @@ namespace TickerQ.Src.Provider
         public Task InsertCronTickers(IEnumerable<TCronTicker> tickers, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
-                _cronTickers.Add(t.Id, t);
+                _cronTickers.TryAdd(t.Id, t);
 
             return Task.CompletedTask;
         }
@@ -213,7 +218,7 @@ namespace TickerQ.Src.Provider
         public Task RemoveCronTickers(IEnumerable<TCronTicker> tickers, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
-                _cronTickers.Remove(t.Id);
+                _cronTickers.TryRemove(t.Id, out _);
 
             return Task.CompletedTask;
         }
@@ -369,9 +374,14 @@ namespace TickerQ.Src.Provider
 
         public Task<byte[]> GetCronTickerRequestViaOccurrence(Guid tickerId, CancellationToken cancellationToken = default)
         {
-            var result = _cronOccurrences.TryGetValue(tickerId, out var t) ? t.CronTicker.Request : null;
+            if (_cronOccurrences.TryGetValue(tickerId, out var cronTickerOccurrence))
+            {
+                return _cronTickers.TryGetValue(cronTickerOccurrence.CronTickerId, out var cronTicker) 
+                    ? Task.FromResult(cronTicker.Request)
+                    : Task.FromResult<byte[]>(null);
+            }
 
-            return Task.FromResult(result);
+            return Task.FromResult<byte[]>(null);
         }
 
         public Task<DateTime> GetEarliestCronTickerOccurrenceById(Guid id, TickerStatus[] tickerStatuses, CancellationToken cancellationToken = default)
@@ -387,7 +397,7 @@ namespace TickerQ.Src.Provider
         public Task InsertCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
             foreach (var o in cronTickerOccurrences)
-                _cronOccurrences.Add(o.Id, o);
+                _cronOccurrences.TryAdd(o.Id, o);
 
             return Task.CompletedTask;
         }
@@ -395,7 +405,7 @@ namespace TickerQ.Src.Provider
         public Task RemoveCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
             foreach (var o in cronTickerOccurrences)
-                _cronOccurrences.Remove(o.Id);
+                _cronOccurrences.TryRemove(o.Id, out _);
 
             return Task.CompletedTask;
         }

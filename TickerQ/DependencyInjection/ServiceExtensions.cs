@@ -29,10 +29,10 @@ namespace TickerQ.DependencyInjection
             services.AddScoped<ITimeTickerManager<TimeTicker>, TickerManager<TimeTicker, CronTicker>>();
             services.AddScoped<IInternalTickerManager, TickerManager<TimeTicker, CronTicker>>();
 
-            services.AddScoped<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerInMemoryPersistenceProvider<TimeTicker, CronTicker>>();
+            services.AddSingleton<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerInMemoryPersistenceProvider<TimeTicker, CronTicker>>();
 
             var optionInstance = new TickerOptionsBuilder();
-
+ 
             optionsBuilder?.Invoke(optionInstance);
 
             if (optionInstance.EfCoreConfigServiceAction != null)
@@ -100,16 +100,14 @@ namespace TickerQ.DependencyInjection
                 notificationHubSender.UpdateHostException(message);
             };
 
-            if (tickerOptBuilder.UseEfCore)
-            {
-                using var scope = app.ApplicationServices.CreateScope();
+            
+            using var scope = app.ApplicationServices.CreateScope();
 
-                var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
+            var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
 
-                internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
+            internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
 
-                internalTickerManager.ReleaseOrCancelAllAcquiredResources(tickerOptBuilder.CancelMissedTickersOnReset).GetAwaiter().GetResult();
-            }
+            internalTickerManager.ReleaseOrCancelAllAcquiredResources(tickerOptBuilder.CancelMissedTickersOnReset).GetAwaiter().GetResult();
 
             if (qStartMode == TickerQStartMode.Manual) return app;
 

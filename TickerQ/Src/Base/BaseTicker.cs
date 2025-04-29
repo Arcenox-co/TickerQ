@@ -49,8 +49,7 @@ namespace TickerQ.Base
                 {
                     CtsTickerChecker = new SafeCancellationTokenSource();
 
-                    if (TickerOptionsBuilder.UseEfCore)
-                        CtsTickerTimeoutChecker = new SafeCancellationTokenSource();
+                    CtsTickerTimeoutChecker = new SafeCancellationTokenSource();
 
                     var tickerTask = (CtsTickerChecker?.IsDisposed == false)
                         ? StartTickerCheckingLoop()
@@ -83,10 +82,8 @@ namespace TickerQ.Base
             CtsTickerDelayAwaiter = SafeCancellationTokenSource.CreateLinked(CtsTickerChecker.Token);
 
             using var scope = ServiceProvider.CreateScope();
-            
-            var internalTickerManager = TickerOptionsBuilder.UseEfCore
-                ? scope.ServiceProvider.GetRequiredService<IInternalTickerManager>()
-                : null;
+
+            var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
 
             while (!CtsTickerChecker.Token.IsCancellationRequested)
             {
@@ -97,9 +94,7 @@ namespace TickerQ.Base
                 {
                     TimeSpan timeRemaining;
 
-                    (timeRemaining, functions) = TickerOptionsBuilder.UseEfCore
-                        ? await internalTickerManager.GetNextTickers(CtsTickerChecker.Token).ConfigureAwait(false)
-                        : MemoryTickers.GetNextMemoryTicker();
+                    (timeRemaining, functions) = await internalTickerManager.GetNextTickers(CtsTickerChecker.Token).ConfigureAwait(false);
 
                     if (timeRemaining == Timeout.InfiniteTimeSpan)
                     {
@@ -124,7 +119,7 @@ namespace TickerQ.Base
                         else if (sleepDuration > TimeSpan.Zero)
                             await Task.Delay(sleepDuration, CtsTickerDelayAwaiter.Token).ConfigureAwait(false);
                         
-                        if (TickerOptionsBuilder.UseEfCore && functions?.Length != 0)
+                        if (functions?.Length != 0)
                             await internalTickerManager.SetTickersInProgress(functions, CtsTickerChecker.Token)
                                 .ConfigureAwait(false);
 
@@ -137,7 +132,7 @@ namespace TickerQ.Base
                 }
                 catch (Exception) when (CtsTickerDelayAwaiter.IsCancellationRequested)
                 {
-                    if (TickerOptionsBuilder.UseEfCore && functions?.Length != 0)
+                    if (functions?.Length != 0)
                         await internalTickerManager.ReleaseAcquiredResources(functions, CancellationToken.None)
                             .ConfigureAwait(false);
 
