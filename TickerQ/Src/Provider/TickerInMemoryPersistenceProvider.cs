@@ -286,7 +286,7 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<CronTickerOccurrence<TCronTicker>[]> GetCronOccurrencesByStatusFlag(Guid tickerId, TickerStatus[] tickerStatuses,
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetCronOccurrencesByCronTickerIdAndStatusFlag(Guid tickerId, TickerStatus[] tickerStatuses,
             CancellationToken cancellationToken = default)
         {
             var result = _cronOccurrences.Values

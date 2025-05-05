@@ -223,7 +223,7 @@ namespace TickerQ.Utilities.Managers
 
                 if (coreChanges)
                 {
-                    var occurrencesToRemove = await PersistenceProvider.GetCronOccurrencesByStatusFlag(cronTicker.Id,
+                    var occurrencesToRemove = await PersistenceProvider.GetCronOccurrencesByCronTickerIdAndStatusFlag(cronTicker.Id,
                         new[]
                         {
                             TickerStatus.Idle,

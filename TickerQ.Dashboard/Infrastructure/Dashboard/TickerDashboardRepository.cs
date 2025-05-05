@@ -540,11 +540,12 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
             if (cronTicker != null)
             {
-                var earliestCronTickerOccurrence = await _persistenceProvider.GetEarliestCronTickerOccurrenceById(cronTicker.Id, new[] { TickerStatus.Idle, TickerStatus.Queued });
+                var earliestCronTickerOccurrence = await _persistenceProvider.GetCronOccurrencesByCronTickerIdAndStatusFlag(cronTicker.Id, new[] { TickerStatus.Queued });
 
                 await _persistenceProvider.RemoveCronTickers(new[] { cronTicker });
 
-                _tickerHost.RestartIfNeeded(earliestCronTickerOccurrence);
+                if(earliestCronTickerOccurrence.Length != 0)
+                    _tickerHost.Restart();
 
                 if (_notificationHubSender != null)
                     await _notificationHubSender.RemoveCronTickerNotifyAsync(id);

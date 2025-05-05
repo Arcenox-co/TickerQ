@@ -377,7 +377,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return nextCronOccurrences.Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
         }
 
-        public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronOccurrencesByStatusFlag(Guid tickerId, TickerStatus[] tickerStatuses,
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronOccurrencesByCronTickerIdAndStatusFlag(Guid tickerId, TickerStatus[] tickerStatuses,
             CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
