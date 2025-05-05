@@ -32,11 +32,11 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerInMemoryPersistenceProvider<TimeTicker, CronTicker>>();
 
             var optionInstance = new TickerOptionsBuilder();
- 
+
             optionsBuilder?.Invoke(optionInstance);
 
-            if (optionInstance.EfCoreConfigServiceAction != null)
-                optionInstance.SetUseEfCore(services);
+            if (optionInstance.ExternalProviderConfigServiceAction != null)
+                optionInstance.UseExternalProvider(services);
 
             if (optionInstance.TickerExceptionHandlerType != null)
                 services.AddScoped(typeof(ITickerExceptionHandler), optionInstance.TickerExceptionHandlerType);
@@ -48,9 +48,7 @@ namespace TickerQ.DependencyInjection
                 optionInstance.SetInstanceIdentifier(Environment.MachineName);
 
             if (optionInstance.DashboardServiceAction != null)
-            {
                 optionInstance.DashboardServiceAction(services);
-            }
             else
                 services.AddSingleton<ITickerQNotificationHubSender, TempTickerQNotificationHubSender>();
 
@@ -73,7 +71,7 @@ namespace TickerQ.DependencyInjection
             var tickerOptBuilder = app.ApplicationServices.GetService<TickerOptionsBuilder>();
             var configuration = app.ApplicationServices.GetService<IConfiguration>();
 
-            var functionsToSeed = MapCronFromConfig(configuration).ToList();
+            MapCronFromConfig(configuration);
 
             if (tickerOptBuilder is { DashboardApplicationAction: { } })
                 tickerOptBuilder.DashboardApplicationAction.Invoke(app, tickerOptBuilder.DashboardLunchUrl);
@@ -99,15 +97,8 @@ namespace TickerQ.DependencyInjection
 
                 notificationHubSender.UpdateHostException(message);
             };
-
             
-            using var scope = app.ApplicationServices.CreateScope();
-
-            var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
-
-            internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
-
-            internalTickerManager.ReleaseOrCancelAllAcquiredResources(tickerOptBuilder.CancelMissedTickersOnReset).GetAwaiter().GetResult();
+            tickerOptBuilder.ExternalProviderConfigApplicationAction?.Invoke(app);
 
             if (qStartMode == TickerQStartMode.Manual) return app;
 
@@ -118,7 +109,7 @@ namespace TickerQ.DependencyInjection
             return app;
         }
 
-        private static IEnumerable<(string, string)> MapCronFromConfig(IConfiguration configuration)
+        private static void MapCronFromConfig(IConfiguration configuration)
         {
             var tickerFunctions =
                 new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate
@@ -126,18 +117,10 @@ namespace TickerQ.DependencyInjection
 
             foreach (var (key, value) in tickerFunctions)
             {
-                if (value.cronExpression.StartsWith("%"))
-                {
-                    var mappedCronExpression = configuration[value.cronExpression.Trim('%')];
-                    tickerFunctions[key] = (mappedCronExpression, value.Priority, value.Delegate);
-
-                    if (string.IsNullOrEmpty(mappedCronExpression))
-                        continue;
-
-                    yield return (key, mappedCronExpression);
-                }
-                else if (!string.IsNullOrWhiteSpace(value.cronExpression))
-                    yield return (key, value.cronExpression);
+                if (!value.cronExpression.StartsWith("%")) continue;
+                
+                var mappedCronExpression = configuration[value.cronExpression.Trim('%')];
+                tickerFunctions[key] = (mappedCronExpression, value.Priority, value.Delegate);
             }
             TickerFunctionProvider.MapCronExpressionsFromIConfigurations(tickerFunctions);
         }
