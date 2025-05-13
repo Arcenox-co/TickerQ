@@ -29,14 +29,14 @@ namespace TickerQ.Src.Provider
 
         #region Time Ticker Operations
 
-        public Task<TTimeTicker> GetTimeTickerById(Guid id, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<TTimeTicker> GetTimeTickerById(Guid id, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = TimeTickers.GetValueOrDefault(id);
 
             return Task.FromResult(result);
         }
 
-        public Task<TTimeTicker[]> GetTimeTickersByIds(Guid[] ids, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<TTimeTicker[]> GetTimeTickersByIds(Guid[] ids, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = TimeTickers.Values
                 .Where(t => ids.Contains(t.Id))
@@ -46,7 +46,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<TTimeTicker[]> GetNextTimeTickers(string lockHolder, DateTime roundedMinDate,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = TimeTickers.Values
                 .Where(x =>
@@ -60,7 +60,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<TTimeTicker[]> GetLockedTimeTickers(string lockHolder, TickerStatus[] tickerStatuses,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = TimeTickers.Values
                 .Where(x => tickerStatuses.Contains(x.Status))
@@ -70,7 +70,7 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<TTimeTicker[]> GetTimedOutTimeTickers(DateTime now, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<TTimeTicker[]> GetTimedOutTimeTickers(DateTime now, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = TimeTickers.Values
                 .Where(x =>
@@ -81,14 +81,14 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<TTimeTicker[]> GetAllTimeTickers(Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<TTimeTicker[]> GetAllTimeTickers(Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var timeTickers = TimeTickers.Values.ToArray();
 
             return Task.FromResult(timeTickers);
         }
 
-        public Task<TTimeTicker[]> GetAllLockedTimeTickers(Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<TTimeTicker[]> GetAllLockedTimeTickers(Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var timeTickers = TimeTickers.Values
                 .Where(x => x.LockHolder != null)
@@ -98,7 +98,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<TTimeTicker[]> GetTimeTickersWithin(DateTime startDate, DateTime endDate,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var timeTickers = TimeTickers.Values
                 .Where(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate)
@@ -107,7 +107,7 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(timeTickers);
         }
 
-        public Task<byte[]> GetTimeTickerRequest(Guid tickerId, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<byte[]> GetTimeTickerRequest(Guid tickerId, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = TimeTickers.TryGetValue(tickerId, out var t) ? t.Request : null;
 
@@ -115,7 +115,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<DateTime?> GetEarliestTimeTickerTime(DateTime now, TickerStatus[] tickerStatuses,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = TimeTickers.Values
                 .Where(x => tickerStatuses.Contains(x.Status)
@@ -127,7 +127,7 @@ namespace TickerQ.Src.Provider
             return Task.FromResult((DateTime?)result);
         }
 
-        public Task InsertTimeTickers(IEnumerable<TTimeTicker> tickers, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task InsertTimeTickers(IEnumerable<TTimeTicker> tickers, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
                 TimeTickers.TryAdd(t.Id, t);
@@ -135,7 +135,7 @@ namespace TickerQ.Src.Provider
             return Task.CompletedTask;
         }
 
-        public Task UpdateTimeTickers(IEnumerable<TTimeTicker> tickers, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task UpdateTimeTickers(IEnumerable<TTimeTicker> tickers, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
                 TimeTickers[t.Id] = t;
@@ -143,7 +143,7 @@ namespace TickerQ.Src.Provider
             return Task.CompletedTask;
         }
 
-        public Task RemoveTimeTickers(IEnumerable<TTimeTicker> tickers, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task RemoveTimeTickers(IEnumerable<TTimeTicker> tickers, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
                 TimeTickers.Remove(t.Id, out _);
@@ -155,14 +155,14 @@ namespace TickerQ.Src.Provider
 
         #region Cron Ticker Operations
 
-        public Task<TCronTicker> GetCronTickerById(Guid id, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<TCronTicker> GetCronTickerById(Guid id, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronTickers.GetValueOrDefault(id);
 
             return Task.FromResult(result);
         }
 
-        public Task<TCronTicker[]> GetCronTickersByIds(Guid[] ids, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<TCronTicker[]> GetCronTickersByIds(Guid[] ids, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronTickers.Values
                 .Where(t => ids.Contains(t.Id))
@@ -172,7 +172,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<TCronTicker[]> GetNextCronTickers(string[] expressions,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronTickers.Values
                 .Where(x => expressions.Contains(x.Expression))
@@ -181,7 +181,7 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<TCronTicker[]> GetAllExistingInitializedCronTickers(Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<TCronTicker[]> GetAllExistingInitializedCronTickers(Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronTickers.Values
                 .Where(x => !string.IsNullOrEmpty(x.InitIdentifier) && x.InitIdentifier.StartsWith("MemoryTicker_Seed"))
@@ -190,7 +190,7 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task<TCronTicker[]> GetAllCronTickers(Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<TCronTicker[]> GetAllCronTickers(Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickers = CronTickers.Values
                 .ToArray();
@@ -198,7 +198,7 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(cronTickers);
         }
 
-        public Task<Tuple<Guid, string>[]> GetAllCronTickerExpressions(Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task<Tuple<Guid, string>[]> GetAllCronTickerExpressions(Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronTickers.Values
                 .Select(x => Tuple.Create(x.Id, x.Expression))
@@ -208,7 +208,7 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
-        public Task InsertCronTickers(IEnumerable<TCronTicker> tickers, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task InsertCronTickers(IEnumerable<TCronTicker> tickers, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
                 CronTickers.TryAdd(t.Id, t);
@@ -216,7 +216,7 @@ namespace TickerQ.Src.Provider
             return Task.CompletedTask;
         }
 
-        public Task UpdateCronTickers(IEnumerable<TCronTicker> tickers, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task UpdateCronTickers(IEnumerable<TCronTicker> tickers, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
                 CronTickers[t.Id] = t;
@@ -224,7 +224,7 @@ namespace TickerQ.Src.Provider
             return Task.CompletedTask;
         }
 
-        public Task RemoveCronTickers(IEnumerable<TCronTicker> tickers, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public Task RemoveCronTickers(IEnumerable<TCronTicker> tickers, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
                 CronTickers.TryRemove(t.Id, out _);
@@ -237,7 +237,7 @@ namespace TickerQ.Src.Provider
         #region Cron Ticker Occurrence Operations
 
         public Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurrenceById(Guid id,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronOccurrences.GetValueOrDefault(id);
 
@@ -245,7 +245,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByIds(Guid[] ids,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronOccurrences.Values
                 .Where(o => ids.Contains(o.Id))
@@ -255,7 +255,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerIds(Guid[] ids,
-            int? takeLimit, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            int? takeLimit, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
              IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrenceEnumerable = CronOccurrences.Values
                 .Where(x => ids.Contains(x.CronTickerId))
@@ -268,7 +268,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder,
-            Guid[] cronTickerIds, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Guid[] cronTickerIds, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronOccurrences.Values
                 .Where(x =>
@@ -281,7 +281,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurrences(string lockHolder,
-            TickerStatus[] tickerStatuses, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            TickerStatus[] tickerStatuses, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronOccurrences.Values
                 .Where(x => tickerStatuses.Contains(x.Status))
@@ -292,7 +292,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetTimedOutCronTickerOccurrences(DateTime now,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronOccurrences.Values
                 .Where(x => !x.ExecutedAt.HasValue && x.Status != TickerStatus.Inprogress &&
@@ -304,7 +304,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetQueuedNextCronOccurrences(Guid tickerId,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronOccurrences.Values
                 .Where(x => x.CronTickerId == tickerId)
@@ -316,7 +316,7 @@ namespace TickerQ.Src.Provider
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetCronOccurrencesByCronTickerIdAndStatusFlag(Guid tickerId,
             TickerStatus[] tickerStatuses,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronOccurrences.Values
                 .Where(x => x.CronTickerId == tickerId)
@@ -327,7 +327,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetAllCronTickerOccurrences(
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrences = CronOccurrences.Values
                 .ToArray();
@@ -336,7 +336,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetAllLockedCronTickerOccurrences(
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrences = CronOccurrences.Values
                 .Where(x => x.LockHolder != null)
@@ -346,7 +346,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerId(Guid cronTickerId,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrences = CronOccurrences.Values
                 .Where(x => x.CronTickerId == cronTickerId)
@@ -356,7 +356,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesWithin(DateTime startDate,
-            DateTime endDate, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            DateTime endDate, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrences = CronOccurrences.Values
                 .Where(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate)
@@ -366,7 +366,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerIdWithin(Guid cronTickerId,
-            DateTime startDate, DateTime endDate, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            DateTime startDate, DateTime endDate, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrences = CronOccurrences.Values
                 .Where(x => x.CronTickerId == cronTickerId)
@@ -377,7 +377,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetPastCronTickerOccurrencesByCronTickerId(Guid cronTickerId,
-            DateTime today, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            DateTime today, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrences = CronOccurrences.Values
                 .Where(x => x.CronTicker.Id == cronTickerId)
@@ -388,7 +388,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetTodayCronTickerOccurrencesByCronTickerId(Guid cronTickerId,
-            DateTime today, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            DateTime today, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrences = CronOccurrences.Values
                 .Where(x => x.CronTicker.Id == cronTickerId)
@@ -399,7 +399,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<CronTickerOccurrence<TCronTicker>[]> GetFutureCronTickerOccurrencesByCronTickerId(Guid cronTickerId,
-            DateTime today, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            DateTime today, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrences = CronOccurrences.Values
                 .Where(x => x.CronTicker.Id == cronTickerId)
@@ -410,7 +410,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<byte[]> GetCronTickerRequestViaOccurrence(Guid tickerId,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             if (CronOccurrences.TryGetValue(tickerId, out var cronTickerOccurrence))
             {
@@ -423,7 +423,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task<DateTime> GetEarliestCronTickerOccurrenceById(Guid id, TickerStatus[] tickerStatuses,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var earliestCronTickerOccurrence = CronOccurrences.Values
                 .Where(x => x.Id == id)
@@ -434,7 +434,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task InsertCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             foreach (var o in cronTickerOccurrences)
                 CronOccurrences.TryAdd(o.Id, o);
@@ -443,7 +443,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task RemoveCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             foreach (var o in cronTickerOccurrences)
                 CronOccurrences.TryRemove(o.Id, out _);
@@ -452,7 +452,7 @@ namespace TickerQ.Src.Provider
         }
 
         public Task UpdateCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             foreach (var o in cronTickerOccurrences)
                 CronOccurrences[o.Id] = o;

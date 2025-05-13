@@ -4,9 +4,9 @@ namespace TickerQ.Utilities.Extensions
 {
     internal static class DelegateExtension
     {
-        public static ProviderOptions InvokeProviderOptions(this Action<ProviderOptions> action)
+        public static TickerProviderOptions InvokeProviderOptions(this Action<TickerProviderOptions> action)
         {
-            var options = new ProviderOptions();
+            var options = new TickerProviderOptions();
             action?.Invoke(options);
             return options;
         }

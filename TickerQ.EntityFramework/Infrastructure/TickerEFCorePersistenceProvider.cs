@@ -31,7 +31,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         #region Time Ticker Operations
 
-        public async Task<TTimeTicker> GetTimeTickerById(Guid id, Action<ProviderOptions> options = null,
+        public async Task<TTimeTicker> GetTimeTickerById(Guid id, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -49,7 +49,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return timeTicker?.ToTimeTicker<TTimeTicker>();
         }
 
-        public async Task<TTimeTicker[]> GetTimeTickersByIds(Guid[] ids, Action<ProviderOptions> options = null,
+        public async Task<TTimeTicker[]> GetTimeTickersByIds(Guid[] ids, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -69,7 +69,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<TTimeTicker[]> GetNextTimeTickers(string lockHolder, DateTime roundedMinDate,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -92,7 +92,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<TTimeTicker[]> GetLockedTimeTickers(string lockHolder, TickerStatus[] tickerStatuses,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -112,7 +112,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<TTimeTicker[]> GetTimedOutTimeTickers(DateTime now,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -132,7 +132,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return timeTickers.Select(x => x.ToTimeTicker<TTimeTicker>()).ToArray();
         }
 
-        public async Task<TTimeTicker[]> GetAllTimeTickers(Action<ProviderOptions> options = null,
+        public async Task<TTimeTicker[]> GetAllTimeTickers(Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -150,7 +150,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return timeTickers.Select(x => x.ToTimeTicker<TTimeTicker>()).ToArray();
         }
 
-        public async Task<TTimeTicker[]> GetAllLockedTimeTickers(Action<ProviderOptions> options = null,
+        public async Task<TTimeTicker[]> GetAllLockedTimeTickers(Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -170,7 +170,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<TTimeTicker[]> GetTimeTickersWithin(DateTime startDate, DateTime endDate,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -189,7 +189,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task InsertTimeTickers(IEnumerable<TTimeTicker> tickers,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
             await timeTickerContext.AddRangeAsync(tickers.Select(x => x.ToTimeTickerEntity()), cancellationToken);
@@ -198,7 +198,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task UpdateTimeTickers(IEnumerable<TTimeTicker> tickers,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var entities = tickers.Select(x => x.ToTimeTickerEntity());
 
@@ -208,7 +208,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task RemoveTimeTickers(IEnumerable<TTimeTicker> tickers,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var entities = tickers.Select(x => x.ToTimeTickerEntity());
 
@@ -217,7 +217,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             await SaveAndDetachAsync<TimeTickerEntity>(cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task<byte[]> GetTimeTickerRequest(Guid tickerId, Action<ProviderOptions> options = null,
+        public async Task<byte[]> GetTimeTickerRequest(Guid tickerId, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -238,7 +238,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<DateTime?> GetEarliestTimeTickerTime(DateTime now, TickerStatus[] tickerStatuses,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -264,7 +264,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         #region Cron Ticker Operations
 
-        public async Task<TCronTicker> GetCronTickerById(Guid id, Action<ProviderOptions> options = null,
+        public async Task<TCronTicker> GetCronTickerById(Guid id, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -282,7 +282,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return cronTicker?.ToCronTicker<TCronTicker>();
         }
 
-        public async Task<TCronTicker[]> GetCronTickersByIds(Guid[] ids, Action<ProviderOptions> options = null,
+        public async Task<TCronTicker[]> GetCronTickersByIds(Guid[] ids, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -302,7 +302,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<TCronTicker[]> GetNextCronTickers(string[] expressions,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -320,7 +320,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<TCronTicker[]> GetAllExistingInitializedCronTickers(
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -338,7 +338,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return existingCronTickers.Select(x => x.ToCronTicker<TCronTicker>()).ToArray();
         }
 
-        public async Task<TCronTicker[]> GetAllCronTickers(Action<ProviderOptions> options = null,
+        public async Task<TCronTicker[]> GetAllCronTickers(Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -357,7 +357,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<Tuple<Guid, string>[]> GetAllCronTickerExpressions(
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -377,7 +377,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task InsertCronTickers(IEnumerable<TCronTicker> tickers,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickerContext = GetDbSet<CronTickerEntity>();
 
@@ -389,7 +389,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task UpdateCronTickers(IEnumerable<TCronTicker> tickers,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var entities = tickers.Select(x => x.ToCronTickerEntity());
 
@@ -399,7 +399,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task RemoveCronTickers(IEnumerable<TCronTicker> tickers,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var context = GetDbSet<CronTickerEntity>();
 
@@ -415,7 +415,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         #region Cron Ticker Occurrence Operations
 
         public async Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurrenceById(Guid id,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -433,7 +433,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByIds(Guid[] ids,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -453,7 +453,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerIds(Guid[] ids,
-            int? takeLimit, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            int? takeLimit, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -480,7 +480,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder,
-            Guid[] cronTickerIds, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Guid[] cronTickerIds, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -502,7 +502,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurrences(string lockHolder,
-            TickerStatus[] tickerStatuses, Action<ProviderOptions> options = null,
+            TickerStatus[] tickerStatuses, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -524,7 +524,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetTimedOutCronTickerOccurrences(DateTime now,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -547,7 +547,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetQueuedNextCronOccurrences(Guid tickerId,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -569,7 +569,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronOccurrencesByCronTickerIdAndStatusFlag(
             Guid tickerId, TickerStatus[] tickerStatuses,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -590,7 +590,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetAllCronTickerOccurrences(
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -609,7 +609,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetAllLockedCronTickerOccurrences(
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -629,7 +629,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerId(Guid cronTickerId,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -649,7 +649,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesWithin(DateTime startDate,
-            DateTime endDate, Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            DateTime endDate, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -670,7 +670,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerIdWithin(
-            Guid cronTickerId, DateTime startDate, DateTime endDate, Action<ProviderOptions> options = null,
+            Guid cronTickerId, DateTime startDate, DateTime endDate, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -692,7 +692,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetPastCronTickerOccurrencesByCronTickerId(
-            Guid cronTickerId, DateTime today, Action<ProviderOptions> options = null,
+            Guid cronTickerId, DateTime today, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -715,7 +715,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetTodayCronTickerOccurrencesByCronTickerId(
-            Guid cronTickerId, DateTime today, Action<ProviderOptions> options = null,
+            Guid cronTickerId, DateTime today, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -737,7 +737,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetFutureCronTickerOccurrencesByCronTickerId(
-            Guid cronTickerId, DateTime today, Action<ProviderOptions> options = null,
+            Guid cronTickerId, DateTime today, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
@@ -759,7 +759,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<byte[]> GetCronTickerRequestViaOccurrence(Guid tickerId,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -779,7 +779,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<DateTime> GetEarliestCronTickerOccurrenceById(Guid id, TickerStatus[] tickerStatuses,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -801,7 +801,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task InsertCronTickerOccurrences(
             IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
             await cronTickerOccurrenceContext.AddRangeAsync(
@@ -823,7 +823,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task UpdateCronTickerOccurrences(
             IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var entities = cronTickerOccurrences.Select(x =>
                 x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>());
@@ -844,7 +844,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task RemoveCronTickerOccurrences(
             IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
-            Action<ProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var entities = cronTickerOccurrences
                 .Select(x => x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>());

@@ -2,7 +2,7 @@ using System;
 
 namespace TickerQ.Utilities
 {
-    internal class ProviderOptions
+    public class TickerProviderOptions
     {
         public bool Tracking { get; private set; } = false;
         
