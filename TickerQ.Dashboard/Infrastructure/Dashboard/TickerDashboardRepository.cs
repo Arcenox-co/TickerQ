@@ -59,7 +59,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         public async Task<IList<Tuple<TickerStatus, int>>> GetTimeTickerFullDataAsync(
             CancellationToken cancellationToken)
         {
-            var timeTickers = await _persistenceProvider.GetAllTimeTickers(cancellationToken);
+            var timeTickers = await _persistenceProvider.GetAllTimeTickers(cancellationToken: cancellationToken);
 
             var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
 
@@ -95,7 +95,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var startDate = today.AddDays(pastDays);
             var endDate = today.AddDays(futureDays);
 
-            var timeTickers = await _persistenceProvider.GetTimeTickersWithin(startDate, endDate, cancellationToken);
+            var timeTickers = await _persistenceProvider.GetTimeTickersWithin(startDate, endDate, cancellationToken: cancellationToken);
 
             // Get all possible statuses once
             var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
@@ -147,7 +147,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var startDate = today.AddDays(pastDays);
             var endDate = today.AddDays(futureDays);
 
-            var cronTickerOccurrences = await _persistenceProvider.GetCronTickerOccurrencesByCronTickerIdWithin(id, startDate, endDate, cancellationToken);
+            var cronTickerOccurrences = await _persistenceProvider.GetCronTickerOccurrencesByCronTickerIdWithin(id, startDate, endDate, cancellationToken: cancellationToken);
 
             var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
 
@@ -194,7 +194,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         public async Task<IList<Tuple<TickerStatus, int>>> GetCronTickerFullDataAsync(
             CancellationToken cancellationToken)
         {
-            var cronTickerOccurrences = await _persistenceProvider.GetAllCronTickerOccurrences();
+            var cronTickerOccurrences = await _persistenceProvider.GetAllCronTickerOccurrences(cancellationToken: cancellationToken);
             var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
 
             var rawData = cronTickerOccurrences
@@ -226,7 +226,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var startDate = today.AddDays(pastDays);
             var endDate = today.AddDays(futureDays);
 
-            var cronTickerOccurrences = await _persistenceProvider.GetCronTickerOccurrencesWithin(startDate, endDate, cancellationToken);
+            var cronTickerOccurrences = await _persistenceProvider.GetCronTickerOccurrencesWithin(startDate, endDate, cancellationToken: cancellationToken);
             var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
 
             var rawData = cronTickerOccurrences

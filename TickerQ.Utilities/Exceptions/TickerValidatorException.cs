@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace TickerQ.Utilities.Exceptios
+namespace TickerQ.Utilities.Exceptions
 {
     public class TickerValidatorException : Exception
     {

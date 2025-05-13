@@ -24,6 +24,10 @@ namespace TickerQ.EntityFrameworkCore.Configurations
                 .HasForeignKey("CronTickerId")
                 .OnDelete(DeleteBehavior.Cascade);
 
+            builder.HasIndex("CronTickerId", "ExecutionTime")
+                .IsUnique()
+                .HasName("UQ_CronTickerId_ExecutionTime");
+
             builder.ToTable("CronTickerOccurrences", "ticker");
         }
     }
