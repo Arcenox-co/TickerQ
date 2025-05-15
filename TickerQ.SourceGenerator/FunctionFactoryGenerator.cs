@@ -390,6 +390,7 @@ namespace TickerQ.SourceGenerator
             var sb = new StringBuilder();
             sb.AppendLine("//v++");
             sb.AppendLine("using System;");
+            sb.AppendLine($"using {assemblyName};");
             sb.AppendLine("using System.Collections.Generic;");
             sb.AppendLine("using System.Threading.Tasks;");
             sb.AppendLine("using TickerQ.Utilities;");
@@ -770,6 +771,7 @@ namespace TickerQ.SourceGenerator
             var sb = new StringBuilder();
             sb.AppendLine("//v3.1");
             sb.AppendLine("using System;");
+            sb.AppendLine($"using {asm};");
             sb.AppendLine("using System.Collections.Generic;");
             sb.AppendLine("using System.Threading.Tasks;");
             sb.AppendLine("using TickerQ.Utilities;");
