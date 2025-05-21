@@ -235,4 +235,3 @@ Want to support this project? [Become a sponsor](https://github.com/sponsors/Arc
 
 **MIT OR Apache 2.0** © [Arcenox](https://arcenox.com)  
 You may choose either license to use this software.
----
