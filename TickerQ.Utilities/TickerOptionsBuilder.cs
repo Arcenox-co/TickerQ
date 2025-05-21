@@ -7,15 +7,14 @@ namespace TickerQ.Utilities
 {
     public class TickerOptionsBuilder
     {
-        internal Action<IServiceCollection> EfCoreConfigServiceAction { get; set; }
+        internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
+        internal Action<IApplicationBuilder> ExternalProviderConfigApplicationAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
         internal Action<IApplicationBuilder, string> DashboardApplicationAction { get; set; }
-        internal bool UseEfCore { get; private set; }
-        internal TimeSpan TimeOutChecker { get; set; } = TimeSpan.FromMinutes(1);
+        internal TimeSpan TimeOutChecker { get; private set; } = TimeSpan.FromMinutes(1);
         internal Type TickerExceptionHandlerType { get; private set; }
         internal int MaxConcurrency { get; private set; } = 0;
         internal string InstanceIdentifier { get; private set; }
-        internal bool CancelMissedTickersOnReset { get;  set; }
         internal bool EnableBasicAuth { get; set; }
         internal string DashboardLunchUrl { get; set; }
         internal static int ActiveThreads;
@@ -45,13 +44,23 @@ namespace TickerQ.Utilities
         public void SetExceptionHandler<THandler>() where THandler : ITickerExceptionHandler
             => TickerExceptionHandlerType = typeof(THandler);
 
-        internal void SetUseEfCore(IServiceCollection services)
+        internal void UseExternalProvider(IServiceCollection services)
         {
-            EfCoreConfigServiceAction(services);
-
-            UseEfCore = true;
-
-            EfCoreConfigServiceAction = null;
+            ExternalProviderConfigServiceAction(services);
+            
+            ExternalProviderConfigServiceAction = null;
+        }
+        
+        
+        /// <summary>
+        /// Timeout checker default is 1 minute, cannot set less than 30 seconds
+        /// </summary>
+        /// <param name="timeSpan"></param>
+        public void UpdateMissedJobCheckDelay(TimeSpan timeSpan)
+        {
+            TimeOutChecker = timeSpan < TimeSpan.FromSeconds(30)
+                ? TimeSpan.FromSeconds(30)
+                : timeSpan;
         }
     }
 }

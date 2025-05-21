@@ -5,8 +5,7 @@
 [![Documentation](https://img.shields.io/badge/docs%20-official%20web-blue)](https://tickerq.arcenox.com)
 
 **Robust. Adaptive. Precise.**  
-TickerQ is a high-performance, modular background job scheduler for .NET applications. It supports cron-based and one-time jobs, integrates with Entity Framework Core for persistence, and offers a live dashboard UI powered by SignalR.
-
+TickerQ is a fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
 ## 📚 Full Docs
 
 👉 [https://tickerq.arcenox.com](https://tickerq.arcenox.com)
@@ -62,7 +61,7 @@ builder.Services.AddTickerQ(options =>
     options.AddDashboardBasicAuth(); // Enables simple auth
 });
 
-app.UseTickerQ();             // Activates job processor
+app.UseTickerQ(); // Activates job processor
 ```
 
 ---
@@ -217,8 +216,6 @@ await _cronTickerManager.AddAsync(new CronTicker
 - Use `FunctionName` consistently across schedule and handler
 - Use `CancellationToken` for graceful cancellation
 - Use `Request` to pass dynamic data to jobs
-- Use `.AddDashboard()` only when EF Core is configured
-
 ---
 
 ## 🤝 Contribution
@@ -231,9 +228,10 @@ PRs, ideas, and issues are welcome!
 
 ---
 
+## 💖 Sponsors
+Want to support this project? [Become a sponsor](https://github.com/sponsors/Arcenox-co/)
+
 ## 📄 License
 
 **MIT OR Apache 2.0** © [Arcenox](https://arcenox.com)  
 You may choose either license to use this software.
-
----
