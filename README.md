@@ -5,8 +5,7 @@
 [![Documentation](https://img.shields.io/badge/docs%20-official%20web-blue)](https://tickerq.arcenox.com)
 
 **Robust. Adaptive. Precise.**  
-TickerQ is a high-performance, modular background job scheduler for .NET applications. It supports cron-based and one-time jobs, integrates with Entity Framework Core for persistence, and offers a live dashboard UI powered by SignalR.
-
+TickerQ is a fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
 ## 📚 Full Docs
 
 👉 [https://tickerq.arcenox.com](https://tickerq.arcenox.com)
@@ -56,16 +55,47 @@ builder.Services.AddTickerQ(options =>
 {
     options.SetMaxConcurrency(4); // Optional
     options.SetExceptionHandler<MyExceptionHandler>(); // Optional
-    options.AddOperationalStore<MyDbContext>(); // Enables EF-backed storage
-    options.CancelMissedTickersOnApplicationRestart(); // Useful in distributed mode
+    options.AddOperationalStore<MyDbContext>(efOpt => 
+    {
+        efOpt.UseModelCustomizerForMigrations(); // Applies custom model customization only during EF Core migrations
+        efOpt.CancelMissedTickersOnApplicationRestart(); // Useful in distributed mode
+    }); // Enables EF-backed storage
     options.AddDashboard(basePath: "/tickerq-dashboard"); // Dashboard path
     options.AddDashboardBasicAuth(); // Enables simple auth
 });
 
-app.UseTickerQ();             // Activates job processor
+app.UseTickerQ(); // Activates job processor
+```
+---
+
+## ❗️If Not Using `UseModelCustomizerForMigrations()`
+
+### You must apply TickerQ configurations manually in your `DbContext`:
+
+```csharp
+public class MyDbContext : DbContext
+{
+    public MyDbContext(DbContextOptions<MyDbContext> options)
+        : base(options) { }
+
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+        base.OnModelCreating(builder);
+
+        // Apply TickerQ entity configurations explicitly
+        builder.ApplyConfiguration(new TimeTickerConfigurations());
+        builder.ApplyConfiguration(new CronTickerConfigurations());
+        builder.ApplyConfiguration(new CronTickerOccurrenceConfigurations());
+
+        // Alternatively, apply all configurations from assembly:
+        // builder.ApplyConfigurationsFromAssembly(typeof(TimeTickerConfigurations).Assembly);
+    }
+}
 ```
 
----
+> 💡 **Recommendation:**  
+Use `UseModelCustomizerForMigrations()` to cleanly separate infrastructure concerns from your core domain model, especially during design-time operations like migrations.  
+**Note:** If you're using third-party libraries (e.g., OpenIddict) that also override `IModelCustomizer`, you must either merge customizations or fall back to manual configuration inside `OnModelCreating()` to avoid conflicts.
 
 ##  Job Definition
 
@@ -217,8 +247,6 @@ await _cronTickerManager.AddAsync(new CronTicker
 - Use `FunctionName` consistently across schedule and handler
 - Use `CancellationToken` for graceful cancellation
 - Use `Request` to pass dynamic data to jobs
-- Use `.AddDashboard()` only when EF Core is configured
-
 ---
 
 ## 🤝 Contribution
@@ -231,9 +259,10 @@ PRs, ideas, and issues are welcome!
 
 ---
 
+## 💖 Sponsors
+Want to support this project? [Become a sponsor](https://github.com/sponsors/Arcenox-co/)
+
 ## 📄 License
 
 **MIT OR Apache 2.0** © [Arcenox](https://arcenox.com)  
 You may choose either license to use this software.
-
----

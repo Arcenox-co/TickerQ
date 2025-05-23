@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 
-namespace TickerQ.EntityFrameworkCore.Infrastructure.Dashboard
+namespace TickerQ.Dashboard.Infrastructure.Dashboard
 {
     internal static class JsonExampleGenerator
     {
@@ -33,7 +33,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure.Dashboard
             }
 
             // Handle generic lists (List<T>)
-            if ((type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>)) || (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IList<>)))
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>) || type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IList<>))
             {
                 var elementType = type.GetGenericArguments()[0];
                 var listType = typeof(List<>).MakeGenericType(elementType);

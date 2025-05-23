@@ -2,7 +2,7 @@
 
 namespace TickerQ.EntityFrameworkCore.Entities
 {
-    public class CronTicker : BaseTickerEntity
+    public class CronTickerEntity : BaseTickerEntity
     {
         public virtual string Expression { get; set; }
         public virtual byte[] Request { get; set; }
