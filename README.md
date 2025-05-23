@@ -55,16 +55,47 @@ builder.Services.AddTickerQ(options =>
 {
     options.SetMaxConcurrency(4); // Optional
     options.SetExceptionHandler<MyExceptionHandler>(); // Optional
-    options.AddOperationalStore<MyDbContext>(); // Enables EF-backed storage
-    options.CancelMissedTickersOnApplicationRestart(); // Useful in distributed mode
+    options.AddOperationalStore<MyDbContext>(efOpt => 
+    {
+        efOpt.UseModelCustomizerForMigrations(); // Applies custom model customization only during EF Core migrations
+        efOpt.CancelMissedTickersOnApplicationRestart(); // Useful in distributed mode
+    }); // Enables EF-backed storage
     options.AddDashboard(basePath: "/tickerq-dashboard"); // Dashboard path
     options.AddDashboardBasicAuth(); // Enables simple auth
 });
 
 app.UseTickerQ(); // Activates job processor
 ```
-
 ---
+
+## ❗️If Not Using `UseModelCustomizerForMigrations()`
+
+### You must apply TickerQ configurations manually in your `DbContext`:
+
+```csharp
+public class MyDbContext : DbContext
+{
+    public MyDbContext(DbContextOptions<MyDbContext> options)
+        : base(options) { }
+
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+        base.OnModelCreating(builder);
+
+        // Apply TickerQ entity configurations explicitly
+        builder.ApplyConfiguration(new TimeTickerConfigurations());
+        builder.ApplyConfiguration(new CronTickerConfigurations());
+        builder.ApplyConfiguration(new CronTickerOccurrenceConfigurations());
+
+        // Alternatively, apply all configurations from assembly:
+        // builder.ApplyConfigurationsFromAssembly(typeof(TimeTickerConfigurations).Assembly);
+    }
+}
+```
+
+> 💡 **Recommendation:**  
+Use `UseModelCustomizerForMigrations()` to cleanly separate infrastructure concerns from your core domain model, especially during design-time operations like migrations.  
+**Note:** If you're using third-party libraries (e.g., OpenIddict) that also override `IModelCustomizer`, you must either merge customizations or fall back to manual configuration inside `OnModelCreating()` to avoid conflicts.
 
 ##  Job Definition
 
