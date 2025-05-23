@@ -61,7 +61,7 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
                         provider => UpdateDbContextOptionsService<TContext, TTimeTickerEntity, TCronTickerEntity>(provider, originalDescriptor.ImplementationFactory),
                         originalDescriptor.Lifetime
                     );
-`
+
                     services.Remove(originalDescriptor);
                     services.Add(newDescriptor);
                 }
