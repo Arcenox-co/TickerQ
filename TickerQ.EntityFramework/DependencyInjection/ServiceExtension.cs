@@ -61,7 +61,7 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
                         provider => UpdateDbContextOptionsService<TContext, TTimeTickerEntity, TCronTickerEntity>(provider, originalDescriptor.ImplementationFactory),
                         originalDescriptor.Lifetime
                     );
-
+`
                     services.Remove(originalDescriptor);
                     services.Add(newDescriptor);
                 }
@@ -92,7 +92,7 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
                 var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
                 
                 var functionsToSeed = TickerFunctionProvider.TickerFunctions
-                    .Where(x => string.IsNullOrEmpty(x.Value.cronExpression) == false)
+                    .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
                     .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
                 
                 internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
