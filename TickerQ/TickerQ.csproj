@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>netstandard2.1</TargetFramework>
+        <TargetFramework>netstandard2.0</TargetFramework>
         <Description>A lightweight, developer-friendly library for queuing and executing cron and time-based jobs in the background.</Description>
         <Authors>Albert Kunushevci</Authors>
         <Company>Arcenox</Company>
@@ -27,7 +27,7 @@
         <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="[2.1.0,)"/>
         <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="2.1.0"/>
         <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="2.1.0"/>
-        <PackageReference Include="TickerQ.Utilities" Version="2.1.1"/>
+        <PackageReference Include="TickerQ.Utilities" Version="2.1.0"/>
     </ItemGroup>
 
     <Target Name="CopyAnalyzer" AfterTargets="Build">
