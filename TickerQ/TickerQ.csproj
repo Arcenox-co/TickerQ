@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>netstandard2.0</TargetFramework>
+        <TargetFramework>netstandard2.1</TargetFramework>
         <Description>A lightweight, developer-friendly library for queuing and executing cron and time-based jobs in the background.</Description>
         <Authors>Albert Kunushevci</Authors>
         <Company>Arcenox</Company>
@@ -12,7 +12,7 @@
         <Copyright>Copyright © Arcenox</Copyright>
         <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <Version>2.1.1</Version>
+        <Version>2.1.0</Version>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageIcon>icon.jpg</PackageIcon>
     </PropertyGroup>
