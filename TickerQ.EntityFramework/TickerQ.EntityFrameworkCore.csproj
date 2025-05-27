@@ -2,7 +2,7 @@
 	<PropertyGroup>
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<PackageId>TickerQ.EntityFrameworkCore</PackageId>
-		<Version>2.1.0</Version>
+		<Version>2.1.1</Version>
 		<Authors>Albert Kunushevci</Authors>
 		<Company>Arcenox LLC</Company>
 		<Description>Entity Framework Core integration for scheduling and persisting cron/time-based jobs using TickerQ.</Description>
@@ -27,9 +27,6 @@
 	   <PackageReference Include="Microsoft.EntityFrameworkCore" Version="[2.1.0,)" />
 	   <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="[2.1.0,)" />
 	   <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="[2.1.0,)" />
-	   <PackageReference Include="System.Interactive.Async" Version="3.1.1">
-		  <Aliases>SysInteractiveAsync</Aliases>
-	   </PackageReference>
-	   <PackageReference Include="TickerQ.Utilities" Version="2.1.0" />
+	   <PackageReference Include="TickerQ.Utilities" Version="2.1.1" />
    </ItemGroup>
 </Project>
