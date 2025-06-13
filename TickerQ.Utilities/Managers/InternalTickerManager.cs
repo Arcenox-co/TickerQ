@@ -105,7 +105,7 @@ namespace TickerQ.Utilities.Managers
                 new DateTime(minDate.Ticks - minDate.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
 
             var timeTickers = await PersistenceProvider
-                .GetNextTimeTickers(LockHolder, roundedMinDate, cancellationToken: cancellationToken)
+                .GetNextTimeTickers(LockHolder, roundedMinDate, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             var lockedAndQueuedTimeTickers = LockAndQueueTimeTickers(timeTickers).ToArray();
@@ -314,7 +314,8 @@ namespace TickerQ.Utilities.Managers
             CancellationToken cancellationToken = default)
         {
             var timeTickers = await PersistenceProvider
-                .GetLockedTimeTickers(LockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress },
+                .GetLockedTimeTickers(LockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress }, 
+                    opt => opt.SetAsTracking(),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
 
             foreach (var timeTicker in timeTickers)
@@ -382,7 +383,7 @@ namespace TickerQ.Utilities.Managers
                         var cronTickerIds = resourceType.Select(x => x.TickerId).ToArray();
 
                         var cronTickers = await PersistenceProvider
-                            .GetCronTickersByIds(cronTickerIds, cancellationToken: cancellationToken)
+                            .GetCronTickersByIds(cronTickerIds, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
                             .ConfigureAwait(false);
 
                         foreach (var cronTicker in cronTickers)
@@ -401,7 +402,7 @@ namespace TickerQ.Utilities.Managers
                         var cronOccurrenceIds = resourceType.Select(x => x.TickerId).ToArray();
 
                         var cronTickerOccurrences = await PersistenceProvider
-                            .GetCronTickerOccurrencesByIds(cronOccurrenceIds, cancellationToken: cancellationToken)
+                            .GetCronTickerOccurrencesByIds(cronOccurrenceIds, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
                             .ConfigureAwait(false);
 
                         foreach (var cronTickerOccurrence in cronTickerOccurrences)
@@ -424,7 +425,7 @@ namespace TickerQ.Utilities.Managers
                     var timeTickerIds = resourceType.Select(x => x.TickerId).ToArray();
 
                     var timeTickers = await PersistenceProvider
-                        .GetTimeTickersByIds(timeTickerIds, cancellationToken: cancellationToken)
+                        .GetTimeTickersByIds(timeTickerIds, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
                         .ConfigureAwait(false);
 
                     foreach (var timeTicker in timeTickers)
@@ -552,7 +553,7 @@ namespace TickerQ.Utilities.Managers
             CancellationToken cancellationToken)
         {
             var timeTickers = await PersistenceProvider
-                .GetTimedOutTimeTickers(Clock.UtcNow, cancellationToken: cancellationToken)
+                .GetTimedOutTimeTickers(Clock.UtcNow, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             if (timeTickers.Length == 0)

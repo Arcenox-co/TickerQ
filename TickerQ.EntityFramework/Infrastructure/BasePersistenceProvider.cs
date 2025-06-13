@@ -5,6 +5,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using TickerQ.EntityFrameworkCore.Entities;
+using TickerQ.Utilities.Enums;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
@@ -32,10 +34,43 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             if (tracked != null)
             {
                 tracked.CurrentValues.SetValues(entity);
+
+                if (entity is TimeTickerEntity timeTickerEntity)
+                {
+                    var lockHolderProp = tracked.Property(nameof(TimeTickerEntity.LockHolder));
+
+                    if (timeTickerEntity.Status == TickerStatus.Queued || timeTickerEntity.Status == TickerStatus.Idle)
+                    {
+                        lockHolderProp.IsModified = true;
+                        lockHolderProp.OriginalValue = null;
+                    }
+                    else
+                    {
+                        lockHolderProp.IsModified = true;
+                    }
+                }
+
+                tracked.State = state;
             }
             else
             {
-                DbContext.Attach(entity).State = state;
+                var entry = DbContext.Attach(entity);
+                entry.State = state;
+
+                if (entity is TimeTickerEntity timeTickerEntity)
+                {
+                    var lockHolderProp = entry.Property(nameof(TimeTickerEntity.LockHolder));
+
+                    if (timeTickerEntity.Status == TickerStatus.Queued || timeTickerEntity.Status == TickerStatus.Idle)
+                    {
+                        lockHolderProp.IsModified = true;
+                        lockHolderProp.OriginalValue = null;
+                    }
+                    else
+                    {
+                        lockHolderProp.IsModified = true;
+                    }
+                }
             }
         }
 

@@ -65,8 +65,6 @@ namespace TickerQ.Utilities.Managers
                 entity.CreatedAt = Clock.UtcNow;
                 entity.UpdatedAt = Clock.UtcNow;
                 entity.Status = TickerStatus.Idle;
-                entity.LockHolder = LockHolder;
-                entity.LockedAt = Clock.UtcNow;
                 entity.ExecutionTime = entity.ExecutionTime.ToUniversalTime();
 
                 await PersistenceProvider.InsertTimeTickers(new[] { entity }, cancellationToken: cancellationToken)
@@ -204,7 +202,7 @@ namespace TickerQ.Utilities.Managers
 
             if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != cronTicker?.Function))
                 return new TickerResult<TCronTicker>(
-                    new TickerValidatorException($"Cannot find TickerFunction with name {cronTicker?.Function}"));
+                    new TickerValidatorException($"Cannot find TickerFunction with name {cronTicker.Function}"));
 
             try
             {
