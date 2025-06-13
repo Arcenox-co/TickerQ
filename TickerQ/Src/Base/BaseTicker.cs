@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
 using System;
+using System.Data;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
@@ -13,7 +14,6 @@ namespace TickerQ.Base
 {
     internal abstract class BaseTicker : ITickerHost
     {
-        private readonly ILogger<TickerHost> _logger;
         private readonly ITickerClock _clock;
         protected readonly IServiceProvider ServiceProvider;
         private TickerOptionsBuilder TickerOptionsBuilder { get; }
@@ -32,7 +32,6 @@ namespace TickerQ.Base
             TickerOptionsBuilder =
                 tickerOptionsBuilder ?? throw new ArgumentNullException(nameof(tickerOptionsBuilder));
             ServiceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _restartThrottle = new RestartThrottleManager(SoftNotifyDelayChange);
         }
@@ -145,6 +144,10 @@ namespace TickerQ.Base
                     CtsTickerDelayAwaiter = SafeCancellationTokenSource.CreateLinked(CtsTickerChecker.Token);
                 }
                 catch (CronOccurrenceAlreadyExistsException)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(new Random().Next(12, 32)));
+                }
+                catch (DBConcurrencyException)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(new Random().Next(12, 32)));
                 }

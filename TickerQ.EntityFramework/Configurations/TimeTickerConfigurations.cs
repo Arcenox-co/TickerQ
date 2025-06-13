@@ -8,8 +8,11 @@ namespace TickerQ.EntityFrameworkCore.Configurations
     {
         public void Configure(EntityTypeBuilder<TimeTickerEntity> builder)
         {
-          
             builder.HasKey("Id");
+
+            builder.Property(x => x.LockHolder)
+                .IsConcurrencyToken()
+                .IsRequired(false);
 
             builder.HasIndex("ExecutionTime")
                     .HasName("IX_TimeTicker_ExecutionTime");
