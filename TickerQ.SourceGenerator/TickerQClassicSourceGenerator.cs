@@ -295,6 +295,7 @@ namespace TickerQ.SourceGenerator
             sb.AppendLine("{");
             sb.AppendLine("  public static class TickerQInstanceFactory");
             sb.AppendLine("  {");
+            sb.AppendLine("#if NET5_0_OR_GREATER\n    [System.Runtime.CompilerServices.ModuleInitializer]\n #endif");
             sb.AppendLine("    public static void Initialize()");
             sb.AppendLine("    {");
             sb.AppendLine(
