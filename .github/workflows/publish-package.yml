@@ -32,6 +32,15 @@ jobs:
           VERSION=$(cat VERSION)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: TickerQ.Dashboard/wwwroot
+
       # ------------------------------------------
       # Build and Pack TickerQ.Utilities
       # ------------------------------------------
