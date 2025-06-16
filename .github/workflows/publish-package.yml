@@ -62,7 +62,7 @@ jobs:
       - name: Pack other projects
         run: |
           dotnet pack TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
-          dotnet pack TickerQ.EntityFramework/TickerQ.EntityFramework.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
+          dotnet pack TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
           dotnet pack TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
       # ------------------------------------------
