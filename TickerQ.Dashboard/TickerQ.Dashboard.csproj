@@ -51,10 +51,6 @@
         <DefineConstants>$(DefineConstants);NETCOREAPP3_1_OR_GREATER</DefineConstants>
     </PropertyGroup>
 
-    <Target Name="BuildVueApp" BeforeTargets="Pack" Condition="'$(IsPackable)' == 'true'">
-        <Exec Command="npm run build" WorkingDirectory="wwwroot" />
-    </Target>
-
     <ItemGroup>
         <EmbeddedResource Include="wwwroot\dist\**\*" />
     </ItemGroup>
