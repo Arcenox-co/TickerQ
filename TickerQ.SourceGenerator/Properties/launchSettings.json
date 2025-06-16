@@ -1,9 +1,0 @@
-﻿{
-  "$schema": "https://json.schemastore.org/launchsettings.json",
-  "profiles": {
-    "DebugRoslynSourceGenerator": {
-      "commandName": "DebugRoslynComponent",
-      "targetProject": "/Users/albertkunushevci/Arcenox/Git-Projects/WebApplication1/TickerQWebApp/TickerQWebApp.csproj"
-    }
-  }
-}
