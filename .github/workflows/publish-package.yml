@@ -53,7 +53,7 @@ jobs:
       - name: Build other projects
         run: |
           dotnet build TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
-          dotnet build TickerQ.EntityFramework/TickerQ.EntityFramework.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
+          dotnet build TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
           dotnet build TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
       # ------------------------------------------
@@ -90,7 +90,7 @@ jobs:
             fname=$(basename "$file")
             if [[ "$fname" == TickerQ.Utilities.*.nupkg ]]; then
               check_and_push "TickerQ.Utilities" "$file"
-            elif [[ "$fname" == TickerQ.EntityFramework.*.nupkg ]]; then
+            elif [[ "$fname" == TickerQ.EntityFrameworkCore.*.nupkg ]]; then
               check_and_push "TickerQ.EntityFrameworkCore" "$file"
             elif [[ "$fname" == TickerQ.Dashboard.*.nupkg ]]; then
               check_and_push "TickerQ.Dashboard" "$file"
