@@ -1,0 +1,87 @@
+name: Build and Publish NuGet
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      DOTNET_NOLOGO: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build Source Generator
+        run: dotnet build src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
+
+      - name: Read Version
+        id: get-version
+        run: |
+          VERSION=$(cat VERSION)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Pack TickerQ.Utilities
+        run: |
+          dotnet pack src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
+
+      - name: Add local nupkgs feed
+        run: |
+          dotnet nuget add source ./nupkgs --name LocalNupkgs
+
+      - name: Restore All
+        run: dotnet restore
+
+      - name: Build All Projects
+        run: |
+          dotnet build src/TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
+          dotnet build src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
+          dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
+
+      - name: Pack Remaining Projects
+        run: |
+          dotnet pack src/TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
+          dotnet pack src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
+          dotnet pack src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
+
+      - name: Push to NuGet if not exists
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          check_and_push() {
+            PACKAGE_NAME=$1
+            PACKAGE_FILE=$2
+
+            echo "Checking if $PACKAGE_NAME exists on NuGet..."
+            VERSION=$(basename "$PACKAGE_FILE" | sed -E "s/^$PACKAGE_NAME\.([0-9\.]+)\.nupkg$/\1/")
+            EXISTS=$(curl -s "https://api.nuget.org/v3-flatcontainer/${PACKAGE_NAME,,}/$VERSION/${PACKAGE_NAME,,}.$VERSION.nupkg" -o /dev/null -w "%{http_code}" -s)
+
+            if [ "$EXISTS" == "200" ]; then
+              echo "$PACKAGE_NAME $VERSION already exists. Skipping."
+            else
+              echo "Pushing $PACKAGE_NAME $VERSION..."
+              dotnet nuget push "$PACKAGE_FILE" --source https://api.nuget.org/v3/index.json --api-key $NUGET_API_KEY
+            fi
+          }
+
+          for file in ./nupkgs/*.nupkg; do
+            fname=$(basename "$file")
+            if [[ "$fname" == TickerQ.Utilities.*.nupkg ]]; then
+              check_and_push "TickerQ.Utilities" "$file"
+            elif [[ "$fname" == TickerQ.*.nupkg ]]; then
+              check_and_push "TickerQ" "$file"
+            elif [[ "$fname" == TickerQ.EntityFrameworkCore.*.nupkg ]]; then
+              check_and_push "TickerQ.EntityFrameworkCore" "$file"
+            elif [[ "$fname" == TickerQ.Dashboard.*.nupkg ]]; then
+              check_and_push "TickerQ.Dashboard" "$file"
+            fi
+          done
