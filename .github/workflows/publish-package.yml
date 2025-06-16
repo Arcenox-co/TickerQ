@@ -12,7 +12,7 @@ jobs:
       DOTNET_NOLOGO: true
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Setup .NET
@@ -26,41 +26,55 @@ jobs:
           VERSION=$(cat VERSION)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      # --- Build Utilities first ---
+      # ------------------------------------------
+      # Remove global NuGet source that breaks builds
+      # ------------------------------------------
+      - name: Remove invalid global 'Local' NuGet source if it exists
+        run: dotnet nuget remove source Local || true
+
+      # ------------------------------------------
+      # Build and Pack TickerQ.Utilities
+      # ------------------------------------------
       - name: Build TickerQ.Utilities
         run: dotnet build TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
       - name: Pack TickerQ.Utilities
         run: dotnet pack TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
-      # --- Remove invalid global source if present ---
-      - name: Remove invalid 'Local' NuGet source if exists
-        run: dotnet nuget remove source Local || true
-
-      # --- Register local ./nupkgs source ---
+      # ------------------------------------------
+      # Add local nupkgs source for dependencies
+      # ------------------------------------------
       - name: Add local nupkgs source
         run: dotnet nuget add source ./nupkgs --name LocalNupkgs
 
-      # --- Build TickerQ.SourceGenerator ---
+      # ------------------------------------------
+      # Build TickerQ.SourceGenerator
+      # ------------------------------------------
       - name: Build TickerQ.SourceGenerator
         run: dotnet build TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
 
-      # --- Build remaining projects ---
+      # ------------------------------------------
+      # Build all other projects
+      # ------------------------------------------
       - name: Build other projects
         run: |
           dotnet build TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
           dotnet build TickerQ.EntityFramework/TickerQ.EntityFramework.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
           dotnet build TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
-      # --- Pack remaining projects ---
+      # ------------------------------------------
+      # Pack other projects
+      # ------------------------------------------
       - name: Pack other projects
         run: |
           dotnet pack TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
           dotnet pack TickerQ.EntityFramework/TickerQ.EntityFramework.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
           dotnet pack TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
-      # --- Push to NuGet.org (skip if version already exists) ---
-      - name: Push to NuGet
+      # ------------------------------------------
+      # Push all packages to NuGet (if not already published)
+      # ------------------------------------------
+      - name: Push to NuGet.org
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
