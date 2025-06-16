@@ -1,0 +1,60 @@
+name: Publish NuGet Packages
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: production-publish
+      url: https://www.nuget.org/
+    env:
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+            8.0.x
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nupkgs
+          path: ./nupkgs
+
+      - name: Push to NuGet.org
+        run: |
+          check_and_push() {
+            PACKAGE_NAME=$1
+            PACKAGE_FILE=$2
+            VERSION=$(basename "$PACKAGE_FILE" | sed -E "s/^$PACKAGE_NAME\.([0-9A-Za-z\.-]+)\.nupkg$/\1/")
+            EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
+              "https://api.nuget.org/v3-flatcontainer/${PACKAGE_NAME,,}/$VERSION/${PACKAGE_NAME,,}.$VERSION.nupkg")
+
+            if [ "$EXISTS" == "200" ]; then
+              echo "$PACKAGE_NAME $VERSION already exists. Skipping push."
+            else
+              echo "🚀 Pushing $PACKAGE_NAME $VERSION..."
+              dotnet nuget push "$PACKAGE_FILE" --source https://api.nuget.org/v3/index.json --api-key $NUGET_API_KEY
+            fi
+          }
+
+          for file in ./nupkgs/*.nupkg; do
+            fname=$(basename "$file")
+            if [[ "$fname" == TickerQ.Utilities.*.nupkg ]]; then
+              check_and_push "TickerQ.Utilities" "$file"
+            elif [[ "$fname" == TickerQ.EntityFrameworkCore.*.nupkg ]]; then
+              check_and_push "TickerQ.EntityFrameworkCore" "$file"
+            elif [[ "$fname" == TickerQ.Dashboard.*.nupkg ]]; then
+              check_and_push "TickerQ.Dashboard" "$file"
+            elif [[ "$fname" == TickerQ.*.nupkg ]]; then
+              check_and_push "TickerQ" "$file"
+            fi
+          done
