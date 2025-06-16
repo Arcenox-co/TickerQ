@@ -18,10 +18,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
-
-      - name: Build Source Generator
-        run: dotnet build TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
+          dotnet-version: '9.0.x'
 
       - name: Read Version
         id: get-version
@@ -29,36 +26,41 @@ jobs:
           VERSION=$(cat VERSION)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      - name: Build Source Generator
+        run: dotnet build TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
+
+      - name: Build TickerQ.Utilities
+        run: dotnet build TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
+
       - name: Pack TickerQ.Utilities
-        run: |
-          dotnet pack TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
+        run: dotnet pack TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
       - name: Add local nupkgs as source
         run: dotnet nuget add source ./nupkgs --name LocalNupkgs
 
-      - name: Restore All
+      - name: Restore dependencies
         run: dotnet restore
 
-      - name: Build All Projects
+      - name: Build other projects
         run: |
           dotnet build TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
           dotnet build TickerQ.EntityFramework/TickerQ.EntityFramework.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
           dotnet build TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
-      - name: Pack Remaining Projects
+      - name: Pack other projects
         run: |
           dotnet pack TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
           dotnet pack TickerQ.EntityFramework/TickerQ.EntityFramework.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
           dotnet pack TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
-      - name: Push to NuGet (skip if exists)
+      - name: Push to NuGet
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
           check_and_push() {
             PACKAGE_NAME=$1
             PACKAGE_FILE=$2
-            VERSION=$(basename "$PACKAGE_FILE" | sed -E "s/^$PACKAGE_NAME\.([0-9\.]+)\.nupkg$/\1/")
+            VERSION=$(basename "$PACKAGE_FILE" | sed -E "s/^$PACKAGE_NAME\.([0-9A-Za-z\.-]+)\.nupkg$/\1/")
             EXISTS=$(curl -s "https://api.nuget.org/v3-flatcontainer/${PACKAGE_NAME,,}/$VERSION/${PACKAGE_NAME,,}.$VERSION.nupkg" -o /dev/null -w "%{http_code}" -s)
 
             if [ "$EXISTS" == "200" ]; then
