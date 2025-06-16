@@ -6,7 +6,51 @@ on:
       - main
 
 jobs:
+  check-nuget:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.all_exist }}
+      version: ${{ steps.get-version.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Read version from file
+        id: get-version
+        run: |
+          VERSION=$(cat VERSION)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if all NuGet packages already exist
+        id: check
+        run: |
+          VERSION="${{ steps.get-version.outputs.version }}"
+          PACKAGE_IDS=(tickerq tickerq.dashboard tickerq.utilities tickerq.entityframeworkcore)
+          MISSING=0
+
+          for ID in "${PACKAGE_IDS[@]}"; do
+            LOWER_ID=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
+            URL="https://api.nuget.org/v3-flatcontainer/$LOWER_ID/$VERSION/$LOWER_ID.$VERSION.nupkg"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
+
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ $ID $VERSION exists on NuGet"
+            else
+              echo "❌ $ID $VERSION does NOT exist on NuGet"
+              MISSING=1
+            fi
+          done
+
+          if [ "$MISSING" = "0" ]; then
+            echo "all_exist=true" >> $GITHUB_OUTPUT
+          else
+            echo "all_exist=false" >> $GITHUB_OUTPUT
+          fi
+
   build:
+    needs: check-nuget
+    if: needs.check-nuget.outputs.skip != 'true'
     runs-on: ubuntu-latest
     env:
       DOTNET_NOLOGO: true
@@ -15,7 +59,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Setup .NET
+      - name: Setup .NET SDKs
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: |
@@ -26,116 +70,43 @@ jobs:
             8.0.x
             9.0.x
 
-      - name: Read version from file
-        id: get-version
-        run: |
-          VERSION=$(cat VERSION)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      # Check if all packages with this version exist on NuGet
-      - name: Check if all NuGet packages already exist
-        id: check-all-nugets
-        run: |
-          VERSION="${{ steps.get-version.outputs.version }}"
-          PACKAGE_IDS=(
-            "tickerq"
-            "tickerq.dashboard"
-            "tickerq.utilities"
-            "tickerq.entityframeworkcore"
-          )
-      
-          echo "🔍 Checking if version $VERSION exists for all packages..."
-          MISSING=0
-          for ID in "${PACKAGE_IDS[@]}"; do
-            LOWER_ID=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
-            URL="https://api.nuget.org/v3-flatcontainer/$LOWER_ID/$VERSION/$LOWER_ID.$VERSION.nupkg"
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
-      
-            if [ "$STATUS" = "200" ]; then
-              echo "✅ $ID $VERSION exists on NuGet"
-            else
-              echo "❌ $ID $VERSION does NOT exist on NuGet"
-              MISSING=1
-            fi
-          done
-      
-          if [ "$MISSING" = "0" ]; then
-            echo "all_exist=true" >> $GITHUB_OUTPUT
-          else
-            echo "all_exist=false" >> $GITHUB_OUTPUT
-          fi
-      
-      # Cancel build early if all packages already exist
-      - name: Cancel job because all packages exist
-        if: steps.check-all-nugets.outputs.all_exist == 'true'
-        run: |
-          echo "🚫 All packages already exist on NuGet. Skipping full CI job."
-          exit 0
-
-      # ------------------------------------------
-      # Setup Node.js 20
-      # ------------------------------------------
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # ------------------------------------------
-      # Install frontend dependencies
-      # ------------------------------------------
       - name: Install frontend dependencies
         run: npm install
         working-directory: TickerQ.Dashboard/wwwroot
 
-      # ------------------------------------------
-      # Build frontend
-      # ------------------------------------------
       - name: Build frontend
         run: npm run build
         working-directory: TickerQ.Dashboard/wwwroot
 
-      # ------------------------------------------
-      # Build and Pack TickerQ.Utilities
-      # ------------------------------------------
       - name: Build TickerQ.Utilities
-        run: dotnet build TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
+        run: dotnet build TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
 
       - name: Pack TickerQ.Utilities
-        run: dotnet pack TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
+        run: dotnet pack TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
 
-      # ------------------------------------------
-      # Add local nupkgs source for dependencies
-      # ------------------------------------------
       - name: Add local nupkgs source
         run: dotnet nuget add source "$(pwd)/nupkgs" --name LocalNupkgs
 
-      # ------------------------------------------
-      # Build TickerQ.SourceGenerator
-      # ------------------------------------------
       - name: Build TickerQ.SourceGenerator
         run: dotnet build TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
 
-      # ------------------------------------------
-      # Build all other projects
-      # ------------------------------------------
       - name: Build other projects
         run: |
-          dotnet build TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
-          dotnet build TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
-          dotnet build TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
+          dotnet build TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet build TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet build TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
 
-      # ------------------------------------------
-      # Pack other projects
-      # ------------------------------------------
       - name: Pack other projects
         run: |
-          dotnet pack TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
-          dotnet pack TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
-          dotnet pack TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
+          dotnet pack TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet pack TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet pack TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
 
-      # ------------------------------------------
-      # Print Package sizes
-      # ------------------------------------------
       - name: Show .nupkg file sizes
         run: |
           echo "📦 Package sizes:"
@@ -143,10 +114,7 @@ jobs:
             size=$(du -h "$pkg" | cut -f1)
             echo " - $(basename "$pkg"): $size"
           done
-          
-      # ------------------------------------------
-      # Push all packages to NuGet (if not already published)
-      # ------------------------------------------
+
       - name: Push to NuGet.org
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
@@ -155,7 +123,8 @@ jobs:
             PACKAGE_NAME=$1
             PACKAGE_FILE=$2
             VERSION=$(basename "$PACKAGE_FILE" | sed -E "s/^$PACKAGE_NAME\.([0-9A-Za-z\.-]+)\.nupkg$/\1/")
-            EXISTS=$(curl -s "https://api.nuget.org/v3-flatcontainer/${PACKAGE_NAME,,}/$VERSION/${PACKAGE_NAME,,}.$VERSION.nupkg" -o /dev/null -w "%{http_code}" -s)
+            EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
+              "https://api.nuget.org/v3-flatcontainer/${PACKAGE_NAME,,}/$VERSION/${PACKAGE_NAME,,}.$VERSION.nupkg")
 
             if [ "$EXISTS" == "200" ]; then
               echo "$PACKAGE_NAME $VERSION already exists. Skipping push."
