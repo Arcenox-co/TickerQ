@@ -81,6 +81,17 @@ jobs:
           dotnet pack TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
       # ------------------------------------------
+      # Print Package sizes
+      # ------------------------------------------
+      - name: Show .nupkg file sizes
+        run: |
+          echo "📦 Package sizes:"
+          for pkg in ./nupkgs/*.nupkg; do
+            size=$(du -h "$pkg" | cut -f1)
+            echo " - $(basename "$pkg"): $size"
+          done
+          
+      # ------------------------------------------
       # Push all packages to NuGet (if not already published)
       # ------------------------------------------
       - name: Push to NuGet.org
