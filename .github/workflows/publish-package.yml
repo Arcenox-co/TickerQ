@@ -27,12 +27,6 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       # ------------------------------------------
-      # Remove global NuGet source that breaks builds
-      # ------------------------------------------
-      - name: Remove invalid global 'Local' NuGet source if it exists
-        run: dotnet nuget remove source Local || true
-
-      # ------------------------------------------
       # Build and Pack TickerQ.Utilities
       # ------------------------------------------
       - name: Build TickerQ.Utilities
@@ -45,7 +39,7 @@ jobs:
       # Add local nupkgs source for dependencies
       # ------------------------------------------
       - name: Add local nupkgs source
-        run: dotnet nuget add source ./nupkgs --name LocalNupkgs
+        run: dotnet nuget add source "$(pwd)/nupkgs" --name LocalNupkgs
 
       # ------------------------------------------
       # Build TickerQ.SourceGenerator
