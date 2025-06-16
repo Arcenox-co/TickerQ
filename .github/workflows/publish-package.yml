@@ -32,6 +32,46 @@ jobs:
           VERSION=$(cat VERSION)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      # Check if all packages with this version exist on NuGet
+      - name: Check if all NuGet packages already exist
+        id: check-all-nugets
+        run: |
+          VERSION="${{ steps.get-version.outputs.version }}"
+          PACKAGE_IDS=(
+            "tickerq"
+            "tickerq.dashboard"
+            "tickerq.utilities"
+            "tickerq.entityframeworkcore"
+          )
+      
+          echo "🔍 Checking if version $VERSION exists for all packages..."
+          MISSING=0
+          for ID in "${PACKAGE_IDS[@]}"; do
+            LOWER_ID=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
+            URL="https://api.nuget.org/v3-flatcontainer/$LOWER_ID/$VERSION/$LOWER_ID.$VERSION.nupkg"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
+      
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ $ID $VERSION exists on NuGet"
+            else
+              echo "❌ $ID $VERSION does NOT exist on NuGet"
+              MISSING=1
+            fi
+          done
+      
+          if [ "$MISSING" = "0" ]; then
+            echo "all_exist=true" >> $GITHUB_OUTPUT
+          else
+            echo "all_exist=false" >> $GITHUB_OUTPUT
+          fi
+      
+      # Cancel build early if all packages already exist
+      - name: Cancel job because all packages exist
+        if: steps.check-all-nugets.outputs.all_exist == 'true'
+        run: |
+          echo "🚫 All packages already exist on NuGet. Skipping full CI job."
+          exit 0
+
       # ------------------------------------------
       # Setup Node.js 20
       # ------------------------------------------
