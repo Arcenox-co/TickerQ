@@ -120,3 +120,17 @@ jobs:
         with:
           name: nupkgs
           path: ./nupkgs
+
+      - name: Trigger Publish Workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "publish.yml",
+              ref: "main",
+              inputs: {
+                version: "${{ needs.check-nuget.outputs.version }}"
+              }
+            });
