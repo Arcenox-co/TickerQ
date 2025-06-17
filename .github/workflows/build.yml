@@ -128,30 +128,42 @@ jobs:
       runs-on: ubuntu-latest
 
       steps:
-      - name: Trigger Publish Workflow
-        uses: actions/github-script@v7
-        env:
-          GH_PAT: ${{ secrets.PAT_TOKEN }}
-        with:
-          script: |
-            const version = '${{ needs.check-nuget.outputs.version }}';
-            const result = await fetch('https://api.github.com/repos/${{ github.repository }}/actions/workflows/publish.yml/dispatches', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${process.env.GH_PAT}`,
-                'Accept': 'application/vnd.github.v3+json'
-              },
-              body: JSON.stringify({
-                ref: 'main',
-                inputs: {
-                  version: version
-                }
-              })
-            });
-      
-            if (!result.ok) {
-              const body = await result.text();
-              core.setFailed(`Failed to trigger publish: ${result.status} ${result.statusText}\n${body}`);
-            } else {
-              console.log(`Successfully triggered publish.yml with version ${version}`);
-            }
+        - name: Get artifact ID for nupkgs
+          id: get_artifact
+          run: |
+            artifacts=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)
+            id=$(echo "$artifacts" | jq '.artifacts[] | select(.name=="nupkgs") | .id')
+            echo "ARTIFACT_ID=$id" >> $GITHUB_ENV
+          env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+        - name: Trigger publish.yml with artifact ID
+          uses: actions/github-script@v7
+          env:
+            GH_PAT: ${{ secrets.PAT_TOKEN }}
+          with:
+            script: |
+              const artifactId = process.env.ARTIFACT_ID;
+              const version = '${{ needs.check-nuget.outputs.version }}';
+        
+              const res = await fetch('https://api.github.com/repos/${{ github.repository }}/actions/workflows/publish.yml/dispatches', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${process.env.GH_PAT}`,
+                  'Accept': 'application/vnd.github.v3+json'
+                },
+                body: JSON.stringify({
+                  ref: 'main',
+                  inputs: {
+                    version: version,
+                    artifact_id: artifactId
+                  }
+                })
+              });
+        
+              if (!res.ok) {
+                const body = await res.text();
+                core.setFailed(`❌ Failed to dispatch: ${res.status} ${res.statusText}\n${body}`);
+              } else {
+                console.log(`✅ Successfully triggered publish with artifact ID: ${artifactId}`);
+              }
