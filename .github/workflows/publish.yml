@@ -1,7 +1,4 @@
-name: Publish NuGet Packages
-
-env:
-  DOTNET_NOLOGO: true
+name: Publish NuGet
 
 on:
   workflow_dispatch:
@@ -9,47 +6,27 @@ on:
       version:
         required: true
         type: string
+      artifact_id:
+        required: true
+        type: string
 
 jobs:
-  publish:
+  download:
     runs-on: ubuntu-latest
-    environment: production-publish
 
     steps:
-      - name: Download nupkgs
-        uses: actions/download-artifact@v4
-        with:
-          name: nupkgs
-          path: ./nupkgs
-
-      - name: Push to NuGet.org
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+      - name: Download artifact ZIP by ID
         run: |
-          VERSION=${{ inputs.version }}
-          check_and_push() {
-            PACKAGE_NAME=$1
-            PACKAGE_FILE=$2
-            EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
-              "https://api.nuget.org/v3-flatcontainer/${PACKAGE_NAME,,}/$VERSION/${PACKAGE_NAME,,}.$VERSION.nupkg")
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${{ github.event.inputs.artifact_id }}/zip \
+            -o artifact.zip
 
-            if [ "$EXISTS" == "200" ]; then
-              echo "$PACKAGE_NAME $VERSION already exists. Skipping."
-            else
-              echo "Pushing $PACKAGE_NAME $VERSION..."
-              dotnet nuget push "$PACKAGE_FILE" --source https://api.nuget.org/v3/index.json --api-key $NUGET_API_KEY
-            fi
-          }
+      - name: Extract artifact
+        run: unzip artifact.zip -d ./nupkgs
 
-          for file in ./nupkgs/*.nupkg; do
-            fname=$(basename "$file")
-            if [[ "$fname" == TickerQ.Utilities.*.nupkg ]]; then
-              check_and_push "TickerQ.Utilities" "$file"
-            elif [[ "$fname" == TickerQ.EntityFrameworkCore.*.nupkg ]]; then
-              check_and_push "TickerQ.EntityFrameworkCore" "$file"
-            elif [[ "$fname" == TickerQ.Dashboard.*.nupkg ]]; then
-              check_and_push "TickerQ.Dashboard" "$file"
-            elif [[ "$fname" == TickerQ.*.nupkg ]]; then
-              check_and_push "TickerQ" "$file"
-            fi
+      - name: Publish to NuGet
+        run: |
+          for f in ./nupkgs/*.nupkg; do
+            dotnet nuget push "$f" --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }}
           done
