@@ -122,7 +122,9 @@ jobs:
           path: ./nupkgs
 
   trigger-publish:
-      needs: build
+      needs:
+        - check-nuget
+        - build
       runs-on: ubuntu-latest
 
       steps:
