@@ -13,6 +13,8 @@ on:
 jobs:
   download:
     runs-on: ubuntu-latest
+    environment:
+      name: production-publish
 
     steps:
       - name: Download artifact ZIP by ID
