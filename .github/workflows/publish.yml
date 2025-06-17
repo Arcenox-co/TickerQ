@@ -1,47 +1,42 @@
 name: Publish NuGet Packages
 
+env:
+  DOTNET_NOLOGO: true
+
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        required: true
+        type: string
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment:
-      name: production-publish
-      url: https://www.nuget.org/
-    env:
-      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+    environment: production-publish
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: |
-            6.0.x
-            8.0.x
-
-      - name: Download build artifact
+      - name: Download nupkgs
         uses: actions/download-artifact@v4
         with:
           name: nupkgs
           path: ./nupkgs
 
       - name: Push to NuGet.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
+          VERSION=${{ inputs.version }}
           check_and_push() {
             PACKAGE_NAME=$1
             PACKAGE_FILE=$2
-            VERSION=$(basename "$PACKAGE_FILE" | sed -E "s/^$PACKAGE_NAME\.([0-9A-Za-z\.-]+)\.nupkg$/\1/")
             EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
               "https://api.nuget.org/v3-flatcontainer/${PACKAGE_NAME,,}/$VERSION/${PACKAGE_NAME,,}.$VERSION.nupkg")
 
             if [ "$EXISTS" == "200" ]; then
-              echo "$PACKAGE_NAME $VERSION already exists. Skipping push."
+              echo "$PACKAGE_NAME $VERSION already exists. Skipping."
             else
-              echo "🚀 Pushing $PACKAGE_NAME $VERSION..."
+              echo "Pushing $PACKAGE_NAME $VERSION..."
               dotnet nuget push "$PACKAGE_FILE" --source https://api.nuget.org/v3/index.json --api-key $NUGET_API_KEY
             fi
           }
