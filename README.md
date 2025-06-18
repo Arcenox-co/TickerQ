@@ -2,29 +2,24 @@
 
 [![NuGet](https://img.shields.io/nuget/dt/tickerq.svg)](https://www.nuget.org/packages/tickerq) 
 [![NuGet](https://img.shields.io/nuget/vpre/tickerq.svg)](https://www.nuget.org/packages/tickerq)
+[![Build NuGet Packages](https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml)
 [![Documentation](https://img.shields.io/badge/docs%20-official%20web-blue)](https://tickerq.arcenox.com)
 
 **Robust. Adaptive. Precise.**  
 TickerQ is a fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
-## 📚 Full Docs
-
-👉 [https://tickerq.arcenox.com](https://tickerq.arcenox.com)
+### 📚 Full Docs: [https://tickerq.arcenox.com](https://tickerq.arcenox.com)
 
 ---
-Dashboard:
-![TickerQ Dashboard](https://tickerq.arcenox.com/Screenshot_14-4-2025_155111_localhost.jpeg?v=2)
-
 
 ## ✨ Features
 
 - **Time and Cron Scheduling**
 - **Stateless Core** with source generator
-- **EF Core Persistence** (optional)
+- **EF Core Persistence**
 - **Live Dashboard UI**
 - **Retry Policies & Throttling**
 - **Dependency Injection support**
 - **Multi-node distributed coordination**
-
 ---
 
 ## 📦 Installation
@@ -169,6 +164,8 @@ public class ReportJobs
 
 ## Dashboard UI
 
+### Check out Dashboard Overview:  [TickerQ-Dashboard-Examples](https://tickerq.arcenox.com/intro/dashboard-overview.html)
+
 Enabled by adding:
 
 ```csharp
@@ -193,27 +190,6 @@ Auth config (optional):
   "Password": "admin"
 }
 ```
-
----
-
-## TickerQ vs Hangfire vs Quartz.NET
-| Feature                              | TickerQ                           | Hangfire                          | Quartz.NET                         |
-|--------------------------------------|-----------------------------------|-----------------------------------|-------------------------------------|
-| Cron scheduling                      | ✅ Yes                            | ✅ Yes                            | ✅ Yes                              |
-| Time-based one-time jobs             | ✅ Yes (TimeTicker)               | ⚠️ Simulated via delay            | ✅ Yes                              |
-| Persistent job store                 | ✅ With EF Core                   | ✅ Yes                            | ✅ Yes                              |
-| In-memory mode                       | ✅ Built-in                       | ✅ Built-in                       | ✅ Built-in                         |
-| Retry/cooldown logic                 | ✅ Advanced & configurable        | ⚠️ Basic retries only            | ⚠️ Manual                           |
-| Dashboard UI                         | ✅ First-party + real-time        | ✅ Basic                          | ⚠️ Third-party required             |
-| DI support                           | ✅ Native and seamless            | 🟠 Partial – type-based only      | ⚠️ Requires extra config            |
-| Reflection-free job discovery        | ✅ Roslyn-based, compile-time     | ❌ Uses reflection                | ❌ Uses reflection                  |
-| Multi-node/distributed support       | ✅ Native with EF Core            | ⚠️ Depends on storage             | ✅ Yes                              |
-| Custom tickers (plugin model)        | ✅ Fully extensible               | ❌ Not extensible                 | ⚠️ Limited                          |
-| Parallelism & concurrency control    | ✅ Built-in scheduler threadpool  | ✅ Queues/ServerCount             | ✅ ThreadPools                      |
-| Performance under high load          | ✅ Optimized, no overhead         | ⚠️ Depends on storage/db         | ⚠️ Thread blocking possible         |
-| Async/await support                  | ✅ Yes                            | ⚠️ Limited – wrapped sync methods| ✅ Yes                              |
-| CancellationToken support            | ✅ Propagated & honored           | ❌ Not natively supported         | 🟠 Optional – must check manually   |
----
 
 ## 🔐 Retry & Locking
 
@@ -258,9 +234,6 @@ PRs, ideas, and issues are welcome!
 3. Submit a Pull Request
 
 ---
-
-## 💖 Sponsors
-Want to support this project? [Become a sponsor](https://github.com/sponsors/Arcenox-co/)
 
 ## 📄 License
 
