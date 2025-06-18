@@ -7,10 +7,12 @@
 
 **Robust. Adaptive. Precise.**  
 TickerQ is a fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
+
 ### 📚 Full Docs: [https://tickerq.arcenox.com](https://tickerq.arcenox.com)
 
----
+As of v2.2.0, all TickerQ packages are versioned together — even if a package has no changes — to keep the ecosystem in sync. Always update all packages to the same version.
 
+---
 ## ✨ Features
 
 - **Time and Cron Scheduling**
