@@ -1,25 +1,15 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+
     <PropertyGroup>
         <TargetFrameworks>netstandard2.1;netcoreapp3.0;net5.0;net6.0;net7.0;net8.0;net9.0</TargetFrameworks>
         <PackageId>TickerQ.Dashboard</PackageId>
-        <Authors>Albert Kunushevci</Authors>
-        <Company>Arcenox LLC</Company>
         <Description>Dashboard UI for visualizing and monitoring TickerQ scheduled jobs, status, and system metrics.</Description>
-        <PackageTags>ticker;dashboard;monitoring;cron;queue;scheduler;status;job;ui</PackageTags>
-        <RepositoryUrl>https://github.com/arcenox/TickerQ</RepositoryUrl>
-        <PackageProjectUrl>https://tickerq.arcenox.com/</PackageProjectUrl>
-        <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
-        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <Copyright>
-            Copyright 2025 Arcenox LLC
-        </Copyright>
+        <PackageTags>$(PackageTags);dashboard;monitoring;scheduler;status;job;ui</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
-        <PackageIcon>icon.jpg</PackageIcon>
     </PropertyGroup>
 
     <ItemGroup>
         <None Include="README.md" Pack="true" PackagePath="" />
-        <None Include="..\..\icon.jpg" Pack="true" PackagePath="\" />
     </ItemGroup>
 
     <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1' OR '$(TargetFramework)' == 'netcoreapp2.2' OR '$(TargetFramework)' == 'netcoreapp3.0'">
@@ -63,4 +53,5 @@
         <None Remove="wwwroot\*" />
         <None Remove="wwwroot\public\*" />
     </ItemGroup>
+
 </Project>

@@ -3,28 +3,19 @@
 	<PropertyGroup>
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<PackageId>TickerQ.Utilities</PackageId>
-		<Authors>Albert Kunushevci</Authors>
-		<Company>Arcenox</Company>
 		<Description>Simple utilities for queuing and executing cron/time-based jobs in the background.</Description>
-		<PackageTags>ticker;queue;time;scheduler;fire-and-forget</PackageTags>
-		<RepositoryUrl>https://github.com/arcenox/TickerQ</RepositoryUrl>
-		<PackageProjectUrl>https://tickerq.arcenox.com/</PackageProjectUrl>
-		<PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
-		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-		<Copyright>
-			Copyright 2025 Arcenox LLC
-		</Copyright>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="" />
 	</ItemGroup>
-	
+
 	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.2.0" />
 		<PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="[2.1.0,)" />
 		<PackageReference Include="NCrontab.Signed" Version="[3.3.2,)" />
 		<PackageReference Include="System.Text.Json" Version="4.6.0" />
 	</ItemGroup>
+
 </Project>

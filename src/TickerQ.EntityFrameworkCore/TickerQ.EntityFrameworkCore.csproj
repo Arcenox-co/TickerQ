@@ -1,25 +1,15 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+
 	<PropertyGroup>
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<PackageId>TickerQ.EntityFrameworkCore</PackageId>
-		<Authors>Albert Kunushevci</Authors>
-		<Company>Arcenox LLC</Company>
 		<Description>Entity Framework Core integration for scheduling and persisting cron/time-based jobs using TickerQ.</Description>
-		<PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget;efcore;entityframework</PackageTags>
-		<RepositoryUrl>https://github.com/arcenox/TickerQ</RepositoryUrl>
-		<PackageProjectUrl>https://tickerq.arcenox.com/</PackageProjectUrl>
-		<PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
-		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-		<Copyright>
-			Copyright 2025 Arcenox LLC
-		</Copyright>
+		<PackageTags>$(PackageTags);efcore;entityframework</PackageTags>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
-		<PackageIcon>icon.jpg</PackageIcon>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="" />
-		<None Include="..\..\icon.jpg" Pack="true" PackagePath="\" />
 	</ItemGroup>
 	
    <ItemGroup>
