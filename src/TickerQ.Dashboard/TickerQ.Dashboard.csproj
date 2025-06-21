@@ -19,7 +19,7 @@
 
     <ItemGroup>
         <None Include="README.md" Pack="true" PackagePath="" />
-        <None Include="..\icon.jpg" Pack="true" PackagePath="\" />
+        <None Include="..\..\icon.jpg" Pack="true" PackagePath="\" />
     </ItemGroup>
 
     <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1' OR '$(TargetFramework)' == 'netcoreapp2.2' OR '$(TargetFramework)' == 'netcoreapp3.0'">
