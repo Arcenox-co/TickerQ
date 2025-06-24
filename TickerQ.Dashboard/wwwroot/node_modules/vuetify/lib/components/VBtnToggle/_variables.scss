@@ -1,0 +1,6 @@
+@use 'sass:map';
+@use '../../styles/settings';
+@use '../../styles/tools';
+
+// VBtnToggle
+$btn-toggle-selected-opacity: map.get(settings.$states, 'activated') !default;

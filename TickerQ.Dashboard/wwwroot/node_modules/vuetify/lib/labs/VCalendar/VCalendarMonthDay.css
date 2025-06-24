@@ -1,0 +1,61 @@
+.v-calendar-month__day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 150px;
+  border-right: thin solid #e0e0e0;
+  border-bottom: thin solid #e0e0e0;
+  flex: 1 1 auto;
+  border-inline-end: thin solid #e0e0e0;
+}
+
+.v-calendar-weekly__day {
+  flex: 1;
+  width: 0;
+  overflow: hidden;
+  user-select: none;
+  position: relative;
+  padding: 0px 0px 0px 0px;
+  min-width: 0;
+  min-height: 150px;
+  border-right: thin solid #e0e0e0;
+  border-bottom: thin solid #e0e0e0;
+  flex: 1 1 auto;
+  border-inline-end: thin solid #e0e0e0;
+  text-align: center;
+}
+.v-calendar-weekly__day.v-present .v-calendar-weekly__day-month {
+  color: currentColor;
+}
+
+.v-calendar-weekly__day-label {
+  text-decoration: none;
+  user-select: none;
+  cursor: pointer;
+  box-shadow: none;
+  text-align: center;
+}
+.v-calendar-weekly__day-label .v-btn {
+  font-size: 12px;
+  text-transform: none !important;
+}
+.v-calendar-weekly__day-label .v-btn.v-calendar-weekly__day-label__today {
+  background: rgba(var(--v-theme-surface-variant), var(--v-medium-emphasis-opacity));
+  color: rgb(var(--v-theme-on-surface-variant));
+}
+
+.v-calendar-weekly__day-month {
+  position: absolute;
+  text-decoration: none;
+  user-select: none;
+  box-shadow: none;
+  top: 0;
+  left: 36px;
+  height: 32px;
+  line-height: 32px;
+}
+
+.v-calendar-weekly__day-alldayevents-container {
+  min-height: 24px;
+}

@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VCarousel","VCarouselItem"],"sources":["../../../src/components/VCarousel/index.ts"],"sourcesContent":["export { VCarousel } from './VCarousel'\nexport { VCarouselItem } from './VCarouselItem'\n"],"mappings":"SAASA,SAAS;AAAA,SACTC,aAAa","ignoreList":[]}

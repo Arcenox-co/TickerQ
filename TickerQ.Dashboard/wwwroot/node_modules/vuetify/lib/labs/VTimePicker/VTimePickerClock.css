@@ -1,0 +1,130 @@
+.v-time-picker-clock {
+  background: rgb(var(--v-theme-background));
+  color: rgb(var(--v-theme-on-background));
+}
+.v-time-picker-clock:after {
+  color: rgb(var(--v-theme-primary));
+}
+.v-time-picker-clock .v-time-picker-clock__item--active {
+  background-color: rgb(var(--v-theme-surface-variant));
+  color: rgb(var(--v-theme-on-surface-variant));
+}
+
+.v-time-picker-clock {
+  margin: 0 auto;
+  background: rgb(var(--v-theme-surface-light));
+  border-radius: 50%;
+  position: relative;
+  transition: none;
+  user-select: none;
+  height: 256px;
+  width: 256px;
+  flex: 1 0 auto;
+}
+.v-time-picker-clock__container {
+  display: flex;
+  flex-direction: column;
+  flex-basis: 290px;
+  justify-content: center;
+  padding: 10px;
+}
+.v-time-picker-clock__hand {
+  background-color: currentColor;
+  height: calc(50% - 4px);
+  width: 2px;
+  bottom: 50%;
+  left: calc(50% - 1px);
+  transform-origin: center bottom;
+  position: absolute;
+  will-change: transform;
+  z-index: 1;
+}
+.v-time-picker-clock__hand:before {
+  background: transparent;
+  border-width: 2px;
+  border-style: solid;
+  border-color: currentColor;
+  border-radius: 100%;
+  width: 10px;
+  height: 10px;
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+.v-time-picker-clock__hand:after {
+  content: "";
+  position: absolute;
+  height: 8px;
+  width: 8px;
+  top: 100%;
+  left: 50%;
+  border-radius: 100%;
+  background-color: currentColor;
+  transform: translate(-50%, -50%);
+}
+.v-time-picker-clock__hand--inner:after {
+  height: 14px;
+}
+.v-time-picker-clock--readonly {
+  pointer-events: none;
+}
+.v-time-picker-clock .v-time-picker-clock__item--disabled {
+  opacity: var(--v-disabled-opacity);
+}
+
+.v-picker--full-width .v-time-picker-clock__container {
+  max-width: 290px;
+}
+
+.v-time-picker-clock__inner {
+  position: absolute;
+  bottom: 27px;
+  left: 27px;
+  right: 27px;
+  top: 27px;
+}
+
+.v-time-picker-clock__item {
+  align-items: center;
+  border-radius: 100%;
+  cursor: default;
+  display: flex;
+  font-size: 16px;
+  justify-content: center;
+  height: 40px;
+  position: absolute;
+  text-align: center;
+  width: 40px;
+  user-select: none;
+  transform: translate(-50%, -50%);
+}
+.v-time-picker-clock__item > span {
+  z-index: 1;
+}
+.v-time-picker-clock__item:before, .v-time-picker-clock__item:after {
+  content: "";
+  border-radius: 100%;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  height: 14px;
+  width: 14px;
+  transform: translate(-50%, -50%);
+}
+.v-time-picker-clock__item:after, .v-time-picker-clock__item:before {
+  height: 40px;
+  width: 40px;
+}
+.v-time-picker-clock__item--active {
+  cursor: default;
+  z-index: 2;
+}
+.v-time-picker-clock__item--disabled {
+  pointer-events: none;
+}
+
+.v-picker--landscape .v-time-picker-clock__container {
+  flex-direction: row;
+}

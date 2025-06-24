@@ -1,0 +1,1 @@
+{"root":["./src/main.ts","./src/http/base/axiosconfig.ts","./src/http/base/basehttpservice.ts","./src/http/services/crontickerservice.ts","./src/router/index.ts","./src/stores/counter.ts"],"errors":true,"version":"5.6.3"}

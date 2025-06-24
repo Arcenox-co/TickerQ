@@ -1,0 +1,69 @@
+.v-stepper-vertical-item {
+  position: relative;
+  transition-duration: 0.2s;
+  transition-property: opacity;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+.v-stepper-vertical-item__title {
+  font-size: 1rem;
+}
+.v-stepper-vertical-item__subtitle {
+  font-size: 0.75rem;
+}
+.v-stepper-vertical-item .v-expansion-panel-text {
+  padding-inline-start: 32px;
+}
+.v-stepper-vertical-item:not(:last-child):before {
+  content: "";
+  position: absolute;
+  width: 2px;
+  height: calc(100% - 30px);
+  background: rgba(var(--v-border-color), var(--v-border-opacity));
+  left: 35px;
+  top: 44px;
+  z-index: 1;
+  transition-duration: 300ms;
+  transition-property: height;
+}
+.v-stepper-vertical-item:after {
+  display: none;
+}
+.v-stepper-vertical-item.v-expansion-panel--disabled .v-expansion-panel-title, .v-stepper-vertical-item:not(.v-stepper-vertical-item--editable) .v-expansion-panel-title {
+  pointer-events: none;
+}
+.v-stepper-vertical-item.v-expansion-panel--disabled .v-expansion-panel-title .v-expansion-panel-title__overlay, .v-stepper-vertical-item:not(.v-stepper-vertical-item--editable) .v-expansion-panel-title .v-expansion-panel-title__overlay {
+  opacity: 0;
+}
+
+.v-stepper-vertical-item__avatar.v-avatar {
+  background: rgba(var(--v-theme-surface-variant), var(--v-medium-emphasis-opacity));
+  color: rgb(var(--v-theme-on-surface-variant));
+  transition-property: background;
+}
+.v-stepper-vertical-item__avatar.v-avatar .v-icon {
+  font-size: 0.875rem;
+}
+.v-expansion-panel--active .v-stepper-vertical-item__avatar.v-avatar {
+  background: rgb(var(--v-theme-surface-variant));
+}
+.v-stepper-vertical-item--error .v-stepper-vertical-item__avatar.v-avatar {
+  background: rgb(var(--v-theme-error));
+  color: rgb(var(--v-theme-on-error));
+}
+
+.v-stepper-vertical-item--error .v-stepper-vertical-item__title {
+  color: rgb(var(--v-theme-error));
+}
+
+.v-stepper-vertical-item--error .v-stepper-vertical-item__subtitle {
+  color: rgb(var(--v-theme-error));
+}
+
+.v-stepper-vertical-actions.v-stepper-actions .v-btn {
+  margin-inline-end: 8px;
+}
+.v-stepper .v-stepper-vertical-actions.v-stepper-actions {
+  justify-content: flex-end;
+  padding: 24px 0 0;
+  flex-direction: row-reverse;
+}

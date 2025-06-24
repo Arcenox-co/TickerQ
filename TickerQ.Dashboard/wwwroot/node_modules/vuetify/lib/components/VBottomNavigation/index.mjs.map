@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VBottomNavigation"],"sources":["../../../src/components/VBottomNavigation/index.ts"],"sourcesContent":["export { VBottomNavigation } from './VBottomNavigation'\n"],"mappings":"SAASA,iBAAiB","ignoreList":[]}

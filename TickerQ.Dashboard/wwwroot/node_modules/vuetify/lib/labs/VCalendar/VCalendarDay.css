@@ -1,0 +1,33 @@
+.v-calendar-day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.v-calendar-weekly .v-calendar__container {
+  display: grid;
+}
+.v-calendar-weekly .v-calendar__container.days__7 {
+  grid-template-columns: repeat(7, 1fr);
+}
+.v-calendar-weekly .v-calendar__container.days__6 {
+  grid-template-columns: repeat(6, 1fr);
+}
+.v-calendar-weekly .v-calendar__container.days__5 {
+  grid-template-columns: repeat(5, 1fr);
+}
+.v-calendar-weekly .v-calendar__container.days__4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+.v-calendar-weekly .v-calendar__container.days__3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+.v-calendar-weekly .v-calendar__container.days__2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+.v-calendar-weekly .v-calendar__container.days__1 {
+  grid-template-columns: repeat(1, 1fr);
+}
+.v-calendar-weekly .v-calendar__container.days__0 {
+  grid-template-columns: repeat(1, 1fr);
+}

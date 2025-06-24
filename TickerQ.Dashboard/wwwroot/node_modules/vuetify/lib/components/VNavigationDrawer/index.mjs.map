@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VNavigationDrawer"],"sources":["../../../src/components/VNavigationDrawer/index.ts"],"sourcesContent":["export { VNavigationDrawer } from './VNavigationDrawer'\n"],"mappings":"SAASA,iBAAiB","ignoreList":[]}

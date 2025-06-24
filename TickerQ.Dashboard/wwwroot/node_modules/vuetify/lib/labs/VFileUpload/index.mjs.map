@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VFileUpload","VFileUploadItem"],"sources":["../../../src/labs/VFileUpload/index.ts"],"sourcesContent":["export { VFileUpload } from './VFileUpload'\nexport { VFileUploadItem } from './VFileUploadItem'\n"],"mappings":"SAASA,WAAW;AAAA,SACXC,eAAe","ignoreList":[]}

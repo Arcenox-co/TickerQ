@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VItemGroup","VItem"],"sources":["../../../src/components/VItemGroup/index.ts"],"sourcesContent":["export { VItemGroup } from './VItemGroup'\nexport { VItem } from './VItem'\n"],"mappings":"SAASA,UAAU;AAAA,SACVC,KAAK","ignoreList":[]}

@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VMenu"],"sources":["../../../src/components/VMenu/index.ts"],"sourcesContent":["export { VMenu } from './VMenu'\n"],"mappings":"SAASA,KAAK","ignoreList":[]}

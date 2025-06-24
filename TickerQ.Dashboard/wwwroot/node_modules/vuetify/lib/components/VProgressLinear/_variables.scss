@@ -1,0 +1,26 @@
+@use 'sass:map';
+@use '../../styles/settings';
+
+// VProgressLinear
+$progress-linear-background: currentColor !default;
+$progress-linear-background-background: $progress-linear-background !default;
+$progress-linear-background-opacity: var(--v-border-opacity) !default;
+$progress-linear-border-radius: map.get(settings.$rounded, 'pill') !default;
+$progress-linear-stream-opacity: 0.3 !default;
+$progress-linear-stripe-background-size: 40px 40px !default;
+$progress-linear-stream-border-width: 4px !default;
+$progress-linear-stripe-gradient: linear-gradient(
+  135deg,
+  hsla(0, 0%, 100%, .25) 25%,
+  transparent 0,
+  transparent 50%,
+  hsla(0, 0%, 100%, .25) 0,
+  hsla(0, 0%, 100%, .25) 75%,
+  transparent 0,
+  transparent
+) !default;
+$progress-linear-indeterminate-animation-duration: 2.2s !default;
+$progress-linear-stream-animation: stream .25s infinite linear !default;
+$progress-linear-striped-animation: progress-linear-stripes 1s infinite linear !default;
+$progress-linear-striped-size: var(--v-progress-linear-height) !default;
+$progress-linear-transition: .2s settings.$standard-easing !default;

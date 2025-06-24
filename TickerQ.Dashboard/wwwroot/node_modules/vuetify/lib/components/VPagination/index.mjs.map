@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VPagination"],"sources":["../../../src/components/VPagination/index.ts"],"sourcesContent":["export { VPagination } from './VPagination'\n"],"mappings":"SAASA,WAAW","ignoreList":[]}

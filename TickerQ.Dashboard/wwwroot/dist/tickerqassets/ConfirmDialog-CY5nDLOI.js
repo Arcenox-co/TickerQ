@@ -1,0 +1,1 @@
+import{_ as o,e as a}from"./_plugin-vue_export-helper-CEavA9-_.js";import{C as m}from"./_plugin-vue_export-helper-CEavA9-_.js";import"./index-Byj9w34-.js";const t=o(a,[["__scopeId","data-v-39533c1b"]]);export{m as ConfirmDialogProps,t as default};

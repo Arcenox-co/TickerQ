@@ -1,0 +1,17 @@
+.v-treeview-item.v-treeview-item--filtered {
+  display: none;
+}
+
+.v-treeview {
+  --indent-padding: 0px;
+}
+
+.v-treeview-group.v-list-group {
+  --list-indent-size: 16px;
+}
+.v-list--slim .v-treeview-group.v-list-group {
+  --prepend-width: 16px;
+}
+.v-treeview-group.v-list-group .v-list-group__items .v-list-item {
+  padding-inline-start: calc(12px + var(--indent-padding)) !important;
+}

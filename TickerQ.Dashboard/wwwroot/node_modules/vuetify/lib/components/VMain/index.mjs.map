@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VMain"],"sources":["../../../src/components/VMain/index.ts"],"sourcesContent":["export { VMain } from './VMain'\n"],"mappings":"SAASA,KAAK","ignoreList":[]}

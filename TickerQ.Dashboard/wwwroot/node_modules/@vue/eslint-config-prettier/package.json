@@ -1,0 +1,54 @@
+{
+  "name": "@vue/eslint-config-prettier",
+  "version": "10.1.0",
+  "description": "eslint-config-prettier for create-vue",
+  "type": "commonjs",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "skip-formatting.js",
+    "skip-formatting.d.ts"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./skip-formatting": "./skip-formatting.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vuejs/eslint-config-prettier.git"
+  },
+  "keywords": [
+    "vue",
+    "create-vue",
+    "create-eslint-config",
+    "eslint",
+    "prettier"
+  ],
+  "author": "Evan You",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/vuejs/eslint-config-prettier/issues"
+  },
+  "homepage": "https://github.com/vuejs/eslint-config-prettier#readme",
+  "dependencies": {
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.2.1"
+  },
+  "devDependencies": {
+    "eslint": "^9.11.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3"
+  },
+  "peerDependencies": {
+    "eslint": ">= 8.21.0",
+    "prettier": ">= 3.0.0"
+  },
+  "scripts": {
+    "lint": "eslint . --fix",
+    "format": "prettier *.{js,md} --write"
+  }
+}

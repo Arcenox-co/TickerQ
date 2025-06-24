@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VTimeline","VTimelineItem"],"sources":["../../../src/components/VTimeline/index.ts"],"sourcesContent":["export { VTimeline } from './VTimeline'\nexport { VTimelineItem } from './VTimelineItem'\n"],"mappings":"SAASA,SAAS;AAAA,SACTC,aAAa","ignoreList":[]}

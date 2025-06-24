@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VResponsive"],"sources":["../../../src/components/VResponsive/index.ts"],"sourcesContent":["export { VResponsive } from './VResponsive'\n"],"mappings":"SAASA,WAAW","ignoreList":[]}

@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VInfiniteScroll"],"sources":["../../../src/components/VInfiniteScroll/index.ts"],"sourcesContent":["export { VInfiniteScroll } from './VInfiniteScroll'\n"],"mappings":"SAASA,eAAe","ignoreList":[]}

@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VSnackbarQueue"],"sources":["../../../src/labs/VSnackbarQueue/index.ts"],"sourcesContent":["export { VSnackbarQueue } from './VSnackbarQueue'\n"],"mappings":"SAASA,cAAc","ignoreList":[]}

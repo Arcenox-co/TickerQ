@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VApp"],"sources":["../../../src/components/VApp/index.ts"],"sourcesContent":["export { VApp } from './VApp'\n"],"mappings":"SAASA,IAAI","ignoreList":[]}

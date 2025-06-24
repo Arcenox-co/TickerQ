@@ -1,0 +1,1 @@
+{"version":3,"file":"index.mjs","names":["VChipGroup"],"sources":["../../../src/components/VChipGroup/index.ts"],"sourcesContent":["export { VChipGroup } from './VChipGroup'\n"],"mappings":"SAASA,UAAU","ignoreList":[]}

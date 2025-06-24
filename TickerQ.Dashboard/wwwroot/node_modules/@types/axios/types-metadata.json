@@ -1,0 +1,29 @@
+{
+    "name": "axios",
+    "libraryName": "axios",
+    "sourceRepoURL": "https://www.github.com/DefinitelyTyped/DefinitelyTyped",
+    "data": {
+        "authors": "Marcel Buesing <https://github.com/marcelbuesing>",
+        "dependencies": {},
+        "pathMappings": {},
+        "libraryMajorVersion": 0,
+        "libraryMinorVersion": 9,
+        "typeScriptVersion": "2.0",
+        "libraryName": "axios",
+        "typingsPackageName": "axios",
+        "projectName": "https://github.com/mzabriskie/axios",
+        "sourceRepoURL": "https://www.github.com/DefinitelyTyped/DefinitelyTyped",
+        "globals": [
+            "axios"
+        ],
+        "declaredModules": [
+            "axios"
+        ],
+        "files": [
+            "index.d.ts"
+        ],
+        "hasPackageJson": false,
+        "contentHash": "c22665b346b5a8f7bf90f9e0f520a1500e1cc5187741cba0fb97e5d24cecee78"
+    },
+    "isLatest": true
+}
