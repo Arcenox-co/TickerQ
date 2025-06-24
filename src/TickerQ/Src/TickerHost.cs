@@ -24,8 +24,7 @@ namespace TickerQ
             IServiceProvider serviceProvider,
             TickerOptionsBuilder tickerOptionsBuilder,
             ILogger<TickerHost> logger,
-            ITickerClock clock
-        )
+            ITickerClock clock)
             : base(tickerOptionsBuilder, serviceProvider, logger, clock)
         {
             _tickerTaskScheduler = new TickerTaskScheduler(tickerOptionsBuilder.MaxConcurrency);
@@ -43,25 +42,20 @@ namespace TickerQ
                     continue;
 
                 if (tickerItem.Priority == TickerTaskPriority.LongRunning)
-                    _ = Task.Factory
-                        .StartNew(
-                            async () => await ExecuteTaskAsync(context, tickerItem.Delegate, dueDone,
-                                cancellationToken), TaskCreationOptions.LongRunning);
+                    _ = Task.Factory.StartNew(
+                        async () => await ExecuteTaskAsync(context, tickerItem.Delegate, dueDone, cancellationToken),
+                        TaskCreationOptions.LongRunning);
                 else
                 {
                     var taskDetails = Task.Factory.StartNew(
-                        async () => await ExecuteTaskAsync(context, tickerItem.Delegate, dueDone,
-                            cancellationToken)
-                        , cancellationToken, TaskCreationOptions.DenyChildAttach,
-                        _tickerTaskScheduler)
-                        .Unwrap();
+                        async () => await ExecuteTaskAsync(context, tickerItem.Delegate, dueDone, cancellationToken),
+                        cancellationToken, TaskCreationOptions.DenyChildAttach, _tickerTaskScheduler).Unwrap();
 
                     _tickerTaskScheduler.SetQueuedTaskPriority(taskDetails.Id, tickerItem.Priority);
                 }
             }
 
             _tickerTaskScheduler.ExecutePriorityTasks();
-
             _semaphoreSlim.Release();
         }
 
@@ -71,13 +65,6 @@ namespace TickerQ
             CancellationToken cancellationToken = default)
         {
             var stopWatch = new Stopwatch();
-
-            var scope = ServiceProvider.CreateScope();
-            
-            var internalTickerManager = context.TickerId != Guid.Empty 
-                ? scope.ServiceProvider.GetRequiredService<IInternalTickerManager>()
-                : null;
-
             var cancellationTokenSource = cancellationToken != CancellationToken.None
                 ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
                 : new CancellationTokenSource();
@@ -86,109 +73,121 @@ namespace TickerQ
                 TickerCancellationTokenManager.AddTickerCancellationToken(cancellationTokenSource, context.FunctionName,
                     context.TickerId, context.Type, isDue);
 
-            try
+            Exception lastException = null;
+            bool success = false;
+
+            for (int attempt = context.RetryCount; attempt <= context.Retries; attempt++)
             {
-                stopWatch.Start();
+                using var scope = ServiceProvider.CreateScope();
+                var scopedProvider = scope.ServiceProvider;
+                var internalTickerManager = context.TickerId != Guid.Empty
+                    ? scopedProvider.GetRequiredService<IInternalTickerManager>()
+                    : null;
 
-                async Task ExecuteDelegate(IServiceProvider scopeServiceProvider, CancellationToken scopeCancellationToken = default)
+                try
                 {
-                    try
-                    {
-                        await delegateFunction(scopeCancellationToken, scopeServiceProvider,
-                            new TickerFunctionContext(context.TickerId, context.Type, context.RetryCount, isDue,
-                                 () => DeleteTicker(context, internalTickerManager, scopeCancellationToken), null));
-                    }
-                    catch (TaskCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (TerminateExecutionException)
-                    {
-                        throw;
-                    }
-                    catch
-                    {
-                        if (context.TickerId == Guid.Empty)
-                            throw;
-                        
-                        if (context.RetryCount >= context.Retries) throw;
+                    stopWatch.Start();
 
-                        var retryInterval = (context.RetryIntervals != null && context.RetryIntervals.Length > 0)
-                            ? (context.RetryCount < context.RetryIntervals.Length
-                                ? context.RetryIntervals[context.RetryCount]
-                                : context.RetryIntervals[^1])
-                            : 30;
+                    await delegateFunction(cancellationTokenSource.Token, scopedProvider,
+                        new TickerFunctionContext(
+                            context.TickerId,
+                            context.Type,
+                            attempt,
+                            isDue,
+                            () => DeleteTicker(context, internalTickerManager!, cancellationTokenSource.Token),
+                            null));
 
-                        context.RetryCount++;
-
-                        await internalTickerManager.UpdateTickerRetries(context, cancellationToken);
-
-                        await Task.Delay(TimeSpan.FromSeconds(retryInterval), scopeCancellationToken);
-
-                        await ExecuteDelegate(scopeServiceProvider, scopeCancellationToken);
-                    }
+                    success = true;
+                    context.RetryCount = attempt;
+                    break;
                 }
-                
-                await ExecuteDelegate(scope.ServiceProvider, cancellationTokenSource.Token).ConfigureAwait(false);
-                stopWatch.Stop();
-                context.ElapsedTime = stopWatch.ElapsedMilliseconds;
+                catch (TaskCanceledException ex)
+                {
+                    context.Status = TickerStatus.Cancelled;
+                    context.ElapsedTime = stopWatch.ElapsedMilliseconds;
+
+                    var handler = scope.ServiceProvider.GetService<ITickerExceptionHandler>();
+                    if (handler != null)
+                        await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type);
+
+                    if (context.TickerId != Guid.Empty)
+                    {
+                        using var updateScope = ServiceProvider.CreateScope();
+                        var updateManager = updateScope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
+                        await updateManager.SetTickerStatus(context, cancellationToken);
+                    }
+
+                    return;
+                }
+                catch (TerminateExecutionException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    lastException = ex;
+
+                    if (context.TickerId == Guid.Empty || attempt >= context.Retries)
+                        break;
+
+                    context.RetryCount = attempt + 1;
+
+                    using var retryScope = ServiceProvider.CreateScope();
+                    var retryManager = retryScope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
+                    await retryManager.UpdateTickerRetries(context, cancellationToken);
+
+                    int retryInterval = (context.RetryIntervals?.Length > 0)
+                        ? (attempt < context.RetryIntervals.Length
+                            ? context.RetryIntervals[attempt]
+                            : context.RetryIntervals[^1])
+                        : 30;
+
+                    await Task.Delay(TimeSpan.FromSeconds(retryInterval), cancellationTokenSource.Token);
+                }
+            }
+
+            stopWatch.Stop();
+            context.ElapsedTime = stopWatch.ElapsedMilliseconds;
+
+            if (success)
+            {
                 if (context.TickerId != Guid.Empty)
                 {
                     context.Status = isDue ? TickerStatus.DueDone : TickerStatus.Done;
-                    await internalTickerManager!.SetTickerStatus(context, cancellationToken);
+                    using var statusScope = ServiceProvider.CreateScope();
+                    var manager = statusScope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
+                    await manager.SetTickerStatus(context, cancellationToken);
                 }
             }
-            catch (TerminateExecutionException)
+            else if (lastException != null)
             {
-            }
-            catch (TaskCanceledException e)
-            {
-                context.ElapsedTime = stopWatch.ElapsedMilliseconds;
-                context.Status = TickerStatus.Cancelled;
-                if (context.TickerId != Guid.Empty)
-                    await internalTickerManager!.SetTickerStatus(context, cancellationToken);
-
-                var exceptionHandler = scope.ServiceProvider.GetService<ITickerExceptionHandler>();
-
-                if (exceptionHandler != null)
-                    await exceptionHandler.HandleCanceledExceptionAsync(e, context.TickerId, context.Type);
-            }
-            catch (Exception e)
-            {
-                context.ElapsedTime = stopWatch.ElapsedMilliseconds;
-                context.ExceptionDetails = SerializeException(e);
                 context.Status = TickerStatus.Failed;
-                if (context.TickerId != Guid.Empty)
-                    await internalTickerManager!.SetTickerStatus(context, cancellationToken);
+                context.ExceptionDetails = SerializeException(lastException);
 
-                var exceptionHandler = scope.ServiceProvider.GetService<ITickerExceptionHandler>();
+                using var handlerScope = ServiceProvider.CreateScope();
+                var handler = handlerScope.ServiceProvider.GetService<ITickerExceptionHandler>();
+                if (handler != null)
+                    await handler.HandleExceptionAsync(lastException, context.TickerId, context.Type);
+                
+                var manager = handlerScope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
+                await manager.SetTickerStatus(context, cancellationToken);
+            }
 
-                if (exceptionHandler != null)
-                    await exceptionHandler.HandleExceptionAsync(e, context.TickerId, context.Type);
-            }
-            finally
-            {
-                scope.Dispose();
-                stopWatch.Reset();
-                cancellationTokenSource.Dispose();
-                if (context.TickerId != Guid.Empty)
-                    TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
-            }
+            cancellationTokenSource.Dispose();
+            if (context.TickerId != Guid.Empty)
+                TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
         }
-        
+
         private static async Task DeleteTicker(InternalFunctionContext context, IInternalTickerManager internalTickerManager, CancellationToken cancellationToken)
         {
-           await internalTickerManager.DeleteTicker(context.TickerId, context.Type, cancellationToken);
-           
-           throw new TerminateExecutionException();
+            await internalTickerManager.DeleteTicker(context.TickerId, context.Type, cancellationToken);
+            throw new TerminateExecutionException();
         }
-        
+
         private static Exception GetRootException(Exception ex)
         {
             while (ex.InnerException != null)
-            {
                 ex = ex.InnerException;
-            }
             return ex;
         }
 
@@ -197,14 +196,12 @@ namespace TickerQ
             var rootException = GetRootException(ex);
             var stackTrace = new StackTrace(rootException, true);
             var frame = stackTrace.GetFrame(0);
-            
-            var serialized = JsonSerializer.Serialize(new ExceptionDetailClassForSerialization
+
+            return JsonSerializer.Serialize(new ExceptionDetailClassForSerialization
             {
                 Message = ex.Message,
-                StackTrace = frame.ToString(),
+                StackTrace = frame?.ToString() ?? rootException.StackTrace
             });
-            
-            return serialized;
         }
     }
 }
