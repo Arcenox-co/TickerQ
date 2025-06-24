@@ -98,7 +98,10 @@ namespace TickerQ.DependencyInjection
                 notificationHubSender.UpdateHostException(message);
             };
             
-            tickerOptBuilder.ExternalProviderConfigApplicationAction?.Invoke(app);
+            if(tickerOptBuilder.ExternalProviderConfigApplicationAction != null)
+                tickerOptBuilder.ExternalProviderConfigApplicationAction(app);
+            else
+                SeedDefinedCronTickers(app);
 
             if (qStartMode == TickerQStartMode.Manual) return app;
 
@@ -123,6 +126,19 @@ namespace TickerQ.DependencyInjection
                 tickerFunctions[key] = (mappedCronExpression, value.Priority, value.Delegate);
             }
             TickerFunctionProvider.MapCronExpressionsFromIConfigurations(tickerFunctions);
+        }
+
+        private static void SeedDefinedCronTickers(this IApplicationBuilder app)
+        {
+            using var scope = app.ApplicationServices.CreateScope();
+
+            var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
+                
+            var functionsToSeed = TickerFunctionProvider.TickerFunctions
+                .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
+                .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
+                
+            internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
         }
     }
 }
