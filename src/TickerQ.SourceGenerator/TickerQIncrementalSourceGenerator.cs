@@ -349,36 +349,32 @@ namespace TickerQ.SourceGenerator
 
         private static string BuildCtorCall(ClassDeclarationSyntax cd, SemanticModel model)
         {
-            var ctor = cd.Members
+            ConstructorDeclarationSyntax ctor = cd.Members
                 .OfType<ConstructorDeclarationSyntax>()
-                .FirstOrDefault(x => x.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword)));
+                .FirstOrDefault(c => c.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword)));
 
-            if (ctor == null)
-            {
-                return "    private static " + GetFullClassName(cd) + " Create" + cd.Identifier.Text + "(IServiceProvider _) => new " + GetFullClassName(cd) + "();";
-            }
+            var isPrimaryCtor = cd.ParameterList?.Parameters.Count > 0;
+            var parameters = isPrimaryCtor ? cd.ParameterList.Parameters :
+                ctor?.ParameterList.Parameters ?? default;
 
             var sb = new StringBuilder();
-            sb.AppendLine("    private static " + GetFullClassName(cd) + " Create" + cd.Identifier.Text + "(IServiceProvider serviceProvider)");
+            sb.AppendLine($"    private static {GetFullClassName(cd)} Create{cd.Identifier.Text}(IServiceProvider serviceProvider)");
             sb.AppendLine("    {");
-            var args = new List<string>();
-            foreach (var p in ctor.ParameterList.Parameters)
-            {
-                var name = FirstLetterToLower(p.Identifier.Text.AsSpan());
-                var sym = model.GetSymbolInfo(p.Type).Symbol as ITypeSymbol;
-                if (sym == null) continue;
 
-                if (name == "serviceProvider")
+            var args = new List<string>();
+            foreach (var p in parameters)
+            {
+                var nm = FirstLetterToLower(p.Identifier.Text.AsSpan());
+                if (nm != "serviceProvider")
                 {
-                    args.Add(name);
+                    var typeSymbol = ModelExtensions.GetSymbolInfo(model, p.Type).Symbol;
+                    var typeName = typeSymbol?.ToDisplayString() ?? p.Type.ToString(); // fallback
+                    sb.AppendLine($"      var {nm} = serviceProvider.GetService<{typeName}>();");
                 }
-                else
-                {
-                    sb.AppendLine("      var " + name + " = serviceProvider.GetService<" + sym.ToDisplayString() + ">();");
-                    args.Add(name);
-                }
+                args.Add(nm);
             }
-            sb.AppendLine("      return new " + GetFullClassName(cd) + "(" + string.Join(", ", args) + ");");
+
+            sb.AppendLine($"      return new {GetFullClassName(cd)}({string.Join(", ", args)});");
             sb.AppendLine("    }");
             return sb.ToString();
         }
@@ -450,12 +446,17 @@ namespace TickerQ.SourceGenerator
         {
             while (node != null)
             {
-                var nd = node as NamespaceDeclarationSyntax;
-                if (nd != null)
-                    return nd.Name.ToString();
+                switch (node)
+                {
+                    case NamespaceDeclarationSyntax nd:
+                        return nd.Name.ToString();
+                    case FileScopedNamespaceDeclarationSyntax fsnd:
+                        return fsnd.Name.ToString();
+                }
                 node = node.Parent;
             }
-            return "";
+
+            return string.Empty;
         }
 
         private static string FirstLetterToLower(ReadOnlySpan<char> str)
