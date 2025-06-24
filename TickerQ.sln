@@ -3,15 +3,17 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Utilities", "TickerQ.Utilities\TickerQ.Utilities.csproj", "{68DBCCE9-C774-4215-8CC1-7284D0D4DB24}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Utilities", "src\TickerQ.Utilities\TickerQ.Utilities.csproj", "{68DBCCE9-C774-4215-8CC1-7284D0D4DB24}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.EntityFrameworkCore", "TickerQ.EntityFrameworkCore\TickerQ.EntityFrameworkCore.csproj", "{A96850C7-35AD-4F5B-B31C-67333D55C548}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.EntityFrameworkCore", "src\TickerQ.EntityFrameworkCore\TickerQ.EntityFrameworkCore.csproj", "{A96850C7-35AD-4F5B-B31C-67333D55C548}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Dashboard", "TickerQ.Dashboard\TickerQ.Dashboard.csproj", "{67C99E39-EF62-4A83-B613-93AE39FC9DFD}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Dashboard", "src\TickerQ.Dashboard\TickerQ.Dashboard.csproj", "{67C99E39-EF62-4A83-B613-93AE39FC9DFD}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ", "TickerQ\TickerQ.csproj", "{C69BE610-27A6-4720-849D-5A7AEF56BADE}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ", "src\TickerQ\TickerQ.csproj", "{C69BE610-27A6-4720-849D-5A7AEF56BADE}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.SourceGenerator", "TickerQ.SourceGenerator\TickerQ.SourceGenerator.csproj", "{1AE368A3-E3D9-4ECF-8979-5EAF8AFAADA9}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.SourceGenerator", "src\TickerQ.SourceGenerator\TickerQ.SourceGenerator.csproj", "{1AE368A3-E3D9-4ECF-8979-5EAF8AFAADA9}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{BA086F2D-2778-4F58-A9AA-45F560CE3504}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -86,5 +88,12 @@ Global
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{C69BE610-27A6-4720-849D-5A7AEF56BADE} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
+		{67C99E39-EF62-4A83-B613-93AE39FC9DFD} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
+		{A96850C7-35AD-4F5B-B31C-67333D55C548} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
+		{1AE368A3-E3D9-4ECF-8979-5EAF8AFAADA9} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
+		{68DBCCE9-C774-4215-8CC1-7284D0D4DB24} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
 	EndGlobalSection
 EndGlobal
