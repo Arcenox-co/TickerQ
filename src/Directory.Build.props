@@ -1,0 +1,18 @@
+﻿<Project>
+
+    <PropertyGroup>
+        <RepositoryUrl>https://github.com/arcenox/TickerQ</RepositoryUrl>
+        <PackageProjectUrl>https://tickerq.arcenox.com/</PackageProjectUrl>
+        <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+        <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
+        <PackageIcon>icon.jpg</PackageIcon>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="..\..\icon.jpg" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+    <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+</Project>
