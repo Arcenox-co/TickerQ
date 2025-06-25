@@ -101,7 +101,7 @@ Use `UseModelCustomizerForMigrations()` to cleanly separate infrastructure conce
 ```csharp
 public class CleanupJobs
 {
-    [TickerFunction(FunctionName = "CleanupLogs", CronExpression = "0 0 * * *")]
+    [TickerFunction(functionName: "CleanupLogs", cronExpression: "0 0 * * *" )]
     public void CleanupLogs()
     {
         // Runs every midnight
@@ -118,7 +118,7 @@ public class CleanupJobs
 ```csharp
 public class NotificationJobs
 {
-    [TickerFunction(FunctionName = "SendWelcome")]
+    [TickerFunction(functionName: "SendWelcome")]
     public Task SendWelcome(TickerFunctionContext<string> tickerContext ,CancellationToken ct)
     {
         Console.WriteLine(tickerContext.Request); // Output: User123
@@ -154,7 +154,7 @@ public class ReportJobs
         _reportService = reportService;
     }
 
-    [TickerFunction(FunctionName = "GenerateDailyReport", CronExpression = "0 6 * * *")]
+    [TickerFunction(functionName: "GenerateDailyReport", cronExpression: "0 6 * * *")]
     public async Task GenerateDailyReport()
     {
         await _reportService.GenerateAsync();
