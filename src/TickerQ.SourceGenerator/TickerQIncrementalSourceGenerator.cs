@@ -391,6 +391,7 @@ namespace TickerQ.SourceGenerator
             sb.AppendLine($"using {assemblyName};");
             sb.AppendLine("using System.Collections.Generic;");
             sb.AppendLine("using System.Threading.Tasks;");
+            sb.AppendLine("using Microsoft.Extensions.DependencyInjection;");
             sb.AppendLine("using TickerQ.Utilities;");
             sb.AppendLine("using TickerQ.Utilities.Models;");
             sb.AppendLine("using TickerQ.Utilities.Enums;");
