@@ -24,6 +24,19 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
     {
         private readonly ITickerClock _clock;
 
+        private static readonly HashSet<TickerStatus> SuccessConditions = new HashSet<TickerStatus>()
+        {
+            TickerStatus.Done
+        };
+
+
+        private static readonly HashSet<TickerStatus> CompletedStatuses = new HashSet<TickerStatus>()
+        {
+            TickerStatus.Cancelled,
+            TickerStatus.Done,
+            TickerStatus.Failed
+        };
+
         public TickerEFCorePersistenceProvider(TDbContext dbContext, ITickerClock clock) : base(dbContext)
         {
             _clock = clock;
@@ -80,11 +93,18 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 : timeTickerContext.AsNoTracking();
 
             var timeTickers = await query
+                .Include(x => x.ParentJob)
                 .Where(x =>
                     ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
                      (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)) &&
                     x.ExecutionTime >= roundedMinDate &&
-                    x.ExecutionTime < roundedMinDate.AddSeconds(1))
+                    x.ExecutionTime < roundedMinDate.AddSeconds(1)
+                    && (x.ParentJob == null
+                        || (x.BatchRunCondition == BatchRunCondition.OnSuccess
+                            && SuccessConditions.Contains(x.ParentJob.Status))
+                        || (x.BatchRunCondition == BatchRunCondition.OnAnyCompletedStatus
+                            && CompletedStatuses.Contains(x.ParentJob.Status))
+                    ))
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -249,9 +269,16 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 : timeTickerContext.AsNoTracking();
 
             var next = await query
+                .Include(x => x.ParentJob)
                 .Where(x => x.LockHolder == null
                             && tickerStatuses.Contains(x.Status)
-                            && x.ExecutionTime > now)
+                            && x.ExecutionTime > now
+                            && (x.ParentJob == null
+                                || (x.BatchRunCondition == BatchRunCondition.OnSuccess
+                                    && SuccessConditions.Contains(x.ParentJob.Status))
+                                || (x.BatchRunCondition == BatchRunCondition.OnAnyCompletedStatus
+                                    && CompletedStatuses.Contains(x.ParentJob.Status))
+                            ))
                 .OrderBy(x => x.ExecutionTime)
                 .Select(x => x.ExecutionTime)
                 .FirstOrDefaultAsync(cancellationToken)
@@ -480,7 +507,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder,
-            Guid[] cronTickerIds, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Guid[] cronTickerIds, Action<TickerProviderOptions> options = null,
+            CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -649,7 +677,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesWithin(DateTime startDate,
-            DateTime endDate, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
+            DateTime endDate, Action<TickerProviderOptions> options = null,
+            CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 

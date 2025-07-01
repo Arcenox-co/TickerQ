@@ -16,5 +16,9 @@ namespace TickerQ.Utilities.Models.Ticker
         public int Retries { get; set; }
         public int RetryCount { get; internal set; }
         public int[] RetryIntervals { get; set; }
+
+        public Guid? BatchParent { get; set; }
+
+        public BatchRunCondition? BatchRunCondition { get; set; }
     }
 }

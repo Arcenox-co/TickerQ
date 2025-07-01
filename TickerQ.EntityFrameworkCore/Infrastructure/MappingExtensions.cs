@@ -122,7 +122,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Description = ticker.Description,
                 CreatedAt = ticker.CreatedAt,
                 UpdatedAt = ticker.UpdatedAt,
-                InitIdentifier = ticker.InitIdentifier
+                InitIdentifier = ticker.InitIdentifier,
+                BatchRunCondition = ticker.BatchRunCondition,
+                BatchParent = ticker.BatchParent
             };
         }
 
