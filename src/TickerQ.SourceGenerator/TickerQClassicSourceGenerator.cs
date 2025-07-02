@@ -251,22 +251,28 @@ namespace TickerQ.SourceGenerator
 
         private static string BuildCtorCall(ClassDeclarationSyntax cd, SemanticModel model)
         {
-            var ctor = cd.Members.OfType<ConstructorDeclarationSyntax>()
+            ConstructorDeclarationSyntax ctor = cd.Members
+                .OfType<ConstructorDeclarationSyntax>()
                 .FirstOrDefault(c => c.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword)));
-            if (ctor == null)
-                return
-                    $"    private static {GetFullClassName(cd)} Create{cd.Identifier.Text}(IServiceProvider _) => new {GetFullClassName(cd)}();";
+
+            var isPrimaryCtor = cd.ParameterList?.Parameters.Count > 0;
+            var parameters = isPrimaryCtor ? cd.ParameterList.Parameters :
+                ctor?.ParameterList.Parameters ?? default;
+
             var sb = new StringBuilder();
-            sb.AppendLine(
-                $"    private static {GetFullClassName(cd)} Create{cd.Identifier.Text}(IServiceProvider serviceProvider)");
+            sb.AppendLine($"    private static {GetFullClassName(cd)} Create{cd.Identifier.Text}(IServiceProvider serviceProvider)");
             sb.AppendLine("    {");
+
             var args = new List<string>();
-            foreach (var p in ctor.ParameterList.Parameters)
+            foreach (var p in parameters)
             {
                 var nm = FirstLetterToLower(p.Identifier.Text.AsSpan());
                 if (nm != "serviceProvider")
-                    sb.AppendLine(
-                        $"      var {nm} = serviceProvider.GetService<{ModelExtensions.GetSymbolInfo(model, p.Type).Symbol.ToDisplayString()}>();");
+                {
+                    var typeSymbol = ModelExtensions.GetSymbolInfo(model, p.Type).Symbol;
+                    var typeName = typeSymbol?.ToDisplayString() ?? p.Type.ToString(); // fallback
+                    sb.AppendLine($"      var {nm} = serviceProvider.GetService<{typeName}>();");
+                }
                 args.Add(nm);
             }
 
@@ -287,6 +293,7 @@ namespace TickerQ.SourceGenerator
             sb.AppendLine($"using {asm};");
             sb.AppendLine("using System.Collections.Generic;");
             sb.AppendLine("using System.Threading.Tasks;");
+            sb.AppendLine("using Microsoft.Extensions.DependencyInjection;");
             sb.AppendLine("using TickerQ.Utilities;");
             sb.AppendLine("using TickerQ.Utilities.Models;");
             sb.AppendLine("using TickerQ.Utilities.Enums;");
@@ -343,8 +350,13 @@ namespace TickerQ.SourceGenerator
         {
             while (node != null)
             {
-                if (node is NamespaceDeclarationSyntax nd)
-                    return nd.Name.ToString();
+                switch (node)
+                {
+                    case NamespaceDeclarationSyntax nd:
+                        return nd.Name.ToString();
+                    case FileScopedNamespaceDeclarationSyntax fsnd:
+                        return fsnd.Name.ToString();
+                }
                 node = node.Parent;
             }
 

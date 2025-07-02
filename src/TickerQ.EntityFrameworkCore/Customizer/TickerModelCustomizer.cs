@@ -1,8 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using TickerQ.EntityFrameworkCore.Configurations;
 using TickerQ.EntityFrameworkCore.Entities;
 
-namespace TickerQ.EntityFrameworkCore.Configurations
+namespace TickerQ.EntityFrameworkCore.Customizer
 {
     internal class TickerModelCustomizer<TTimeTicker, TCronTicker> : RelationalModelCustomizer
         where TTimeTicker : TimeTickerEntity where TCronTicker : CronTickerEntity

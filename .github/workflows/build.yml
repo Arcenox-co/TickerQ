@@ -77,35 +77,35 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm install
-        working-directory: TickerQ.Dashboard/wwwroot
+        working-directory: src/TickerQ.Dashboard/wwwroot
 
       - name: Build frontend
         run: npm run build
-        working-directory: TickerQ.Dashboard/wwwroot
+        working-directory: src/TickerQ.Dashboard/wwwroot
 
       - name: Build TickerQ.Utilities
-        run: dotnet build TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+        run: dotnet build src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
 
       - name: Pack TickerQ.Utilities
-        run: dotnet pack TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+        run: dotnet pack src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
 
       - name: Add local nupkgs source
         run: dotnet nuget add source "$(pwd)/nupkgs" --name LocalNupkgs
 
       - name: Build TickerQ.SourceGenerator
-        run: dotnet build TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
+        run: dotnet build src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
 
       - name: Build other projects
         run: |
-          dotnet build TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
-          dotnet build TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
-          dotnet build TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet build src/TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet build src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
 
       - name: Pack other projects
         run: |
-          dotnet pack TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
-          dotnet pack TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
-          dotnet pack TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet pack src/TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet pack src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet pack src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
 
       - name: Show .nupkg file sizes
         run: |
@@ -122,48 +122,48 @@ jobs:
           path: ./nupkgs
 
   trigger-publish:
-      needs:
-        - check-nuget
-        - build
-      runs-on: ubuntu-latest
+    needs:
+      - check-nuget
+      - build
+    runs-on: ubuntu-latest
 
-      steps:
-        - name: Get artifact ID for nupkgs
-          id: get_artifact
-          run: |
-            artifacts=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)
-            id=$(echo "$artifacts" | jq '.artifacts[] | select(.name=="nupkgs") | .id')
-            echo "ARTIFACT_ID=$id" >> $GITHUB_ENV
-          env:
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
-        - name: Trigger publish.yml with artifact ID
-          uses: actions/github-script@v7
-          env:
-            GH_PAT: ${{ secrets.PAT_TOKEN }}
-          with:
-            script: |
-              const artifactId = process.env.ARTIFACT_ID;
-              const version = '${{ needs.check-nuget.outputs.version }}';
-        
-              const res = await fetch('https://api.github.com/repos/${{ github.repository }}/actions/workflows/publish.yml/dispatches', {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${process.env.GH_PAT}`,
-                  'Accept': 'application/vnd.github.v3+json'
-                },
-                body: JSON.stringify({
-                  ref: 'main',
-                  inputs: {
-                    version: version,
-                    artifact_id: artifactId
-                  }
-                })
-              });
-        
-              if (!res.ok) {
-                const body = await res.text();
-                core.setFailed(`❌ Failed to dispatch: ${res.status} ${res.statusText}\n${body}`);
-              } else {
-                console.log(`✅ Successfully triggered publish with artifact ID: ${artifactId}`);
-              }
+    steps:
+      - name: Get artifact ID for nupkgs
+        id: get_artifact
+        run: |
+          artifacts=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)
+          id=$(echo "$artifacts" | jq '.artifacts[] | select(.name=="nupkgs") | .id')
+          echo "ARTIFACT_ID=$id" >> $GITHUB_ENV
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Trigger publish.yml with artifact ID
+        uses: actions/github-script@v7
+        env:
+          GH_PAT: ${{ secrets.PAT_TOKEN }}
+        with:
+          script: |
+            const artifactId = process.env.ARTIFACT_ID;
+            const version = '${{ needs.check-nuget.outputs.version }}';
+
+            const res = await fetch('https://api.github.com/repos/${{ github.repository }}/actions/workflows/publish.yml/dispatches', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${process.env.GH_PAT}`,
+                'Accept': 'application/vnd.github.v3+json'
+              },
+              body: JSON.stringify({
+                ref: 'main',
+                inputs: {
+                  version: version,
+                  artifact_id: artifactId
+                }
+              })
+            });
+
+            if (!res.ok) {
+              const body = await res.text();
+              core.setFailed(`❌ Failed to dispatch: ${res.status} ${res.statusText}\n${body}`);
+            } else {
+              console.log(`✅ Successfully triggered publish with artifact ID: ${artifactId}`);
+            }

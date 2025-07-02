@@ -3,22 +3,13 @@
     <PropertyGroup>
         <TargetFramework>netstandard2.1</TargetFramework>
         <Description>A lightweight, developer-friendly library for queuing and executing cron and time-based jobs in the background.</Description>
-        <Authors>Albert Kunushevci</Authors>
-        <Company>Arcenox</Company>
-        <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget;background-jobs;dotnet;task-scheduling</PackageTags>
+        <PackageTags>$(PackageTags);background-jobs;task-scheduling</PackageTags>
         <PackageId>TickerQ</PackageId>
-        <RepositoryUrl>https://github.com/arcenox/TickerQ</RepositoryUrl>
-        <PackageProjectUrl>https://tickerq.arcenox.com/</PackageProjectUrl>
-        <Copyright>Copyright © Arcenox</Copyright>
-        <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
-        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
         <PackageReadmeFile>README.md</PackageReadmeFile>
-        <PackageIcon>icon.jpg</PackageIcon>
     </PropertyGroup>
-    
+
     <ItemGroup>
-        <None Include="..\README.md" Pack="true" PackagePath="" />
-        <None Include="..\icon.jpg" Pack="true" PackagePath="\" />
+        <None Include="..\..\README.md" Pack="true" PackagePath="" />
     </ItemGroup>
     
     <ItemGroup>
