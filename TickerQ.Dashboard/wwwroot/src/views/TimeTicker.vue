@@ -143,7 +143,7 @@ const getTimeTickersGraphDataRangeAndParseToGraph = async (startDate: number, en
       itemStyle: { color: seriesColors[Status[item1]] },
     }))
 
-    const statuses = ['Idle', 'Queued', 'InProgress', 'Done', 'DueDone', 'Failed', 'Cancelled']
+    const statuses = ['Idle', 'Queued', 'InProgress', 'Done', 'DueDone', 'Failed', 'Cancelled', 'Batched']
 
     const seriesNames = composedData.filter((x) => x.data.some((y) => y > 0)).map((x) => x.name)
 
@@ -186,6 +186,7 @@ const seriesColors: { [key: string]: string } = {
   DueDone: '#008000', // Green
   Failed: '#FF0000', // Red
   Cancelled: '#FFD700', // Gold/Yellow
+  Batched: '#A9A9A9', // Dark Gray
 }
 
 const requestCancel = async (id: string) => {

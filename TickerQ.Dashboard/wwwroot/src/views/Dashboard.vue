@@ -103,6 +103,7 @@ const statuses: Ref<Array<{ name: string; count: number; percentage: string }>> 
   { name: 'DueDone', count: 0, percentage: '0' },
   { name: 'Failed', count: 0, percentage: '0' },
   { name: 'Cancelled', count: 0, percentage: '0' },
+  { name: 'Batched', count: 0, percentage: '0' },
 ])
 
 const hasError = computed(
@@ -135,6 +136,7 @@ const seriesColors: { [key: string]: string } = {
   DueDone: '#008000', // Green
   Failed: '#FF0000', // Red
   Cancelled: '#FFD700', // Gold/Yellow
+  Batched: '#A9A9A9', // Dark Gray
 }
 
 const machineItems: Ref<Array<{ machine: string; locked: string }>> = ref([])

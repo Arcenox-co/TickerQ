@@ -24,19 +24,6 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
     {
         private readonly ITickerClock _clock;
 
-        private static readonly HashSet<TickerStatus> SuccessConditions = new HashSet<TickerStatus>()
-        {
-            TickerStatus.Done
-        };
-
-
-        private static readonly HashSet<TickerStatus> CompletedStatuses = new HashSet<TickerStatus>()
-        {
-            TickerStatus.Cancelled,
-            TickerStatus.Done,
-            TickerStatus.Failed
-        };
-
         public TickerEFCorePersistenceProvider(TDbContext dbContext, ITickerClock clock) : base(dbContext)
         {
             _clock = clock;
@@ -98,13 +85,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
                      (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)) &&
                     x.ExecutionTime >= roundedMinDate &&
-                    x.ExecutionTime < roundedMinDate.AddSeconds(1)
-                    && (x.ParentJob == null
-                        || (x.BatchRunCondition == BatchRunCondition.OnSuccess
-                            && SuccessConditions.Contains(x.ParentJob.Status))
-                        || (x.BatchRunCondition == BatchRunCondition.OnAnyCompletedStatus
-                            && CompletedStatuses.Contains(x.ParentJob.Status))
-                    ))
+                    x.ExecutionTime < roundedMinDate.AddSeconds(1))
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -237,6 +218,19 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             await SaveAndDetachAsync<TimeTickerEntity>(cancellationToken).ConfigureAwait(false);
         }
 
+        public async Task<TTimeTicker[]> GetChildTickersByParentId(Guid parentTickerId,
+            CancellationToken cancellationToken = new CancellationToken())
+        {
+            var timeTickerContext = GetDbSet<TimeTickerEntity>();
+
+            var childTickers = await timeTickerContext
+                .AsNoTracking()
+                .Where(x => x.BatchParent == parentTickerId)
+                .ToListAsync(cancellationToken: cancellationToken);
+
+            return childTickers.Select(x => x.ToTimeTicker<TTimeTicker>()).ToArray();
+        }
+
         public async Task<byte[]> GetTimeTickerRequest(Guid tickerId, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
@@ -269,16 +263,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 : timeTickerContext.AsNoTracking();
 
             var next = await query
-                .Include(x => x.ParentJob)
                 .Where(x => x.LockHolder == null
                             && tickerStatuses.Contains(x.Status)
-                            && x.ExecutionTime > now
-                            && (x.ParentJob == null
-                                || (x.BatchRunCondition == BatchRunCondition.OnSuccess
-                                    && SuccessConditions.Contains(x.ParentJob.Status))
-                                || (x.BatchRunCondition == BatchRunCondition.OnAnyCompletedStatus
-                                    && CompletedStatuses.Contains(x.ParentJob.Status))
-                            ))
+                            && x.ExecutionTime > now)
                 .OrderBy(x => x.ExecutionTime)
                 .Select(x => x.ExecutionTime)
                 .FirstOrDefaultAsync(cancellationToken)

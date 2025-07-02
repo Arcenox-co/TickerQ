@@ -64,7 +64,7 @@ namespace TickerQ.Utilities.Managers
 
                 entity.CreatedAt = Clock.UtcNow;
                 entity.UpdatedAt = Clock.UtcNow;
-                entity.Status = TickerStatus.Idle;
+                entity.Status = entity.BatchParent != null ? TickerStatus.Batched : TickerStatus.Idle;
                 entity.ExecutionTime = entity.ExecutionTime.ToUniversalTime();
 
                 await PersistenceProvider.InsertTimeTickers(new[] { entity }, cancellationToken: cancellationToken)

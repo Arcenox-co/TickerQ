@@ -44,7 +44,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Description = entity.Description,
                 CreatedAt = entity.CreatedAt,
                 UpdatedAt = entity.UpdatedAt,
-                InitIdentifier = entity.InitIdentifier
+                InitIdentifier = entity.InitIdentifier,
+                BatchParent = entity.BatchParent,
+                BatchRunCondition = entity.BatchRunCondition
             };
         }
 

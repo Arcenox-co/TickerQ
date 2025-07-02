@@ -151,6 +151,11 @@ namespace TickerQ.Src.Provider
             return Task.CompletedTask;
         }
 
+        public Task<TTimeTicker[]> GetChildTickersByParentId(Guid parentTickerId, CancellationToken cancellationToken = new CancellationToken())
+        {
+            throw new NotSupportedException("Batching is not supported with in memory persistence.");
+        }
+
         #endregion
 
         #region Cron Ticker Operations
