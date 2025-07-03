@@ -9,6 +9,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models.Ticker;
 
 namespace TickerQ.Dashboard.Infrastructure.Dashboard
@@ -20,13 +21,16 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         private readonly ITickerPersistenceProvider<TTimeTicker, TCronTicker> _persistenceProvider;
         private readonly ITickerHost _tickerHost;
         private readonly ITickerQNotificationHubSender _notificationHubSender;
+        private readonly IInternalTickerManager _internalTickerManager;
 
         public TickerDashboardRepository(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
-            ITickerHost tickerHost, ITickerQNotificationHubSender notificationHubSender)
+            ITickerHost tickerHost, ITickerQNotificationHubSender notificationHubSender,
+            IInternalTickerManager internalTickerManager)
         {
             _persistenceProvider = persistenceProvider;
             _tickerHost = tickerHost ?? throw new ArgumentNullException(nameof(tickerHost));
             _notificationHubSender = notificationHubSender;
+            _internalTickerManager = internalTickerManager;
         }
 
         public async Task<IList<TimeTickerDto>> GetTimeTickersAsync()
@@ -52,10 +56,32 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     RetryCount = x.RetryCount,
                     RetryIntervals = x.RetryIntervals,
                     Description = x.Description,
-                    InitIdentifier =  x.InitIdentifier,
+                    InitIdentifier = x.InitIdentifier,
                     BatchRunCondition = x.BatchRunCondition,
                     BatchParent = x.BatchParent
                 }).ToList();
+        }
+
+        public async Task SetTimeTickerBatchParent(Guid targetId, Guid parentId,
+            BatchRunCondition? batchRunCondition = null)
+        {
+            var tt = await _persistenceProvider.GetTimeTickerById(targetId, options => options.SetAsTracking());
+
+            tt.BatchParent = parentId;
+            tt.BatchRunCondition = batchRunCondition;
+
+            if (tt.Status == TickerStatus.Idle)
+            {
+                tt.Status = TickerStatus.Batched;
+            }
+
+            await _persistenceProvider.UpdateTimeTickers(new[]
+            {
+                tt
+            });
+
+            var parentTicker = await _persistenceProvider.GetTimeTickerById(parentId);
+            await _internalTickerManager.CascadeBatchUpdate(parentId, parentTicker.Status);
         }
 
         public async Task<IList<Tuple<TickerStatus, int>>> GetTimeTickerFullDataAsync(
@@ -97,7 +123,9 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var startDate = today.AddDays(pastDays);
             var endDate = today.AddDays(futureDays);
 
-            var timeTickers = await _persistenceProvider.GetTimeTickersWithin(startDate, endDate, cancellationToken: cancellationToken);
+            var timeTickers =
+                await _persistenceProvider.GetTimeTickersWithin(startDate, endDate,
+                    cancellationToken: cancellationToken);
 
             // Get all possible statuses once
             var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
@@ -142,14 +170,17 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             return finalData;
         }
 
-        public async Task<IList<TickerGraphData>> GetCronTickersGraphSpecificDataByIdAsync(Guid id, int pastDays, int futureDays,
+        public async Task<IList<TickerGraphData>> GetCronTickersGraphSpecificDataByIdAsync(Guid id, int pastDays,
+            int futureDays,
             CancellationToken cancellationToken)
         {
             var today = DateTime.UtcNow.Date;
             var startDate = today.AddDays(pastDays);
             var endDate = today.AddDays(futureDays);
 
-            var cronTickerOccurrences = await _persistenceProvider.GetCronTickerOccurrencesByCronTickerIdWithin(id, startDate, endDate, cancellationToken: cancellationToken);
+            var cronTickerOccurrences =
+                await _persistenceProvider.GetCronTickerOccurrencesByCronTickerIdWithin(id, startDate, endDate,
+                    cancellationToken: cancellationToken);
 
             var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
 
@@ -196,7 +227,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         public async Task<IList<Tuple<TickerStatus, int>>> GetCronTickerFullDataAsync(
             CancellationToken cancellationToken)
         {
-            var cronTickerOccurrences = await _persistenceProvider.GetAllCronTickerOccurrences(cancellationToken: cancellationToken);
+            var cronTickerOccurrences =
+                await _persistenceProvider.GetAllCronTickerOccurrences(cancellationToken: cancellationToken);
             var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
 
             var rawData = cronTickerOccurrences
@@ -228,7 +260,9 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var startDate = today.AddDays(pastDays);
             var endDate = today.AddDays(futureDays);
 
-            var cronTickerOccurrences = await _persistenceProvider.GetCronTickerOccurrencesWithin(startDate, endDate, cancellationToken: cancellationToken);
+            var cronTickerOccurrences =
+                await _persistenceProvider.GetCronTickerOccurrencesWithin(startDate, endDate,
+                    cancellationToken: cancellationToken);
             var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
 
             var rawData = cronTickerOccurrences
@@ -395,7 +429,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     Description = x.Description,
                     Retries = x.Retries,
                     RetryIntervals = x.RetryIntervals,
-                    InitIdentifier =  x.InitIdentifier
+                    InitIdentifier = x.InitIdentifier
                 }).ToList();
         }
 
@@ -425,7 +459,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var maxTotalDays = 14;
             var today = DateTime.UtcNow.Date;
 
-            var cronTickerOccurrencesPast = await _persistenceProvider.GetPastCronTickerOccurrencesByCronTickerId(guid, today);
+            var cronTickerOccurrencesPast =
+                await _persistenceProvider.GetPastCronTickerOccurrencesByCronTickerId(guid, today);
             var pastData = cronTickerOccurrencesPast
                 .GroupBy(x => x.ExecutionTime.Date)
                 .Select(group => new CronOccurrenceTickerGraphData
@@ -439,7 +474,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 .OrderBy(d => d.Date)
                 .ToList();
 
-            var cronTickerOccurrencesToday = await _persistenceProvider.GetTodayCronTickerOccurrencesByCronTickerId(guid, today);
+            var cronTickerOccurrencesToday =
+                await _persistenceProvider.GetTodayCronTickerOccurrencesByCronTickerId(guid, today);
             var todayData = cronTickerOccurrencesToday
                 .GroupBy(x => x.ExecutionTime.Date)
                 .Select(group => new CronOccurrenceTickerGraphData
@@ -456,7 +492,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 Results = Array.Empty<Tuple<TickerStatus, int>>()
             };
 
-            var cronTickerOccurrencesFuture = await _persistenceProvider.GetFutureCronTickerOccurrencesByCronTickerId(guid, today);
+            var cronTickerOccurrencesFuture =
+                await _persistenceProvider.GetFutureCronTickerOccurrencesByCronTickerId(guid, today);
             var futureData = cronTickerOccurrencesFuture
                 .GroupBy(x => x.ExecutionTime.Date)
                 .Select(group => new CronOccurrenceTickerGraphData
@@ -542,11 +579,13 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
             if (cronTicker != null)
             {
-                var earliestCronTickerOccurrence = await _persistenceProvider.GetCronOccurrencesByCronTickerIdAndStatusFlag(cronTicker.Id, new[] { TickerStatus.Queued });
+                var earliestCronTickerOccurrence =
+                    await _persistenceProvider.GetCronOccurrencesByCronTickerIdAndStatusFlag(cronTicker.Id,
+                        new[] { TickerStatus.Queued });
 
                 await _persistenceProvider.RemoveCronTickers(new[] { cronTicker });
 
-                if(earliestCronTickerOccurrence.Length != 0)
+                if (earliestCronTickerOccurrence.Length != 0)
                     _tickerHost.Restart();
 
                 if (_notificationHubSender != null)
@@ -667,10 +706,10 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 ? executionTimeProperty.GetDateTime().ToUniversalTime()
                 : DateTime.UtcNow.AddSeconds(1);
 
+
             _tickerHost.RestartIfNeeded(timeTicker.ExecutionTime);
 
             await _persistenceProvider.UpdateTimeTickers(new[] { timeTicker });
-
             await NotifyOrUpdateUpdate(timeTicker, requestType, false);
         }
 
@@ -723,11 +762,11 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             };
-            
+
             cronTicker.RetryIntervals = newCronTicker.TryGetProperty("intervals", out var intervalsProperty)
                 ? intervalsProperty.EnumerateArray().Select(x => x.GetInt32()).ToArray()
                 : new[] { 30 };
-            
+
             if (newCronTicker.TryGetProperty("retries", out var retryProperty))
                 cronTicker.Retries = retryProperty.GetInt32();
 
@@ -747,10 +786,10 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             await _persistenceProvider.InsertCronTickers(new[] { cronTicker });
 
             var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression)?.GetNextOccurrence(DateTime.UtcNow);
-            
-            if(nextOccurrence != null)
+
+            if (nextOccurrence != null)
                 _tickerHost.RestartIfNeeded(nextOccurrence.Value);
-            
+
             await NotifyOrUpdateUpdate(cronTicker, requestType, true);
         }
 
@@ -768,7 +807,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             cronTicker.RetryIntervals = newCronTicker.TryGetProperty("intervals", out var intervalsProperty)
                 ? intervalsProperty.EnumerateArray().Select(x => x.GetInt32()).ToArray()
                 : new[] { 30 };
-            
+
             if (newCronTicker.TryGetProperty("retries", out var retryProperty))
                 cronTicker.Retries = retryProperty.GetInt32();
 
@@ -786,10 +825,10 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 cronTicker.Expression = expressionProperty.GetString();
 
             await _persistenceProvider.UpdateCronTickers(new[] { cronTicker });
-            
+
             var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression)?.GetNextOccurrence(DateTime.UtcNow);
-            
-            if(nextOccurrence != null)
+
+            if (nextOccurrence != null)
                 _tickerHost.RestartIfNeeded(nextOccurrence.Value);
 
             await NotifyOrUpdateUpdate(cronTicker, requestType, false);

@@ -49,3 +49,9 @@ export class UpdateTimeTickerRequest {
     executionTime?:string;
     intervals?:number[];
 }
+
+export class SetBatchParentRequest {
+  parentId!:string;
+  batchRunCondition?:number;
+  targetId!:string;
+}

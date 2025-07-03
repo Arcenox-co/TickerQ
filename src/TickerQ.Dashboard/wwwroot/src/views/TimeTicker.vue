@@ -22,6 +22,7 @@ import VChart, { THEME_KEY } from 'vue-echarts'
 
 const getTimeTickers = timeTickerService.getTimeTickers()
 const deleteTimeTicker = timeTickerService.deleteTimeTicker()
+const setBatchParent = timeTickerService.setBatchParent()
 const requestCancelTicker = tickerService.requestCancel()
 const getTimeTickersGraphDataRange = timeTickerService.getTimeTickersGraphDataRange()
 const getTimeTickersGraphData = timeTickerService.getTimeTickersGraphData()
@@ -44,10 +45,20 @@ const exceptionDialog = useDialog<ConfirmDialogProps>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
 )
 
+const dragBatchParentDialog = ref({
+  isOpen: false,
+  sourceItem: null as any,
+  targetItem: null as any,
+  batchRunCondition: 0
+})
+
 const requestMatchType = ref(new Map<string, number>())
 const crudTimeTickerDialogRef = ref(null)
 
 const expandedParents = ref(new Set<string>())
+
+const draggedItem = ref<any>(null)
+const dragOverItem = ref<string | null>(null)
 
 onMounted(async () => {
   await TickerNotificationHub.startConnection()
@@ -129,6 +140,78 @@ const processedTableData = computed(() => {
 
   return result
 })
+
+const headersWithDragHandle = computed(() => {
+  const headers = [...(getTimeTickers.headers.value || [])]
+  headers.unshift({
+    title: '',
+    key: 'dragHandle',
+    sortable: false,
+    visibility: true,
+  })
+  return headers
+})
+
+const handleDragStart = (event: DragEvent, item: any) => {
+  draggedItem.value = item
+  event.dataTransfer!.effectAllowed = 'move'
+  event.dataTransfer!.setData('text/html', '') // Firefox requires this
+}
+
+const handleDragEnd = (event: DragEvent) => {
+  draggedItem.value = null
+  dragOverItem.value = null
+}
+
+const handleDragOver = (event: DragEvent, item: any) => {
+  event.preventDefault()
+  event.dataTransfer!.dropEffect = 'move'
+
+  // Don't allow dropping on itself
+  if (draggedItem.value && draggedItem.value.id !== item.id) {
+    dragOverItem.value = item.id
+  }
+}
+
+const handleDragLeave = () => {
+  dragOverItem.value = null
+}
+
+const handleDrop = (event: DragEvent, targetItem: any) => {
+  event.preventDefault()
+
+  if (draggedItem.value && draggedItem.value.id !== targetItem.id) {
+
+    dragBatchParentDialog.value.sourceItem = draggedItem.value
+    dragBatchParentDialog.value.targetItem = targetItem
+    dragBatchParentDialog.value.isOpen = true
+  }
+
+  dragOverItem.value = null
+}
+
+const handleReorderConfirm = () => {
+  console.debug(`Set Batch Parent confirmed:`)
+  console.debug(`Source: ${dragBatchParentDialog.value.sourceItem.id}`)
+  console.debug(`Target: ${dragBatchParentDialog.value.targetItem.id}`)
+  console.debug(`Option: ${dragBatchParentDialog.value.batchRunCondition}`)
+
+  setBatchParent.requestAsync({
+    batchRunCondition: dragBatchParentDialog.value.batchRunCondition,
+    parentId: dragBatchParentDialog.value.targetItem.id,
+    targetId: dragBatchParentDialog.value.sourceItem.id
+  })
+
+  dragBatchParentDialog.value.isOpen = false
+  dragBatchParentDialog.value.sourceItem = null
+  dragBatchParentDialog.value.targetItem = null
+}
+
+const handleReorderCancel = () => {
+  dragBatchParentDialog.value.isOpen = false
+  dragBatchParentDialog.value.sourceItem = null
+  dragBatchParentDialog.value.targetItem = null
+}
 
 const toggleParentExpansion = (parentId: string) => {
   if (expandedParents.value.has(parentId)) {
@@ -269,25 +352,60 @@ const onSubmitConfirmDialog = async () => {
 
 const setRowProp = (propContext: any) => {
   const baseStyle = `color:${seriesColors[propContext.item.status]}`
+  let classes = []
+
+  if (draggedItem.value && draggedItem.value.id === propContext.item.id) {
+    classes.push('dragging')
+  }
 
   if (propContext.item.isChild) {
+    classes.push('child-row')
     return {
       style: `${baseStyle}; padding-left: 40px; background-color: rgba(255, 255, 255, 0.02);`,
-      class: 'child-row'
+      class: classes.concat(dragOverItem.value === propContext.item.id ? 'drag-over' : '').join(' '),
+      draggable: true,
+      ondragstart: (e: DragEvent) => handleDragStart(e, propContext.item),
+      ondragend: handleDragEnd,
+      ondragover: (e: DragEvent) => handleDragOver(e, propContext.item),
+      ondragleave: handleDragLeave,
+      ondrop: (e: DragEvent) => handleDrop(e, propContext.item)
     }
   } else if (propContext.item.isParent) {
+    classes.push('parent-row')
     return {
       style: `${baseStyle}; font-weight: 500;`,
-      class: 'parent-row'
+      class: classes.concat(dragOverItem.value === propContext.item.id ? 'drag-over' : '').join(' '),
+      draggable: true,
+      ondragstart: (e: DragEvent) => handleDragStart(e, propContext.item),
+      ondragend: handleDragEnd,
+      ondragover: (e: DragEvent) => handleDragOver(e, propContext.item),
+      ondragleave: handleDragLeave,
+      ondrop: (e: DragEvent) => handleDrop(e, propContext.item)
     }
   } else if (propContext.item.isOrphan) {
+    classes.push('orphan-row')
     return {
       style: `${baseStyle}; font-style: italic; opacity: 0.8;`,
-      class: 'orphan-row'
+      class: classes.concat(dragOverItem.value === propContext.item.id ? 'drag-over' : '').join(' '),
+      draggable: true,
+      ondragstart: (e: DragEvent) => handleDragStart(e, propContext.item),
+      ondragend: handleDragEnd,
+      ondragover: (e: DragEvent) => handleDragOver(e, propContext.item),
+      ondragleave: handleDragLeave,
+      ondrop: (e: DragEvent) => handleDrop(e, propContext.item)
     }
   }
 
-  return { style: baseStyle }
+  return {
+    style: baseStyle,
+    class: classes.concat(dragOverItem.value === propContext.item.id ? 'drag-over' : '').join(' '),
+    draggable: true,
+    ondragstart: (e: DragEvent) => handleDragStart(e, propContext.item),
+    ondragend: handleDragEnd,
+    ondragover: (e: DragEvent) => handleDragOver(e, propContext.item),
+    ondragleave: handleDragLeave,
+    ondrop: (e: DragEvent) => handleDrop(e, propContext.item)
+  }
 }
 
 use([
@@ -534,14 +652,29 @@ watch(
             <v-data-table
               density="compact"
               :row-props="setRowProp"
-              :headers="getTimeTickers.headers.value"
+              :headers="headersWithDragHandle"
               :loading="getTimeTickers.loader.value"
               :items="processedTableData"
               item-value="Id"
               item-class="custom-row-class"
-              :items-per-page="-1"
-              hide-default-footer
+              :items-per-page="10"
             >
+              <!-- Drag Handle Column -->
+              <template v-slot:item.dragHandle="{ item }">
+                <v-tooltip location="right">
+                  <template v-slot:activator="{ props }">
+                    <v-icon
+                      v-bind="props"
+                      size="small"
+                      class="drag-handle"
+                    >
+                      mdi-drag-vertical
+                    </v-icon>
+                  </template>
+                  <span>Drag to reorder</span>
+                </v-tooltip>
+              </template>
+
               <template v-slot:item.function="{ item }">
                 <div class="d-flex align-center">
                   <v-btn
@@ -826,6 +959,55 @@ watch(
     @close="exceptionDialog.close()"
     :dialog-props="exceptionDialog.propData"
   />
+
+  <!-- Drag Reorder Confirmation Dialog -->
+  <v-dialog
+    v-model="dragBatchParentDialog.isOpen"
+    max-width="500"
+    persistent
+  >
+    <v-card>
+      <v-card-title class="d-flex align-center">
+        <v-icon class="mr-2">mdi-swap-vertical</v-icon>
+        Confirm Reorder Action
+      </v-card-title>
+
+      <v-card-text>
+        <div class="mb-4">
+          You are about to make <strong>{{ dragBatchParentDialog.sourceItem?.function }}</strong>
+          a child of <strong>{{ dragBatchParentDialog.targetItem?.function }}</strong>.
+        </div>
+
+        <v-select
+          v-model="dragBatchParentDialog.batchRunCondition"
+          label="Batch Run Condition Option"
+          :items="[
+            { title: 'On Any Completed Status', value: 0 },
+            { title: 'On Success', value: 1 }
+          ]"
+          variant="outlined"
+          density="compact"
+        ></v-select>
+      </v-card-text>
+
+      <v-card-actions>
+        <v-spacer></v-spacer>
+        <v-btn
+          variant="text"
+          @click="handleReorderCancel"
+        >
+          Cancel
+        </v-btn>
+        <v-btn
+          color="primary"
+          variant="elevated"
+          @click="handleReorderConfirm"
+        >
+          OK
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
 </template>
 
 <style scoped>
@@ -921,5 +1103,58 @@ watch(
 
 :deep(.v-btn--icon.v-btn--density-comfortable:hover) {
   transform: scale(1.1);
+}
+
+/* Drag and drop styles */
+.drag-handle {
+  opacity: 0.5;
+  transition: opacity 0.2s ease;
+}
+
+.drag-handle:hover {
+  opacity: 1;
+}
+
+/* Make entire row draggable */
+:deep(.v-data-table__tr[draggable="true"]) {
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+:deep(.v-data-table__tr[draggable="true"]:hover) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Dragging state */
+:deep(.v-data-table__tr.dragging) {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.drag-over {
+  background-color: rgba(33, 150, 243, 0.1) !important;
+  border-top: 2px solid #2196f3;
+  border-bottom: 2px solid #2196f3;
+}
+
+:deep(.v-data-table__tr.drag-over) {
+  background-color: rgba(33, 150, 243, 0.1) !important;
+}
+
+/* Dialog styling for dark theme */
+:deep(.v-dialog .v-card) {
+  background-color: #2e2e2e;
+}
+
+:deep(.v-dialog .v-card-title) {
+  color: #fff;
+  font-size: 1.1rem;
+}
+
+:deep(.v-dialog .v-card-text) {
+  color: #e0e0e0;
 }
 </style>

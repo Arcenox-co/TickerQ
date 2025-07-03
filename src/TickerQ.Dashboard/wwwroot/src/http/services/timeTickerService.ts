@@ -3,12 +3,12 @@ import { formatDate, formatTime } from '@/utilities/dateTimeParser';
 import { useBaseHttpService } from '../base/baseHttpService';
 import { Status } from './types/base/baseHttpResponse.types';
 import {
-    AddTimeTickerRequest,
-    GetTimeTickerGraphDataRangeResponse,
-    GetTimeTickerGraphDataResponse,
-    GetTimeTickerResponse,
-    UpdateTimeTickerRequest
-} from './types/timeTickerService.types';
+  AddTimeTickerRequest,
+  GetTimeTickerGraphDataRangeResponse,
+  GetTimeTickerGraphDataResponse,
+  GetTimeTickerResponse, SetBatchParentRequest,
+  UpdateTimeTickerRequest
+} from './types/timeTickerService.types'
 import { nameof } from '@/utilities/nameof';
 import { format} from 'timeago.js';
 import { useFunctionNameStore } from '@/stores/functionNames';
@@ -133,6 +133,17 @@ const updateTimeTicker = () => {
     };
 }
 
+const setBatchParent = () => {
+  const baseHttp = useBaseHttpService<SetBatchParentRequest, object>('single');
+
+  const requestAsync = async (data: SetBatchParentRequest) => (await baseHttp.sendAsync("POST", "time-tickers/set-batch-parent", { bodyData: data}));
+
+  return {
+    ...baseHttp,
+    requestAsync
+  };
+}
+
 
 export const timeTickerService = {
     getTimeTickers,
@@ -141,4 +152,5 @@ export const timeTickerService = {
     getTimeTickersGraphData,
     addTimeTicker,
     updateTimeTicker,
+  setBatchParent
 };
