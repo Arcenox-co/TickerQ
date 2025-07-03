@@ -66,6 +66,9 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             BatchRunCondition? batchRunCondition = null)
         {
             var tt = await _persistenceProvider.GetTimeTickerById(targetId, options => options.SetAsTracking());
+            
+            var requestType = GetRequestType(tt.Function);
+
 
             tt.BatchParent = parentId;
             tt.BatchRunCondition = batchRunCondition;
@@ -74,6 +77,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             {
                 tt.Status = TickerStatus.Batched;
             }
+            _tickerHost.RestartIfNeeded(tt.ExecutionTime);
 
             await _persistenceProvider.UpdateTimeTickers(new[]
             {
@@ -82,6 +86,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
             var parentTicker = await _persistenceProvider.GetTimeTickerById(parentId);
             await _internalTickerManager.CascadeBatchUpdate(parentId, parentTicker.Status);
+
+            await NotifyOrUpdateUpdate(tt, requestType, false);
         }
 
         public async Task<IList<Tuple<TickerStatus, int>>> GetTimeTickerFullDataAsync(
