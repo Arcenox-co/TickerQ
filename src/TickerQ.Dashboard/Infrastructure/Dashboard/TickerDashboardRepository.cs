@@ -52,7 +52,9 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     RetryCount = x.RetryCount,
                     RetryIntervals = x.RetryIntervals,
                     Description = x.Description,
-                    InitIdentifier =  x.InitIdentifier
+                    InitIdentifier =  x.InitIdentifier,
+                    BatchRunCondition = x.BatchRunCondition,
+                    BatchParent = x.BatchParent
                 }).ToList();
         }
 
@@ -834,7 +836,9 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                             ExecutionTime = timeTicker.ExecutionTime,
                             RetryIntervals = timeTicker.RetryIntervals,
                             Retries = timeTicker.Retries,
-                            Description = timeTicker.Description
+                            Description = timeTicker.Description,
+                            BatchRunCondition = timeTicker.BatchRunCondition,
+                            BatchParent = timeTicker.BatchParent
                         };
                         if (isNew)
                             await _notificationHubSender.AddTimeTickerNotifyAsync(timeTickerDto);

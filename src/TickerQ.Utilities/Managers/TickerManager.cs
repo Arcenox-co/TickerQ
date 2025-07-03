@@ -90,6 +90,8 @@ namespace TickerQ.Utilities.Managers
                         RetryIntervals = entity.RetryIntervals,
                         ExecutedAt = entity.ExecutedAt,
                         RetryCount = entity.RetryCount,
+                        BatchRunCondition = entity.BatchRunCondition,
+                        BatchParent = entity.BatchParent
                     });
 
                 return new TickerResult<TTimeTicker>(entity);
