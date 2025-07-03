@@ -8,6 +8,7 @@
         Done,
         DueDone,
         Failed,
-        Cancelled
+        Cancelled,
+        Batched
     }
 }

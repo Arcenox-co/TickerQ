@@ -27,6 +27,9 @@ namespace TickerQ.Utilities.Interfaces
         Task UpdateTimeTickers(IEnumerable<TTimeTicker> tickers, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task RemoveTimeTickers(IEnumerable<TTimeTicker> tickers, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
 
+        Task<TTimeTicker[]> GetChildTickersByParentId(Guid parentTickerId,
+            CancellationToken cancellationToken = default);
+        
         #endregion
 
         #region Cron Ticker Operations

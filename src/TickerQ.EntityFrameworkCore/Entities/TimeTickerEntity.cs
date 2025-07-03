@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using TickerQ.EntityFrameworkCore.Entities.BaseEntity;
 using TickerQ.Utilities.Enums;
 
@@ -17,5 +18,12 @@ namespace TickerQ.EntityFrameworkCore.Entities
         public int Retries { get; set; }
         public int RetryCount { get; internal set; }
         public int[] RetryIntervals { get; set; }
+
+        public Guid? BatchParent { get; set; }
+
+        public BatchRunCondition? BatchRunCondition { get; set; }
+
+        internal virtual TimeTickerEntity ParentJob { get; set; }
+        internal virtual ICollection<TimeTickerEntity> ChildJobs { get; set; }
     }
 }

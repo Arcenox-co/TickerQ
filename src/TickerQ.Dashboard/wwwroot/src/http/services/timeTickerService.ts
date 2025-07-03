@@ -3,12 +3,12 @@ import { formatDate, formatTime } from '@/utilities/dateTimeParser';
 import { useBaseHttpService } from '../base/baseHttpService';
 import { Status } from './types/base/baseHttpResponse.types';
 import {
-    AddTimeTickerRequest,
-    GetTimeTickerGraphDataRangeResponse,
-    GetTimeTickerGraphDataResponse,
-    GetTimeTickerResponse,
-    UpdateTimeTickerRequest
-} from './types/timeTickerService.types';
+  AddTimeTickerRequest,
+  GetTimeTickerGraphDataRangeResponse,
+  GetTimeTickerGraphDataResponse,
+  GetTimeTickerResponse, SetBatchParentRequest,
+  UpdateTimeTickerRequest
+} from './types/timeTickerService.types'
 import { nameof } from '@/utilities/nameof';
 import { format} from 'timeago.js';
 import { useFunctionNameStore } from '@/stores/functionNames';
@@ -28,11 +28,11 @@ const getTimeTickers = () => {
 
             response.description = response.description == '' ? 'N/A' : response.description;
 
-            if (response.retryIntervals == null || response.retryIntervals.length == 0 && response.retries != null && (response.retries as number) > 0) 
+            if (response.retryIntervals == null || response.retryIntervals.length == 0 && response.retries != null && (response.retries as number) > 0)
                 response.retryIntervals = Array(1).fill(`${30}s`);
-            else 
+            else
                 response.retryIntervals = (response.retryIntervals as string[]).map((x: any) => formatTime(x as number, false));
-            
+
             response.lockHolder = response.lockHolder ?? 'N/A';
 
             return response;
@@ -49,6 +49,14 @@ const getTimeTickers = () => {
             }
             if (nameof<GetTimeTickerResponse>(x => x.executionTimeFormatted) == header.key) {
                 header.title = "Execution Time"
+            }
+
+            if (nameof<GetTimeTickerResponse>((x) => x.batchParent) == header.key) {
+              header.visibility = false
+            }
+
+            if (nameof<GetTimeTickerResponse>((x) => x.batchRunCondition) == header.key) {
+              header.visibility = false
             }
 
             return header;
@@ -125,6 +133,17 @@ const updateTimeTicker = () => {
     };
 }
 
+const setBatchParent = () => {
+  const baseHttp = useBaseHttpService<SetBatchParentRequest, object>('single');
+
+  const requestAsync = async (data: SetBatchParentRequest) => (await baseHttp.sendAsync("POST", "time-tickers/set-batch-parent", { bodyData: data}));
+
+  return {
+    ...baseHttp,
+    requestAsync
+  };
+}
+
 
 export const timeTickerService = {
     getTimeTickers,
@@ -133,4 +152,5 @@ export const timeTickerService = {
     getTimeTickersGraphData,
     addTimeTicker,
     updateTimeTicker,
+  setBatchParent
 };

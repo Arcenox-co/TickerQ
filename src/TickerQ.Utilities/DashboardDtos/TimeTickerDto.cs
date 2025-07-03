@@ -18,5 +18,8 @@ namespace TickerQ.Utilities.DashboardDtos
         public int RetryCount { get; set; }
         public int[] RetryIntervals { get; set; }
         public string InitIdentifier { get; set; }
+        
+        public Guid? BatchParent { get; set; }
+        public BatchRunCondition? BatchRunCondition { get; set; }
     }
 }

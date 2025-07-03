@@ -14,11 +14,16 @@ namespace TickerQ.EntityFrameworkCore.Configurations
                 .IsConcurrencyToken()
                 .IsRequired(false);
 
+            builder.HasOne(e => e.ParentJob)
+                .WithMany(x => x.ChildJobs)
+                .HasForeignKey(x => x.BatchParent)
+                .OnDelete(DeleteBehavior.SetNull);
+            
             builder.HasIndex("ExecutionTime")
-                    .HasName("IX_TimeTicker_ExecutionTime");
+                .HasName("IX_TimeTicker_ExecutionTime");
 
             builder.HasIndex("Status", "ExecutionTime")
-                    .HasName("IX_TimeTicker_Status_ExecutionTime");
+                .HasName("IX_TimeTicker_Status_ExecutionTime");
 
             builder.ToTable("TimeTickers", "ticker");
         }

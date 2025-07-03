@@ -44,7 +44,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Description = entity.Description,
                 CreatedAt = entity.CreatedAt,
                 UpdatedAt = entity.UpdatedAt,
-                InitIdentifier = entity.InitIdentifier
+                InitIdentifier = entity.InitIdentifier,
+                BatchParent = entity.BatchParent,
+                BatchRunCondition = entity.BatchRunCondition
             };
         }
 
@@ -122,7 +124,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Description = ticker.Description,
                 CreatedAt = ticker.CreatedAt,
                 UpdatedAt = ticker.UpdatedAt,
-                InitIdentifier = ticker.InitIdentifier
+                InitIdentifier = ticker.InitIdentifier,
+                BatchRunCondition = ticker.BatchRunCondition,
+                BatchParent = ticker.BatchParent
             };
         }
 

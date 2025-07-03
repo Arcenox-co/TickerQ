@@ -10,6 +10,7 @@ namespace TickerQ.Utilities.Interfaces
     internal interface ITickerDashboardRepository
     {
         Task<IList<TimeTickerDto>> GetTimeTickersAsync();
+        Task SetTimeTickerBatchParent(Guid targetId, Guid parentId, BatchRunCondition? batchRunCondition = null);
         Task<IList<Tuple<TickerStatus, int>>> GetTimeTickerFullDataAsync(CancellationToken cancellationToken);
         Task<IList<TickerGraphData>> GetTimeTickersGraphSpecificDataAsync(int pastDays, int futureDays,CancellationToken cancellationToken);
         Task<IList<TickerGraphData>> GetCronTickersGraphSpecificDataAsync(int pastDays, int futureDays,CancellationToken cancellationToken);
