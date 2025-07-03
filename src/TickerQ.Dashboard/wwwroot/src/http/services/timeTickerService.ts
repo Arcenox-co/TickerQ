@@ -28,11 +28,11 @@ const getTimeTickers = () => {
 
             response.description = response.description == '' ? 'N/A' : response.description;
 
-            if (response.retryIntervals == null || response.retryIntervals.length == 0 && response.retries != null && (response.retries as number) > 0) 
+            if (response.retryIntervals == null || response.retryIntervals.length == 0 && response.retries != null && (response.retries as number) > 0)
                 response.retryIntervals = Array(1).fill(`${30}s`);
-            else 
+            else
                 response.retryIntervals = (response.retryIntervals as string[]).map((x: any) => formatTime(x as number, false));
-            
+
             response.lockHolder = response.lockHolder ?? 'N/A';
 
             return response;
@@ -49,6 +49,14 @@ const getTimeTickers = () => {
             }
             if (nameof<GetTimeTickerResponse>(x => x.executionTimeFormatted) == header.key) {
                 header.title = "Execution Time"
+            }
+
+            if (nameof<GetTimeTickerResponse>((x) => x.batchParent) == header.key) {
+              header.visibility = false
+            }
+
+            if (nameof<GetTimeTickerResponse>((x) => x.batchRunCondition) == header.key) {
+              header.visibility = false
             }
 
             return header;

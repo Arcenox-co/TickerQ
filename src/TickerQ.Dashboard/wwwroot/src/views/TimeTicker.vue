@@ -19,6 +19,7 @@ import {
   GridComponent,
 } from 'echarts/components'
 import VChart, { THEME_KEY } from 'vue-echarts'
+
 const getTimeTickers = timeTickerService.getTimeTickers()
 const deleteTimeTicker = timeTickerService.deleteTimeTicker()
 const requestCancelTicker = tickerService.requestCancel()
@@ -45,6 +46,8 @@ const exceptionDialog = useDialog<ConfirmDialogProps>().withComponent(
 
 const requestMatchType = ref(new Map<string, number>())
 const crudTimeTickerDialogRef = ref(null)
+
+const expandedParents = ref(new Set<string>())
 
 onMounted(async () => {
   await TickerNotificationHub.startConnection()
@@ -78,6 +81,72 @@ const addHubListeners = async () => {
   TickerNotificationHub.onReceiveDeleteTimeTicker<string>((id) => {
     getTimeTickers.removeFromResponse('id', id)
   })
+}
+
+// Process data to create hierarchical structure
+const processedTableData = computed(() => {
+  const rawData = getTimeTickers.response.value || []
+  const result: any[] = []
+
+  // Create maps for quick lookup
+  const parentMap = new Map<string, any>()
+  const childrenMap = new Map<string, any[]>()
+
+  // First pass: separate parents and children
+  rawData.forEach(item => {
+    if (!item.batchParent) {
+      // This is a parent item
+      parentMap.set(item.id, { ...item, isParent: true, children: [] })
+    } else {
+      // This is a child item
+      if (!childrenMap.has(item.batchParent)) {
+        childrenMap.set(item.batchParent, [])
+      }
+      childrenMap.get(item.batchParent)?.push({ ...item, isChild: true })
+    }
+  })
+
+  parentMap.forEach((parent, parentId) => {
+    const children = childrenMap.get(parentId) || []
+    parent.children = children
+    result.push(parent)
+
+    // Add children to result if parent is expanded
+    if (expandedParents.value.has(parentId)) {
+      children.forEach(child => {
+        result.push(child)
+      })
+    }
+  })
+
+  childrenMap.forEach((children, parentId) => {
+    if (!parentMap.has(parentId)) {
+      children.forEach(child => {
+        result.push({ ...child, isOrphan: true })
+      })
+    }
+  })
+
+  return result
+})
+
+const toggleParentExpansion = (parentId: string) => {
+  if (expandedParents.value.has(parentId)) {
+    expandedParents.value.delete(parentId)
+  } else {
+    expandedParents.value.add(parentId)
+  }
+  // Trigger reactivity
+  expandedParents.value = new Set(expandedParents.value)
+}
+
+const isParentExpanded = (parentId: string) => {
+  return expandedParents.value.has(parentId)
+}
+
+const getChildrenCount = (parentId: string) => {
+  const parent = processedTableData.value.find(item => item.id === parentId && item.isParent)
+  return parent?.children?.length || 0
 }
 
 const closeCrudTimeTickerDialog = () => {
@@ -199,7 +268,26 @@ const onSubmitConfirmDialog = async () => {
 }
 
 const setRowProp = (propContext: any) => {
-  return { style: `color:${seriesColors[propContext.item.status]}` }
+  const baseStyle = `color:${seriesColors[propContext.item.status]}`
+
+  if (propContext.item.isChild) {
+    return {
+      style: `${baseStyle}; padding-left: 40px; background-color: rgba(255, 255, 255, 0.02);`,
+      class: 'child-row'
+    }
+  } else if (propContext.item.isParent) {
+    return {
+      style: `${baseStyle}; font-weight: 500;`,
+      class: 'parent-row'
+    }
+  } else if (propContext.item.isOrphan) {
+    return {
+      style: `${baseStyle}; font-style: italic; opacity: 0.8;`,
+      class: 'orphan-row'
+    }
+  }
+
+  return { style: baseStyle }
 }
 
 use([
@@ -369,6 +457,7 @@ watch(
   },
 )
 </script>
+
 <template>
   <v-container fluid>
     <v-row>
@@ -447,10 +536,70 @@ watch(
               :row-props="setRowProp"
               :headers="getTimeTickers.headers.value"
               :loading="getTimeTickers.loader.value"
-              :items="getTimeTickers.response.value"
+              :items="processedTableData"
               item-value="Id"
               item-class="custom-row-class"
+              :items-per-page="-1"
+              hide-default-footer
             >
+              <template v-slot:item.function="{ item }">
+                <div class="d-flex align-center">
+                  <v-btn
+                    v-if="item.isParent && getChildrenCount(item.id) > 0"
+                    :icon="isParentExpanded(item.id) ? 'mdi-chevron-down' : 'mdi-chevron-right'"
+                    size="small"
+                    variant="text"
+                    density="comfortable"
+                    @click="toggleParentExpansion(item.id)"
+                    class="mr-2"
+                  >
+                  </v-btn>
+
+                  <!-- Indentation for Child Items -->
+                  <div v-else-if="item.isChild" class="ml-8"></div>
+
+                  <!-- Function Name with Hierarchy Indicators -->
+                  <div class="d-flex align-center">
+                    <v-icon
+                      v-if="item.isParent && getChildrenCount(item.id) > 0"
+                      size="small"
+                      class="mr-1"
+                      color="primary"
+                    >
+                      mdi-folder-outline
+                    </v-icon>
+                    <v-icon
+                      v-else-if="item.isChild"
+                      size="small"
+                      class="mr-1"
+                      color="secondary"
+                    >
+                      mdi-subdirectory-arrow-right
+                    </v-icon>
+                    <v-icon
+                      v-else-if="item.isOrphan"
+                      size="small"
+                      class="mr-1"
+                      color="warning"
+                    >
+                      mdi-help-circle-outline
+                    </v-icon>
+
+                    <span>{{ item.function }}</span>
+
+                    <!-- Child Count Badge for Parents -->
+                    <v-chip
+                      v-if="item.isParent && getChildrenCount(item.id) > 0"
+                      size="x-small"
+                      color="primary"
+                      class="ml-2"
+                    >
+                      {{ getChildrenCount(item.id) }}
+                    </v-chip>
+                  </div>
+                </div>
+              </template>
+
               <template v-slot:item.status="{ item }">
                 <span
                   :class="hasStatus(item.status, Status.Failed) ? 'underline' : ''"
@@ -473,10 +622,11 @@ watch(
                     class="ml-2 mb-1"
                     size="small"
                     v-if="hasStatus(item.status, Status.Failed)"
-                    >mdi-bug-outline</v-icon
+                  >mdi-bug-outline</v-icon
                   >
                 </span>
               </template>
+
               <template v-slot:item.RequestType="{ item }">
                 <v-badge
                   v-bind="
@@ -493,6 +643,7 @@ watch(
                   </p>
                 </v-badge>
               </template>
+
               <template v-slot:item.ExecutedAt="{ item }">
                 <div
                   v-if="hasStatus(item.status, Status.InProgress)"
@@ -512,6 +663,7 @@ watch(
                   }}
                 </div>
               </template>
+
               <template v-slot:item.retryIntervals="{ item }">
                 <span v-if="item.retryIntervals == null || item.retryIntervals.length == 0">
                   <span>N/A</span>
@@ -549,7 +701,7 @@ watch(
                       <span
                         class="attempt"
                         v-if="(item.retryCount as number) != item.retryIntervals.length + 1"
-                        >, ...
+                      >, ...
                       </span>
                       <span v-else>, </span>
                       <span
@@ -583,7 +735,7 @@ watch(
                               ? 'active-attempt'
                               : 'interval'
                           : 'interval'
-                      "
+                        "
                     >
                       <span class="attempt">#{{ item.retries }}</span>
                       <span>&#x21FE;</span>
@@ -593,12 +745,14 @@ watch(
                   ]
                 </span>
               </template>
+
               <template v-slot:item.lockHolder="{ item }">
                 {{ item.lockHolder }}
                 <v-tooltip v-if="item.lockHolder != 'N/A'" activator="parent" location="left">
                   <span>Locked At: {{ formatDate(item.lockedAt) }}</span>
                 </v-tooltip>
               </template>
+
               <template v-slot:item.actions="{ item }">
                 <v-btn
                   @click="requestCancel(item.id)"
@@ -608,7 +762,7 @@ watch(
                   density="comfortable"
                 >
                   <v-icon :color="hasStatus(item.status, Status.InProgress) ? 'blue' : 'grey'"
-                    >mdi-cancel</v-icon
+                  >mdi-cancel</v-icon
                   >
                 </v-btn>
                 <v-btn
@@ -645,6 +799,7 @@ watch(
       </v-col>
     </v-row>
   </v-container>
+
   <confirmDialog.Component
     :is-open="confirmDialog.isOpen"
     @close="confirmDialog.close()"
@@ -672,6 +827,7 @@ watch(
     :dialog-props="exceptionDialog.propData"
   />
 </template>
+
 <style scoped>
 .chart {
   height: 35vh;
@@ -718,5 +874,52 @@ watch(
 .underline {
   text-decoration: underline;
   cursor: pointer;
+}
+
+.parent-row {
+  border-left: 3px solid #2196f3;
+}
+
+.child-row {
+  border-left: 3px solid #ff9800;
+  position: relative;
+}
+
+.child-row::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 152, 0, 0.3);
+}
+
+.orphan-row {
+  border-left: 3px solid #ff5722;
+}
+
+.parent-row:hover {
+  background-color: rgba(33, 150, 243, 0.05) !important;
+}
+
+.child-row:hover {
+  background-color: rgba(255, 152, 0, 0.05) !important;
+}
+
+.orphan-row:hover {
+  background-color: rgba(255, 87, 34, 0.05) !important;
+}
+
+:deep(.v-data-table__tr) {
+  transition: all 0.2s ease;
+}
+
+:deep(.v-btn--icon.v-btn--density-comfortable) {
+  transition: transform 0.2s ease;
+}
+
+:deep(.v-btn--icon.v-btn--density-comfortable:hover) {
+  transform: scale(1.1);
 }
 </style>
