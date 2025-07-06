@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 using System.Threading;
 using TickerQ.Dashboard.Controllers.Attributes;
+using TickerQ.Dashboard.Requests;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
@@ -62,6 +63,15 @@ namespace TickerQ.Dashboard.Controllers
         public async Task<IActionResult> GetTimeTickersGraphDataAsync(CancellationToken cancellationToken)
         {
             return Ok(await TickerDashboardRepository.GetTimeTickerFullDataAsync(cancellationToken));
+        }
+        
+        [HttpPost("time-tickers/set-batch-parent")]
+        public async Task<IActionResult> SetBatchParent([FromBody] SetBatchParentRequest request,  CancellationToken cancellationToken)
+        {
+            await TickerDashboardRepository.SetTimeTickerBatchParent(request.TargetId, request.ParentId,
+                request.BatchRunCondition);
+            
+            return Ok();
         }
 
         [HttpGet("cron-tickers/:graph-data-range")]

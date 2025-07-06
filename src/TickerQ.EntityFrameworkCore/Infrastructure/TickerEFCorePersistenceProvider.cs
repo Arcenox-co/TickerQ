@@ -80,6 +80,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 : timeTickerContext.AsNoTracking();
 
             var timeTickers = await query
+                .Include(x => x.ParentJob)
                 .Where(x =>
                     ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
                      (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)) &&
@@ -215,6 +216,19 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             DeleteRange(entities, x => x.Id);
 
             await SaveAndDetachAsync<TimeTickerEntity>(cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<TTimeTicker[]> GetChildTickersByParentId(Guid parentTickerId,
+            CancellationToken cancellationToken = new CancellationToken())
+        {
+            var timeTickerContext = GetDbSet<TimeTickerEntity>();
+
+            var childTickers = await timeTickerContext
+                .AsNoTracking()
+                .Where(x => x.BatchParent == parentTickerId)
+                .ToListAsync(cancellationToken: cancellationToken);
+
+            return childTickers.Select(x => x.ToTimeTicker<TTimeTicker>()).ToArray();
         }
 
         public async Task<byte[]> GetTimeTickerRequest(Guid tickerId, Action<TickerProviderOptions> options = null,
@@ -480,7 +494,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder,
-            Guid[] cronTickerIds, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
+            Guid[] cronTickerIds, Action<TickerProviderOptions> options = null,
+            CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -649,7 +664,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesWithin(DateTime startDate,
-            DateTime endDate, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
+            DateTime endDate, Action<TickerProviderOptions> options = null,
+            CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 

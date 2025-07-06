@@ -107,7 +107,8 @@ const seriesColors: { [key: string]: string } = {
   Done: '#32CD32', // Lime Green
   DueDone: '#008000', // Green
   Failed: '#FF0000', // Red
-  Cancelled: '#FFD700', // Gold/Yellow
+  Cancelled: '#FFD700', // Gold/Yellow,
+  Batched: '#A9A9A9', // Dark Gray
 }
 
 const setRowProp = (propContext: any) => {

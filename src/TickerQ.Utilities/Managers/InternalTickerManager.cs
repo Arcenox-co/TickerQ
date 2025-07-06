@@ -21,6 +21,21 @@ namespace TickerQ.Utilities.Managers
         protected readonly ITickerClock Clock;
         protected readonly ITickerQNotificationHubSender NotificationHubSender;
 
+        private static readonly HashSet<TickerStatus> SuccessConditions = new HashSet<TickerStatus>()
+        {
+            TickerStatus.Done, 
+            TickerStatus.DueDone
+        };
+
+
+        private static readonly HashSet<TickerStatus> CompletedStatuses = new HashSet<TickerStatus>()
+        {
+            TickerStatus.Cancelled,
+            TickerStatus.Done,
+            TickerStatus.DueDone,
+            TickerStatus.Failed
+        };
+
         protected InternalTickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerHost tickerHost, ITickerClock clock, TickerOptionsBuilder tickerOptionsBuilder,
             ITickerQNotificationHubSender notificationHubSender)
@@ -105,7 +120,8 @@ namespace TickerQ.Utilities.Managers
                 new DateTime(minDate.Ticks - minDate.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
 
             var timeTickers = await PersistenceProvider
-                .GetNextTimeTickers(LockHolder, roundedMinDate, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
+                .GetNextTimeTickers(LockHolder, roundedMinDate, opt => opt.SetAsTracking(),
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             var lockedAndQueuedTimeTickers = LockAndQueueTimeTickers(timeTickers).ToArray();
@@ -154,7 +170,8 @@ namespace TickerQ.Utilities.Managers
                 .ConfigureAwait(false);
 
             var occurrenceList = await PersistenceProvider
-                .GetNextCronTickerOccurrences(LockHolder, cronTickerIdSet, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
+                .GetNextCronTickerOccurrences(LockHolder, cronTickerIdSet, opt => opt.SetAsTracking(),
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             var result = new List<InternalFunctionContext>();
@@ -314,7 +331,7 @@ namespace TickerQ.Utilities.Managers
             CancellationToken cancellationToken = default)
         {
             var timeTickers = await PersistenceProvider
-                .GetLockedTimeTickers(LockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress }, 
+                .GetLockedTimeTickers(LockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress },
                     opt => opt.SetAsTracking(),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -383,7 +400,8 @@ namespace TickerQ.Utilities.Managers
                         var cronTickerIds = resourceType.Select(x => x.TickerId).ToArray();
 
                         var cronTickers = await PersistenceProvider
-                            .GetCronTickersByIds(cronTickerIds, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
+                            .GetCronTickersByIds(cronTickerIds, opt => opt.SetAsTracking(),
+                                cancellationToken: cancellationToken)
                             .ConfigureAwait(false);
 
                         foreach (var cronTicker in cronTickers)
@@ -402,7 +420,8 @@ namespace TickerQ.Utilities.Managers
                         var cronOccurrenceIds = resourceType.Select(x => x.TickerId).ToArray();
 
                         var cronTickerOccurrences = await PersistenceProvider
-                            .GetCronTickerOccurrencesByIds(cronOccurrenceIds, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
+                            .GetCronTickerOccurrencesByIds(cronOccurrenceIds, opt => opt.SetAsTracking(),
+                                cancellationToken: cancellationToken)
                             .ConfigureAwait(false);
 
                         foreach (var cronTickerOccurrence in cronTickerOccurrences)
@@ -425,7 +444,8 @@ namespace TickerQ.Utilities.Managers
                     var timeTickerIds = resourceType.Select(x => x.TickerId).ToArray();
 
                     var timeTickers = await PersistenceProvider
-                        .GetTimeTickersByIds(timeTickerIds, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
+                        .GetTimeTickersByIds(timeTickerIds, opt => opt.SetAsTracking(),
+                            cancellationToken: cancellationToken)
                         .ConfigureAwait(false);
 
                     foreach (var timeTicker in timeTickers)
@@ -438,6 +458,11 @@ namespace TickerQ.Utilities.Managers
 
                     await PersistenceProvider.UpdateTimeTickers(timeTickers, cancellationToken: cancellationToken)
                         .ConfigureAwait(false);
+
+                    foreach (var timeTicker in timeTickers)
+                    {
+                        await CascadeBatchUpdate(timeTicker.Id, timeTicker.Status, cancellationToken);
+                    }
                 }
             }
         }
@@ -682,6 +707,26 @@ namespace TickerQ.Utilities.Managers
 
                 TickerHost.RestartIfNeeded(timeTicker.ExecutionTime);
             }
+        }
+
+        public async Task CascadeBatchUpdate(Guid parentTickerId, TickerStatus currentStatus,
+            CancellationToken cancellationToken = default)
+        {
+            var childTickers = await PersistenceProvider.GetChildTickersByParentId(parentTickerId, cancellationToken);
+
+            foreach (var child in childTickers)
+            {
+                child.Status = child.BatchRunCondition switch
+                {
+                    BatchRunCondition.OnSuccess when SuccessConditions.Contains(currentStatus) => TickerStatus
+                        .Idle,
+                    BatchRunCondition.OnAnyCompletedStatus when CompletedStatuses.Contains(currentStatus) =>
+                        TickerStatus.Idle,
+                    _ => child.Status
+                };
+            }
+
+            await PersistenceProvider.UpdateTimeTickers(childTickers, cancellationToken: cancellationToken);
         }
     }
 }

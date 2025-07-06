@@ -25,11 +25,11 @@ namespace TickerQ.SourceGenerator
                 if (TfmHelper.IsNet6OrGreaterFromTfm(tfm))
                     return;
             }
-            
+
             var compilation = context.Compilation;
             var receiver = context.SyntaxReceiver as SyntaxReceiver;
             var methodPairs = new List<(ClassDeclarationSyntax, MethodDeclarationSyntax)>();
-            
+
             if (compilation.Assembly.Name == "TickerQ")
                 return;
 
