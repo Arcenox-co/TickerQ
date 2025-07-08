@@ -136,7 +136,11 @@ await _timeTickerManager.AddAsync(new TimeTicker
     ExecutionTime = DateTime.UtcNow.AddMinutes(1),
     Request = TickerHelper.CreateTickerRequest<string>("User123"),
     Retries = 3,
-    RetryIntervals = new[] { 30, 60, 120 } // Retry after 30s, 60s, then 2min
+    RetryIntervals = new[] { 30, 60, 120 }, // Retry after 30s, 60s, then 2min
+
+    // Optional batching
+    BatchParent = Guid.Parse("...."),
+    BatchRunCondition = BatchRunCondition.OnSuccess
 });
 ```
 
