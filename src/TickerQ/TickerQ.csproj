@@ -30,4 +30,8 @@
               PackagePath="analyzers/dotnet/cs" />
     </ItemGroup>
 
+    <ItemGroup>
+      <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
+    </ItemGroup>
+
 </Project>

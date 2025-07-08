@@ -18,4 +18,8 @@
 	   <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="[2.1.0,)" />
 	   <PackageReference Include="TickerQ.Utilities" Version="$(PackageVersion)" />
    </ItemGroup>
+	
+   <ItemGroup>
+     <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
+   </ItemGroup>
 </Project>
