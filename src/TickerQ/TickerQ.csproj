@@ -11,7 +11,7 @@
     <ItemGroup>
         <None Include="..\..\README.md" Pack="true" PackagePath="" />
     </ItemGroup>
-    
+
     <ItemGroup>
         <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.2.0"/>
         <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="[2.1.0,)"/>
@@ -28,10 +28,6 @@
         <None Include="..\TickerQ.SourceGenerator\bin\$(Configuration)\netstandard2.0\TickerQ.SourceGenerator.dll"
               Pack="true"
               PackagePath="analyzers/dotnet/cs" />
-    </ItemGroup>
-
-    <ItemGroup>
-      <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
     </ItemGroup>
 
 </Project>
