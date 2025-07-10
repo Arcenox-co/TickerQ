@@ -7,10 +7,15 @@ import { sleep } from '@/utilities/sleep'
 import { useDialog } from '@/composables/useDialog'
 import { methodName, type TickerNotificationHubType } from '@/hub/tickerNotificationHub'
 import type { GetCronTickerOccurrenceResponse } from '@/http/services/types/cronTickerOccurrenceService.types'
+import { ConfirmDialogProps } from '@/components/common/ConfirmDialog.vue'
 </script>
 
 <script setup lang="ts">
 const confirmDialog = useDialog<{ data: string }>().withComponent(
+  () => import('@/components/common/ConfirmDialog.vue'),
+)
+
+const exceptionDialog = useDialog<ConfirmDialogProps>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
 )
 
@@ -121,6 +126,11 @@ const setRowProp = (propContext: any) => {
     @close="confirmDialog.close()"
     @confirm="onSubmitConfirmDialog"
   />
+  <exceptionDialog.Component
+    :is-open="exceptionDialog.isOpen"
+    @close="exceptionDialog.close()"
+    :dialog-props="exceptionDialog.propData"
+  />
   <div class="text-center pa-4">
     <v-dialog v-model="toRef(isOpen).value" width="auto">
       <v-card>
@@ -138,6 +148,32 @@ const setRowProp = (propContext: any) => {
           :row-props="setRowProp"
           key="Id"
         >
+        <template v-slot:item.status="{ item }">
+                <span
+                  :class="hasStatus(item.status, Status.Failed) ? 'underline' : ''"
+                  @click="
+                    hasStatus(item.status, Status.Failed)
+                      ? exceptionDialog.open({
+                          ...new ConfirmDialogProps(),
+                          title: 'Exception Details',
+                          text: JSON.stringify(JSON.parse(item.exception!), null, 2),
+                          showConfirm: false,
+                          maxWidth: '800',
+                          icon: 'mdi-bug-outline',
+                          isCode: true,
+                        })
+                      : null
+                  "
+                >
+                  <span>{{ item.status }}</span>
+                  <v-icon
+                    class="ml-2 mb-1"
+                    size="small"
+                    v-if="hasStatus(item.status, Status.Failed)"
+                  >mdi-bug-outline</v-icon
+                  >
+                </span>
+              </template>
           <template v-slot:item.ExecutedAt="{ item }">
             <div
               v-if="hasStatus(item.status, Status.InProgress)"
