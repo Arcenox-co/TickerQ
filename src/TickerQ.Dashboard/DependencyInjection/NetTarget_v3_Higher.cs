@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
+using TickerQ.Dashboard.Controllers;
 using TickerQ.Dashboard.Hubs;
 
 namespace TickerQ.Dashboard.DependencyInjection
@@ -25,7 +26,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                         .AllowCredentials();
                 });
             });
-            services.AddControllers();
+            services.AddControllers().AddApplicationPart(typeof(TickerQController).Assembly);
         }
 
         internal static void UseDashboard(IApplicationBuilder app, string basePath)
