@@ -71,6 +71,16 @@ const deleteCronTicker = () => {
     };
 }
 
+const runCronTickerOnDemand = () => {
+    const baseHttp = useBaseHttpService<object, object>('single')
+    const requestAsync = async (id: string) => (await baseHttp.sendAsync("POST", "cron-ticker/:run", { paramData: { id } }));
+
+    return {
+        ...baseHttp,
+        requestAsync
+    };
+}
+
 const getTimeTickersGraphDataRange = () => {
     const baseHttp = useBaseHttpService<object, GetCronTickerGraphDataRangeResponse>('array')
         .FixToResponseModel(GetCronTickerGraphDataRangeResponse, (item) => {
@@ -115,11 +125,13 @@ const getTimeTickersGraphData = () => {
         requestAsync
     };
 }
+
 export const cronTickerService = {
     getCronTickers,
     updateCronTicker,
     addCronTicker,
     deleteCronTicker,
+    runCronTickerOnDemand,
     getTimeTickersGraphDataRange,
     getTimeTickersGraphDataRangeById,
     getTimeTickersGraphData

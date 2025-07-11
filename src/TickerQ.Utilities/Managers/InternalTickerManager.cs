@@ -279,9 +279,17 @@ namespace TickerQ.Utilities.Managers
                     var existingOccurrence = cronTickerOccurrences
                         .FirstOrDefault(x => x.CronTickerId == vt.Item1 && x.LockHolder != LockHolder);
 
-                    var next = existingOccurrence != null
-                        ? schedule.GetNextOccurrence(existingOccurrence.ExecutionTime)
-                        : schedule.GetNextOccurrence(now);
+                    DateTime next;
+                    if (existingOccurrence != null)
+                    {
+                        next = existingOccurrence.LockHolder == null 
+                            ? existingOccurrence.ExecutionTime 
+                            : schedule.GetNextOccurrence(existingOccurrence.ExecutionTime);
+                    }
+                    else
+                    {
+                        next = schedule.GetNextOccurrence(now);
+                    }
 
                     return new
                     {
