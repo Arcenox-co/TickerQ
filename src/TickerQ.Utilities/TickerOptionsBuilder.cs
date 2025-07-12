@@ -8,7 +8,7 @@ namespace TickerQ.Utilities
     public class TickerOptionsBuilder
     {
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
-        internal Action<IApplicationBuilder> ExternalProviderConfigApplicationAction { get; set; }
+        internal Action<IServiceProvider> ExternalProviderConfigApplicationAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
         internal Action<IApplicationBuilder, string> DashboardApplicationAction { get; set; }
         internal TimeSpan TimeOutChecker { get; private set; } = TimeSpan.FromMinutes(1);

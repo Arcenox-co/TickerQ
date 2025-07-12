@@ -15,7 +15,7 @@ using TickerQ.Utilities.Temps;
 
 namespace TickerQ.DependencyInjection
 {
-    public static class ServiceExtensions
+    public static class TickerQServiceExtensions
     {
         /// <summary>
         /// Adds Ticker to the service collection.
@@ -59,33 +59,41 @@ namespace TickerQ.DependencyInjection
 
             return services;
         }
+        
+        public static void UseTickerQ(this IApplicationBuilder app, 
+            TickerQStartMode qStartMode = TickerQStartMode.Immediate)
+        {
+            var tickerOptBuilder = app.ApplicationServices.GetService<TickerOptionsBuilder>();
+
+            if (tickerOptBuilder?.DashboardApplicationAction != null)
+                tickerOptBuilder.DashboardApplicationAction.Invoke(app, tickerOptBuilder.DashboardLunchUrl);
+
+            UseTickerQ(app.ApplicationServices, qStartMode);
+        }
 
         /// <summary>
         /// Use Ticker in the application.
         /// </summary>
-        /// <param name="app"></param>
+        /// <param name="serviceProvider"></param>
         /// <param name="qStartMode"></param>
         /// <returns></returns>
-        public static IApplicationBuilder UseTickerQ(this IApplicationBuilder app, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
+        internal static void UseTickerQ(IServiceProvider serviceProvider, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
         {
-            var tickerOptBuilder = app.ApplicationServices.GetService<TickerOptionsBuilder>();
-            var configuration = app.ApplicationServices.GetService<IConfiguration>();
+            var tickerOptBuilder = serviceProvider.GetService<TickerOptionsBuilder>();
+            var configuration = serviceProvider.GetService<IConfiguration>();
 
             MapCronFromConfig(configuration);
 
-            if (tickerOptBuilder is { DashboardApplicationAction: { } })
-                tickerOptBuilder.DashboardApplicationAction.Invoke(app, tickerOptBuilder.DashboardLunchUrl);
-
             tickerOptBuilder.NotifyNextOccurenceFunc = nextOccurrence =>
             {
-                var notificationHubSender = app.ApplicationServices.GetService<ITickerQNotificationHubSender>();
+                var notificationHubSender = serviceProvider.GetService<ITickerQNotificationHubSender>();
 
                 notificationHubSender.UpdateNextOccurrence(nextOccurrence);
             };
 
             tickerOptBuilder.NotifyHostStatusFunc = active =>
             {
-                var notificationHubSender = app.ApplicationServices.GetService<ITickerQNotificationHubSender>();
+                var notificationHubSender = serviceProvider.GetService<ITickerQNotificationHubSender>();
 
                 notificationHubSender.UpdateHostStatus(active);
             };
@@ -93,25 +101,24 @@ namespace TickerQ.DependencyInjection
             tickerOptBuilder.HostExceptionMessageFunc = message =>
             {
                 tickerOptBuilder.LastHostExceptionMessage = message;
-                var notificationHubSender = app.ApplicationServices.GetService<ITickerQNotificationHubSender>();
+                var notificationHubSender = serviceProvider.GetService<ITickerQNotificationHubSender>();
 
                 notificationHubSender.UpdateHostException(message);
             };
             
             if(tickerOptBuilder.ExternalProviderConfigApplicationAction != null)
-                tickerOptBuilder.ExternalProviderConfigApplicationAction(app);
+                tickerOptBuilder.ExternalProviderConfigApplicationAction(serviceProvider);
             else
-                SeedDefinedCronTickers(app);
+                SeedDefinedCronTickers(serviceProvider);
 
-            if (qStartMode == TickerQStartMode.Manual) return app;
+            if (qStartMode == TickerQStartMode.Manual) return;
 
-            var tickerHost = app.ApplicationServices.GetRequiredService<ITickerHost>();
+            var tickerHost = serviceProvider.GetRequiredService<ITickerHost>();
 
             tickerHost.Start();
-
-            return app;
         }
-
+        
+        
         private static void MapCronFromConfig(IConfiguration configuration)
         {
             var tickerFunctions =
@@ -128,9 +135,9 @@ namespace TickerQ.DependencyInjection
             TickerFunctionProvider.MapCronExpressionsFromIConfigurations(tickerFunctions);
         }
 
-        private static void SeedDefinedCronTickers(this IApplicationBuilder app)
+        private static void SeedDefinedCronTickers(IServiceProvider serviceProvider)
         {
-            using var scope = app.ApplicationServices.CreateScope();
+            using var scope = serviceProvider.CreateScope();
 
             var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
                 
