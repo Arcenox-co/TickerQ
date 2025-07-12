@@ -1,7 +1,7 @@
 # TickerQ
 
 
-[![Discord Community](https://img.shields.io/badge/Discord-TickerQ-5865F2?logo=discord-community&logoColor=white&style=for-the-badge)](https://discord.gg/D7qvAjbK)
+[![Discord Community](https://img.shields.io/badge/Discord-TickerQ-5865F2?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/D7qvAjbK)
 
 
 [![NuGet](https://img.shields.io/nuget/dt/tickerq.svg)](https://www.nuget.org/packages/tickerq) 
