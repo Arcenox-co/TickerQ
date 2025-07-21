@@ -482,7 +482,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerOccurrences = await query
                 .Where(x => ids.Contains(x.CronTickerId))
                 .Where(x => x.ExecutionTime >= now)
-                .OrderByDescending(x => x.ExecutionTime)
+                .OrderBy(x => x.ExecutionTime)
                 .ToListAsync(cancellationToken);
 
             cronTickerOccurrences = cronTickerOccurrences.DistinctBy(x => x.CronTickerId)

@@ -439,6 +439,27 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 }).ToList();
         }
 
+        public async Task AddOnDemandCronTickerOccurrenceAsync(Guid id)
+        {
+            var now = DateTime.UtcNow;
+            
+            var onDemandOccurrence = new CronTickerOccurrence<TCronTicker>
+            {
+                Id = Guid.NewGuid(),
+                Status = TickerStatus.Idle,
+                ExecutionTime = now.AddSeconds(1),
+                LockedAt = now,
+                CronTickerId = id
+            };
+            
+            await _persistenceProvider.InsertCronTickerOccurrences(new[] { onDemandOccurrence });
+            
+            _tickerHost.RestartIfNeeded(onDemandOccurrence.ExecutionTime);
+            
+            if (_notificationHubSender != null)
+                await _notificationHubSender.AddCronOccurrenceAsync(id, onDemandOccurrence);
+        }
+
         public async Task<IList<CronTickerOccurrenceDto>> GetCronTickersOccurrencesAsync(Guid cronTickerId)
         {
             var cronTickerOccurrences = await _persistenceProvider.GetCronTickerOccurrencesByCronTickerId(cronTickerId);

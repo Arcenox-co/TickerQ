@@ -1,9 +1,15 @@
 # TickerQ
 
+
+[![Discord Community](https://img.shields.io/badge/Discord-TickerQ-5865F2?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/D7qvAjbK)
+
+
 [![NuGet](https://img.shields.io/nuget/dt/tickerq.svg)](https://www.nuget.org/packages/tickerq) 
 [![NuGet](https://img.shields.io/nuget/vpre/tickerq.svg)](https://www.nuget.org/packages/tickerq)
 [![Build NuGet Packages](https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml)
 [![Documentation](https://img.shields.io/badge/docs%20-official%20web-blue)](https://tickerq.arcenox.com)
+
+
 
 **Robust. Adaptive. Precise.**  
 TickerQ is a fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
@@ -136,7 +142,11 @@ await _timeTickerManager.AddAsync(new TimeTicker
     ExecutionTime = DateTime.UtcNow.AddMinutes(1),
     Request = TickerHelper.CreateTickerRequest<string>("User123"),
     Retries = 3,
-    RetryIntervals = new[] { 30, 60, 120 } // Retry after 30s, 60s, then 2min
+    RetryIntervals = new[] { 30, 60, 120 }, // Retry after 30s, 60s, then 2min
+
+    // Optional batching
+    BatchParent = Guid.Parse("...."),
+    BatchRunCondition = BatchRunCondition.OnSuccess
 });
 ```
 

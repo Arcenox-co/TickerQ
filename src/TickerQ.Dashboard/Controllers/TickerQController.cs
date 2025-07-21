@@ -199,6 +199,13 @@ namespace TickerQ.Dashboard.Controllers
             await TickerDashboardRepository.UpdateCronTickerAsync(id, jsonString);
             return Ok();
         }
+        
+        [HttpPost("cron-ticker/:run")]
+        public async Task<IActionResult> RunCronTickerOnDemandAsync([FromQuery] Guid id)
+        {
+            await TickerDashboardRepository.AddOnDemandCronTickerOccurrenceAsync(id);
+            return Ok();
+        }
 
         [HttpGet("ticker-host/:next-ticker")]
         public IActionResult GetNextTickerAsync()

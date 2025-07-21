@@ -29,6 +29,7 @@ const getCronTickers = cronTickerService.getCronTickers()
 const getCronTickerRangeGraphDataById = cronTickerService.getTimeTickersGraphDataRangeById()
 const getCronTickersGraphDataAndParseToGraph = cronTickerService.getTimeTickersGraphData()
 const deleteCronTicker = cronTickerService.deleteCronTicker()
+const runCronTickerOnDemand = cronTickerService.runCronTickerOnDemand()
 
 const confirmDialog = useDialog<ConfirmDialogProps & { id: string }>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
@@ -157,6 +158,12 @@ const ShowCronTickerOccurrenceGraphData = async (
       selectedCronTickerGraphData.value = id
     })
   }
+}
+
+const RunCronTickerOnDemand = async (
+  id: string
+) => {
+  await runCronTickerOnDemand.requestAsync(id)
 }
 
 const addHubListeners = async () => {
@@ -522,6 +529,15 @@ watch(
                 @click="crudCronTickerDialog.open({ ...item, isFromDuplicate: false })"
               >
                 <v-icon color="amber">mdi-pencil</v-icon>
+              </v-btn>
+              <v-btn
+                icon
+                density="comfortable"
+                @click="RunCronTickerOnDemand(item.id)"
+              >
+                <v-icon color="light-green"
+                  >mdi-play-outline</v-icon
+                >
               </v-btn>
               <v-btn
                 @click="

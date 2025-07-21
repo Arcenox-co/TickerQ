@@ -17,6 +17,7 @@ namespace TickerQ.Utilities.Interfaces
         Task<IList<TickerGraphData>> GetCronTickersGraphSpecificDataByIdAsync(Guid id, int pastDays, int futureDays,CancellationToken cancellationToken);
         Task<IList<Tuple<TickerStatus, int>>> GetCronTickerFullDataAsync(CancellationToken cancellationToken);
         Task<IList<CronTickerDto>> GetCronTickersAsync();
+        Task AddOnDemandCronTickerOccurrenceAsync(Guid id);
         Task<IList<CronTickerOccurrenceDto>> GetCronTickersOccurrencesAsync(Guid guid);
         Task<IList<CronOccurrenceTickerGraphData>> GetCronTickersOccurrencesGraphDataAsync(Guid guid);
         bool CancelTickerById(Guid tickerId);

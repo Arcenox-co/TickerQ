@@ -85,9 +85,9 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
 
         private static void UseApplicationService(this TickerOptionsBuilder tickerConfiguration, bool cancelMissedTickersOnReset)
         {
-            tickerConfiguration.ExternalProviderConfigApplicationAction = (app) =>
+            tickerConfiguration.ExternalProviderConfigApplicationAction = (serviceProvider) =>
             {
-                using var scope = app.ApplicationServices.CreateScope();
+                using var scope = serviceProvider.CreateScope();
 
                 var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
                 
