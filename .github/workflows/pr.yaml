@@ -1,0 +1,59 @@
+name: Run Build and Tests on Pull Request
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  pr:
+    name: PR Build and Test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read version from file
+        id: get-version
+        run: |
+          VERSION=$(cat VERSION)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Setup .NET SDKs
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            3.0.x
+            5.0.x
+            6.0.x
+            7.0.x
+            8.0.x
+            9.0.x
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: src/TickerQ.Dashboard/wwwroot
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: src/TickerQ.Dashboard/wwwroot
+
+      - name: Build TickerQ.Utilities
+        run: dotnet build src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+
+      - name: Build TickerQ.SourceGenerator
+        run: dotnet build src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
+
+      - name: Build other projects
+        run: |
+          dotnet build src/TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet build src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+
+      - name: Run tests
+        run: dotnet test tests/TickerQ.Tests/ --no-build
