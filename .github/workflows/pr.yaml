@@ -44,16 +44,16 @@ jobs:
         working-directory: src/TickerQ.Dashboard/wwwroot
 
       - name: Build TickerQ.Utilities
-        run: dotnet build src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+        run: dotnet build src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
       - name: Build TickerQ.SourceGenerator
         run: dotnet build src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
 
       - name: Build other projects
         run: |
-          dotnet build src/TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
-          dotnet build src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
-          dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet build src/TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
+          dotnet build src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
+          dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ steps.get-version.outputs.version }}
 
       - name: Run tests
         run: dotnet test tests/TickerQ.Tests/ --no-build
