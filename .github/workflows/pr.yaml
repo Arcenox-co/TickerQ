@@ -8,7 +8,7 @@ on:
 jobs:
   pr:
     name: PR Build and Test
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
