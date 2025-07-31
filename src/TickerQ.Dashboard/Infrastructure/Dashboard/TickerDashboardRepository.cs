@@ -436,7 +436,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     Description = x.Description,
                     Retries = x.Retries,
                     RetryIntervals = x.RetryIntervals,
-                    InitIdentifier = x.InitIdentifier,
+                    InitIdentifier = x.InitIdentifier
                 }).ToList();
         }
 
@@ -920,12 +920,13 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                                 Id = cronTicker.Id,
                                 Function = cronTicker.Function,
                                 Expression = cronTicker.Expression,
+                                ExpressionReadable = TickerCronExpressionHelper.ToHumanReadable(cronTicker.Expression),
                                 CreatedAt = cronTicker.CreatedAt,
                                 UpdatedAt = cronTicker.UpdatedAt,
                                 RequestType = requestType,
                                 RetryIntervals = cronTicker.RetryIntervals,
                                 Description = cronTicker.Description,
-                                Retries = cronTicker.Retries
+                                Retries = cronTicker.Retries,
                             };
                             if (isNew)
                                 await _notificationHubSender.AddCronTickerNotifyAsync(cronTickerDto);
