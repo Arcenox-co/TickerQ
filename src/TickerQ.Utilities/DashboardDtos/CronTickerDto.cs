@@ -8,5 +8,6 @@ namespace TickerQ.Utilities.DashboardDtos
         public int Retries { get; set; }
         public int[] RetryIntervals { get; set; }
         public string InitIdentifier { get; set; }
+        public string ExpressionReadable { get; set; }
     }
 }

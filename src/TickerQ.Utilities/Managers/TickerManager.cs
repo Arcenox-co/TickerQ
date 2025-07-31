@@ -144,10 +144,11 @@ namespace TickerQ.Utilities.Managers
                     {
                         Function = entity.Function,
                         Expression = entity.Expression,
+                        ExpressionReadable = TickerCronExpressionHelper.ToHumanReadable(entity.Expression),
                         UpdatedAt = entity.UpdatedAt,
                         CreatedAt = entity.CreatedAt,
                         Retries = entity.Retries,
-                        RetryIntervals = entity.RetryIntervals,
+                        RetryIntervals = entity.RetryIntervals,                        
                         Id = entity.Id
                     });
 
