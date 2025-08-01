@@ -24,7 +24,10 @@ namespace TickerQ
 
                 try
                 {
-                    TickerOptionsBuilder.NotifyThreadCountFunc(count);
+                    if (TickerOptionsBuilder.NotifyThreadCountFunc is null)
+                    {
+                        TickerOptionsBuilder.NotifyThreadCountFunc(count);
+                    }
                 }
                 catch
                 {
