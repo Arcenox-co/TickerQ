@@ -17,7 +17,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.HasOne(e => e.ParentJob)
                 .WithMany(x => x.ChildJobs)
                 .HasForeignKey(x => x.BatchParent)
-                .OnDelete(DeleteBehavior.SetNull);
+                .OnDelete(DeleteBehavior.NoAction);
             
             builder.HasIndex("ExecutionTime")
                 .HasName("IX_TimeTicker_ExecutionTime");
