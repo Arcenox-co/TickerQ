@@ -396,6 +396,10 @@ watch(
     flush: 'post',
   },
 )
+
+const headersWithoutReadable = computed(() =>
+  getCronTickers.headers.value?.filter((h) => h.key !== 'expressionReadable')
+)
 </script>
 <template>
   <v-container fluid>
@@ -470,13 +474,23 @@ watch(
             </v-btn>
           </div>
           <v-data-table
-            :headers="getCronTickers.headers.value"
+            :headers="headersWithoutReadable"
             :loading="getCronTickers.loader.value"
             :items="getCronTickers.response.value"
             item-value="id"
             item-class="custom-row-class"
             density="compact"
-          >
+          >            
+            <template v-slot:item.expression="{ item }">
+                <v-tooltip location="top">
+                  <template #activator="{ props }">
+                    <span v-bind="props" class="expression-tooltip">
+                      {{ item.expression }}
+                    </span>
+                  </template>
+                  <span>{{ item.expressionReadable }}</span>
+                </v-tooltip>
+            </template>
             <template v-slot:item.retryIntervals="{ item }">
               <span v-if="item.retryIntervals == null || item.retryIntervals.length == 0">
                 <span>N/A</span>
@@ -591,5 +605,11 @@ watch(
 .attempt {
   font-size: 0.75em;
   color: #c8bbbb;
+}
+
+.expression-tooltip {
+  cursor: help;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 </style>
