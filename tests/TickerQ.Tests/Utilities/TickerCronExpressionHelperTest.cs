@@ -30,35 +30,35 @@ public class TickerCronExpressionHelperTest
     public void Test_EveryDayAtSpecificTime()
     {
         string result = TickerCronExpressionHelper.ToHumanReadable("30 14 * * *");
-        result.Should().Be("Every day at 02:30 PM");
+        result.Should().Be("Every day at 14:30");
     }
 
     [Fact]
     public void Test_EveryMondayAtTime()
     {
         string result = TickerCronExpressionHelper.ToHumanReadable("15 10 * * 1");
-        result.Should().Be("Every Mon at 10:15 AM");
+        result.Should().Be("Every Mon at 10:15");
     }
 
     [Fact]
     public void Test_Every27thAtTime()
     {
         string result = TickerCronExpressionHelper.ToHumanReadable("0 4 27 * ?");
-        result.Should().Be("Every month on the 27th at 04:00 AM");
+        result.Should().Be("Every month on the 27th at 04:00");
     }
 
     [Fact]
     public void Test_Every6MonthsOn27th()
     {
         string result = TickerCronExpressionHelper.ToHumanReadable("0 4 27 */6 ?");
-        result.Should().Be("Every 6 months on the 27th at 04:00 AM");
+        result.Should().Be("Every 6 months on the 27th at 04:00");
     }
 
     [Fact]
     public void Test_SpecificDayAndWeek()
     {
         string result = TickerCronExpressionHelper.ToHumanReadable("0 23 15 * 1");
-        result.Should().Be("On 15th and Mon at 11:00 PM");
+        result.Should().Be("On 15th and Mon at 23:00");
     }
 
     [Fact]
@@ -66,20 +66,20 @@ public class TickerCronExpressionHelperTest
     {
         TimeZoneInfo timeZone = TimeZoneInfo.FindSystemTimeZoneById("W. Central Africa Standard Time");
         string result = TickerCronExpressionHelper.ToHumanReadable("0 4 * * *", timeZone);
-        result.Should().Be("Every day at 05:00 AM");
+        result.Should().Be("Every day at 05:00");
     }
 
     [Fact]
     public void Test_Quartz6PartExpression()
     {
         string result = TickerCronExpressionHelper.ToHumanReadable("0 15 10 * * ?", null);
-        result.Should().Be("Every day at 10:15 AM");
+        result.Should().Be("Every day at 10:15");
     }
 
     [Fact]
     public void Test_Quartz7PartExpression()
     {
         string result = TickerCronExpressionHelper.ToHumanReadable("0 0 12 1/1 * ? *", null);
-        result.Should().Be("Every month on the 1st at 12:00 PM");
+        result.Should().Be("Every month on the 1st at 12:00");
     }
 }

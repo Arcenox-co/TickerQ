@@ -119,7 +119,7 @@ namespace TickerQ.Utilities
             int m = int.TryParse(minute.Replace("*/", "0"), out int mParsed) ? mParsed : 0;
             DateTime utcTime = new DateTime(2000, 1, 1, h, m, 0, DateTimeKind.Utc);
             DateTime localTime = timeZone != null ? TimeZoneInfo.ConvertTimeFromUtc(utcTime, timeZone) : utcTime;
-            return localTime.ToString("hh:mm tt");
+            return localTime.ToString("HH:mm");
         }
 
         /// <summary>
