@@ -13,11 +13,8 @@ public class TickerFunctionProviderTests
     [Fact]
     public void RegisterFunctions_ShouldStoreFunctionsCorrectly()
     {
-        // Arrange
-        bool wasCalled;
         TickerFunctionDelegate testDelegate = (ct, sp, ctx) =>
         {
-            wasCalled = true;
             return Task.CompletedTask;
         };
 
