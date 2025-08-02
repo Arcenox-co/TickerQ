@@ -221,7 +221,7 @@ TickerQ supports:
 await _cronTickerManager.AddAsync(new CronTicker
 {
     Function = "CleanupLogs",
-    CronExpression = "0 */6 * * *", // Every 6 hours
+    Expression = "0 */6 * * *", // Every 6 hours
     Retries = 2,
     RetryIntervals = new[] { 60, 300 }
 });
