@@ -606,4 +606,10 @@ const headersWithoutReadable = computed(() =>
   font-size: 0.75em;
   color: #c8bbbb;
 }
+
+.expression-tooltip {
+  cursor: help;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 </style>
