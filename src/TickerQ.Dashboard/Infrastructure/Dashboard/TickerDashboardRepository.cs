@@ -66,7 +66,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             BatchRunCondition? batchRunCondition = null)
         {
             var tt = await _persistenceProvider.GetTimeTickerById(targetId, options => options.SetAsTracking());
-            
+
             var requestType = GetRequestType(tt.Function);
 
 
@@ -430,6 +430,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     Id = x.Id,
                     Function = x.Function,
                     Expression = x.Expression,
+                    ExpressionReadable = TickerCronExpressionHelper.ToHumanReadable(x.Expression),
                     CreatedAt = x.CreatedAt,
                     UpdatedAt = x.UpdatedAt,
                     Description = x.Description,
@@ -442,7 +443,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         public async Task AddOnDemandCronTickerOccurrenceAsync(Guid id)
         {
             var now = DateTime.UtcNow;
-            
+
             var onDemandOccurrence = new CronTickerOccurrence<TCronTicker>
             {
                 Id = Guid.NewGuid(),
@@ -451,11 +452,11 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 LockedAt = now,
                 CronTickerId = id
             };
-            
+
             await _persistenceProvider.InsertCronTickerOccurrences(new[] { onDemandOccurrence });
-            
+
             _tickerHost.RestartIfNeeded(onDemandOccurrence.ExecutionTime);
-            
+
             if (_notificationHubSender != null)
                 await _notificationHubSender.AddCronOccurrenceAsync(id, onDemandOccurrence);
         }
@@ -514,10 +515,10 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                         .ToArray()
                 })
                 .FirstOrDefault() ?? new CronOccurrenceTickerGraphData
-            {
-                Date = today,
-                Results = Array.Empty<Tuple<TickerStatus, int>>()
-            };
+                {
+                    Date = today,
+                    Results = Array.Empty<Tuple<TickerStatus, int>>()
+                };
 
             var cronTickerOccurrencesFuture =
                 await _persistenceProvider.GetFutureCronTickerOccurrencesByCronTickerId(guid, today);
@@ -890,48 +891,49 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 switch (ticker)
                 {
                     case TTimeTicker timeTicker:
-                    {
-                        var timeTickerDto = new TimeTickerDto
                         {
-                            Id = timeTicker.Id,
-                            Function = timeTicker.Function,
-                            CreatedAt = timeTicker.CreatedAt,
-                            UpdatedAt = timeTicker.UpdatedAt,
-                            RequestType = requestType,
-                            Status = timeTicker.Status,
-                            ExecutionTime = timeTicker.ExecutionTime,
-                            RetryIntervals = timeTicker.RetryIntervals,
-                            Retries = timeTicker.Retries,
-                            Description = timeTicker.Description,
-                            BatchRunCondition = timeTicker.BatchRunCondition,
-                            BatchParent = timeTicker.BatchParent
-                        };
-                        if (isNew)
-                            await _notificationHubSender.AddTimeTickerNotifyAsync(timeTickerDto);
-                        else
-                            await _notificationHubSender.UpdateTimeTickerNotifyAsync(timeTickerDto);
-                        break;
-                    }
+                            var timeTickerDto = new TimeTickerDto
+                            {
+                                Id = timeTicker.Id,
+                                Function = timeTicker.Function,
+                                CreatedAt = timeTicker.CreatedAt,
+                                UpdatedAt = timeTicker.UpdatedAt,
+                                RequestType = requestType,
+                                Status = timeTicker.Status,
+                                ExecutionTime = timeTicker.ExecutionTime,
+                                RetryIntervals = timeTicker.RetryIntervals,
+                                Retries = timeTicker.Retries,
+                                Description = timeTicker.Description,
+                                BatchRunCondition = timeTicker.BatchRunCondition,
+                                BatchParent = timeTicker.BatchParent
+                            };
+                            if (isNew)
+                                await _notificationHubSender.AddTimeTickerNotifyAsync(timeTickerDto);
+                            else
+                                await _notificationHubSender.UpdateTimeTickerNotifyAsync(timeTickerDto);
+                            break;
+                        }
                     case TCronTicker cronTicker:
-                    {
-                        var cronTickerDto = new CronTickerDto
                         {
-                            Id = cronTicker.Id,
-                            Function = cronTicker.Function,
-                            Expression = cronTicker.Expression,
-                            CreatedAt = cronTicker.CreatedAt,
-                            UpdatedAt = cronTicker.UpdatedAt,
-                            RequestType = requestType,
-                            RetryIntervals = cronTicker.RetryIntervals,
-                            Description = cronTicker.Description,
-                            Retries = cronTicker.Retries
-                        };
-                        if (isNew)
-                            await _notificationHubSender.AddCronTickerNotifyAsync(cronTickerDto);
-                        else
-                            await _notificationHubSender.UpdateCronTickerNotifyAsync(cronTickerDto);
-                        break;
-                    }
+                            var cronTickerDto = new CronTickerDto
+                            {
+                                Id = cronTicker.Id,
+                                Function = cronTicker.Function,
+                                Expression = cronTicker.Expression,
+                                ExpressionReadable = TickerCronExpressionHelper.ToHumanReadable(cronTicker.Expression),
+                                CreatedAt = cronTicker.CreatedAt,
+                                UpdatedAt = cronTicker.UpdatedAt,
+                                RequestType = requestType,
+                                RetryIntervals = cronTicker.RetryIntervals,
+                                Description = cronTicker.Description,
+                                Retries = cronTicker.Retries,
+                            };
+                            if (isNew)
+                                await _notificationHubSender.AddCronTickerNotifyAsync(cronTickerDto);
+                            else
+                                await _notificationHubSender.UpdateCronTickerNotifyAsync(cronTickerDto);
+                            break;
+                        }
                 }
             }
         }
