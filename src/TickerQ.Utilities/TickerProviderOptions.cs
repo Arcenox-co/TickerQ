@@ -1,5 +1,3 @@
-using System;
-
 namespace TickerQ.Utilities
 {
     public class TickerProviderOptions

@@ -4,7 +4,6 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Linq;
-using Microsoft.AspNetCore.Builder;
 using TickerQ.EntityFrameworkCore.Customizer;
 using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.EntityFrameworkCore.Infrastructure;
