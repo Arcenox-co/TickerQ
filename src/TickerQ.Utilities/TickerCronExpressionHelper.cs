@@ -19,14 +19,14 @@ namespace TickerQ.Utilities
         };
 
         /// <summary>
-        /// Transforms a Quartz cron expression into a human-readable format.
+        /// Transforms cron expression into a human-readable format.
         /// </summary>
         /// <param name="cronExpression"></param>
         /// <param name="timeZone"></param>
         /// <returns></returns>
         public static string ToHumanReadable(this string cronExpression, TimeZoneInfo timeZone = null)
         {
-            string cronosCompatible = ConvertQuartzToCronos(cronExpression);
+            string cronosCompatible = ToCronosExpression(cronExpression);
             string[] parts = cronosCompatible.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length != 5)
                 return "Invalid cron expression";
@@ -86,13 +86,13 @@ namespace TickerQ.Utilities
         #region [Private Methods]
 
         /// <summary>
-        /// Converts a Quartz cron expression to a Cronos-compatible expression.
+        /// Converts a cron expression to a Cronos-compatible format.
         /// </summary>
-        /// <param name="quartzCron"></param>
+        /// <param name="cron"></param>
         /// <returns></returns>
-        private static string ConvertQuartzToCronos(string quartzCron)
+        private static string ToCronosExpression(string cron)
         {
-            string[] parts = quartzCron.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string[] parts = cron.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length == 6 || parts.Length == 7)
             {
                 string minute = parts[1];
@@ -103,7 +103,7 @@ namespace TickerQ.Utilities
 
                 return $"{minute} {hour} {day} {month} {dayOfWeek}";
             }
-            return quartzCron;
+            return cron;
         }
 
         /// <summary>

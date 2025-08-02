@@ -70,14 +70,14 @@ public class TickerCronExpressionHelperTest
     }
 
     [Fact]
-    public void Test_Quartz6PartExpression()
+    public void Test_Cron6PartExpression()
     {
         string result = TickerCronExpressionHelper.ToHumanReadable("0 15 10 * * ?", null);
         result.Should().Be("Every day at 10:15");
     }
 
     [Fact]
-    public void Test_Quartz7PartExpression()
+    public void Test_Cron7PartExpression()
     {
         string result = TickerCronExpressionHelper.ToHumanReadable("0 0 12 1/1 * ? *", null);
         result.Should().Be("Every month on the 1st at 12:00");
