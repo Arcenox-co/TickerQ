@@ -20,12 +20,16 @@ const getTimeTickers = () => {
         .FixToResponseModel(GetTimeTickerResponse, response => {
             response.status = Status[response.status as any];
 
-            if (response.executedAt != null || response.executedAt != undefined)
-                response.executedAt = `${format(response.executedAt)} (took ${formatTime(response.elapsedTime as number, true)})`;
+            if (response.executedAt != null || response.executedAt != undefined) {
+                // Ensure the datetime is treated as UTC by adding 'Z' if missing
+                const utcExecutedAt = response.executedAt.endsWith('Z') ? response.executedAt : response.executedAt + 'Z';
+                response.executedAt = `${format(utcExecutedAt)} (took ${formatTime(response.elapsedTime as number, true)})`;
+            }
 
-            response.executionTimeFormatted = formatDate(response.executionTime);
+            const utcExecutionTime = response.executionTime.endsWith('Z') ? response.executionTime : response.executionTime + 'Z';
+            response.executionTimeFormatted = formatDate(utcExecutionTime);
+
             response.requestType = functionNamesStore.getNamespaceOrNull(response.function) ?? 'N/A';
-
             response.description = response.description == '' ? 'N/A' : response.description;
 
             if (response.retryIntervals == null || response.retryIntervals.length == 0 && response.retries != null && (response.retries as number) > 0)
