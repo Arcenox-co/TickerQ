@@ -39,15 +39,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 {
                     var lockHolderProp = tracked.Property(nameof(TimeTickerEntity.LockHolder));
 
-                    if (timeTickerEntity.Status == TickerStatus.Queued || timeTickerEntity.Status == TickerStatus.Idle)
-                    {
-                        lockHolderProp.IsModified = true;
-                        lockHolderProp.OriginalValue = null;
-                    }
-                    else
-                    {
-                        lockHolderProp.IsModified = true;
-                    }
+                    lockHolderProp.IsModified = true;
                 }
 
                 tracked.State = state;
