@@ -480,7 +480,7 @@ const headersWithoutReadable = computed(() =>
             item-value="id"
             item-class="custom-row-class"
             density="compact"
-          >            
+          >
             <template v-slot:item.expression="{ item }">
                 <v-tooltip location="top">
                   <template #activator="{ props }">
@@ -514,61 +514,86 @@ const headersWithoutReadable = computed(() =>
                 ]
               </span>
             </template>
-            <template v-slot:item.actions="{ item }">
-              <v-btn
-                icon
-                density="comfortable"
-                @click="ShowCronTickerOccurrenceGraphData(item.function, item.id, -3, 3)"
-              >
-                <v-icon :color="selectedCronTickerGraphData == item.id ? 'grey' : 'light-blue'"
-                  >mdi-chart-areaspline</v-icon
-                >
-              </v-btn>
-              <v-btn
-                @click="
-                  cronOccurrenceDialog.open({
-                    id: item.id,
-                    retries: item.retries,
-                    retryIntervals: item.retryIntervals,
-                  })
-                "
-                icon
-                density="comfortable"
-              >
-                <v-icon color="light-blue">mdi-folder-open</v-icon>
-              </v-btn>
-              <v-btn
-                icon
-                density="comfortable"
-                @click="crudCronTickerDialog.open({ ...item, isFromDuplicate: false })"
-              >
-                <v-icon color="amber">mdi-pencil</v-icon>
-              </v-btn>
-              <v-btn
-                icon
-                density="comfortable"
-                @click="RunCronTickerOnDemand(item.id)"
-              >
-                <v-icon color="light-green"
-                  >mdi-play-outline</v-icon
-                >
-              </v-btn>
-              <v-btn
-                @click="
-                  confirmDialog.open({
-                    ...new ConfirmDialogProps(),
-                    id: item.id,
-                    showWarningAlert: item.initIdentifier != undefined ? true : false,
-                    warningAlertMessage:
-                      'System-seeded ticker. To remove permanently, delete its cron expression from code.',
-                  })
-                "
-                icon
-                density="comfortable"
-              >
-                <v-icon color="red-lighten-1">mdi-delete</v-icon>
-              </v-btn>
-            </template>
+              <template #item.actions="{ item }">
+               <v-tooltip text="History">
+                 <template #activator="{ props }">
+                   <v-btn
+                     icon
+                     density="comfortable"
+                     v-bind="props"
+                     @click="ShowCronTickerOccurrenceGraphData(item.function, item.id, -3, 3)"
+                   >
+                     <v-icon :color="selectedCronTickerGraphData == item.id ? 'grey' : 'light-blue'"
+                       >mdi-chart-areaspline</v-icon
+                     >
+                   </v-btn>
+                 </template>
+               </v-tooltip>
+               <v-tooltip text="Cron Occurrences">
+                 <template #activator="{ props }">
+                   <v-btn
+                     @click="
+                       cronOccurrenceDialog.open({
+                         id: item.id,
+                         retries: item.retries,
+                         retryIntervals: item.retryIntervals,
+                       })
+                     "
+                     icon
+                     density="comfortable"
+                     v-bind="props"
+                   >
+                     <v-icon color="light-blue">mdi-folder-open</v-icon>
+                   </v-btn>
+                 </template>
+               </v-tooltip>
+               <v-tooltip text="Edit Ticker">
+                 <template #activator="{ props }">
+                   <v-btn
+                     icon
+                     density="comfortable"
+                     v-bind="props"
+                     @click="crudCronTickerDialog.open({ ...item, isFromDuplicate: false })"
+                   >
+                     <v-icon color="amber">mdi-pencil</v-icon>
+                   </v-btn>
+                 </template>
+               </v-tooltip>
+                 <v-tooltip text="Run on demand">
+                  <template #activator="{ props }">
+                    <v-btn
+                      icon
+                      density="comfortable"
+                      v-bind="props"
+                      @click="RunCronTickerOnDemand(item.id)"
+                    >
+                      <v-icon color="light-green"
+                        >mdi-play-outline</v-icon
+                      >
+                    </v-btn>
+                  </template>
+                </v-tooltip>
+                <v-tooltip text="Delete Ticker">
+                  <template #activator="{ props }">
+                    <v-btn
+                      @click="
+                        confirmDialog.open({
+                          ...new ConfirmDialogProps(),
+                          id: item.id,
+                          showWarningAlert: item.initIdentifier != undefined ? true : false,
+                          warningAlertMessage:
+                            'System-seeded ticker. To remove permanently, delete its cron expression from code.',
+                        })
+                      "
+                      icon
+                      density="comfortable"
+                      v-bind="props"
+                    >
+                      <v-icon color="red-lighten-1">mdi-delete</v-icon>
+                    </v-btn>
+                  </template>
+                </v-tooltip>
+             </template>
           </v-data-table>
         </v-sheet>
       </v-col>
