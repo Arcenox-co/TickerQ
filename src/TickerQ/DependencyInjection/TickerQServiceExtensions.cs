@@ -1,9 +1,10 @@
-﻿using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using TickerQ.Src.Provider;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
@@ -76,18 +77,24 @@ namespace TickerQ.DependencyInjection
         /// </summary>
         /// <param name="serviceProvider"></param>
         /// <param name="qStartMode"></param>
+        /// <param name="scanAssemblies">Additional assemblies to scan for TickerFunction methods. If null, scans all loaded assemblies.</param>
         /// <returns></returns>
-        internal static void UseTickerQ(IServiceProvider serviceProvider, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
+        internal static void UseTickerQ(IServiceProvider serviceProvider, TickerQStartMode qStartMode = TickerQStartMode.Immediate, Assembly[] scanAssemblies = null)
         {
             var tickerOptBuilder = serviceProvider.GetService<TickerOptionsBuilder>();
             var configuration = serviceProvider.GetService<IConfiguration>();
+
+            // Combine registered assemblies with scan assemblies
+            var assembliesToScan = CombineAssemblies(tickerOptBuilder?.AssembliesToRegister?.ToArray(), scanAssemblies);
+
+            // Discover functions from assemblies before mapping cron from config
+            DiscoverCrossAssemblyFunctions(assembliesToScan);
 
             MapCronFromConfig(configuration);
 
             tickerOptBuilder.NotifyNextOccurenceFunc = nextOccurrence =>
             {
                 var notificationHubSender = serviceProvider.GetService<ITickerQNotificationHubSender>();
-
                 notificationHubSender.UpdateNextOccurrence(nextOccurrence);
             };
 
@@ -146,6 +153,52 @@ namespace TickerQ.DependencyInjection
                 .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
                 
             internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
+        }
+
+        private static void DiscoverCrossAssemblyFunctions(Assembly[] scanAssemblies)
+        {
+            if (scanAssemblies == null)
+            {
+                // Auto-discover from all loaded assemblies, excluding system assemblies
+                scanAssemblies = AppDomain.CurrentDomain.GetAssemblies()
+                    .Where(a => !a.IsDynamic && 
+                               !a.FullName.StartsWith("System.") && 
+                               !a.FullName.StartsWith("Microsoft.") &&
+                               !a.FullName.StartsWith("netstandard") &&
+                               a.FullName != "TickerQ")
+                    .ToArray();
+            }
+
+            if (scanAssemblies.Length > 0)
+            {
+                TickerFunctionProvider.RegisterFunctionsFromAssemblies(scanAssemblies);
+            }
+        }
+
+        /// <summary>
+        /// Combines registered assemblies with scan assemblies, removing duplicates.
+        /// </summary>
+        /// <param name="registeredAssemblies">Assemblies registered via TickerOptionsBuilder</param>
+        /// <param name="scanAssemblies">Additional assemblies to scan</param>
+        /// <returns>Combined array of unique assemblies</returns>
+        private static Assembly[] CombineAssemblies(Assembly[] registeredAssemblies, Assembly[] scanAssemblies)
+        {
+            var allAssemblies = new List<Assembly>();
+
+            // Add registered assemblies
+            if (registeredAssemblies != null && registeredAssemblies.Length > 0)
+            {
+                allAssemblies.AddRange(registeredAssemblies);
+            }
+
+            // Add scan assemblies
+            if (scanAssemblies != null && scanAssemblies.Length > 0)
+            {
+                allAssemblies.AddRange(scanAssemblies);
+            }
+
+            // Remove duplicates and return
+            return allAssemblies.Distinct().ToArray();
         }
     }
 }

@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities.Interfaces;
@@ -23,6 +25,11 @@ namespace TickerQ.Utilities
         internal Action<bool> NotifyHostStatusFunc;
         internal Action<string> HostExceptionMessageFunc;
         internal string LastHostExceptionMessage;
+
+        /// <summary>
+        /// Collection of assemblies to register for service discovery
+        /// </summary>
+        internal List<Assembly> AssembliesToRegister { get; private set; } = new List<Assembly>();
         /// <summary>
         /// Default max concurrency is Environment.ProcessorCount
         /// </summary>
@@ -61,6 +68,21 @@ namespace TickerQ.Utilities
             TimeOutChecker = timeSpan < TimeSpan.FromSeconds(30)
                 ? TimeSpan.FromSeconds(30)
                 : timeSpan;
+        }
+
+        /// <summary>
+        /// Registers assemblies for service discovery and registration.
+        /// These assemblies will be scanned for TickerFunction methods during application startup.
+        /// </summary>
+        /// <param name="assemblies">The assemblies to register for service discovery</param>
+        /// <returns>This TickerOptionsBuilder instance to enable method chaining</returns>
+        public TickerOptionsBuilder RegisterServicesFromAssemblies(params Assembly[] assemblies)
+        {
+            if (assemblies != null && assemblies.Length > 0)
+            {
+                AssembliesToRegister.AddRange(assemblies);
+            }
+            return this;
         }
     }
 }
