@@ -237,6 +237,35 @@ await _cronTickerManager.AddAsync(new CronTicker
 - Use `Request` to pass dynamic data to jobs
 ---
 
+## 💖 Sponsors & Backers
+
+We want to acknowledge the individuals and organizations who support the development of TickerQ through [OpenCollective](https://opencollective.com/tickerq). Your contributions help us maintain and grow this project. If you'd like to support, check out the tiers below and join the community!
+
+
+[Become a Sponsor or Backer on OpenCollective](https://opencollective.com/tickerq)
+
+---
+
+### 🏆 Gold Sponsors
+*Become a gold sponsor and get your logo here with a link to your site.*
+
+---
+
+### 🥈 Silver Sponsors
+*Become a silver sponsor and get your logo here with a link to your site.*
+
+---
+
+### 🥉 Bronze Sponsors
+*Become a bronze sponsor and get your logo here with a link to your site.*
+
+---
+
+### 🙌 Backers
+*Become a backer and get your avatar here with a link to your profile.*
+
+---
+
 ## 🤝 Contribution
 
 PRs, ideas, and issues are welcome!
