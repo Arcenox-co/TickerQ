@@ -887,44 +887,68 @@ watch(
               </template>
 
               <template v-slot:item.actions="{ item }">
-                <v-btn
-                  @click="requestCancel(item.id)"
-                  :disabled="!hasStatus(item.status, Status.InProgress)"
-                  icon
-                  :variant="hasStatus(item.status, Status.InProgress) ? 'elevated' : 'text'"
-                  density="comfortable"
-                >
-                  <v-icon :color="hasStatus(item.status, Status.InProgress) ? 'blue' : 'grey'"
-                  >mdi-cancel</v-icon
-                  >
-                </v-btn>
-                <v-btn
-                  v-if="
-                    hasStatus(item.status, Status.Queued) || hasStatus(item.status, Status.Idle)
-                  "
-                  icon
-                  density="comfortable"
-                  @click="crudTimeTickerDialog.open({ ...item, executionTime: formatFromUtcToLocal(item.executionTime), isFromDuplicate: false })"
-                >
-                  <v-icon color="amber">mdi-pencil</v-icon>
-                </v-btn>
-                <v-btn
-                  v-else
-                  icon
-                  density="comfortable"
-                  @click="crudTimeTickerDialog.open({ ...item, executionTime: formatFromUtcToLocal(item.executionTime), isFromDuplicate: true })"
-                >
-                  <v-icon color="grey">mdi-plus-box-multiple-outline</v-icon>
-                </v-btn>
-                <v-btn
-                  @click="confirmDialog.open({ id: item.id })"
-                  :disabled="hasStatus(item.status, Status.InProgress)"
-                  :variant="!hasStatus(item.status, Status.InProgress) ? 'elevated' : 'text'"
-                  icon
-                  density="comfortable"
-                >
-                  <v-icon color="red">mdi-delete</v-icon>
-                </v-btn>
+
+                <v-tooltip text="Cancel Ticker">
+                  <template #activator="{ props }">
+                      <v-btn
+                        v-bind="props"
+                        @click="requestCancel(item.id)"
+                        :disabled="!hasStatus(item.status, Status.InProgress)"
+                        icon
+                        :variant="hasStatus(item.status, Status.InProgress) ? 'elevated' : 'text'"
+                        density="comfortable"
+                      >
+                        <v-icon :color="hasStatus(item.status, Status.InProgress) ? 'blue' : 'grey'"
+                        >mdi-cancel</v-icon
+                        >
+                      </v-btn>
+                  </template>
+                </v-tooltip>
+
+
+                <v-tooltip text="Edit Ticker"
+                  v-if="hasStatus(item.status, Status.Queued) || hasStatus(item.status, Status.Idle)">
+                  <template #activator="{ props }">
+                    <v-btn
+                      v-bind="props"
+                      icon
+                      density="comfortable"
+                      @click="crudTimeTickerDialog.open({ ...item, executionTime: formatFromUtcToLocal(item.executionTime), isFromDuplicate: false })"
+                    >
+                      <v-icon color="amber">mdi-pencil</v-icon>
+                    </v-btn>
+                  </template>
+                </v-tooltip>
+
+                <v-tooltip text="Duplicate Ticker"
+                  v-else>
+                  <template #activator="{ props }">
+                    <v-btn
+                      v-bind="props"
+                      icon
+                      density="comfortable"
+                      @click="crudTimeTickerDialog.open({ ...item, executionTime: formatFromUtcToLocal(item.executionTime), isFromDuplicate: true })"
+                    >
+                      <v-icon color="grey">mdi-plus-box-multiple-outline</v-icon>
+                    </v-btn>
+                  </template>
+                </v-tooltip>
+
+                <v-tooltip text="Delete Ticker">
+                  <template #activator="{ props }">
+                    <v-btn
+                      v-bind="props"
+                      @click="confirmDialog.open({ id: item.id })"
+                      :disabled="hasStatus(item.status, Status.InProgress)"
+                      :variant="!hasStatus(item.status, Status.InProgress) ? 'elevated' : 'text'"
+                      icon
+                      density="comfortable"
+                    >
+                      <v-icon color="red">mdi-delete</v-icon>
+                    </v-btn>
+                  </template>
+                </v-tooltip>
+
               </template>
             </v-data-table>
           </v-sheet>
