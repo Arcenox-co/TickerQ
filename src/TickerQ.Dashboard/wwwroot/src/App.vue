@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { useAuthStore } from './stores/authStore'
+import { useRouter } from 'vue-router'
+
 const navigationLinks = [
   { icon: 'mdi-view-dashboard', text: 'Dashboard', path: '/' },
   { icon: 'mdi-alarm', text: 'Time Tickers', path: '/time-tickers' },
@@ -7,6 +9,12 @@ const navigationLinks = [
 ]
 
 const authStore = useAuthStore()
+const router = useRouter()
+
+const navigateToDashboard = () => {
+  router.push('/')
+}
+
 </script>
 
 <template>
@@ -14,17 +22,19 @@ const authStore = useAuthStore()
     <v-app id="inspire">
       <v-app-bar>
           <template v-slot:prepend>
-            <v-icon class="ml-5 mr-4">
-              <img
-                src="https://arcenox.com/assets/imgs/main/arcenox-logo.svg"
-                alt="Arcenox"
-                style="height: 40px"
-                class="ml-4"
-              />
-            </v-icon>
+            <div class="d-flex align-center" style="cursor: pointer" @click="navigateToDashboard">
+              <v-icon class="ml-5 mr-4">
+                <img
+                  src="https://arcenox.com/assets/imgs/main/arcenox-logo.svg"
+                  alt="Arcenox"
+                  style="height: 40px"
+                  class="ml-4"
+                />
+              </v-icon>
+              <v-app-bar-title class="ml-4"><strong>TickerQ</strong></v-app-bar-title>
+            </div>
           </template>
 
-          <v-app-bar-title><strong>TickerQ</strong></v-app-bar-title>
         <template v-slot:append>
           <v-btn
             v-for="link in navigationLinks"
