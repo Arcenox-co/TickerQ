@@ -21,15 +21,9 @@ namespace TickerQ
                     return;
                 
                 _lastNotified = _latestCount;
-
-                try
-                {
-                    TickerOptionsBuilder.NotifyThreadCountFunc(count);
-                }
-                catch
-                {
-                    //
-                }
+                
+                TickerOptionsBuilder.NotifyThreadCountFunc?.Invoke(count);
+                
             }, null, 100, Timeout.Infinite);
         }
     }
