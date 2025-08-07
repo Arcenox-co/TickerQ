@@ -125,7 +125,6 @@ namespace TickerQ.Utilities.Managers
 
                 var generateNextOccurrence = new CronTickerOccurrence<TCronTicker>
                 {
-                    CronTicker = entity,
                     Status = TickerStatus.Idle,
                     ExecutionTime = nextOccurrence,
                     LockedAt = Clock.UtcNow,
@@ -144,7 +143,7 @@ namespace TickerQ.Utilities.Managers
                     {
                         Function = entity.Function,
                         Expression = entity.Expression,
-                        ExpressionReadable = TickerCronExpressionHelper.ToHumanReadable(entity.Expression),
+                        ExpressionReadable = entity.Expression.ToHumanReadable(),
                         UpdatedAt = entity.UpdatedAt,
                         CreatedAt = entity.CreatedAt,
                         Retries = entity.Retries,
