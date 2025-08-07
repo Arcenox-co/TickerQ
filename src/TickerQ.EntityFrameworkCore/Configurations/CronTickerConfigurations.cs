@@ -6,6 +6,13 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 {
     public class CronTickerConfigurations : IEntityTypeConfiguration<CronTickerEntity>
     {
+        private readonly string _schema;
+
+        public CronTickerConfigurations(string schema = Constants.DefaultSchema)
+        {
+            _schema = schema;
+        }
+
         public void Configure(EntityTypeBuilder<CronTickerEntity> builder)
         {
             builder.HasKey("Id");
@@ -13,7 +20,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.HasIndex("Expression")
                 .HasName("IX_CronTickers_Expression");
 
-            builder.ToTable("CronTickers", "ticker");
+            builder.ToTable("CronTickers", _schema);
         }
     }
 }
