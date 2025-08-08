@@ -262,8 +262,9 @@ We want to acknowledge the individuals and organizations who support the develop
 ---
 
 ### 🙌 Backers
-*Become a backer and get your avatar here with a link to your profile.*
+[Become a backer](https://opencollective.com/tickerq#backer) and get your image on our README on GitHub with a link to your site.
 
+<a href="https://opencollective.com/tickerq/backer/0/website?requireActive=false" target="_blank"><img width="30" src="https://opencollective.com/tickerq/backer/0/avatar.svg?requireActive=false"></a>
 ---
 
 ## 🤝 Contribution
