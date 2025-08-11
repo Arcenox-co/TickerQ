@@ -69,6 +69,16 @@ builder.Services.AddTickerQ(options =>
 
 app.UseTickerQ(); // Activates job processor
 ```
+
+To control when the job processor starts use the TickerQStartMode overload
+
+```csharp
+app.UseTickerQ(TickerQStartMode.Manual);
+
+ITickerHost tickerHost = app.Services.GetRequiredService<ITickerHost>(); // Resolve the Singleton service ITickerHost from the IServiceProvider.
+
+tickerHost.Start(); // Invoke the start method to manual start TickerQ
+```
 ---
 
 ## ❗️If Not Using `UseModelCustomizerForMigrations()`
