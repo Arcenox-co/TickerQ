@@ -77,7 +77,7 @@ app.UseTickerQ(TickerQStartMode.Manual);
 
 ITickerHost tickerHost = app.Services.GetRequiredService<ITickerHost>(); // Resolve the Singleton service ITickerHost from the IServiceProvider.
 
-tickerHost.Start(); // Invoke the start method to manual start TickerQ
+tickerHost.Start(); // Invoke the start method to manually start TickerQ
 ```
 ---
 
