@@ -155,6 +155,9 @@ const functionItems: Ref<
     priority: string
   }>
 > = ref([])
+
+// Pagination configuration
+const defaultItemsPerPage = 10
 </script>
 <template>
   <v-container fluid>
@@ -285,7 +288,11 @@ const functionItems: Ref<
         <v-row class="mt-2">
           <v-col cols="8">
             <v-card-title> Declared Functions </v-card-title>
-            <v-data-table hide-default-footer density="compact" :items="functionItems">
+            <v-data-table
+              density="compact"
+              :items="functionItems"
+              :items-per-page="defaultItemsPerPage"
+            >
               <template #item.request="{ item }">
                 <div class="text-truncate" style="max-width: 200px">
                   {{ item.request }}
@@ -296,9 +303,9 @@ const functionItems: Ref<
           <v-col cols="4">
             <v-card-title> Used Machines </v-card-title>
             <v-data-table
-              hide-default-footer
               density="compact"
               :items="machineItems"
+              :items-per-page="defaultItemsPerPage"
             ></v-data-table>
           </v-col>
         </v-row>
