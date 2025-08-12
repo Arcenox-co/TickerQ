@@ -1,5 +1,3 @@
-#if !NETCOREAPP3_1_OR_GREATER
-
 using System.IO;
 using System.Reflection;
 using Microsoft.AspNetCore.Builder;
@@ -11,10 +9,11 @@ using TickerQ.Dashboard.Hubs;
 
 namespace TickerQ.Dashboard.DependencyInjection
 {
-    internal static class NetTargetV31Lower
+    internal static class ServiceCollectionExtensions
     {
-        internal static void AddDashboardService(IServiceCollection services)
+        internal static void AddDashboardService(this IServiceCollection services)
         {
+            services.AddRouting();
             services.AddSignalR();
             services.AddCors(options =>
             {
@@ -26,39 +25,38 @@ namespace TickerQ.Dashboard.DependencyInjection
                         .AllowCredentials();
                 });
             });
-            services.AddMvc(opt => opt.EnableEndpointRouting = false)
-                .AddApplicationPart(typeof(TickerQController).Assembly);
+            services.AddControllers().AddApplicationPart(typeof(TickerQController).Assembly);
         }
-        
-        internal static void UseDashboard(IApplicationBuilder app, string basePath)
+
+        internal static void UseDashboard(this IApplicationBuilder app, string basePath)
         {
+            // Get the assembly and set up the embedded file provider (adjust the namespace as needed)
             var assembly = Assembly.GetExecutingAssembly();
             var embeddedFileProvider = new EmbeddedFileProvider(assembly, "TickerQ.Dashboard.wwwroot.dist");
 
-            // Normalize the base path to ensure it starts with "/"
+            // Ensure basePath starts with a "/" and does not end with one.
             if (string.IsNullOrEmpty(basePath))
                 basePath = "/";
-            if (!string.IsNullOrEmpty(basePath) && !basePath.StartsWith("/"))
+            if (!string.IsNullOrEmpty(basePath) && !basePath.StartsWith('/'))
                 basePath = "/" + basePath;
 
             basePath = basePath.TrimEnd('/');
 
-            // Map the base path
+            // Map a branch for the basePath
             app.Map(basePath, dashboardApp =>
             {
-                // Serve static files
+                // Serve static files from the embedded provider
                 dashboardApp.UseStaticFiles(new StaticFileOptions
                 {
                     FileProvider = embeddedFileProvider
                 });
 
-                // Redirect requests for assets without the basePath
+                // Redirect ticker asset requests that lack the basePath segment
                 app.Use(async (context, next) =>
                 {
                     if (context.Request.Path.StartsWithSegments("/tickerqassets") &&
                         !context.Request.Path.StartsWithSegments($"{basePath}/tickerqassets"))
                     {
-                        // Redirect the request to include the basePath
                         var correctedPath = $"{basePath}{context.Request.Path}";
                         context.Response.Redirect(correctedPath);
                         return;
@@ -66,15 +64,26 @@ namespace TickerQ.Dashboard.DependencyInjection
 
                     await next();
                 });
-                
+
+                // Set up routing and CORS for this branch
+                dashboardApp.UseRouting();
                 dashboardApp.UseCors("Allow_TickerQ_Dashboard");
-                
-                dashboardApp.UseSignalR(routes =>
+
+                // Combine all endpoint registrations into one call
+                dashboardApp.UseEndpoints(endpoints =>
                 {
-                    routes.MapHub<TickerQNotificationHub>($"/ticker-notification-hub");
+                    // Map controller routes (e.g., Home/Index)
+                    endpoints.MapControllerRoute(
+                        name: "default",
+                        pattern: $"{basePath}{{controller=Home}}/{{action=Index}}/{{id?}}"
+                    );
+
+                    // Map the SignalR hub.
+                    // Inside the branch, map with a relative path.
+                    endpoints.MapHub<TickerQNotificationHub>("/ticker-notification-hub");
                 });
-                
-                // SPA fallback
+
+                // SPA fallback middleware: if no route is matched, serve the modified index.html
                 dashboardApp.Use(async (context, next) =>
                 {
                     await next();
@@ -83,24 +92,19 @@ namespace TickerQ.Dashboard.DependencyInjection
                         context.Request.PathBase.Value.StartsWith(basePath))
                     {
                         var file = embeddedFileProvider.GetFileInfo("index.html");
-                        using var stream = file.CreateReadStream();
-                        using var reader = new StreamReader(stream);
-                        var htmlContent = await reader.ReadToEndAsync();
+                        if (file.Exists)
+                        {
+                            using var stream = file.CreateReadStream();
+                            using var reader = new StreamReader(stream);
+                            var htmlContent = await reader.ReadToEndAsync();
 
-                        // Inject <base> tag into the <head> section
-                        htmlContent = ReplaceBasePath(htmlContent, basePath);
+                            // Inject the base tag and other replacements into the HTML
+                            htmlContent = ReplaceBasePath(htmlContent, basePath);
 
-                        // Write the modified HTML back to the response
-                        context.Response.ContentType = "text/html";
-                        await context.Response.WriteAsync(htmlContent);
+                            context.Response.ContentType = "text/html";
+                            await context.Response.WriteAsync(htmlContent);
+                        }
                     }
-                });
-
-                dashboardApp.UseMvc(routes =>
-                {
-                    routes.MapRoute(
-                        name: "default",
-                        template: $"{basePath}{{controller=Home}}/{{action=Index}}/{{id?}}");
                 });
             });
         }
@@ -113,4 +117,3 @@ namespace TickerQ.Dashboard.DependencyInjection
         }
     }
 }
-#endif

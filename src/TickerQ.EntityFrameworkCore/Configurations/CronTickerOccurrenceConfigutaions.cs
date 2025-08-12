@@ -18,13 +18,13 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.HasKey("Id");
 
             builder.HasIndex("CronTickerId")
-                .HasName("IX_CronTickerOccurrence_CronTickerId");
+                .HasDatabaseName("IX_CronTickerOccurrence_CronTickerId");
 
             builder.HasIndex("ExecutionTime")
-                .HasName("IX_CronTickerOccurrence_ExecutionTime");
+                .HasDatabaseName("IX_CronTickerOccurrence_ExecutionTime");
 
             builder.HasIndex("Status", "ExecutionTime")
-                .HasName("IX_CronTickerOccurrence_Status_ExecutionTime");
+                .HasDatabaseName("IX_CronTickerOccurrence_Status_ExecutionTime");
 
             builder.HasOne(x => x.CronTicker)
                 .WithMany()
@@ -33,7 +33,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
             builder.HasIndex("CronTickerId", "ExecutionTime")
                 .IsUnique()
-                .HasName("UQ_CronTickerId_ExecutionTime");
+                .HasDatabaseName("UQ_CronTickerId_ExecutionTime");
 
             builder.ToTable("CronTickerOccurrences", _schema);
         }
