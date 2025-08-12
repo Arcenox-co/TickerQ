@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>netstandard2.1</TargetFramework>
+        <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
         <Description>A lightweight, developer-friendly library for queuing and executing cron and time-based jobs in the background.</Description>
         <PackageTags>$(PackageTags);background-jobs;task-scheduling</PackageTags>
         <PackageId>TickerQ</PackageId>
@@ -13,12 +13,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.2.0"/>
-        <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="[2.2.0,)"/>
-        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="2.2.0" />
-        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="2.2.0"/>
-        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="2.2.0" />
-        <PackageReference Include="TickerQ.Utilities" Version="$(PackageVersion)"/>
+        <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
     </ItemGroup>
 
     <Target Name="CopyAnalyzer" AfterTargets="Build">

@@ -24,15 +24,10 @@ namespace TickerQ.Dashboard.DependencyInjection
                 services.AddScoped<ITickerDashboardRepository, TickerDashboardRepository<TimeTicker, CronTicker>>();
                 services.AddSingleton<ITickerQNotificationHubSender, TickerQNotificationHubSender>();
                 
-#if NETCOREAPP3_1_OR_GREATER
-                NetTargetV3Higher.AddDashboardService(services);
-#else
-                NetTargetV31Lower.AddDashboardService(services);
-#endif
+                services.AddDashboardService();
             };
 
             UseDashboardDelegate(tickerConfiguration);
-
             return tickerConfiguration;
         }
 
@@ -47,11 +42,7 @@ namespace TickerQ.Dashboard.DependencyInjection
 
                      notificationSender?.UpdateActiveThreads(threadCount);
                 };
-#if NETCOREAPP3_1_OR_GREATER
-                NetTargetV3Higher.UseDashboard(app, basePath);
-#else
-                NetTargetV31Lower.UseDashboard(app, basePath);
-#endif
+                app.UseDashboard(basePath);
             };
         }
     }
