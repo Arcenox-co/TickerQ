@@ -19,7 +19,15 @@ const getTimeTickers = () => {
 
     const baseHttp = useBaseHttpService<object, GetTimeTickerResponse>('array')
         .FixToResponseModel(GetTimeTickerResponse, response => {
-            response.status = Status[response.status as any];
+            // Add null check to prevent "Cannot set properties of undefined" error
+            if (!response) {
+                return response;
+            }
+
+            // Safely set status with null check
+            if (response.status !== undefined && response.status !== null) {
+                response.status = Status[response.status as any];
+            }
 
             if (response.executedAt != null || response.executedAt != undefined)
                 response.executedAt = `${format(response.executedAt)} (took ${formatTime(response.elapsedTime as number, true)})`;

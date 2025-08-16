@@ -20,7 +20,7 @@ class BaseHub {
                 // Access localStorage directly instead of using the store during initialization
                 return localStorage.getItem('auth') || 'ZHVtbXk6ZHVtbXk=';
             } catch (error) {
-                console.warn('Could not access auth token, using default:', error);
+                // Could not access auth token, using default
                 return 'ZHVtbXk6ZHVtbXk=';
             }
         };
@@ -46,32 +46,27 @@ class BaseHub {
             try {
                 await this.connection.invoke(methodName);
             } catch (err) {
-                console.error("Error sending message: ", err);
+                // Error sending message
             }
         } else {
-            console.warn("Cannot send message: SignalR connection is not active.");
+            // Cannot send message: SignalR connection is not active.
         }
     }
 
     // Start Connection
     async startConnectionAsync(): Promise<void> {
         if (this.connection.state === signalR.HubConnectionState.Connected) {
-            console.log("SignalR connection already established");
             return;
         }
         
         if (this.connection.state === signalR.HubConnectionState.Connecting) {
-            console.log("SignalR connection already in progress");
             return;
         }
         
         try {
-            console.log("Starting SignalR connection...");
             await this.connection.start();
-            console.log("Connected to SignalR successfully");
         } catch (err) {
-            console.error("SignalR Connection Error: ", err);
-            // Don't retry automatically - let the connection manager handle reconnection
+            // SignalR Connection Error
             throw err;
         }
     }
@@ -79,9 +74,8 @@ class BaseHub {
     async stopConnectionAsync(): Promise<void> {
         try {
             await this.connection.stop();
-            console.log("Disconnected from SignalR");
         } catch (err) {
-            console.error("Error stopping SignalR connection: ", err);
+            // Error stopping SignalR connection
         }
     }
 

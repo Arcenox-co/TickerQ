@@ -272,7 +272,7 @@ export function useBaseHttpService(
     ) => {
       const keys = responseModelKeys.value;
       if (!keys) {
-        console.warn("FixToHeaders called before FixToResponseModel.");
+        // FixToHeaders called before FixToResponseModel.
         return baseHttpService;
       }
 
@@ -379,11 +379,16 @@ export function useBaseHttpService(
 
     const updateByKey = (key: string, value: any, ignoreKeys: string[] = []) => {
       const item = response.value?.find(item => item[key] == value[key]);
+      
+      if (!item) {
+        return; // Exit early if no matching item found
+      }
+      
       const processed = processResponse(value, responseModelKeys.value, transformFn);
 
       Object.keys(processed).forEach((itemKey) => {
         if(!ignoreKeys.includes(itemKey)) {
-          item[itemKey] = processed[itemKey];
+          (item as any)[itemKey] = processed[itemKey] as any;
         }
       });
 
@@ -421,7 +426,7 @@ export function useBaseHttpService(
     ) => {
       const keys = responseModelKeys.value;
       if (!keys) {
-        console.warn("FixToHeaders called before FixToResponseModel.");
+        // FixToHeaders called before FixToResponseModel.
         return baseHttpService;
       }
 

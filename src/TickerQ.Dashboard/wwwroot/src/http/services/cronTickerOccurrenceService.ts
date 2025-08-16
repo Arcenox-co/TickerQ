@@ -9,8 +9,15 @@ import { nameof } from '@/utilities/nameof';
 const getByCronTickerId = () => {
     const baseHttp = useBaseHttpService<GetCronTickerOccurrenceRequest, GetCronTickerOccurrenceResponse>('array')
         .FixToResponseModel(GetCronTickerOccurrenceResponse, response => {
+            // Add null check to prevent "Cannot set properties of undefined" error
+            if (!response) {
+                return response;
+            }
             
-            response.status = Status[response.status as any];
+            // Safely set status with null check
+            if (response.status !== undefined && response.status !== null) {
+                response.status = Status[response.status as any];
+            }
 
             if (response.executedAt != null || response.executedAt != undefined)
                 response.executedAt = `${format(response.executedAt)} (took ${formatTime(response.elapsedTime as number, true)})`;

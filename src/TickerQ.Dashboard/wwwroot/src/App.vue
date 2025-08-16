@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { useAuthStore } from './stores/authStore'
 import DashboardLayout from './components/layout/DashboardLayout.vue'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
+import { useConnectionStore } from './stores/connectionStore'
 
 const authStore = useAuthStore()
+const connectionStore = useConnectionStore()
 
 // Form validation
 const form = ref()
@@ -22,9 +24,35 @@ const rules = {
   ]
 }
 
-// Initialize auth on mount
+// Initialize auth and connection on mount
 onMounted(async () => {
   await authStore.initializeAuth()
+  
+  // Wait for next tick to ensure Pinia stores are fully initialized
+  await nextTick()
+  
+  try {
+    // Check if connection store is ready
+    if (connectionStore.isReady) {
+      // Initialize WebSocket connection with retry logic
+      await connectionStore.initializeConnectionWithRetry()
+      
+      // Set up visibility handling for better connection management
+      connectionStore.setupVisibilityHandling()
+    } else {
+      // Retry after a delay
+      setTimeout(async () => {
+        try {
+          await connectionStore.initializeConnectionWithRetry()
+          connectionStore.setupVisibilityHandling()
+        } catch (error) {
+          // Connection initialization failed after retry
+        }
+      }, 2000)
+    }
+  } catch (error) {
+    // Error setting up connection store
+  }
 })
 
 // Handle form submission
@@ -36,7 +64,7 @@ const handleSubmit = async () => {
     try {
       await authStore.login()
     } catch (error) {
-      console.error('Login failed:', error)
+      // Login failed
     } finally {
       isLoading.value = false
     }

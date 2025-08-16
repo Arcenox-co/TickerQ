@@ -30,9 +30,9 @@ namespace TickerQ.Utilities
 
         public static bool RequestTickerCancellationById(Guid tickerId)
         {
-            var existTickerCancellationToken = TickerCancellationTokensDictionary.TryGetValue(tickerId, out var tickerCancellationToken);
+            var existTickerCancellationToken = TickerCancellationTokensDictionary.TryRemove(tickerId, out var tickerCancellationToken);
             
-            if(existTickerCancellationToken) 
+            if(existTickerCancellationToken)
                 tickerCancellationToken.CancellationSource.Cancel();
             
             return existTickerCancellationToken;

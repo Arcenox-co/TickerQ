@@ -103,6 +103,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                             htmlContent = ReplaceBasePath(htmlContent, basePath);
 
                             context.Response.ContentType = "text/html";
+                            context.Response.StatusCode = 200;
                             await context.Response.WriteAsync(htmlContent);
                         }
                     }

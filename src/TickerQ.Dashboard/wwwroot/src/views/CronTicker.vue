@@ -1,4 +1,4 @@
-<script lang="ts">
+<script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch, type Ref } from 'vue'
 import { cronTickerService } from '@/http/services/cronTickerService'
 import { Status } from '@/http/services/types/base/baseHttpResponse.types'
@@ -13,7 +13,7 @@ import {
   type GetCronTickerResponse,
 } from '@/http/services/types/cronTickerService.types'
 import TickerNotificationHub, { methodName } from '@/hub/tickerNotificationHub'
-import { connectionManager } from '@/hub/connectionManager'
+import { useConnectionStore } from '@/stores/connectionStore'
 import {
   TitleComponent,
   TooltipComponent,
@@ -22,9 +22,6 @@ import {
   GridComponent,
 } from 'echarts/components'
 import VChart, { THEME_KEY } from 'vue-echarts'
-</script>
-
-<script setup lang="ts">
 const getCronTickerRangeGraphData = cronTickerService.getTimeTickersGraphDataRange()
 const getCronTickers = cronTickerService.getCronTickers()
 const getCronTickerRangeGraphDataById = cronTickerService.getTimeTickersGraphDataRangeById()
@@ -61,31 +58,24 @@ const onSubmitConfirmDialog = async () => {
       try {
         const res = await getCronTickerRangeGraphData.requestAsync(-3, 3)
         GetCronTickerRangeGraphData(res)
-      } catch (error) {
+      } catch (error: any) {
         if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-          console.log('ℹ️ Graph data refresh request was canceled')
-        } else {
-          console.error('❌ Failed to refresh graph data:', error)
+          return
         }
       }
     }
-  } catch (error) {
+  } catch (error: any) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-      console.log('ℹ️ Delete request was canceled')
-    } else {
-      console.error('❌ Failed to delete cron ticker:', error)
+      return
     }
   }
 }
 
 const getTimeTickersGraphDataAndParseToGraph = async () => {
   try {
-    console.log('🔄 Loading pie chart data...')
-    
     const res = await getCronTickersGraphDataAndParseToGraph.requestAsync()
     
     if (!res || !Array.isArray(res)) {
-      console.warn('⚠️ Invalid response for pie chart data')
       pieChartData.value = [{ value: 1, name: 'No Data Available', itemStyle: { color: '#9e9e9e' } }]
       return
     }
@@ -106,28 +96,19 @@ const getTimeTickersGraphDataAndParseToGraph = async () => {
     // Force pie chart re-render by updating the key
     pieChartKey.value++
     
-    console.log('✅ Pie chart data updated with all tickers:', chartData)
-  } catch (error) {
+  } catch (error: any) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-      console.log('ℹ️ Pie chart data request was canceled')
       return
     }
-    
-    console.error('❌ Error loading pie chart data:', error)
-    // Set error state
-    pieChartData.value = [{ value: 1, name: 'Error loading data', itemStyle: { color: '#ff0000' } }]
   }
 }
 
 const updatePieChartForSelectedTicker = async (tickerId: string, min: number, max: number) => {
   try {
-    console.log('🔄 Updating pie chart for selected ticker...', { tickerId, min, max })
-    
     // Get the specific ticker's data for the selected range
     const res = await getCronTickerRangeGraphDataById.requestAsync(tickerId, min, max)
     
     if (!res || !Array.isArray(res)) {
-      console.warn('⚠️ Invalid response for ticker data')
       pieChartData.value = [{ value: 1, name: 'No Data Available', itemStyle: { color: '#9e9e9e' } }]
       return
     }
@@ -172,25 +153,16 @@ const updatePieChartForSelectedTicker = async (tickerId: string, min: number, ma
     // Force pie chart re-render by updating the key
     pieChartKey.value++
     
-    console.log('✅ Pie chart updated for selected ticker:', chartData)
-  } catch (error) {
+  } catch (error: any) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-      console.log('ℹ️ Pie chart update request was canceled')
       return
     }
-    
-    console.error('❌ Error updating pie chart for selected ticker:', error)
-    // Set error state
-    pieChartData.value = [{ value: 1, name: 'Error loading ticker data', itemStyle: { color: '#ff0000' } }]
   }
 }
 
 const GetCronTickerRangeGraphData = (res: GetCronTickerGraphDataRangeResponse[]) => {
   try {
-    console.log('🔄 Processing chart data...', res)
-    
     if (!res || !Array.isArray(res)) {
-      console.warn('⚠️ Invalid response for chart data')
       return
     }
     
@@ -314,25 +286,9 @@ const GetCronTickerRangeGraphData = (res: GetCronTickerGraphDataRangeResponse[])
     // Force chart re-render by updating the key
     chartKey.value++
     
-    console.log('✅ Chart data processed successfully:', {
-      dates: uniqueDates,
-      series: composedData,
-      legend: legendData
-    })
-  } catch (error) {
+  } catch (error: any) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-      console.log('ℹ️ Chart data processing was canceled')
       return
-    }
-    
-    console.error('❌ Error processing chart data:', error)
-    
-    // Set default/error state for the chart
-    chartData.value = {
-      xAxisData: [],
-      series: [],
-      legend: {},
-      title: 'Chart Error'
     }
   }
 }
@@ -352,12 +308,10 @@ const ShowCronTickerOccurrenceGraphData = async (functionName: string, id: strin
         
         // Refresh pie chart with all tickers data
         await getTimeTickersGraphDataAndParseToGraph()
-      } catch (error) {
+      } catch (error: any) {
         if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-          console.log('ℹ️ Chart data request was canceled')
           return
         }
-        throw error
       }
     } else {
       // Select specific ticker and show its data
@@ -370,12 +324,10 @@ const ShowCronTickerOccurrenceGraphData = async (functionName: string, id: strin
         
         // Update pie chart with selected ticker's data
         await updatePieChartForSelectedTicker(id, min, max)
-      } catch (error) {
+      } catch (error: any) {
         if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-          console.log('ℹ️ Chart data request was canceled')
           return
         }
-        throw error
       }
     }
     
@@ -384,14 +336,9 @@ const ShowCronTickerOccurrenceGraphData = async (functionName: string, id: strin
     
     // Additional delay to ensure chart updates
     setTimeout(() => {
-      console.log('Chart should be updated now with:', chartData.value)
     }, 100)
     
-  } catch (error) {
-    console.error('❌ Error loading chart data:', error)
-    // Reset to default state on error
-    selectedCronTickerGraphData.value = undefined
-    chartData.value.title = 'Job statuses for all Cron Tickers'
+  } catch (error: any) {
   } finally {
     chartLoading.value = false
   }
@@ -406,18 +353,14 @@ const RunCronTickerOnDemand = async (id: string) => {
 onMounted(async () => {
   try {
     isMounted.value = true
-    console.log('🔄 CronTicker component mounting...')
-    
     // Ensure WebSocket connection is established (only if not already initialized)
     try {
-      if (!connectionManager.isInitialized?.value) {
-        await connectionManager.initializeConnection()
-        console.log('✅ WebSocket connection initialized')
+      const connectionStore = useConnectionStore()
+      if (!connectionStore.isInitialized) {
+        await connectionStore.initializeConnectionWithRetry()
       } else {
-        console.log('ℹ️ WebSocket connection already initialized')
       }
-    } catch (error) {
-      console.warn('⚠️ WebSocket connection failed, continuing without it:', error)
+    } catch (error: any) {
     }
     
     // Check if still mounted before continuing
@@ -426,9 +369,7 @@ onMounted(async () => {
     // Load cron tickers data
     try {
       await getCronTickers.requestAsync()
-      console.log('✅ Cron tickers data loaded')
-    } catch (error) {
-      console.error('❌ Failed to load cron tickers:', error)
+    } catch (error: any) {
     }
     
     // Check if still mounted before continuing
@@ -438,12 +379,9 @@ onMounted(async () => {
     try {
       const res = await getCronTickerRangeGraphData.requestAsync(-3, 3)
       GetCronTickerRangeGraphData(res)
-      console.log('✅ Graph data range loaded')
-    } catch (error) {
+    } catch (error: any) {
       if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-        console.log('ℹ️ Graph data range request was canceled')
-      } else {
-        console.error('❌ Failed to load graph data range:', error)
+        return
       }
     }
     
@@ -453,9 +391,7 @@ onMounted(async () => {
     // Load status distribution data
     try {
       await getTimeTickersGraphDataAndParseToGraph()
-      console.log('✅ Status distribution data loaded')
-    } catch (error) {
-      console.error('❌ Failed to load status distribution data:', error)
+    } catch (error: any) {
     }
     
     // Check if still mounted before continuing
@@ -464,20 +400,15 @@ onMounted(async () => {
     // Add hub listeners
     try {
       await addHubListeners()
-      console.log('✅ Hub listeners added')
-    } catch (error) {
-      console.error('❌ Failed to add hub listeners:', error)
+    } catch (error: any) {
     }
     
-    console.log('✅ CronTicker component mounted successfully')
-  } catch (error) {
-    console.error('❌ Critical error during CronTicker mount:', error)
+  } catch (error: any) {
   }
 })
 
 onUnmounted(() => {
   isMounted.value = false
-  console.log('🔄 CronTicker component unmounting...')
   
   TickerNotificationHub.stopReceiver(methodName.onReceiveAddCronTicker)
   TickerNotificationHub.stopReceiver(methodName.onReceiveUpdateCronTicker)
@@ -830,11 +761,9 @@ const fetchGraphData = debounce(async ([min, max]: number[]) => {
       // Also update the pie chart for the selected ticker
       await updatePieChartForSelectedTicker(selectedCronTickerGraphData.value!, min, max)
     }
-  } catch (error) {
+  } catch (error: any) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-      console.log('ℹ️ Graph data fetch request was canceled')
-    } else {
-      console.error('❌ Error fetching graph data:', error)
+      return
     }
   }
 }, 100) // You can tweak delay to 200ms+ for inputs
@@ -855,7 +784,6 @@ watch(
 watch(
   () => chartData.value,
   (newData) => {
-    console.log('Chart data changed:', newData)
   },
   { deep: true }
 )
@@ -864,7 +792,6 @@ watch(
 watch(
   () => pieChartData.value,
   (newData) => {
-    console.log('Pie chart data changed:', newData)
   },
   { deep: true }
 )
@@ -891,20 +818,16 @@ const refreshData = async () => {
     try {
       const res = await getCronTickerRangeGraphData.requestAsync(-3, 3)
       GetCronTickerRangeGraphData(res)
-    } catch (error) {
+    } catch (error: any) {
       if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-        console.log('ℹ️ Graph data refresh request was canceled')
-      } else {
-        console.error('❌ Failed to refresh graph data:', error)
+        return
       }
     }
     
     await getTimeTickersGraphDataAndParseToGraph()
-  } catch (error) {
+  } catch (error: any) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-      console.log('ℹ️ Data refresh request was canceled')
-    } else {
-      console.error('❌ Failed to refresh data:', error)
+      return
     }
   }
 }

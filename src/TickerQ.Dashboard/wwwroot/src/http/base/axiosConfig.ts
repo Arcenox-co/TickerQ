@@ -41,7 +41,7 @@ axiosInstance.interceptors.response.use(
   (error: AxiosError) => {
     if (error.response?.status === 401) {
       authStore.auth = '';
-      authStore.errorMessage = true;
+      authStore.errorMessage = 'Authentication failed. Please log in again.';
     }
 
     return Promise.reject(error);

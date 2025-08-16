@@ -64,7 +64,7 @@ export class AuthService {
       const authStore = this.getAuthStore()
       authStore.logout()
     } catch (error) {
-      console.error('Logout error:', error)
+      // Failed to update WebSocket connection
     }
   }
 
@@ -116,7 +116,7 @@ export class AuthService {
       const authStore = this.getAuthStore()
       await authStore.updateWebSocketConnection()
     } catch (error) {
-      console.error('Failed to update WebSocket connection:', error)
+      // Failed to update WebSocket connection
     }
   }
 }

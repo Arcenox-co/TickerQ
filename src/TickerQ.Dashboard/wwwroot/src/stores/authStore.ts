@@ -2,6 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, reactive, watch, type Ref } from 'vue';
 import { validateCredentials } from '../config/auth.config';
+import { useConnectionStore } from './connectionStore';
 
 export const useAuthStore = defineStore('auth', () => {
   // 1. Authentication state
@@ -26,36 +27,33 @@ export const useAuthStore = defineStore('auth', () => {
         auth.value = storedAuth
       }
     } catch (error) {
-      console.error('Failed to initialize auth from localStorage:', error)
+      // Failed to initialize auth from localStorage
     } finally {
       isInitialized.value = true
     }
   }
 
-  // 4. Sync to localStorage and update WebSocket connection
+  // Watch for auth token changes and update WebSocket connection
   watch(auth, async (newVal) => {
-    if (newVal) {
-      localStorage.setItem('auth', newVal)
-      // Update WebSocket connection with new auth token
+    if (newVal && newVal !== 'ZHVtbXk6ZHVtbXk=') {
       try {
-        // Dynamic import to avoid circular dependency
-        const { connectionManager } = await import('../hub/connectionManager')
-        await connectionManager.updateAuthToken(newVal)
+        const connectionStore = useConnectionStore()
+        await connectionStore.updateAuthToken(newVal)
       } catch (error) {
-        console.error('Failed to update WebSocket connection with new auth token:', error)
-      }
-    } else {
-      localStorage.removeItem('auth')
-      // Disconnect WebSocket when logging out
-      try {
-        // Dynamic import to avoid circular dependency
-        const { connectionManager } = await import('../hub/connectionManager')
-        await connectionManager.cleanup()
-      } catch (error) {
-        console.error('Failed to disconnect WebSocket on logout:', error)
+        // Failed to update auth token in connection
       }
     }
   })
+
+  // Cleanup function
+  async function cleanup() {
+    try {
+      const connectionStore = useConnectionStore()
+      await connectionStore.cleanup()
+    } catch (error) {
+      // Failed to cleanup connection
+    }
+  }
 
   // 5. Computed login state - only true if initialized and has auth
   const isLoggedIn = computed(() => isInitialized.value && !!auth.value)
@@ -106,10 +104,10 @@ export const useAuthStore = defineStore('auth', () => {
   const updateWebSocketConnection = async () => {
     if (auth.value) {
       try {
-        const { connectionManager } = await import('../hub/connectionManager');
-        await connectionManager.updateAuthToken(auth.value);
+        const connectionStore = useConnectionStore()
+        await connectionStore.updateAuthToken(auth.value)
       } catch (error) {
-        console.error('Failed to manually update WebSocket connection:', error);
+        // Failed to manually update WebSocket connection
       }
     }
   };

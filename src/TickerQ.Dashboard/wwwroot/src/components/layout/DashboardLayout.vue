@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { sleep } from '../../utilities/sleep'
 import { useDialog } from '../../composables/useDialog'
 import { ConfirmDialogProps } from '../common/ConfirmDialog.vue'
@@ -29,7 +29,6 @@ const dashboardStore = useDashboardStore()
 const connectionStore = useConnectionStore()
 
 // Lazy-loaded stores and services
-let connectionManager: any = null
 let tickerService: any = null
 
 // Lazy-loaded service functions
@@ -50,18 +49,24 @@ let stopTicker: any = null
 // Initialize stores and services lazily
 const initializeServices = async () => {
   try {
-    // Import services only when needed
-    const connectionManagerModule = await import('../../hub/connectionManager')
-    connectionManager = connectionManagerModule.connectionManager
-    
-    // Set the connection store in the connection manager
-    connectionManager.setConnectionStore(connectionStore)
-    
-    // Initialize the WebSocket connection
+    // Initialize the WebSocket connection using the connection store
     try {
-      await connectionManager.initializeConnection()
+      if (!connectionStore.isReady) {
+        // Connection store not ready, retrying in 2 seconds...
+        setTimeout(async () => {
+          try {
+            await connectionStore.initializeConnectionWithRetry()
+            connectionStore.setupVisibilityHandling()
+          } catch (error) {
+            // Connection initialization failed after retry
+          }
+        }, 2000)
+        return
+      }
+
+      await connectionStore.initializeConnection()
     } catch (error) {
-      console.error('Failed to initialize WebSocket connection:', error)
+      // Failed to initialize WebSocket connection
     }
     
     const tickerServiceModule = await import('../../http/services/tickerService')
@@ -80,7 +85,7 @@ const initializeServices = async () => {
     // Mark services as ready
     isServicesReady.value = true
   } catch (error) {
-    console.error('Failed to initialize services:', error)
+    // Failed to initialize services
     // Even if there's an error, mark as ready to prevent infinite loading
     isServicesReady.value = true
   }
@@ -111,15 +116,39 @@ const loadInitialData = async () => {
       tickerHostStatus.value = getTickerHostStatus.response.value.isRunning
     }
   } catch (error) {
-    console.error('Failed to load initial data:', error)
+    // Failed to load initial data
     currentMachine.value = 'Error'
     tickerHostStatus.value = false
   }
 }
 
-// Load data on mount
-onMounted(() => {
-  initializeServices()
+// Initialize connection on mount
+onMounted(async () => {
+  // Wait for next tick to ensure Pinia stores are fully initialized
+  await nextTick()
+  
+  try {
+    // Check if connection store is ready
+    if (!connectionStore.isReady) {
+      // Connection store not ready, retrying in 2 seconds...
+      setTimeout(async () => {
+        try {
+          await connectionStore.initializeConnectionWithRetry()
+          connectionStore.setupVisibilityHandling()
+        } catch (error) {
+          // Connection initialization failed after retry
+        }
+      }, 2000)
+      return
+    }
+
+    await connectionStore.initializeConnection()
+    
+    // After connection is established, initialize services and load data
+    await initializeServices()
+  } catch (error) {
+    // Error initializing connection
+  }
 })
 
 // Restart handler ensures at least 1s animation and until request completes
@@ -138,8 +167,6 @@ async function handleRestart() {
 
 // Get WebSocket status text with backend health information
 function getWebSocketStatusText() {
-  if (!connectionManager) return 'Initializing...'
-  
   const isConnecting = connectionStore.isConnecting
   const isConnected = connectionStore.isWebSocketConnected
   
@@ -156,23 +183,21 @@ function getWebSocketStatusText() {
 
 // Handle reconnection with health check
 async function handleReconnect() {
-  if (!connectionManager) return
-  
   try {
-    await connectionManager.forceReconnection()
+    await connectionStore.forceReconnection()
     
     // Wait for connection to stabilize
     await new Promise(resolve => setTimeout(resolve, 3000))
     
     // Perform health check and refresh
-    await connectionManager.performManualHealthCheck()
-    await connectionManager.refreshConnectionStatus()
+    await connectionStore.performManualHealthCheck()
+    await connectionStore.refreshConnectionStatus()
     
     // Force UI update
-    connectionManager.forceUIUpdate()
+    connectionStore.forceUIUpdate()
     
   } catch (error) {
-    console.error('Reconnection failed:', error)
+    // Reconnection failed
   }
 }
 
@@ -197,6 +222,41 @@ function handleAuthLogout() {
   if (typeof window !== 'undefined') {
     window.location.reload()
   }
+}
+
+// Connection status display
+const getConnectionStatus = computed(() => {
+  if (connectionStore.isConnected) {
+    return 'Connected'
+  } else if (connectionStore.isConnecting) {
+    return 'Connecting...'
+  } else {
+    return 'Disconnected'
+  }
+})
+
+// Connection management methods
+const handleForceReconnection = async () => {
+  if (!connectionStore) return
+  
+  try {
+    await connectionStore.forceReconnection()
+  } catch (error) {
+    // Force reconnection failed
+  }
+}
+
+const handleManualHealthCheck = async () => {
+  try {
+    await connectionStore.performManualHealthCheck()
+    await connectionStore.refreshConnectionStatus()
+  } catch (error) {
+    // Manual health check failed
+  }
+}
+
+const handleForceUIUpdate = () => {
+  connectionStore.forceUIUpdate()
 }
 
 
@@ -303,8 +363,6 @@ function handleAuthLogout() {
                 Reconnect
               </v-btn>
               
-
-
             </div>
             
             <!-- Loading State for WebSocket -->

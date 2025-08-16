@@ -116,12 +116,14 @@ const seriesColors: { [key: string]: string } = {
   Batched: '#A9A9A9', // Dark Gray
 }
 
-const getStatusColor = (status: string) => {
-  return seriesColors[status] || '#999'
+const getStatusColor = (status: string | number) => {
+  const statusStr = typeof status === 'number' ? Status[status] : status
+  return seriesColors[statusStr] || '#999'
 }
 
-const getStatusIcon = (status: string) => {
-  switch (status) {
+const getStatusIcon = (status: string | number) => {
+  const statusStr = typeof status === 'number' ? Status[status] : status
+  switch (statusStr) {
     case 'Idle': return 'mdi-clock-outline'
     case 'Queued': return 'mdi-queue'
     case 'InProgress': return 'mdi-progress-clock'

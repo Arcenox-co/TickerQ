@@ -61,8 +61,7 @@ const handleLogin = async () => {
       // Don't emit login event on failure, just show the error
     }
   } catch (error) {
-    console.error('Login error:', error)
-    // Don't emit login event on error
+    // Login error
   }
 }
 
@@ -71,8 +70,7 @@ const handleLogout = async () => {
     await logout()
     emit('logout')
   } catch (error) {
-    console.error('Logout error:', error)
-    // Still emit logout even if there's an error
+    // Logout error
     emit('logout')
   }
 }

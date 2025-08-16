@@ -76,13 +76,14 @@ const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values
   }),
   onFieldUpdate: {
     functionName: (value, update) => {
+      const functionData = functionNamesStore.data?.find((fn) => fn.functionName === value)
       setFieldValue(
         'exampleData',
-        functionNamesStore.data!.find((fn) => fn.functionName === value)?.functionRequestType!,
+        functionData?.functionRequestType || '',
       )
       setFieldValue(
         'requestData',
-        formatJsonForDisplay(getTickerRequestData.response.value?.result!, false)!,
+        formatJsonForDisplay(getTickerRequestData.response.value?.result || '', false) || '',
       )
 
       update(value)
@@ -128,7 +129,6 @@ const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values
   onSubmitForm: async (values, errors) => {
     if (!errors) {
       var originalRequestData = values.requestData
-      console.log('init', values.requestData)
       if (!props.dialogProps.isFromDuplicate) {
         await updateCronTicker
           .requestAsync(props.dialogProps.id, {

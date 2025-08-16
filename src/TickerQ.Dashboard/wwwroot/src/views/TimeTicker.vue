@@ -10,7 +10,6 @@ import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, PieChart } from 'echarts/charts'
 import TickerNotificationHub, { methodName } from '@/hub/tickerNotificationHub'
-import { connectionManager } from '@/hub/connectionManager'
 import { formatDate, formatFromUtcToLocal } from '@/utilities/dateTimeParser'
 import {
   TitleComponent,
@@ -115,56 +114,40 @@ const availableChildren = computed(() => {
 onMounted(async () => {
   try {
     isMounted.value = true
-    console.log('🔄 TimeTicker component mounting...')
     
-    // Ensure WebSocket connection is established (only if not already initialized)
+    // Initialize WebSocket connection
     try {
-      if (!connectionManager.isInitialized?.value) {
-        await connectionManager.initializeConnection()
-        console.log('✅ WebSocket connection initialized')
-      } else {
-        console.log('ℹ️ WebSocket connection already initialized')
+      if (!connectionStore.isInitialized) {
+        await connectionStore.initializeConnection()
       }
     } catch (error) {
-      console.warn('⚠️ WebSocket connection failed, continuing without it:', error)
+      // WebSocket connection failed, continuing without it
     }
     
-    // Check if still mounted before continuing
-    if (!isMounted.value) return
-    
-    // Load time tickers data
+    // Load initial data
     try {
       await getTimeTickers.requestAsync()
-      console.log('✅ Time tickers data loaded')
     } catch (error) {
-      console.error('❌ Failed to load time tickers:', error)
+      // Failed to load time tickers
     }
     
-    // Check if still mounted before continuing
-    if (!isMounted.value) return
-    
-    // Load graph data with range validation
     try {
-      if (range.value && Array.isArray(range.value) && range.value.length >= 2) {
-        await getTimeTickersGraphDataRangeAndParseToGraph(range.value[0], range.value[1])
-        console.log('✅ Graph data range loaded')
-      } else {
-        console.warn('⚠️ Invalid range value, using defaults')
-        await getTimeTickersGraphDataRangeAndParseToGraph(-3, 3)
+      const res = await getTimeTickersGraphDataRange.requestAsync(7, 7)
+      if (res && res.length > 0) {
+        const min = res[0].date
+        const max = res[res.length - 1].date
+        if (min && max) {
+          await getTimeTickersGraphData.requestAsync()
+        }
       }
     } catch (error) {
-      console.error('❌ Failed to load graph data range:', error)
+      // Failed to load graph data range
     }
     
-    // Check if still mounted before continuing
-    if (!isMounted.value) return
-    
-    // Load status distribution data
     try {
-      await getTimeTickersGraphDataAndParseToGraph()
-      console.log('✅ Status distribution data loaded')
+      await getTimeTickersGraphData.requestAsync()
     } catch (error) {
-      console.error('❌ Failed to load status distribution data:', error)
+      // Failed to load status distribution data
     }
     
     // Check if still mounted before continuing
@@ -173,20 +156,17 @@ onMounted(async () => {
     // Add hub listeners
     try {
       await addHubListeners()
-      console.log('✅ Hub listeners added')
     } catch (error) {
-      console.error('❌ Failed to add hub listeners:', error)
+      // Failed to add hub listeners
     }
     
-    console.log('✅ TimeTicker component mounted successfully')
   } catch (error) {
-    console.error('❌ Critical error during TimeTicker mount:', error)
+    // Critical error during TimeTicker mount
   }
 })
 
 onUnmounted(() => {
   isMounted.value = false
-  console.log('🔄 TimeTicker component unmounting...')
   
   TickerNotificationHub.stopReceiver(methodName.onReceiveAddTimeTicker)
   TickerNotificationHub.stopReceiver(methodName.onReceiveUpdateTimeTicker)
@@ -366,9 +346,8 @@ const unbatchItem = async (itemId: string) => {
   if (item.batchParent) {
     try {
       await unbatchTicker.requestAsync({ tickerId: itemId })
-      console.log(`Successfully unbatched item: ${item.id}`)
     } catch (error) {
-      console.error(`Failed to unbatch item: ${item.id}`, error)
+      // Failed to unbatch item
     }
   }
 }
@@ -404,15 +383,12 @@ const getTimeTickersGraphDataAndParseToGraph = async () => {
   chartError.value = false
 
   try {
-    console.log('🔄 Loading Status Distribution data...')
-
     // Set loading state
     totalOption.value.series[0].data = [
       { value: 1, name: 'Loading...', itemStyle: { color: '#64b5f6' } },
     ]
 
     const res = await getTimeTickersGraphData.requestAsync()
-    console.log('📊 Status Distribution Data received:', res)
 
     if (res && Array.isArray(res) && res.length > 0) {
       const chartData = res
@@ -455,30 +431,26 @@ const getTimeTickersGraphDataAndParseToGraph = async () => {
           },
         }))
 
-      console.log('✅ Processed Chart Data:', chartData)
-
       if (chartData.length > 0) {
         totalOption.value.series[0].data = chartData
         totalOption.value.title.text = `Status Distribution (${res.reduce((sum, item) => sum + item.item2, 0)} Total)`
       } else {
-        // No valid data
         totalOption.value.series[0].data = [
-          { value: 1, name: 'No Active Items', itemStyle: { color: '#9e9e9e' } },
+          { value: 1, name: 'No Data', itemStyle: { color: '#9e9e9e' } },
         ]
-        totalOption.value.title.text = 'Status Distribution'
+        totalOption.value.title.text = 'Status Distribution (No Data)'
       }
     } else {
-      console.warn('⚠️ No data received for Status Distribution')
+      // No data received for Status Distribution
       totalOption.value.series[0].data = [
-        { value: 1, name: 'No Data Available', itemStyle: { color: '#9e9e9e' } },
+        { value: 1, name: 'No Data', itemStyle: { color: '#9e9e9e' } },
       ]
-      totalOption.value.title.text = 'Status Distribution'
+      totalOption.value.title.text = 'Status Distribution (No Data)'
     }
   } catch (error) {
-    console.error('❌ Error loading Status Distribution:', error)
-    chartError.value = true
+    // Error loading Status Distribution
     totalOption.value.series[0].data = [
-      { value: 1, name: 'Failed to Load', itemStyle: { color: '#f44336' } },
+      { value: 1, name: 'Error', itemStyle: { color: '#f44336' } },
     ]
     totalOption.value.title.text = 'Status Distribution (Error)'
   } finally {
@@ -488,12 +460,9 @@ const getTimeTickersGraphDataAndParseToGraph = async () => {
 
 const getTimeTickersGraphDataRangeAndParseToGraph = async (startDate: number, endDate: number) => {
   try {
-    console.log('🔄 Loading graph data range...', { startDate, endDate })
-    
     const res = await getTimeTickersGraphDataRange.requestAsync(startDate, endDate)
     
     if (!res || !Array.isArray(res)) {
-      console.warn('⚠️ Invalid response for graph data range')
       return
     }
     
@@ -608,14 +577,10 @@ const getTimeTickersGraphDataRangeAndParseToGraph = async (startDate: number, en
 
     option.value.series = composedData as any
     
-    console.log('✅ Graph data range loaded successfully')
-  } catch (error) {
+  } catch (error: any) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-      console.log('ℹ️ Graph data range request was canceled')
       return
     }
-    
-    console.error('❌ Error loading graph data range:', error)
     
     // Set default/error state for the chart
     option.value.series = []
