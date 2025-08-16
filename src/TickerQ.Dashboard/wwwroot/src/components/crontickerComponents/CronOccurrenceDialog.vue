@@ -116,10 +116,63 @@ const seriesColors: { [key: string]: string } = {
   Batched: '#A9A9A9', // Dark Gray
 }
 
+const getStatusColor = (status: string) => {
+  return seriesColors[status] || '#999'
+}
+
+const getStatusIcon = (status: string) => {
+  switch (status) {
+    case 'Idle': return 'mdi-clock-outline'
+    case 'Queued': return 'mdi-queue'
+    case 'InProgress': return 'mdi-progress-clock'
+    case 'Done': return 'mdi-check-circle'
+    case 'DueDone': return 'mdi-check-circle-outline'
+    case 'Failed': return 'mdi-alert-circle'
+    case 'Cancelled': return 'mdi-cancel'
+    case 'Batched': return 'mdi-layers'
+    default: return 'mdi-help-circle'
+  }
+}
+
+const formatRetryIntervals = (item: any) => {
+  if (!item.retryIntervals || item.retryIntervals.length === 0) {
+    return []
+  }
+
+  const intervals = []
+  const maxRetries = props.dialogProps.retries as number
+  
+  for (let i = 0; i < maxRetries; i++) {
+    if (i < item.retryIntervals.length) {
+      intervals.push({
+        attempt: i + 1,
+        interval: item.retryIntervals[i],
+        status: i === item.retryCount - 1 ? item.status : 'Completed',
+        isCurrent: i === item.retryCount - 1,
+        isCompleted: i < item.retryCount - 1
+      })
+    } else {
+      intervals.push({
+        attempt: i + 1,
+        interval: item.retryIntervals[item.retryIntervals.length - 1],
+        status: 'Pending',
+        isCurrent: false,
+        isCompleted: false
+      })
+    }
+  }
+  
+  return intervals
+}
+
 const setRowProp = (propContext: any) => {
-  return { style: `color:${seriesColors[propContext.item.status]}` }
+  return { 
+    class: `status-row status-${propContext.item.status.toLowerCase()}`,
+    style: `border-left: 4px solid ${getStatusColor(propContext.item.status)}`
+  }
 }
 </script>
+
 <template>
   <confirmDialog.Component
     :is-open="confirmDialog.isOpen"
@@ -131,216 +184,572 @@ const setRowProp = (propContext: any) => {
     @close="exceptionDialog.close()"
     :dialog-props="exceptionDialog.propData"
   />
-  <div class="text-center pa-4">
-    <v-dialog v-model="toRef(isOpen).value" width="auto">
-      <v-card>
-        <v-card-title class="d-flex justify-space-between align-center">
-          <span class="headline">Cron Ticker Occurrences</span>
-          <v-btn @click="emit('close')" variant="outlined" aria-label="Close">
-            <v-icon>mdi-close</v-icon>
+  
+  <v-dialog v-model="toRef(isOpen).value" max-width="1400" persistent>
+    <v-card class="occurrences-dialog">
+      <!-- Header -->
+      <v-card-title class="dialog-header">
+        <div class="header-content">
+          <div class="header-left">
+            <v-icon size="24" color="primary" class="header-icon">mdi-calendar-clock</v-icon>
+            <div class="header-text">
+              <h2 class="dialog-title">Cron Ticker Occurrences</h2>
+              <p class="dialog-subtitle">Execution history and retry attempts</p>
+            </div>
+          </div>
+          <v-btn 
+            @click="emit('close')" 
+            icon 
+            variant="text" 
+            size="small"
+            class="close-btn"
+            aria-label="Close"
+          >
+            <v-icon size="20">mdi-close</v-icon>
           </v-btn>
-        </v-card-title>
-        <v-data-table
-          :headers="getByCronTickerId.headers.value"
-          :loading="getByCronTickerId.loader.value"
-          :items="getByCronTickerId.response.value"
-          item-value="Id"
-          :row-props="setRowProp"
-          key="Id"
-        >
-        <template v-slot:item.status="{ item }">
-                <span
-                  :class="hasStatus(item.status, Status.Failed) ? 'underline' : ''"
-                  @click="
-                    hasStatus(item.status, Status.Failed)
-                      ? exceptionDialog.open({
-                          ...new ConfirmDialogProps(),
-                          title: 'Exception Details',
-                          text: JSON.stringify(JSON.parse(item.exception!), null, 2),
-                          showConfirm: false,
-                          maxWidth: '800',
-                          icon: 'mdi-bug-outline',
-                          isCode: true,
-                        })
-                      : null
-                  "
+        </div>
+      </v-card-title>
+
+      <!-- Content -->
+      <v-card-text class="dialog-content">
+        <div v-if="getByCronTickerId.loader.value" class="loading-container">
+          <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+          <p class="loading-text">Loading occurrences...</p>
+        </div>
+
+        <div v-else-if="!getByCronTickerId.response.value || getByCronTickerId.response.value.length === 0" class="empty-state">
+          <v-icon size="64" color="grey-lighten-1">mdi-calendar-remove</v-icon>
+          <h3 class="empty-title">No Occurrences Found</h3>
+          <p class="empty-subtitle">This cron ticker hasn't been executed yet.</p>
+        </div>
+
+        <div v-else class="table-container">
+          <v-data-table
+            :headers="getByCronTickerId.headers.value"
+            :loading="getByCronTickerId.loader.value"
+            :items="getByCronTickerId.response.value"
+            item-value="Id"
+            :row-props="setRowProp"
+            key="Id"
+            class="enhanced-table"
+            density="compact"
+            hover
+            height="400"
+            fixed-header
+          >
+            <!-- Status Column -->
+            <template v-slot:item.status="{ item }">
+              <div class="status-cell">
+                <div class="status-badge" :style="{ backgroundColor: getStatusColor(item.status) }">
+                  <v-icon size="14" color="white">{{ getStatusIcon(item.status) }}</v-icon>
+                  <span class="status-text">{{ item.status }}</span>
+                </div>
+                
+                <!-- Exception indicator for failed statuses -->
+                <div 
+                  v-if="hasStatus(item.status, Status.Failed) && item.exception"
+                  class="exception-indicator"
+                  @click="exceptionDialog.open({
+                    ...new ConfirmDialogProps(),
+                    title: 'Exception Details',
+                    text: item.exception,
+                    showConfirm: false,
+                    maxWidth: '900',
+                    icon: 'mdi-bug-outline',
+                    isException: true,
+                  })"
                 >
-                  <span>{{ item.status }}</span>
-                  <v-icon
-                    class="ml-2 mb-1"
-                    size="small"
-                    v-if="hasStatus(item.status, Status.Failed)"
-                  >mdi-bug-outline</v-icon
-                  >
-                </span>
-              </template>
-          <template v-slot:item.ExecutedAt="{ item }">
-            <div
-              v-if="hasStatus(item.status, Status.InProgress)"
-              class="snippet"
-              data-title="dot-carousel"
-            >
-              <div class="stage">
-                <div class="dot-carousel"></div>
+                  <v-icon size="16" color="error">mdi-bug-outline</v-icon>
+                  <v-tooltip activator="parent" location="top">View Exception Details</v-tooltip>
+                </div>
               </div>
-            </div>
-            <div v-else class="text-center">
-              {{
-                hasStatus(item.status, Status.Cancelled) || hasStatus(item.status, Status.Queued)
-                  ? 'N/A'
-                  : item.executedAt
-              }}
-            </div>
-          </template>
-          <template v-slot:item.retryIntervals="{ item }">
-                <span v-if="item.retryIntervals == null || item.retryIntervals.length == 0">
-                  <span>N/A</span>
-                </span>
-                <span v-else>
-                  [
-                  <span v-for="(interval, index) in item.retryIntervals" :key="index">
-                    <span
-                      :class="
-                        index == item.retryCount - 1
-                          ? item.status == Status[Status.InProgress]
-                            ? 'interval interval-running'
-                            : item.status != Status[Status.InProgress] ||
-                                item.status != Status[Status.Idle] ||
-                                item.status != Status[Status.Queued]
-                              ? 'active-attempt'
-                              : 'interval'
-                          : 'interval'
-                      "
-                    >
-                      <span class="attempt">#{{ index + 1 }}</span>
-                      <span class="retry-preview">&#x21FE;</span>
-                      <span>{{ interval }}</span>
-                    </span>
-                    <span v-if="index < item.retryIntervals.length - 1">, </span>
-                  </span>
-                  <span v-if="(props.dialogProps.retries as number) > item.retryIntervals.length">
-                    <span
-                      v-if="
-                        (item.retryCount as number) > item.retryIntervals.length &&
-                        (item.retryCount as number) != item.retryIntervals.length &&
-                        (item.retryCount as number) != props.dialogProps.retries
-                      "
-                    >
-                      <span
-                        class="attempt"
-                        v-if="(item.retryCount as number) != item.retryIntervals.length + 1"
-                        >, ...
-                      </span>
-                      <span v-else>, </span>
-                      <span
-                        :class="
-                          item.status == Status[Status.InProgress]
-                            ? 'interval interval-running'
-                            : item.status != Status[Status.InProgress] ||
-                                item.status != Status[Status.Idle] ||
-                                item.status != Status[Status.Queued]
-                              ? 'active-attempt'
-                              : 'interval'
-                        "
-                      >
-                        <span class="attempt">#{{ item.retryCount }}</span>
-                        <span class="retry-preview">&#x21FE;</span>
-                        <span>{{ item.retryIntervals[item.retryIntervals.length - 1] }}</span>
-                      </span>
-                      <span v-if="(item.retryCount as number) + 1 != props.dialogProps.retries">, ...</span>
-                      <span v-else>, </span>
-                    </span>
-                    <span v-else-if="(props.dialogProps.retries as number) == 2">, </span>
-                    <span v-else>, ...</span>
-                    <span
-                      :class="
-                        (item.retryCount as number) == props.dialogProps.retries
-                          ? item.status == Status[Status.InProgress]
-                            ? 'interval interval-running'
-                            : item.status != Status[Status.InProgress] ||
-                                item.status != Status[Status.Idle] ||
-                                item.status != Status[Status.Queued]
-                              ? 'active-attempt'
-                              : 'interval'
-                          : 'interval'
-                      "
-                    >
-                      <span class="attempt">#{{ props.dialogProps.retries }}</span>
-                      <span>&#x21FE;</span>
-                      <span>{{ item.retryIntervals[item.retryIntervals.length - 1] }}</span>
-                    </span>
-                  </span>
-                  ]
-                </span>
-              </template>
-          <template v-slot:item.actions="{ item }">
-            <v-btn
-              @click="requestCancel(item.id)"
-              :disabled="!hasStatus(item.status, Status.InProgress)"
-              icon
-              :variant="hasStatus(item.status, Status.InProgress) ? 'elevated' : 'text'"
-              density="comfortable"
-            >
-              <v-icon :color="hasStatus(item.status, Status.InProgress) ? 'blue' : 'grey'"
-                >mdi-cancel</v-icon
-              >
-            </v-btn>
-            <v-btn
-              @click="confirmDialog.open({ data: item.id })"
-              :disabled="hasStatus(item.status, Status.InProgress)"
-              :variant="!hasStatus(item.status, Status.InProgress) ? 'elevated' : 'text'"
-              icon
-              density="comfortable"
-            >
-              <v-icon color="red">mdi-delete</v-icon>
-            </v-btn>
-          </template>
-        </v-data-table>
-      </v-card>
-    </v-dialog>
-  </div>
+            </template>
+
+            <!-- Executed At Column -->
+            <template v-slot:item.ExecutedAt="{ item }">
+              <div class="executed-at-cell">
+                <div v-if="hasStatus(item.status, Status.InProgress)" class="executing-indicator">
+                  <v-icon size="16" class="spinning">mdi-loading</v-icon>
+                  <span class="executing-text">Executing...</span>
+                </div>
+                <div v-else-if="hasStatus(item.status, Status.Cancelled) || hasStatus(item.status, Status.Queued)" class="na-text">
+                  N/A
+                </div>
+                <div v-else class="execution-time">
+                  {{ item.executedAt }}
+                </div>
+              </div>
+            </template>
+
+            <!-- Retry Intervals Column -->
+            <template v-slot:item.retryIntervals="{ item }">
+              <div class="retry-intervals-cell">
+                <div v-if="!item.retryIntervals || item.retryIntervals.length === 0" class="no-retries">
+                  <span class="na-text">N/A</span>
+                </div>
+                <div v-else class="retry-timeline-compact">
+                  <div 
+                    v-for="(retry, retryIndex) in formatRetryIntervals(item)" 
+                    :key="retryIndex"
+                    class="timeline-item-compact"
+                    :class="{
+                      'current': retry.isCurrent,
+                      'completed': retry.isCompleted,
+                      'pending': !retry.isCompleted && !retry.isCurrent
+                    }"
+                  >
+                    <div class="timeline-marker-compact">
+                      <v-icon 
+                        v-if="retry.isCompleted" 
+                        size="12" 
+                        color="success"
+                      >mdi-check-circle</v-icon>
+                      <v-icon 
+                        v-else-if="retry.isCurrent" 
+                        size="12" 
+                        color="primary"
+                        class="spinning"
+                      >mdi-progress-clock</v-icon>
+                      <v-icon 
+                        v-else 
+                        size="12" 
+                        color="grey-lighten-1"
+                      >mdi-clock-outline</v-icon>
+                    </div>
+                    
+                    <div class="timeline-content-compact">
+                      <span class="attempt-number-compact">#{{ retry.attempt }}</span>
+                      <span class="interval-time-compact">{{ retry.interval }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- Actions Column -->
+            <template v-slot:item.actions="{ item }">
+              <div class="actions-cell">
+                <v-btn
+                  @click="requestCancel(item.id)"
+                  :disabled="!hasStatus(item.status, Status.InProgress)"
+                  icon
+                  variant="text"
+                  size="small"
+                  class="action-btn cancel-btn"
+                  :class="{ 'active': hasStatus(item.status, Status.InProgress) }"
+                >
+                  <v-icon size="18">mdi-cancel</v-icon>
+                  <v-tooltip activator="parent" location="top">Cancel Execution</v-tooltip>
+                </v-btn>
+                
+                <v-btn
+                  @click="confirmDialog.open({ data: item.id })"
+                  :disabled="hasStatus(item.status, Status.InProgress)"
+                  icon
+                  variant="text"
+                  size="small"
+                  class="action-btn delete-btn"
+                >
+                  <v-icon size="18">mdi-delete</v-icon>
+                  <v-tooltip activator="parent" location="top">Delete Occurrence</v-tooltip>
+                </v-btn>
+              </div>
+            </template>
+          </v-data-table>
+        </div>
+      </v-card-text>
+    </v-card>
+  </v-dialog>
 </template>
+
 <style scoped>
-.blue-underline {
+.occurrences-dialog {
+  border-radius: 16px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog-header {
+  background: linear-gradient(135deg, rgba(100, 181, 246, 0.12) 0%, rgba(100, 181, 246, 0.04) 100%);
+  border-bottom: 1px solid rgba(100, 181, 246, 0.2);
+  padding: 16px;
+}
+
+.header-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-icon {
+  background: rgba(100, 181, 246, 0.15);
+  border-radius: 8px;
+  padding: 6px;
+}
+
+.header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dialog-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 0;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.dialog-subtitle {
+  font-size: 0.75rem;
+  color: #bdbdbd;
+  margin: 0;
+}
+
+.close-btn {
+  color: #bdbdbd;
+  transition: all 0.2s ease;
+}
+
+.close-btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.dialog-content {
+  padding: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 32px;
+  gap: 16px;
+}
+
+.loading-text {
+  color: #bdbdbd;
+  font-size: 1rem;
+  margin: 0;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 32px;
+  gap: 16px;
+  text-align: center;
+}
+
+.empty-title {
+  color: #ffffff;
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.empty-subtitle {
+  color: #bdbdbd;
+  font-size: 0.875rem;
+  margin: 0;
+}
+
+.table-container {
+  padding: 16px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.enhanced-table {
+  background: transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  flex: 1;
+}
+
+/* Table Row Styling */
+:deep(.enhanced-table .v-data-table__tr) {
+  transition: all 0.2s ease;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+:deep(.enhanced-table .v-data-table__tr:hover) {
+  background: rgba(255, 255, 255, 0.03) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+:deep(.enhanced-table .v-data-table-header) {
+  background: linear-gradient(135deg, rgba(100, 181, 246, 0.12) 0%, rgba(100, 181, 246, 0.04) 100%);
+  border-bottom: 1px solid rgba(100, 181, 246, 0.2);
+}
+
+:deep(.enhanced-table .v-data-table-header__td) {
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 8px 8px;
+}
+
+:deep(.enhanced-table .v-data-table__td) {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+:deep(.enhanced-table .v-data-table__wrapper) {
+  overflow: hidden;
+}
+
+:deep(.enhanced-table .v-data-table__tbody) {
+  overflow: hidden;
+}
+
+/* Status Row Styling */
+.status-row {
+  background: rgba(255, 255, 255, 0.01);
+  transition: all 0.2s ease;
+}
+
+.status-row:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Status Cell Styling */
+.status-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 0.65rem;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.status-text {
+  font-size: 0.65rem;
+}
+
+.exception-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255, 0, 0, 0.2);
   cursor: pointer;
-  text-decoration: underline;
+  transition: all 0.2s ease;
 }
 
-:deep(.blue-badge .v-badge__badge) {
-  color: rgb(0, 145, 255) !important;
+.exception-indicator:hover {
+  background: rgba(255, 0, 0, 0.3);
+  transform: scale(1.05);
 }
 
-:deep(.red-badge .v-badge__badge) {
-  color: red !important;
+/* Executed At Cell Styling */
+.executed-at-cell {
+  display: flex;
+  align-items: center;
+  min-height: 20px;
 }
 
-:deep(.grey-badge .v-badge__badge) {
-  color: grey !important;
+.executing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #6495ED;
+  font-weight: 600;
+  font-size: 0.75rem;
 }
 
-.retry-preview {
-  font-family: monospace;
+.executing-text {
+  font-size: 0.75rem;
 }
 
-.interval > .attempt {
-  font-size: 0.75em;
-  color: #c8bbbb;
+.na-text {
+  color: #bdbdbd;
+  font-style: italic;
+  font-size: 0.75rem;
 }
 
-.active-attempt > .attempt {
-  font-size: 0.75em;
+.execution-time {
+  color: #ffffff;
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 
-.interval {
-  color: #c8bbbb;
+/* Retry Intervals Cell Styling */
+.retry-intervals-cell {
+  min-height: 20px;
 }
 
-.interval-running {
-  color: rgb(0, 145, 255);
+.no-retries {
+  display: flex;
+  align-items: center;
+  height: 100%;
 }
 
-.underline {
-  text-decoration: underline;
-  cursor: pointer;
+.retry-timeline-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.timeline-item-compact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.timeline-item-compact.current {
+  background: rgba(100, 181, 246, 0.12);
+  border: 1px solid rgba(100, 181, 246, 0.25);
+}
+
+.timeline-item-compact.completed {
+  background: rgba(76, 175, 80, 0.08);
+  border: 1px solid rgba(76, 175, 80, 0.15);
+}
+
+.timeline-item-compact.pending {
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.timeline-marker-compact {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.timeline-content-compact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.attempt-number-compact {
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 0.65rem;
+  min-width: 16px;
+}
+
+.interval-time-compact {
+  color: #bdbdbd;
+  font-size: 0.65rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Actions Cell Styling */
+.actions-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+}
+
+.action-btn {
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.action-btn:hover {
+  transform: scale(1.05);
+}
+
+.cancel-btn.active {
+  background: rgba(100, 181, 246, 0.15);
+  color: #6495ED;
+}
+
+.delete-btn:hover {
+  background: rgba(255, 0, 0, 0.15);
+  color: #ff0000;
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .occurrences-dialog {
+    margin: 12px;
+    max-width: calc(100vw - 24px);
+  }
+  
+  .dialog-header {
+    padding: 12px;
+  }
+  
+  .header-left {
+    gap: 8px;
+  }
+  
+  .dialog-title {
+    font-size: 1.125rem;
+  }
+  
+  .header-icon {
+    padding: 4px;
+  }
+  
+  .table-container {
+    padding: 12px;
+  }
+  
+  :deep(.enhanced-table .v-data-table-header__td),
+  :deep(.enhanced-table .v-data-table__td) {
+    padding: 4px 6px;
+  }
 }
 </style>

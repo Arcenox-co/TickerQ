@@ -7,6 +7,7 @@ import {
   GetTimeTickerGraphDataRangeResponse,
   GetTimeTickerGraphDataResponse,
   GetTimeTickerResponse, SetBatchParentRequest,
+  UnbatchTickerRequest,
   UpdateTimeTickerRequest
 } from './types/timeTickerService.types'
 import { nameof } from '@/utilities/nameof';
@@ -24,16 +25,15 @@ const getTimeTickers = () => {
                 response.executedAt = `${format(response.executedAt)} (took ${formatTime(response.elapsedTime as number, true)})`;
 
             response.executionTimeFormatted = formatDate(response.executionTime);
-            response.requestType = functionNamesStore.getNamespaceOrNull(response.function) ?? 'N/A';
+            response.requestType = functionNamesStore.getNamespaceOrNull(response.function) ?? '';
 
-            response.description = response.description == '' ? 'N/A' : response.description;
 
             if (response.retryIntervals == null || response.retryIntervals.length == 0 && response.retries != null && (response.retries as number) > 0)
                 response.retryIntervals = Array(1).fill(`${30}s`);
             else
                 response.retryIntervals = (response.retryIntervals as string[]).map((x: any) => formatTime(x as number, false));
 
-            response.lockHolder = response.lockHolder ?? 'N/A';
+            response.lockHolder = response.lockHolder ?? '-';
 
             return response;
         })
@@ -144,6 +144,17 @@ const setBatchParent = () => {
   };
 }
 
+const unbatchTicker = () => {
+  const baseHttp = useBaseHttpService<UnbatchTickerRequest, object>('single');
+
+  const requestAsync = async (data: UnbatchTickerRequest) => (await baseHttp.sendAsync("POST", "time-tickers/unbatch", { bodyData: data}));
+
+  return {
+    ...baseHttp,
+    requestAsync
+  };
+}
+
 
 export const timeTickerService = {
     getTimeTickers,
@@ -152,5 +163,6 @@ export const timeTickerService = {
     getTimeTickersGraphData,
     addTimeTicker,
     updateTimeTicker,
-  setBatchParent
+    setBatchParent,
+    unbatchTicker
 };

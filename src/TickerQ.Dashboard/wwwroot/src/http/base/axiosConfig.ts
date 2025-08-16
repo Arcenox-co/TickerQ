@@ -7,7 +7,7 @@ const authStore = useAuthStore();
 const axiosInstance: AxiosInstance = axios.create({
   baseURL: import.meta.env.PROD
     ? `${baseTag?.href}/api`
-    : 'http://localhost:5079/tickerq-dashboard/api',
+    : 'http://localhost:5083/tickerq-dashboard/api',
 });
 
 // ✅ Request Interceptor: Set Authorization header from localStorage

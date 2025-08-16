@@ -90,6 +90,44 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             await NotifyOrUpdateUpdate(tt, requestType, false);
         }
 
+
+
+        public async Task UnbatchTimeTickerAsync(Guid tickerId)
+        {
+            var tt = await _persistenceProvider.GetTimeTickerById(tickerId, options => options.SetAsTracking());
+
+            var requestType = GetRequestType(tt.Function);
+
+            // Store the original parent ID for cascade updates
+            var originalParentId = tt.BatchParent;
+
+            // Clear the batch relationship
+            tt.BatchParent = null;
+            tt.BatchRunCondition = null;
+
+            // If the ticker was batched, change it to idle
+            if (tt.Status == TickerStatus.Batched)
+            {
+                tt.Status = TickerStatus.Idle;
+            }
+
+            _tickerHost.RestartIfNeeded(tt.ExecutionTime);
+
+            await _persistenceProvider.UpdateTimeTickers(new[]
+            {
+                tt
+            });
+
+            // If there was a parent, update the parent's batch cascade
+            if (originalParentId.HasValue)
+            {
+                var parentTicker = await _persistenceProvider.GetTimeTickerById(originalParentId.Value);
+                await _internalTickerManager.CascadeBatchUpdate(originalParentId.Value, parentTicker.Status);
+            }
+
+            await NotifyOrUpdateUpdate(tt, requestType, false);
+        }
+
         public async Task<IList<Tuple<TickerStatus, int>>> GetTimeTickerFullDataAsync(
             CancellationToken cancellationToken)
         {
@@ -705,35 +743,29 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             }
         }
 
-        public async Task UpdateTimeTickerAsync(Guid id, string jsonBody)
+        // New method that accepts request models
+        public async Task UpdateTimeTickerAsync(Guid id, TickerQ.Utilities.DashboardDtos.UpdateTimeTickerRequest request)
         {
             var timeTicker = await _persistenceProvider.GetTimeTickerById(id);
-            var requestType = string.Empty;
+            var requestType = GetRequestType(request.Function);
 
             timeTicker.UpdatedAt = DateTime.UtcNow;
             timeTicker.LockedAt = null;
             timeTicker.LockHolder = null;
             timeTicker.Status = TickerStatus.Idle;
+            timeTicker.Function = request.Function;
+            timeTicker.Description = request.Description;
+            timeTicker.Retries = request.Retries;
+            timeTicker.RetryIntervals = request.Intervals ?? new[] { 30 };
+            
+            // Process the request using the function
+            var requestJson = JsonSerializer.Serialize(new { request = request.Request });
+            var requestElement = JsonSerializer.Deserialize<JsonElement>(requestJson);
+            timeTicker.Request = ProcessRequest(requestElement, request.Function);
 
-            var newTimeTicker = JsonSerializer.Deserialize<JsonElement>(jsonBody);
-
-            if (newTimeTicker.TryGetProperty("function", out var functionProperty))
-            {
-                timeTicker.Function = functionProperty.GetString();
-                requestType = GetRequestType(functionProperty.GetString());
-                timeTicker.Request = ProcessRequest(newTimeTicker, functionProperty.GetString());
-            }
-
-            if (newTimeTicker.TryGetProperty("description", out var descriptionProperty))
-                timeTicker.Description = descriptionProperty.GetString();
-
-            if (newTimeTicker.TryGetProperty("intervals", out var intervalsProperty))
-                timeTicker.RetryIntervals = intervalsProperty.EnumerateArray().Select(x => x.GetInt32()).ToArray();
-
-            timeTicker.ExecutionTime = newTimeTicker.TryGetProperty("executionTime", out var executionTimeProperty)
-                ? executionTimeProperty.GetDateTime().ToUniversalTime()
+            timeTicker.ExecutionTime = !string.IsNullOrEmpty(request.ExecutionTime) 
+                ? DateTime.Parse(request.ExecutionTime).ToUniversalTime()
                 : DateTime.UtcNow.AddSeconds(1);
-
 
             _tickerHost.RestartIfNeeded(timeTicker.ExecutionTime);
 
@@ -741,36 +773,31 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             await NotifyOrUpdateUpdate(timeTicker, requestType, false);
         }
 
-        public async Task AddTimeTickerAsync(string jsonBody)
+
+
+        // New method that accepts request models
+        public async Task AddTimeTickerAsync(TickerQ.Utilities.DashboardDtos.AddTimeTickerRequest request)
         {
-            var newTimeTicker = JsonSerializer.Deserialize<JsonElement>(jsonBody);
-            var requestType = string.Empty;
+            var requestType = GetRequestType(request.Function);
 
             var timeTicker = new TTimeTicker
             {
                 Status = TickerStatus.Idle,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
-                RetryIntervals = newTimeTicker.TryGetProperty("intervals", out var intervalsProperty)
-                    ? intervalsProperty.EnumerateArray().Select(x => x.GetInt32()).ToArray()
-                    : new[] { 30 }
+                Function = request.Function,
+                Description = request.Description,
+                Retries = request.Retries,
+                RetryIntervals = request.Intervals ?? new[] { 30 }
             };
 
-            if (newTimeTicker.TryGetProperty("retries", out var retryProperty))
-                timeTicker.Retries = retryProperty.GetInt32();
+            // Process the request using the function
+            var requestJson = JsonSerializer.Serialize(new { request = request.Request });
+            var requestElement = JsonSerializer.Deserialize<JsonElement>(requestJson);
+            timeTicker.Request = ProcessRequest(requestElement, request.Function);
 
-            if (newTimeTicker.TryGetProperty("description", out var descriptionProperty))
-                timeTicker.Description = descriptionProperty.GetString();
-
-            if (newTimeTicker.TryGetProperty("function", out var functionProperty))
-            {
-                timeTicker.Function = functionProperty.GetString();
-                requestType = GetRequestType(functionProperty.GetString());
-                timeTicker.Request = ProcessRequest(newTimeTicker, functionProperty.GetString());
-            }
-
-            timeTicker.ExecutionTime = newTimeTicker.TryGetProperty("executionTime", out var executionTimeProperty)
-                ? executionTimeProperty.GetDateTime().ToUniversalTime()
+            timeTicker.ExecutionTime = !string.IsNullOrEmpty(request.ExecutionTime)
+                ? DateTime.Parse(request.ExecutionTime).ToUniversalTime()
                 : DateTime.UtcNow.AddSeconds(1);
 
             await _persistenceProvider.InsertTimeTickers(new[] { timeTicker });
@@ -780,36 +807,31 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             await NotifyOrUpdateUpdate(timeTicker, requestType, true);
         }
 
-        public async Task AddCronTickerAsync(string jsonBody)
+
+
+        // New method that accepts request models
+        public async Task AddCronTickerAsync(TickerQ.Utilities.DashboardDtos.AddCronTickerRequest request)
         {
-            var requestType = string.Empty;
-            var newCronTicker = JsonSerializer.Deserialize<JsonElement>(jsonBody);
+            var requestType = GetRequestType(request.Function);
 
             var cronTicker = new TCronTicker
             {
                 CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
+                UpdatedAt = DateTime.UtcNow,
+                Function = request.Function,
+                Expression = request.Expression,
+                Description = request.Description ?? string.Empty,
+                Retries = request.Retries ?? 0,
+                RetryIntervals = request.Intervals ?? new[] { 30 }
             };
 
-            cronTicker.RetryIntervals = newCronTicker.TryGetProperty("intervals", out var intervalsProperty)
-                ? intervalsProperty.EnumerateArray().Select(x => x.GetInt32()).ToArray()
-                : new[] { 30 };
-
-            if (newCronTicker.TryGetProperty("retries", out var retryProperty))
-                cronTicker.Retries = retryProperty.GetInt32();
-
-            if (newCronTicker.TryGetProperty("description", out var descriptionProperty))
-                cronTicker.Description = descriptionProperty.GetString();
-
-            if (newCronTicker.TryGetProperty("function", out var functionProperty))
+            // Process the request using the function
+            if (!string.IsNullOrEmpty(request.Request))
             {
-                cronTicker.Function = functionProperty.GetString();
-                requestType = GetRequestType(functionProperty.GetString());
-                cronTicker.Request = ProcessRequest(newCronTicker, functionProperty.GetString());
+                var requestJson = JsonSerializer.Serialize(new { request = request.Request });
+                var requestElement = JsonSerializer.Deserialize<JsonElement>(requestJson);
+                cronTicker.Request = ProcessRequest(requestElement, request.Function);
             }
-
-            if (newCronTicker.TryGetProperty("expression", out var expressionProperty))
-                cronTicker.Expression = expressionProperty.GetString();
 
             await _persistenceProvider.InsertCronTickers(new[] { cronTicker });
 
@@ -821,36 +843,32 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             await NotifyOrUpdateUpdate(cronTicker, requestType, true);
         }
 
-        public async Task UpdateCronTickerAsync(Guid id, string jsonBody)
+
+
+        // New method that accepts request models
+        public async Task UpdateCronTickerAsync(Guid id, TickerQ.Utilities.DashboardDtos.UpdateCronTickerRequest request)
         {
-            var newCronTicker = JsonSerializer.Deserialize<JsonElement>(jsonBody);
             var cronTicker = await _persistenceProvider.GetCronTickerById(id);
 
             if (cronTicker == null)
                 throw new KeyNotFoundException($"CronTicker with ID {id} not found.");
 
             cronTicker.UpdatedAt = DateTime.UtcNow;
-            string requestType = string.Empty;
+            var requestType = GetRequestType(request.Function);
 
-            cronTicker.RetryIntervals = newCronTicker.TryGetProperty("intervals", out var intervalsProperty)
-                ? intervalsProperty.EnumerateArray().Select(x => x.GetInt32()).ToArray()
-                : new[] { 30 };
+            cronTicker.Function = request.Function;
+            cronTicker.Expression = request.Expression;
+            cronTicker.Description = request.Description ?? string.Empty;
+            cronTicker.Retries = request.Retries ?? 0;
+            cronTicker.RetryIntervals = request.Intervals ?? new[] { 30 };
 
-            if (newCronTicker.TryGetProperty("retries", out var retryProperty))
-                cronTicker.Retries = retryProperty.GetInt32();
-
-            if (newCronTicker.TryGetProperty("description", out var descriptionProperty))
-                cronTicker.Description = descriptionProperty.GetString();
-
-            if (newCronTicker.TryGetProperty("function", out var functionProperty))
+            // Process the request using the function
+            if (!string.IsNullOrEmpty(request.Request))
             {
-                cronTicker.Function = functionProperty.GetString();
-                requestType = GetRequestType(functionProperty.GetString());
-                cronTicker.Request = ProcessRequest(newCronTicker, functionProperty.GetString());
+                var requestJson = JsonSerializer.Serialize(new { request = request.Request });
+                var requestElement = JsonSerializer.Deserialize<JsonElement>(requestJson);
+                cronTicker.Request = ProcessRequest(requestElement, request.Function);
             }
-
-            if (newCronTicker.TryGetProperty("expression", out var expressionProperty))
-                cronTicker.Expression = expressionProperty.GetString();
 
             await _persistenceProvider.UpdateCronTickers(new[] { cronTicker });
 

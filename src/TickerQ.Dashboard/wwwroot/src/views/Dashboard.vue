@@ -4,32 +4,26 @@ import { formatDate } from '@/utilities/dateTimeParser'
 import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import TickerNotificationHub, { methodName } from '@/hub/tickerNotificationHub'
 import { useFunctionNameStore } from '@/stores/functionNames'
+import { useDashboardStore } from '@/stores/dashboardStore'
 import { Status } from '@/http/services/types/base/baseHttpResponse.types'
-import { useDialog } from '@/composables/useDialog'
-import { ConfirmDialogProps } from '@/components/common/ConfirmDialog.vue'
 import { sleep } from '@/utilities/sleep'
 
 const getNextPlannedTicker = tickerService.getNextPlannedTicker()
-const stopTicker = tickerService.stopTicker()
-const startTicker = tickerService.startTicker()
-const restartTicker = tickerService.restartTicker()
-const getTickerHostStatus = tickerService.getTickerHostStatus()
 const getOptions = tickerService.getOptions()
 const getMachineJobs = tickerService.getMachineJobs()
 const getJobStatusesPastWeek = tickerService.getJobStatusesPastWeek()
 const getJobStatusesOverall = tickerService.getJobStatusesOverall()
 const functionNamesStore = useFunctionNameStore()
+const dashboardStore = useDashboardStore()
 
 const activeThreads = ref(0)
-const tickerHostStatus = ref(false)
-
-const confirmDialog = useDialog<ConfirmDialogProps>().withComponent(
-  () => import('@/components/common/ConfirmDialog.vue'),
-)
 
 onMounted(async () => {
-  await TickerNotificationHub.startConnection()
   await getNextPlannedTicker.requestAsync()
+  // Initialize dashboard store with the fetched data
+  if (getNextPlannedTicker.response.value?.nextOccurrence) {
+    dashboardStore.setNextOccurrence(getNextPlannedTicker.response.value.nextOccurrence)
+  }
   await getOptions.requestAsync()
   await getJobStatusesOverall.requestAsync().then((res) => {
     const total = res.reduce((sum, item) => sum + item.item2, 0)
@@ -57,6 +51,7 @@ onMounted(async () => {
     })
   })
   await functionNamesStore.loadData().then((res) => {
+    functionItems.value = [] // Clear existing items
     res.value?.forEach((item) => {
       const request = item.functionRequestNamespace == '' ? 'N/A' : item.functionRequestNamespace
       functionItems.value.push({
@@ -65,10 +60,8 @@ onMounted(async () => {
         priority: tickerTaskPriority[item.priority],
       })
     })
-  })
-
-  await getTickerHostStatus.requestAsync().then((res) => {
-    tickerHostStatus.value = res.isRunning
+    // Reset pagination to first page when data changes
+    currentFunctionsPage.value = 1
   })
 
   TickerNotificationHub.onReceiveThreadsActive((threads: number) => {
@@ -77,16 +70,39 @@ onMounted(async () => {
 
   TickerNotificationHub.onReceiveNextOccurrence((nextOccurrence: string) => {
     getNextPlannedTicker.updateProperty('nextOccurrence', nextOccurrence)
-  })
-
-  TickerNotificationHub.onReceiveHostStatus((status: boolean) => {
-    tickerHostStatus.value = status
+    dashboardStore.setNextOccurrence(nextOccurrence)
   })
 
   TickerNotificationHub.onReceiveHostExceptionMessage((message: string) => {
     getOptions.updateProperty('lastHostExceptionMessage', message)
   })
 })
+
+// Function to calculate successful count (only Done and DueDone jobs)
+function getSuccessfulCount(): number {
+  const doneStatus = statuses.value.find(s => s.name === 'Done')
+  const dueDoneStatus = statuses.value.find(s => s.name === 'DueDone')
+  
+  const doneCount = doneStatus ? doneStatus.count : 0
+  const dueDoneCount = dueDoneStatus ? dueDoneStatus.count : 0
+  
+  return doneCount + dueDoneCount
+}
+
+// Function to calculate total final jobs count (Done, DueDone, Failed, Cancelled)
+function getTotalFinalJobsCount(): number {
+  const doneStatus = statuses.value.find(s => s.name === 'Done')
+  const dueDoneStatus = statuses.value.find(s => s.name === 'DueDone')
+  const failedStatus = statuses.value.find(s => s.name === 'Failed')
+  const cancelledStatus = statuses.value.find(s => s.name === 'Cancelled')
+  
+  const doneCount = doneStatus ? doneStatus.count : 0
+  const dueDoneCount = dueDoneStatus ? dueDoneStatus.count : 0
+  const failedCount = failedStatus ? failedStatus.count : 0
+  const cancelledCount = cancelledStatus ? cancelledStatus.count : 0
+  
+  return doneCount + dueDoneCount + failedCount + cancelledCount
+}
 
 onUnmounted(() => {
   TickerNotificationHub.stopReceiver(methodName.onReceiveThreadsActive)
@@ -155,84 +171,92 @@ const functionItems: Ref<
     priority: string
   }>
 > = ref([])
+
+// Pagination for Registered Functions
+const functionsPerPage = ref(10)
+const currentFunctionsPage = ref(1)
+
+// Available page sizes
+const availablePageSizes = [5, 10, 20, 50]
+
+// Table headers for Vuetify data table
+const functionHeaders = [
+  { title: 'Function Name', key: 'function', sortable: true },
+  { title: 'Request Namespace', key: 'request', sortable: true },
+  { title: 'Priority', key: 'priority', sortable: true }
+]
+
+// Computed properties for pagination
+const totalFunctionsPages = computed(() => Math.ceil(functionItems.value.length / functionsPerPage.value))
+const paginatedFunctions = computed(() => {
+  const start = (currentFunctionsPage.value - 1) * functionsPerPage.value
+  const end = start + functionsPerPage.value
+  return functionItems.value.slice(start, end)
+})
+
+// Pagination functions
+const goToFunctionsPage = (page: number) => {
+  if (page >= 1 && page <= totalFunctionsPages.value) {
+    currentFunctionsPage.value = page
+  }
+}
+
+const nextFunctionsPage = () => {
+  if (currentFunctionsPage.value < totalFunctionsPages.value) {
+    currentFunctionsPage.value++
+  }
+}
+
+const prevFunctionsPage = () => {
+  if (currentFunctionsPage.value > 1) {
+    currentFunctionsPage.value--
+  }
+}
+
+// Function to handle page size changes
+const changePageSize = (newSize: number) => {
+  functionsPerPage.value = newSize
+  currentFunctionsPage.value = 1 // Reset to first page when changing page size
+}
+
+// Handle Vuetify table options update
+const handleTableOptionsUpdate = (options: any) => {
+  if (options.itemsPerPage !== undefined) {
+    functionsPerPage.value = options.itemsPerPage
+  }
+  if (options.page !== undefined) {
+    currentFunctionsPage.value = options.page
+  }
+}
+
+// Function to get visible page numbers for pagination
+const getVisiblePageNumbers = () => {
+  const total = totalFunctionsPages.value
+  const current = currentFunctionsPage.value
+  const delta = 2 // Number of pages to show on each side of current page
+  
+  let start = Math.max(1, current - delta)
+  let end = Math.min(total, current + delta)
+  
+  // Adjust start and end to always show delta*2 + 1 pages when possible
+  if (end - start < delta * 2) {
+    if (start === 1) {
+      end = Math.min(total, start + delta * 2)
+    } else {
+      start = Math.max(1, end - delta * 2)
+    }
+  }
+  
+  const pages = []
+  for (let i = start; i <= end; i++) {
+    pages.push(i)
+  }
+  
+  return pages
+}
 </script>
 <template>
   <div class="dashboard-container">
-    <!-- Header Section -->
-    <div class="dashboard-header">
-      <div class="header-content">
-        <div class="status-section">
-          <div class="status-indicator">
-            <div 
-              class="status-pulse"
-              :class="{ 'pulse-active': tickerHostStatus, 'pulse-inactive': !tickerHostStatus }"
-            ></div>
-            <div class="status-info">
-              <div class="system-details">
-                <span class="machine-name">{{ getOptions.response.value?.currentMachine }}</span>
-                <span class="status-divider">•</span>
-                <span 
-                  class="status-text"
-                  :class="{ 'status-online': tickerHostStatus, 'status-offline': !tickerHostStatus }"
-                >
-                  {{ tickerHostStatus ? 'Online' : 'Offline' }}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        <div class="action-section">
-          <div class="action-buttons">
-              <v-btn
-              v-if="!tickerHostStatus"
-                color="success"
-              variant="elevated"
-              size="small"
-              prepend-icon="mdi-play-circle"
-                @click="startTicker.requestAsync()"
-                :loading="startTicker.loader.value"
-              class="action-btn start-btn"
-            >
-              Start System
-            </v-btn>
-            
-            <template v-if="tickerHostStatus">
-              <v-btn
-                color="warning"
-                variant="elevated"
-                size="small"
-                prepend-icon="mdi-restart"
-                @click="
-                  restartTicker.requestAsync().then(async () => {
-                    restartTicker.loader.value = true;
-                    await sleep(1000).then(() => {
-                      restartTicker.loader.value = false
-                    })
-                  })
-                "
-                :loading="restartTicker.loader.value"
-                class="action-btn restart-btn"
-              >
-                Restart
-              </v-btn>
-              
-              <v-btn
-                color="error"
-                variant="elevated"
-                size="small"
-                prepend-icon="mdi-stop-circle"
-                @click="confirmDialog.open({ ...new ConfirmDialogProps(), confirmText: 'Stop' })"
-                :loading="stopTicker.loader.value"
-                class="action-btn stop-btn"
-              >
-                Stop System
-              </v-btn>
-          </template>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- Content Section -->
     <div class="dashboard-content">
@@ -246,9 +270,9 @@ const functionItems: Ref<
           <div class="metric-content">
             <h3 class="metric-label">Next Execution</h3>
             <p class="metric-value primary-text" v-if="getNextPlannedTicker.response.value !== undefined">
-              {{ getNextPlannedTicker.response.value?.nextOccurrence == undefined
+              {{ dashboardStore.displayNextOccurrence === 'Not Scheduled' || dashboardStore.displayNextOccurrence == undefined
                 ? 'Not Scheduled'
-                : formatDate(getNextPlannedTicker.response.value?.nextOccurrence) }}
+                : formatDate(dashboardStore.displayNextOccurrence) }}
             </p>
             <div v-else class="skeleton-text metric-value-skeleton"></div>
           </div>
@@ -297,8 +321,8 @@ const functionItems: Ref<
           <div class="metric-content">
             <h3 class="metric-label">Success Rate</h3>
             <p class="metric-value success-text" v-if="getJobStatusesPastWeek.response.value !== undefined">
-              {{ getJobStatusesPastWeek.response.value != undefined && getJobStatusesPastWeek.response.value[2].item2 > 0
-                ? Math.round(((getJobStatusesPastWeek.response.value[2].item2 - getJobStatusesPastWeek.response.value[1].item2) / getJobStatusesPastWeek.response.value[2].item2) * 100)
+              {{ getTotalFinalJobsCount() > 0
+                ? Math.round((getSuccessfulCount() / getTotalFinalJobsCount()) * 100)
                 : 0 }}%
             </p>
             <div v-else class="skeleton-text metric-value-skeleton"></div>
@@ -320,7 +344,7 @@ const functionItems: Ref<
               <span class="stat-title">Successful</span>
             </div>
             <div class="stat-number success-number" v-if="getJobStatusesPastWeek.response.value !== undefined">
-              {{ getJobStatusesPastWeek.response.value[2].item2 - getJobStatusesPastWeek.response.value[1].item2 }}
+              {{ getSuccessfulCount() }}
             </div>
             <div v-else class="skeleton-text stat-number-skeleton"></div>
             <div class="stat-trend">
@@ -347,15 +371,15 @@ const functionItems: Ref<
           <div class="stat-card info-stat">
             <div class="stat-header">
               <v-icon color="info" size="20">mdi-information</v-icon>
-              <span class="stat-title">Total</span>
+              <span class="stat-title">Final Jobs</span>
             </div>
             <div class="stat-number info-number" v-if="getJobStatusesPastWeek.response.value !== undefined">
-              {{ getJobStatusesPastWeek.response.value[2].item2 }}
+              {{ getTotalFinalJobsCount() }}
             </div>
             <div v-else class="skeleton-text stat-number-skeleton"></div>
             <div class="stat-trend">
               <v-icon size="14" color="info">mdi-chart-line</v-icon>
-              <span class="trend-text">Jobs processed</span>
+              <span class="trend-text">Final job states</span>
             </div>
           </div>
         </div>
@@ -419,47 +443,53 @@ const functionItems: Ref<
         </div>
         
         <div class="table-container">
-          <div class="table-scroll">
-                         <table class="premium-table">
-               <thead>
-                 <tr>
-                   <th>Function Name</th>
-                   <th>Request Namespace</th>
-                   <th>Priority</th>
-                 </tr>
-               </thead>
-               <tbody>
-                 <template v-if="functionItems.length > 0">
-                   <tr v-for="item in functionItems" :key="item.function" class="table-row">
-                     <td class="function-name">{{ item.function }}</td>
-                     <td class="request-namespace">
-                       <span 
-                         class="namespace-text"
-                         :title="item.request"
-                       >
-                         {{ item.request }}
-                       </span>
-                     </td>
-                     <td class="priority-cell">
-                       <div 
-                         class="priority-badge"
-                         :class="`priority-${item.priority.toLowerCase().replace('longrunning', 'long')}`"
-                       >
-                         {{ item.priority }}
-                       </div>
-                     </td>
-                   </tr>
-                 </template>
-                 <template v-else>
-                   <tr v-for="i in 5" :key="i" class="table-row">
-                     <td><div class="skeleton-text function-name-skeleton"></div></td>
-                     <td><div class="skeleton-text namespace-skeleton"></div></td>
-                     <td><div class="skeleton-text priority-skeleton"></div></td>
-                   </tr>
-                 </template>
-               </tbody>
-             </table>
-          </div>
+          <v-data-table
+            :headers="functionHeaders"
+            :items="functionItems"
+            :items-per-page="functionsPerPage"
+            :page="currentFunctionsPage"
+            :items-per-page-options="availablePageSizes"
+            class="functions-table-vuetify"
+            density="compact"
+            hover
+            @update:options="handleTableOptionsUpdate"
+          >
+            <!-- Function Name Column -->
+            <template v-slot:item.function="{ item }">
+              <span class="function-name">{{ item.function }}</span>
+            </template>
+            
+            <!-- Request Namespace Column -->
+            <template v-slot:item.request="{ item }">
+              <span 
+                class="namespace-text"
+                :title="item.request"
+              >
+                {{ item.request }}
+              </span>
+            </template>
+            
+            <!-- Priority Column -->
+            <template v-slot:item.priority="{ item }">
+              <div 
+                class="priority-badge"
+                :class="`priority-${item.priority.toLowerCase().replace('longrunning', 'long')}`"
+              >
+                {{ item.priority }}
+              </div>
+            </template>
+            
+            <!-- Loading State -->
+            <template v-slot:loading>
+              <div class="loading-skeleton">
+                <div v-for="i in 5" :key="i" class="skeleton-row">
+                  <div class="skeleton-text function-name-skeleton"></div>
+                  <div class="skeleton-text namespace-skeleton"></div>
+                  <div class="skeleton-text priority-skeleton"></div>
+                </div>
+              </div>
+            </template>
+          </v-data-table>
         </div>
       </div>
     </div>
@@ -552,17 +582,6 @@ const functionItems: Ref<
    </div>
    </div>
 
-  <confirmDialog.Component
-    :is-open="confirmDialog.isOpen"
-    @close="confirmDialog.close()"
-    :dialog-props="confirmDialog.propData"
-    @confirm="
-      stopTicker.requestAsync().then(() => {
-        confirmDialog.close()
-        getNextPlannedTicker.updateProperty('nextOccurrence', undefined)
-      })
-    "
-  />
 </template>
 <style scoped>
 /* Dashboard Container */
@@ -575,27 +594,6 @@ const functionItems: Ref<
   color: #e0e0e0;
 }
 
-/* Header Section */
-.dashboard-header {
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  background: rgba(33, 33, 33, 0.95);
-  backdrop-filter: blur(20px);
-  border-radius: 0;
-  padding: 12px 20px;
-  margin: 0;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
-  border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  transition: all 0.3s ease;
-}
-
-.dashboard-header:hover {
-  background: rgba(33, 33, 33, 0.98);
-  box-shadow: 0 6px 25px rgba(0, 0, 0, 0.4);
-}
-
 /* Dashboard Content */
 .dashboard-content {
   max-width: 1400px;
@@ -603,102 +601,7 @@ const functionItems: Ref<
   padding: 20px 24px 16px 24px;
 }
 
-.header-content {
-  max-width: 1400px;
-  margin: 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 16px;
-}
 
-.status-section {
-  display: flex;
-  align-items: center;
-}
-
-.status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.status-pulse {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.pulse-active {
-  background: #4caf50;
-  animation: pulse-success 2s infinite;
-  box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7);
-}
-
-.pulse-inactive {
-  background: #f44336;
-  animation: pulse-error 2s infinite;
-  box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.7);
-}
-
-@keyframes pulse-success {
-  0% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7); }
-  70% { box-shadow: 0 0 0 10px rgba(76, 175, 80, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0); }
-}
-
-@keyframes pulse-error {
-  0% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.7); }
-  70% { box-shadow: 0 0 0 10px rgba(244, 67, 54, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0); }
-}
-
-.system-details {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.875rem;
-}
-
-.machine-name {
-  font-weight: 600;
-  color: #e0e0e0;
-}
-
-.status-divider {
-  color: #757575;
-}
-
-.status-online {
-  color: #4caf50;
-  font-weight: 600;
-}
-
-.status-offline {
-  color: #f44336;
-  font-weight: 600;
-}
-
-.action-buttons {
-  display: flex;
-  gap: 12px;
-}
-
-.action-btn {
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: 0.5px;
-  border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  transition: all 0.3s ease;
-}
-
-.action-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
-}
 
 /* Metrics Grid */
 .metrics-grid {
@@ -1324,5 +1227,256 @@ const functionItems: Ref<
 
 .table-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(var(--v-theme-primary), 0.5);
+}
+
+/* Vuetify Table Styles */
+.functions-table-vuetify {
+  background: transparent !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+.functions-table-vuetify .v-data-table__wrapper {
+  background: transparent !important;
+}
+
+.functions-table-vuetify .v-data-table-header {
+  background: rgba(66, 66, 66, 0.9) !important;
+  backdrop-filter: blur(20px) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  padding: 0 !important;
+}
+
+.functions-table-vuetify .v-data-table-header th {
+  color: #bdbdbd !important;
+  font-weight: 600 !important;
+  font-size: 0.875rem !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.5px !important;
+  padding: 16px !important;
+  border-bottom: none !important;
+  background: transparent !important;
+}
+
+.functions-table-vuetify .v-data-table__tr {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+  transition: all 0.3s ease !important;
+}
+
+.functions-table-vuetify .v-data-table__tr:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
+}
+
+.functions-table-vuetify .v-data-table__td {
+  padding: 16px !important;
+  border-bottom: none !important;
+  color: #e0e0e0 !important;
+  background: transparent !important;
+}
+
+.functions-table-vuetify .v-data-table-footer {
+  background: rgba(66, 66, 66, 0.9) !important;
+  backdrop-filter: blur(20px) !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: #bdbdbd !important;
+  padding: 16px !important;
+}
+
+.functions-table-vuetify .v-data-table-footer .v-data-table-footer__items-per-page {
+  color: #bdbdbd !important;
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+}
+
+.functions-table-vuetify .v-data-table-footer .v-data-table-footer__items-per-page .v-select {
+  color: #bdbdbd !important;
+}
+
+.functions-table-vuetify .v-data-table-footer .v-data-table-footer__items-per-page .v-field {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 8px !important;
+}
+
+.functions-table-vuetify .v-data-table-footer .v-data-table-footer__items-per-page .v-field__input {
+  color: #bdbdbd !important;
+}
+
+.functions-table-vuetify .v-data-table-footer .v-data-table-footer__pagination {
+  color: #bdbdbd !important;
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+}
+
+.functions-table-vuetify .v-data-table-footer .v-btn {
+  color: #bdbdbd !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 6px !important;
+  transition: all 0.2s ease !important;
+  min-width: 32px !important;
+  height: 32px !important;
+}
+
+.functions-table-vuetify .v-data-table-footer .v-btn:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
+}
+
+.functions-table-vuetify .v-data-table-footer .v-btn--variant-elevated {
+  background: var(--v-theme-primary) !important;
+  color: white !important;
+  border-color: var(--v-theme-primary) !important;
+}
+
+.functions-table-vuetify .v-data-table-footer .v-btn--variant-elevated:hover {
+  background: var(--v-theme-primary) !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(var(--v-theme-primary), 0.3) !important;
+}
+
+.functions-table-vuetify .v-data-table-footer .v-btn:disabled {
+  opacity: 0.5 !important;
+  cursor: not-allowed !important;
+}
+
+/* Loading Skeleton */
+.loading-skeleton {
+  padding: 16px;
+}
+
+.skeleton-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.skeleton-row .skeleton-text {
+  flex: 1;
+}
+
+/* Pagination Styles */
+.pagination-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin-top: 12px;
+}
+
+.pagination-info {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.pagination-text {
+  font-size: 0.875rem;
+  color: #bdbdbd;
+  font-weight: 500;
+}
+
+.page-size-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-size-label {
+  font-size: 0.875rem;
+  color: #bdbdbd;
+  font-weight: 500;
+}
+
+.page-size-select {
+  min-width: 80px;
+  max-width: 100px;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.pagination-btn {
+  font-weight: 500;
+  text-transform: none;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  min-width: auto;
+  padding: 6px 12px;
+  font-size: 0.875rem;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.page-numbers {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.page-number-btn {
+  min-width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.page-number-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.page-number-btn:not(.v-btn--variant-elevated):hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Responsive pagination */
+@media (max-width: 768px) {
+  .pagination-info {
+    flex-direction: column;
+    gap: 16px;
+  }
+  
+  .pagination-controls {
+    flex-direction: column;
+    gap: 8px;
+  }
+  
+  .page-numbers {
+    order: -1;
+  }
+  
+  .pagination-btn {
+    width: 100%;
+    max-width: 200px;
+  }
+  
+  .page-size-selector {
+    justify-content: center;
+  }
 }
 </style>

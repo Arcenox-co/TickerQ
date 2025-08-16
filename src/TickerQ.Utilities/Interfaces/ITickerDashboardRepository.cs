@@ -11,6 +11,7 @@ namespace TickerQ.Utilities.Interfaces
     {
         Task<IList<TimeTickerDto>> GetTimeTickersAsync();
         Task SetTimeTickerBatchParent(Guid targetId, Guid parentId, BatchRunCondition? batchRunCondition = null);
+        Task UnbatchTimeTickerAsync(Guid tickerId);
         Task<IList<Tuple<TickerStatus, int>>> GetTimeTickerFullDataAsync(CancellationToken cancellationToken);
         Task<IList<TickerGraphData>> GetTimeTickersGraphSpecificDataAsync(int pastDays, int futureDays,CancellationToken cancellationToken);
         Task<IList<TickerGraphData>> GetCronTickersGraphSpecificDataAsync(int pastDays, int futureDays,CancellationToken cancellationToken);
@@ -26,10 +27,10 @@ namespace TickerQ.Utilities.Interfaces
         Task DeleteCronTickerOccurrenceByIdAsync(Guid id);
         Task<(string, int)> GetTickerRequestByIdAsync(Guid tickerId, TickerType tickerType);
         IEnumerable<(string, (string, string, TickerTaskPriority))> GetTickerFunctions();
-        Task UpdateTimeTickerAsync(Guid id, string jsonBody);
-        Task AddTimeTickerAsync(string jsonBody);
-        Task AddCronTickerAsync(string jsonBody);
-        Task UpdateCronTickerAsync(Guid id, string jsonBody);
+        Task UpdateTimeTickerAsync(Guid id, UpdateTimeTickerRequest request);
+        Task AddTimeTickerAsync(AddTimeTickerRequest request);
+        Task AddCronTickerAsync(AddCronTickerRequest request);
+        Task UpdateCronTickerAsync(Guid id, UpdateCronTickerRequest request);
         Task<IList<(int, int)>> GetLastWeekJobStatusesAsync();
         Task<IList<(TickerStatus, int)>> GetOverallJobStatusesAsync();
         Task<IList<(string, int)>> GetMachineJobsAsync();

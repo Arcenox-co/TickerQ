@@ -1,24 +1,43 @@
-import { useAuthStore } from "@/stores/authStore";
 import * as signalR from "@microsoft/signalr";
-
-const authStore = useAuthStore();
 
 const baseTag = document.querySelector<HTMLBaseElement>('base');
 
-
 class BaseHub {
-    protected connection: signalR.HubConnection;
+    public connection: signalR.HubConnection;
 
     constructor() {
+        this.connection = this.createConnection();
+    }
+
+    private createConnection(): signalR.HubConnection {
         const basePath = import.meta.env.PROD
             ? baseTag?.href
-            : 'http://localhost:5079/tickerq-dashboard';
+            : 'http://localhost:5083/tickerq-dashboard';
 
-        this.connection = new signalR.HubConnectionBuilder()
-            .withUrl(`${basePath}/ticker-notification-hub?auth=${encodeURIComponent(authStore.auth)}`)
+        // Get auth token lazily when building the connection
+        const getAuthToken = () => {
+            try {
+                // Access localStorage directly instead of using the store during initialization
+                return localStorage.getItem('auth') || 'ZHVtbXk6ZHVtbXk=';
+            } catch (error) {
+                console.warn('Could not access auth token, using default:', error);
+                return 'ZHVtbXk6ZHVtbXk=';
+            }
+        };
+
+        return new signalR.HubConnectionBuilder()
+            .withUrl(`${basePath}/ticker-notification-hub?auth=${encodeURIComponent(getAuthToken())}`)
             .withAutomaticReconnect()
             .configureLogging(signalR.LogLevel.Information)
             .build();
+    }
+
+    // Method to rebuild connection with new auth token
+    public rebuildConnection(): void {
+        if (this.connection.state === signalR.HubConnectionState.Connected) {
+            this.connection.stop();
+        }
+        this.connection = this.createConnection();
     }
 
     // Send a message to the server
@@ -36,14 +55,24 @@ class BaseHub {
 
     // Start Connection
     async startConnectionAsync(): Promise<void> {
-        if (this.connection.state == signalR.HubConnectionState.Connected)
+        if (this.connection.state === signalR.HubConnectionState.Connected) {
+            console.log("SignalR connection already established");
             return;
+        }
+        
+        if (this.connection.state === signalR.HubConnectionState.Connecting) {
+            console.log("SignalR connection already in progress");
+            return;
+        }
+        
         try {
+            console.log("Starting SignalR connection...");
             await this.connection.start();
-            console.log("Connected to SignalR");
+            console.log("Connected to SignalR successfully");
         } catch (err) {
             console.error("SignalR Connection Error: ", err);
-            setTimeout(() => this.startConnectionAsync(), 5000);
+            // Don't retry automatically - let the connection manager handle reconnection
+            throw err;
         }
     }
 

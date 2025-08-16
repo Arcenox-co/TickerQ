@@ -55,3 +55,7 @@ export class SetBatchParentRequest {
   batchRunCondition?:number;
   targetId!:string;
 }
+
+export class UnbatchTickerRequest {
+  tickerId!:string;
+}
