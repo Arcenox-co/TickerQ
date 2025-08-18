@@ -1,4 +1,4 @@
-<script lang="ts">
+<script setup lang="ts">
 import { watch, type PropType, toRef, onMounted, onUnmounted } from 'vue'
 import { cronTickerOccurrenceService } from '@/http/services/cronTickerOccurrenceService'
 import { Status } from '@/http/services/types/base/baseHttpResponse.types'
@@ -8,9 +8,7 @@ import { useDialog } from '@/composables/useDialog'
 import { methodName, type TickerNotificationHubType } from '@/hub/tickerNotificationHub'
 import type { GetCronTickerOccurrenceResponse } from '@/http/services/types/cronTickerOccurrenceService.types'
 import { ConfirmDialogProps } from '@/components/common/ConfirmDialog.vue'
-</script>
 
-<script setup lang="ts">
 const confirmDialog = useDialog<{ data: string }>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
 )

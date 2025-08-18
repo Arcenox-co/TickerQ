@@ -11,6 +11,8 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, PieChart } from 'echarts/charts'
 import TickerNotificationHub, { methodName } from '@/hub/tickerNotificationHub'
 import { formatDate, formatFromUtcToLocal } from '@/utilities/dateTimeParser'
+import { useConnectionStore } from '@/stores/connectionStore'
+
 import {
   TitleComponent,
   TooltipComponent,
@@ -117,12 +119,12 @@ onMounted(async () => {
     
     // Initialize WebSocket connection
     try {
+      const connectionStore = useConnectionStore()
       if (!connectionStore.isInitialized) {
-        await connectionStore.initializeConnection()
+        await connectionStore.initializeConnectionWithRetry()
       }
-    } catch (error) {
-      // WebSocket connection failed, continuing without it
-    }
+    } 
+    catch (error: any) {}
     
     // Load initial data
     try {
@@ -1074,6 +1076,8 @@ const safeMax = computed({
   },
 })
 
+const canBeForceDeleted = ref<string[]>([]);
+
 // ✅ Debounce utility
 function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
   let timeout: ReturnType<typeof setTimeout>
@@ -1517,8 +1521,10 @@ watch(
                     <template v-slot:activator="{ props }">
                       <button
                         v-bind="props"
-                        @click="requestCancel(item.id)"
-                        :disabled="!hasStatus(item.status, Status.InProgress)"
+                        @click="requestCancel(item.id).catch(() => {
+                          canBeForceDeleted.push(item.id)
+                        })"
+                        :disabled="!hasStatus(item.status, Status.InProgress) || canBeForceDeleted.includes(item.id)"
                         class="modern-action-btn cancel-btn"
                         :class="{ active: hasStatus(item.status, Status.InProgress) }"
                       >
@@ -1601,21 +1607,21 @@ watch(
                 <!-- Delete Button -->
                 <div
                   class="action-btn-wrapper"
-                  :class="{ 'action-btn-disabled': hasStatus(item.status, Status.InProgress) }"
+                  :class="{ 'action-btn-disabled': hasStatus(item.status, Status.InProgress) && !canBeForceDeleted.includes(item.id) }"
                 >
                   <v-tooltip location="top">
                     <template v-slot:activator="{ props }">
                       <button
                         v-bind="props"
                         @click="confirmDialog.open({ id: item.id })"
-                        :disabled="hasStatus(item.status, Status.InProgress)"
+                        :disabled="hasStatus(item.status, Status.InProgress) && !canBeForceDeleted.includes(item.id)"
                         class="modern-action-btn delete-btn"
-                        :class="{ active: !hasStatus(item.status, Status.InProgress) }"
+                        :class="{ active: !hasStatus(item.status, Status.InProgress) || canBeForceDeleted.includes(item.id) }"
                       >
                         <v-icon size="16">mdi-trash-can</v-icon>
                       </button>
                     </template>
-                    <span>Delete Ticker</span>
+                    <span>{{ canBeForceDeleted.includes(item.id) ? 'Force Delete Ticker' : 'Delete Ticker' }}</span>
                   </v-tooltip>
                 </div>
               </div>

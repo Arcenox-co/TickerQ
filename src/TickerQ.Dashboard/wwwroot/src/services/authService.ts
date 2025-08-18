@@ -1,125 +1,122 @@
-import { useAuthStore } from '../stores/authStore'
-import { validateCredentials } from '../config/auth.config'
+import { useAuthStore } from '@/stores/authStore';
+import { resolveApiUrl, resolvePath } from '@/utilities/pathResolver';
 
-export interface AuthCredentials {
-  username: string
-  password: string
-}
-
-export interface AuthResult {
-  success: boolean
-  error?: string
+export interface AuthConfig {
+  enableBasicAuth: boolean;
+  useHostAuthentication: boolean;
+  enableBuiltInAuth: boolean;
 }
 
 export class AuthService {
   /**
-   * Get the auth store instance
+   * Get the auth store lazily to avoid Pinia initialization issues
    */
-  private getAuthStore() {
-    return useAuthStore()
+  private get authStore() {
+    return useAuthStore();
   }
 
   /**
-   * Authenticate user with username and password
+   * Check if basic auth is enabled and redirect to login if needed
    */
-  async login(credentials: AuthCredentials): Promise<AuthResult> {
+  public checkAuthAndRedirect(): void {
+    const config = window.TickerQConfig;
+    
+    if (!config) {
+      console.warn('TickerQ configuration not found');
+      return;
+    }
+
+    // If basic auth is enabled and user is not authenticated, redirect to login
+    if (config.enableBasicAuth && !this.authStore.auth) {
+      this.redirectToLogin();
+    }
+  }
+
+  /**
+   * Redirect to the login page
+   */
+  private redirectToLogin(): void {
+    // For basic auth, we'll redirect to a login page or show a login modal
+    // The actual credentials will be handled by the browser's basic auth prompt
+    // or by a custom login form that doesn't expose the credentials
+    
+    // Check if we're already on a login page to avoid infinite redirects
+    if (window.location.pathname.includes('/login')) {
+      return;
+    }
+
+    // Redirect to login page using path resolver
+    const loginPath = resolvePath('/login');
+    window.location.href = loginPath;
+  }
+
+  /**
+   * Handle basic auth login
+   */
+  public async handleBasicAuthLogin(username: string, password: string): Promise<boolean> {
     try {
-      // Validate credentials first
-      const validation = validateCredentials(credentials.username, credentials.password)
+      // Create basic auth token
+      const token = btoa(`${username}:${password}`);
       
-      if (!validation.isValid) {
-        return {
-          success: false,
-          error: validation.error || 'Invalid credentials'
+      // Test the credentials by making a request to the API
+      const response = await fetch(resolveApiUrl('/auth/test'), {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${token}`,
+          'Content-Type': 'application/json'
         }
+      });
+
+      if (response.ok) {
+        // Store the auth token
+        this.authStore.auth = token;
+        localStorage.setItem('auth', token);
+        return true;
+      } else {
+        // Clear any existing auth
+        this.authStore.auth = '';
+        localStorage.removeItem('auth');
+        return false;
       }
-
-      const authStore = this.getAuthStore()
-
-      // Update store credentials
-      authStore.credentials.username = credentials.username
-      authStore.credentials.password = credentials.password
-
-      // Attempt login
-      await authStore.login()
-      
-      return { success: true }
     } catch (error) {
-      // Get the error message from the store if available
-      const storeErrorMessage = this.getAuthStore().errorMessage
-      const errorMessage = storeErrorMessage || (error instanceof Error ? error.message : 'Login failed')
-      
-      return {
-        success: false,
-        error: errorMessage
-      }
+      console.error('Authentication failed:', error);
+      this.authStore.auth = '';
+      localStorage.removeItem('auth');
+      return false;
     }
   }
 
   /**
-   * Logout current user
+   * Logout user
    */
-  async logout(): Promise<void> {
-    try {
-      const authStore = this.getAuthStore()
-      authStore.logout()
-    } catch (error) {
-      // Failed to update WebSocket connection
+  public logout(): void {
+    this.authStore.auth = '';
+    localStorage.removeItem('auth');
+    
+    // Redirect to login if basic auth is enabled
+    if (window.TickerQConfig?.enableBasicAuth) {
+      this.redirectToLogin();
     }
   }
 
   /**
-   * Check if user is currently authenticated
+   * Check if user is authenticated
    */
-  isAuthenticated(): boolean {
-    const authStore = this.getAuthStore()
-    return authStore.isLoggedIn
+  public isAuthenticated(): boolean {
+    return !!this.authStore.auth;
   }
 
   /**
-   * Get current username
+   * Get current auth configuration
    */
-  getCurrentUsername(): string {
-    const authStore = this.getAuthStore()
-    return authStore.credentials.username
-  }
-
-  /**
-   * Get current auth token
-   */
-  getAuthToken(): string {
-    const authStore = this.getAuthStore()
-    return authStore.auth
-  }
-
-  /**
-   * Clear any error messages
-   */
-  clearError(): void {
-    const authStore = this.getAuthStore()
-    authStore.clearError()
-  }
-
-  /**
-   * Get current error message
-   */
-  getErrorMessage(): string {
-    const authStore = this.getAuthStore()
-    return authStore.errorMessage
-  }
-
-  /**
-   * Update WebSocket connection with current auth token
-   */
-  async updateWebSocketConnection(): Promise<void> {
-    try {
-      const authStore = this.getAuthStore()
-      await authStore.updateWebSocketConnection()
-    } catch (error) {
-      // Failed to update WebSocket connection
-    }
+  public getAuthConfig(): AuthConfig | null {
+    return window.TickerQConfig ? {
+      enableBasicAuth: window.TickerQConfig.enableBasicAuth || false,
+      useHostAuthentication: window.TickerQConfig.useHostAuthentication || false,
+      enableBuiltInAuth: window.TickerQConfig.enableBuiltInAuth || false
+    } : null;
   }
 }
 
-// Export singleton instance
-export const authService = new AuthService() 
+// Create singleton instance
+export const authService = new AuthService(); 

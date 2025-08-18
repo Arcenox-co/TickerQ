@@ -1,6 +1,5 @@
 import * as signalR from "@microsoft/signalr";
-
-const baseTag = document.querySelector<HTMLBaseElement>('base');
+import { getBasePath, getBackendUrl } from '@/utilities/pathResolver';
 
 class BaseHub {
     public connection: signalR.HubConnection;
@@ -10,9 +9,9 @@ class BaseHub {
     }
 
     private createConnection(): signalR.HubConnection {
-        const basePath = import.meta.env.PROD
-            ? baseTag?.href
-            : 'http://localhost:5083/tickerq-dashboard';
+
+        const basePath = getBasePath();
+        const backendUrl = getBackendUrl();
 
         // Get auth token lazily when building the connection
         const getAuthToken = () => {
@@ -25,8 +24,16 @@ class BaseHub {
             }
         };
 
+        // Use backend domain for WebSocket if configured, otherwise use base path
+        let hubUrl: string;
+        if (backendUrl) {
+            hubUrl = `${backendUrl}/ticker-notification-hub?auth=${encodeURIComponent(getAuthToken())}`;
+        } else {
+            hubUrl = `${basePath}/ticker-notification-hub?auth=${encodeURIComponent(getAuthToken())}`;
+        }
+
         return new signalR.HubConnectionBuilder()
-            .withUrl(`${basePath}/ticker-notification-hub?auth=${encodeURIComponent(getAuthToken())}`)
+            .withUrl(hubUrl)
             .withAutomaticReconnect()
             .configureLogging(signalR.LogLevel.Information)
             .build();

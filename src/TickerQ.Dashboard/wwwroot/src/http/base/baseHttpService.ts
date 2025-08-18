@@ -4,6 +4,7 @@ import axios, {type Method } from "axios";
 import {type Ref, ref } from "vue";
 import http from "./axiosConfig";
 import type { Path, PathValue } from "@/utilities/pathTypes";
+import { useAlert } from "@/composables/useAlert";
 
 /* ------------------------------------------------------------------
    1) Define TableHeader Interface and Helper Function
@@ -54,6 +55,7 @@ export interface BaseHttpServiceSingle<TRequest, TSingle extends object> {
     options?: {
       bodyData?: TRequest;
       paramData?: Record<string, any>;
+      suppressAlert?: boolean; // Set to false to force show alert (default: axios interceptor handles it)
     }
   ): Promise<TSingle>;
 
@@ -96,6 +98,7 @@ export interface BaseHttpServiceArray<TRequest, TItem extends object> {
     options?: {
       bodyData?: TRequest;
       paramData?: Record<string, any>;
+      suppressAlert?: boolean; // Set to false to force show alert (default: axios interceptor handles it)
     }
   ): Promise<TItem[]>;
 
@@ -159,6 +162,7 @@ export function useBaseHttpService(
 
   const cancelRequest: Ref<Function | undefined> = ref(undefined);
   const loader = ref(false);
+  const { showHttpError } = useAlert();
 
   // Will be set if you call FixToResponseModel
   const responseModelKeys: Ref<string[] | undefined> = ref([]);
@@ -220,7 +224,7 @@ export function useBaseHttpService(
     const sendAsync = async (
       methodType: Method,
       url: string,
-      options?: { bodyData?: any; paramData?: Record<string, any> }
+      options?: { bodyData?: any; paramData?: Record<string, any>; suppressAlert?: boolean }
     ): Promise<any> => {
       if (cancelRequest.value) cancelRequest.value();
       loader.value = true;
@@ -245,6 +249,13 @@ export function useBaseHttpService(
         }
 
         return response.value;
+      } catch (error) {
+        // Don't show error alert here since axios interceptor handles it
+        // Only show if explicitly requested and not suppressed
+        if (options?.suppressAlert === false) {
+          showHttpError(error);
+        }
+        throw error;
       } finally {
         loader.value = false;
       }
@@ -322,7 +333,7 @@ export function useBaseHttpService(
     const sendAsync = async (
       methodType: Method,
       url: string,
-      options?: { bodyData?: any; paramData?: Record<string, any> }
+      options?: { bodyData?: any; paramData?: Record<string, any>; suppressAlert?: boolean }
     ): Promise<any[]> => {
       if (cancelRequest.value) cancelRequest.value(); // Cancel existing request
       loader.value = true;
@@ -346,6 +357,13 @@ export function useBaseHttpService(
 
         return response.value;
 
+      } catch (error) {
+        // Don't show error alert here since axios interceptor handles it
+        // Only show if explicitly requested and not suppressed
+        if (options?.suppressAlert === false) {
+          showHttpError(error);
+        }
+        throw error;
       } finally {
         loader.value = false;
       }
@@ -374,7 +392,21 @@ export function useBaseHttpService(
     };
 
     const removeFromResponse = (key: any, value: any) => {
-      response.value = response.value?.filter(item => item[key] !== value);
+      if (!response.value) return;
+      
+      // Handle both string and GUID comparisons for better reliability
+      const filtered = response.value.filter(item => {
+        const itemValue = item[key];
+        // Convert both values to strings for comparison to handle GUID/string mismatches
+        return String(itemValue) !== String(value);
+      });
+      
+      response.value = filtered;
+      
+      // Apply reorganization if needed
+      if (reOrganizeFn) {
+        response.value = reOrganizeFn(response.value);
+      }
     };
 
     const updateByKey = (key: string, value: any, ignoreKeys: string[] = []) => {

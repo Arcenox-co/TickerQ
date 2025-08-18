@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { useAuthStore } from './stores/authStore'
 import DashboardLayout from './components/layout/DashboardLayout.vue'
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick } from 'vue'
 import { useConnectionStore } from './stores/connectionStore'
 
 const authStore = useAuthStore()
 const connectionStore = useConnectionStore()
-
 // Form validation
 const form = ref()
 const isLoading = ref(false)

@@ -1,8 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/authStore'
+import { getBasePath } from '@/utilities/pathResolver'
 
 const router = createRouter({
-  history: createWebHistory(import.meta.env.PROD ? "" : "/tickerq-dashboard"),
+  history: createWebHistory(getBasePath()),
   routes: [
     {
       path: '/',

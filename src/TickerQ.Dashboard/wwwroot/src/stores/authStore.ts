@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import { ref, computed, reactive, watch, type Ref } from 'vue';
 import { validateCredentials } from '../config/auth.config';
 import { useConnectionStore } from './connectionStore';
+import { isBasicAuthEnabled } from '@/utilities/pathResolver';
 
 export const useAuthStore = defineStore('auth', () => {
   // 1. Authentication state
@@ -45,18 +46,9 @@ export const useAuthStore = defineStore('auth', () => {
     }
   })
 
-  // Cleanup function
-  async function cleanup() {
-    try {
-      const connectionStore = useConnectionStore()
-      await connectionStore.cleanup()
-    } catch (error) {
-      // Failed to cleanup connection
-    }
-  }
 
   // 5. Computed login state - only true if initialized and has auth
-  const isLoggedIn = computed(() => isInitialized.value && !!auth.value)
+  const isLoggedIn = computed(() => (isInitialized.value && !!auth.value) || !isBasicAuthEnabled())
 
   // 5. Login method
   const login = async () => {
@@ -65,8 +57,7 @@ export const useAuthStore = defineStore('auth', () => {
       const validation = validateCredentials(credentials.username, credentials.password)
       
       if (validation.isValid) {
-        const authHeader = btoa(`${credentials.username}:${credentials.password}`);
-        auth.value = authHeader;
+        setToLocalStorage();
         errorMessage.value = '';
         return true;
       } else {
@@ -85,6 +76,8 @@ export const useAuthStore = defineStore('auth', () => {
   const setToLocalStorage = () => {
     const authHeader = btoa(`${credentials.username}:${credentials.password}`);
     auth.value = authHeader;
+    localStorage.setItem('auth', authHeader);
+    localStorage.setItem('username', credentials.username);
   };
 
   // 7. Logout
@@ -93,6 +86,8 @@ export const useAuthStore = defineStore('auth', () => {
     credentials.username = '';
     credentials.password = '';
     errorMessage.value = '';
+    localStorage.removeItem('auth');
+    localStorage.removeItem('username');
   };
 
   // 8. Clear error message

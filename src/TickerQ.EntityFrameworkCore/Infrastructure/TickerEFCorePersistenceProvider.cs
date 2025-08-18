@@ -72,7 +72,6 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             var optionsValue = options.InvokeProviderOptions();
 
-            // Ultra-fast approach optimized for strict timeout constraints (1-3 seconds)
             // Uses optimistic bulk locking for maximum speed within timeout windows
             return await DbContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
@@ -88,7 +87,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         .Where(x =>
                             ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
                              (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)) &&
-                            x.ExecutionTime >= roundedMinDate &&
+                            x.ExecutionTime >= roundedMinDate.AddSeconds(-2) &&
                             x.ExecutionTime < roundedMinDate.AddSeconds(1))
                         .OrderBy(x => x.ExecutionTime)
                         .Take(100)
@@ -327,7 +326,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var next = await query
                 .Where(x => x.LockHolder == null
                             && tickerStatuses.Contains(x.Status)
-                            && x.ExecutionTime > now)
+                            && x.ExecutionTime >= now)
                 .OrderBy(x => x.ExecutionTime)
                 .Select(x => x.ExecutionTime)
                 .FirstOrDefaultAsync(cancellationToken)

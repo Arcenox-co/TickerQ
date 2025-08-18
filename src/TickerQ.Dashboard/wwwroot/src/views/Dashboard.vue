@@ -6,7 +6,6 @@ import TickerNotificationHub, { methodName } from '@/hub/tickerNotificationHub'
 import { useFunctionNameStore } from '@/stores/functionNames'
 import { useDashboardStore } from '@/stores/dashboardStore'
 import { Status } from '@/http/services/types/base/baseHttpResponse.types'
-import { sleep } from '@/utilities/sleep'
 
 const getNextPlannedTicker = tickerService.getNextPlannedTicker()
 const getOptions = tickerService.getOptions()
@@ -80,27 +79,27 @@ onMounted(async () => {
 
 // Function to calculate successful count (only Done and DueDone jobs)
 function getSuccessfulCount(): number {
-  const doneStatus = statuses.value.find(s => s.name === 'Done')
-  const dueDoneStatus = statuses.value.find(s => s.name === 'DueDone')
-  
+  const doneStatus = statuses.value.find((s) => s.name === 'Done')
+  const dueDoneStatus = statuses.value.find((s) => s.name === 'DueDone')
+
   const doneCount = doneStatus ? doneStatus.count : 0
   const dueDoneCount = dueDoneStatus ? dueDoneStatus.count : 0
-  
+
   return doneCount + dueDoneCount
 }
 
 // Function to calculate total final jobs count (Done, DueDone, Failed, Cancelled)
 function getTotalFinalJobsCount(): number {
-  const doneStatus = statuses.value.find(s => s.name === 'Done')
-  const dueDoneStatus = statuses.value.find(s => s.name === 'DueDone')
-  const failedStatus = statuses.value.find(s => s.name === 'Failed')
-  const cancelledStatus = statuses.value.find(s => s.name === 'Cancelled')
-  
+  const doneStatus = statuses.value.find((s) => s.name === 'Done')
+  const dueDoneStatus = statuses.value.find((s) => s.name === 'DueDone')
+  const failedStatus = statuses.value.find((s) => s.name === 'Failed')
+  const cancelledStatus = statuses.value.find((s) => s.name === 'Cancelled')
+
   const doneCount = doneStatus ? doneStatus.count : 0
   const dueDoneCount = dueDoneStatus ? dueDoneStatus.count : 0
   const failedCount = failedStatus ? failedStatus.count : 0
   const cancelledCount = cancelledStatus ? cancelledStatus.count : 0
-  
+
   return doneCount + dueDoneCount + failedCount + cancelledCount
 }
 
@@ -183,41 +182,13 @@ const availablePageSizes = [5, 10, 20, 50]
 const functionHeaders = [
   { title: 'Function Name', key: 'function', sortable: true },
   { title: 'Request Namespace', key: 'request', sortable: true },
-  { title: 'Priority', key: 'priority', sortable: true }
+  { title: 'Priority', key: 'priority', sortable: true },
 ]
 
 // Computed properties for pagination
-const totalFunctionsPages = computed(() => Math.ceil(functionItems.value.length / functionsPerPage.value))
-const paginatedFunctions = computed(() => {
-  const start = (currentFunctionsPage.value - 1) * functionsPerPage.value
-  const end = start + functionsPerPage.value
-  return functionItems.value.slice(start, end)
-})
-
-// Pagination functions
-const goToFunctionsPage = (page: number) => {
-  if (page >= 1 && page <= totalFunctionsPages.value) {
-    currentFunctionsPage.value = page
-  }
-}
-
-const nextFunctionsPage = () => {
-  if (currentFunctionsPage.value < totalFunctionsPages.value) {
-    currentFunctionsPage.value++
-  }
-}
-
-const prevFunctionsPage = () => {
-  if (currentFunctionsPage.value > 1) {
-    currentFunctionsPage.value--
-  }
-}
-
-// Function to handle page size changes
-const changePageSize = (newSize: number) => {
-  functionsPerPage.value = newSize
-  currentFunctionsPage.value = 1 // Reset to first page when changing page size
-}
+const totalFunctionsPages = computed(() =>
+  Math.ceil(functionItems.value.length / functionsPerPage.value),
+)
 
 // Handle Vuetify table options update
 const handleTableOptionsUpdate = (options: any) => {
@@ -234,10 +205,10 @@ const getVisiblePageNumbers = () => {
   const total = totalFunctionsPages.value
   const current = currentFunctionsPage.value
   const delta = 2 // Number of pages to show on each side of current page
-  
+
   let start = Math.max(1, current - delta)
   let end = Math.min(total, current + delta)
-  
+
   // Adjust start and end to always show delta*2 + 1 pages when possible
   if (end - start < delta * 2) {
     if (start === 1) {
@@ -246,21 +217,20 @@ const getVisiblePageNumbers = () => {
       start = Math.max(1, end - delta * 2)
     }
   }
-  
+
   const pages = []
   for (let i = start; i <= end; i++) {
     pages.push(i)
   }
-  
+
   return pages
 }
 </script>
 <template>
   <div class="dashboard-container">
-
     <!-- Content Section -->
     <div class="dashboard-content">
-            <!-- Key Metrics Grid -->
+      <!-- Key Metrics Grid -->
       <div class="metrics-grid">
         <!-- Next Execution Metric -->
         <div class="metric-card primary-metric">
@@ -269,10 +239,16 @@ const getVisiblePageNumbers = () => {
           </div>
           <div class="metric-content">
             <h3 class="metric-label">Next Execution</h3>
-            <p class="metric-value primary-text" v-if="getNextPlannedTicker.response.value !== undefined">
-              {{ dashboardStore.displayNextOccurrence === 'Not Scheduled' || dashboardStore.displayNextOccurrence == undefined
-                ? 'Not Scheduled'
-                : formatDate(dashboardStore.displayNextOccurrence) }}
+            <p
+              class="metric-value primary-text"
+              v-if="getNextPlannedTicker.response.value !== undefined"
+            >
+              {{
+                dashboardStore.displayNextOccurrence === 'Not Scheduled' ||
+                dashboardStore.displayNextOccurrence == undefined
+                  ? 'Not Scheduled'
+                  : formatDate(dashboardStore.displayNextOccurrence)
+              }}
             </p>
             <div v-else class="skeleton-text metric-value-skeleton"></div>
           </div>
@@ -295,19 +271,13 @@ const getVisiblePageNumbers = () => {
         <!-- Active Threads Metric -->
         <div class="metric-card" :class="warningMessage ? 'warning-metric' : 'success-metric'">
           <div class="metric-icon">
-            <v-icon 
-              size="28" 
-              :color="warningMessage ? 'warning' : 'success'"
-            >
+            <v-icon size="28" :color="warningMessage ? 'warning' : 'success'">
               {{ warningMessage ? 'mdi-alert-circle-outline' : 'mdi-pulse' }}
             </v-icon>
           </div>
           <div class="metric-content">
             <h3 class="metric-label">Active Threads</h3>
-            <p 
-              class="metric-value"
-              :class="warningMessage ? 'warning-text' : 'success-text'"
-            >
+            <p class="metric-value" :class="warningMessage ? 'warning-text' : 'success-text'">
               {{ activeThreads }}
             </p>
           </div>
@@ -320,30 +290,38 @@ const getVisiblePageNumbers = () => {
           </div>
           <div class="metric-content">
             <h3 class="metric-label">Success Rate</h3>
-            <p class="metric-value success-text" v-if="getJobStatusesPastWeek.response.value !== undefined">
-              {{ getTotalFinalJobsCount() > 0
-                ? Math.round((getSuccessfulCount() / getTotalFinalJobsCount()) * 100)
-                : 0 }}%
+            <p
+              class="metric-value success-text"
+              v-if="getJobStatusesPastWeek.response.value !== undefined"
+            >
+              {{
+                getTotalFinalJobsCount() > 0
+                  ? Math.round((getSuccessfulCount() / getTotalFinalJobsCount()) * 100)
+                  : 0
+              }}%
             </p>
             <div v-else class="skeleton-text metric-value-skeleton"></div>
           </div>
         </div>
       </div>
 
-          <!-- Statistics Section -->
+      <!-- Statistics Section -->
       <div class="stats-section">
         <h2 class="section-title">
           <v-icon class="section-icon" color="primary">mdi-chart-bar</v-icon>
           Job Statistics (Past 7 Days)
         </h2>
-        
+
         <div class="stats-grid">
           <div class="stat-card success-stat">
             <div class="stat-header">
               <v-icon color="success" size="20">mdi-check-circle</v-icon>
               <span class="stat-title">Successful</span>
             </div>
-            <div class="stat-number success-number" v-if="getJobStatusesPastWeek.response.value !== undefined">
+            <div
+              class="stat-number success-number"
+              v-if="getJobStatusesPastWeek.response.value !== undefined"
+            >
               {{ getSuccessfulCount() }}
             </div>
             <div v-else class="skeleton-text stat-number-skeleton"></div>
@@ -358,7 +336,10 @@ const getVisiblePageNumbers = () => {
               <v-icon color="error" size="20">mdi-close-circle</v-icon>
               <span class="stat-title">Failed</span>
             </div>
-            <div class="stat-number error-number" v-if="getJobStatusesPastWeek.response.value !== undefined">
+            <div
+              class="stat-number error-number"
+              v-if="getJobStatusesPastWeek.response.value !== undefined"
+            >
               {{ getJobStatusesPastWeek.response.value[1].item2 }}
             </div>
             <div v-else class="skeleton-text stat-number-skeleton"></div>
@@ -373,7 +354,10 @@ const getVisiblePageNumbers = () => {
               <v-icon color="info" size="20">mdi-information</v-icon>
               <span class="stat-title">Final Jobs</span>
             </div>
-            <div class="stat-number info-number" v-if="getJobStatusesPastWeek.response.value !== undefined">
+            <div
+              class="stat-number info-number"
+              v-if="getJobStatusesPastWeek.response.value !== undefined"
+            >
               {{ getTotalFinalJobsCount() }}
             </div>
             <div v-else class="skeleton-text stat-number-skeleton"></div>
@@ -385,203 +369,193 @@ const getVisiblePageNumbers = () => {
         </div>
       </div>
 
-    <!-- Main Content Grid -->
-    <div class="content-grid">
-      <!-- Status Overview -->
-      <div class="content-card status-overview">
-        <div class="card-header">
-          <h2 class="card-title">
-            <v-icon class="title-icon" color="primary">mdi-chart-donut-variant</v-icon>
-            Status Distribution
-          </h2>
-          <p class="card-subtitle">Current job status breakdown</p>
+      <!-- Main Content Grid -->
+      <div class="content-grid">
+        <!-- Status Overview -->
+        <div class="content-card status-overview">
+          <div class="card-header">
+            <h2 class="card-title">
+              <v-icon class="title-icon" color="primary">mdi-chart-donut-variant</v-icon>
+              Status Distribution
+            </h2>
+            <p class="card-subtitle">Current job status breakdown</p>
+          </div>
+
+          <div class="status-compact-list">
+            <template v-if="getJobStatusesOverall.response.value !== undefined">
+              <div v-for="status in statuses" :key="status.name" class="status-compact-row">
+                <div class="status-compact-info">
+                  <div
+                    class="status-mini-dot"
+                    :style="{ backgroundColor: seriesColors[status.name] }"
+                  ></div>
+                  <span class="status-compact-name">{{ status.name }}</span>
+                </div>
+                <div class="status-compact-values">
+                  <span class="status-compact-count">{{ status.count }}</span>
+                  <span class="status-compact-percentage">{{ status.percentage }}%</span>
+                </div>
+              </div>
+            </template>
+            <template v-else>
+              <div v-for="i in 8" :key="i" class="status-compact-row">
+                <div class="status-compact-info">
+                  <div class="skeleton-circle status-dot-skeleton"></div>
+                  <div class="skeleton-text status-name-skeleton"></div>
+                </div>
+                <div class="status-compact-values">
+                  <div class="skeleton-text status-count-skeleton"></div>
+                  <div class="skeleton-text status-percentage-skeleton"></div>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
-        
-        <div class="status-compact-list">
-          <template v-if="getJobStatusesOverall.response.value !== undefined">
-            <div 
-              v-for="status in statuses" 
-              :key="status.name"
-              class="status-compact-row"
+
+        <!-- Functions Table -->
+        <div class="content-card functions-table">
+          <div class="card-header">
+            <h2 class="card-title">
+              <v-icon class="title-icon" color="primary">mdi-function-variant</v-icon>
+              Registered Functions
+            </h2>
+            <p class="card-subtitle">{{ functionItems.length }} active function handlers</p>
+          </div>
+
+          <div class="table-container">
+            <v-data-table
+              :headers="functionHeaders"
+              :items="functionItems"
+              :items-per-page="functionsPerPage"
+              :page="currentFunctionsPage"
+              :items-per-page-options="availablePageSizes"
+              class="functions-table-vuetify"
+              density="compact"
+              hover
+              @update:options="handleTableOptionsUpdate"
             >
-              <div class="status-compact-info">
-                <div 
-                  class="status-mini-dot"
-                  :style="{ backgroundColor: seriesColors[status.name] }"
-                ></div>
-                <span class="status-compact-name">{{ status.name }}</span>
-              </div>
-              <div class="status-compact-values">
-                <span class="status-compact-count">{{ status.count }}</span>
-                <span class="status-compact-percentage">{{ status.percentage }}%</span>
-              </div>
+              <!-- Function Name Column -->
+              <template v-slot:item.function="{ item }">
+                <span class="function-name">{{ item.function }}</span>
+              </template>
+
+              <!-- Request Namespace Column -->
+              <template v-slot:item.request="{ item }">
+                <span class="namespace-text" :title="item.request">
+                  {{ item.request }}
+                </span>
+              </template>
+
+              <!-- Priority Column -->
+              <template v-slot:item.priority="{ item }">
+                <div
+                  class="priority-badge"
+                  :class="`priority-${item.priority.toLowerCase().replace('longrunning', 'long')}`"
+                >
+                  {{ item.priority }}
                 </div>
               </template>
-          <template v-else>
-            <div v-for="i in 8" :key="i" class="status-compact-row">
-              <div class="status-compact-info">
-                <div class="skeleton-circle status-dot-skeleton"></div>
-                <div class="skeleton-text status-name-skeleton"></div>
-              </div>
-              <div class="status-compact-values">
-                <div class="skeleton-text status-count-skeleton"></div>
-                <div class="skeleton-text status-percentage-skeleton"></div>
-              </div>
-            </div>
-          </template>
+
+              <!-- Loading State -->
+              <template v-slot:loading>
+                <div class="loading-skeleton">
+                  <div v-for="i in 5" :key="i" class="skeleton-row">
+                    <div class="skeleton-text function-name-skeleton"></div>
+                    <div class="skeleton-text namespace-skeleton"></div>
+                    <div class="skeleton-text priority-skeleton"></div>
+                  </div>
+                </div>
+              </template>
+            </v-data-table>
+          </div>
         </div>
       </div>
 
-      <!-- Functions Table -->
-      <div class="content-card functions-table">
-        <div class="card-header">
-          <h2 class="card-title">
-            <v-icon class="title-icon" color="primary">mdi-function-variant</v-icon>
-            Registered Functions
-          </h2>
-          <p class="card-subtitle">{{ functionItems.length }} active function handlers</p>
-        </div>
-        
-        <div class="table-container">
-          <v-data-table
-            :headers="functionHeaders"
-            :items="functionItems"
-            :items-per-page="functionsPerPage"
-            :page="currentFunctionsPage"
-            :items-per-page-options="availablePageSizes"
-            class="functions-table-vuetify"
-            density="compact"
-            hover
-            @update:options="handleTableOptionsUpdate"
-          >
-            <!-- Function Name Column -->
-            <template v-slot:item.function="{ item }">
-              <span class="function-name">{{ item.function }}</span>
-            </template>
-            
-            <!-- Request Namespace Column -->
-            <template v-slot:item.request="{ item }">
-              <span 
-                class="namespace-text"
-                :title="item.request"
-              >
-                {{ item.request }}
-              </span>
-            </template>
-            
-            <!-- Priority Column -->
-            <template v-slot:item.priority="{ item }">
-              <div 
-                class="priority-badge"
-                :class="`priority-${item.priority.toLowerCase().replace('longrunning', 'long')}`"
-              >
-                {{ item.priority }}
-              </div>
-            </template>
-            
-            <!-- Loading State -->
-            <template v-slot:loading>
-              <div class="loading-skeleton">
-                <div v-for="i in 5" :key="i" class="skeleton-row">
-                  <div class="skeleton-text function-name-skeleton"></div>
-                  <div class="skeleton-text namespace-skeleton"></div>
-                  <div class="skeleton-text priority-skeleton"></div>
+      <!-- Bottom Section -->
+      <div class="bottom-grid">
+        <!-- Machines -->
+        <div class="content-card machines-card">
+          <div class="card-header">
+            <h2 class="card-title">
+              <v-icon class="title-icon" color="primary">mdi-server-network</v-icon>
+              Machines
+            </h2>
+            <p class="card-subtitle">{{ machineItems.length }} machine instances</p>
+          </div>
+
+          <div class="machines-list">
+            <template v-if="machineItems.length > 0">
+              <div v-for="machine in machineItems" :key="machine.machine" class="machine-item">
+                <div class="machine-info">
+                  <span class="machine-name">{{ machine.machine }}</span>
+                  <span class="machine-jobs">{{ machine.locked }}</span>
                 </div>
               </div>
             </template>
-          </v-data-table>
+            <template v-else>
+              <div v-for="i in 3" :key="i" class="machine-item">
+                <div class="machine-indicator">
+                  <div class="skeleton-circle machine-dot-skeleton"></div>
+                </div>
+                <div class="machine-info">
+                  <div class="skeleton-text machine-name-skeleton"></div>
+                  <div class="skeleton-text machine-jobs-skeleton"></div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- System Alerts -->
+        <div class="content-card alerts-card">
+          <div class="card-header">
+            <h2 class="card-title">
+              <v-icon class="title-icon" color="primary">mdi-bell-ring</v-icon>
+              System Alerts
+            </h2>
+            <p class="card-subtitle">Real-time system notifications</p>
+          </div>
+
+          <div class="alerts-container">
+            <div v-if="hasError" class="alert alert-error">
+              <div class="alert-icon">
+                <v-icon color="error">mdi-alert-circle</v-icon>
+              </div>
+              <div class="alert-content">
+                <h4 class="alert-title">System Error Detected</h4>
+                <p class="alert-message">
+                  {{ getOptions.response.value?.lastHostExceptionMessage }}
+                </p>
+              </div>
+            </div>
+
+            <div v-else-if="warningMessage" class="alert alert-warning">
+              <div class="alert-icon">
+                <v-icon color="warning">mdi-alert</v-icon>
+              </div>
+              <div class="alert-content">
+                <h4 class="alert-title">High Thread Usage</h4>
+                <p class="alert-message">
+                  All worker threads are currently active. Consider optimizing task execution or
+                  increasing concurrency limits.
+                </p>
+              </div>
+            </div>
+
+            <div v-else class="alert alert-success">
+              <div class="alert-icon">
+                <v-icon color="success">mdi-check-circle</v-icon>
+              </div>
+              <div class="alert-content">
+                <h4 class="alert-title">System Operating Normally</h4>
+                <p class="alert-message">All systems are functioning within normal parameters.</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
-
-    <!-- Bottom Section -->
-    <div class="bottom-grid">
-      <!-- Machines -->
-      <div class="content-card machines-card">
-        <div class="card-header">
-          <h2 class="card-title">
-            <v-icon class="title-icon" color="primary">mdi-server-network</v-icon>
-            Active Machines
-          </h2>
-          <p class="card-subtitle">{{ machineItems.length }} machine instances</p>
-        </div>
-        
-                 <div class="machines-list">
-           <template v-if="machineItems.length > 0">
-             <div 
-               v-for="machine in machineItems" 
-               :key="machine.machine"
-               class="machine-item"
-             >
-               <div class="machine-indicator">
-                 <div class="machine-dot"></div>
-               </div>
-               <div class="machine-info">
-                 <span class="machine-name">{{ machine.machine }}</span>
-                 <span class="machine-jobs">{{ machine.locked }}</span>
-               </div>
-             </div>
-           </template>
-           <template v-else>
-             <div v-for="i in 3" :key="i" class="machine-item">
-               <div class="machine-indicator">
-                 <div class="skeleton-circle machine-dot-skeleton"></div>
-               </div>
-               <div class="machine-info">
-                 <div class="skeleton-text machine-name-skeleton"></div>
-                 <div class="skeleton-text machine-jobs-skeleton"></div>
-               </div>
-             </div>
-           </template>
-         </div>
-      </div>
-
-      <!-- System Alerts -->
-      <div class="content-card alerts-card">
-        <div class="card-header">
-          <h2 class="card-title">
-            <v-icon class="title-icon" color="primary">mdi-bell-ring</v-icon>
-            System Alerts
-          </h2>
-          <p class="card-subtitle">Real-time system notifications</p>
-        </div>
-        
-        <div class="alerts-container">
-          <div v-if="hasError" class="alert alert-error">
-            <div class="alert-icon">
-              <v-icon color="error">mdi-alert-circle</v-icon>
-            </div>
-            <div class="alert-content">
-              <h4 class="alert-title">System Error Detected</h4>
-              <p class="alert-message">{{ getOptions.response.value?.lastHostExceptionMessage }}</p>
-            </div>
-          </div>
-          
-          <div v-else-if="warningMessage" class="alert alert-warning">
-            <div class="alert-icon">
-              <v-icon color="warning">mdi-alert</v-icon>
-            </div>
-            <div class="alert-content">
-              <h4 class="alert-title">High Thread Usage</h4>
-              <p class="alert-message">All worker threads are currently active. Consider optimizing task execution or increasing concurrency limits.</p>
-            </div>
-          </div>
-          
-          <div v-else class="alert alert-success">
-            <div class="alert-icon">
-              <v-icon color="success">mdi-check-circle</v-icon>
-                </div>
-            <div class="alert-content">
-              <h4 class="alert-title">System Operating Normally</h4>
-              <p class="alert-message">All systems are functioning within normal parameters.</p>
-            </div>
-          </div>
-                 </div>
-       </div>
-     </div>
-   </div>
-   </div>
-
+  </div>
 </template>
 <style scoped>
 /* Dashboard Container */
@@ -589,7 +563,11 @@ const getVisiblePageNumbers = () => {
   min-height: 100vh;
   background: linear-gradient(135deg, #212121 0%, #2d2d2d 100%);
   padding: 0;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family:
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
   position: relative;
   color: #e0e0e0;
 }
@@ -600,8 +578,6 @@ const getVisiblePageNumbers = () => {
   margin: 0 auto;
   padding: 20px 24px 16px 24px;
 }
-
-
 
 /* Metrics Grid */
 .metrics-grid {
@@ -641,10 +617,18 @@ const getVisiblePageNumbers = () => {
   box-shadow: 0 8px 25px rgba(0, 0, 0, 0.6);
 }
 
-.primary-metric::before { background: linear-gradient(90deg, #3b82f6, #1d4ed8); }
-.info-metric::before { background: linear-gradient(90deg, #06b6d4, #0891b2); }
-.success-metric::before { background: linear-gradient(90deg, #10b981, #059669); }
-.warning-metric::before { background: linear-gradient(90deg, #f59e0b, #d97706); }
+.primary-metric::before {
+  background: linear-gradient(90deg, #3b82f6, #1d4ed8);
+}
+.info-metric::before {
+  background: linear-gradient(90deg, #06b6d4, #0891b2);
+}
+.success-metric::before {
+  background: linear-gradient(90deg, #10b981, #059669);
+}
+.warning-metric::before {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+}
 
 .metric-icon {
   background: rgba(255, 255, 255, 0.1);
@@ -672,10 +656,18 @@ const getVisiblePageNumbers = () => {
   color: #e0e0e0;
 }
 
-.primary-text { color: #64b5f6; }
-.info-text { color: #4dd0e1; }
-.success-text { color: #4caf50; }
-.warning-text { color: #ffb74d; }
+.primary-text {
+  color: #64b5f6;
+}
+.info-text {
+  color: #4dd0e1;
+}
+.success-text {
+  color: #4caf50;
+}
+.warning-text {
+  color: #ffb74d;
+}
 
 /* Statistics Section */
 .stats-section {
@@ -741,9 +733,15 @@ const getVisiblePageNumbers = () => {
   letter-spacing: -0.5px;
 }
 
-.success-number { color: #4caf50; }
-.error-number { color: #f44336; }
-.info-number { color: #64b5f6; }
+.success-number {
+  color: #4caf50;
+}
+.error-number {
+  color: #f44336;
+}
+.info-number {
+  color: #64b5f6;
+}
 
 .stat-trend {
   display: flex;
@@ -1084,11 +1082,11 @@ const getVisiblePageNumbers = () => {
   .content-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .bottom-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .header-content,
   .dashboard-content {
     padding-left: 24px;
@@ -1104,19 +1102,19 @@ const getVisiblePageNumbers = () => {
     padding-left: 16px;
     padding-right: 16px;
   }
-  
+
   .dashboard-content {
     padding: 20px 16px 16px 16px;
   }
-  
+
   .metrics-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .stats-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .action-buttons {
     justify-content: center;
   }
@@ -1133,14 +1131,24 @@ const getVisiblePageNumbers = () => {
 }
 
 .skeleton-text {
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.1) 25%, rgba(255, 255, 255, 0.2) 37%, rgba(255, 255, 255, 0.1) 63%);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.1) 25%,
+    rgba(255, 255, 255, 0.2) 37%,
+    rgba(255, 255, 255, 0.1) 63%
+  );
   background-size: 400px 100%;
   animation: skeleton-loading 1.4s ease-in-out infinite;
   border-radius: 4px;
 }
 
 .skeleton-circle {
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.1) 25%, rgba(255, 255, 255, 0.2) 37%, rgba(255, 255, 255, 0.1) 63%);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.1) 25%,
+    rgba(255, 255, 255, 0.2) 37%,
+    rgba(255, 255, 255, 0.1) 63%
+  );
   background-size: 400px 100%;
   animation: skeleton-loading 1.4s ease-in-out infinite;
   border-radius: 50%;
@@ -1460,21 +1468,21 @@ const getVisiblePageNumbers = () => {
     flex-direction: column;
     gap: 16px;
   }
-  
+
   .pagination-controls {
     flex-direction: column;
     gap: 8px;
   }
-  
+
   .page-numbers {
     order: -1;
   }
-  
+
   .pagination-btn {
     width: 100%;
     max-width: 200px;
   }
-  
+
   .page-size-selector {
     justify-content: center;
   }

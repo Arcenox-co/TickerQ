@@ -1,6 +1,17 @@
 import { computed, ref, watch, readonly } from 'vue'
 import { useAuthStore } from '../stores/authStore'
-import { authService, type AuthCredentials, type AuthResult } from '../services/authService'
+import { authService } from '../services/authService'
+
+// Define the types locally since they're not exported from authService anymore
+export interface AuthCredentials {
+  username: string
+  password: string
+}
+
+export interface AuthResult {
+  success: boolean
+  error?: string
+}
 
 export function useAuth() {
   // Local state
@@ -20,7 +31,7 @@ export function useAuth() {
   const username = computed(() => {
     try {
       const authStore = useAuthStore()
-      return authStore.credentials.username
+      return localStorage.getItem('username') || authStore.credentials.username
     } catch {
       return ''
     }
@@ -50,17 +61,22 @@ export function useAuth() {
     error.value = ''
     
     try {
-      const result = await authService.login(credentials)
+      // Use the new authService method for basic auth login
+      const success = await authService.handleBasicAuthLogin(
+        credentials.username,
+        credentials.password
+      )
       
-      if (!result.success) {
-        error.value = result.error || 'Login failed'
+      if (!success) {
+        error.value = 'Invalid username or password'
         // Also update the store error message for consistency
         try {
           const authStore = useAuthStore()
-          authStore.errorMessage = result.error || 'Login failed'
+          authStore.errorMessage = 'Invalid username or password'
         } catch {
           // Store not available, ignore
         }
+        return { success: false, error: 'Invalid username or password' }
       } else {
         // Clear any previous errors on success
         error.value = ''
@@ -70,9 +86,8 @@ export function useAuth() {
         } catch {
           // Store not available, ignore
         }
+        return { success: true }
       }
-      
-      return result
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'An unexpected error occurred'
       error.value = errorMsg
@@ -87,7 +102,7 @@ export function useAuth() {
     error.value = ''
     
     try {
-      await authService.logout()
+      authService.logout()
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Logout failed'
       error.value = errorMsg
@@ -104,16 +119,6 @@ export function useAuth() {
       authStore.clearError()
     } catch {
       // Store not available, just clear local error
-    }
-  }
-
-  const updateWebSocketConnection = async (): Promise<void> => {
-    try {
-      await authService.updateWebSocketConnection()
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Failed to update WebSocket connection'
-      error.value = errorMsg
-      throw err
     }
   }
 
@@ -144,7 +149,6 @@ export function useAuth() {
     // Methods
     login,
     logout,
-    clearError,
-    updateWebSocketConnection
+    clearError
   }
 } 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useAuth } from '../../composables/useAuth'
+import { authService } from '@/services/authService'
 
 // Props
 interface Props {
@@ -32,13 +33,39 @@ const {
   clearError
 } = useAuth()
 
+// Import alert composable for demonstration
+import { useAlert } from '@/composables/useAlert'
+const { showSuccess, showError, showWarning, showInfo } = useAlert()
+
 // Local state
 const isLoginFormVisible = ref(false)
 const localUsername = ref('')
 const localPassword = ref('')
 
+// Check if basic auth is enabled
+const isBasicAuthEnabled = computed(() => {
+  return window.TickerQConfig?.enableBasicAuth || false
+})
+
+// Check if host authentication is enabled
+const isHostAuthEnabled = computed(() => {
+  return window.TickerQConfig?.useHostAuthentication || false
+})
+
+// Show login form automatically if basic auth is enabled and user is not authenticated
+const shouldShowLoginForm = computed(() => {
+  if (isBasicAuthEnabled.value && !isAuthenticated.value) {
+    return true
+  }
+  return isLoginFormVisible.value
+})
+
 // Methods
 const toggleLoginForm = () => {
+  if (isBasicAuthEnabled.value) {
+    // For basic auth, we can't toggle - user must authenticate
+    return
+  }
   isLoginFormVisible.value = !isLoginFormVisible.value
 }
 
@@ -49,14 +76,32 @@ const handleLogin = async () => {
   }
 
   try {
-    const result = await login({
-      username: localUsername.value,
-      password: localPassword.value
-    })
+    let result
+    
+    if (isBasicAuthEnabled.value) {
+      // Use the new auth service for basic auth
+      const success = await authService.handleBasicAuthLogin(
+        localUsername.value,
+        localPassword.value
+      )
+      result = { success }
+    } else {
+      // Use the existing auth composable for other auth types
+      result = await login({
+        username: localUsername.value,
+        password: localPassword.value
+      })
+    }
     
     if (result.success) {
       isLoginFormVisible.value = false
+      showSuccess('Login successful!')
       emit('login', true)
+      
+      // For basic auth, reload the page to ensure all components are properly authenticated
+      if (isBasicAuthEnabled.value) {
+        window.location.reload()
+      }
     } else {
       // Don't emit login event on failure, just show the error
     }
@@ -67,29 +112,49 @@ const handleLogin = async () => {
 
 const handleLogout = async () => {
   try {
-    await logout()
+    if (isBasicAuthEnabled.value) {
+      // Use the new auth service for basic auth
+      authService.logout()
+    } else {
+      // Use the existing auth composable for other auth types
+      await logout()
+    }
+    
+    showInfo('Logged out successfully')
     emit('logout')
   } catch (error) {
     // Logout error
+    showError('Logout failed')
     emit('logout')
   }
 }
 
-// No need for local clearError since it's provided by the composable
+// Check auth status on mount
+onMounted(() => {
+  // If basic auth is enabled and user is not authenticated, show login form
+  if (isBasicAuthEnabled.value && !isAuthenticated.value) {
+    isLoginFormVisible.value = true
+  }
+})
 
 // Watch for auth changes to auto-hide login form
 watch(isAuthenticated, (newValue) => {
   if (newValue) {
     isLoginFormVisible.value = false
+  } else if (isBasicAuthEnabled.value) {
+    // For basic auth, show login form when user becomes unauthenticated
+    isLoginFormVisible.value = true
   }
 })
+
+// No need for local clearError since it's provided by the composable
 </script>
 
 <template>
   <div class="auth-header">
     <!-- Login Form -->
     <div v-if="!isAuthenticated && showLoginForm" class="auth-section">
-      <div v-if="!isLoginFormVisible" class="login-prompt">
+      <div v-if="!shouldShowLoginForm" class="login-prompt">
         <v-btn
           color="primary"
           variant="outlined"
@@ -103,6 +168,17 @@ watch(isAuthenticated, (newValue) => {
       </div>
       
       <div v-else class="login-form">
+        <div v-if="isBasicAuthEnabled" class="basic-auth-notice">
+          <v-alert
+            type="info"
+            variant="tonal"
+            density="compact"
+            class="info-alert"
+          >
+            Basic Authentication Required
+          </v-alert>
+        </div>
+        
         <div class="form-row">
           <v-text-field
             v-model="localUsername"
@@ -138,6 +214,7 @@ watch(isAuthenticated, (newValue) => {
             Login
           </v-btn>
           <v-btn
+            v-if="!isBasicAuthEnabled"
             variant="text"
             size="small"
             @click="toggleLoginForm"
@@ -221,6 +298,14 @@ watch(isAuthenticated, (newValue) => {
   flex-direction: column;
   gap: 8px;
   min-width: 400px;
+}
+
+.basic-auth-notice {
+  margin-bottom: 8px;
+}
+
+.info-alert {
+  font-size: 0.875rem;
 }
 
 .form-row {

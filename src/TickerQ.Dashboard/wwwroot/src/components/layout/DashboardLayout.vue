@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import { sleep } from '../../utilities/sleep'
 import { useDialog } from '../../composables/useDialog'
 import { ConfirmDialogProps } from '../common/ConfirmDialog.vue'
@@ -27,6 +28,9 @@ const dashboardStore = useDashboardStore()
 
 // Connection store
 const connectionStore = useConnectionStore()
+
+// Router
+const router = useRouter()
 
 // Lazy-loaded stores and services
 let tickerService: any = null
@@ -204,9 +208,7 @@ async function handleReconnect() {
 // Navigate to dashboard
 function navigateToDashboard() {
   // Use router to navigate to dashboard
-  if (typeof window !== 'undefined') {
-    window.location.href = '/'
-  }
+  router.push('/')
 }
 
 // Auth event handlers

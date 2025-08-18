@@ -50,24 +50,88 @@ const isMounted = ref(false)
 
 const onSubmitConfirmDialog = async () => {
   try {
+    const deletedId = confirmDialog.propData?.id!
     confirmDialog.close()
-    await deleteCronTicker.requestAsync(confirmDialog.propData?.id!)
     
-    if (selectedCronTickerGraphData.value != undefined) {
+    // Immediately remove from UI for better UX
+    getCronTickers.removeFromResponse('id', deletedId)
+    
+    // Perform the actual deletion
+    await deleteCronTicker.requestAsync(deletedId)
+    
+    // Update charts to reflect the deletion
+    await updateChartsAfterDeletion(deletedId)
+    
+  } catch (error: any) {
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+      return
+    }
+    // If deletion failed, we might want to refresh the data to restore the item
+    // But for now, we'll let the notification system handle it
+  }
+}
+
+// Helper function to update charts after any data change (create, update, delete)
+const updateChartsAfterDataChange = async (changedId?: string) => {
+  try {
+    // Update pie chart with overall statistics
+    await getTimeTickersGraphDataAndParseToGraph()
+    
+    // If we have a selected ticker and it's the one that was changed, update its specific chart
+    if (selectedCronTickerGraphData.value && changedId && selectedCronTickerGraphData.value === changedId) {
+      // Update the specific ticker's chart
+      const res = await getCronTickerRangeGraphDataById.requestAsync(selectedCronTickerGraphData.value, -3, 3)
+      GetCronTickerRangeGraphData(res)
+      await updatePieChartForSelectedTicker(selectedCronTickerGraphData.value, -3, 3)
+    } else if (selectedCronTickerGraphData.value) {
+      // If another ticker is selected, update its specific chart
+      const res = await getCronTickerRangeGraphDataById.requestAsync(selectedCronTickerGraphData.value, -3, 3)
+      GetCronTickerRangeGraphData(res)
+      await updatePieChartForSelectedTicker(selectedCronTickerGraphData.value, -3, 3)
+    } else {
+      // No specific ticker selected, update overall chart
       chartData.value.title = 'Job statuses for all Cron Tickers'
-      try {
-        const res = await getCronTickerRangeGraphData.requestAsync(-3, 3)
-        GetCronTickerRangeGraphData(res)
-      } catch (error: any) {
-        if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-          return
-        }
-      }
+      const res = await getCronTickerRangeGraphData.requestAsync(-3, 3)
+      GetCronTickerRangeGraphData(res)
     }
   } catch (error: any) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
       return
     }
+    console.error('Error updating charts after data change:', error)
+  }
+}
+
+// Helper function to update charts after deletion (specific case)
+const updateChartsAfterDeletion = async (deletedId: string) => {
+  try {
+    // Update pie chart with overall statistics
+    await getTimeTickersGraphDataAndParseToGraph()
+    
+    // If we have a selected ticker and it's the one that was deleted, reset to overall view
+    if (selectedCronTickerGraphData.value === deletedId) {
+      selectedCronTickerGraphData.value = undefined
+      chartData.value.title = 'Job statuses for all Cron Tickers'
+      
+      // Update the main chart with overall data
+      const res = await getCronTickerRangeGraphData.requestAsync(-3, 3)
+      GetCronTickerRangeGraphData(res)
+    } else if (selectedCronTickerGraphData.value) {
+      // If another ticker is selected, update its specific chart
+      const res = await getCronTickerRangeGraphDataById.requestAsync(selectedCronTickerGraphData.value, -3, 3)
+      GetCronTickerRangeGraphData(res)
+      await updatePieChartForSelectedTicker(selectedCronTickerGraphData.value, -3, 3)
+    } else {
+      // No specific ticker selected, update overall chart
+      chartData.value.title = 'Job statuses for all Cron Tickers'
+      const res = await getCronTickerRangeGraphData.requestAsync(-3, 3)
+      GetCronTickerRangeGraphData(res)
+    }
+  } catch (error: any) {
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+      return
+    }
+    console.error('Error updating charts after deletion:', error)
   }
 }
 
@@ -358,10 +422,9 @@ onMounted(async () => {
       const connectionStore = useConnectionStore()
       if (!connectionStore.isInitialized) {
         await connectionStore.initializeConnectionWithRetry()
-      } else {
       }
-    } catch (error: any) {
-    }
+    } 
+    catch (error: any) {}
     
     // Check if still mounted before continuing
     if (!isMounted.value) return
@@ -418,14 +481,32 @@ onUnmounted(() => {
 const addHubListeners = async () => {
   TickerNotificationHub.onReceiveAddCronTicker<GetCronTickerResponse>((response) => {
     getCronTickers.addToResponse(response)
+    
+    // Update charts to reflect the new ticker
+    updateChartsAfterDataChange(response.id)
   })
 
   TickerNotificationHub.onReceiveUpdateCronTicker<GetCronTickerResponse>((response) => {
     getCronTickers.updateByKey('id', response, ['requestType'])
+    
+    // Update charts to reflect the updated ticker
+    updateChartsAfterDataChange(response.id)
   })
 
   TickerNotificationHub.onReceiveDeleteCronTicker<string>((id) => {
+    // Ensure immediate removal from the data table
     getCronTickers.removeFromResponse('id', id)
+    
+    // Force a reactive update by triggering a re-render
+    nextTick(() => {
+      // This ensures the UI updates immediately
+      if (getCronTickers.response.value) {
+        getCronTickers.response.value = [...getCronTickers.response.value]
+      }
+    })
+    
+    // Update charts to reflect the deletion
+    updateChartsAfterDeletion(id)
   })
 }
 
@@ -815,16 +896,8 @@ const refreshData = async () => {
     selectedCronTickerGraphData.value = undefined
     chartData.value.title = 'Job statuses for all Cron Tickers'
     
-    try {
-      const res = await getCronTickerRangeGraphData.requestAsync(-3, 3)
-      GetCronTickerRangeGraphData(res)
-    } catch (error: any) {
-      if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-        return
-      }
-    }
-    
-    await getTimeTickersGraphDataAndParseToGraph()
+    // Update charts using the helper function
+    await updateChartsAfterDataChange()
   } catch (error: any) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
       return
@@ -1074,11 +1147,13 @@ const refreshData = async () => {
                       <button
                         v-bind="props"
                         @click="
-                          cronOccurrenceDialog.open({
-                            id: item.id,
-                            retries: item.retries,
-                            retryIntervals: item.retryIntervals,
-                          })
+                          (event) => {
+                            cronOccurrenceDialog.open({
+                              id: item.id,
+                              retries: item.retries,
+                              retryIntervals: item.retryIntervals,
+                            });
+                          }
                         "
                         class="modern-action-btn occurrences-btn"
                       >

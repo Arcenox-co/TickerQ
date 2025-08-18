@@ -57,10 +57,10 @@ app.use(VueTheMask as any)
 
 // Mount the app
 app.mount('#app')
-
 // Make connection store available globally for debugging
 import { useConnectionStore } from './stores/connectionStore'
 
 // Expose connection store methods globally for debugging
 const connectionStore = useConnectionStore()
 ;(window as any).connectionStore = connectionStore
+
