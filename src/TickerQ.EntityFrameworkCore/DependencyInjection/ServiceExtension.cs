@@ -65,7 +65,7 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
                     services.Add(newDescriptor);
                 }
               
-                services.AddScoped<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerEFCorePersistenceProvider<TContext, TimeTicker, CronTicker>>();
+                services.AddScoped<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerEfCorePersistenceProvider<TContext, TimeTicker, CronTicker>>();
             };
 
             UseApplicationService(tickerConfiguration, efCoreOptionBuilder.CancelMissedTickersOnReset);
@@ -86,17 +86,17 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
         {
             tickerConfiguration.ExternalProviderConfigApplicationAction = (serviceProvider) =>
             {
-                using var scope = serviceProvider.CreateScope();
-
-                var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
-                
-                var functionsToSeed = TickerFunctionProvider.TickerFunctions
-                    .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
-                    .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
-                
-                internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
-
-                internalTickerManager.ReleaseOrCancelAllAcquiredResources(cancelMissedTickersOnReset).GetAwaiter().GetResult();
+                // using var scope = serviceProvider.CreateScope();
+                //
+                // var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
+                //
+                // var functionsToSeed = TickerFunctionProvider.TickerFunctions
+                //     .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
+                //     .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
+                //
+                // internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
+                //
+                // internalTickerManager.ReleaseOrCancelAllAcquiredResources(cancelMissedTickersOnReset).GetAwaiter().GetResult();
             };
         }
     }

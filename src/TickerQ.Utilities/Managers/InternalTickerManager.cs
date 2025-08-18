@@ -24,7 +24,7 @@ namespace TickerQ.Utilities.Managers
 
         private static readonly HashSet<TickerStatus> SuccessConditions = new HashSet<TickerStatus>()
         {
-            TickerStatus.Done, 
+            TickerStatus.Done,
             TickerStatus.DueDone
         };
 
@@ -58,12 +58,14 @@ namespace TickerQ.Utilities.Managers
 
             if (minTimeRemaining == Timeout.InfiniteTimeSpan)
                 return (Timeout.InfiniteTimeSpan, Array.Empty<InternalFunctionContext>());
-            
+
             var nextTickers =
                 await RetrieveEligibleTickersAsync(minCronGroup, minTimeTicker ?? default, cancellationToken)
                     .ConfigureAwait(false);
-            
-            return nextTickers.Length == 0 ? (TimeSpan.FromMilliseconds(10), Array.Empty<InternalFunctionContext>()) : (minTimeRemaining, nextTickers);
+
+            return nextTickers.Length == 0
+                ? (TimeSpan.FromMilliseconds(10), Array.Empty<InternalFunctionContext>())
+                : (minTimeRemaining, nextTickers);
         }
 
         private TimeSpan CalculateMinTimeRemaining(IGrouping<DateTime, (Guid, string)> minCronTicker,
@@ -81,7 +83,7 @@ namespace TickerQ.Utilities.Managers
             return minTimeRemaining;
         }
 
-        private async Task<InternalFunctionContext[]> RetrieveEligibleTickersAsync(
+        private async Task<InternalFunctionContext[]>RetrieveEligibleTickersAsync(
             IGrouping<DateTime, (Guid, string)> minCronTicker, DateTime minTimeTicker,
             CancellationToken cancellationToken = default)
         {
@@ -184,7 +186,7 @@ namespace TickerQ.Utilities.Managers
 
             // GetNextCronTickerOccurrences now handles locking internally, so we don't need to set tracking
             var occurrenceList = await PersistenceProvider
-                .GetNextCronTickerOccurrences(LockHolder, cronTickerIdSet, opt => opt.SetAsNoTracking(),
+                .GetNextCronTickerOccurrences(nextOccurrence, LockHolder, cronTickerIdSet, opt => opt.SetAsNoTracking(),
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
@@ -215,14 +217,14 @@ namespace TickerQ.Utilities.Managers
             }
 
             // Check if we need to create new occurrences for cron tickers that don't have any
-            foreach (var (cronTickerId, expression) in vt)
+            foreach (var (cronTickerId, _) in vt)
             {
                 var cronTicker = cronTickers.FirstOrDefault(x => x.Id == cronTickerId);
                 if (cronTicker == null) continue;
 
                 // Check if we already have an occurrence for this cron ticker
-                var hasExistingOccurrence = occurrenceList.Any(x => x.CronTickerId == cronTickerId);
-                
+                var hasExistingOccurrence = occurrenceList.Any(x => x.CronTickerId == cronTickerId && x.ExecutionTime == nextOccurrence);
+
                 if (!hasExistingOccurrence)
                 {
                     // Create a new occurrence for the next execution time
@@ -237,30 +239,39 @@ namespace TickerQ.Utilities.Managers
                     };
 
                     newOccurrences.Add(newOccurrence);
-
-                    result.Add(new InternalFunctionContext
-                    {
-                        FunctionName = cronTicker.Function,
-                        TickerId = newOccurrence.Id,
-                        Type = TickerType.CronExpression,
-                        Retries = cronTicker.Retries,
-                        RetryIntervals = cronTicker.RetryIntervals
-                    });
-
-                    // Send notification for new occurrence
-                    if (NotificationHubSender != null)
-                    {
-                        await NotificationHubSender.AddCronOccurrenceAsync(cronTicker.Id, newOccurrence);
-                    }
                 }
             }
 
             // Insert new occurrences if any were created
             if (newOccurrences.Count > 0)
             {
-                await PersistenceProvider
+                var insertedTickers = await PersistenceProvider
                     .InsertCronTickerOccurrences(newOccurrences, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
+
+                if (insertedTickers.Count != 0)
+                {
+                    foreach (var insertedTicker in insertedTickers)
+                    {
+                        var cronTickerOccurrence = newOccurrences.First(x => x.Id == insertedTicker);
+                        var cronTicker = cronTickers.First(x => x.Id == cronTickerOccurrence.CronTickerId);
+
+                        result.Add(new InternalFunctionContext
+                        {
+                            FunctionName = cronTicker.Function,
+                            TickerId = insertedTicker,
+                            Type = TickerType.CronExpression,
+                            Retries = cronTicker.Retries,
+                            RetryIntervals = cronTicker.RetryIntervals
+                        });
+
+                        // Send notification for new occurrence
+                        if (NotificationHubSender != null)
+                        {
+                            await NotificationHubSender.AddCronOccurrenceAsync(cronTicker.Id, cronTickerOccurrence);
+                        }
+                    }
+                }
             }
 
             return result.ToArray();
@@ -296,38 +307,82 @@ namespace TickerQ.Utilities.Managers
                     var schedule = CrontabSchedule.TryParse(vt.Item2);
                     if (schedule == null) return null;
 
-                    // Find the earliest occurrence for this cron ticker, regardless of lock holder
-                    var existingOccurrence = cronTickerOccurrences
+                    // Find the earliest occurrence for this cron ticker
+                    var existingOccurrences = cronTickerOccurrences
                         .Where(x => x.CronTickerId == vt.Item1)
                         .OrderBy(x => x.ExecutionTime)
-                        .FirstOrDefault();
+                        .ToList();
 
-                    DateTime next;
-                    if (existingOccurrence != null)
+                    if (existingOccurrences.Count != 0)
                     {
-                        // If the existing occurrence is in the future and not completed, use it
-                        if (existingOccurrence.ExecutionTime > now && 
-                            !CompletedStatuses.Contains(existingOccurrence.Status))
+                        // First priority: Find idle occurrences that are ready to execute
+                        var idleOccurrence = existingOccurrences
+                            .FirstOrDefault(x => x.Status == TickerStatus.Idle && x.ExecutionTime > now);
+
+                        if (idleOccurrence != null)
                         {
-                            next = existingOccurrence.ExecutionTime;
+                            return new
+                            {
+                                Id = vt.Item1,
+                                Expression = vt.Item2,
+                                Next = idleOccurrence.ExecutionTime
+                            };
                         }
-                        else
+                        
+                        var queuedOnSameLock = existingOccurrences
+                            .Where(x => x.Status == TickerStatus.Queued && x.LockHolder == LockHolder)
+                            .OrderBy(x => x.ExecutionTime)
+                            .FirstOrDefault();
+
+                        if (queuedOnSameLock != null)
                         {
-                            // Calculate next occurrence after the existing one
-                            next = schedule.GetNextOccurrence(existingOccurrence.ExecutionTime);
+                            return new
+                            {
+                                Id = vt.Item1,
+                                Expression = vt.Item2,
+                                Next = queuedOnSameLock.ExecutionTime
+                            };
                         }
-                    }
-                    else
-                    {
-                        // No existing occurrence, calculate from now
-                        next = schedule.GetNextOccurrence(now);
+
+                        // For any non-completed occurrences (including queued/in-progress), 
+                        // calculate next occurrence AFTER the latest one to avoid conflicts
+                        var latestNonCompletedOccurrence = existingOccurrences
+                            .Where(x => !CompletedStatuses.Contains(x.Status))
+                            .OrderByDescending(x => x.ExecutionTime)
+                            .FirstOrDefault();
+
+                        if (latestNonCompletedOccurrence != null)
+                        {
+                            // Get next occurrence after the latest non-completed one
+                            return new
+                            {
+                                Id = vt.Item1,
+                                Expression = vt.Item2,
+                                Next = schedule.GetNextOccurrence(latestNonCompletedOccurrence.ExecutionTime)
+                            };
+                        }
+
+                        // If there are only completed occurrences, find the next occurrence after the latest completed one
+                        var latestCompletedOccurrence = existingOccurrences
+                            .OrderByDescending(x => x.ExecutionTime)
+                            .FirstOrDefault();
+
+                        if (latestCompletedOccurrence != null)
+                        {
+                            return new
+                            {
+                                Id = vt.Item1,
+                                Expression = vt.Item2,
+                                Next = schedule.GetNextOccurrence(latestCompletedOccurrence.ExecutionTime)
+                            };
+                        }
                     }
 
                     return new
                     {
                         Id = vt.Item1,
                         Expression = vt.Item2,
-                        Next = next
+                        Next = schedule.GetNextOccurrence(now)
                     };
                 })
                 .Where(x => x?.Next != null)

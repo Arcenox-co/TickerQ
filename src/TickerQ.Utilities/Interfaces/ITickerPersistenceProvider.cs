@@ -51,7 +51,7 @@ namespace TickerQ.Utilities.Interfaces
         Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurrenceById(Guid id, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByIds(Guid[] ids, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerIds(Guid[] ids, int? takeLimit, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
-        Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder, Guid[] cronTickerIds, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(DateTime nextOccurrence, string lockHolder, Guid[] cronTickerIds, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurrences(string lockHolder, TickerStatus[] tickerStatuses, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetTimedOutCronTickerOccurrences(DateTime now, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetQueuedNextCronOccurrences(Guid tickerId, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
@@ -66,7 +66,7 @@ namespace TickerQ.Utilities.Interfaces
         Task<CronTickerOccurrence<TCronTicker>[]> GetFutureCronTickerOccurrencesByCronTickerId(Guid cronTickerId, DateTime today, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<byte[]> GetCronTickerRequestViaOccurrence(Guid tickerId, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<DateTime> GetEarliestCronTickerOccurrenceById(Guid id, TickerStatus[] tickerStatuses, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
-        Task InsertCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
+        Task<IList<Guid>> InsertCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task UpdateCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task RemoveCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
 

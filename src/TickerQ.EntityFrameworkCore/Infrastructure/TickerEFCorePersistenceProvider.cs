@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
-using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Extensions;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models.Ticker;
@@ -15,7 +14,7 @@ using TickerQ.Utilities.Models.Ticker;
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
     internal class
-        TickerEFCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker> : BasePersistenceProvider<TDbContext>,
+        TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker> : BasePersistenceProvider<TDbContext>,
         ITickerPersistenceProvider<TTimeTicker,
             TCronTicker>
         where TDbContext : DbContext
@@ -24,7 +23,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
     {
         private readonly ITickerClock _clock;
 
-        public TickerEFCorePersistenceProvider(TDbContext dbContext, ITickerClock clock) : base(dbContext)
+        public TickerEfCorePersistenceProvider(TDbContext dbContext, ITickerClock clock) : base(dbContext)
         {
             _clock = clock;
         }
@@ -68,8 +67,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return timeTickers.Select(x => x.ToTimeTicker<TTimeTicker>()).ToArray();
         }
 
-                public async Task<TTimeTicker[]> GetNextTimeTickers(string lockHolder, DateTime roundedMinDate,
-Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
+        public async Task<TTimeTicker[]> GetNextTimeTickers(string lockHolder, DateTime roundedMinDate,
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var optionsValue = options.InvokeProviderOptions();
 
@@ -78,10 +77,10 @@ Action<TickerProviderOptions> options = null, CancellationToken cancellationToke
             return await DbContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
                 var timeTickerContext = GetDbSet<TimeTickerEntity>();
-                
+
                 // Single optimized transaction with bulk processing
                 using var transaction = DbContext.Database.BeginTransaction();
-                
+
                 try
                 {
                     // Fast bulk query and update in one operation
@@ -100,7 +99,7 @@ Action<TickerProviderOptions> options = null, CancellationToken cancellationToke
                     if (!availableTickers.Any())
                     {
                         transaction.Rollback();
-                        return new TTimeTicker[0];
+                        return Array.Empty<TTimeTicker>();
                     }
 
                     // Bulk update all tickers at once (fastest approach)
@@ -130,23 +129,21 @@ Action<TickerProviderOptions> options = null, CancellationToken cancellationToke
                         DetachAll<TimeTickerEntity>();
                         return result;
                     }
-                    else
-                    {
-                        transaction.Rollback();
-                        return new TTimeTicker[0];
-                    }
+
+                    transaction.Rollback();
+                    return Array.Empty<TTimeTicker>();
                 }
                 catch (DbUpdateConcurrencyException)
                 {
                     transaction.Rollback();
                     DetachAll<TimeTickerEntity>();
-                    return new TTimeTicker[0];
+                    return Array.Empty<TTimeTicker>();
                 }
                 catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
                 {
                     transaction.Rollback();
                     DetachAll<TimeTickerEntity>();
-                    return new TTimeTicker[0];
+                    return Array.Empty<TTimeTicker>();
                 }
                 catch
                 {
@@ -155,9 +152,6 @@ Action<TickerProviderOptions> options = null, CancellationToken cancellationToke
                 }
             });
         }
-
-
-
 
 
         public async Task<TTimeTicker[]> GetLockedTimeTickers(string lockHolder, TickerStatus[] tickerStatuses,
@@ -550,74 +544,95 @@ Action<TickerProviderOptions> options = null, CancellationToken cancellationToke
             var cronTickerOccurrences = await query
                 .Where(x => ids.Contains(x.CronTickerId))
                 .Where(x => x.ExecutionTime >= now)
+                .Where(x => x.Status != TickerStatus.Done && x.Status != TickerStatus.DueDone && 
+                           x.Status != TickerStatus.Cancelled && x.Status != TickerStatus.Failed)
                 .OrderBy(x => x.ExecutionTime)
                 .ToListAsync(cancellationToken);
-
-            cronTickerOccurrences = cronTickerOccurrences.DistinctBy(x => x.CronTickerId)
-                .Take(takeLimit ?? 1)
-                .ToList();
 
             return cronTickerOccurrences
                 .Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
         }
 
-        public async Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder,
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(DateTime nextOccurrence,
+            string lockHolder,
             Guid[] cronTickerIds, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
-            var optionsValue = options.InvokeProviderOptions();
-
-            // Use execution strategy to handle retry logic and transaction management
+            // Uses optimistic bulk locking for maximum speed within timeout windows - SAME AS TIMETICKERS
             return await DbContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
+                var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+                // Single optimized transaction with bulk processing
                 using var transaction = DbContext.Database.BeginTransaction();
-                
+
                 try
                 {
-                    var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
-
-                    // First, get the IDs of available occurrences with a simple query
-                    var availableOccurrenceIds = await cronTickerOccurrenceContext
+                    // Allow locking idle occurrences, but prevent same node from re-locking its own queued occurrences
+                    var availableOccurrences = await cronTickerOccurrenceContext
                         .Where(x =>
                             cronTickerIds.Contains(x.CronTickerId) &&
                             ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
-                             (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)))
-                        .Select(x => x.Id)
-                        .ToArrayAsync(cancellationToken)
+                             (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)) &&
+                            x.ExecutionTime == nextOccurrence)
+                        .OrderBy(x => x.ExecutionTime)
+                        .ToListAsync(cancellationToken)
                         .ConfigureAwait(false);
 
-                    if (availableOccurrenceIds.Length == 0)
+                    if (!availableOccurrences.Any())
                     {
+                        transaction.Rollback();
+                        return Array.Empty<CronTickerOccurrence<TCronTicker>>();
+                    }
+
+                    // Bulk update all occurrences at once 
+                    var lockTime = _clock.UtcNow;
+                    var successfulOccurrences = new List<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+                    foreach (var occurrence in availableOccurrences)
+                    {
+                        // Fast in-memory check and update - SIMILAR TO TIMETICKERS  
+                        // Lock idle occurrences or steal queued ones from other nodes, but never re-lock own queued ones
+                        if ((occurrence.LockHolder == null && occurrence.Status == TickerStatus.Idle) ||
+                            (occurrence.LockHolder != lockHolder && occurrence.Status == TickerStatus.Queued))
+                        {
+                            occurrence.Status = TickerStatus.Queued;
+                            occurrence.LockHolder = lockHolder;
+                            occurrence.LockedAt = lockTime;
+                            successfulOccurrences.Add(occurrence);
+                        }
+                    }
+
+                    if (successfulOccurrences.Any())
+                    {
+                        // Single bulk save operation
+                        await DbContext.SaveChangesAsync(cancellationToken);
                         transaction.Commit();
-                        return new CronTickerOccurrence<TCronTicker>[0];
+
+                        var result = successfulOccurrences
+                            .Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>())
+                            .ToArray();
+                        DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                        return result;
                     }
 
-                    // Now fetch the full entities
-                    var occurrenceList = await cronTickerOccurrenceContext
-                        .Where(x => availableOccurrenceIds.Contains(x.Id))
-                        .ToArrayAsync(cancellationToken)
-                        .ConfigureAwait(false);
-
-                    // Immediately update the lock holder to prevent race conditions
-                    foreach (var occurrence in occurrenceList)
-                    {
-                        occurrence.Status = TickerStatus.Queued;
-                        occurrence.LockHolder = lockHolder;
-                        occurrence.LockedAt = _clock.UtcNow;
-                    }
-
-                    // Save changes within the transaction
-                    await DbContext.SaveChangesAsync(cancellationToken);
-                    
-                    // Commit the transaction
-                    transaction.Commit();
-
-                    return occurrenceList
-                        .Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
+                    transaction.Rollback();
+                    return Array.Empty<CronTickerOccurrence<TCronTicker>>();
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    transaction.Rollback();
+                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                    return Array.Empty<CronTickerOccurrence<TCronTicker>>();
+                }
+                catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
+                {
+                    transaction.Rollback();
+                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                    return Array.Empty<CronTickerOccurrence<TCronTicker>>();
                 }
                 catch
                 {
-                    // Rollback on any error
                     transaction.Rollback();
                     throw;
                 }
@@ -923,217 +938,56 @@ Action<TickerProviderOptions> options = null, CancellationToken cancellationToke
             return earliestCronTickerOccurrence;
         }
 
-        public async Task InsertCronTickerOccurrences(
+        public async Task<IList<Guid>> InsertCronTickerOccurrences(
             IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
-            var optionsValue = options.InvokeProviderOptions();
-            
-            // Use execution strategy to handle retry logic and transaction management
+            var listOfSuccessfulIds = new List<Guid>();
+
             await DbContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
-                using var transaction = DbContext.Database.BeginTransaction();
-                
-                try
+                var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+                var entities = cronTickerOccurrences.Select(x =>
+                    x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()).ToList();
+
+                foreach (var entity in entities)
                 {
-                    var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                    
-                    // Convert to entities
-                    var entities = cronTickerOccurrences.Select(x =>
-                        x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()).ToList();
-                    
-                    // Efficiently check for existing occurrences to prevent duplicates
-                    var existingKeys = await GetExistingOccurrenceKeysAsync(cronTickerOccurrences, cancellationToken);
-                    
-                    var newEntities = new List<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                    
-                    foreach (var entity in entities)
+                    using var transaction = DbContext.Database.BeginTransaction();
+
+                    try
                     {
-                        var key = (entity.CronTickerId, entity.ExecutionTime);
-                        if (!existingKeys.Contains(key))
-                        {
-                            newEntities.Add(entity);
-                        }
-                    }
-                    
-                    // Only add and save if there are new entities
-                    if (newEntities.Any())
-                    {
-                        await cronTickerOccurrenceContext.AddRangeAsync(newEntities, cancellationToken);
+                        cronTickerOccurrenceContext.Add(entity);
+
                         await DbContext.SaveChangesAsync(cancellationToken);
+
+                        transaction.Commit();
+
+                        listOfSuccessfulIds.Add(entity.Id);
                     }
-                    
-                    // Commit the transaction
-                    transaction.Commit();
-                    
-                    // Detach entities to prevent memory leaks
-                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                    catch (Exception ex)
+                    {
+                        transaction.Rollback();
+                        DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                    }
                 }
-                catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex, "UQ_CronTickerId_ExecutionTime"))
-                {
-                    // Rollback on constraint violation
-                    transaction.Rollback();
-                    
-                    // Detach all entities to prevent memory leaks
-                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                    
-                    // Log the constraint violation but don't throw - this is expected in multi-node scenarios
-                    // The occurrence already exists, which is fine
-                    return;
-                }
-                catch (DbUpdateConcurrencyException)
-                {
-                    // Handle EF Core concurrency conflicts
-                    transaction.Rollback();
-                    
-                    // Detach all entities to prevent memory leaks
-                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                    
-                    // This is expected in multi-node scenarios where multiple nodes try to insert the same occurrence
-                    return;
-                }
-                catch (Exception ex) when (ex.Message.Contains("concurrency") || ex.Message.Contains("Concurrency") || 
-                                         ex.GetType().Name.Contains("Concurrency") || 
-                                         ex.GetType().Name.Contains("AggregateUpdateConcurrency"))
-                {
-                    // Handle any other concurrency-related exceptions (including PostgreSQL specific ones)
-                    transaction.Rollback();
-                    
-                    // Detach all entities to prevent memory leaks
-                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                    
-                    // This is expected in multi-node scenarios
-                    return;
-                }
-                catch (Exception)
-                {
-                    transaction.Rollback();
-                    throw;
-                }
+
+                // Detach entities to prevent memory leaks
+                DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
             });
+
+            return listOfSuccessfulIds;
         }
 
         public async Task UpdateCronTickerOccurrences(
             IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
-            var optionsValue = options.InvokeProviderOptions();
-            
-            // Use execution strategy to handle retry logic and transaction management
-            await DbContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
-            {
-                using var transaction = await DbContext.Database.BeginTransactionAsync(cancellationToken);
-                
-                try
-                {
-                    var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                    
-                    // Get existing occurrences to check for duplicates
-                    var existingKeys = await GetExistingOccurrenceKeysAsync(cronTickerOccurrences, cancellationToken);
-                    
-                    // Filter out occurrences that don't exist (can't update what doesn't exist)
-                    var validOccurrences = cronTickerOccurrences
-                        .Where(x => existingKeys.Contains((x.CronTickerId, x.ExecutionTime)))
-                        .ToList();
-                    
-                    if (!validOccurrences.Any())
-                    {
-                        // No valid occurrences to update, commit transaction and return
-                        transaction.Commit();
-                        return;
-                    }
-                    
-                    // First, detach any existing tracked entities to prevent conflicts
-                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                    
-                    // Update only valid occurrences using proper EF Core approach
-                    foreach (var occurrence in validOccurrences)
-                    {
-                        // Check if entity is already tracked
-                        var existingEntity = cronTickerOccurrenceContext
-                            .Local
-                            .FirstOrDefault(x => x.Id == occurrence.Id);
-                        
-                        if (existingEntity != null)
-                        {
-                            // Update existing tracked entity
-                            existingEntity.CronTickerId = occurrence.CronTickerId;
-                            existingEntity.ExecutionTime = occurrence.ExecutionTime;
-                            existingEntity.ExecutedAt = occurrence.ExecutedAt;
-                            existingEntity.ElapsedTime = occurrence.ElapsedTime;
-                            existingEntity.Status = occurrence.Status;
-                            existingEntity.Exception = occurrence.Exception;
-                            existingEntity.RetryCount = occurrence.RetryCount;
-                            existingEntity.LockHolder = occurrence.LockHolder;
-                            existingEntity.LockedAt = occurrence.LockedAt;
-                        }
-                        else
-                        {
-                            // Create new entity and attach it
-                            var entity = new CronTickerOccurrenceEntity<CronTickerEntity>
-                            {
-                                Id = occurrence.Id,
-                                CronTickerId = occurrence.CronTickerId,
-                                ExecutionTime = occurrence.ExecutionTime,
-                                ExecutedAt = occurrence.ExecutedAt,
-                                ElapsedTime = occurrence.ElapsedTime,
-                                Status = occurrence.Status,
-                                Exception = occurrence.Exception,
-                                RetryCount = occurrence.RetryCount,
-                                LockHolder = occurrence.LockHolder,
-                                LockedAt = occurrence.LockedAt
-                            };
-                            
-                            cronTickerOccurrenceContext.Attach(entity);
-                            DbContext.Entry(entity).State = EntityState.Modified;
-                        }
-                    }
-                    
-                    await DbContext.SaveChangesAsync(cancellationToken);
-                    transaction.Commit();
-                    
-                    // Detach all entities to prevent memory leaks
-                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                }
-                catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
-                {
-                    // Handle duplicate constraint violations gracefully
-                    // This can happen in multi-node scenarios where multiple nodes try to update the same occurrence
-                    transaction.Rollback();
-                    
-                    // Detach all entities to prevent memory leaks
-                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                    
-                    // This is expected in multi-node scenarios
-                }
-                catch (DbUpdateConcurrencyException)
-                {
-                    // Handle EF Core concurrency conflicts
-                    transaction.Rollback();
-                    
-                    // Detach all entities to prevent memory leaks
-                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                    
-                    // This is expected in multi-node scenarios where multiple nodes try to update the same occurrence
-                }
-                catch (Exception ex) when (ex.Message.Contains("concurrency") || ex.Message.Contains("Concurrency") || 
-                                           ex.GetType().Name.Contains("Concurrency") || 
-                                           ex.GetType().Name.Contains("AggregateUpdateConcurrency"))
-                {
-                    // Handle any other concurrency-related exceptions (including PostgreSQL specific ones)
-                    transaction.Rollback();
-                    
-                    // Detach all entities to prevent memory leaks
-                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                    
-                    // This is expected in multi-node scenarios
-                }
-                catch (Exception)
-                {
-                    transaction.Rollback();
-                    throw;
-                }
-            }).ConfigureAwait(false);
+            var entities = cronTickerOccurrences.Select(x => x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>());
+
+            UpsertRange(entities, x => x.Id);
+
+            await SaveAndDetachAsync<TimeTickerEntity>(cancellationToken).ConfigureAwait(false);
         }
 
         public async Task RemoveCronTickerOccurrences(
@@ -1147,45 +1001,6 @@ Action<TickerProviderOptions> options = null, CancellationToken cancellationToke
 
             await SaveAndDetachAsync<CronTickerOccurrenceEntity<CronTickerEntity>>(cancellationToken)
                 .ConfigureAwait(false);
-        }
-
-        #endregion
-
-        #region Helper Methods
-
-        /// <summary>
-        /// Checks if cron ticker occurrences already exist for the given cron ticker IDs and execution times
-        /// </summary>
-        private async Task<HashSet<(Guid CronTickerId, DateTime ExecutionTime)>> GetExistingOccurrenceKeysAsync(
-            IEnumerable<CronTickerOccurrence<TCronTicker>> occurrences, 
-            CancellationToken cancellationToken)
-        {
-            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
-            
-            var keys = occurrences.Select(x => (x.CronTickerId, x.ExecutionTime)).Distinct().ToList();
-            
-            if (!keys.Any())
-                return new HashSet<(Guid, DateTime)>();
-            
-            // Optimize by using bulk query instead of N individual queries
-            // Extract unique CronTickerIds and ExecutionTimes for efficient filtering
-            var cronTickerIds = keys.Select(x => x.CronTickerId).Distinct().ToList();
-            var executionTimes = keys.Select(x => x.ExecutionTime).Distinct().ToList();
-            
-            // Single query to get all existing occurrences that match any of our keys
-            var existingOccurrences = await cronTickerOccurrenceContext
-                .AsNoTracking()
-                .Where(x => cronTickerIds.Contains(x.CronTickerId) && executionTimes.Contains(x.ExecutionTime))
-                .Select(x => new { x.CronTickerId, x.ExecutionTime })
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false);
-            
-            // Convert to HashSet for O(1) lookup performance
-            var existingKeys = existingOccurrences
-                .Select(x => (x.CronTickerId, x.ExecutionTime))
-                .ToHashSet();
-                
-            return existingKeys;
         }
 
         #endregion

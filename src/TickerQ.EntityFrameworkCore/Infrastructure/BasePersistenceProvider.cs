@@ -38,7 +38,12 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 if (entity is TimeTickerEntity timeTickerEntity)
                 {
                     var lockHolderProp = tracked.Property(nameof(TimeTickerEntity.LockHolder));
+                    lockHolderProp.IsModified = true;
+                }
 
+                if (entity is CronTickerOccurrenceEntity<CronTickerEntity> cronOccurrenceEntity)
+                {
+                    var lockHolderProp = tracked.Property(nameof(CronTickerOccurrenceEntity<CronTickerEntity>.LockHolder));
                     lockHolderProp.IsModified = true;
                 }
 
@@ -46,21 +51,55 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             }
             else
             {
-                var entry = DbContext.Attach(entity);
-                entry.State = state;
-
-                if (entity is TimeTickerEntity timeTickerEntity)
+                try
                 {
-                    var lockHolderProp = entry.Property(nameof(TimeTickerEntity.LockHolder));
+                    var entry = DbContext.Attach(entity);
+                    entry.State = state;
 
-                    if (timeTickerEntity.Status == TickerStatus.Queued || timeTickerEntity.Status == TickerStatus.Idle)
+                    if (entity is TimeTickerEntity timeTickerEntity)
                     {
-                        lockHolderProp.IsModified = true;
-                        lockHolderProp.OriginalValue = null;
+                        var lockHolderProp = entry.Property(nameof(TimeTickerEntity.LockHolder));
+
+                        if (timeTickerEntity.Status == TickerStatus.Queued || timeTickerEntity.Status == TickerStatus.Idle)
+                        {
+                            lockHolderProp.IsModified = true;
+                            lockHolderProp.OriginalValue = null;
+                        }
+                        else
+                        {
+                            lockHolderProp.IsModified = true;
+                        }
+                    }
+
+                    if (entity is CronTickerOccurrenceEntity<CronTickerEntity> cronOccurrenceEntity)
+                    {
+                        var lockHolderProp = entry.Property(nameof(CronTickerOccurrenceEntity<CronTickerEntity>.LockHolder));
+
+                        if (cronOccurrenceEntity.Status == TickerStatus.Queued || cronOccurrenceEntity.Status == TickerStatus.Idle)
+                        {
+                            lockHolderProp.IsModified = true;
+                            lockHolderProp.OriginalValue = null;
+                        }
+                        else
+                        {
+                            lockHolderProp.IsModified = true;
+                        }
+                    }
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("already being tracked"))
+                {
+                    // Entity is already tracked, find it and update instead
+                    var existingEntry = DbContext.ChangeTracker.Entries<TEntity>()
+                        .FirstOrDefault(match);
+                    
+                    if (existingEntry != null)
+                    {
+                        existingEntry.CurrentValues.SetValues(entity);
+                        existingEntry.State = state;
                     }
                     else
                     {
-                        lockHolderProp.IsModified = true;
+                        throw; // Rethrow if we can't find the tracked entity
                     }
                 }
             }
