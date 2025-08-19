@@ -7,6 +7,7 @@ import { ConfirmDialogProps } from '../common/ConfirmDialog.vue'
 import { useDashboardStore } from '../../stores/dashboardStore'
 import { useConnectionStore } from '../../stores/connectionStore'
 import AuthHeader from '../common/AuthHeader.vue'
+import GlobalAlerts from '../common/GlobalAlerts.vue'
 
 const navigationLinks = [
   { icon: 'mdi-view-dashboard', text: 'Dashboard', path: '/' },
@@ -463,26 +464,31 @@ const handleForceUIUpdate = () => {
 
   </v-app>
 
-  <!-- Confirm Dialog - Fixed positioned to avoid teleport issues -->
-  <component
-    v-if="confirmDialog && confirmDialog.isOpen"
-    :is="confirmDialog.Component"
-    :is-open="confirmDialog.isOpen"
-    @close="confirmDialog.close()"
-    :dialog-props="confirmDialog.propData"
-    @confirm="
-      stopTicker.requestAsync().then(() => {
-        confirmDialog.close();
-        // Force next occurrence to show 'Not Scheduled'
-        dashboardStore.forceNotScheduled();
-        stopTicker.loader.value = true;
-        sleep(1000).then(() => {
-          loadInitialData();
-          stopTicker.loader.value = false;
+  <!-- Global Alerts Component -->
+  <GlobalAlerts />
+
+  <!-- Confirm Dialog - Portal to body to avoid layout issues -->
+  <Teleport to="body">
+    <component
+      v-if="confirmDialog && confirmDialog.isOpen"
+      :is="confirmDialog.Component"
+      :is-open="confirmDialog.isOpen"
+      @close="confirmDialog.close()"
+      :dialog-props="confirmDialog.propData"
+      @confirm="
+        stopTicker.requestAsync().then(() => {
+          confirmDialog.close();
+          // Force next occurrence to show 'Not Scheduled'
+          dashboardStore.forceNotScheduled();
+          stopTicker.loader.value = true;
+          sleep(1000).then(() => {
+            loadInitialData();
+            stopTicker.loader.value = false;
+          })
         })
-      })
-    "
-  />
+      "
+    />
+  </Teleport>
 </template>
 
 <style scoped>

@@ -187,7 +187,7 @@ const clearError = () => {
   </span>
 
   <!-- Global Alerts Component -->
-  <GlobalAlerts v-if="authStore.isInitialized" />
+  <GlobalAlerts />
 </template>
 
 <style scoped>
