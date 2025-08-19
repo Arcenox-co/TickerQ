@@ -7,6 +7,7 @@ import {
   GetTimeTickerGraphDataRangeResponse,
   GetTimeTickerGraphDataResponse,
   GetTimeTickerResponse, SetBatchParentRequest,
+  UnbatchTickerRequest,
   UpdateTimeTickerRequest
 } from './types/timeTickerService.types'
 import { nameof } from '@/utilities/nameof';
@@ -18,26 +19,29 @@ const getTimeTickers = () => {
 
     const baseHttp = useBaseHttpService<object, GetTimeTickerResponse>('array')
         .FixToResponseModel(GetTimeTickerResponse, response => {
-            response.status = Status[response.status as any];
-
-            if (response.executedAt != null || response.executedAt != undefined) {
-                // Ensure the datetime is treated as UTC by adding 'Z' if missing
-                const utcExecutedAt = response.executedAt.endsWith('Z') ? response.executedAt : response.executedAt + 'Z';
-                response.executedAt = `${format(utcExecutedAt)} (took ${formatTime(response.elapsedTime as number, true)})`;
+            // Add null check to prevent "Cannot set properties of undefined" error
+            if (!response) {
+                return response;
             }
 
-            const utcExecutionTime = response.executionTime.endsWith('Z') ? response.executionTime : response.executionTime + 'Z';
-            response.executionTimeFormatted = formatDate(utcExecutionTime);
+            // Safely set status with null check
+            if (response.status !== undefined && response.status !== null) {
+                response.status = Status[response.status as any];
+            }
 
-            response.requestType = functionNamesStore.getNamespaceOrNull(response.function) ?? 'N/A';
-            response.description = response.description == '' ? 'N/A' : response.description;
+            if (response.executedAt != null || response.executedAt != undefined)
+                response.executedAt = `${format(response.executedAt)} (took ${formatTime(response.elapsedTime as number, true)})`;
+
+            response.executionTimeFormatted = formatDate(response.executionTime);
+            response.requestType = functionNamesStore.getNamespaceOrNull(response.function) ?? '';
+
 
             if (response.retryIntervals == null || response.retryIntervals.length == 0 && response.retries != null && (response.retries as number) > 0)
                 response.retryIntervals = Array(1).fill(`${30}s`);
             else
                 response.retryIntervals = (response.retryIntervals as string[]).map((x: any) => formatTime(x as number, false));
 
-            response.lockHolder = response.lockHolder ?? 'N/A';
+            response.lockHolder = response.lockHolder ?? '-';
 
             return response;
         })
@@ -148,6 +152,17 @@ const setBatchParent = () => {
   };
 }
 
+const unbatchTicker = () => {
+  const baseHttp = useBaseHttpService<UnbatchTickerRequest, object>('single');
+
+  const requestAsync = async (data: UnbatchTickerRequest) => (await baseHttp.sendAsync("POST", "time-tickers/unbatch", { bodyData: data}));
+
+  return {
+    ...baseHttp,
+    requestAsync
+  };
+}
+
 
 export const timeTickerService = {
     getTimeTickers,
@@ -156,5 +171,6 @@ export const timeTickerService = {
     getTimeTickersGraphData,
     addTimeTicker,
     updateTimeTicker,
-  setBatchParent
+    setBatchParent,
+    unbatchTicker
 };

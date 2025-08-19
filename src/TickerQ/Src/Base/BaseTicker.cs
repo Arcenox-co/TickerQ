@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
@@ -72,7 +73,7 @@ namespace TickerQ.Base
                     CtsTickerTimeoutChecker?.Dispose();
                     using var scope = ServiceProvider.CreateScope();
                     var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
-                    await internalTickerManager.ReleaseOrCancelAllAcquiredResources(false);
+                    await internalTickerManager.ReleaseAllAcquiredResources(ReleaseAcquiredTermination.ToIdle);
                 }
             });
         }

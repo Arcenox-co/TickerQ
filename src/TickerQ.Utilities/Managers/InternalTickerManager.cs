@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -23,7 +24,7 @@ namespace TickerQ.Utilities.Managers
 
         private static readonly HashSet<TickerStatus> SuccessConditions = new HashSet<TickerStatus>()
         {
-            TickerStatus.Done, 
+            TickerStatus.Done,
             TickerStatus.DueDone
         };
 
@@ -62,7 +63,9 @@ namespace TickerQ.Utilities.Managers
                 await RetrieveEligibleTickersAsync(minCronGroup, minTimeTicker ?? default, cancellationToken)
                     .ConfigureAwait(false);
 
-            return (minTimeRemaining, nextTickers);
+            return nextTickers.Length == 0
+                ? (TimeSpan.FromMilliseconds(10), Array.Empty<InternalFunctionContext>())
+                : (minTimeRemaining, nextTickers);
         }
 
         private TimeSpan CalculateMinTimeRemaining(IGrouping<DateTime, (Guid, string)> minCronTicker,
@@ -80,7 +83,7 @@ namespace TickerQ.Utilities.Managers
             return minTimeRemaining;
         }
 
-        private async Task<InternalFunctionContext[]> RetrieveEligibleTickersAsync(
+        private async Task<InternalFunctionContext[]>RetrieveEligibleTickersAsync(
             IGrouping<DateTime, (Guid, string)> minCronTicker, DateTime minTimeTicker,
             CancellationToken cancellationToken = default)
         {
@@ -119,42 +122,54 @@ namespace TickerQ.Utilities.Managers
             var roundedMinDate =
                 new DateTime(minDate.Ticks - minDate.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
 
+            // GetNextTimeTickers now handles locking internally, so we don't need to set tracking
             var timeTickers = await PersistenceProvider
-                .GetNextTimeTickers(LockHolder, roundedMinDate, opt => opt.SetAsTracking(),
+                .GetNextTimeTickers(LockHolder, roundedMinDate, opt => opt.SetAsNoTracking(),
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
-            var lockedAndQueuedTimeTickers = LockAndQueueTimeTickers(timeTickers).ToArray();
-
-            if (lockedAndQueuedTimeTickers.Length > 0)
-                await PersistenceProvider.UpdateTimeTickers(timeTickers, cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
-
-            if (NotificationHubSender != null && lockedAndQueuedTimeTickers.Length > 0)
-                await NotificationHubSender.UpdateTimeTickerNotifyAsync(lockedAndQueuedTimeTickers);
-
-            return lockedAndQueuedTimeTickers;
-
-            IEnumerable<InternalFunctionContext> LockAndQueueTimeTickers(TTimeTicker[] scopeTimeTickers)
+            // Convert to InternalFunctionContext directly since entities are already locked and updated
+            var lockedAndQueuedTimeTickers = timeTickers.Select(ticker => new InternalFunctionContext()
             {
-                var now = Clock.UtcNow;
+                FunctionName = ticker.Function,
+                TickerId = ticker.Id,
+                Type = TickerType.Timer,
+                Retries = ticker.Retries,
+                RetryIntervals = ticker.RetryIntervals
+            }).ToArray();
 
-                foreach (var timeTicker in scopeTimeTickers)
+            // Send notifications if we have tickers
+            if (NotificationHubSender != null && lockedAndQueuedTimeTickers.Length > 0)
+            {
+                // Send notification for each ticker individually
+                foreach (var ticker in timeTickers)
                 {
-                    timeTicker.Status = TickerStatus.Queued;
-                    timeTicker.LockHolder = LockHolder;
-                    timeTicker.LockedAt = now;
-
-                    yield return new InternalFunctionContext()
+                    var timeTickerDto = new TimeTickerDto
                     {
-                        FunctionName = timeTicker.Function,
-                        TickerId = timeTicker.Id,
-                        Type = TickerType.Timer,
-                        Retries = timeTicker.Retries,
-                        RetryIntervals = timeTicker.RetryIntervals
+                        Id = ticker.Id,
+                        Function = ticker.Function,
+                        ExecutionTime = ticker.ExecutionTime,
+                        Status = ticker.Status,
+                        Exception = ticker.Exception,
+                        ElapsedTime = ticker.ElapsedTime,
+                        CreatedAt = ticker.CreatedAt,
+                        UpdatedAt = ticker.UpdatedAt,
+                        LockedAt = ticker.LockedAt,
+                        LockHolder = ticker.LockHolder,
+                        Description = ticker.Description,
+                        Retries = ticker.Retries,
+                        RetryIntervals = ticker.RetryIntervals,
+                        ExecutedAt = ticker.ExecutedAt,
+                        RetryCount = ticker.RetryCount,
+                        BatchRunCondition = ticker.BatchRunCondition,
+                        BatchParent = ticker.BatchParent
                     };
+
+                    await NotificationHubSender.UpdateTimeTickerNotifyAsync(timeTickerDto);
                 }
             }
+
+            return lockedAndQueuedTimeTickers;
         }
 
         private async Task<InternalFunctionContext[]> RetrieveNextCronTickersAsync((Guid, string)[] vt,
@@ -169,44 +184,50 @@ namespace TickerQ.Utilities.Managers
                 .GetCronTickersByIds(cronTickerIdSet, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
+            // GetNextCronTickerOccurrences now handles locking internally, so we don't need to set tracking
             var occurrenceList = await PersistenceProvider
-                .GetNextCronTickerOccurrences(LockHolder, cronTickerIdSet, opt => opt.SetAsTracking(),
+                .GetNextCronTickerOccurrences(nextOccurrence, LockHolder, cronTickerIdSet, opt => opt.SetAsNoTracking(),
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             var result = new List<InternalFunctionContext>();
-
             var newOccurrences = new List<CronTickerOccurrence<TCronTicker>>();
-            var adjustedOccurrences = new List<CronTickerOccurrence<TCronTicker>>();
 
-            foreach (var cronTicker in cronTickers)
+            // Process existing occurrences that were locked
+            foreach (var occurrence in occurrenceList)
             {
-                var existing = occurrenceList.FirstOrDefault(x =>
-                    x.CronTickerId == cronTicker.Id &&
-                    x.ExecutionTime == nextOccurrence);
-
-                if (existing != null)
+                var cronTicker = cronTickers.FirstOrDefault(x => x.Id == occurrence.CronTickerId);
+                if (cronTicker != null)
                 {
-                    existing.Status = TickerStatus.Queued;
-                    existing.LockHolder = LockHolder;
-                    existing.LockedAt = now;
-
-                    adjustedOccurrences.Add(existing);
-
                     result.Add(new InternalFunctionContext
                     {
                         FunctionName = cronTicker.Function,
-                        TickerId = existing.Id,
+                        TickerId = occurrence.Id,
                         Type = TickerType.CronExpression,
                         Retries = cronTicker.Retries,
                         RetryIntervals = cronTicker.RetryIntervals
                     });
 
+                    // Send notifications if we have a notification hub
                     if (NotificationHubSender != null)
-                        await NotificationHubSender.UpdateCronOccurrenceAsync(cronTicker.Id, existing);
+                    {
+                        await NotificationHubSender.UpdateCronOccurrenceAsync(cronTicker.Id, occurrence);
+                    }
                 }
-                else
+            }
+
+            // Check if we need to create new occurrences for cron tickers that don't have any
+            foreach (var (cronTickerId, _) in vt)
+            {
+                var cronTicker = cronTickers.FirstOrDefault(x => x.Id == cronTickerId);
+                if (cronTicker == null) continue;
+
+                // Check if we already have an occurrence for this cron ticker
+                var hasExistingOccurrence = occurrenceList.Any(x => x.CronTickerId == cronTickerId && x.ExecutionTime == nextOccurrence);
+
+                if (!hasExistingOccurrence)
                 {
+                    // Create a new occurrence for the next execution time
                     var newOccurrence = new CronTickerOccurrence<TCronTicker>
                     {
                         Id = Guid.NewGuid(),
@@ -214,34 +235,44 @@ namespace TickerQ.Utilities.Managers
                         ExecutionTime = nextOccurrence,
                         LockedAt = now,
                         LockHolder = LockHolder,
-                        CronTickerId = cronTicker.Id
+                        CronTickerId = cronTickerId
                     };
 
                     newOccurrences.Add(newOccurrence);
-
-                    result.Add(new InternalFunctionContext
-                    {
-                        FunctionName = cronTicker.Function,
-                        TickerId = newOccurrence.Id,
-                        Type = TickerType.CronExpression,
-                        Retries = cronTicker.Retries,
-                        RetryIntervals = cronTicker.RetryIntervals
-                    });
-
-                    if (NotificationHubSender != null)
-                        await NotificationHubSender.AddCronOccurrenceAsync(cronTicker.Id, newOccurrence);
                 }
             }
 
-            if (adjustedOccurrences.Count > 0)
-                await PersistenceProvider
-                    .UpdateCronTickerOccurrences(adjustedOccurrences, cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
-
+            // Insert new occurrences if any were created
             if (newOccurrences.Count > 0)
-                await PersistenceProvider
+            {
+                var insertedTickers = await PersistenceProvider
                     .InsertCronTickerOccurrences(newOccurrences, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
+
+                if (insertedTickers.Count != 0)
+                {
+                    foreach (var insertedTicker in insertedTickers)
+                    {
+                        var cronTickerOccurrence = newOccurrences.First(x => x.Id == insertedTicker);
+                        var cronTicker = cronTickers.First(x => x.Id == cronTickerOccurrence.CronTickerId);
+
+                        result.Add(new InternalFunctionContext
+                        {
+                            FunctionName = cronTicker.Function,
+                            TickerId = insertedTicker,
+                            Type = TickerType.CronExpression,
+                            Retries = cronTicker.Retries,
+                            RetryIntervals = cronTicker.RetryIntervals
+                        });
+
+                        // Send notification for new occurrence
+                        if (NotificationHubSender != null)
+                        {
+                            await NotificationHubSender.AddCronOccurrenceAsync(cronTicker.Id, cronTickerOccurrence);
+                        }
+                    }
+                }
+            }
 
             return result.ToArray();
         }
@@ -276,26 +307,82 @@ namespace TickerQ.Utilities.Managers
                     var schedule = CrontabSchedule.TryParse(vt.Item2);
                     if (schedule == null) return null;
 
-                    var existingOccurrence = cronTickerOccurrences
-                        .FirstOrDefault(x => x.CronTickerId == vt.Item1 && x.LockHolder != LockHolder);
+                    // Find the earliest occurrence for this cron ticker
+                    var existingOccurrences = cronTickerOccurrences
+                        .Where(x => x.CronTickerId == vt.Item1)
+                        .OrderBy(x => x.ExecutionTime)
+                        .ToList();
 
-                    DateTime next;
-                    if (existingOccurrence != null)
+                    if (existingOccurrences.Count != 0)
                     {
-                        next = existingOccurrence.LockHolder == null 
-                            ? existingOccurrence.ExecutionTime 
-                            : schedule.GetNextOccurrence(existingOccurrence.ExecutionTime);
-                    }
-                    else
-                    {
-                        next = schedule.GetNextOccurrence(now);
+                        // First priority: Find idle occurrences that are ready to execute
+                        var idleOccurrence = existingOccurrences
+                            .FirstOrDefault(x => x.Status == TickerStatus.Idle && x.ExecutionTime > now);
+
+                        if (idleOccurrence != null)
+                        {
+                            return new
+                            {
+                                Id = vt.Item1,
+                                Expression = vt.Item2,
+                                Next = idleOccurrence.ExecutionTime
+                            };
+                        }
+                        
+                        var queuedOnSameLock = existingOccurrences
+                            .Where(x => x.Status == TickerStatus.Queued && x.LockHolder == LockHolder)
+                            .OrderBy(x => x.ExecutionTime)
+                            .FirstOrDefault();
+
+                        if (queuedOnSameLock != null)
+                        {
+                            return new
+                            {
+                                Id = vt.Item1,
+                                Expression = vt.Item2,
+                                Next = queuedOnSameLock.ExecutionTime
+                            };
+                        }
+
+                        // For any non-completed occurrences (including queued/in-progress), 
+                        // calculate next occurrence AFTER the latest one to avoid conflicts
+                        var latestNonCompletedOccurrence = existingOccurrences
+                            .Where(x => !CompletedStatuses.Contains(x.Status))
+                            .OrderByDescending(x => x.ExecutionTime)
+                            .FirstOrDefault();
+
+                        if (latestNonCompletedOccurrence != null)
+                        {
+                            // Get next occurrence after the latest non-completed one
+                            return new
+                            {
+                                Id = vt.Item1,
+                                Expression = vt.Item2,
+                                Next = schedule.GetNextOccurrence(latestNonCompletedOccurrence.ExecutionTime)
+                            };
+                        }
+
+                        // If there are only completed occurrences, find the next occurrence after the latest completed one
+                        var latestCompletedOccurrence = existingOccurrences
+                            .OrderByDescending(x => x.ExecutionTime)
+                            .FirstOrDefault();
+
+                        if (latestCompletedOccurrence != null)
+                        {
+                            return new
+                            {
+                                Id = vt.Item1,
+                                Expression = vt.Item2,
+                                Next = schedule.GetNextOccurrence(latestCompletedOccurrence.ExecutionTime)
+                            };
+                        }
                     }
 
                     return new
                     {
                         Id = vt.Item1,
                         Expression = vt.Item2,
-                        Next = next
+                        Next = schedule.GetNextOccurrence(now)
                     };
                 })
                 .Where(x => x?.Next != null)
@@ -335,7 +422,7 @@ namespace TickerQ.Utilities.Managers
         }
 
 
-        public async Task ReleaseOrCancelAllAcquiredResources(bool terminateExpiredTickers,
+        public async Task ReleaseAllAcquiredResources(ReleaseAcquiredTermination termination,
             CancellationToken cancellationToken = default)
         {
             var timeTickers = await PersistenceProvider
@@ -346,7 +433,7 @@ namespace TickerQ.Utilities.Managers
             foreach (var timeTicker in timeTickers)
             {
                 if (timeTicker.Status == TickerStatus.Inprogress ||
-                    terminateExpiredTickers && DateTime.Compare(timeTicker.ExecutionTime, Clock.UtcNow) == 0)
+                    termination == ReleaseAcquiredTermination.CancelExpired && DateTime.Compare(timeTicker.ExecutionTime, Clock.UtcNow) == 0)
                 {
                     timeTicker.Status = TickerStatus.Cancelled;
                     timeTicker.LockedAt = Clock.UtcNow;
@@ -365,12 +452,13 @@ namespace TickerQ.Utilities.Managers
 
             var cronTickerOccurrences = await PersistenceProvider
                 .GetLockedCronTickerOccurrences(LockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress },
+                    opt => opt.SetAsTracking(),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
 
             foreach (var cronTickerOccurrence in cronTickerOccurrences)
             {
                 if (cronTickerOccurrence.Status == TickerStatus.Inprogress ||
-                    terminateExpiredTickers && DateTime.Compare(cronTickerOccurrence.ExecutionTime, Clock.UtcNow) > 0)
+                    termination == ReleaseAcquiredTermination.CancelExpired && DateTime.Compare(cronTickerOccurrence.ExecutionTime, Clock.UtcNow) > 0)
                 {
                     cronTickerOccurrence.Status = TickerStatus.Cancelled;
                     cronTickerOccurrence.LockedAt = Clock.UtcNow;

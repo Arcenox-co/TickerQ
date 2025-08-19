@@ -272,11 +272,12 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(cronTickerOccurrenceEnumerable.ToArray());
         }
 
-        public Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder,
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(DateTime nextOccurrence, string lockHolder,
             Guid[] cronTickerIds, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             var result = CronOccurrences.Values
                 .Where(x =>
+                    x.ExecutionTime >= nextOccurrence &&
                     cronTickerIds.Contains(x.CronTickerId) &&
                     ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
                      (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)))
@@ -438,13 +439,18 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(earliestCronTickerOccurrence);
         }
 
-        public Task InsertCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
+        public Task<IList<Guid>> InsertCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
+            IList<Guid> ids = new List<Guid>();
+            
             foreach (var o in cronTickerOccurrences)
+            {
                 CronOccurrences.TryAdd(o.Id, o);
+                ids.Add(o.Id);
+            }
 
-            return Task.CompletedTask;
+            return Task.FromResult(ids);
         }
 
         public Task RemoveCronTickerOccurrences(IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,

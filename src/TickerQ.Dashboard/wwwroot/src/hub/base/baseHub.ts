@@ -1,24 +1,50 @@
-import { useAuthStore } from "@/stores/authStore";
 import * as signalR from "@microsoft/signalr";
-
-const authStore = useAuthStore();
-
-const baseTag = document.querySelector<HTMLBaseElement>('base');
-
+import { getBasePath, getBackendUrl } from '@/utilities/pathResolver';
 
 class BaseHub {
-    protected connection: signalR.HubConnection;
+    public connection: signalR.HubConnection;
 
     constructor() {
-        const basePath = import.meta.env.PROD
-            ? baseTag?.href
-            : 'http://localhost:5079/tickerq-dashboard';
+        this.connection = this.createConnection();
+    }
 
-        this.connection = new signalR.HubConnectionBuilder()
-            .withUrl(`${basePath}/ticker-notification-hub?auth=${encodeURIComponent(authStore.auth)}`)
+    private createConnection(): signalR.HubConnection {
+
+        const basePath = getBasePath();
+        const backendUrl = getBackendUrl();
+
+        // Get auth token lazily when building the connection
+        const getAuthToken = () => {
+            try {
+                // Access localStorage directly instead of using the store during initialization
+                return localStorage.getItem('auth') || 'ZHVtbXk6ZHVtbXk=';
+            } catch (error) {
+                // Could not access auth token, using default
+                return 'ZHVtbXk6ZHVtbXk=';
+            }
+        };
+
+        // Use backend domain for WebSocket if configured, otherwise use base path
+        let hubUrl: string;
+        if (backendUrl) {
+            hubUrl = `${backendUrl}/ticker-notification-hub?auth=${encodeURIComponent(getAuthToken())}`;
+        } else {
+            hubUrl = `${basePath}/ticker-notification-hub?auth=${encodeURIComponent(getAuthToken())}`;
+        }
+
+        return new signalR.HubConnectionBuilder()
+            .withUrl(hubUrl)
             .withAutomaticReconnect()
             .configureLogging(signalR.LogLevel.Information)
             .build();
+    }
+
+    // Method to rebuild connection with new auth token
+    public rebuildConnection(): void {
+        if (this.connection.state === signalR.HubConnectionState.Connected) {
+            this.connection.stop();
+        }
+        this.connection = this.createConnection();
     }
 
     // Send a message to the server
@@ -27,32 +53,36 @@ class BaseHub {
             try {
                 await this.connection.invoke(methodName);
             } catch (err) {
-                console.error("Error sending message: ", err);
+                // Error sending message
             }
         } else {
-            console.warn("Cannot send message: SignalR connection is not active.");
+            // Cannot send message: SignalR connection is not active.
         }
     }
 
     // Start Connection
     async startConnectionAsync(): Promise<void> {
-        if (this.connection.state == signalR.HubConnectionState.Connected)
+        if (this.connection.state === signalR.HubConnectionState.Connected) {
             return;
+        }
+        
+        if (this.connection.state === signalR.HubConnectionState.Connecting) {
+            return;
+        }
+        
         try {
             await this.connection.start();
-            console.log("Connected to SignalR");
         } catch (err) {
-            console.error("SignalR Connection Error: ", err);
-            setTimeout(() => this.startConnectionAsync(), 5000);
+            // SignalR Connection Error
+            throw err;
         }
     }
 
     async stopConnectionAsync(): Promise<void> {
         try {
             await this.connection.stop();
-            console.log("Disconnected from SignalR");
         } catch (err) {
-            console.error("Error stopping SignalR connection: ", err);
+            // Error stopping SignalR connection
         }
     }
 

@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
-using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Extensions;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models.Ticker;
@@ -15,7 +14,7 @@ using TickerQ.Utilities.Models.Ticker;
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
     internal class
-        TickerEFCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker> : BasePersistenceProvider<TDbContext>,
+        TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker> : BasePersistenceProvider<TDbContext>,
         ITickerPersistenceProvider<TTimeTicker,
             TCronTicker>
         where TDbContext : DbContext
@@ -24,7 +23,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
     {
         private readonly ITickerClock _clock;
 
-        public TickerEFCorePersistenceProvider(TDbContext dbContext, ITickerClock clock) : base(dbContext)
+        public TickerEfCorePersistenceProvider(TDbContext dbContext, ITickerClock clock) : base(dbContext)
         {
             _clock = clock;
         }
@@ -73,24 +72,86 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             var optionsValue = options.InvokeProviderOptions();
 
-            var timeTickerContext = GetDbSet<TimeTickerEntity>();
+            // Uses optimistic bulk locking for maximum speed within timeout windows
+            return await DbContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                var timeTickerContext = GetDbSet<TimeTickerEntity>();
 
-            var query = optionsValue.Tracking
-                ? timeTickerContext
-                : timeTickerContext.AsNoTracking();
+                // Single optimized transaction with bulk processing
+                using var transaction = DbContext.Database.BeginTransaction();
 
-            var timeTickers = await query
-                .Include(x => x.ParentJob)
-                .Where(x =>
-                    ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
-                     (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)) &&
-                    x.ExecutionTime >= roundedMinDate &&
-                    x.ExecutionTime < roundedMinDate.AddSeconds(1))
-                .ToArrayAsync(cancellationToken)
-                .ConfigureAwait(false);
+                try
+                {
+                    // Fast bulk query and update in one operation
+                    var availableTickers = await timeTickerContext
+                        .Where(x =>
+                            ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
+                             (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)) &&
+                            x.ExecutionTime >= roundedMinDate.AddSeconds(-2) &&
+                            x.ExecutionTime < roundedMinDate.AddSeconds(1))
+                        .OrderBy(x => x.ExecutionTime)
+                        .Take(100)
+                        .Include(x => x.ParentJob)
+                        .ToListAsync(cancellationToken)
+                        .ConfigureAwait(false);
 
-            return timeTickers.Select(x => x.ToTimeTicker<TTimeTicker>()).ToArray();
+                    if (!availableTickers.Any())
+                    {
+                        transaction.Rollback();
+                        return Array.Empty<TTimeTicker>();
+                    }
+
+                    // Bulk update all tickers at once (fastest approach)
+                    var lockTime = _clock.UtcNow;
+                    var successfulTickers = new List<TimeTickerEntity>();
+
+                    foreach (var ticker in availableTickers)
+                    {
+                        // Fast in-memory check and update
+                        if ((ticker.LockHolder == null && ticker.Status == TickerStatus.Idle) ||
+                            (ticker.LockHolder == lockHolder && ticker.Status == TickerStatus.Queued))
+                        {
+                            ticker.Status = TickerStatus.Queued;
+                            ticker.LockHolder = lockHolder;
+                            ticker.LockedAt = lockTime;
+                            successfulTickers.Add(ticker);
+                        }
+                    }
+
+                    if (successfulTickers.Any())
+                    {
+                        // Single bulk save operation
+                        await DbContext.SaveChangesAsync(cancellationToken);
+                        transaction.Commit();
+
+                        var result = successfulTickers.Select(x => x.ToTimeTicker<TTimeTicker>()).ToArray();
+                        DetachAll<TimeTickerEntity>();
+                        return result;
+                    }
+
+                    transaction.Rollback();
+                    return Array.Empty<TTimeTicker>();
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    transaction.Rollback();
+                    DetachAll<TimeTickerEntity>();
+                    return Array.Empty<TTimeTicker>();
+                }
+                catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
+                {
+                    transaction.Rollback();
+                    DetachAll<TimeTickerEntity>();
+                    return Array.Empty<TTimeTicker>();
+                }
+                catch
+                {
+                    transaction.Rollback();
+                    throw;
+                }
+            });
         }
+
 
         public async Task<TTimeTicker[]> GetLockedTimeTickers(string lockHolder, TickerStatus[] tickerStatuses,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
@@ -265,7 +326,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var next = await query
                 .Where(x => x.LockHolder == null
                             && tickerStatuses.Contains(x.Status)
-                            && x.ExecutionTime > now)
+                            && x.ExecutionTime >= now)
                 .OrderBy(x => x.ExecutionTime)
                 .Select(x => x.ExecutionTime)
                 .FirstOrDefaultAsync(cancellationToken)
@@ -482,38 +543,99 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var cronTickerOccurrences = await query
                 .Where(x => ids.Contains(x.CronTickerId))
                 .Where(x => x.ExecutionTime >= now)
+                .Where(x => x.Status != TickerStatus.Done && x.Status != TickerStatus.DueDone && 
+                           x.Status != TickerStatus.Cancelled && x.Status != TickerStatus.Failed)
                 .OrderBy(x => x.ExecutionTime)
                 .ToListAsync(cancellationToken);
-
-            cronTickerOccurrences = cronTickerOccurrences.DistinctBy(x => x.CronTickerId)
-                .Take(takeLimit ?? 1)
-                .ToList();
 
             return cronTickerOccurrences
                 .Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
         }
 
-        public async Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(string lockHolder,
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(DateTime nextOccurrence,
+            string lockHolder,
             Guid[] cronTickerIds, Action<TickerProviderOptions> options = null,
             CancellationToken cancellationToken = default)
         {
-            var optionsValue = options.InvokeProviderOptions();
+            // Uses optimistic bulk locking for maximum speed within timeout windows - SAME AS TIMETICKERS
+            return await DbContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
-            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                // Single optimized transaction with bulk processing
+                using var transaction = DbContext.Database.BeginTransaction();
 
-            var query = optionsValue.Tracking
-                ? cronTickerOccurrenceContext
-                : cronTickerOccurrenceContext.AsNoTracking();
+                try
+                {
+                    // Allow locking idle occurrences, but prevent same node from re-locking its own queued occurrences
+                    var availableOccurrences = await cronTickerOccurrenceContext
+                        .Where(x =>
+                            cronTickerIds.Contains(x.CronTickerId) &&
+                            ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
+                             (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)) &&
+                            x.ExecutionTime == nextOccurrence)
+                        .OrderBy(x => x.ExecutionTime)
+                        .ToListAsync(cancellationToken)
+                        .ConfigureAwait(false);
 
-            var occurrenceList = await query
-                .Where(x =>
-                    cronTickerIds.Contains(x.CronTickerId) &&
-                    ((x.LockHolder == null && x.Status == TickerStatus.Idle) ||
-                     (x.LockHolder == lockHolder && x.Status == TickerStatus.Queued)))
-                .ToListAsync(cancellationToken);
+                    if (!availableOccurrences.Any())
+                    {
+                        transaction.Rollback();
+                        return Array.Empty<CronTickerOccurrence<TCronTicker>>();
+                    }
 
-            return occurrenceList
-                .Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
+                    // Bulk update all occurrences at once 
+                    var lockTime = _clock.UtcNow;
+                    var successfulOccurrences = new List<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+                    foreach (var occurrence in availableOccurrences)
+                    {
+                        // Fast in-memory check and update - SIMILAR TO TIMETICKERS  
+                        // Lock idle occurrences or steal queued ones from other nodes, but never re-lock own queued ones
+                        if ((occurrence.LockHolder == null && occurrence.Status == TickerStatus.Idle) ||
+                            (occurrence.LockHolder != lockHolder && occurrence.Status == TickerStatus.Queued))
+                        {
+                            occurrence.Status = TickerStatus.Queued;
+                            occurrence.LockHolder = lockHolder;
+                            occurrence.LockedAt = lockTime;
+                            successfulOccurrences.Add(occurrence);
+                        }
+                    }
+
+                    if (successfulOccurrences.Any())
+                    {
+                        // Single bulk save operation
+                        await DbContext.SaveChangesAsync(cancellationToken);
+                        transaction.Commit();
+
+                        var result = successfulOccurrences
+                            .Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>())
+                            .ToArray();
+                        DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                        return result;
+                    }
+
+                    transaction.Rollback();
+                    return Array.Empty<CronTickerOccurrence<TCronTicker>>();
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    transaction.Rollback();
+                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                    return Array.Empty<CronTickerOccurrence<TCronTicker>>();
+                }
+                catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
+                {
+                    transaction.Rollback();
+                    DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                    return Array.Empty<CronTickerOccurrence<TCronTicker>>();
+                }
+                catch
+                {
+                    transaction.Rollback();
+                    throw;
+                }
+            });
         }
 
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurrences(string lockHolder,
@@ -815,47 +937,56 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return earliestCronTickerOccurrence;
         }
 
-        public async Task InsertCronTickerOccurrences(
+        public async Task<IList<Guid>> InsertCronTickerOccurrences(
             IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
-            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
-            await cronTickerOccurrenceContext.AddRangeAsync(
-                cronTickerOccurrences.Select(x =>
-                    x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()),
-                cancellationToken);
+            var listOfSuccessfulIds = new List<Guid>();
 
-            try
+            await DbContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
-                await SaveAndDetachAsync<CronTickerOccurrenceEntity<CronTickerEntity>>(cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex, "UQ_CronTickerId_ExecutionTime"))
-            {
+                var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+                var entities = cronTickerOccurrences.Select(x =>
+                    x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>()).ToList();
+
+                foreach (var entity in entities)
+                {
+                    using var transaction = DbContext.Database.BeginTransaction();
+
+                    try
+                    {
+                        cronTickerOccurrenceContext.Add(entity);
+
+                        await DbContext.SaveChangesAsync(cancellationToken);
+
+                        transaction.Commit();
+
+                        listOfSuccessfulIds.Add(entity.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        transaction.Rollback();
+                        DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                    }
+                }
+
+                // Detach entities to prevent memory leaks
                 DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                throw new CronOccurrenceAlreadyExistsException();
-            }
+            });
+
+            return listOfSuccessfulIds;
         }
 
         public async Task UpdateCronTickerOccurrences(
             IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
-            var entities = cronTickerOccurrences.Select(x =>
-                x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>());
-            try
-            {
-                UpsertRange(entities, x => x.Id);
+            var entities = cronTickerOccurrences.Select(x => x.ToCronTickerOccurrenceEntity<TCronTicker, CronTickerOccurrence<TCronTicker>>());
 
-                await SaveAndDetachAsync<CronTickerOccurrenceEntity<CronTickerEntity>>(cancellationToken)
-                    .ConfigureAwait(false);
-                ;
-            }
-            catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex, "UQ_CronTickerId_ExecutionTime"))
-            {
-                DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
-                throw new CronOccurrenceAlreadyExistsException();
-            }
+            UpsertRange(entities, x => x.Id);
+
+            await SaveAndDetachAsync<TimeTickerEntity>(cancellationToken).ConfigureAwait(false);
         }
 
         public async Task RemoveCronTickerOccurrences(
@@ -869,7 +1000,6 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
             await SaveAndDetachAsync<CronTickerOccurrenceEntity<CronTickerEntity>>(cancellationToken)
                 .ConfigureAwait(false);
-            ;
         }
 
         #endregion

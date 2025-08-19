@@ -3,11 +3,11 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
-using System.Text.Json;
 using System.Threading;
 using TickerQ.Dashboard.Controllers.Attributes;
 using TickerQ.Dashboard.Requests;
 using TickerQ.Utilities;
+using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 
@@ -70,6 +70,14 @@ namespace TickerQ.Dashboard.Controllers
         {
             await TickerDashboardRepository.SetTimeTickerBatchParent(request.TargetId, request.ParentId,
                 request.BatchRunCondition);
+            
+            return Ok();
+        }
+
+        [HttpPost("time-tickers/unbatch")]
+        public async Task<IActionResult> UnbatchTimeTicker([FromBody] UnbatchTickerRequest request, CancellationToken cancellationToken)
+        {
+            await TickerDashboardRepository.UnbatchTimeTickerAsync(request.TickerId);
             
             return Ok();
         }
@@ -162,41 +170,37 @@ namespace TickerQ.Dashboard.Controllers
                 FunctionName = x.Item1,
                 FunctionRequestNamespace = x.Item2.Item1,
                 FunctionRequestType = x.Item2.Item2,
-                Priority = x.Item2.Item3,
+                Priority = (int)x.Item2.Item3,
             });
 
             return Ok(result);
         }
 
         [HttpPut("time-ticker/:update")]
-        public async Task<IActionResult> UpdateTimeTickerAsync([FromQuery] Guid id, [FromBody] JsonElement json)
+        public async Task<IActionResult> UpdateTimeTickerAsync([FromQuery] Guid id, [FromBody] UpdateTimeTickerRequest request)
         {
-            var jsonString = json.GetRawText();
-            await TickerDashboardRepository.UpdateTimeTickerAsync(id, jsonString);
+            await TickerDashboardRepository.UpdateTimeTickerAsync(id, request);
             return Ok();
         }
 
         [HttpPost("time-ticker/:add")]
-        public async Task<IActionResult> UpdateTimeTickerAsync([FromBody] JsonElement json)
+        public async Task<IActionResult> AddTimeTickerAsync([FromBody] AddTimeTickerRequest request)
         {
-            var jsonString = json.GetRawText();
-            await TickerDashboardRepository.AddTimeTickerAsync(jsonString);
+            await TickerDashboardRepository.AddTimeTickerAsync(request);
             return Ok();
         }
 
         [HttpPost("cron-ticker/:add")]
-        public async Task<IActionResult> AddCronTickerAsync([FromBody] JsonElement json)
+        public async Task<IActionResult> AddCronTickerAsync([FromBody] AddCronTickerRequest request)
         {
-            var jsonString = json.GetRawText();
-            await TickerDashboardRepository.AddCronTickerAsync(jsonString);
+            await TickerDashboardRepository.AddCronTickerAsync(request);
             return Ok();
         }
 
         [HttpPut("cron-ticker/:update")]
-        public async Task<IActionResult> UpdateCronTickerAsync([FromQuery] Guid id, [FromBody] JsonElement json)
+        public async Task<IActionResult> UpdateCronTickerAsync([FromQuery] Guid id, [FromBody] UpdateCronTickerRequest request)
         {
-            var jsonString = json.GetRawText();
-            await TickerDashboardRepository.UpdateCronTickerAsync(id, jsonString);
+            await TickerDashboardRepository.UpdateCronTickerAsync(id, request);
             return Ok();
         }
         

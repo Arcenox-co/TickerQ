@@ -1,6 +1,6 @@
 #if !NETCOREAPP3_1_OR_GREATER
-
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -8,57 +8,66 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using TickerQ.Dashboard.Controllers;
 using TickerQ.Dashboard.Hubs;
+using System.Text.Json;
 
 namespace TickerQ.Dashboard.DependencyInjection
 {
     internal static class NetTargetV31Lower
     {
-        internal static void AddDashboardService(IServiceCollection services)
+        internal static void AddDashboardService(IServiceCollection services, DashboardConfiguration config)
         {
             services.AddSignalR();
+            
             services.AddCors(options =>
             {
                 options.AddPolicy("Allow_TickerQ_Dashboard", policy =>
                 {
-                    policy.SetIsOriginAllowed(x => true)
-                        .AllowAnyHeader()
+                    if (config.CorsOrigins.Contains("*"))
+                    {
+                        policy.SetIsOriginAllowed(x => true);
+                    }
+                    else
+                    {
+                        policy.WithOrigins(config.CorsOrigins);
+                    }
+                    
+                    policy.AllowAnyHeader()
                         .AllowAnyMethod()
                         .AllowCredentials();
                 });
             });
+            
             services.AddMvc(opt => opt.EnableEndpointRouting = false)
                 .AddApplicationPart(typeof(TickerQController).Assembly);
         }
-        
-        internal static void UseDashboard(IApplicationBuilder app, string basePath)
+
+        internal static void UseDashboard(IApplicationBuilder app, string basePath, DashboardConfiguration config)
         {
+            // Get the assembly and set up the embedded file provider
             var assembly = Assembly.GetExecutingAssembly();
             var embeddedFileProvider = new EmbeddedFileProvider(assembly, "TickerQ.Dashboard.wwwroot.dist");
 
-            // Normalize the base path to ensure it starts with "/"
-            if (string.IsNullOrEmpty(basePath))
-                basePath = "/";
-            if (!string.IsNullOrEmpty(basePath) && !basePath.StartsWith("/"))
-                basePath = "/" + basePath;
+            // Validate and normalize base path
+            basePath = NormalizeBasePath(basePath);
 
-            basePath = basePath.TrimEnd('/');
-
-            // Map the base path
+            // Map a branch for the basePath
             app.Map(basePath, dashboardApp =>
             {
-                // Serve static files
+                // Execute custom middleware if provided
+                config.CustomMiddleware?.Invoke(dashboardApp);
+                
+                // Serve static files from the embedded provider
                 dashboardApp.UseStaticFiles(new StaticFileOptions
                 {
                     FileProvider = embeddedFileProvider
                 });
 
-                // Redirect requests for assets without the basePath
+                // Redirect ticker asset requests that lack the basePath segment
                 app.Use(async (context, next) =>
                 {
                     if (context.Request.Path.StartsWithSegments("/tickerqassets") &&
                         !context.Request.Path.StartsWithSegments($"{basePath}/tickerqassets"))
                     {
-                        // Redirect the request to include the basePath
                         var correctedPath = $"{basePath}{context.Request.Path}";
                         context.Response.Redirect(correctedPath);
                         return;
@@ -66,50 +75,88 @@ namespace TickerQ.Dashboard.DependencyInjection
 
                     await next();
                 });
-                
+
+                // Set up CORS for this branch
                 dashboardApp.UseCors("Allow_TickerQ_Dashboard");
-                
+
+                // Add authentication and authorization if using host authentication
+                // Note: In older .NET versions, these should be configured at the app level, not in the branch
+                // The host application should call UseAuthentication() and UseAuthorization() before UseTickerQ()
+                if (config.UseHostAuthentication)
+                {
+                    // For older .NET versions, authentication and authorization are typically configured
+                    // at the application level, not within the mapped branch
+                    // The host application should ensure these are called before UseTickerQ()
+                }
+
+                // Set up SignalR
                 dashboardApp.UseSignalR(routes =>
                 {
-                    routes.MapHub<TickerQNotificationHub>($"/ticker-notification-hub");
+                    routes.MapHub<TickerQNotificationHub>("/ticker-notification-hub");
                 });
-                
-                // SPA fallback
+
+                // Set up MVC routing
+                dashboardApp.UseMvc(routes =>
+                {
+                    routes.MapRoute(
+                        name: "default",
+                        template: "{controller=Home}/{action=Index}/{id?}");
+                });
+
+                // SPA fallback middleware
                 dashboardApp.Use(async (context, next) =>
                 {
                     await next();
 
                     if (context.Response.StatusCode == 404 &&
-                        context.Request.PathBase.Value.StartsWith(basePath))
+                        context.Request.PathBase.Value?.StartsWith(basePath) == true)
                     {
                         var file = embeddedFileProvider.GetFileInfo("index.html");
-                        using var stream = file.CreateReadStream();
-                        using var reader = new StreamReader(stream);
-                        var htmlContent = await reader.ReadToEndAsync();
+                        if (file.Exists)
+                        {
+                            using var stream = file.CreateReadStream();
+                            using var reader = new StreamReader(stream);
+                            var htmlContent = await reader.ReadToEndAsync();
 
-                        // Inject <base> tag into the <head> section
-                        htmlContent = ReplaceBasePath(htmlContent, basePath);
+                            // Inject the base tag and other replacements into the HTML
+                            htmlContent = ReplaceBasePath(htmlContent, basePath, config);
 
-                        // Write the modified HTML back to the response
-                        context.Response.ContentType = "text/html";
-                        await context.Response.WriteAsync(htmlContent);
+                            context.Response.ContentType = "text/html";
+                            context.Response.StatusCode = 200;
+                            await context.Response.WriteAsync(htmlContent);
+                        }
                     }
-                });
-
-                dashboardApp.UseMvc(routes =>
-                {
-                    routes.MapRoute(
-                        name: "default",
-                        template: $"{basePath}{{controller=Home}}/{{action=Index}}/{{id?}}");
                 });
             });
         }
 
-        private static string ReplaceBasePath(string htmlContent, string basePath)
+        private static string NormalizeBasePath(string basePath)
         {
-            var regex = new System.Text.RegularExpressions.Regex("(src|href|action)=\"/(?!/)");
-            htmlContent = regex.Replace(htmlContent, $"$1=\"{basePath}/");
-            return htmlContent.Replace("__base_path__", basePath);
+            if (string.IsNullOrEmpty(basePath))
+                return "/";
+            
+            if (!basePath.StartsWith('/'))
+                basePath = "/" + basePath;
+            
+            return basePath.TrimEnd('/');
+        }
+
+        private static string ReplaceBasePath(string htmlContent, string basePath, DashboardConfiguration config)
+        {
+            // Inject environment configuration (excluding sensitive credentials)
+            var envConfig = new
+            {
+                basePath = basePath,
+                backendDomain = config.BackendDomain,
+                useHostAuthentication = config.UseHostAuthentication,
+                enableBuiltInAuth = config.EnableBuiltInAuth,
+                enableBasicAuth = config.EnableBasicAuth
+            };
+            
+            var configScript = $"<script>window.TickerQConfig = {JsonSerializer.Serialize(envConfig)};</script>";
+            htmlContent = htmlContent.Replace("</head>", $"{configScript}</head>");
+            
+            return htmlContent;
         }
     }
 }

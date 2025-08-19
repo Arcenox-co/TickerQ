@@ -1,13 +1,13 @@
 import { useAuthStore } from '@/stores/authStore';
+import { useAlertStore } from '@/stores/alertStore';
 import axios, {AxiosError, type AxiosInstance, type AxiosResponse } from 'axios';
+import { getApiBaseUrl, getBackendUrl } from '@/utilities/pathResolver';
 
-const baseTag = document.querySelector<HTMLBaseElement>('base');
 const authStore = useAuthStore();
+const alertStore = useAlertStore();
 
 const axiosInstance: AxiosInstance = axios.create({
-  baseURL: import.meta.env.PROD
-    ? `${baseTag?.href}/api`
-    : 'http://localhost:5079/tickerq-dashboard/api',
+  baseURL: getApiBaseUrl(),
 });
 
 // ✅ Request Interceptor: Set Authorization header from localStorage
@@ -35,13 +35,25 @@ axiosInstance.interceptors.request.use(
   }
 );
 
-// ✅ Response Interceptor: Remove auth on 401
+// ✅ Response Interceptor: Handle errors and auth
 axiosInstance.interceptors.response.use(
   (response: AxiosResponse) => response,
   (error: AxiosError) => {
-    if (error.response?.status === 401) {
-      authStore.auth = '';
-      authStore.errorMessage = true;
+    try {
+      // Handle 401 authentication errors
+      if (error.response?.status === 401) {
+        authStore.auth = '';
+        authStore.errorMessage = 'Authentication failed. Please log in again.';
+      }
+
+      // Show error alert for HTTP errors (except 401 which is handled by auth flow)
+      // Also avoid showing alerts for cancelled requests
+      if (error.response?.status !== 401 && !error.message?.includes('canceled')) {
+        alertStore.showHttpError(error);
+      }
+    } catch (alertError) {
+      // Prevent infinite loops if alert system has issues
+      console.error('Error showing alert:', alertError);
     }
 
     return Promise.reject(error);

@@ -16,6 +16,10 @@ namespace TickerQ.EntityFrameworkCore.Configurations
         public void Configure(EntityTypeBuilder<CronTickerOccurrenceEntity<CronTickerEntity>> builder)
         {
             builder.HasKey("Id");
+            
+            builder.Property(x => x.LockHolder)
+                .IsConcurrencyToken()
+                .IsRequired(false);
 
             builder.HasIndex("CronTickerId")
                 .HasName("IX_CronTickerOccurrence_CronTickerId");
