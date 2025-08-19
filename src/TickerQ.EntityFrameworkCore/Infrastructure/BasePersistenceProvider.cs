@@ -35,13 +35,13 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 tracked.CurrentValues.SetValues(entity);
 
-                if (entity is TimeTickerEntity timeTickerEntity)
+                if (entity is TimeTickerEntity _)
                 {
                     var lockHolderProp = tracked.Property(nameof(TimeTickerEntity.LockHolder));
                     lockHolderProp.IsModified = true;
                 }
 
-                if (entity is CronTickerOccurrenceEntity<CronTickerEntity> cronOccurrenceEntity)
+                if (entity is CronTickerOccurrenceEntity<CronTickerEntity> _)
                 {
                     var lockHolderProp = tracked.Property(nameof(CronTickerOccurrenceEntity<CronTickerEntity>.LockHolder));
                     lockHolderProp.IsModified = true;
@@ -60,7 +60,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     {
                         var lockHolderProp = entry.Property(nameof(TimeTickerEntity.LockHolder));
 
-                        if (timeTickerEntity.Status == TickerStatus.Queued || timeTickerEntity.Status == TickerStatus.Idle)
+                        if (timeTickerEntity.Status == TickerStatus.Queued || timeTickerEntity.Status == TickerStatus.Idle || timeTickerEntity.Status == TickerStatus.Cancelled)
                         {
                             lockHolderProp.IsModified = true;
                             lockHolderProp.OriginalValue = null;
@@ -75,7 +75,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     {
                         var lockHolderProp = entry.Property(nameof(CronTickerOccurrenceEntity<CronTickerEntity>.LockHolder));
 
-                        if (cronOccurrenceEntity.Status == TickerStatus.Queued || cronOccurrenceEntity.Status == TickerStatus.Idle)
+                        if (cronOccurrenceEntity.Status == TickerStatus.Queued || cronOccurrenceEntity.Status == TickerStatus.Idle || cronOccurrenceEntity.Status == TickerStatus.Cancelled)
                         {
                             lockHolderProp.IsModified = true;
                             lockHolderProp.OriginalValue = null;

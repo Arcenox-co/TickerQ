@@ -14,7 +14,7 @@ namespace TickerQ.Utilities.Interfaces.Managers
 
         Task ReleaseAcquiredResources(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
 
-        Task ReleaseOrCancelAllAcquiredResources(bool terminateExpiredTicker,
+        Task ReleaseAllAcquiredResources(ReleaseAcquiredTermination termination,
             CancellationToken cancellationToken = default);
 
         Task SetTickersInProgress(InternalFunctionContext[] context, CancellationToken cancellationToken = default);

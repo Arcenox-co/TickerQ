@@ -8,6 +8,7 @@ using TickerQ.EntityFrameworkCore.Customizer;
 using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.EntityFrameworkCore.Infrastructure;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models.Ticker;
@@ -68,7 +69,7 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
                 services.AddScoped<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerEfCorePersistenceProvider<TContext, TimeTicker, CronTicker>>();
             };
 
-            UseApplicationService(tickerConfiguration, efCoreOptionBuilder.CancelMissedTickersOnReset);
+            UseApplicationService(tickerConfiguration, efCoreOptionBuilder);
             
             return tickerConfiguration;
         }
@@ -81,22 +82,31 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
                         .ReplaceService<IModelCustomizer, TickerModelCustomizer<TTimeTickerEntity, TCronTickerEntity>>()
                         .Options;
         }
-
-        private static void UseApplicationService(this TickerOptionsBuilder tickerConfiguration, bool cancelMissedTickersOnReset)
+        
+        private static void UseApplicationService(this TickerOptionsBuilder tickerConfiguration, EfCoreOptionBuilder options)
         {
             tickerConfiguration.ExternalProviderConfigApplicationAction = (serviceProvider) =>
             {
-                // using var scope = serviceProvider.CreateScope();
-                //
-                // var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
-                //
-                // var functionsToSeed = TickerFunctionProvider.TickerFunctions
-                //     .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
-                //     .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
-                //
-                // internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
-                //
-                // internalTickerManager.ReleaseOrCancelAllAcquiredResources(cancelMissedTickersOnReset).GetAwaiter().GetResult();
+                using var scope = serviceProvider.CreateScope();
+                
+                var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
+                
+                var functionsToSeed = TickerFunctionProvider.TickerFunctions
+                    .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
+                    .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
+                
+                if(!options.IgnoreSeedMemoryCronTickersInternal)
+                    internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
+
+                options.TimeSeeder?.Invoke(internalTickerManager).GetAwaiter().GetResult();
+                options.CronSeeder?.Invoke(internalTickerManager).GetAwaiter().GetResult();
+                
+                // Use the correct method name and parameters
+                var termination = options.CancelMissedTickersOnReset ? 
+                    ReleaseAcquiredTermination.CancelExpired : 
+                    ReleaseAcquiredTermination.ToIdle;
+                
+                internalTickerManager.ReleaseAllAcquiredResources(termination).GetAwaiter().GetResult();
             };
         }
     }

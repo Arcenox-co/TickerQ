@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useAuthStore } from './stores/authStore'
 import DashboardLayout from './components/layout/DashboardLayout.vue'
+import GlobalAlerts from './components/common/GlobalAlerts.vue'
 import { ref, onMounted, nextTick } from 'vue'
 import { useConnectionStore } from './stores/connectionStore'
 
@@ -184,6 +185,9 @@ const clearError = () => {
       </div>
     </div>
   </span>
+
+  <!-- Global Alerts Component -->
+  <GlobalAlerts />
 </template>
 
 <style scoped>

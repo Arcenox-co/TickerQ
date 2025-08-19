@@ -23,6 +23,7 @@ namespace TickerQ.Utilities
         internal Action<bool> NotifyHostStatusFunc;
         internal Action<string> HostExceptionMessageFunc;
         internal string LastHostExceptionMessage;
+        internal bool SeedDefinedCronJobsToPersistence;
         /// <summary>
         /// Default max concurrency is Environment.ProcessorCount
         /// </summary>
@@ -50,7 +51,6 @@ namespace TickerQ.Utilities
             
             ExternalProviderConfigServiceAction = null;
         }
-        
         
         /// <summary>
         /// Timeout checker default is 1 minute, cannot set less than 30 seconds

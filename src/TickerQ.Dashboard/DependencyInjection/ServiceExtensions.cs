@@ -20,12 +20,6 @@ namespace TickerQ.Dashboard.DependencyInjection
         // Backend API Configuration
         public string BackendDomain { get; set; }
         
-        public JsonSerializerOptions JsonSerializerOptions { get; set; } = new JsonSerializerOptions()
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            Converters = { new JsonStringEnumConverter() }
-        };
-        
         // Authentication Integration
         public bool EnableBuiltInAuth { get; set; } = true;
         public bool UseHostAuthentication { get; set; } = false;
@@ -50,11 +44,6 @@ namespace TickerQ.Dashboard.DependencyInjection
             var dashboardConfig = new DashboardConfiguration
             {
                 CorsOrigins = new[] { "*" },
-                JsonSerializerOptions = new JsonSerializerOptions
-                {
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                    Converters = { new JsonStringEnumConverter() }
-                },
                 EnableBuiltInAuth = true,
                 UseHostAuthentication = false,
                 EnableBasicAuth = false // Default to false, must be explicitly enabled

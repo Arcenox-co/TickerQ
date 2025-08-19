@@ -19,7 +19,7 @@ export class GetTimeTickerResponse {
     actions:string|undefined = undefined;
     exception?:string;
     batchParent?:string;
-    batchRunCondition?:number;
+    batchRunCondition?:string|number;
 }
 
 export class GetTimeTickerGraphDataRangeResponse{

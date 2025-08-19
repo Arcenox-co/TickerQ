@@ -200,8 +200,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     : new Dictionary<TickerStatus, int>();
 
                 var results = allStatuses
-                    .Select(status => new Tuple<TickerStatus, int>(
-                        status,
+                    .Select(status => new Tuple<int, int>(
+                        (int)status,
                         statusCounts.GetValueOrDefault(status, 0)))
                     .ToArray();
 
@@ -253,8 +253,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     : new Dictionary<TickerStatus, int>();
 
                 var results = allStatuses
-                    .Select(status => new Tuple<TickerStatus, int>(
-                        status,
+                    .Select(status => new Tuple<int, int>(
+                        (int)status,
                         statusCounts.GetValueOrDefault(status, 0)))
                     .ToArray();
 
@@ -334,8 +334,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     : new Dictionary<TickerStatus, int>();
 
                 var results = allStatuses
-                    .Select(status => new Tuple<TickerStatus, int>(
-                        status,
+                    .Select(status => new Tuple<int, int>(
+                        (int)status,
                         statusCounts.GetValueOrDefault(status, 0)))
                     .ToArray();
 
@@ -534,7 +534,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     Date = group.Key,
                     Results = group
                         .GroupBy(x => x.Status)
-                        .Select(statusGroup => new Tuple<TickerStatus, int>(statusGroup.Key, statusGroup.Count()))
+                        .Select(statusGroup => new Tuple<int, int>((int)statusGroup.Key, statusGroup.Count()))
                         .ToArray()
                 })
                 .OrderBy(d => d.Date)
@@ -549,13 +549,13 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     Date = group.Key,
                     Results = group
                         .GroupBy(x => x.Status)
-                        .Select(statusGroup => new Tuple<TickerStatus, int>(statusGroup.Key, statusGroup.Count()))
+                        .Select(statusGroup => new Tuple<int, int>((int)statusGroup.Key, statusGroup.Count()))
                         .ToArray()
                 })
                 .FirstOrDefault() ?? new CronOccurrenceTickerGraphData
                 {
                     Date = today,
-                    Results = Array.Empty<Tuple<TickerStatus, int>>()
+                    Results = Array.Empty<Tuple<int, int>>()
                 };
 
             var cronTickerOccurrencesFuture =
@@ -567,7 +567,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     Date = group.Key,
                     Results = group
                         .GroupBy(x => x.Status)
-                        .Select(statusGroup => new Tuple<TickerStatus, int>(statusGroup.Key, statusGroup.Count()))
+                        .Select(statusGroup => new Tuple<int, int>((int)statusGroup.Key, statusGroup.Count()))
                         .ToArray()
                 })
                 .OrderBy(d => d.Date)
@@ -589,7 +589,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     emptyPastDays.Add(new CronOccurrenceTickerGraphData
                     {
                         Date = firstPastDate.AddDays(-i),
-                        Results = Array.Empty<Tuple<TickerStatus, int>>()
+                        Results = Array.Empty<Tuple<int, int>>()
                     });
                 }
             }
@@ -603,7 +603,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     emptyFutureDays.Add(new CronOccurrenceTickerGraphData
                     {
                         Date = lastFutureDate.AddDays(i),
-                        Results = Array.Empty<Tuple<TickerStatus, int>>()
+                        Results = Array.Empty<Tuple<int, int>>()
                     });
                 }
             }
@@ -627,7 +627,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 .Select(date => completeData.FirstOrDefault(d => d.Date == date) ?? new CronOccurrenceTickerGraphData
                 {
                     Date = date,
-                    Results = Array.Empty<Tuple<TickerStatus, int>>()
+                    Results = Array.Empty<Tuple<int, int>>()
                 })
                 .ToList();
 
@@ -782,6 +782,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
             var timeTicker = new TTimeTicker
             {
+                Id = Guid.NewGuid(),
                 Status = TickerStatus.Idle,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,

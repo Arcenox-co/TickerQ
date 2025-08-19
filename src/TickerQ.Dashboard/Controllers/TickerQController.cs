@@ -170,7 +170,7 @@ namespace TickerQ.Dashboard.Controllers
                 FunctionName = x.Item1,
                 FunctionRequestNamespace = x.Item2.Item1,
                 FunctionRequestType = x.Item2.Item2,
-                Priority = x.Item2.Item3,
+                Priority = (int)x.Item2.Item3,
             });
 
             return Ok(result);

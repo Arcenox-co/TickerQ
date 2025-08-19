@@ -422,7 +422,7 @@ namespace TickerQ.Utilities.Managers
         }
 
 
-        public async Task ReleaseOrCancelAllAcquiredResources(bool terminateExpiredTickers,
+        public async Task ReleaseAllAcquiredResources(ReleaseAcquiredTermination termination,
             CancellationToken cancellationToken = default)
         {
             var timeTickers = await PersistenceProvider
@@ -433,7 +433,7 @@ namespace TickerQ.Utilities.Managers
             foreach (var timeTicker in timeTickers)
             {
                 if (timeTicker.Status == TickerStatus.Inprogress ||
-                    terminateExpiredTickers && DateTime.Compare(timeTicker.ExecutionTime, Clock.UtcNow) == 0)
+                    termination == ReleaseAcquiredTermination.CancelExpired && DateTime.Compare(timeTicker.ExecutionTime, Clock.UtcNow) == 0)
                 {
                     timeTicker.Status = TickerStatus.Cancelled;
                     timeTicker.LockedAt = Clock.UtcNow;
@@ -452,12 +452,13 @@ namespace TickerQ.Utilities.Managers
 
             var cronTickerOccurrences = await PersistenceProvider
                 .GetLockedCronTickerOccurrences(LockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress },
+                    opt => opt.SetAsTracking(),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
 
             foreach (var cronTickerOccurrence in cronTickerOccurrences)
             {
                 if (cronTickerOccurrence.Status == TickerStatus.Inprogress ||
-                    terminateExpiredTickers && DateTime.Compare(cronTickerOccurrence.ExecutionTime, Clock.UtcNow) > 0)
+                    termination == ReleaseAcquiredTermination.CancelExpired && DateTime.Compare(cronTickerOccurrence.ExecutionTime, Clock.UtcNow) > 0)
                 {
                     cronTickerOccurrence.Status = TickerStatus.Cancelled;
                     cronTickerOccurrence.LockedAt = Clock.UtcNow;

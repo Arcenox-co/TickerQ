@@ -5,6 +5,7 @@ import {type Ref, ref } from "vue";
 import http from "./axiosConfig";
 import type { Path, PathValue } from "@/utilities/pathTypes";
 import { useAlert } from "@/composables/useAlert";
+import { getStatusValueSafe } from "../services/types/base/baseHttpResponse.types";
 
 /* ------------------------------------------------------------------
    1) Define TableHeader Interface and Helper Function
@@ -240,6 +241,11 @@ export function useBaseHttpService(
           }),
         });
 
+        if(res.data.status != undefined) {
+          res.data.status = getStatusValueSafe(res.data.status);
+        }
+    
+
         const processed = processResponse(res.data, responseModelKeys.value, transformFn);
 
         if(reOrganizeFn) {
@@ -348,6 +354,13 @@ export function useBaseHttpService(
             cancelRequest.value = exec;
           }),
         });
+        
+        res.data = res.data.map((item: any) => {
+          if(item.status != undefined) {
+            item.status = getStatusValueSafe(item.status);
+          }
+          return item;
+        });
 
         const organized = reOrganizeFn ? reOrganizeFn(res.data) : res.data;
 
@@ -411,7 +424,7 @@ export function useBaseHttpService(
 
     const updateByKey = (key: string, value: any, ignoreKeys: string[] = []) => {
       const item = response.value?.find(item => item[key] == value[key]);
-      
+
       if (!item) {
         return; // Exit early if no matching item found
       }

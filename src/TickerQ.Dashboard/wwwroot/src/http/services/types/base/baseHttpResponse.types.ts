@@ -8,3 +8,20 @@ export enum Status {
     Cancelled = 6,
     Batched = 7,
   }
+
+  export const getStatusValueSafe = (statusString: string | number): number => {
+    // If it's already a number, return it
+    if (typeof statusString === 'number') return statusString;
+    
+    // Get all enum keys and find case-insensitive match
+    const enumKeys = Object.keys(Status).filter(key => isNaN(Number(key)));
+    const matchedKey = enumKeys.find(key => 
+      key.toLowerCase() === statusString.toLowerCase()
+    );
+    
+    if (matchedKey) {
+      return Status[matchedKey as keyof typeof Status];
+    }
+    
+    return Status.Failed; // Default fallback
+  };

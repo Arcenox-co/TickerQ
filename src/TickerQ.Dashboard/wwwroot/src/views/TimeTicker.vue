@@ -59,7 +59,7 @@ const createBatchDialog = ref({
   selectedParentId: '',
   selectedChildrenIds: [] as string[],
   batchRunCondition: 0,
-  step: 1, // 1: Select Parent, 2: Select Children
+  step: 1, 
 })
 
 const requestMatchType = ref(new Map<string, number>())
