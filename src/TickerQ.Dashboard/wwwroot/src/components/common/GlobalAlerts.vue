@@ -36,58 +36,56 @@ const handleAction = (alertId: string, action: () => void) => {
 </script>
 
 <template>
-  <teleport to="body">
-    <div class="global-alerts">
-      <!-- Display alerts as custom components -->
-      <transition-group name="alert" tag="div">
-        <div
-          v-for="alert in visibleAlerts"
-          :key="alert.id"
-          :class="['alert-item', `alert-${alert.type}`]"
-          @click.stop
-        >
-          <div class="alert-content">
-            <!-- Alert Icon -->
-            <div class="alert-icon">
-              <v-icon :icon="getAlertIcon(alert.type)" size="18" />
+  <div class="global-alerts">
+    <!-- Display alerts as custom components -->
+    <div>
+      <div
+        v-for="alert in visibleAlerts"
+        :key="alert.id"
+        :class="['alert-item', `alert-${alert.type}`]"
+        @click.stop
+      >
+        <div class="alert-content">
+          <!-- Alert Icon -->
+          <div class="alert-icon">
+            <v-icon :icon="getAlertIcon(alert.type)" size="18" />
+          </div>
+          
+          <!-- Alert Text -->
+          <div class="alert-text">
+            <div v-if="alert.title" class="alert-title">
+              {{ alert.title }}
             </div>
-            
-            <!-- Alert Text -->
-            <div class="alert-text">
-              <div v-if="alert.title" class="alert-title">
-                {{ alert.title }}
-              </div>
-              <div class="alert-message">
-                {{ alert.message }}
-              </div>
+            <div class="alert-message">
+              {{ alert.message }}
             </div>
-
-            <!-- Close Button -->
-            <button
-              v-if="alert.closable"
-              @click="handleClose(alert.id)"
-              class="alert-close-btn"
-              aria-label="Close alert"
-            >
-              <v-icon icon="mdi-close" size="16" />
-            </button>
           </div>
 
-          <!-- Custom Actions -->
-          <div v-if="alert.actions && alert.actions.length > 0" class="alert-actions">
-            <button
-              v-for="(action, index) in alert.actions"
-              :key="index"
-              @click="handleAction(alert.id, action.action)"
-              :class="['alert-action-btn', action.color && `alert-action-${action.color}`]"
-            >
-              {{ action.text }}
-            </button>
-          </div>
+          <!-- Close Button -->
+          <button
+            v-if="alert.closable"
+            @click="handleClose(alert.id)"
+            class="alert-close-btn"
+            aria-label="Close alert"
+          >
+            <v-icon icon="mdi-close" size="16" />
+          </button>
         </div>
-      </transition-group>
+
+        <!-- Custom Actions -->
+        <div v-if="alert.actions && alert.actions.length > 0" class="alert-actions">
+          <button
+            v-for="(action, index) in alert.actions"
+            :key="index"
+            @click="handleAction(alert.id, action.action)"
+            :class="['alert-action-btn', action.color && `alert-action-${action.color}`]"
+          >
+            {{ action.text }}
+          </button>
+        </div>
+      </div>
     </div>
-  </teleport>
+  </div>
 </template>
 
 <style scoped>
@@ -153,6 +151,7 @@ const handleAction = (alertId: string, action: () => void) => {
   overflow-wrap: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
