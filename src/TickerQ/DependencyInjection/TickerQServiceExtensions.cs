@@ -12,7 +12,6 @@ using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Managers;
 using TickerQ.Utilities.Models.Ticker;
 using TickerQ.Utilities.Temps;
-using TickerQ.Interfaces;
 
 namespace TickerQ.DependencyInjection
 {
