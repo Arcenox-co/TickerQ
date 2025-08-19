@@ -6,6 +6,13 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 {
     public class CronTickerOccurrenceConfigurations : IEntityTypeConfiguration<CronTickerOccurrenceEntity<CronTickerEntity>>
     {
+        private readonly string _schema;
+
+        public CronTickerOccurrenceConfigurations(string schema = Constants.DefaultSchema)
+        {
+            _schema = schema;
+        }
+        
         public void Configure(EntityTypeBuilder<CronTickerOccurrenceEntity<CronTickerEntity>> builder)
         {
             builder.HasKey("Id");
@@ -32,7 +39,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
                 .IsUnique()
                 .HasName("UQ_CronTickerId_ExecutionTime");
 
-            builder.ToTable("CronTickerOccurrences", "ticker");
+            builder.ToTable("CronTickerOccurrences", _schema);
         }
     }
 }

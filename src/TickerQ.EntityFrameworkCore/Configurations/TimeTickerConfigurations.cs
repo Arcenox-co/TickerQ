@@ -6,6 +6,13 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 {
     public class TimeTickerConfigurations : IEntityTypeConfiguration<TimeTickerEntity>
     {
+        private readonly string _schema;
+
+        public TimeTickerConfigurations(string schema = Constants.DefaultSchema)
+        {
+            _schema = schema;
+        }
+        
         public void Configure(EntityTypeBuilder<TimeTickerEntity> builder)
         {
             builder.HasKey("Id");
@@ -25,7 +32,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.HasIndex("Status", "ExecutionTime")
                 .HasName("IX_TimeTicker_Status_ExecutionTime");
 
-            builder.ToTable("TimeTickers", "ticker");
+            builder.ToTable("TimeTickers", _schema);
         }
     }
 }

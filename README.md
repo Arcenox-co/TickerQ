@@ -8,7 +8,7 @@
 [![NuGet](https://img.shields.io/nuget/vpre/tickerq.svg)](https://www.nuget.org/packages/tickerq)
 [![Build NuGet Packages](https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml)
 [![Documentation](https://img.shields.io/badge/docs%20-official%20web-blue)](https://tickerq.arcenox.com)
-
+[![](https://opencollective.com/tickerq/tiers/badge.svg)](https://opencollective.com/tickerq)
 
 
 **Robust. Adaptive. Precise.**  
@@ -68,6 +68,16 @@ builder.Services.AddTickerQ(options =>
 });
 
 app.UseTickerQ(); // Activates job processor
+```
+
+To control when the job processor starts use the TickerQStartMode overload
+
+```csharp
+app.UseTickerQ(TickerQStartMode.Manual);
+
+ITickerHost tickerHost = app.Services.GetRequiredService<ITickerHost>(); // Resolve the Singleton service ITickerHost from the IServiceProvider.
+
+tickerHost.Start(); // Invoke the start method to manually start TickerQ
 ```
 ---
 
@@ -235,6 +245,38 @@ await _cronTickerManager.AddAsync(new CronTicker
 - Use `FunctionName` consistently across schedule and handler
 - Use `CancellationToken` for graceful cancellation
 - Use `Request` to pass dynamic data to jobs
+- If you are building this project locally, you must replace the `$(PackageVersion)` with any version NuGet package version (ideally the latest).
+- If you are getting random 403 responses, make sure that you don't have any filter in some endpoint that might be triggering it, thus causing issues with TickerQ's dashboard. Check this [issue](https://github.com/Arcenox-co/TickerQ/issues/155#issuecomment-3175214745) for more details.
+---
+
+## 💖 Sponsors & Backers
+
+We want to acknowledge the individuals and organizations who support the development of TickerQ through [OpenCollective](https://opencollective.com/tickerq). Your contributions help us maintain and grow this project. If you'd like to support, check out the tiers below and join the community!
+
+
+[Become a Sponsor or Backer on OpenCollective](https://opencollective.com/tickerq)
+
+---
+
+### 🏆 Gold Sponsors
+*Become a gold sponsor and get your logo here with a link to your site.*
+
+---
+
+### 🥈 Silver Sponsors
+*Become a silver sponsor and get your logo here with a link to your site.*
+
+---
+
+### 🥉 Bronze Sponsors
+*Become a bronze sponsor and get your logo here with a link to your site.*
+
+---
+
+### 🙌 Backers
+[Become a backer](https://opencollective.com/tickerq#backer) and get your image on our README on GitHub with a link to your site.
+
+<a href="https://opencollective.com/tickerq/backer/0/website?requireActive=false" target="_blank"><img width="30" src="https://opencollective.com/tickerq/backer/0/avatar.svg?requireActive=false"></a>
 ---
 
 ## 🤝 Contribution

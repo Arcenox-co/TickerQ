@@ -33,8 +33,9 @@
         <FrameworkReference Include="Microsoft.AspNetCore.App" />
     </ItemGroup>
 
-    <ItemGroup>
-        <PackageReference Include="TickerQ.Utilities" Version="$(PackageVersion)" />
+    <ItemGroup><!--        <PackageReference Include="TickerQ.Utilities" Version="$(PackageVersion)" />-->
+    
+      <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
     </ItemGroup>
 
     <PropertyGroup Condition="'$(TargetFramework)' != 'netstandard2.1' AND '$(TargetFramework)' != 'netcoreapp2.2' AND '$(TargetFramework)' != 'netcoreapp3.0'">
