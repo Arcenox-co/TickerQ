@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { useAuthStore } from './stores/authStore'
 import DashboardLayout from './components/layout/DashboardLayout.vue'
-import GlobalAlerts from './components/common/GlobalAlerts.vue'
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, defineAsyncComponent } from 'vue'
 import { useConnectionStore } from './stores/connectionStore'
+
+const GlobalAlerts = defineAsyncComponent(() => import('./components/common/GlobalAlerts.vue'))
 
 const authStore = useAuthStore()
 const connectionStore = useConnectionStore()
@@ -103,6 +104,7 @@ const clearError = () => {
         <RouterView :key="String(authStore.isLoggedIn)" />
       </template>
     </DashboardLayout>
+    <GlobalAlerts />
   </span>
   
   <!-- Login form when not authenticated -->
@@ -184,10 +186,9 @@ const clearError = () => {
         </div>
       </div>
     </div>
+    <GlobalAlerts />
   </span>
 
-  <!-- Global Alerts Component -->
-  <GlobalAlerts />
 </template>
 
 <style scoped>

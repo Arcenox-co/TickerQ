@@ -1,22 +1,11 @@
 <script setup lang="ts">
 import { useAlertStore } from '@/stores/alertStore'
-import { computed, ref, onMounted, nextTick } from 'vue'
+import { computed} from 'vue'
 
 const alertStore = useAlertStore()
-const isComponentReady = ref(false)
-
-// Wait for component to be fully mounted before showing alerts
-onMounted(async () => {
-  await nextTick()
-  // Small delay to ensure DOM is stable
-  setTimeout(() => {
-    isComponentReady.value = true
-  }, 100)
-})
 
 // Get alerts that are visible
 const visibleAlerts = computed(() => {
-  if (!isComponentReady.value) return []
   return alertStore.alerts.filter(alert => alert.visible)
 })
 
@@ -38,16 +27,10 @@ const getAlertIcon = (type: string) => {
 const handleClose = (alertId: string) => {
   alertStore.dismissAlert(alertId)
 }
-
-// Handle action click
-const handleAction = (alertId: string, action: () => void) => {
-  action()
-  alertStore.dismissAlert(alertId)
-}
 </script>
 
 <template>
-  <div v-if="isComponentReady" class="global-alerts">
+  <div class="global-alerts">
     <!-- Display alerts as custom components -->
     <div>
       <div
@@ -80,18 +63,6 @@ const handleAction = (alertId: string, action: () => void) => {
             aria-label="Close alert"
           >
             <v-icon icon="mdi-close" size="16" />
-          </button>
-        </div>
-
-        <!-- Custom Actions -->
-        <div v-if="alert.actions && alert.actions.length > 0" class="alert-actions">
-          <button
-            v-for="(action, index) in alert.actions"
-            :key="index"
-            @click="handleAction(alert.id, action.action)"
-            :class="['alert-action-btn', action.color && `alert-action-${action.color}`]"
-          >
-            {{ action.text }}
           </button>
         </div>
       </div>

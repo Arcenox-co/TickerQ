@@ -7,7 +7,6 @@ import { ConfirmDialogProps } from '../common/ConfirmDialog.vue'
 import { useDashboardStore } from '../../stores/dashboardStore'
 import { useConnectionStore } from '../../stores/connectionStore'
 import AuthHeader from '../common/AuthHeader.vue'
-import GlobalAlerts from '../common/GlobalAlerts.vue'
 
 const navigationLinks = [
   { icon: 'mdi-view-dashboard', text: 'Dashboard', path: '/' },
@@ -464,8 +463,7 @@ const handleForceUIUpdate = () => {
 
   </v-app>
 
-  <!-- Global Alerts Component -->
-  <GlobalAlerts />
+
 
   <!-- Confirm Dialog - Portal to body to avoid layout issues -->
   <Teleport to="body">
