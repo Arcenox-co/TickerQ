@@ -241,7 +241,7 @@ namespace TickerQ.Utilities.Managers
 
                     var generateNextOccurrence = new CronTickerOccurrence<TCronTicker>
                     {
-                        CronTicker = cronTicker,
+                        CronTickerId = cronTicker.Id,
                         Status = TickerStatus.Idle,
                         ExecutionTime = crontabSchedule.GetNextOccurrence(Clock.UtcNow),
                         LockedAt = Clock.UtcNow,
