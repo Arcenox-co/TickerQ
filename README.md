@@ -5,7 +5,7 @@
 
 
 [![NuGet](https://img.shields.io/nuget/dt/tickerq.svg)](https://www.nuget.org/packages/tickerq) 
-[![NuGet](https://img.shields.io/nuget/vpre/tickerq.svg)](https://www.nuget.org/packages/tickerq)
+[![NuGet](https://img.shields.io/nuget/v/tickerq.svg)](https://www.nuget.org/packages/tickerq)
 [![Build NuGet Packages](https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml)
 [![Documentation](https://img.shields.io/badge/docs%20-official%20web-blue)](https://tickerq.arcenox.com)
 [![](https://opencollective.com/tickerq/tiers/badge.svg)](https://opencollective.com/tickerq)
