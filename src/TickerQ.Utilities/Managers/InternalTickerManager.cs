@@ -626,7 +626,7 @@ namespace TickerQ.Utilities.Managers
             CancellationToken cancellationToken)
         {
             var cronTickerOccurrences = await PersistenceProvider
-                .GetTimedOutCronTickerOccurrences(Clock.UtcNow, cancellationToken: cancellationToken)
+                .GetTimedOutCronTickerOccurrences(Clock.UtcNow, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             if (cronTickerOccurrences.Length == 0)
@@ -637,7 +637,7 @@ namespace TickerQ.Utilities.Managers
             if (updatedCronTickers.Length > 0)
             {
                 await PersistenceProvider
-                    .UpdateCronTickerOccurrences(cronTickerOccurrences, cancellationToken: cancellationToken)
+                    .UpdateCronTickerOccurrences(cronTickerOccurrences, opt => opt.SetAsTracking(), cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
 
                 foreach (var updatedOccurrence in cronTickerOccurrences)

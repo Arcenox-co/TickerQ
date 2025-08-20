@@ -201,6 +201,10 @@ namespace TickerQ.Base
                     CtsTickerTimeoutDelayAwaiter =
                         SafeCancellationTokenSource.CreateLinked(CtsTickerTimeoutChecker.Token);
                 }
+                catch (Exception)
+                {
+                    //
+                }
             }
         }
 
