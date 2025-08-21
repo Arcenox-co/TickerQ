@@ -18,7 +18,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.HasKey("Id");
 
             builder.HasIndex("Expression")
-                .HasName("IX_CronTickers_Expression");
+                .HasDatabaseName("IX_CronTickers_Expression");
 
             builder.ToTable("CronTickers", _schema);
         }

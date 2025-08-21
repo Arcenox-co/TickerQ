@@ -19,7 +19,7 @@ jobs:
       - name: Read version from file
         id: get-version
         run: |
-          VERSION=$(cat VERSION)
+          VERSION=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:Version)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Check if all NuGet packages already exist
@@ -62,13 +62,7 @@ jobs:
       - name: Setup .NET SDKs
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: |
-            3.0.x
-            5.0.x
-            6.0.x
-            7.0.x
-            8.0.x
-            9.0.x
+          dotnet-version: 9.0.x
 
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
@@ -84,10 +78,10 @@ jobs:
         working-directory: src/TickerQ.Dashboard/wwwroot
 
       - name: Build TickerQ.Utilities
-        run: dotnet build src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+        run: dotnet build src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release
 
       - name: Pack TickerQ.Utilities
-        run: dotnet pack src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+        run: dotnet pack src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs
 
       - name: Add local nupkgs source
         run: dotnet nuget add source "$(pwd)/nupkgs" --name LocalNupkgs
@@ -97,15 +91,15 @@ jobs:
 
       - name: Build other projects
         run: |
-          dotnet build src/TickerQ/TickerQ.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
-          dotnet build src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
-          dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet build src/TickerQ/TickerQ.csproj --configuration Release
+          dotnet build src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release
+          dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release
 
       - name: Pack other projects
         run: |
-          dotnet pack src/TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
-          dotnet pack src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
-          dotnet pack src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs /p:PackageVersion=${{ needs.check-nuget.outputs.version }}
+          dotnet pack src/TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs
+          dotnet pack src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs
+          dotnet pack src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs
 
       - name: Show .nupkg file sizes
         run: |

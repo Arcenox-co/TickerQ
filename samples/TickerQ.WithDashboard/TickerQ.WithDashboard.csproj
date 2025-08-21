@@ -7,9 +7,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.7" />
-	<PackageReference Include="TickerQ" Version="2.4.1" />
-	<PackageReference Include="TickerQ.Dashboard" Version="2.4.1" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TickerQ\TickerQ.csproj" />
+    <ProjectReference Include="..\..\src\TickerQ.Dashboard\TickerQ.Dashboard.csproj" />
   </ItemGroup>
 
 </Project>
