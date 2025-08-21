@@ -871,7 +871,7 @@ const getVisiblePageNumbers = () => {
 /* Premium Table */
 .table-container {
   background: rgba(0, 0, 0, 0.2);
-  border-radius: 8px;
+  border-radius: 12px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
