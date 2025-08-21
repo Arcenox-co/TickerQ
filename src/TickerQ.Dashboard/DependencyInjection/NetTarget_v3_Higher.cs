@@ -9,6 +9,7 @@ using Microsoft.Extensions.FileProviders;
 using TickerQ.Dashboard.Controllers;
 using TickerQ.Dashboard.Hubs;
 using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
 
 namespace TickerQ.Dashboard.DependencyInjection
 {
@@ -104,7 +105,10 @@ namespace TickerQ.Dashboard.DependencyInjection
                     // Add role-based or policy-based authorization if specified
                     if (config.RequiredRoles.Any())
                     {
-                        controllerRoute.RequireAuthorization();
+                        controllerRoute.RequireAuthorization(new AuthorizeAttribute()
+                        {
+                            Roles = string.Join(",", config.RequiredRoles)
+                        });
                     }
                     else if (config.RequiredPolicies.Any())
                     {
