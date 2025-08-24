@@ -72,8 +72,12 @@ builder.Services.AddTickerQ(options =>
 
 app.UseTickerQ(); // Activates job processor
 ```
+> 💡 **Recommendation:**  
+Use `UseModelCustomizerForMigrations()` to cleanly separate infrastructure concerns from your core domain model, especially during design-time operations like migrations.  
+**Note:** If you're using third-party libraries (e.g., OpenIddict) that also override `IModelCustomizer`, you must either merge customizations or fall back to manual configuration inside `OnModelCreating()` to avoid conflicts.
 
-❗️If Not Using `UseModelCustomizerForMigrations() You must apply TickerQ configurations manually in your `DbContext`:
+
+❗️If Not Using `UseModelCustomizerForMigrations()` You must apply TickerQ configurations manually in your `DbContext`:
 
 ```csharp
 public class MyDbContext : DbContext
@@ -103,10 +107,6 @@ Migrations would be created for `Context` that is declared at `AddOperationalSto
 ```PM
 PM> add-migration "TickerQInitialCreate" -c MyDbContext
 ```
-
-> 💡 **Recommendation:**  
-Use `UseModelCustomizerForMigrations()` to cleanly separate infrastructure concerns from your core domain model, especially during design-time operations like migrations.  
-**Note:** If you're using third-party libraries (e.g., OpenIddict) that also override `IModelCustomizer`, you must either merge customizations or fall back to manual configuration inside `OnModelCreating()` to avoid conflicts.
 
 ##  Job Definition
 
