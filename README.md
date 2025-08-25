@@ -172,7 +172,6 @@ await _cronTickerManager.AddAsync(new CronTicker
 - Use `FunctionName` consistently across schedule and handler
 - Use `CancellationToken` for graceful cancellation
 - Use `Request` to pass dynamic data to jobs
-- If you are building this project locally, you must replace the `$(PackageVersion)` with any version NuGet package version (ideally the latest).
 - If you are getting random 403 responses, make sure that you don't have any filter in some endpoint that might be triggering it, thus causing issues with TickerQ's dashboard. Check this [issue](https://github.com/Arcenox-co/TickerQ/issues/155#issuecomment-3175214745) for more details.
 ---
 

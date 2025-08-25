@@ -35,6 +35,13 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.WithDependencyInjec
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.WithDashboard", "samples\TickerQ.WithDashboard\TickerQ.WithDashboard.csproj", "{BC5C1469-A073-4609-8C77-59096440E7F4}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "workflows", "workflows", "{9E6EC713-AD6D-4909-8617-B909D76A6E3A}"
+	ProjectSection(SolutionItems) = preProject
+		.github\workflows\build.yml = .github\workflows\build.yml
+		.github\workflows\pr.yaml = .github\workflows\pr.yaml
+		.github\workflows\publish.yml = .github\workflows\publish.yml
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -167,5 +174,6 @@ Global
 		{EBC1EA7E-19A6-4B71-B84B-5A188BE7448B} = {45D577FA-DB7A-4B96-BB3F-97DDA0A929D5}
 		{FC775FFF-3856-434A-9E5F-D8D6477981BA} = {45D577FA-DB7A-4B96-BB3F-97DDA0A929D5}
 		{BC5C1469-A073-4609-8C77-59096440E7F4} = {45D577FA-DB7A-4B96-BB3F-97DDA0A929D5}
+		{9E6EC713-AD6D-4909-8617-B909D76A6E3A} = {9A4EB4A4-FB92-477C-A6D8-0735579B7BAB}
 	EndGlobalSection
 EndGlobal
