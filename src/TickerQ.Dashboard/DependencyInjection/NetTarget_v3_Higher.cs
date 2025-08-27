@@ -169,14 +169,11 @@ namespace TickerQ.Dashboard.DependencyInjection
 
             json = SanitizeForInlineScript(json);
 
-            // Optional CSP nonce
-            string nonceAttr = string.IsNullOrEmpty(config.CspNonce) ? "" : $" nonce=\"{config.CspNonce}\"";
-
             // Add base tag for proper asset loading
             var baseTag = $@"<base href=""{basePath}/"" />";
 
             // Inline bootstrap: set TickerQConfig and derive __dynamic_base__ (vite-plugin-dynamic-base)
-            var script = $@"<script{nonceAttr}>
+            var script = $@"<script>
 (function() {{
   try {{
     // Expose config

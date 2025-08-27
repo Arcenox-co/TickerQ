@@ -18,6 +18,7 @@
     "echarts": "^5.6.0",
     "pinia": "^2.3.0",
     "timeago.js": "^4.0.2",
+    "vite-plugin-dynamic-base": "^1.2.0",
     "vue": "^3.5.13",
     "vue-echarts": "^7.0.3",
     "vue-router": "^4.5.0",
