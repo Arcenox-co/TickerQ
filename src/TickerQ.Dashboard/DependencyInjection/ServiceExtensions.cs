@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Dashboard.Hubs;
 using TickerQ.Dashboard.Infrastructure.Dashboard;
 using TickerQ.Utilities;
@@ -64,9 +64,6 @@ namespace TickerQ.Dashboard.DependencyInjection
                 services.AddScoped<ITickerDashboardRepository, TickerDashboardRepository<TimeTicker, CronTicker>>();
                 services.AddSingleton<ITickerQNotificationHubSender, TickerQNotificationHubSender>();
                 
-                
-                
-#if NETCOREAPP3_1_OR_GREATER
                 // Add authentication services if using host authentication
                 if (dashboardConfig.UseHostAuthentication)
                 {
@@ -78,21 +75,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                         services.AddAuthorization();
                     }
                 }
-                NetTargetV3Higher.AddDashboardService(services, dashboardConfig);
-#else
-// Add authentication services if using host authentication
-                if (dashboardConfig.UseHostAuthentication)
-                {
-                    // The host application should configure authentication services
-                    // We just ensure they're available
-                    if (!services.Any(s => s.ServiceType.Name.Contains("Authentication")))
-                    {
-                        services.AddAuthenticationCore();
-                        services.AddAuthorization();
-                    }
-                }
-                NetTargetV31Lower.AddDashboardService(services, dashboardConfig);
-#endif
+                services.AddDashboardService(dashboardConfig);
             };
 
             UseDashboardDelegate(tickerConfiguration, dashboardConfig);
@@ -115,12 +98,8 @@ namespace TickerQ.Dashboard.DependencyInjection
                 // Execute pre-dashboard middleware
                 dashboardConfig.PreDashboardMiddleware?.Invoke(app);
                 
-#if NETCOREAPP3_1_OR_GREATER
-                NetTargetV3Higher.UseDashboard(app, basePath, dashboardConfig);
-#else
-                NetTargetV31Lower.UseDashboard(app, basePath, dashboardConfig);
-#endif
-                
+                app.UseDashboard(basePath, dashboardConfig);
+
                 // Execute post-dashboard middleware
                 dashboardConfig.PostDashboardMiddleware?.Invoke(app);
             };

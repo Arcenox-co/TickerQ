@@ -7,6 +7,7 @@
         <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+        <Version>2.5.2</Version>
     </PropertyGroup>
 
     <ItemGroup>
