@@ -2,7 +2,7 @@
 
 namespace TickerQ.Utilities.Interfaces
 {
-    internal interface ITickerClock
+    public interface ITickerClock
     {
         DateTime UtcNow { get; }
     }
