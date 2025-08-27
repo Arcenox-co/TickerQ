@@ -289,6 +289,7 @@ namespace TickerQ.SourceGenerator
         {
             var sb = new StringBuilder();
             sb.AppendLine("//v3.1-");
+            sb.AppendLine("#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member");
             sb.AppendLine("using System;");
             sb.AppendLine($"using {asm};");
             sb.AppendLine("using System.Collections.Generic;");
