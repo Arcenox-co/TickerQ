@@ -1,7 +1,9 @@
 #if NETCOREAPP3_1_OR_GREATER
+using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,6 +11,7 @@ using Microsoft.Extensions.FileProviders;
 using TickerQ.Dashboard.Controllers;
 using TickerQ.Dashboard.Hubs;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 
 namespace TickerQ.Dashboard.DependencyInjection
@@ -19,7 +22,7 @@ namespace TickerQ.Dashboard.DependencyInjection
         {
             services.AddRouting();
             services.AddSignalR();
-            
+
             services.AddCors(options =>
             {
                 options.AddPolicy("Allow_TickerQ_Dashboard", policy =>
@@ -32,13 +35,13 @@ namespace TickerQ.Dashboard.DependencyInjection
                     {
                         policy.WithOrigins(config.CorsOrigins);
                     }
-                    
+
                     policy.AllowAnyHeader()
                         .AllowAnyMethod()
                         .AllowCredentials();
                 });
             });
-            
+
             services.AddControllers().AddApplicationPart(typeof(TickerQController).Assembly);
         }
 
@@ -56,25 +59,11 @@ namespace TickerQ.Dashboard.DependencyInjection
             {
                 // Execute custom middleware if provided
                 config.CustomMiddleware?.Invoke(dashboardApp);
-                
+
                 // Serve static files from the embedded provider
                 dashboardApp.UseStaticFiles(new StaticFileOptions
                 {
                     FileProvider = embeddedFileProvider
-                });
-
-                // Redirect ticker asset requests that lack the basePath segment
-                app.Use(async (context, next) =>
-                {
-                    if (context.Request.Path.StartsWithSegments("/tickerqassets") &&
-                        !context.Request.Path.StartsWithSegments($"{basePath}/tickerqassets"))
-                    {
-                        var correctedPath = $"{basePath}{context.Request.Path}";
-                        context.Response.Redirect(correctedPath);
-                        return;
-                    }
-
-                    await next();
                 });
 
                 // Set up routing and CORS for this branch
@@ -100,8 +89,8 @@ namespace TickerQ.Dashboard.DependencyInjection
                     // Map the SignalR hub.
                     // Inside the branch, map with a relative path.
                     endpoints.MapHub<TickerQNotificationHub>("/ticker-notification-hub");
-                    
-                    
+
+
                     // Add role-based or policy-based authorization if specified
                     if (config.RequiredRoles.Any())
                     {
@@ -147,30 +136,82 @@ namespace TickerQ.Dashboard.DependencyInjection
         {
             if (string.IsNullOrEmpty(basePath))
                 return "/";
-            
+
             if (!basePath.StartsWith('/'))
                 basePath = "/" + basePath;
-            
+
             return basePath.TrimEnd('/');
         }
 
         private static string ReplaceBasePath(string htmlContent, string basePath, DashboardConfiguration config)
         {
-            // Inject environment configuration (excluding sensitive credentials)
+            if (string.IsNullOrEmpty(htmlContent))
+                return htmlContent ?? string.Empty;
+
+            // Build the config object
             var envConfig = new
             {
-                basePath = basePath,
+                basePath,
                 backendDomain = config.BackendDomain,
                 useHostAuthentication = config.UseHostAuthentication,
                 enableBuiltInAuth = config.EnableBuiltInAuth,
                 enableBasicAuth = config.EnableBasicAuth
             };
-            
-            var configScript = $"<script>window.TickerQConfig = {JsonSerializer.Serialize(envConfig)};</script>";
-            htmlContent = htmlContent.Replace("</head>", $"{configScript}</head>");
-            
-            return htmlContent;
+
+            // Serialize without over-escaping, but make sure it won't break </script>
+            var json = JsonSerializer.Serialize(
+                envConfig,
+                new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                });
+
+            json = SanitizeForInlineScript(json);
+
+            // Optional CSP nonce
+            string nonceAttr = string.IsNullOrEmpty(config.CspNonce) ? "" : $" nonce=\"{config.CspNonce}\"";
+
+            // Add base tag for proper asset loading
+            var baseTag = $@"<base href=""{basePath}/"" />";
+
+            // Inline bootstrap: set TickerQConfig and derive __dynamic_base__ (vite-plugin-dynamic-base)
+            var script = $@"<script{nonceAttr}>
+(function() {{
+  try {{
+    // Expose config
+    window.TickerQConfig = {json};
+
+    // Derive dynamic base for vite-plugin-dynamic-base
+    window.__dynamic_base__ = window.TickerQConfig.basePath;
+  }} catch (e) {{ console.error('Runtime config injection failed:', e); }}
+}})();
+</script>";
+
+            var fullInjection = baseTag + script;
+            // Prefer inject immediately after opening <head ...>
+            var headOpen = Regex.Match(htmlContent, "(?is)<head\\b[^>]*>");
+            if (headOpen.Success)
+            {
+                return htmlContent.Insert(headOpen.Index + headOpen.Length, fullInjection);
+            }
+
+            // Fallback: just before </head>
+            var closeIdx = htmlContent.IndexOf("</head>", StringComparison.OrdinalIgnoreCase);
+            if (closeIdx >= 0)
+            {
+                return htmlContent.Insert(closeIdx, fullInjection);
+            }
+
+            // Last resort: prepend (ensures script runs early)
+            return fullInjection + htmlContent;
         }
+
+        /// <summary>
+        /// Prevents &lt;/script&gt; in JSON strings from prematurely closing the inline script.
+        /// </summary>
+        private static string SanitizeForInlineScript(string json)
+            => json.Replace("</script", "<\\/script", StringComparison.OrdinalIgnoreCase);
     }
 }
 #endif

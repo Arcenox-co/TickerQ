@@ -15,6 +15,7 @@ namespace TickerQ.Dashboard.DependencyInjection
     public class DashboardConfiguration
     {
         public string BasePath { get; set; } = "/tickerq-dashboard";
+        public string CspNonce { get; set; }
         public string[] CorsOrigins { get; set; } = new[] { "*" };
         
         // Backend API Configuration
