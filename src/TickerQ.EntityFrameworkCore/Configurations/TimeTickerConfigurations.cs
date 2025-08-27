@@ -27,10 +27,10 @@ namespace TickerQ.EntityFrameworkCore.Configurations
                 .OnDelete(DeleteBehavior.Restrict);
             
             builder.HasIndex("ExecutionTime")
-                .HasName("IX_TimeTicker_ExecutionTime");
+                .HasDatabaseName("IX_TimeTicker_ExecutionTime");
 
             builder.HasIndex("Status", "ExecutionTime")
-                .HasName("IX_TimeTicker_Status_ExecutionTime");
+                .HasDatabaseName("IX_TimeTicker_Status_ExecutionTime");
 
             builder.ToTable("TimeTickers", _schema);
         }

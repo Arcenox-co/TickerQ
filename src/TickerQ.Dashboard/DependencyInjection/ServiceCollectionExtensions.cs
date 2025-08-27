@@ -1,4 +1,3 @@
-#if !NETCOREAPP3_1_OR_GREATER
 using System;
 using System.IO;
 using System.Linq;
@@ -12,13 +11,15 @@ using TickerQ.Dashboard.Controllers;
 using TickerQ.Dashboard.Hubs;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Authorization;
 
 namespace TickerQ.Dashboard.DependencyInjection
 {
-    internal static class NetTargetV31Lower
+    internal static class ServiceCollectionExtensions
     {
-        internal static void AddDashboardService(IServiceCollection services, DashboardConfiguration config)
+        internal static void AddDashboardService(this IServiceCollection services, DashboardConfiguration config)
         {
+            services.AddRouting();
             services.AddSignalR();
 
             services.AddCors(options =>
@@ -40,13 +41,12 @@ namespace TickerQ.Dashboard.DependencyInjection
                 });
             });
 
-            services.AddMvc(opt => opt.EnableEndpointRouting = false)
-                .AddApplicationPart(typeof(TickerQController).Assembly);
+            services.AddControllers().AddApplicationPart(typeof(TickerQController).Assembly);
         }
 
-        internal static void UseDashboard(IApplicationBuilder app, string basePath, DashboardConfiguration config)
+        internal static void UseDashboard(this IApplicationBuilder app, string basePath, DashboardConfiguration config)
         {
-            // Get the assembly and set up the embedded file provider
+            // Get the assembly and set up the embedded file provider (adjust the namespace as needed)
             var assembly = Assembly.GetExecutingAssembly();
             var embeddedFileProvider = new EmbeddedFileProvider(assembly, "TickerQ.Dashboard.wwwroot.dist");
 
@@ -65,34 +65,46 @@ namespace TickerQ.Dashboard.DependencyInjection
                     FileProvider = embeddedFileProvider
                 });
 
-                // Set up CORS for this branch
+                // Set up routing and CORS for this branch
+                dashboardApp.UseRouting();
                 dashboardApp.UseCors("Allow_TickerQ_Dashboard");
 
                 // Add authentication and authorization if using host authentication
-                // Note: In older .NET versions, these should be configured at the app level, not in the branch
-                // The host application should call UseAuthentication() and UseAuthorization() before UseTickerQ()
                 if (config.UseHostAuthentication)
                 {
-                    // For older .NET versions, authentication and authorization are typically configured
-                    // at the application level, not within the mapped branch
-                    // The host application should ensure these are called before UseTickerQ()
+                    dashboardApp.UseAuthentication();
+                    dashboardApp.UseAuthorization();
                 }
 
-                // Set up SignalR
-                dashboardApp.UseSignalR(routes =>
+                // Combine all endpoint registrations into one call
+                dashboardApp.UseEndpoints(endpoints =>
                 {
-                    routes.MapHub<TickerQNotificationHub>("/ticker-notification-hub");
-                });
-
-                // Set up MVC routing
-                dashboardApp.UseMvc(routes =>
-                {
-                    routes.MapRoute(
+                    // Map controller routes (e.g., Home/Index)
+                    var controllerRoute = endpoints.MapControllerRoute(
                         name: "default",
-                        template: "{controller=Home}/{action=Index}/{id?}");
+                        pattern: "{controller=Home}/{action=Index}/{id?}"
+                    );
+
+                    // Map the SignalR hub.
+                    // Inside the branch, map with a relative path.
+                    endpoints.MapHub<TickerQNotificationHub>("/ticker-notification-hub");
+
+
+                    // Add role-based or policy-based authorization if specified
+                    if (config.RequiredRoles.Any())
+                    {
+                        controllerRoute.RequireAuthorization(new AuthorizeAttribute()
+                        {
+                            Roles = string.Join(",", config.RequiredRoles)
+                        });
+                    }
+                    else if (config.RequiredPolicies.Any())
+                    {
+                        controllerRoute.RequireAuthorization(config.RequiredPolicies);
+                    }
                 });
 
-                // SPA fallback middleware
+                // SPA fallback middleware: if no route is matched, serve the modified index.html
                 dashboardApp.Use(async (context, next) =>
                 {
                     await next();
@@ -191,7 +203,6 @@ namespace TickerQ.Dashboard.DependencyInjection
             return fullInjection + htmlContent;
         }
 
-
         /// <summary>
         /// Prevents &lt;/script&gt; in JSON strings from prematurely closing the inline script.
         /// </summary>
@@ -199,4 +210,3 @@ namespace TickerQ.Dashboard.DependencyInjection
             => json.Replace("</script", "<\\/script", StringComparison.OrdinalIgnoreCase);
     }
 }
-#endif
