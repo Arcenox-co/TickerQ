@@ -53,6 +53,9 @@ namespace TickerQ.Utilities.Managers
         private async Task<TickerResult<TTimeTicker>> AddTimeTickerAsync(TTimeTicker entity,
             CancellationToken cancellationToken)
         {
+            if (entity.Id == Guid.Empty)
+                entity.Id = Guid.NewGuid();
+            
             if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity?.Function))
                 return new TickerResult<TTimeTicker>(
                     new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
@@ -107,6 +110,9 @@ namespace TickerQ.Utilities.Managers
         {
             try
             {
+                if(entity.Id == Guid.Empty)
+                    entity.Id = Guid.NewGuid();
+                
                 if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity?.Function))
                     return new TickerResult<TCronTicker>(
                         new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
