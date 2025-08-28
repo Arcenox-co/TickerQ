@@ -877,8 +877,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
             await _persistenceProvider.UpdateCronTickers(new[] { cronTicker });
 
-            var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression, CronParseOptions)?
-                .GetNextOccurrence(DateTime.UtcNow);
+            var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression, CronParseOptions)
+                ?.GetNextOccurrence(DateTime.UtcNow);
 
             if (nextOccurrence != null)
                 _tickerHost.RestartIfNeeded(nextOccurrence.Value);
