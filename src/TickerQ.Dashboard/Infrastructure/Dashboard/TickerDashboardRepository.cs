@@ -23,6 +23,9 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         private readonly ITickerQNotificationHubSender _notificationHubSender;
         private readonly IInternalTickerManager _internalTickerManager;
 
+        private static readonly CrontabSchedule.ParseOptions CronParseOptions
+            = new() { IncludingSeconds = true };
+            
         public TickerDashboardRepository(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerHost tickerHost, ITickerQNotificationHubSender notificationHubSender,
             IInternalTickerManager internalTickerManager)
@@ -836,7 +839,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
             await _persistenceProvider.InsertCronTickers(new[] { cronTicker });
 
-            var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression)?.GetNextOccurrence(DateTime.UtcNow);
+            var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression, CronParseOptions)
+                ?.GetNextOccurrence(DateTime.UtcNow);
 
             if (nextOccurrence != null)
                 _tickerHost.RestartIfNeeded(nextOccurrence.Value);
@@ -873,7 +877,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
             await _persistenceProvider.UpdateCronTickers(new[] { cronTicker });
 
-            var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression)?.GetNextOccurrence(DateTime.UtcNow);
+            var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression, CronParseOptions)?
+                .GetNextOccurrence(DateTime.UtcNow);
 
             if (nextOccurrence != null)
                 _tickerHost.RestartIfNeeded(nextOccurrence.Value);
