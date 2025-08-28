@@ -2,7 +2,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+		<TargetFrameworks>net8.0;</TargetFrameworks>
 		<PackageId>TickerQ.Utilities</PackageId>
 		<Description>Simple utilities for queuing and executing cron/time-based jobs in the background.</Description>
 		<PackageReadmeFile>README.md</PackageReadmeFile>

@@ -9,6 +9,7 @@ using TickerQ.Utilities;
 
 namespace TickerQ.Dashboard.Controllers.Attributes
 {
+    [AttributeUsage(AttributeTargets.Class)]
     public class BasicAuthAttribute : Attribute, IAuthorizationFilter
     {
         public void OnAuthorization(AuthorizationFilterContext context)
@@ -22,7 +23,7 @@ namespace TickerQ.Dashboard.Controllers.Attributes
             var validUser = config["TickerQBasicAuth:Username"];
             var validPass = config["TickerQBasicAuth:Password"];
 
-            var header = context.HttpContext.Request.Headers["Authorization"].FirstOrDefault();
+            var header = context.HttpContext.Request.Headers.Authorization.FirstOrDefault();
 
             if (header == null || !header.StartsWith("Basic "))
             {

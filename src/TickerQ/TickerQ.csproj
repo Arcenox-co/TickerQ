@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+        <TargetFrameworks>net8.0;</TargetFrameworks>
         <Description>A lightweight, developer-friendly library for queuing and executing cron and time-based jobs in the background.</Description>
         <PackageTags>$(PackageTags);background-jobs;task-scheduling</PackageTags>
         <PackageId>TickerQ</PackageId>

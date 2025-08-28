@@ -54,7 +54,7 @@ namespace TickerQ.DependencyInjection
 
             services.AddSingleton<ITickerClock, TickerSystemClock>();
 
-            services.AddSingleton<TickerOptionsBuilder>(_ => optionInstance)
+            services.AddSingleton(_ => optionInstance)
                 .AddSingleton<ITickerHost, TickerHost>();
 
             return services;
@@ -65,8 +65,7 @@ namespace TickerQ.DependencyInjection
         {
             var tickerOptBuilder = app.ApplicationServices.GetService<TickerOptionsBuilder>();
 
-            if (tickerOptBuilder?.DashboardApplicationAction != null)
-                tickerOptBuilder.DashboardApplicationAction.Invoke(app, tickerOptBuilder.DashboardLunchUrl);
+            tickerOptBuilder?.DashboardApplicationAction?.Invoke(app, tickerOptBuilder.DashboardLunchUrl);
 
             UseTickerQ(app.ApplicationServices, qStartMode);
         }

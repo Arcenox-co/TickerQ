@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+        <TargetFrameworks>net8.0;</TargetFrameworks>
         <PackageId>TickerQ.Dashboard</PackageId>
         <Description>Dashboard UI for visualizing and monitoring TickerQ scheduled jobs, status, and system metrics.</Description>
         <PackageTags>$(PackageTags);dashboard;monitoring;scheduler;status;job;ui</PackageTags>

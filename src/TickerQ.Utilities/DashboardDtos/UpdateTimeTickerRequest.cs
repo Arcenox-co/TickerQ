@@ -8,7 +8,7 @@ namespace TickerQ.Utilities.DashboardDtos
         public string Request { get; set; } = string.Empty;
         public int Retries { get; set; }
         public string Description { get; set; } = string.Empty;
-        public string? ExecutionTime { get; set; }
-        public int[]? Intervals { get; set; }
+        public string ExecutionTime { get; set; }
+        public int[] Intervals { get; set; }
     }
 } 

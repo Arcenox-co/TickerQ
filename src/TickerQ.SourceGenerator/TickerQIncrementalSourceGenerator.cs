@@ -51,19 +51,14 @@ namespace TickerQ.SourceGenerator
                 .Where(pair => pair != null)
                 .Select((pair, _) => pair.Value);
 
-            var tfmCheck = context.AnalyzerConfigOptionsProvider
-                .Select((provider, _) => provider.GlobalOptions.TryGetValue("build_property.targetframework", out var tfm)
-                                         && TfmHelper.IsNet6OrGreaterFromTfm(tfm));
-
             var compilationAndMethods = context.CompilationProvider
-                .Combine(tickerMethods.Collect())
-                .Combine(tfmCheck); // ((Compilation, Methods), IsNet6OrGreater)
+                .Combine(tickerMethods.Collect());
 
             context.RegisterSourceOutput(compilationAndMethods, (productionContext, source) =>
             {
-                var ((compilation, methodPairs), isNet6OrGreater) = source;
+                var (compilation, methodPairs) = source;
 
-                if (!isNet6OrGreater || compilation.Assembly.Name == "TickerQ")
+                if (compilation.Assembly.Name == "TickerQ")
                     return;
 
                 var delegates = BuildTickerFunctionDelegates(methodPairs, compilation, productionContext).ToList();
@@ -84,12 +79,10 @@ namespace TickerQ.SourceGenerator
 
         private static (ClassDeclarationSyntax ClassDecl, MethodDeclarationSyntax MethodDecl)? GetTickerMethodIfAny(GeneratorSyntaxContext ctx)
         {
-            var methodSyntax = ctx.Node as MethodDeclarationSyntax;
-            if (methodSyntax == null) return null;
+            if (!(ctx.Node is MethodDeclarationSyntax methodSyntax)) return null;
 
             var semanticModel = ctx.SemanticModel;
-            var methodSymbol = semanticModel.GetDeclaredSymbol(methodSyntax) as IMethodSymbol;
-            if (methodSymbol == null) return null;
+            if (!(semanticModel.GetDeclaredSymbol(methodSyntax) is IMethodSymbol methodSymbol)) return null;
 
             if (methodSymbol.ContainingAssembly.Name != semanticModel.Compilation.Assembly.Name)
                 return null;
@@ -98,8 +91,7 @@ namespace TickerQ.SourceGenerator
                 .Any(attr => attr.AttributeClass?.Name == "TickerFunctionAttribute");
             if (!hasTickerFunction) return null;
 
-            var cd = methodSyntax.Parent as ClassDeclarationSyntax;
-            if (cd == null) return null;
+            if (!(methodSyntax.Parent is ClassDeclarationSyntax cd)) return null;
 
             return (cd, methodSyntax);
         }
@@ -148,10 +140,9 @@ namespace TickerQ.SourceGenerator
                 ValidateClassAndMethod(cd, method, comp, context);
 
                 var semanticModel = comp.GetSemanticModel(method.SyntaxTree);
-                var ms = semanticModel.GetDeclaredSymbol(method) as IMethodSymbol;
-                if (ms == null) continue;
+                var ms = semanticModel.GetDeclaredSymbol(method);
 
-                var tickerAttrData = ms.GetAttributes()
+                var tickerAttrData = ms?.GetAttributes()
                     .FirstOrDefault(ad => ad.AttributeClass?.Name == "TickerFunctionAttribute");
                 if (tickerAttrData == null) continue;
 
@@ -195,9 +186,9 @@ namespace TickerQ.SourceGenerator
         {
             if (part == "*") return true;
 
-            ReadOnlySpan<char> span = part.AsSpan();
+            var span = part.AsSpan();
             var values = new HashSet<int>();
-            int i = 0;
+            var i = 0;
 
             while (i < span.Length)
             {
@@ -240,7 +231,7 @@ namespace TickerQ.SourceGenerator
                 if (num1 < min || num2 > max || num1 > num2 || step < 1 || step > max)
                     return false;
 
-                for (int v = num1; v <= num2; v += step)
+                for (var v = num1; v <= num2; v += step)
                     values.Add(v);
 
                 if (i < span.Length && span[i] == ',')
@@ -272,13 +263,12 @@ namespace TickerQ.SourceGenerator
             int functionPriority,
             string cronExpression)
         {
-            bool usesGenericContext = false;
+            var usesGenericContext = false;
             string genericTypeName = null;
             var paramsList = new List<string>();
 
-            foreach (var p in method.ParameterList.Parameters)
+            foreach (var typeSymbol in method.ParameterList.Parameters.Select(p => model.GetTypeInfo(p.Type).Type))
             {
-                var typeSymbol = model.GetTypeInfo(p.Type).Type;
                 if (typeSymbol is INamedTypeSymbol nts && nts.IsGenericType && nts.Name == "TickerFunctionContext")
                 {
                     usesGenericContext = true;
@@ -301,7 +291,7 @@ namespace TickerQ.SourceGenerator
                 }
             }
 
-            bool isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
+            var isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
             var awaitable = IsMethodAwaitable(ms, comp);
             var asyncFlag = (usesGenericContext || awaitable) ? "async " : "";
             var cronExprFlag = string.IsNullOrEmpty(cronExpression)
@@ -367,9 +357,12 @@ namespace TickerQ.SourceGenerator
                 var nm = FirstLetterToLower(p.Identifier.Text.AsSpan());
                 if (nm != "serviceProvider")
                 {
-                    var typeSymbol = ModelExtensions.GetSymbolInfo(model, p.Type).Symbol;
-                    var typeName = typeSymbol?.ToDisplayString() ?? p.Type.ToString(); // fallback
-                    sb.AppendLine($"      var {nm} = serviceProvider.GetService<{typeName}>();");
+                    if (p.Type != null)
+                    {
+                        var typeSymbol = ModelExtensions.GetSymbolInfo(model, p.Type).Symbol;
+                        var typeName = typeSymbol?.ToDisplayString() ?? p.Type.ToString(); // fallback
+                        sb.AppendLine($"      var {nm} = serviceProvider.GetService<{typeName}>();");
+                    }
                 }
                 args.Add(nm);
             }
@@ -483,7 +476,7 @@ namespace TickerQ.SourceGenerator
             if (vtg!=null && SymbolEqualityComparer.Default.Equals(rt.OriginalDefinition, vtg)) return true;
 
             var awaiter = rt.GetMembers("GetAwaiter").OfType<IMethodSymbol>().FirstOrDefault();
-            return awaiter != null && awaiter.ReturnType != null;
+            return awaiter != null;
         }
 
         private static string FormatCode(string code)

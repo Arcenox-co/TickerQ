@@ -13,40 +13,35 @@ using TickerQ.Utilities.Models.Ticker;
 
 namespace TickerQ.Utilities.Managers
 {
-    internal abstract class InternalTickerManager<TTimeTicker, TCronTicker> : IInternalTickerManager
-        where TTimeTicker : TimeTicker, new() where TCronTicker : CronTicker, new()
+    internal abstract class InternalTickerManager<TTimeTicker, TCronTicker>(
+        ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
+        ITickerHost tickerHost,
+        ITickerClock clock,
+        TickerOptionsBuilder tickerOptionsBuilder,
+        ITickerQNotificationHubSender notificationHubSender)
+        : IInternalTickerManager
+        where TTimeTicker : TimeTicker, new()
+        where TCronTicker : CronTicker, new()
     {
-        protected readonly string LockHolder;
-        protected readonly ITickerPersistenceProvider<TTimeTicker, TCronTicker> PersistenceProvider;
-        protected readonly ITickerHost TickerHost;
-        protected readonly ITickerClock Clock;
-        protected readonly ITickerQNotificationHubSender NotificationHubSender;
+        protected readonly string LockHolder = tickerOptionsBuilder?.InstanceIdentifier ?? Environment.MachineName;
+        protected readonly ITickerPersistenceProvider<TTimeTicker, TCronTicker> PersistenceProvider = persistenceProvider;
+        protected readonly ITickerHost TickerHost = tickerHost ?? throw new ArgumentNullException(nameof(tickerHost));
+        protected readonly ITickerClock Clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        protected readonly ITickerQNotificationHubSender NotificationHubSender = notificationHubSender;
 
-        private static readonly HashSet<TickerStatus> SuccessConditions = new HashSet<TickerStatus>()
-        {
+        private readonly HashSet<TickerStatus> _successConditions =
+        [
             TickerStatus.Done,
             TickerStatus.DueDone
-        };
-
-
-        private static readonly HashSet<TickerStatus> CompletedStatuses = new HashSet<TickerStatus>()
-        {
+        ];
+        
+        private readonly HashSet<TickerStatus> _completedStatuses =
+        [
             TickerStatus.Cancelled,
             TickerStatus.Done,
             TickerStatus.DueDone,
             TickerStatus.Failed
-        };
-
-        protected InternalTickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
-            ITickerHost tickerHost, ITickerClock clock, TickerOptionsBuilder tickerOptionsBuilder,
-            ITickerQNotificationHubSender notificationHubSender)
-        {
-            LockHolder = tickerOptionsBuilder?.InstanceIdentifier ?? Environment.MachineName;
-            PersistenceProvider = persistenceProvider;
-            TickerHost = tickerHost ?? throw new ArgumentNullException(nameof(tickerHost));
-            Clock = clock ?? throw new ArgumentNullException(nameof(clock));
-            NotificationHubSender = notificationHubSender;
-        }
+        ];
 
         public async Task<(TimeSpan TimeRemaining, InternalFunctionContext[] Functions)> GetNextTickers(
             CancellationToken cancellationToken = default)
@@ -57,7 +52,7 @@ namespace TickerQ.Utilities.Managers
             var minTimeRemaining = CalculateMinTimeRemaining(minCronGroup, minTimeTicker ?? default);
 
             if (minTimeRemaining == Timeout.InfiniteTimeSpan)
-                return (Timeout.InfiniteTimeSpan, Array.Empty<InternalFunctionContext>());
+                return (Timeout.InfiniteTimeSpan, []);
 
             var nextTickers =
                 await RetrieveEligibleTickersAsync(minCronGroup, minTimeTicker ?? default, cancellationToken)
@@ -280,7 +275,7 @@ namespace TickerQ.Utilities.Managers
         private async Task<DateTime?> GetEarliestTimeTickerAsync(CancellationToken cancellationToken = default)
         {
             return await PersistenceProvider
-                .GetEarliestTimeTickerTime(Clock.UtcNow, new[] { TickerStatus.Idle },
+                .GetEarliestTimeTickerTime(Clock.UtcNow, [TickerStatus.Idle],
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -347,7 +342,7 @@ namespace TickerQ.Utilities.Managers
                         // For any non-completed occurrences (including queued/in-progress), 
                         // calculate next occurrence AFTER the latest one to avoid conflicts
                         var latestNonCompletedOccurrence = existingOccurrences
-                            .Where(x => !CompletedStatuses.Contains(x.Status))
+                            .Where(x => !_completedStatuses.Contains(x.Status))
                             .OrderByDescending(x => x.ExecutionTime)
                             .FirstOrDefault();
 
@@ -426,7 +421,7 @@ namespace TickerQ.Utilities.Managers
             CancellationToken cancellationToken = default)
         {
             var timeTickers = await PersistenceProvider
-                .GetLockedTimeTickers(LockHolder, new[] { TickerStatus.Queued, TickerStatus.Inprogress },
+                .GetLockedTimeTickers(LockHolder, [TickerStatus.Queued, TickerStatus.Inprogress],
                     opt => opt.SetAsTracking(),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -565,7 +560,7 @@ namespace TickerQ.Utilities.Managers
 
         public Task SetTickerStatus(InternalFunctionContext context, CancellationToken cancellationToken = default)
         {
-            return UpdateTickersAsync(new[] { context },
+            return UpdateTickersAsync([context],
                 cronOccurrence =>
                 {
                     cronOccurrence.Status = context.Status;
@@ -600,7 +595,7 @@ namespace TickerQ.Utilities.Managers
         public async Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type,
             CancellationToken cancellationToken = default)
         {
-            byte[] request = type == TickerType.CronExpression
+            var request = type == TickerType.CronExpression
                 ? await PersistenceProvider
                     .GetCronTickerRequestViaOccurrence(tickerId, cancellationToken: cancellationToken)
                     .ConfigureAwait(false)
@@ -617,7 +612,7 @@ namespace TickerQ.Utilities.Managers
             var timedOutCronTickers = await RetrieveTimedOutCronTickersAsync(cancellationToken).ConfigureAwait(false);
 
             if (timedOutTimeTickers.Length == 0 && timedOutCronTickers.Length == 0)
-                return Array.Empty<InternalFunctionContext>();
+                return [];
 
             return timedOutTimeTickers.Concat(timedOutCronTickers).ToArray();
         }
@@ -630,7 +625,7 @@ namespace TickerQ.Utilities.Managers
                 .ConfigureAwait(false);
 
             if (cronTickerOccurrences.Length == 0)
-                return Array.Empty<InternalFunctionContext>();
+                return [];
 
             var updatedCronTickers = UpdateCronTickerOccurrences(cronTickerOccurrences).ToArray();
 
@@ -678,7 +673,7 @@ namespace TickerQ.Utilities.Managers
                 .ConfigureAwait(false);
 
             if (timeTickers.Length == 0)
-                return Array.Empty<InternalFunctionContext>();
+                return [];
 
             var updatedTimeTickers = UpdateTimeTickers(timeTickers).ToArray();
 
@@ -709,7 +704,7 @@ namespace TickerQ.Utilities.Managers
 
         public Task UpdateTickerRetries(InternalFunctionContext context, CancellationToken cancellationToken = default)
         {
-            return UpdateTickersAsync(new[] { context },
+            return UpdateTickersAsync([context],
                 cronTickerOccurrence => { cronTickerOccurrence.RetryCount = context.RetryCount; },
                 timeTicker => { timeTicker.RetryCount = context.RetryCount; },
                 null, cancellationToken);
@@ -757,12 +752,12 @@ namespace TickerQ.Utilities.Managers
 
             var nonExistingCronTickers = existingCronTickers.Where(x => !existingFunctions.Contains(x.Id)).ToList();
 
-            if (nonExistingCronTickers.Any())
+            if (nonExistingCronTickers.Count != 0)
                 await PersistenceProvider
                     .RemoveCronTickers(nonExistingCronTickers, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
 
-            if (newCronTickers.Any())
+            if (newCronTickers.Count != 0)
                 await PersistenceProvider.InsertCronTickers(newCronTickers, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
         }
@@ -778,7 +773,7 @@ namespace TickerQ.Utilities.Managers
                 if (cronTicker is null)
                     return;
 
-                await PersistenceProvider.RemoveCronTickers(new[] { cronTicker }, cancellationToken: cancellationToken)
+                await PersistenceProvider.RemoveCronTickers([cronTicker], cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
 
                 if (NotificationHubSender != null)
@@ -795,7 +790,7 @@ namespace TickerQ.Utilities.Managers
                 if (timeTicker is null)
                     return;
 
-                await PersistenceProvider.RemoveTimeTickers(new[] { timeTicker }, cancellationToken: cancellationToken)
+                await PersistenceProvider.RemoveTimeTickers([timeTicker], cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
 
                 if (NotificationHubSender != null)
@@ -814,9 +809,9 @@ namespace TickerQ.Utilities.Managers
             {
                 child.Status = child.BatchRunCondition switch
                 {
-                    BatchRunCondition.OnSuccess when SuccessConditions.Contains(currentStatus) => TickerStatus
+                    BatchRunCondition.OnSuccess when _successConditions.Contains(currentStatus) => TickerStatus
                         .Idle,
-                    BatchRunCondition.OnAnyCompletedStatus when CompletedStatuses.Contains(currentStatus) =>
+                    BatchRunCondition.OnAnyCompletedStatus when _completedStatuses.Contains(currentStatus) =>
                         TickerStatus.Idle,
                     _ => child.Status
                 };

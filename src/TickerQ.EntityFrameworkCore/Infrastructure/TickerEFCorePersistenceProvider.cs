@@ -14,20 +14,14 @@ using TickerQ.Utilities.Models.Ticker;
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
     internal class
-        TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker> : BasePersistenceProvider<TDbContext>,
-        ITickerPersistenceProvider<TTimeTicker,
-            TCronTicker>
+        TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker>(TDbContext dbContext, ITickerClock clock)
+        : BasePersistenceProvider<TDbContext>(dbContext),
+            ITickerPersistenceProvider<TTimeTicker,
+                TCronTicker>
         where TDbContext : DbContext
         where TTimeTicker : TimeTicker, new()
         where TCronTicker : CronTicker, new()
     {
-        private readonly ITickerClock _clock;
-
-        public TickerEfCorePersistenceProvider(TDbContext dbContext, ITickerClock clock) : base(dbContext)
-        {
-            _clock = clock;
-        }
-
         #region Time Ticker Operations
 
         public async Task<TTimeTicker> GetTimeTickerById(Guid id, Action<TickerProviderOptions> options = null,
@@ -54,7 +48,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var optionsValue = options.InvokeProviderOptions();
 
             var timeTickerContext = GetDbSet<TimeTickerEntity>();
-
+            
             var query = optionsValue.Tracking
                 ? timeTickerContext
                 : timeTickerContext.AsNoTracking();
@@ -102,7 +96,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     }
 
                     // Bulk update all tickers at once (fastest approach)
-                    var lockTime = _clock.UtcNow;
+                    var lockTime = clock.UtcNow;
                     var successfulTickers = new List<TimeTickerEntity>();
 
                     foreach (var ticker in availableTickers)
@@ -532,7 +526,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             var optionsValue = options.InvokeProviderOptions();
 
-            var now = _clock.UtcNow;
+            var now = clock.UtcNow;
 
             var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
@@ -585,7 +579,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     }
 
                     // Bulk update all occurrences at once 
-                    var lockTime = _clock.UtcNow;
+                    var lockTime = clock.UtcNow;
                     var successfulOccurrences = new List<CronTickerOccurrenceEntity<CronTickerEntity>>();
 
                     foreach (var occurrence in availableOccurrences)
@@ -964,7 +958,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
                         listOfSuccessfulIds.Add(entity.Id);
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
                         transaction.Rollback();
                         DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();

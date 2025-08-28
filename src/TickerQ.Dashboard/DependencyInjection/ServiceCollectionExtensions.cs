@@ -115,7 +115,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                         var file = embeddedFileProvider.GetFileInfo("index.html");
                         if (file.Exists)
                         {
-                            using var stream = file.CreateReadStream();
+                            await using var stream = file.CreateReadStream();
                             using var reader = new StreamReader(stream);
                             var htmlContent = await reader.ReadToEndAsync();
 
