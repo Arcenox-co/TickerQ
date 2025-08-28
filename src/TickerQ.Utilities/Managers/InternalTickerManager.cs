@@ -37,6 +37,9 @@ namespace TickerQ.Utilities.Managers
             TickerStatus.Failed
         };
 
+        private static readonly CrontabSchedule.ParseOptions CronParseOptions
+            = new() { IncludingSeconds = true };
+            
         protected InternalTickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerHost tickerHost, ITickerClock clock, TickerOptionsBuilder tickerOptionsBuilder,
             ITickerQNotificationHubSender notificationHubSender)
@@ -304,7 +307,7 @@ namespace TickerQ.Utilities.Managers
             var withNext = cronTickers
                 .Select(vt =>
                 {
-                    var schedule = CrontabSchedule.TryParse(vt.Item2);
+                    var schedule = CrontabSchedule.TryParse(vt.Item2, CronParseOptions);
                     if (schedule == null) return null;
 
                     // Find the earliest occurrence for this cron ticker
