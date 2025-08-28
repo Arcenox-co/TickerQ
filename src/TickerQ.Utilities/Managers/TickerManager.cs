@@ -19,6 +19,9 @@ namespace TickerQ.Utilities.Managers
         ITimeTickerManager<TTimeTicker>
         where TTimeTicker : TimeTicker, new() where TCronTicker : CronTicker, new()
     {
+        private static readonly CrontabSchedule.ParseOptions CronParseOptions
+            = new() { IncludingSeconds = true };
+            
         public TickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerHost tickerHost, ITickerClock clock,
             TickerOptionsBuilder tickerOptions, ITickerQNotificationHubSender notificationHubSender)
@@ -117,7 +120,7 @@ namespace TickerQ.Utilities.Managers
                     return new TickerResult<TCronTicker>(
                         new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
 
-                if (!(CrontabSchedule.TryParse(entity.Expression) is { } crontabSchedule))
+                if (!(CrontabSchedule.TryParse(entity.Expression, CronParseOptions) is { } crontabSchedule))
                     return new TickerResult<TCronTicker>(
                         new TickerValidatorException($"Cannot parse expression {entity.Expression}"));
 
@@ -221,7 +224,7 @@ namespace TickerQ.Utilities.Managers
 
                 var coreChanges = (cronTickerExpression != cronTicker.Expression) || function != cronTicker.Function;
 
-                if (!(CrontabSchedule.TryParse(cronTicker.Expression) is { } crontabSchedule))
+                if (!(CrontabSchedule.TryParse(cronTicker.Expression, CronParseOptions) is { } crontabSchedule))
                     return new TickerResult<TCronTicker>(
                         new TickerValidatorException($"Cannot parse expression {cronTicker.Expression}"));
 
