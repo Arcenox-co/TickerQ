@@ -60,7 +60,7 @@ dotnet add package TickerQ.Dashboard
 ```csharp
 builder.Services.AddTickerQ(options =>
 {
-    opt.SetMaxConcurrency(10);
+    options.SetMaxConcurrency(10);
     options.AddOperationalStore<MyDbContext>(efOpt => 
     {
         efOpt.SetExceptionHandler<MyExceptionHandlerClass>();
@@ -70,8 +70,10 @@ builder.Services.AddTickerQ(options =>
     {
         uiopt.BasePath = "/tickerq-dashboard"; 
         uiopt.AddDashboardBasicAuth();
-    }
+    });
 });
+
+...
 
 app.UseTickerQ(); // Activates job processor
 ```
@@ -121,7 +123,7 @@ public class CleanupJobs(ICleanUpService cleanUpService)
     private readonly ICleanUpService _cleanUpService = cleanUpService;
 
     [TickerFunction(functionName: "CleanupLogs", cronExpression: "0 0 * * *" )]
-    public asynt Task CleanupLogs(TickerFunctionContext<string> tickerContext, CancellationToken cancellationToken)
+    public async Task CleanupLogs(TickerFunctionContext<string> tickerContext, CancellationToken cancellationToken)
     {
         var logFileName = tickerContext.Request; // output cleanup_example_file.txt
         await _cleanUpService.CleanOldLogsAsync(logFileName, cancellationToken);
