@@ -1,4 +1,5 @@
-﻿using NCrontab;
+﻿using Microsoft.Extensions.Logging;
+using NCrontab;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -21,6 +22,7 @@ namespace TickerQ.Utilities.Managers
         protected readonly ITickerHost TickerHost;
         protected readonly ITickerClock Clock;
         protected readonly ITickerQNotificationHubSender NotificationHubSender;
+        protected readonly ILogger<InternalTickerManager<TTimeTicker, TCronTicker>> Logger;
 
         private static readonly HashSet<TickerStatus> SuccessConditions = new HashSet<TickerStatus>()
         {
@@ -39,13 +41,14 @@ namespace TickerQ.Utilities.Managers
 
         protected InternalTickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerHost tickerHost, ITickerClock clock, TickerOptionsBuilder tickerOptionsBuilder,
-            ITickerQNotificationHubSender notificationHubSender)
+            ITickerQNotificationHubSender notificationHubSender, ILogger<InternalTickerManager<TTimeTicker, TCronTicker>> logger)
         {
             LockHolder = tickerOptionsBuilder?.InstanceIdentifier ?? Environment.MachineName;
             PersistenceProvider = persistenceProvider;
             TickerHost = tickerHost ?? throw new ArgumentNullException(nameof(tickerHost));
             Clock = clock ?? throw new ArgumentNullException(nameof(clock));
             NotificationHubSender = notificationHubSender;
+            Logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         public async Task<(TimeSpan TimeRemaining, InternalFunctionContext[] Functions)> GetNextTickers(
@@ -189,6 +192,16 @@ namespace TickerQ.Utilities.Managers
                 .GetNextCronTickerOccurrences(nextOccurrence, LockHolder, cronTickerIdSet, opt => opt.SetAsNoTracking(),
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
+            
+            // Get existing occurrences for duplicate checking (Issue #195 fix)
+            var existingOccurrences = await PersistenceProvider
+                .GetExistingCronTickerOccurrences(cronTickerIdSet, opt => opt.SetAsNoTracking(),
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            
+            // Log occurrence counts for debugging
+            Logger.LogDebug("LockHolder={LockHolder}, lockableOccurrences={LockableCount}, allExistingOccurrences={ExistingCount}", 
+                LockHolder, occurrenceList.Length, existingOccurrences.Length);
 
             var result = new List<InternalFunctionContext>();
             var newOccurrences = new List<CronTickerOccurrence<TCronTicker>>();
@@ -222,8 +235,8 @@ namespace TickerQ.Utilities.Managers
                 var cronTicker = cronTickers.FirstOrDefault(x => x.Id == cronTickerId);
                 if (cronTicker == null) continue;
 
-                // Check if we already have an occurrence for this cron ticker
-                var hasExistingOccurrence = occurrenceList.Any(x => x.CronTickerId == cronTickerId && x.ExecutionTime == nextOccurrence);
+                // Check if we already have an occurrence for this cron ticker (Issue #195 fix)
+                var hasExistingOccurrence = existingOccurrences.Any(x => x.CronTickerId == cronTickerId && x.ExecutionTime == nextOccurrence);
 
                 if (!hasExistingOccurrence)
                 {
@@ -239,6 +252,12 @@ namespace TickerQ.Utilities.Managers
                     };
 
                     newOccurrences.Add(newOccurrence);
+                }
+                else
+                {
+                    // Skip creating occurrence as it already exists
+                    Logger.LogDebug("Skipping duplicate occurrence for CronTickerId={CronTickerId}, ExecutionTime={ExecutionTime:yyyy-MM-dd HH:mm:ss}", 
+                        cronTickerId, nextOccurrence);
                 }
             }
 

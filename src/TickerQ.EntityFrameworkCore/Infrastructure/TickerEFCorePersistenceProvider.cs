@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -22,10 +23,12 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         where TCronTicker : CronTicker, new()
     {
         private readonly ITickerClock _clock;
+        private readonly ILogger<TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker>> _logger;
 
-        public TickerEfCorePersistenceProvider(TDbContext dbContext, ITickerClock clock) : base(dbContext)
+        public TickerEfCorePersistenceProvider(TDbContext dbContext, ITickerClock clock, ILogger<TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker>> logger) : base(dbContext)
         {
             _clock = clock;
+            _logger = logger;
         }
 
         #region Time Ticker Operations
@@ -660,6 +663,31 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>()).ToArray();
         }
 
+        public async Task<CronTickerOccurrence<TCronTicker>[]> GetExistingCronTickerOccurrences(
+            Guid[] cronTickerIds,
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
+        {
+            var optionsValue = options.InvokeProviderOptions();
+            var cronTickerOccurrenceContext = GetDbSet<CronTickerOccurrenceEntity<CronTickerEntity>>();
+
+            var query = optionsValue.Tracking
+                ? cronTickerOccurrenceContext
+                : cronTickerOccurrenceContext.AsNoTracking();
+
+            var occurrences = await query
+                .Where(x => cronTickerIds.Contains(x.CronTickerId) && 
+                            x.Status != TickerStatus.Done && 
+                            x.Status != TickerStatus.DueDone &&
+                            x.Status != TickerStatus.Failed &&
+                            x.Status != TickerStatus.Cancelled)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return occurrences
+                .Select(x => x.ToCronTickerOccurrence<CronTickerOccurrence<TCronTicker>, TCronTicker>())
+                .ToArray();
+        }
+
         public async Task<CronTickerOccurrence<TCronTicker>[]> GetTimedOutCronTickerOccurrences(DateTime now,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
@@ -941,6 +969,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
+            _logger.LogDebug("Inserting {EntityCount} CronTickerOccurrences", cronTickerOccurrences.Count());
+
             var listOfSuccessfulIds = new List<Guid>();
 
             await DbContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
@@ -963,13 +993,36 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         transaction.Commit();
 
                         listOfSuccessfulIds.Add(entity.Id);
+                        _logger.LogDebug("Successfully inserted occurrence for CronTickerId={CronTickerId}, ExecutionTime={ExecutionTime:yyyy-MM-dd HH:mm:ss}", 
+                            entity.CronTickerId, entity.ExecutionTime);
                     }
-                    catch (Exception ex)
+                    catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex, "UQ_CronTickerId_ExecutionTime"))
                     {
+                        // Expected constraint violation during initialization - handle gracefully
+                        _logger.LogWarning("Constraint violation handled gracefully for CronTickerId={CronTickerId}, ExecutionTime={ExecutionTime:yyyy-MM-dd HH:mm:ss}", 
+                            entity.CronTickerId, entity.ExecutionTime);
+                        transaction.Rollback();
+                        DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                        // Continue processing other occurrences (don't add to processedOccurrences)
+                    }
+                    catch (DbUpdateConcurrencyException)
+                    {
+                        // Concurrency conflict - handle gracefully
                         transaction.Rollback();
                         DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
                     }
+                    catch (Exception)
+                    {
+                        // Unexpected errors - re-throw
+                        transaction.Rollback();
+                        DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
+                        throw;
+                    }
                 }
+
+                // Log summary of batch processing
+                _logger.LogDebug("Batch complete: Total={TotalEntities}, Success={SuccessCount}, Failed={FailedCount}",
+                    entities.Count, listOfSuccessfulIds.Count, entities.Count - listOfSuccessfulIds.Count);
 
                 // Detach entities to prevent memory leaks
                 DetachAll<CronTickerOccurrenceEntity<CronTickerEntity>>();
