@@ -8,8 +8,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.7" />
-	<PackageReference Include="TickerQ" Version="2.5.3" />
-	<PackageReference Include="TickerQ.Dashboard" Version="2.5.3" />
+	<PackageReference Include="TickerQ" Version="2.4.1" />
+	<PackageReference Include="TickerQ.Dashboard" Version="2.4.1" />
   </ItemGroup>
 
 </Project>
