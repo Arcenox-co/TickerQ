@@ -22,6 +22,7 @@ import {
   GridComponent,
 } from 'echarts/components'
 import VChart, { THEME_KEY } from 'vue-echarts'
+import cronstrue from 'cronstrue'
 const getCronTickerRangeGraphData = cronTickerService.getTimeTickersGraphDataRange()
 const getCronTickers = cronTickerService.getCronTickers()
 const getCronTickerRangeGraphDataById = cronTickerService.getTimeTickersGraphDataRangeById()
@@ -881,6 +882,22 @@ const headersWithoutReadable = computed(() =>
   getCronTickers.headers.value?.filter((h) => h.key !== 'expressionReadable')
 )
 
+/**
+ * Get human-readable description of cron expression using cronstrue
+ */
+const getCronDescription = (expression: string): string => {
+  try {
+    if (!expression || !expression.trim()) return 'No expression provided'
+    return cronstrue.toString(expression, { 
+      throwExceptionOnParseError: false,
+      verbose: true,
+      use24HourTimeFormat: true
+    })
+  } catch (error) {
+    return 'Invalid cron expression'
+  }
+}
+
 // Chart toggle state
 const activeChart = ref('line') // Default to line chart (Time Series Analysis)
 
@@ -1098,13 +1115,20 @@ const refreshData = async () => {
             class="enhanced-table"
           >
             <template v-slot:item.expression="{ item }">
-              <v-tooltip location="top">
+              <v-tooltip 
+                location="top"
+                :open-delay="200"
+                content-class="cron-tooltip-content"
+              >
                 <template #activator="{ props }">
                   <span v-bind="props" class="expression-tooltip">
                     {{ item.expression }}
                   </span>
                 </template>
-                <span>{{ item.expressionReadable }}</span>
+                <div class="cron-tooltip">
+                  <div class="cron-tooltip-title">Human Readable:</div>
+                  <div class="cron-tooltip-description">{{ getCronDescription(item.expression) }}</div>
+                </div>
               </v-tooltip>
             </template>
 
@@ -1965,6 +1989,39 @@ const refreshData = async () => {
 .expression-tooltip:hover {
   color: #90caf9;
   text-shadow: 0 0 8px rgba(100, 181, 246, 0.3);
+}
+
+/* Enhanced Cron Tooltip Styles */
+:deep(.cron-tooltip-content) {
+  background: rgba(0, 0, 0, 0.95) !important;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(100, 181, 246, 0.3) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8) !important;
+  border-radius: 8px !important;
+  max-width: 280px !important;
+}
+
+.cron-tooltip {
+  padding: 6px 8px;
+}
+
+.cron-tooltip-title {
+  font-weight: 600;
+  color: #64b5f6;
+  font-size: 0.75rem;
+  margin-bottom: 3px;
+  border-bottom: 1px solid rgba(100, 181, 246, 0.4);
+  padding-bottom: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.cron-tooltip-description {
+  font-size: 0.8rem;
+  line-height: 1.3;
+  color: #ffffff;
+  font-weight: 500;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
 /* Clean Retry Intervals Display */
