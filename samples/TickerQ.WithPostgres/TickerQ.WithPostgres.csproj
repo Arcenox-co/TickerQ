@@ -13,13 +13,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\TickerQ\TickerQ.csproj" />
-    <ProjectReference Include="..\..\src\TickerQ.Dashboard\TickerQ.Dashboard.csproj" />
-    <ProjectReference Include="..\..\src\TickerQ.EntityFrameworkCore\TickerQ.EntityFrameworkCore.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\TickerQ.SourceGenerator\TickerQ.SourceGenerator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <PackageReference Include="TickerQ" Version="2.5.3-preview" />
+    <PackageReference Include="TickerQ.Dashboard" Version="2.5.3-preview" />
+    <PackageReference Include="TickerQ.EntityFrameworkCore" Version="2.5.3-preview" />
   </ItemGroup>
 
 </Project>
