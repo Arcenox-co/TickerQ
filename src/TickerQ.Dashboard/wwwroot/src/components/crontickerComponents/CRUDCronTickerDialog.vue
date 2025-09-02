@@ -6,6 +6,8 @@ import { tickerService } from '@/http/services/tickerService'
 import type { GetCronTickerResponse } from '@/http/services/types/cronTickerService.types'
 import { cronTickerService } from '@/http/services/cronTickerService'
 import { formatTime } from '@/utilities/dateTimeParser'
+import cron from 'cron-validate'
+import cronstrue from 'cronstrue'
 const functionNamesStore = useFunctionNameStore()
 const getTickerRequestData = tickerService.getRequestData()
 const updateCronTicker = cronTickerService.updateCronTicker()
@@ -55,8 +57,21 @@ const formatJsonForDisplay = (json: string, isHtml: boolean = false) => {
   }
 }
 
-const cronRegex =
-  /^(\*|([0-5]?\d)(\/[0-5]?\d)?|(\*\/[0-5]?\d)|([0-5]?\d(-[0-5]?\d)?)(,[0-5]?\d(-[0-5]?\d)?)*)\s+(\*|([0-1]?\d|2[0-3])(\/[0-1]?\d|\/2[0-3])?|(\*\/[0-1]?\d|\/2[0-3])|([0-1]?\d|2[0-3])(-([0-1]?\d|2[0-3]))?(,([0-1]?\d|2[0-3]))*)\s+(\*|([1-9]|[12]\d|3[01])(\/[1-9]|\/[12]\d|\/3[01])?|(\*\/[1-9]|\/[12]\d|\/3[01])|([1-9]|[12]\d|3[01])(-([1-9]|[12]\d|3[01]))?(,([1-9]|[12]\d|3[01]))*)\s+(\*|(1[0-2]|[1-9])(\/(1[0-2]|[1-9]))?|(\*\/(1[0-2]|[1-9]))|(1[0-2]|[1-9])(-([1-9]|1[0-2]))?(,(1[0-2]|[1-9]))*)\s+(\*|([0-6])(\/*[0-6])?|(\*\/[0-6])|([0-6])(-[0-6])?(,[0-6])*)$/
+/**
+ * Get human-readable description of cron expression using cronstrue
+ */
+const getCronDescription = (expression: string): string => {
+  try {
+    if (!expression || !expression.trim()) return ''
+    return cronstrue.toString(expression, { 
+      throwExceptionOnParseError: false,
+      verbose: true,
+      use24HourTimeFormat: true
+    })
+  } catch (error) {
+    return 'Invalid cron expression'
+  }
+}
 
 const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values } = useForm({
   initialValues: {
@@ -72,7 +87,11 @@ const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values
     expression: validator
       .string()
       .required('Expression is required')
-      .matches(cronRegex, 'Invalid expression'),
+      .test('valid-cron', 'Invalid cron expression', (value) => {
+        if (!value) return false
+        const result = cron(value)
+        return result.isValid()
+      }),
   }),
   onFieldUpdate: {
     functionName: (value, update) => {
@@ -176,6 +195,12 @@ const reqyestType = computed(() => {
   )?.functionRequestNamespace
 
   return requestType == '' ? 'No request data' : requestType
+})
+
+const cronDescription = computed(() => {
+  const expression = getFieldValue('expression')
+  if (!expression) return ''
+  return getCronDescription(expression)
 })
 
 const comboBoxFilter = (_: any, queryText: any, item: any) => {
@@ -310,6 +335,9 @@ defineExpose({
                       v-bind="bindField('expression')"
                       variant="outlined"
                       label="Expression"
+                      :hint="cronDescription"
+                      persistent-hint
+                      placeholder="e.g., */5 * * * *"
                     ></v-text-field>
                   </v-col>
                   <v-col cols="12">
