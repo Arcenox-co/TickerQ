@@ -7,14 +7,14 @@
 [![NuGet](https://img.shields.io/nuget/dt/tickerq.svg)](https://www.nuget.org/packages/tickerq) 
 [![NuGet](https://img.shields.io/nuget/v/tickerq.svg)](https://www.nuget.org/packages/tickerq)
 [![Build NuGet Packages](https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml)
-[![Documentation](https://img.shields.io/badge/docs%20-official%20web-blue)](https://tickerq.arcenox.com)
+[![Documentation](https://img.shields.io/badge/docs%20-official%20web-blue)](https://tickerq.net)
 [![](https://opencollective.com/tickerq/tiers/badge.svg)](https://opencollective.com/tickerq)
 
 
 **Robust. Adaptive. Precise.**  
 TickerQ is a fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
 
-### 📚 Full Docs: [https://tickerq.arcenox.com](https://tickerq.arcenox.com)
+### 📚 Full Docs: [https://tickerq.net](https://tickerq.net)
 > **Repo:** https://github.com/Arcenox-co/TickerQ-UI (docs are open-source and anyone can help us improving.)
 
 > **Note:**
@@ -28,7 +28,7 @@ As of v2.2.0, all TickerQ packages are versioned together — even if a package 
 - **Stateless Core** with source generator
 - **EF Core Persistence**
 - **Live Dashboard UI**
-- **Live Dashboard UI** - [View Screenshots](https://tickerq.arcenox.com/intro/dashboard-overview.html)
+- **Live Dashboard UI** - [View Screenshots](https://tickerq.net/intro/dashboard-overview.html)
 - **Retry Policies & Throttling**
 - **Dependency Injection support**
 - **Multi-node distributed coordination**
