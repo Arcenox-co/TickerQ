@@ -2,7 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.EntityFrameworkCore.Configurations;
 
-namespace TickerQ.WithDashboard.Data
+namespace TickerQ.WithPostgres.Data
 {
     public class TickerQDbContext : DbContext
     {

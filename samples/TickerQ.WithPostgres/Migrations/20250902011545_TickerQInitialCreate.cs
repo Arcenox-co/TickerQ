@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
-namespace TickerQ.WithDashboard.Migrations
+namespace TickerQ.WithPostgres.Migrations
 {
     /// <inheritdoc />
     public partial class TickerQInitialCreate : Migration

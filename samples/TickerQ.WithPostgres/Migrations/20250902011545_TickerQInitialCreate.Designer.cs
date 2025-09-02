@@ -2,18 +2,21 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
-using TickerQ.WithDashboard.Data;
+using TickerQ.WithPostgres.Data;
 
 #nullable disable
 
-namespace TickerQ.WithDashboard.Migrations
+namespace TickerQ.WithPostgres.Migrations
 {
     [DbContext(typeof(TickerQDbContext))]
-    partial class TickerQDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250902011545_TickerQInitialCreate")]
+    partial class TickerQInitialCreate
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

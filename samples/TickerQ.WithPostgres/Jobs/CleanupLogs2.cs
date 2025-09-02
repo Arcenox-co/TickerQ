@@ -1,7 +1,7 @@
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Models;
 
-namespace TickerQ.WithDashboard.Jobs
+namespace TickerQ.WithPostgres.Jobs
 {
     public class MyFirstExample
     {

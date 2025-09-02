@@ -140,8 +140,6 @@ namespace TickerQ.Utilities.Managers
                     CronTickerId = entity.Id
                 };
 
-
-
                 await PersistenceProvider
                     .InsertCronTickerOccurrences(new[] { generateNextOccurrence }, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
