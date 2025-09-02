@@ -2,7 +2,6 @@
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -970,20 +969,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             IEnumerable<CronTickerOccurrence<TCronTicker>> cronTickerOccurrences,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
-            // Debug: Log caller stack and DbContext instance
-            var stackTrace = new StackTrace(true);
-            _logger.LogCritical("🚨🚨🚨 ISSUE-195-FIX: InsertCronTickerOccurrences CALLED 🚨🚨🚨");
-            _logger.LogCritical("🔍 DbContext Instance: {DbContextHash}", DbContext.GetHashCode());
-            _logger.LogCritical("📋 Full Stack Trace:");
-            for (int i = 0; i < Math.Min(stackTrace.FrameCount, 10); i++)
-            {
-                var frame = stackTrace.GetFrame(i);
-                var method = frame.GetMethod();
-                _logger.LogCritical("  🔸 [{Index}] {Method} in {File}:{Line}", 
-                    i, $"{method.DeclaringType?.Name}.{method.Name}", 
-                    frame.GetFileName() ?? "Unknown", frame.GetFileLineNumber());
-            }
-            _logger.LogCritical("🚨 Processing {EntityCount} CronTickerOccurrences 🚨", cronTickerOccurrences.Count());
+            _logger.LogDebug("Inserting {EntityCount} CronTickerOccurrences", cronTickerOccurrences.Count());
 
             var listOfSuccessfulIds = new List<Guid>();
 
@@ -1035,7 +1021,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 }
 
                 // Log summary of batch processing
-                _logger.LogWarning("✅ BATCH COMPLETE: Total={TotalEntities}, Success={SuccessCount}, Failed={FailedCount}",
+                _logger.LogDebug("Batch complete: Total={TotalEntities}, Success={SuccessCount}, Failed={FailedCount}",
                     entities.Count, listOfSuccessfulIds.Count, entities.Count - listOfSuccessfulIds.Count);
 
                 // Detach entities to prevent memory leaks

@@ -199,21 +199,9 @@ namespace TickerQ.Utilities.Managers
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
             
-            // DEBUG: Log LockHolder and occurrence counts for Issue #195
-            Logger.LogCritical("🔑 LockHolder={LockHolder}, lockableOccurrences={LockableCount}, allExistingOccurrences={ExistingCount}", 
+            // Log occurrence counts for debugging
+            Logger.LogDebug("LockHolder={LockHolder}, lockableOccurrences={LockableCount}, allExistingOccurrences={ExistingCount}", 
                 LockHolder, occurrenceList.Length, existingOccurrences.Length);
-            
-            foreach (var occ in occurrenceList)
-            {
-                Logger.LogCritical("   📌 Lockable: CronTickerId={CronTickerId}, ExecutionTime={ExecutionTime:yyyy-MM-dd HH:mm:ss}, Status={Status}, LockHolder={LockHolder}", 
-                    occ.CronTickerId, occ.ExecutionTime, occ.Status, occ.LockHolder);
-            }
-            
-            foreach (var occ in existingOccurrences)
-            {
-                Logger.LogCritical("   📅 Existing: CronTickerId={CronTickerId}, ExecutionTime={ExecutionTime:yyyy-MM-dd HH:mm:ss}, Status={Status}, LockHolder={LockHolder}", 
-                    occ.CronTickerId, occ.ExecutionTime, occ.Status, occ.LockHolder);
-            }
 
             var result = new List<InternalFunctionContext>();
             var newOccurrences = new List<CronTickerOccurrence<TCronTicker>>();
@@ -264,6 +252,12 @@ namespace TickerQ.Utilities.Managers
                     };
 
                     newOccurrences.Add(newOccurrence);
+                }
+                else
+                {
+                    // Skip creating occurrence as it already exists
+                    Logger.LogDebug("Skipping duplicate occurrence for CronTickerId={CronTickerId}, ExecutionTime={ExecutionTime:yyyy-MM-dd HH:mm:ss}", 
+                        cronTickerId, nextOccurrence);
                 }
             }
 

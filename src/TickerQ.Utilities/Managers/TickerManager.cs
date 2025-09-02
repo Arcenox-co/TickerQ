@@ -140,8 +140,7 @@ namespace TickerQ.Utilities.Managers
                     CronTickerId = entity.Id
                 };
 
-                // DEBUG: Log LockHolder for Issue #195
-                Console.WriteLine($"🔐 AddCronTickerAsync LockHolder={LockHolder}, Status={generateNextOccurrence.Status}");
+
 
                 await PersistenceProvider
                     .InsertCronTickerOccurrences(new[] { generateNextOccurrence }, cancellationToken: cancellationToken)
