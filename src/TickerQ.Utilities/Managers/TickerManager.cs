@@ -1,4 +1,5 @@
-﻿using NCrontab;
+﻿using Microsoft.Extensions.Logging;
+using NCrontab;
 using System;
 using System.Linq;
 using System.Threading;
@@ -21,8 +22,9 @@ namespace TickerQ.Utilities.Managers
     {
         public TickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerHost tickerHost, ITickerClock clock,
-            TickerOptionsBuilder tickerOptions, ITickerQNotificationHubSender notificationHubSender)
-            : base(persistenceProvider, tickerHost, clock, tickerOptions, notificationHubSender)
+            TickerOptionsBuilder tickerOptions, ITickerQNotificationHubSender notificationHubSender,
+            ILogger<InternalTickerManager<TTimeTicker, TCronTicker>> logger)
+            : base(persistenceProvider, tickerHost, clock, tickerOptions, notificationHubSender, logger)
         {
         }
 
@@ -137,6 +139,9 @@ namespace TickerQ.Utilities.Managers
                     LockHolder = LockHolder,
                     CronTickerId = entity.Id
                 };
+
+                // DEBUG: Log LockHolder for Issue #195
+                Console.WriteLine($"🔐 AddCronTickerAsync LockHolder={LockHolder}, Status={generateNextOccurrence.Status}");
 
                 await PersistenceProvider
                     .InsertCronTickerOccurrences(new[] { generateNextOccurrence }, cancellationToken: cancellationToken)

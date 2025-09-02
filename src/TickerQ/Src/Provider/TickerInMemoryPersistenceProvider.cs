@@ -297,6 +297,21 @@ namespace TickerQ.Src.Provider
             return Task.FromResult(result);
         }
 
+        public Task<CronTickerOccurrence<TCronTicker>[]> GetExistingCronTickerOccurrences(
+            Guid[] cronTickerIds,
+            Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
+        {
+            var result = CronOccurrences.Values
+                .Where(x => cronTickerIds.Contains(x.CronTickerId) &&
+                            x.Status != TickerStatus.Done &&
+                            x.Status != TickerStatus.DueDone &&
+                            x.Status != TickerStatus.Failed &&
+                            x.Status != TickerStatus.Cancelled)
+                .ToArray();
+
+            return Task.FromResult(result);
+        }
+
         public Task<CronTickerOccurrence<TCronTicker>[]> GetTimedOutCronTickerOccurrences(DateTime now,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {

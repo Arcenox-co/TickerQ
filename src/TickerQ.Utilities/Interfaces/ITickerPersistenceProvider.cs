@@ -52,6 +52,7 @@ namespace TickerQ.Utilities.Interfaces
         Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByIds(Guid[] ids, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetCronTickerOccurrencesByCronTickerIds(Guid[] ids, int? takeLimit, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetNextCronTickerOccurrences(DateTime nextOccurrence, string lockHolder, Guid[] cronTickerIds, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
+        Task<CronTickerOccurrence<TCronTicker>[]> GetExistingCronTickerOccurrences(Guid[] cronTickerIds, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetLockedCronTickerOccurrences(string lockHolder, TickerStatus[] tickerStatuses, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetTimedOutCronTickerOccurrences(DateTime now, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrence<TCronTicker>[]> GetQueuedNextCronOccurrences(Guid tickerId, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default);

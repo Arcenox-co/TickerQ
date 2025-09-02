@@ -1,0 +1,56 @@
+Using launch settings from /Users/isolomatov/Sources/Demo/TickerQ/samples/TickerQ.WithDashboard/Properties/launchSettings.json...
+Building...
+/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/DashboardDtos/AddCronTickerRequest.cs(9,22): warning CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context. [/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/TickerQ.Utilities.csproj]
+/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/DashboardDtos/AddCronTickerRequest.cs(11,22): warning CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context. [/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/TickerQ.Utilities.csproj]
+/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/DashboardDtos/AddCronTickerRequest.cs(12,21): warning CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context. [/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/TickerQ.Utilities.csproj]
+/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/DashboardDtos/AddTimeTickerRequest.cs(11,22): warning CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context. [/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/TickerQ.Utilities.csproj]
+/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/DashboardDtos/AddTimeTickerRequest.cs(12,21): warning CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context. [/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/TickerQ.Utilities.csproj]
+/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/DashboardDtos/UpdateCronTickerRequest.cs(9,22): warning CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context. [/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/TickerQ.Utilities.csproj]
+/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/DashboardDtos/UpdateCronTickerRequest.cs(11,22): warning CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context. [/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/TickerQ.Utilities.csproj]
+/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/DashboardDtos/UpdateCronTickerRequest.cs(12,21): warning CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context. [/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/TickerQ.Utilities.csproj]
+/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/DashboardDtos/UpdateTimeTickerRequest.cs(11,22): warning CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context. [/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/TickerQ.Utilities.csproj]
+/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/DashboardDtos/UpdateTimeTickerRequest.cs(12,21): warning CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context. [/Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.Utilities/TickerQ.Utilities.csproj]
+/Users/isolomatov/Sources/Demo/TickerQ/samples/TickerQ.WithDashboard/Jobs/CleanupLogs2.cs(9,27): warning CS1998: This async method lacks 'await' operators and will run synchronously. Consider using the 'await' operator to await non-blocking API calls, or 'await Task.Run(...)' to do CPU-bound work on a background thread. [/Users/isolomatov/Sources/Demo/TickerQ/samples/TickerQ.WithDashboard/TickerQ.WithDashboard.csproj]
+🔐 AddCronTickerAsync LockHolder=Igors-MacBook-Pro, Status=Idle
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+      🚨🚨🚨 ISSUE-195-FIX: InsertCronTickerOccurrences CALLED 🚨🚨🚨
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+      🔍 DbContext Instance: 6318890
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+      📋 Full Stack Trace:
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+        🔸 [0] <InsertCronTickerOccurrences>d__45.MoveNext in /Users/isolomatov/Sources/Demo/TickerQ/src/TickerQ.EntityFrameworkCore/Infrastructure/TickerEFCorePersistenceProvider.cs:974
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+        🔸 [1] AsyncMethodBuilderCore.Start in Unknown:0
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+        🔸 [2] TickerEfCorePersistenceProvider`3.InsertCronTickerOccurrences in Unknown:0
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+        🔸 [3] <AddCronTickerAsync>d__8.MoveNext in Unknown:0
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+        🔸 [4] AsyncStateMachineBox`1.ExecutionContextCallback in Unknown:0
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+        🔸 [5] ExecutionContext.RunInternal in Unknown:0
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+        🔸 [6] AsyncStateMachineBox`1.MoveNext in Unknown:0
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+        🔸 [7] AwaitTaskContinuation.RunOrScheduleAction in Unknown:0
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+        🔸 [8] Task.RunContinuations in Unknown:0
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+        🔸 [9] Task`1.TrySetResult in Unknown:0
+crit: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+      🚨 Processing 1 CronTickerOccurrences 🚨
+dbug: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+      Successfully inserted occurrence for CronTickerId=d66fb30b-b239-457a-9cff-f2101e81a9b0, ExecutionTime=2025-09-02 18:11:00
+warn: TickerQ.EntityFrameworkCore.Infrastructure.TickerEfCorePersistenceProvider[0]
+      ✅ BATCH COMPLETE: Total=1, Success=1, Failed=0
+info: Microsoft.Hosting.Lifetime[14]
+      Now listening on: http://localhost:5149
+info: Microsoft.Hosting.Lifetime[0]
+      Application started. Press Ctrl+C to shut down.
+info: Microsoft.Hosting.Lifetime[0]
+      Hosting environment: Development
+info: Microsoft.Hosting.Lifetime[0]
+      Content root path: /Users/isolomatov/Sources/Demo/TickerQ/samples/TickerQ.WithDashboard
+info: Microsoft.Hosting.Lifetime[0]
+      Application is shutting down...

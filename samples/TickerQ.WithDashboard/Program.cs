@@ -82,7 +82,7 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-// Apply database migrations for TickerQ (needed to reproduce issue #195)
+// Apply database migrations for TickerQ FIRST (needed to reproduce issue #195)
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<TickerQDbContext>();

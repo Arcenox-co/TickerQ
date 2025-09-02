@@ -15,6 +15,7 @@
 	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.2.0" />
 		<PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="[2.1.0,)" />
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="[2.1.0,)" />
 		<PackageReference Include="NCrontab.Signed" Version="[3.3.2,)" />
 		<PackageReference Include="System.Text.Json" Version="4.6.0" />
 	</ItemGroup>
