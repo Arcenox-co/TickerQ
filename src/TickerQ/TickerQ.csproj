@@ -18,7 +18,7 @@
         <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="2.2.0" />
         <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="2.2.0"/>
         <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="2.2.0" />
-        <PackageReference Include="TickerQ.Utilities" Version="$(PackageVersion)"/>
+        <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj"/>
     </ItemGroup>
 
     <Target Name="CopyAnalyzer" AfterTargets="Build">
