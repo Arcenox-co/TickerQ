@@ -16,6 +16,6 @@
 		<PackageReference Include="Microsoft.EntityFrameworkCore" Version="[2.2.0,)" />
 		<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="[2.2.0,)" />
 		<PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="[2.2.0,)" />
-		<PackageReference Include="TickerQ.Utilities" Version="$(PackageVersion)" />
+		<PackageReference Include="TickerQ.Utilities" Version="2.5.3" />
 	</ItemGroup>
 </Project>
