@@ -8,11 +8,9 @@ export function formatDate(
   }
   // 1) Ensure there’s a “Z”
   let iso = utcDateString.trim();
-
-  //commented out to let it works with LocalDatetime
-  //if (!iso.endsWith('Z')) {
-  //    iso = iso.replace(' ', 'T') + 'Z';
-  //}
+  if (!iso.endsWith('Z')) {
+    iso = iso.replace(' ', 'T') + 'Z';
+  }
 
   // 2) Now JS knows “that’s UTC” and will shift to local when you read getHours()
   const dateObj = new Date(iso);
