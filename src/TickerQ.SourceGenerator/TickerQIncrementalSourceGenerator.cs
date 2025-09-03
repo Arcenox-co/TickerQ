@@ -309,7 +309,7 @@ namespace TickerQ.SourceGenerator
                 : "\"" + cronExpression + "\"";
 
             var sb = new StringBuilder();
-            sb.AppendLine("      tickerFunctionDelegateDict.TryAdd(\"" + functionName + "\", (" + cronExprFlag + ", (TickerTaskPriority)" + functionPriority + ", new TickerFunctionDelegate(" + asyncFlag + "(cancellationToken, serviceProvider, context) =>");
+            sb.AppendLine("      if (!tickerFunctionDelegateDict.ContainsKey(\"" + functionName + "\")) tickerFunctionDelegateDict.Add(\"" + functionName + "\", (" + cronExprFlag + ", (TickerTaskPriority)" + functionPriority + ", new TickerFunctionDelegate(" + asyncFlag + "(cancellationToken, serviceProvider, context) =>");
             sb.AppendLine("      {");
 
             if (!isStatic)
@@ -426,7 +426,7 @@ namespace TickerQ.SourceGenerator
             {
                 if (!string.IsNullOrEmpty(rt.Item1))
                 {
-                    sb.AppendLine("      requestTypes.TryAdd(\"" + rt.Item2 + "\", (typeof(" + rt.Item1 + ").FullName, typeof(" + rt.Item1 + ")));");
+                    sb.AppendLine("      if (!requestTypes.ContainsKey(\"" + rt.Item2 + "\")) requestTypes.Add(\"" + rt.Item2 + "\", (typeof(" + rt.Item1 + ").FullName, typeof(" + rt.Item1 + ")));");
                 }
             }
             sb.AppendLine("      TickerFunctionProvider.RegisterRequestType(requestTypes);");

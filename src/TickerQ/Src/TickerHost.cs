@@ -173,7 +173,7 @@ namespace TickerQ
             var retryInterval = (context.RetryIntervals?.Length > 0)
                 ? (attempt < context.RetryIntervals.Length
                     ? context.RetryIntervals[attempt]
-                    : context.RetryIntervals[^1])
+                    : context.RetryIntervals[context.RetryIntervals.Length - 1])
                 : 30;
 
             await Task.Delay(TimeSpan.FromSeconds(retryInterval), cancellationTokenSource.Token);

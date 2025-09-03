@@ -124,7 +124,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             if (string.IsNullOrEmpty(basePath))
                 return "/";
 
-            if (!basePath.StartsWith('/'))
+            if (!basePath.StartsWith("/"))
                 basePath = "/" + basePath;
 
             return basePath.TrimEnd('/');
@@ -196,7 +196,7 @@ namespace TickerQ.Dashboard.DependencyInjection
         /// Prevents &lt;/script&gt; in JSON strings from prematurely closing the inline script.
         /// </summary>
         private static string SanitizeForInlineScript(string json)
-            => json.Replace("</script", "<\\/script", StringComparison.OrdinalIgnoreCase);
+            => Regex.Replace(json, "</script", "<\\/script", RegexOptions.IgnoreCase);
     }
 }
 #endif

@@ -31,7 +31,7 @@ namespace TickerQ.Utilities
                 return "Invalid cron expression";
 
             string cronosCompatible = ToCronosExpression(cronExpression);
-            string[] parts = cronosCompatible.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string[] parts = cronosCompatible.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length != 5)
                 return "Invalid cron expression";
 
@@ -233,7 +233,7 @@ namespace TickerQ.Utilities
                     return cron;
                 }
 
-                string[] parts = cron.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                string[] parts = cron.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 
                 // NCrontab supports only 5 parts: minute hour day month dayofweek
                 if (parts.Length == 5)

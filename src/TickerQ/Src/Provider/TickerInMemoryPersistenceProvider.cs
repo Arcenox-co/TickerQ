@@ -31,7 +31,7 @@ namespace TickerQ.Src.Provider
 
         public Task<TTimeTicker> GetTimeTickerById(Guid id, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
-            var result = TimeTickers.GetValueOrDefault(id);
+            TimeTickers.TryGetValue(id, out var result);
 
             return Task.FromResult(result);
         }
@@ -146,7 +146,7 @@ namespace TickerQ.Src.Provider
         public Task RemoveTimeTickers(IEnumerable<TTimeTicker> tickers, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
             foreach (var t in tickers)
-                TimeTickers.Remove(t.Id, out _);
+                TimeTickers.TryRemove(t.Id, out _);
 
             return Task.CompletedTask;
         }
@@ -162,7 +162,7 @@ namespace TickerQ.Src.Provider
 
         public Task<TCronTicker> GetCronTickerById(Guid id, Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
-            var result = CronTickers.GetValueOrDefault(id);
+            CronTickers.TryGetValue(id, out var result);
 
             return Task.FromResult(result);
         }
@@ -244,7 +244,7 @@ namespace TickerQ.Src.Provider
         public Task<CronTickerOccurrence<TCronTicker>> GetCronTickerOccurrenceById(Guid id,
             Action<TickerProviderOptions> options = null, CancellationToken cancellationToken = default)
         {
-            var result = CronOccurrences.GetValueOrDefault(id);
+            CronOccurrences.TryGetValue(id, out var result);
 
             return Task.FromResult(result);
         }

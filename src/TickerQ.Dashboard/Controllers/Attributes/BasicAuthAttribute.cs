@@ -30,7 +30,7 @@ namespace TickerQ.Dashboard.Controllers.Attributes
                 return;
             }
 
-            var encodedCredentials = header["Basic ".Length..].Trim();
+            var encodedCredentials = header.Substring("Basic ".Length).Trim();
 
             // This will throw if the base64 is invalid
             var decodedBytes = Convert.FromBase64String(encodedCredentials);

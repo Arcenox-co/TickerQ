@@ -152,7 +152,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var result = allStatuses
                 .Select(status => new Tuple<TickerStatus, int>(
                     status,
-                    statusCounts.GetValueOrDefault(status, 0)))
+                    statusCounts.TryGetValue(status, out var count) ? count : 0))
                 .ToList();
 
             return result;
@@ -202,7 +202,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 var results = allStatuses
                     .Select(status => new Tuple<int, int>(
                         (int)status,
-                        statusCounts.GetValueOrDefault(status, 0)))
+                        statusCounts.TryGetValue(status, out var count) ? count : 0))
                     .ToArray();
 
                 return new TickerGraphData
@@ -255,7 +255,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 var results = allStatuses
                     .Select(status => new Tuple<int, int>(
                         (int)status,
-                        statusCounts.GetValueOrDefault(status, 0)))
+                        statusCounts.TryGetValue(status, out var count) ? count : 0))
                     .ToArray();
 
                 return new TickerGraphData
@@ -289,7 +289,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var result = allStatuses
                 .Select(status => new Tuple<TickerStatus, int>(
                     status,
-                    statusCounts.GetValueOrDefault(status, 0)))
+                    statusCounts.TryGetValue(status, out var count) ? count : 0))
                 .ToList();
 
             return result;
@@ -336,7 +336,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 var results = allStatuses
                     .Select(status => new Tuple<int, int>(
                         (int)status,
-                        statusCounts.GetValueOrDefault(status, 0)))
+                        statusCounts.TryGetValue(status, out var count) ? count : 0))
                     .ToArray();
 
                 return new TickerGraphData

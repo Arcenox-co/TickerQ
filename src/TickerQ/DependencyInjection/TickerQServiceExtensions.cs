@@ -121,12 +121,22 @@ namespace TickerQ.DependencyInjection
         
         private static void MapCronFromConfig(IConfiguration configuration)
         {
-            var tickerFunctions =
-                new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate
-                    Delegate)>(TickerFunctionProvider.TickerFunctions ?? new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>());
-
-            foreach (var (key, value) in tickerFunctions)
+            var originalFunctions = TickerFunctionProvider.TickerFunctions;
+            var tickerFunctions = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)>();
+            
+            if (originalFunctions != null)
             {
+                foreach (var kvp in originalFunctions)
+                {
+                    tickerFunctions[kvp.Key] = kvp.Value;
+                }
+            }
+
+            foreach (var kvp in tickerFunctions)
+            {
+                var key = kvp.Key;
+                var value = kvp.Value;
+                
                 if (!value.cronExpression.StartsWith("%")) continue;
                 
                 var mappedCronExpression = configuration[value.cronExpression.Trim('%')];

@@ -219,7 +219,7 @@ namespace TickerQ.SourceGenerator
             var cronLit = string.IsNullOrEmpty(cron) ? "string.Empty" : "\"" + cron + "\"";
             var sb = new StringBuilder();
             sb.AppendLine(
-                $"      tickerFunctionDelegateDict.TryAdd(\"{functionName}\", ({cronLit}, (TickerTaskPriority){priority}, new TickerFunctionDelegate({asyncKw}(cancellationToken, serviceProvider, context) =>");
+                $"      if (!tickerFunctionDelegateDict.ContainsKey(\"{functionName}\")) tickerFunctionDelegateDict.Add(\"{functionName}\", ({cronLit}, (TickerTaskPriority){priority}, new TickerFunctionDelegate({asyncKw}(cancellationToken, serviceProvider, context) =>");
             sb.AppendLine("      {");
             if (!method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword)))
                 sb.AppendLine($"        var service = Create{cd.Identifier.Text}(serviceProvider);");
@@ -330,7 +330,7 @@ namespace TickerQ.SourceGenerator
             {
                 if (!string.IsNullOrEmpty(rt.Item1))
                     sb.AppendLine(
-                        $"      requestTypes.TryAdd(\"{rt.Item2}\", (typeof({rt.Item1}).FullName, typeof({rt.Item1})));"
+                        $"      if (!requestTypes.ContainsKey(\"{rt.Item2}\")) requestTypes.Add(\"{rt.Item2}\", (typeof({rt.Item1}).FullName, typeof({rt.Item1})));"
                     );
             }
 

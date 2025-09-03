@@ -39,7 +39,7 @@ namespace TickerQ.Utilities
         
         public static string ReadTickerRequestAsString(byte[] gzipBytes)
         {
-            if (!gzipBytes.TakeLast(GZipSignature.Length).SequenceEqual(GZipSignature))
+            if (!gzipBytes.Skip(gzipBytes.Length - GZipSignature.Length).SequenceEqual(GZipSignature))
             {
                 throw new Exception("The bytes are not GZip compressed.");
             }
