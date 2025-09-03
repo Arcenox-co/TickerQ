@@ -12,22 +12,24 @@ namespace TickerQ.Utilities
 
         public static byte[] CreateTickerRequest<T>(T data)
         {
-            var serializedData = JsonSerializer.Serialize(data);
-
-            byte[] compressedBytes;
-
-            using (var memoryStream = new MemoryStream())
+            Span<byte> compressedBytes;
+            var serialized = JsonSerializer.SerializeToUtf8Bytes(data);
+            using (MemoryStream memoryStream = new MemoryStream())
             {
-                using (var gzipStream = new GZipStream(memoryStream, CompressionMode.Compress))
+                using (GZipStream stream = new GZipStream(memoryStream, CompressionMode.Compress, true))
                 {
-                    using var streamWriter = new StreamWriter(gzipStream);
-
-                    streamWriter.Write(serializedData);
+                    stream.Write(serialized);
                 }
-                compressedBytes = memoryStream.ToArray();
+
+                compressedBytes = memoryStream.GetBuffer().AsSpan()[..(int)memoryStream.Length];
             }
 
-            return compressedBytes.Concat(GZipSignature).ToArray();
+            var returnVal = new byte[compressedBytes.Length + GZipSignature.Length];
+            var returnValSpan = returnVal.AsSpan();
+            compressedBytes.CopyTo(returnValSpan);
+            GZipSignature.AsSpan().CopyTo(returnValSpan.Slice(compressedBytes.Length));
+
+            return returnVal;
         }
 
         public static T ReadTickerRequest<T>(byte[] gzipBytes)

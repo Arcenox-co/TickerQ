@@ -8,8 +8,7 @@ public class TickerHelperTests
 {
 
     [Fact]
-    public void
-        Serialize_And_Compress_An_Object_Then_Decompress_And_Deserialize_It_To_Check_If_Same_Object_Is_Being_Returned()
+    public void Serialize_And_Compress_An_Object_Then_Decompress_And_Deserialize_It_To_Check_If_Same_Object_Is_Being_Returned()
     {
         // Arrange
         var person = new Project("TickerQ", true);
@@ -48,6 +47,26 @@ public class TickerHelperTests
         
         // Assert
         deserialized.Should().Be(initial);
+    }
+    
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    [InlineData(int.MaxValue / 2)]
+    [InlineData(double.MaxValue / 2)]
+    [InlineData("Some Random String")]
+    public void Serialize_And_Compress_An_Object_Then_Decompress_And_Deserialize_It_Should_Return_The_Same_Object(object data)
+    {
+        // Arrange
+        var objectType = data.GetType();
+
+        // Act
+        var tickerRequest = TickerHelper.CreateTickerRequest(data);
+        var converted = TickerHelper.ReadTickerRequestAsString(tickerRequest);
+        var deserialized = JsonSerializer.Deserialize(converted, objectType);
+
+        // Assert
+        deserialized.Should().BeEquivalentTo(data);
     }
 }
 
