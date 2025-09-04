@@ -18,8 +18,11 @@ builder.Services.AddTickerQ(options =>
      * - https://localhost:7045/tickerq-dashboard/
      * - http://localhost:5149/tickerq-dashboard/
      */
-    options.AddDashboard(basePath: "/tickerq-dashboard");
-    options.AddDashboardBasicAuth();
+    options.AddDashboard(x =>
+    {
+        x.BasePath = "/tickerq-dashboard";
+        x.EnableBasicAuth = true;
+    });
 });
 
 builder.Services.AddScoped<IHelloWorldService, HelloWorldService>();
