@@ -1,5 +1,4 @@
 ﻿using Microsoft.Extensions.Logging;
-using NCrontab;
 using System;
 using System.Linq;
 using System.Threading;
@@ -23,8 +22,9 @@ namespace TickerQ.Utilities.Managers
         public TickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerHost tickerHost, ITickerClock clock,
             TickerOptionsBuilder tickerOptions, ITickerQNotificationHubSender notificationHubSender,
-            ILogger<InternalTickerManager<TTimeTicker, TCronTicker>> logger)
-            : base(persistenceProvider, tickerHost, clock, tickerOptions, notificationHubSender, logger)
+            ILogger<InternalTickerManager<TTimeTicker, TCronTicker>> logger,
+            ICronParserProvider cronParserProvider)
+            : base(persistenceProvider, tickerHost, clock, tickerOptions, notificationHubSender, logger, cronParserProvider)
         {
         }
 
@@ -57,7 +57,7 @@ namespace TickerQ.Utilities.Managers
         {
             if (entity.Id == Guid.Empty)
                 entity.Id = Guid.NewGuid();
-            
+
             if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity?.Function))
                 return new TickerResult<TTimeTicker>(
                     new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
@@ -112,18 +112,16 @@ namespace TickerQ.Utilities.Managers
         {
             try
             {
-                if(entity.Id == Guid.Empty)
+                if (entity.Id == Guid.Empty)
                     entity.Id = Guid.NewGuid();
-                
+
                 if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity?.Function))
                     return new TickerResult<TCronTicker>(
                         new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
 
-                if (!(CrontabSchedule.TryParse(entity.Expression) is { } crontabSchedule))
+                if (!CronParserProvider.TryGetNextOccurrence(entity.Expression, Clock.UtcNow, out DateTime nextOccurrence))
                     return new TickerResult<TCronTicker>(
                         new TickerValidatorException($"Cannot parse expression {entity.Expression}"));
-
-                var nextOccurrence = crontabSchedule.GetNextOccurrence(Clock.UtcNow);
 
                 entity.CreatedAt = Clock.UtcNow;
                 entity.UpdatedAt = Clock.UtcNow;
@@ -155,7 +153,7 @@ namespace TickerQ.Utilities.Managers
                         UpdatedAt = entity.UpdatedAt,
                         CreatedAt = entity.CreatedAt,
                         Retries = entity.Retries,
-                        RetryIntervals = entity.RetryIntervals,                        
+                        RetryIntervals = entity.RetryIntervals,
                         Id = entity.Id
                     });
 
@@ -223,7 +221,7 @@ namespace TickerQ.Utilities.Managers
 
                 var coreChanges = (cronTickerExpression != cronTicker.Expression) || function != cronTicker.Function;
 
-                if (!(CrontabSchedule.TryParse(cronTicker.Expression) is { } crontabSchedule))
+                if (!CronParserProvider.TryGetNextOccurrence(cronTicker.Expression, Clock.UtcNow, out DateTime nextOccurrence))
                     return new TickerResult<TCronTicker>(
                         new TickerValidatorException($"Cannot parse expression {cronTicker.Expression}"));
 
@@ -251,7 +249,7 @@ namespace TickerQ.Utilities.Managers
                     {
                         CronTickerId = cronTicker.Id,
                         Status = TickerStatus.Idle,
-                        ExecutionTime = crontabSchedule.GetNextOccurrence(Clock.UtcNow),
+                        ExecutionTime = nextOccurrence,
                         LockedAt = Clock.UtcNow,
                         LockHolder = LockHolder
                     };
@@ -300,7 +298,6 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TCronTicker>(e);
             }
         }
-
 
         private async Task<TickerResult<TTimeTicker>> DeleteTimeTickerAsync(Guid id,
             CancellationToken cancellationToken = default)

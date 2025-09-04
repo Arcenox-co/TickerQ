@@ -1,5 +1,4 @@
 ﻿using Microsoft.Extensions.Logging;
-using NCrontab;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -23,13 +22,13 @@ namespace TickerQ.Utilities.Managers
         protected readonly ITickerClock Clock;
         protected readonly ITickerQNotificationHubSender NotificationHubSender;
         protected readonly ILogger<InternalTickerManager<TTimeTicker, TCronTicker>> Logger;
+        protected readonly ICronParserProvider CronParserProvider;
 
         private static readonly HashSet<TickerStatus> SuccessConditions = new HashSet<TickerStatus>()
         {
             TickerStatus.Done,
             TickerStatus.DueDone
         };
-
 
         private static readonly HashSet<TickerStatus> CompletedStatuses = new HashSet<TickerStatus>()
         {
@@ -41,7 +40,8 @@ namespace TickerQ.Utilities.Managers
 
         protected InternalTickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerHost tickerHost, ITickerClock clock, TickerOptionsBuilder tickerOptionsBuilder,
-            ITickerQNotificationHubSender notificationHubSender, ILogger<InternalTickerManager<TTimeTicker, TCronTicker>> logger)
+            ITickerQNotificationHubSender notificationHubSender, ILogger<InternalTickerManager<TTimeTicker, TCronTicker>> logger,
+            ICronParserProvider cronParserProvider)
         {
             LockHolder = tickerOptionsBuilder?.InstanceIdentifier ?? Environment.MachineName;
             PersistenceProvider = persistenceProvider;
@@ -49,6 +49,7 @@ namespace TickerQ.Utilities.Managers
             Clock = clock ?? throw new ArgumentNullException(nameof(clock));
             NotificationHubSender = notificationHubSender;
             Logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            CronParserProvider = cronParserProvider;
         }
 
         public async Task<(TimeSpan TimeRemaining, InternalFunctionContext[] Functions)> GetNextTickers(
@@ -86,7 +87,7 @@ namespace TickerQ.Utilities.Managers
             return minTimeRemaining;
         }
 
-        private async Task<InternalFunctionContext[]>RetrieveEligibleTickersAsync(
+        private async Task<InternalFunctionContext[]> RetrieveEligibleTickersAsync(
             IGrouping<DateTime, (Guid, string)> minCronTicker, DateTime minTimeTicker,
             CancellationToken cancellationToken = default)
         {
@@ -192,15 +193,15 @@ namespace TickerQ.Utilities.Managers
                 .GetNextCronTickerOccurrences(nextOccurrence, LockHolder, cronTickerIdSet, opt => opt.SetAsNoTracking(),
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
-            
+
             // Get existing occurrences for duplicate checking (Issue #195 fix)
             var existingOccurrences = await PersistenceProvider
                 .GetExistingCronTickerOccurrences(cronTickerIdSet, opt => opt.SetAsNoTracking(),
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
-            
+
             // Log occurrence counts for debugging
-            Logger.LogDebug("LockHolder={LockHolder}, lockableOccurrences={LockableCount}, allExistingOccurrences={ExistingCount}", 
+            Logger.LogDebug("LockHolder={LockHolder}, lockableOccurrences={LockableCount}, allExistingOccurrences={ExistingCount}",
                 LockHolder, occurrenceList.Length, existingOccurrences.Length);
 
             var result = new List<InternalFunctionContext>();
@@ -256,7 +257,7 @@ namespace TickerQ.Utilities.Managers
                 else
                 {
                     // Skip creating occurrence as it already exists
-                    Logger.LogDebug("Skipping duplicate occurrence for CronTickerId={CronTickerId}, ExecutionTime={ExecutionTime:yyyy-MM-dd HH:mm:ss}", 
+                    Logger.LogDebug("Skipping duplicate occurrence for CronTickerId={CronTickerId}, ExecutionTime={ExecutionTime:yyyy-MM-dd HH:mm:ss}",
                         cronTickerId, nextOccurrence);
                 }
             }
@@ -323,8 +324,8 @@ namespace TickerQ.Utilities.Managers
             var withNext = cronTickers
                 .Select(vt =>
                 {
-                    var schedule = CrontabSchedule.TryParse(vt.Item2);
-                    if (schedule == null) return null;
+                    var schedule = CronParserProvider.TryGetNextOccurrence(vt.Item2, now, out DateTime nextOccurrence);
+                    if (schedule == false) return null;
 
                     // Find the earliest occurrence for this cron ticker
                     var existingOccurrences = cronTickerOccurrences
@@ -347,7 +348,7 @@ namespace TickerQ.Utilities.Managers
                                 Next = idleOccurrence.ExecutionTime
                             };
                         }
-                        
+
                         var queuedOnSameLock = existingOccurrences
                             .Where(x => x.Status == TickerStatus.Queued && x.LockHolder == LockHolder)
                             .OrderBy(x => x.ExecutionTime)
@@ -363,21 +364,22 @@ namespace TickerQ.Utilities.Managers
                             };
                         }
 
-                        // For any non-completed occurrences (including queued/in-progress), 
+                        // For any non-completed occurrences (including queued/in-progress),
                         // calculate next occurrence AFTER the latest one to avoid conflicts
                         var latestNonCompletedOccurrence = existingOccurrences
                             .Where(x => !CompletedStatuses.Contains(x.Status))
                             .OrderByDescending(x => x.ExecutionTime)
                             .FirstOrDefault();
 
-                        if (latestNonCompletedOccurrence != null)
+                        if (latestNonCompletedOccurrence != null &&
+                            CronParserProvider.TryGetNextOccurrence(vt.Item2, latestNonCompletedOccurrence.ExecutionTime, out nextOccurrence))
                         {
                             // Get next occurrence after the latest non-completed one
                             return new
                             {
                                 Id = vt.Item1,
                                 Expression = vt.Item2,
-                                Next = schedule.GetNextOccurrence(latestNonCompletedOccurrence.ExecutionTime)
+                                Next = nextOccurrence
                             };
                         }
 
@@ -386,13 +388,14 @@ namespace TickerQ.Utilities.Managers
                             .OrderByDescending(x => x.ExecutionTime)
                             .FirstOrDefault();
 
-                        if (latestCompletedOccurrence != null)
+                        if (latestCompletedOccurrence != null &&
+                            CronParserProvider.TryGetNextOccurrence(vt.Item2, latestCompletedOccurrence.ExecutionTime, out nextOccurrence))
                         {
                             return new
                             {
                                 Id = vt.Item1,
                                 Expression = vt.Item2,
-                                Next = schedule.GetNextOccurrence(latestCompletedOccurrence.ExecutionTime)
+                                Next = nextOccurrence
                             };
                         }
                     }
@@ -401,7 +404,7 @@ namespace TickerQ.Utilities.Managers
                     {
                         Id = vt.Item1,
                         Expression = vt.Item2,
-                        Next = schedule.GetNextOccurrence(now)
+                        Next = nextOccurrence
                     };
                 })
                 .Where(x => x?.Next != null)
@@ -439,7 +442,6 @@ namespace TickerQ.Utilities.Managers
                     timeTicker.LockedAt = null;
                 }, null, cancellationToken);
         }
-
 
         public async Task ReleaseAllAcquiredResources(ReleaseAcquiredTermination termination,
             CancellationToken cancellationToken = default)
