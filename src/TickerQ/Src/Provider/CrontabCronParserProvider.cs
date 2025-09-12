@@ -6,7 +6,7 @@ namespace TickerQ.Src.Provider
 {
     public sealed class CrontabCronParserProvider : ICronParserProvider
     {
-        public bool TryGetNextOccurrence(string expression, DateTime dateTime, out DateTime nextOccurrence)
+        public bool TryGetNextOccurrence(string expression, DateTimeOffset dateTime, out DateTime nextOccurrence)
         {
             nextOccurrence = DateTime.MinValue;
 
@@ -15,7 +15,7 @@ namespace TickerQ.Src.Provider
                 return false;
             }
 
-            nextOccurrence = crontabSchedule.GetNextOccurrence(dateTime);
+            nextOccurrence = crontabSchedule.GetNextOccurrence(dateTime.DateTime);
 
             return true;
         }

@@ -7,7 +7,7 @@ namespace TickerQ.Utilities.Interfaces
     public interface ICronParserProvider
     {
         bool TryGetNextOccurrence(string expression,
-                                    DateTime dateTime,
+                                    DateTimeOffset dateTime,
                                     out DateTime nextOccurrence);
     }
 }
