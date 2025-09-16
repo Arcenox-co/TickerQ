@@ -1,6 +1,6 @@
 namespace TickerQ.Utilities.Enums
 {
-    public enum BatchRunCondition
+    public enum RunCondition
     {
         /// <summary>
         /// Job will execute even if the parent job failed, Cancelled or Succeeded.

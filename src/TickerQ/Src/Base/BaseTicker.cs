@@ -1,58 +1,57 @@
 ﻿using Microsoft.Extensions.Logging;
 using System;
-using System.Data;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
-using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 using TickerQ.Utilities.Interfaces.Managers;
-
 namespace TickerQ.Base
 {
     internal abstract class BaseTicker : ITickerHost
     {
-        private readonly ITickerClock _clock;
-        protected readonly IServiceProvider ServiceProvider;
-        private TickerOptionsBuilder TickerOptionsBuilder { get; }
+        protected readonly ITickerClock Clock;
+        private readonly TickerExecutionContext _executionContext;
         private SafeCancellationTokenSource CtsTickerChecker { get; set; }
         private SafeCancellationTokenSource CtsTickerDelayAwaiter { get; set; }
         private SafeCancellationTokenSource CtsTickerTimeoutChecker { get; set; }
         private SafeCancellationTokenSource CtsTickerTimeoutDelayAwaiter { get; set; }
-        public DateTime? NextPlannedOccurrence { get; private set; }
         private readonly RestartThrottleManager _restartThrottle;
-        protected abstract Task OnTimerTick(InternalFunctionContext[] functions,
-            CancellationToken cancellationToken = default, bool dueDone = false);
+        protected readonly TickerTaskScheduler TickerTaskScheduler;
+        protected IInternalTickerManager InternalTickerManager;
+        protected readonly IServiceProvider ServiceProvider;
+        protected abstract Task OnTimerTick(InternalFunctionContext[] functions, bool dueDone, CancellationToken cancellationToken);
 
-        protected BaseTicker(TickerOptionsBuilder tickerOptionsBuilder,
-            IServiceProvider serviceProvider, ILogger<TickerHost> logger, ITickerClock clock)
+        protected BaseTicker(TickerExecutionContext executionContext, ILogger<TickerHost> logger, ITickerClock clock, IServiceProvider serviceProvider)
         {
-            TickerOptionsBuilder =
-                tickerOptionsBuilder ?? throw new ArgumentNullException(nameof(tickerOptionsBuilder));
-            ServiceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
-            _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+            ServiceProvider = serviceProvider;
+            Clock = clock ?? throw new ArgumentNullException(nameof(clock));
+            TickerTaskScheduler = new TickerTaskScheduler(executionContext);
+            _executionContext = executionContext ?? throw new ArgumentNullException(nameof(executionContext));
             _restartThrottle = new RestartThrottleManager(SoftNotifyDelayChange);
         }
 
-        private void Run()
+        public void Run()
         {
-            TickerOptionsBuilder.HostExceptionMessageFunc(string.Empty);
+            InternalTickerManager ??= ServiceProvider.GetService<IInternalTickerManager>();
+            
+            Stop();
+            
+            _executionContext.NotifyCoreAction(string.Empty, CoreNotifyActionType.NotifyHostExceptionMessage);
 
             if (TickerFunctionProvider.TickerFunctions.Count == 0)
                 return;
-            
+
             Task.Run(async () =>
             {
                 try
                 {
                     CtsTickerChecker = new SafeCancellationTokenSource();
-
                     CtsTickerTimeoutChecker = new SafeCancellationTokenSource();
 
-                    var tickerTask = (CtsTickerChecker?.IsDisposed == false)
+                    var tickerTask  = (CtsTickerChecker?.IsDisposed == false)
                         ? StartTickerCheckingLoop()
                         : Task.CompletedTask;
 
@@ -62,18 +61,24 @@ namespace TickerQ.Base
 
                     await Task.WhenAll(tickerTask, timeoutTask).ConfigureAwait(false);
                 }
+                catch (OperationCanceledException) when (
+                    (CtsTickerChecker?.IsCancellationRequested ?? false) ||
+                    (CtsTickerTimeoutChecker?.IsCancellationRequested ?? false))
+                {
+                    // normal shutdown
+                }
                 catch (Exception ex)
                 {
-                    TickerOptionsBuilder.HostExceptionMessageFunc(ex.StackTrace);
-                    TickerOptionsBuilder.NotifyNextOccurenceFunc(null);
+                    _executionContext.NotifyCoreAction(ex.ToString(), CoreNotifyActionType.NotifyHostExceptionMessage);
+                    _executionContext.NotifyCoreAction(null, CoreNotifyActionType.NotifyNextOccurence);
                 }
                 finally
                 {
+                    _executionContext.SetFunctions([]);
+
                     CtsTickerChecker?.Dispose();
                     CtsTickerTimeoutChecker?.Dispose();
-                    using var scope = ServiceProvider.CreateScope();
-                    var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
-                    await internalTickerManager.ReleaseAllAcquiredResources(ReleaseAcquiredTermination.ToIdle);
+                    await InternalTickerManager.ReleaseAcquiredResources([]).ConfigureAwait(false);
                 }
             });
         }
@@ -81,33 +86,30 @@ namespace TickerQ.Base
         private async Task StartTickerCheckingLoop()
         {
             CtsTickerDelayAwaiter = SafeCancellationTokenSource.CreateLinked(CtsTickerChecker.Token);
-
-            using var scope = ServiceProvider.CreateScope();
-
-            var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
-
-            while (!CtsTickerChecker.Token.IsCancellationRequested)
+            
+            while (!CtsTickerChecker!.Token.IsCancellationRequested)
             {
-                TickerOptionsBuilder.HostExceptionMessageFunc(string.Empty);
+                _executionContext.NotifyCoreAction(string.Empty, CoreNotifyActionType.NotifyHostExceptionMessage);
 
-                var functions = Array.Empty<InternalFunctionContext>();
+                InternalFunctionContext[] functions = [];
+                
                 try
                 {
-                    TimeSpan timeRemaining;
+                    await Task.Delay(Timeout.InfiniteTimeSpan, CtsTickerDelayAwaiter.Token).ConfigureAwait(false);
 
-                    (timeRemaining, functions) = await internalTickerManager.GetNextTickers(CtsTickerChecker.Token)
-                        .ConfigureAwait(false);
-
+                    (var timeRemaining, functions) = await InternalTickerManager.GetNextTickers(CtsTickerChecker.Token).ConfigureAwait(false);
+                    
+                    _executionContext.SetFunctions(functions);
                     if (timeRemaining == Timeout.InfiniteTimeSpan)
                     {
-                        NextPlannedOccurrence = null;
-                        TickerOptionsBuilder.NotifyNextOccurenceFunc(NextPlannedOccurrence);
+                        _executionContext.SetNextPlannedOccurrence(null);
+                        _executionContext.NotifyCoreAction(_executionContext.NextPlannedOccurrence, CoreNotifyActionType.NotifyNextOccurence);
                         await Task.Delay(Timeout.InfiniteTimeSpan, CtsTickerDelayAwaiter.Token).ConfigureAwait(false);
                     }
                     else
                     {
-                        NextPlannedOccurrence = _clock.UtcNow.Add(timeRemaining);
-                        TickerOptionsBuilder.NotifyNextOccurenceFunc(NextPlannedOccurrence);
+                        _executionContext.SetNextPlannedOccurrence(Clock.Now.Add(timeRemaining));
+                        _executionContext.NotifyCoreAction(_executionContext.NextPlannedOccurrence, CoreNotifyActionType.NotifyNextOccurence);
 
                         var sleepDuration = timeRemaining > TimeSpan.FromDays(1)
                             ? TimeSpan.FromDays(1)
@@ -122,11 +124,13 @@ namespace TickerQ.Base
                             await Task.Delay(sleepDuration, CtsTickerDelayAwaiter.Token).ConfigureAwait(false);
 
                         if (functions?.Length != 0)
-                            await internalTickerManager.SetTickersInProgress(functions, CtsTickerChecker.Token)
-                                .ConfigureAwait(false);
+                            await InternalTickerManager.SetTickersInProgress(functions, CtsTickerChecker.Token).ConfigureAwait(false);
 
                         if (functions?.Length != 0)
-                            await OnTimerTick(functions, CtsTickerChecker.Token);
+                        {
+                            await OnTimerTick(functions, dueDone: false, cancellationToken: CtsTickerChecker.Token).ConfigureAwait(false);
+                            _executionContext.SetFunctions([]);
+                        }
 
                         if (CtsTickerDelayAwaiter.IsCancellationRequested)
                             ResetCtsTickerDelayAwaiter();
@@ -135,8 +139,11 @@ namespace TickerQ.Base
                 catch (Exception) when (CtsTickerDelayAwaiter.IsCancellationRequested)
                 {
                     if (functions?.Length != 0)
-                        await internalTickerManager.ReleaseAcquiredResources(functions, CancellationToken.None)
-                            .ConfigureAwait(false);
+                    {
+                        await InternalTickerManager.ReleaseAcquiredResources(functions, CancellationToken.None);
+
+                        _executionContext.SetFunctions([]);
+                    }
 
                     if (CtsTickerChecker.IsCancellationRequested)
                         return;
@@ -144,20 +151,12 @@ namespace TickerQ.Base
                     CtsTickerDelayAwaiter?.Dispose();
                     CtsTickerDelayAwaiter = SafeCancellationTokenSource.CreateLinked(CtsTickerChecker.Token);
                 }
-                catch (CronOccurrenceAlreadyExistsException)
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(new Random().Next(12, 32)));
-                }
-                catch (DBConcurrencyException)
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(new Random().Next(12, 32)));
-                }
                 catch (Exception ex)
                 {
-                    TickerOptionsBuilder.HostExceptionMessageFunc(ex.StackTrace);
-                    TickerOptionsBuilder.NotifyHostStatusFunc(false);
-                    TickerOptionsBuilder.NotifyNextOccurenceFunc(null);
-
+                    _executionContext.SetFunctions([]);
+                    _executionContext.NotifyCoreAction(ex.StackTrace, CoreNotifyActionType.NotifyHostExceptionMessage);
+                    _executionContext.NotifyCoreAction(false, CoreNotifyActionType.NotifyHostStatus);
+                    _executionContext.NotifyCoreAction(null, CoreNotifyActionType.NotifyNextOccurence);
                     CtsTickerChecker?.Cancel();
                 }
             }
@@ -167,39 +166,34 @@ namespace TickerQ.Base
         {
             CtsTickerTimeoutDelayAwaiter = SafeCancellationTokenSource.CreateLinked(CtsTickerTimeoutChecker.Token);
 
-            using var scope = ServiceProvider.CreateScope();
-            var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
-
-            if (TickerOptionsBuilder.TimeOutChecker == Timeout.InfiniteTimeSpan)
+            if (_executionContext.TimeOutChecker == Timeout.InfiniteTimeSpan)
                 return;
 
-            var delayAwaiter = TickerOptionsBuilder.TimeOutChecker;
+            var delayAwaiter = _executionContext.TimeOutChecker;
             while (!CtsTickerTimeoutChecker.Token.IsCancellationRequested)
             {
                 try
                 {
-                    var functions = await internalTickerManager.GetTimedOutFunctions(CtsTickerTimeoutChecker.Token)
-                        .ConfigureAwait(false);
-
+                    var functions = await InternalTickerManager.RunTimedOutTickers(CtsTickerTimeoutChecker.Token);
+                
                     if (functions.Length == 0)
                     {
-                        await Task.Delay(delayAwaiter, CtsTickerTimeoutDelayAwaiter.Token).ConfigureAwait(false);
-                        delayAwaiter = TickerOptionsBuilder.TimeOutChecker;
+                        await Task.Delay(delayAwaiter, CtsTickerTimeoutDelayAwaiter.Token);
+                        delayAwaiter = _executionContext.TimeOutChecker;
                         continue;
                     }
-
-                    await OnTimerTick(functions, CtsTickerTimeoutChecker.Token, true);
+                
+                    await OnTimerTick(functions, dueDone: true, cancellationToken: CtsTickerTimeoutChecker.Token);
                 }
                 catch (Exception) when (CtsTickerTimeoutDelayAwaiter.IsCancellationRequested)
                 {
                     if (CtsTickerTimeoutChecker.IsCancellationRequested)
                         return;
-
+                
                     delayAwaiter = TimeSpan.FromSeconds(1);
-
+                
                     CtsTickerTimeoutDelayAwaiter?.Dispose();
-                    CtsTickerTimeoutDelayAwaiter =
-                        SafeCancellationTokenSource.CreateLinked(CtsTickerTimeoutChecker.Token);
+                    CtsTickerTimeoutDelayAwaiter = SafeCancellationTokenSource.CreateLinked(CtsTickerTimeoutChecker.Token);
                 }
                 catch (Exception)
                 {
@@ -208,20 +202,21 @@ namespace TickerQ.Base
             }
         }
 
+
         public void Stop()
         {
-            TickerOptionsBuilder.HostExceptionMessageFunc(string.Empty);
+            _executionContext.NotifyCoreAction(string.Empty, CoreNotifyActionType.NotifyHostExceptionMessage);
 
             if (CtsTickerTimeoutChecker?.IsDisposed == false)
-                CtsTickerTimeoutChecker?.Cancel();
+                CtsTickerTimeoutChecker.Cancel();
 
             if (CtsTickerChecker?.IsDisposed == false)
-                CtsTickerChecker?.Cancel();
+                CtsTickerChecker.Cancel();
 
             TickerCancellationTokenManager.CleanUpTickerCancellationTokens();
-            NextPlannedOccurrence = null;
-            TickerOptionsBuilder.NotifyNextOccurenceFunc(NextPlannedOccurrence);
-            TickerOptionsBuilder.NotifyHostStatusFunc(false);
+            _executionContext.SetNextPlannedOccurrence(null);
+            _executionContext.NotifyCoreAction(_executionContext.NextPlannedOccurrence, CoreNotifyActionType.NotifyNextOccurence);
+            _executionContext.NotifyCoreAction(false, CoreNotifyActionType.NotifyHostStatus);
         }
         
         private void SoftNotifyDelayChange()
@@ -232,32 +227,21 @@ namespace TickerQ.Base
 
         public void RestartIfNeeded(DateTime nextPlannedOccurrence)
         {
-            if (NextPlannedOccurrence == null ||
-                (NextPlannedOccurrence.Value - nextPlannedOccurrence).TotalSeconds >= 1)
-            {
+            if (_executionContext.NextPlannedOccurrence == null || (_executionContext.NextPlannedOccurrence.Value - nextPlannedOccurrence).TotalSeconds >= 1)
                 _restartThrottle.RequestRestart();
-            }
         }
+        
         public void Restart()
         {
             if (CtsTickerDelayAwaiter?.IsDisposed == false)
                 CtsTickerDelayAwaiter.Cancel();
 
-            TickerOptionsBuilder.NotifyHostStatusFunc((CtsTickerChecker?.IsDisposed == false));
-        }
-
-        public void Start()
-        {
-            Stop();
-            Run();
-            TickerOptionsBuilder.NotifyHostStatusFunc(true);
+            _executionContext.NotifyCoreAction((CtsTickerChecker?.IsDisposed == false), CoreNotifyActionType.NotifyHostStatus);
         }
 
         public bool IsRunning()
-        {
-            return (CtsTickerChecker?.IsDisposed == false);
-        }
-        
+            => (CtsTickerChecker?.IsDisposed == false);
+
         private void ResetCtsTickerDelayAwaiter()
         {
             CtsTickerDelayAwaiter?.Dispose();

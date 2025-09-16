@@ -1,14 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace TickerQ.SourceGenerator
 {
     public static class CronValidator
     {
-        // C# 8 doesn’t support target‑typed array initializers or file‑scoped namespaces,
+        // C# 8 doesn't support target‑typed array initializers or file‑scoped namespaces,
         // so we use the classic form:
-        private static readonly int[] MinValues = new int[] { 0, 0, 1, 1, 0 };
-        private static readonly int[] MaxValues = new int[] { 59, 23, 31, 12, 6 };
+        // Format: seconds, minutes, hours, day, month, day-of-week
+        private static readonly int[] MinValues = new int[] { 0, 0, 0, 1, 1, 0 };
+        private static readonly int[] MaxValues = new int[] { 59, 59, 23, 31, 12, 6 };
 
         public static bool IsValidCronExpression(string expression)
         {
@@ -16,15 +18,9 @@ namespace TickerQ.SourceGenerator
 
             var parts = expression.Split(' ');
             if (parts.Length != MinValues.Length) 
-                return false; // must have exactly 5 parts
+                return false; // must have exactly 6 parts
 
-            for (int i = 0; i < MinValues.Length; i++)
-            {
-                if (!ValidatePart(parts[i], MinValues[i], MaxValues[i]))
-                    return false;
-            }
-
-            return true;
+            return !MinValues.Where((t, i) => !ValidatePart(parts[i], t, MaxValues[i])).Any();
         }
 
         private static bool ValidatePart(string part, int min, int max)
@@ -32,7 +28,7 @@ namespace TickerQ.SourceGenerator
             if (part == "*") 
                 return true; // wildcard
 
-            ReadOnlySpan<char> span = part.AsSpan();
+            var span = part.AsSpan();
             var values = new HashSet<int>();
             int i = 0;
 
@@ -58,7 +54,7 @@ namespace TickerQ.SourceGenerator
                     return false;
                 }
 
-                // optional range “‑”
+                // optional range "‑"
                 if (i < span.Length && span[i] == '-')
                 {
                     i++;
@@ -68,7 +64,7 @@ namespace TickerQ.SourceGenerator
                         return false;
                 }
 
-                // optional step “/”
+                // optional step "/"
                 if (i < span.Length && span[i] == '/')
                 {
                     i++;

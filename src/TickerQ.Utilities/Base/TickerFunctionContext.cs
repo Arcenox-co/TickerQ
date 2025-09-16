@@ -2,7 +2,7 @@
 using System.Threading.Tasks;
 using TickerQ.Utilities.Enums;
 
-namespace TickerQ.Utilities.Models
+namespace TickerQ.Utilities.Base
 {
     public class TickerFunctionContext<TRequest> : TickerFunctionContext
     {

@@ -1,6 +1,6 @@
-﻿using TickerQ.EntityFrameworkCore.Entities.BaseEntity;
+﻿using TickerQ.Utilities.Entities.BaseEntity;
 
-namespace TickerQ.EntityFrameworkCore.Entities
+namespace TickerQ.Utilities.Entities
 {
     public class CronTickerEntity : BaseTickerEntity
     {

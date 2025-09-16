@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <RootNamespace>TickerQ.Scanner</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+      <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
+    </ItemGroup>
+
+    <Target Name="CopyAnalyzer" AfterTargets="Build">
+        <MakeDir Directories="$(OutputPath)analyzers/dotnet/cs" />
+    </Target>
+
+    <ItemGroup>
+        <None Include="..\TickerQ.SourceGenerator\bin\$(Configuration)\netstandard2.0\TickerQ.SourceGenerator.dll"
+              Pack="true"
+              PackagePath="analyzers/dotnet/cs" />
+    </ItemGroup>
+</Project>

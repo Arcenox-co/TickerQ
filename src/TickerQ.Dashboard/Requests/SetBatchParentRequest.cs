@@ -7,6 +7,6 @@ namespace TickerQ.Dashboard.Requests
     {
         public Guid TargetId { get; set; }
         public Guid ParentId { get; set; }
-        public BatchRunCondition? BatchRunCondition { get; set; }
+        public RunCondition? BatchRunCondition { get; set; }
     }
 }

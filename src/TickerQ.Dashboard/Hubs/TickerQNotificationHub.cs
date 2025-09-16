@@ -5,7 +5,6 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using TickerQ.Utilities;
 
 namespace TickerQ.Dashboard.Hubs
 {
@@ -22,7 +21,7 @@ namespace TickerQ.Dashboard.Hubs
         {
             var httpContext = Context.GetHttpContext();
             
-            var builder = httpContext?.RequestServices.GetService<TickerOptionsBuilder>();
+            var builder = httpContext?.RequestServices.GetService<DashboardOptionsBuilder>();
 
             if (builder is { EnableBasicAuth: false })
             {

@@ -1,26 +1,28 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using TickerQ.EntityFrameworkCore.Entities;
+using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Entities.BaseEntity;
 
 namespace TickerQ.EntityFrameworkCore.Configurations
 {
-    public class CronTickerOccurrenceConfigurations : IEntityTypeConfiguration<CronTickerOccurrenceEntity<CronTickerEntity>>
+    public class CronTickerOccurrenceConfigurations<TCronTicker> : IEntityTypeConfiguration<CronTickerOccurrenceEntity<TCronTicker>>
+        where TCronTicker : CronTickerEntity
     {
         private readonly string _schema;
 
         public CronTickerOccurrenceConfigurations(string schema = Constants.DefaultSchema)
-        {
-            _schema = schema;
-        }
+            => _schema = schema;
         
-        public void Configure(EntityTypeBuilder<CronTickerOccurrenceEntity<CronTickerEntity>> builder)
+        public void Configure(EntityTypeBuilder<CronTickerOccurrenceEntity<TCronTicker>> builder)
         {
             builder.HasKey("Id");
             
+            builder.Property(e => e.Id)
+                .ValueGeneratedNever();
+            
             builder.Property(x => x.LockHolder)
-                .IsConcurrencyToken()
                 .IsRequired(false);
-
+            
             builder.HasIndex("CronTickerId")
                 .HasDatabaseName("IX_CronTickerOccurrence_CronTickerId");
 

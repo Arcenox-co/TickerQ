@@ -1,9 +1,8 @@
 ﻿using System;
-using System.Collections.Generic;
-using TickerQ.EntityFrameworkCore.Entities.BaseEntity;
+using TickerQ.Utilities.Entities.BaseEntity;
 using TickerQ.Utilities.Enums;
 
-namespace TickerQ.EntityFrameworkCore.Entities
+namespace TickerQ.Utilities.Entities
 {
     public class TimeTickerEntity : BaseTickerEntity
     {
@@ -18,9 +17,7 @@ namespace TickerQ.EntityFrameworkCore.Entities
         public virtual int Retries { get; set; }
         public virtual int RetryCount { get; internal set; }
         public virtual int[] RetryIntervals { get; set; }
-        public virtual Guid? BatchParent { get; set; }
-        public virtual BatchRunCondition? BatchRunCondition { get; set; }
-        internal virtual TimeTickerEntity ParentJob { get; set; }
-        internal virtual ICollection<TimeTickerEntity> ChildJobs { get; set; }
+        public virtual Guid? ParentId { get; set; }
+        public virtual RunCondition? RunCondition { get; set; }
     }
 }

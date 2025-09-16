@@ -1,5 +1,4 @@
 using System;
-using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.DashboardDtos
 {

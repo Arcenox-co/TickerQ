@@ -8,46 +8,48 @@ using TickerQ.Dashboard.Controllers.Attributes;
 using TickerQ.Dashboard.Requests;
 using TickerQ.Utilities;
 using TickerQ.Utilities.DashboardDtos;
+using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
-
 namespace TickerQ.Dashboard.Controllers
 {
     [ApiController]
     [BasicAuth]
     [Route("api")]
-    public class TickerQController : ControllerBase
+    public class TickerQController<TTimeTicker, TCronTicker> : ControllerBase
+        where TTimeTicker : TimeTickerEntity, new()
+        where TCronTicker : CronTickerEntity, new()
     {
-        private ITickerDashboardRepository TickerDashboardRepository
-            => HttpContext.RequestServices.GetService<ITickerDashboardRepository>();
-
+        private ITickerDashboardRepository<TTimeTicker, TCronTicker> TickerDashboardRepository
+            => HttpContext.RequestServices.GetService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
+        
         private ITickerHost TickerHost
             => HttpContext.RequestServices.GetService<ITickerHost>();
 
-        private TickerOptionsBuilder TickerOptionsBuilder
-            => HttpContext.RequestServices.GetService<TickerOptionsBuilder>();
+        private TickerExecutionContext TickerExecutionContext
+            => HttpContext.RequestServices.GetService<TickerExecutionContext>();
 
         [HttpGet("options")]
         public IActionResult GetOptions()
         {
             return Ok(new
             {
-                MaxConcurrency = TickerOptionsBuilder.MaxConcurrency,
-                CurrentMachine = TickerOptionsBuilder.InstanceIdentifier,
-                LastHostExceptionMessage = TickerOptionsBuilder.LastHostExceptionMessage,
+                MaxConcurrency = TickerExecutionContext.MaxConcurrency,
+                CurrentMachine = TickerExecutionContext.InstanceIdentifier,
+                LastHostExceptionMessage = TickerExecutionContext.LastHostExceptionMessage,
             });
         }
 
         [HttpGet("cron-tickers")]
-        public async Task<IActionResult> GetCronTickersAsync()
+        public async Task<IActionResult> GetCronTickersAsync(CancellationToken cancellationToken)
         {
-            return Ok(await TickerDashboardRepository.GetCronTickersAsync());
+            return Ok(await TickerDashboardRepository.GetCronTickersAsync(cancellationToken));
         }
 
         [HttpGet("time-tickers")]
-        public async Task<IActionResult> GetTimeTickersAsync()
+        public async Task<IActionResult> GetTimeTickersAsync(CancellationToken cancellationToken)
         {
-            return Ok(await TickerDashboardRepository.GetTimeTickersAsync());
+            return Ok(await TickerDashboardRepository.GetTimeTickersAsync(cancellationToken));
         }
 
         [HttpGet("time-tickers/:graph-data-range")]
@@ -184,7 +186,7 @@ namespace TickerQ.Dashboard.Controllers
         }
 
         [HttpPost("time-ticker/:add")]
-        public async Task<IActionResult> AddTimeTickerAsync([FromBody] AddTimeTickerRequest request)
+        public async Task<IActionResult> AddTimeTickerAsync([FromBody] TTimeTicker request)
         {
             await TickerDashboardRepository.AddTimeTickerAsync(request);
             return Ok();
@@ -216,7 +218,7 @@ namespace TickerQ.Dashboard.Controllers
         {
             var result = new
             {
-                NextOccurrence = TickerHost.NextPlannedOccurrence
+                NextOccurrence = TickerExecutionContext.NextPlannedOccurrence
             };
             return Ok(result);
         }
@@ -231,7 +233,7 @@ namespace TickerQ.Dashboard.Controllers
         [HttpPost("ticker-host/:start")]
         public IActionResult StartTickerHostAsync()
         {
-            TickerHost.Start();
+            TickerHost.Run();
             return Ok();
         }
 
@@ -257,17 +259,17 @@ namespace TickerQ.Dashboard.Controllers
         }
 
         [HttpGet("ticker/statuses/:get")]
-        public async Task<IActionResult> GetJobStatusesAsync()
+        public async Task<IActionResult> GetJobStatusesAsync(CancellationToken cancellationToken)
         {
-            var jobStatuses = await TickerDashboardRepository.GetOverallJobStatusesAsync();
+            var jobStatuses = await TickerDashboardRepository.GetOverallJobStatusesAsync(cancellationToken);
 
             return Ok(jobStatuses.Select(x => new { x.Item1, x.Item2 }).ToArray());
         }
 
         [HttpGet("ticker/machine/:jobs")]
-        public async Task<IActionResult> GetMachineJobsAsync()
+        public async Task<IActionResult> GetMachineJobsAsync(CancellationToken cancellationToken)
         {
-            var machineJobs = await TickerDashboardRepository.GetMachineJobsAsync();
+            var machineJobs = await TickerDashboardRepository.GetMachineJobsAsync(cancellationToken);
 
             return Ok(machineJobs.Select(x => new { item1 = x.Item1, item2 = x.Item2 }).ToArray());
         }

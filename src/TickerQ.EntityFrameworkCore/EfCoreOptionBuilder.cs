@@ -1,45 +1,45 @@
 using System;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using TickerQ.EntityFrameworkCore.Customizer;
+using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces.Managers;
-using TickerQ.Utilities.Models.Ticker;
 
 namespace TickerQ.EntityFrameworkCore
 {
-    public class EfCoreOptionBuilder
+    public class EfCoreOptionBuilder<TTimeTicker, TCronTicker>
+        where TTimeTicker : TimeTickerEntity, new()
+        where TCronTicker : CronTickerEntity, new()
     {
-        internal bool UsesModelCustomizer { get; private set; }
-        internal bool CancelMissedTickersOnReset { get; private set; }
-        internal bool IgnoreSeedMemoryCronTickersInternal { get; private set; }
-        public Func<object, Task> TimeSeeder { get; private set; }
-        public Func<object, Task> CronSeeder  { get; private set; }
-        public void UseModelCustomizerForMigrations()
-            => UsesModelCustomizer = true;
-        
-        /// <summary>
-        /// Will cancel missed tickers that are tied to this node on application start.
-        /// </summary>
-        public void CancelMissedTickersOnAppStart()
-            => CancelMissedTickersOnReset = true;
-
-        public void IgnoreSeedMemoryCronTickers()
-            =>  IgnoreSeedMemoryCronTickersInternal = true;
-        
-        public void UseTickerSeeder<TTimeTicker, TCronTicker>(
-            Func<ITimeTickerManager<TTimeTicker>, Task> timeTickerAsync,
-            Func<ICronTickerManager<TCronTicker>, Task> cronTickerAsync)
-            where TCronTicker : CronTicker, new()
-            where TTimeTicker : TimeTicker, new()
+        internal bool SeedDefinedCronTickers { get; private set; } = true;
+        internal Func<ITimeTickerManager<TTimeTicker>, Task> TimeSeeder { get; private set; }
+        internal Func<ICronTickerManager<TCronTicker>, Task> CronSeeder  { get; private set; }
+        internal Action<IServiceCollection> ConfigureServices { get; set; }
+        internal int PoolSize { get; set; } = 32;
+        public EfCoreOptionBuilder<TTimeTicker, TCronTicker> IgnoreSeedDefinedCronTickers()
         {
-            TimeSeeder = async t => await timeTickerAsync((ITimeTickerManager<TTimeTicker>)t);
-            CronSeeder = async c => await cronTickerAsync((ICronTickerManager<TCronTicker>)c);
+            SeedDefinedCronTickers = false;
+            return this;
         }
 
-        public void UseTickerSeeder(
-            Func<ITimeTickerManager<TimeTicker>, Task> timeTickerAsync,
-            Func<ICronTickerManager<CronTicker>, Task> cronTickerAsync)
+        public EfCoreOptionBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(Func<ITimeTickerManager<TTimeTicker>, Task> timeTickerAsync, Func<ICronTickerManager<TCronTicker>, Task> cronTickerAsync)
         {
-            TimeSeeder = async t => await timeTickerAsync((ITimeTickerManager<TimeTicker>)t);
-            CronSeeder = async c => await cronTickerAsync((ICronTickerManager<CronTicker>)c);
+            TimeSeeder = async t => await timeTickerAsync(t);
+            CronSeeder = async c => await cronTickerAsync(c);
+            return this;
+        }
+
+        public EfCoreOptionBuilder<TTimeTicker, TCronTicker> UseDbContext<TDbContext>(ConfigurationType configurationType) where TDbContext : DbContext
+        {
+            CustomizerServiceDescriptor.UseDbContext<TDbContext, TTimeTicker, TCronTicker>(this, configurationType);
+            return this;
+        }
+
+        public EfCoreOptionBuilder<TTimeTicker, TCronTicker> SetDbContextPoolSize(int poolSize)
+        {
+            PoolSize = poolSize;
+            return this;
         }
     }
 }

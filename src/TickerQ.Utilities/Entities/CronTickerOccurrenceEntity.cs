@@ -1,7 +1,8 @@
 ﻿using System;
+using TickerQ.Utilities.Entities.BaseEntity;
 using TickerQ.Utilities.Enums;
 
-namespace TickerQ.EntityFrameworkCore.Entities
+namespace TickerQ.Utilities.Entities
 {
     public class CronTickerOccurrenceEntity<TCronTicker> where TCronTicker : CronTickerEntity
     {
@@ -16,5 +17,7 @@ namespace TickerQ.EntityFrameworkCore.Entities
         public virtual string Exception { get; set; }
         public virtual long ElapsedTime { get; set; }
         public virtual int RetryCount { get; set; }
+        public virtual DateTime CreatedAt { get; set; }
+        public virtual DateTime UpdatedAt { get; set; }
     }
 }

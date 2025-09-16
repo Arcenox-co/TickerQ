@@ -1,113 +1,55 @@
-﻿
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Linq;
-using TickerQ.EntityFrameworkCore.Customizer;
-using TickerQ.EntityFrameworkCore.Entities;
-using TickerQ.EntityFrameworkCore.Infrastructure;
 using TickerQ.Utilities;
-using TickerQ.Utilities.Enums;
-using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces.Managers;
-using TickerQ.Utilities.Models.Ticker;
+using TickerQ.Utilities.Managers;
 
 namespace TickerQ.EntityFrameworkCore.DependencyInjection
 {
     public static class ServiceExtension
     {
-        /// <summary>
-        /// Add the operational store for Ticker, OperationalStore will consume the DbContextOptions from the original configuration.
-        /// </summary>
-        /// <typeparam name="TContext"></typeparam>
-        /// <param name="tickerConfiguration"></param>
-        /// <param name="optionsBuilderAction"></param>
-        /// <returns></returns>
-        /// <exception cref="Exception"></exception>
-        public static TickerOptionsBuilder AddOperationalStore<TContext>(this TickerOptionsBuilder tickerConfiguration, Action<EfCoreOptionBuilder> optionsBuilderAction = null) where TContext : DbContext
-            => AddOperationalStore<TContext, TimeTickerEntity, CronTickerEntity>(tickerConfiguration, optionsBuilderAction);
-
-        /// <summary>
-        /// Add the operational store for Ticker, OperationalStore will consume the DbContextOptions from the original configuration.
-        /// </summary>
-        /// <typeparam name="TContext"></typeparam>
-        /// <typeparam name="TTimeTickerEntity"></typeparam>
-        /// <typeparam name="TCronTickerEntity"></typeparam>
-        /// <param name="tickerConfiguration"></param>
-        /// <param name="optionsBuilderAction"></param>
-        /// <returns></returns>
-        /// <exception cref="Exception"></exception>
-        public static TickerOptionsBuilder AddOperationalStore<TContext, TTimeTickerEntity, TCronTickerEntity>(this TickerOptionsBuilder tickerConfiguration, Action<EfCoreOptionBuilder> optionsBuilderAction = null)
-            where TContext : DbContext
-            where TTimeTickerEntity : TimeTickerEntity, new()
-            where TCronTickerEntity : CronTickerEntity, new()
+        
+        public static TickerOptionsBuilder<TTimeTicker, TCronTicker> AddOperationalStore<TTimeTicker, TCronTicker>(this TickerOptionsBuilder<TTimeTicker,TCronTicker> tickerConfiguration, Action<EfCoreOptionBuilder<TTimeTicker, TCronTicker>> efConfiguration = null)
+            where TTimeTicker : TimeTickerEntity, new()
+            where TCronTicker : CronTickerEntity, new()
         {
-            var efCoreOptionBuilder = new EfCoreOptionBuilder();
+            var efCoreOptionBuilder = new EfCoreOptionBuilder<TTimeTicker, TCronTicker>();
 
-            optionsBuilderAction?.Invoke(efCoreOptionBuilder);
+            efConfiguration?.Invoke(efCoreOptionBuilder);
 
-            tickerConfiguration.ExternalProviderConfigServiceAction = (services) =>
-            {
-                if (efCoreOptionBuilder.UsesModelCustomizer)
-                {
-                    var originalDescriptor = services.FirstOrDefault(descriptor => descriptor.ServiceType == typeof(DbContextOptions<TContext>));
-
-                    if (originalDescriptor == null)
-                        throw new Exception($"Ticker: Cannot add OperationalStore with empty {typeof(TContext).Name} configurations");
-
-                    var newDescriptor = new ServiceDescriptor(
-                        typeof(DbContextOptions<TContext>),
-                        provider => UpdateDbContextOptionsService<TContext, TTimeTickerEntity, TCronTickerEntity>(provider, originalDescriptor.ImplementationFactory),
-                        originalDescriptor.Lifetime
-                    );
-
-                    services.Remove(originalDescriptor);
-                    services.Add(newDescriptor);
-                }
-              
-                services.AddScoped<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerEfCorePersistenceProvider<TContext, TimeTicker, CronTicker>>();
-            };
-
+            if (efCoreOptionBuilder.PoolSize <= 0)
+                throw new ArgumentOutOfRangeException(nameof(efCoreOptionBuilder.PoolSize), "Pool size must be greater than 0");
+            
+            tickerConfiguration.ExternalProviderConfigServiceAction = efCoreOptionBuilder.ConfigureServices;
+                
             UseApplicationService(tickerConfiguration, efCoreOptionBuilder);
             
             return tickerConfiguration;
         }
-
-        private static DbContextOptions<TContext> UpdateDbContextOptionsService<TContext, TTimeTickerEntity, TCronTickerEntity>(IServiceProvider serviceProvider, Func<IServiceProvider, object> oldFactory) where TContext : DbContext where TTimeTickerEntity : TimeTickerEntity where TCronTickerEntity : CronTickerEntity
-        {
-            var factory = (DbContextOptions<TContext>)oldFactory(serviceProvider);
-
-            return new DbContextOptionsBuilder<TContext>(factory)
-                        .ReplaceService<IModelCustomizer, TickerModelCustomizer<TTimeTickerEntity, TCronTickerEntity>>()
-                        .Options;
-        }
         
-        private static void UseApplicationService(this TickerOptionsBuilder tickerConfiguration, EfCoreOptionBuilder options)
+        private static void UseApplicationService<TTimeTicker, TCronTicker>(TickerOptionsBuilder<TTimeTicker, TCronTicker> tickerConfiguration, EfCoreOptionBuilder<TTimeTicker, TCronTicker> options)
+            where TTimeTicker : TimeTickerEntity, new()
+            where TCronTicker : CronTickerEntity, new()
         {
-            tickerConfiguration.ExternalProviderConfigApplicationAction = (serviceProvider) =>
+            tickerConfiguration.UseExternalProviderApplication(async (serviceProvider) =>
             {
-                using var scope = serviceProvider.CreateScope();
-                
-                var internalTickerManager = scope.ServiceProvider.GetRequiredService<IInternalTickerManager>();
+                var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
                 
                 var functionsToSeed = TickerFunctionProvider.TickerFunctions
                     .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
                     .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
                 
-                if(!options.IgnoreSeedMemoryCronTickersInternal)
-                    internalTickerManager.SyncWithDbMemoryCronTickers(functionsToSeed).GetAwaiter().GetResult();
+                if(options.SeedDefinedCronTickers)
+                    await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed);
 
-                options.TimeSeeder?.Invoke(internalTickerManager).GetAwaiter().GetResult();
-                options.CronSeeder?.Invoke(internalTickerManager).GetAwaiter().GetResult();
+                if(options.TimeSeeder != null)
+                    await options.TimeSeeder((TickerManager<TTimeTicker, TCronTicker>)internalTickerManager);
                 
-                // Use the correct method name and parameters
-                var termination = options.CancelMissedTickersOnReset ? 
-                    ReleaseAcquiredTermination.CancelExpired : 
-                    ReleaseAcquiredTermination.ToIdle;
-                
-                internalTickerManager.ReleaseAllAcquiredResources(termination).GetAwaiter().GetResult();
-            };
+                if(options.CronSeeder != null)
+                    await options.CronSeeder((TickerManager<TTimeTicker, TCronTicker>)internalTickerManager);
+            });
         }
     }
 }

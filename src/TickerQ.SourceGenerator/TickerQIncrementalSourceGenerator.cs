@@ -283,8 +283,8 @@ namespace TickerQ.SourceGenerator
                         case "System.Threading.CancellationToken":
                             paramsList.Add("cancellationToken");
                             break;
-                        case "TickerQ.Utilities.Models.TickerFunctionContext":
-                        case "TickerQ.Utilities.Models.TickerFunctionContext`1":
+                        case "TickerQ.Utilities.Base.TickerFunctionContext":
+                        case "TickerQ.Utilities.Base.TickerFunctionContext`1":
                             paramsList.Add("context");
                             break;
                     }
@@ -387,12 +387,13 @@ namespace TickerQ.SourceGenerator
             sb.AppendLine("using System.Threading.Tasks;");
             sb.AppendLine("using Microsoft.Extensions.DependencyInjection;");
             sb.AppendLine("using TickerQ.Utilities;");
+            sb.AppendLine("using TickerQ.Utilities.Base;");
             sb.AppendLine("using TickerQ.Utilities.Models;");
             sb.AppendLine("using TickerQ.Utilities.Enums;");
             sb.AppendLine();
             sb.AppendLine("namespace " + assemblyName);
             sb.AppendLine("{");
-            sb.AppendLine("  public static class TickerQInstanceFactory");
+            sb.AppendLine("  public static class TickerQInstanceFactoryExtensions");
             sb.AppendLine("  {");
             sb.AppendLine("#if NET5_0_OR_GREATER\n    [System.Runtime.CompilerServices.ModuleInitializer]\n #endif");
             sb.AppendLine("    public static void Initialize()");

@@ -3,66 +3,33 @@ using TickerQ.Dashboard.Hubs;
 using TickerQ.Dashboard.Infrastructure.Dashboard;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
-using TickerQ.Utilities.Models.Ticker;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System;
 using System.Linq;
-using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using TickerQ.Utilities.Entities;
 
 namespace TickerQ.Dashboard.DependencyInjection
 {
-    public class DashboardConfiguration
-    {
-        public string BasePath { get; set; } = "/tickerq-dashboard";
-        public string[] CorsOrigins { get; set; } = new[] { "*" };
-        
-        // Backend API Configuration
-        public string BackendDomain { get; set; }
-        
-        // Authentication Integration
-        public bool EnableBuiltInAuth { get; set; } = true;
-        public bool UseHostAuthentication { get; set; } = false;
-        public string[] RequiredRoles { get; set; } = Array.Empty<string>();
-        public string[] RequiredPolicies { get; set; } = Array.Empty<string>();
-        
-        // Basic Auth Configuration
-        public bool EnableBasicAuth { get; set; } = false;
-        
-        // Custom Middleware Integration
-        public Action<IApplicationBuilder> CustomMiddleware { get; set; }
-        public Action<IApplicationBuilder> PreDashboardMiddleware { get; set; }
-        public Action<IApplicationBuilder> PostDashboardMiddleware { get; set; }
-        public bool UseHostMiddleware { get; set; } = false;
-    }
-
     public static class ServiceExtensions
     {
-        public static TickerOptionsBuilder AddDashboard(this TickerOptionsBuilder tickerConfiguration,
-            Action<DashboardConfiguration> configureDashboard = null)
+        public static TickerOptionsBuilder<TTimeTicker, TCronTicker> AddDashboard<TTimeTicker, TCronTicker>(this TickerOptionsBuilder<TTimeTicker, TCronTicker> tickerConfiguration, Action<DashboardOptionsBuilder> configureDashboard = null)
+            where TTimeTicker : TimeTickerEntity, new()
+            where TCronTicker : CronTickerEntity, new()
         {
-            var dashboardConfig = new DashboardConfiguration
+            var dashboardConfig = new DashboardOptionsBuilder
             {
-                CorsOrigins = new[] { "*" },
+                CorsOrigins = ["*"],
                 EnableBuiltInAuth = true,
                 UseHostAuthentication = false,
-                EnableBasicAuth = false // Default to false, must be explicitly enabled
+                EnableBasicAuth = false
             };
             
             configureDashboard?.Invoke(dashboardConfig);
             
-            // Set the basic auth flag on the ticker configuration if enabled
-            if (dashboardConfig.EnableBasicAuth)
-            {
-                tickerConfiguration.EnableBasicAuth = true;
-            }
-            
-            tickerConfiguration.DashboardLunchUrl = dashboardConfig.BasePath;
-            
             tickerConfiguration.DashboardServiceAction = (services) =>
             {
-                services.AddScoped<ITickerDashboardRepository, TickerDashboardRepository<TimeTicker, CronTicker>>();
-                services.AddSingleton<ITickerQNotificationHubSender, TickerQNotificationHubSender>();
+                services.AddScoped<ITickerDashboardRepository<TTimeTicker, TCronTicker>, TickerDashboardRepository<TTimeTicker, TCronTicker>>();
+                services.Replace(ServiceDescriptor.Singleton(services.AddSingleton<ITickerQNotificationHubSender, TickerQNotificationHubSender>()));
                 
                 // Add authentication services if using host authentication
                 if (dashboardConfig.UseHostAuthentication)
@@ -75,7 +42,8 @@ namespace TickerQ.Dashboard.DependencyInjection
                         services.AddAuthorization();
                     }
                 }
-                services.AddDashboardService(dashboardConfig);
+                services.AddDashboardService<TTimeTicker, TCronTicker>(dashboardConfig);
+                services.AddSingleton<DashboardOptionsBuilder>(_ => dashboardConfig);
             };
 
             UseDashboardDelegate(tickerConfiguration, dashboardConfig);
@@ -83,26 +51,20 @@ namespace TickerQ.Dashboard.DependencyInjection
             return tickerConfiguration;
         }
 
-        private static void UseDashboardDelegate(this TickerOptionsBuilder tickerConfiguration, DashboardConfiguration dashboardConfig)
+        private static void UseDashboardDelegate<TTimeTicker, TCronTicker>(this TickerOptionsBuilder<TTimeTicker, TCronTicker> tickerConfiguration, DashboardOptionsBuilder dashboardConfig)
+            where TTimeTicker : TimeTickerEntity, new()
+            where TCronTicker : CronTickerEntity, new()
         {
-            
-            tickerConfiguration.DashboardApplicationAction = (app, basePath) =>
+            tickerConfiguration.UseDashboardApplication((app) =>
             {
-                TickerOptionsBuilder.NotifyThreadCountFunc = (int threadCount) =>
-                {
-                     var notificationSender = app.ApplicationServices.GetService<ITickerQNotificationHubSender>();
-
-                     notificationSender?.UpdateActiveThreads(threadCount);
-                };
-                
                 // Execute pre-dashboard middleware
                 dashboardConfig.PreDashboardMiddleware?.Invoke(app);
                 
-                app.UseDashboard(basePath, dashboardConfig);
-
+                app.UseDashboard(dashboardConfig);
+                
                 // Execute post-dashboard middleware
                 dashboardConfig.PostDashboardMiddleware?.Invoke(app);
-            };
+            });
         }
     }
 }

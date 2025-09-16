@@ -11,27 +11,30 @@ namespace TickerQ
 {
     internal sealed class TickerTaskScheduler : TaskScheduler, IDisposable
     {
+        private readonly SoftSchedulerNotifyDebounce _notifyDebounce;
+
         /// <summary>Cancellation token used for disposal.</summary>
-        private readonly CancellationTokenSource _disposeCancellation = new CancellationTokenSource();
+        private readonly CancellationTokenSource _disposeCancellation = new();
 
         /// <summary>Whether we're processing tasks on the current thread.</summary>
-        private static readonly ThreadLocal<bool> TaskProcessingThread = new ThreadLocal<bool>();
+        private static readonly ThreadLocal<bool> TaskProcessingThread = new();
 
         /// <summary>The collection of tasks to be executed on our custom threads.</summary>
         private readonly BlockingCollection<Task> _blockingTaskQueue;
 
-        private readonly ConcurrentDictionary<int, TaskWithPriority> _taskDict =
-            new ConcurrentDictionary<int, TaskWithPriority>();
+        private readonly ConcurrentDictionary<int, TaskWithPriority> _taskDict = new();
         
         private const string DefaultThreadNameFormat = "Ticker thread ({0})";
 
-        public TickerTaskScheduler(int threadCount)
+        public TickerTaskScheduler(TickerExecutionContext executionContext)
         {
-            MaximumConcurrencyLevel = threadCount;
+            _notifyDebounce =  new SoftSchedulerNotifyDebounce(executionContext);
+            
+            MaximumConcurrencyLevel = executionContext.MaxConcurrency;
 
             _blockingTaskQueue = new BlockingCollection<Task>();
             
-            CreateAndStartThreads(threadCount);
+            CreateAndStartThreads(MaximumConcurrencyLevel);
         }
 
         private void CreateAndStartThreads(int concurrencyLevel)
@@ -57,35 +60,31 @@ namespace TickerQ
             TaskProcessingThread.Value = true;
             try
             {
-                while (true)
+                foreach (var task in _blockingTaskQueue.GetConsumingEnumerable(_disposeCancellation.Token))
                 {
+                    _notifyDebounce.NotifySafely(Interlocked.Increment(ref TickerExecutionContext.ActiveThreads));
+
                     try
                     {
-                        foreach (var task in _blockingTaskQueue.GetConsumingEnumerable(_disposeCancellation.Token))
-                        {
-                            SoftSchedulerNotifyDebounce.NotifySafely(Interlocked.Increment(ref TickerOptionsBuilder.ActiveThreads));
-                            
-                            try
-                            {
-                                TryExecuteTask(task);
-                            }
-                            finally
-                            {
-                                SoftSchedulerNotifyDebounce.NotifySafely(Interlocked.Decrement(ref TickerOptionsBuilder.ActiveThreads));
-                            }
-                        }
+                        TryExecuteTask(task);
                     }
-                    catch (ThreadAbortException)
+                    catch (OperationCanceledException)
                     {
-                        if (!Environment.HasShutdownStarted && !AppDomain.CurrentDomain.IsFinalizingForUnload())
-                        {
-                            Thread.ResetAbort();
-                        }
+                        // task cooperatively canceled; ignore
+                    }
+                    finally
+                    {
+                        _notifyDebounce.NotifySafely(Interlocked.Decrement(ref TickerExecutionContext.ActiveThreads));
                     }
                 }
             }
             catch (OperationCanceledException)
             {
+                // disposal/shutdown signaled
+            }
+            catch (ObjectDisposedException)
+            {
+                // collection/token disposed during shutdown
             }
             finally
             {
@@ -160,6 +159,7 @@ namespace TickerQ
         public void Dispose()
         {
             _disposeCancellation.Cancel();
+            _notifyDebounce.Dispose();
         }
 
         private readonly struct TaskWithPriority

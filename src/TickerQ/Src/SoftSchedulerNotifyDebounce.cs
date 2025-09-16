@@ -1,30 +1,80 @@
+using System;
 using System.Threading;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Enums;
 
 namespace TickerQ
 {
-    internal static class SoftSchedulerNotifyDebounce
+    internal sealed class SoftSchedulerNotifyDebounce : IDisposable
     {
-        private static Timer _debounceTimer;
-        private static int _latestCount = -1;
-        private static int _lastNotified = -1;
+        private readonly TickerExecutionContext _executionContext;
+        private readonly Timer _timer;
 
-        internal static void NotifySafely(int count)
+        private int _latest;
+        private int _lastNotified = -1;
+
+        private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(100);
+        private int _disposed;
+
+        public SoftSchedulerNotifyDebounce(TickerExecutionContext executionContext)
         {
-            _latestCount = count;
+            _executionContext = executionContext ?? throw new ArgumentNullException(nameof(executionContext));
+            _timer = new Timer(Callback, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        }
 
-            _debounceTimer?.Dispose();
-            _debounceTimer = new Timer(_ =>
+        /// <summary>
+        /// Debounces notifications; fires immediately when count == 0, otherwise after Debounce.
+        /// </summary>
+        internal void NotifySafely(int count)
+        {
+            Volatile.Write(ref _latest, count);
+
+            if (Volatile.Read(ref _disposed) == 1)
+                return;
+
+            var due = (count == 0) ? TimeSpan.Zero : Debounce;
+
+            try
             {
-                // Always notify if count is 0 (reset signal)
-                if (_latestCount != 0 && _latestCount == _lastNotified)
-                    return;
-                
-                _lastNotified = _latestCount;
-                
-                TickerOptionsBuilder.NotifyThreadCountFunc?.Invoke(count);
-                
-            }, null, 100, Timeout.Infinite);
+                _timer.Change(due, Timeout.InfiniteTimeSpan);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Raced with Dispose(); ignore.
+            }
+        }
+
+        /// <summary>
+        /// Synchronously push the latest value now (used on shutdown).
+        /// </summary>
+        internal void Flush()
+        {
+            Callback(null);
+        }
+
+        private void Callback(object? _)
+        {
+            if (Volatile.Read(ref _disposed) == 1)
+                return;
+
+            var latest = Volatile.Read(ref _latest);
+            var last   = Volatile.Read(ref _lastNotified);
+
+            if (latest != 0 && latest == last)
+                return;
+
+            Volatile.Write(ref _lastNotified, latest);
+            _executionContext.NotifyCoreAction?.Invoke(latest, CoreNotifyActionType.NotifyThreadCount);
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 1)
+                return;
+
+            try { _timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan); } catch { /* ignore */ }
+            _timer.Dispose();
+            GC.SuppressFinalize(this);
         }
     }
 }

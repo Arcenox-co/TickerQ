@@ -12,12 +12,15 @@ using TickerQ.Dashboard.Hubs;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
+using TickerQ.Utilities.Entities;
 
 namespace TickerQ.Dashboard.DependencyInjection
 {
     internal static class ServiceCollectionExtensions
     {
-        internal static void AddDashboardService(this IServiceCollection services, DashboardConfiguration config)
+        internal static void AddDashboardService<TTimeTicker, TCronTicker>(this IServiceCollection services, DashboardOptionsBuilder config)
+            where TTimeTicker : TimeTickerEntity, new()
+            where TCronTicker : CronTickerEntity, new()
         {
             services.AddRouting();
             services.AddSignalR();
@@ -28,7 +31,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                 {
                     if (config.CorsOrigins.Contains("*"))
                     {
-                        policy.SetIsOriginAllowed(x => true);
+                        policy.SetIsOriginAllowed(_ => true);
                     }
                     else
                     {
@@ -41,17 +44,18 @@ namespace TickerQ.Dashboard.DependencyInjection
                 });
             });
 
-            services.AddControllers().AddApplicationPart(typeof(TickerQController).Assembly);
+            services.AddControllers()
+                .ConfigureApplicationPartManager(cm => cm.FeatureProviders.Add(new GenericControllerFeatureProvider<TTimeTicker, TCronTicker>()));
         }
 
-        internal static void UseDashboard(this IApplicationBuilder app, string basePath, DashboardConfiguration config)
+        internal static void UseDashboard(this IApplicationBuilder app, DashboardOptionsBuilder config)
         {
             // Get the assembly and set up the embedded file provider (adjust the namespace as needed)
             var assembly = Assembly.GetExecutingAssembly();
             var embeddedFileProvider = new EmbeddedFileProvider(assembly, "TickerQ.Dashboard.wwwroot.dist");
 
             // Validate and normalize base path
-            basePath = NormalizeBasePath(basePath);
+            var basePath = NormalizeBasePath(config.BasePath);
 
             // Map a branch for the basePath
             app.Map(basePath, dashboardApp =>
@@ -142,7 +146,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             return basePath.TrimEnd('/');
         }
 
-        private static string ReplaceBasePath(string htmlContent, string basePath, DashboardConfiguration config)
+        private static string ReplaceBasePath(string htmlContent, string basePath, DashboardOptionsBuilder config)
         {
             if (string.IsNullOrEmpty(htmlContent))
                 return htmlContent ?? string.Empty;

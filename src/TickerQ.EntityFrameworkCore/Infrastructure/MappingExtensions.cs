@@ -1,171 +1,155 @@
-﻿using TickerQ.EntityFrameworkCore.Entities;
-using TickerQ.Utilities.Models.Ticker;
+﻿using System;
+using System.Linq.Expressions;
+using Microsoft.EntityFrameworkCore.Query;
+using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
     internal static class MappingExtensions
     {
-        internal static TCronTicker ToCronTicker<TCronTicker>(this CronTickerEntity entity)
-            where TCronTicker : CronTicker, new()
-        {
-            return new TCronTicker()
+        public static Expression<Func<TCronTicker, CronTickerEntity>> ForCronTickerExpressions<TCronTicker>() where TCronTicker : CronTickerEntity, new()
+            => e => new CronTickerEntity
             {
-                Id = entity.Id,
-                Expression = entity.Expression,
-                Function = entity.Function,
-                RetryIntervals = entity.RetryIntervals,
-                Retries = entity.Retries,
-                Description = entity.Description,
-                Request = entity.Request,
-                CreatedAt = entity.CreatedAt,
-                UpdatedAt = entity.UpdatedAt,
-                InitIdentifier = entity.InitIdentifier
+                Id = e.Id,
+                Expression = e.Expression,
+                Function = e.Function,
+                RetryIntervals = e.RetryIntervals,
+                Retries = e.Retries
             };
-        }
-
-        internal static TTimeTicker ToTimeTicker<TTimeTicker>(this TimeTickerEntity entity)
-            where TTimeTicker : TimeTicker, new()
-        {
-            return new TTimeTicker()
+        
+        internal static Expression<Func<TTimeTicker, TimeTickerEntity>> ForQueueTimeTickers<TTimeTicker>() where TTimeTicker : TimeTickerEntity, new()
+            => e => new TTimeTicker
             {
-                Id = entity.Id,
-                ElapsedTime = entity.ElapsedTime,
-                ExecutionTime = entity.ExecutionTime,
-                Status = entity.Status,
-                Exception = entity.Exception,
-                ExecutedAt = entity.ExecutedAt,
-                Request = entity.Request,
-                LockedAt = entity.LockedAt,
-                LockHolder = entity.LockHolder,
-                RetryCount = entity.RetryCount,
-                Function = entity.Function,
-                RetryIntervals = entity.RetryIntervals,
-                Retries = entity.Retries,
-                Description = entity.Description,
-                CreatedAt = entity.CreatedAt,
-                UpdatedAt = entity.UpdatedAt,
-                InitIdentifier = entity.InitIdentifier,
-                BatchParent = entity.BatchParent,
-                BatchRunCondition = entity.BatchRunCondition
+                Id = e.Id,
+                Function = e.Function,
+                Retries = e.Retries,
+                RetryIntervals = e.RetryIntervals,
+                UpdatedAt = e.UpdatedAt
             };
-        }
-
-        internal static TCronTickerOccurrence ToCronTickerOccurrence<TCronTickerOccurrence, TCronTicker>(
-            this CronTickerOccurrenceEntity<CronTickerEntity> entity)
-            where TCronTicker : CronTicker, new()
-            where TCronTickerOccurrence : CronTickerOccurrence<TCronTicker>, new()
-        {
-            var cronTickerOccurrence = new TCronTickerOccurrence
+        
+        internal static Expression<Func<TTimeTicker, TimeTickerEntity>> ForEarliestTimeTickers<TTimeTicker>() where TTimeTicker : TimeTickerEntity, new()
+            => e => new TTimeTicker
             {
-                Id = entity.Id,
-                CronTickerId = entity.CronTickerId,
-                ExecutionTime = entity.ExecutionTime,
-                ElapsedTime = entity.ElapsedTime,
-                LockedAt = entity.LockedAt,
-                Status = entity.Status,
-                LockHolder = entity.LockHolder,
-                ExecutedAt = entity.ExecutedAt,
-                RetryCount = entity.RetryCount,
-                Exception = entity.Exception
+                Id = e.Id,
+                ExecutionTime = e.ExecutionTime,
+                UpdatedAt = e.UpdatedAt,
+                Function = e.Function
             };
 
-            if (entity.CronTicker != null)
-                cronTickerOccurrence.CronTicker = new TCronTicker
+        internal static Expression<Func<TCronTickerOccurrence, CronTickerOccurrenceEntity<TCronTicker>>> ForQueueCronTickerOccurrence<TCronTickerOccurrence, TCronTicker>()
+            where TCronTicker : CronTickerEntity, new()
+            where TCronTickerOccurrence : CronTickerOccurrenceEntity<TCronTicker>, new()
+            => e => new CronTickerOccurrenceEntity<TCronTicker>
+            {
+                Id = e.Id,
+                UpdatedAt = e.UpdatedAt,
+                CronTickerId = e.CronTickerId,
+                CronTicker = new TCronTicker
                 {
-                    Id = entity.CronTicker.Id,
-                    Expression = entity.CronTicker.Expression,
-                    Function = entity.CronTicker.Function,
-                    RetryIntervals = entity.CronTicker.RetryIntervals,
-                    Retries = entity.CronTicker.Retries,
-                    Description = entity.CronTicker.Description,
-                    Request = entity.CronTicker.Request,
-                    CreatedAt = entity.CronTicker.CreatedAt,
-                    UpdatedAt = entity.CronTicker.UpdatedAt,
-                    InitIdentifier = entity.CronTicker.InitIdentifier
-                };
-
-            return cronTickerOccurrence;
-        }
-
-        internal static CronTickerEntity ToCronTickerEntity(this CronTicker ticker)
-        {
-            return new CronTickerEntity
-            {
-                Id = ticker.Id,
-                Expression = ticker.Expression,
-                Function = ticker.Function,
-                RetryIntervals = ticker.RetryIntervals,
-                Retries = ticker.Retries,
-                Description = ticker.Description,
-                Request = ticker.Request,
-                CreatedAt = ticker.CreatedAt,
-                UpdatedAt = ticker.UpdatedAt,
-                InitIdentifier = ticker.InitIdentifier
+                    Id = e.CronTicker.Id,
+                    Function = e.CronTicker.Function,
+                    RetryIntervals = e.CronTicker.RetryIntervals,
+                    Retries = e.CronTicker.Retries
+                }
             };
-        }
-
-        internal static TimeTickerEntity ToTimeTickerEntity(this TimeTicker ticker)
-        {
-            return new TimeTickerEntity
+        
+        internal static Expression<Func<TCronTickerOccurrence, CronTickerOccurrenceEntity<TCronTicker>>> ForLatestQueuedCronTickerOccurrence<TCronTickerOccurrence, TCronTicker>()
+            where TCronTicker : CronTickerEntity, new()
+            where TCronTickerOccurrence : CronTickerOccurrenceEntity<TCronTicker>, new()
+            => e => new CronTickerOccurrenceEntity<TCronTicker>
             {
-                Id = ticker.Id,
-                ElapsedTime = ticker.ElapsedTime,
-                ExecutionTime = ticker.ExecutionTime,
-                Status = ticker.Status,
-                Exception = ticker.Exception,
-                ExecutedAt = ticker.ExecutedAt,
-                Request = ticker.Request,
-                LockedAt = ticker.LockedAt,
-                LockHolder = ticker.LockHolder,
-                RetryCount = ticker.RetryCount,
-                Function = ticker.Function,
-                RetryIntervals = ticker.RetryIntervals,
-                Retries = ticker.Retries,
-                Description = ticker.Description,
-                CreatedAt = ticker.CreatedAt,
-                UpdatedAt = ticker.UpdatedAt,
-                InitIdentifier = ticker.InitIdentifier,
-                BatchRunCondition = ticker.BatchRunCondition,
-                BatchParent = ticker.BatchParent
-            };
-        }
-
-        internal static CronTickerOccurrenceEntity<CronTickerEntity> ToCronTickerOccurrenceEntity<TCronTicker,
-            TCronTickerOccurrence>(
-            this TCronTickerOccurrence occurrence)
-            where TCronTicker : CronTicker
-            where TCronTickerOccurrence : CronTickerOccurrence<TCronTicker>
-        {
-            var cronTickerOccurrenceEntity = new CronTickerOccurrenceEntity<CronTickerEntity>
-            {
-                Id = occurrence.Id,
-                CronTickerId = occurrence.CronTickerId,
-                ExecutionTime = occurrence.ExecutionTime,
-                ElapsedTime = occurrence.ElapsedTime,
-                LockedAt = occurrence.LockedAt,
-                Status = occurrence.Status,
-                LockHolder = occurrence.LockHolder,
-                ExecutedAt = occurrence.ExecutedAt,
-                RetryCount = occurrence.RetryCount,
-                Exception = occurrence.Exception,
-            };
-
-            if (occurrence.CronTicker != null)
-                cronTickerOccurrenceEntity.CronTicker = new CronTickerEntity
+                Id = e.Id,
+                CreatedAt = e.CreatedAt,
+                CronTickerId = e.CronTickerId,
+                ExecutionTime = e.ExecutionTime,
+                CronTicker = new TCronTicker
                 {
-                    Id = occurrence.CronTicker.Id,
-                    Expression = occurrence.CronTicker.Expression,
-                    Function = occurrence.CronTicker.Function,
-                    RetryIntervals = occurrence.CronTicker.RetryIntervals,
-                    Retries = occurrence.CronTicker.Retries,
-                    Description = occurrence.CronTicker.Description,
-                    Request = occurrence.CronTicker.Request,
-                    CreatedAt = occurrence.CronTicker.CreatedAt,
-                    UpdatedAt = occurrence.CronTicker.UpdatedAt,
-                    InitIdentifier = occurrence.CronTicker.InitIdentifier
-                };
+                    Id = e.CronTicker.Id,
+                    Function = e.CronTicker.Function,
+                    Expression = e.CronTicker.Expression,
+                    RetryIntervals = e.CronTicker.RetryIntervals,
+                    Retries = e.CronTicker.Retries
+                }
+            };
 
-            return cronTickerOccurrenceEntity;
+        internal static Expression<Func<SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>, SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>>> UpdateCronTickerOccurrence<TCronTicker>(InternalFunctionContext functionContext)
+            where TCronTicker : CronTickerEntity, new()
+        {
+            var propsToUpdate = functionContext.GetPropsToUpdate();
+
+            Expression<Func<SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>, SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>>> setExpression = 
+                calls => calls;
+            
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.Status, functionContext.Status));
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.ExecutedAt, functionContext.ExecutedAt));
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.Exception, functionContext.ExceptionDetails));
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime));
+            
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.ExecutionTime, functionContext.ExecutionTime));
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.RetryCount, functionContext.RetryCount));
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.LockHolder, (string)null)
+                        .SetProperty(x => x.LockedAt, (DateTime?)null));
+            
+            return setExpression;
+        }
+        
+        internal static Expression<Func<SetPropertyCalls<TTimeTicker>, SetPropertyCalls<TTimeTicker>>> UpdateTimeTicker<TTimeTicker>(InternalFunctionContext functionContext, DateTime updatedAt)
+            where TTimeTicker : TimeTickerEntity, new()
+        {
+            var propsToUpdate = functionContext.GetPropsToUpdate();
+
+            Expression<Func<SetPropertyCalls<TTimeTicker>, SetPropertyCalls<TTimeTicker>>> setExpression = 
+                calls => calls;
+            
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.Status, functionContext.Status));
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.ExecutedAt, functionContext.ExecutedAt));
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.Exception, functionContext.ExceptionDetails));
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime));
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.RetryCount, functionContext.RetryCount));
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.LockHolder, (string)null)
+                        .SetProperty(x => x.LockedAt, (DateTime?)null));
+            
+            setExpression = ExpressionHelper.CombineSetters(setExpression,
+                s => s.SetProperty(x => x.UpdatedAt, updatedAt));
+            
+            return setExpression;
         }
     }
 }
