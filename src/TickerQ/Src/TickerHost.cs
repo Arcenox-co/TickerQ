@@ -156,7 +156,7 @@ internal class TickerHost : BaseTicker
                 stopWatch.Start();
                     
                 await using var scope = ServiceProvider.CreateAsyncScope();
-
+                tickerFunctionContext.SetServiceScope(scope);
                 await delegateFunction(cancellationTokenSource.Token, scope.ServiceProvider, tickerFunctionContext);
 
                 success = true;

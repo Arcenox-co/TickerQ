@@ -1,4 +1,5 @@
 ﻿using System;
+using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.Base;
@@ -21,6 +22,7 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
 
 public class TickerFunctionContext
 {
+    internal AsyncServiceScope ServiceScope { get; set; }
     internal Action CancelOperationAction { get; set; }
     public Guid Id { get; internal set; }
     public TickerType Type { get; internal set; }
@@ -29,6 +31,8 @@ public class TickerFunctionContext
     public CronOccurrenceOperations CronOccurrenceOperations { get; internal set; }
     public void CancelOperation() 
         => CancelOperationAction();
+    internal void SetServiceScope(AsyncServiceScope serviceScope)
+        => ServiceScope = serviceScope;
 }
 
 public class CronOccurrenceOperations

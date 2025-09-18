@@ -3,6 +3,7 @@ using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.Base
 {
+    [AttributeUsage(AttributeTargets.Method)]
     public class TickerFunctionAttribute : Attribute
     {
         public TickerFunctionAttribute(string functionName, string cronExpression = null,

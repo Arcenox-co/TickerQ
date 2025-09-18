@@ -77,11 +77,10 @@ namespace TickerQ.Utilities
 
     public static class TickerRequestProvider
     {
-        public static async Task<T> GetRequestAsync<T>(IServiceProvider serviceProvider, Guid tickerId,
-            TickerType tickerType)
+        public static async Task<T> GetRequestAsync<T>(TickerFunctionContext context, CancellationToken cancellationToken)
         {
-            var internalTickerManager = serviceProvider.GetService<IInternalTickerManager>();
-            return await internalTickerManager.GetRequestAsync<T>(tickerId, tickerType);
+            var internalTickerManager = context.ServiceScope.ServiceProvider.GetService<IInternalTickerManager>();
+            return await internalTickerManager.GetRequestAsync<T>(context.Id, context.Type, cancellationToken);
         }
     }
 }
