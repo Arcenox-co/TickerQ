@@ -22,7 +22,7 @@ namespace TickerQ.DependencyInjection
             => AddTickerQ<TimeTickerEntity, CronTickerEntity>(services, optionsBuilder);
         
         public static IServiceCollection AddTickerQ<TTimeTicker, TCronTicker>(this IServiceCollection services, Action<TickerOptionsBuilder<TTimeTicker, TCronTicker>> optionsBuilder = null)
-            where TTimeTicker : TimeTickerEntity, new()
+            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
             var tickerExecutionContext = new TickerExecutionContext();
@@ -54,7 +54,7 @@ namespace TickerQ.DependencyInjection
             return services;
         }
         
-        public static async Task UseTickerQ(this IApplicationBuilder app, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
+        public static async Task UseTickerQAsync(this IApplicationBuilder app, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
         {
             var tickerExecutionContext = app.ApplicationServices.GetService<TickerExecutionContext>();
 

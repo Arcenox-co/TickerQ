@@ -13,7 +13,7 @@ namespace TickerQ.Dashboard.DependencyInjection
     public static class ServiceExtensions
     {
         public static TickerOptionsBuilder<TTimeTicker, TCronTicker> AddDashboard<TTimeTicker, TCronTicker>(this TickerOptionsBuilder<TTimeTicker, TCronTicker> tickerConfiguration, Action<DashboardOptionsBuilder> configureDashboard = null)
-            where TTimeTicker : TimeTickerEntity, new()
+            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
             var dashboardConfig = new DashboardOptionsBuilder
@@ -52,7 +52,7 @@ namespace TickerQ.Dashboard.DependencyInjection
         }
 
         private static void UseDashboardDelegate<TTimeTicker, TCronTicker>(this TickerOptionsBuilder<TTimeTicker, TCronTicker> tickerConfiguration, DashboardOptionsBuilder dashboardConfig)
-            where TTimeTicker : TimeTickerEntity, new()
+            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
             tickerConfiguration.UseDashboardApplication((app) =>

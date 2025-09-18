@@ -8,7 +8,7 @@ using TickerQ.Utilities.Interfaces;
 namespace TickerQ.Utilities
 {
     public class TickerOptionsBuilder<TTimeTicker, TCronTicker>
-        where TTimeTicker : TimeTickerEntity, new()
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         private readonly TickerExecutionContext _tickerExecutionContext;

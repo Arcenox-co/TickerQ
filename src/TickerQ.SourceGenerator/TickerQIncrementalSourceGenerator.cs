@@ -103,8 +103,8 @@ namespace TickerQ.SourceGenerator
             SourceProductionContext context)
         {
             var semanticModel = comp.GetSemanticModel(method.SyntaxTree);
-            var methodSymbol = semanticModel.GetDeclaredSymbol(method) as IMethodSymbol;
-            var classSymbol = semanticModel.GetDeclaredSymbol(cd) as INamedTypeSymbol;
+            var methodSymbol = semanticModel.GetDeclaredSymbol(method);
+            var classSymbol = semanticModel.GetDeclaredSymbol(cd);
             if (methodSymbol == null || classSymbol == null) return;
 
             if (classSymbol.DeclaredAccessibility == Accessibility.Private || classSymbol.IsAbstract)
@@ -180,77 +180,6 @@ namespace TickerQ.SourceGenerator
                     attributes.cronExpression
                 );
             }
-        }
-
-        private static bool ValidatePart(string part, int min, int max)
-        {
-            if (part == "*") return true;
-
-            var span = part.AsSpan();
-            var values = new HashSet<int>();
-            var i = 0;
-
-            while (i < span.Length)
-            {
-                int num1 = 0, num2 = -1, step = 1;
-
-                if (span[i] == '*')
-                {
-                    num1 = min;
-                    num2 = max;
-                    i++;
-                }
-                else if (char.IsDigit(span[i]))
-                {
-                    num1 = ReadNumber(span, ref i);
-                }
-                else
-                {
-                    return false;
-                }
-
-                if (i < span.Length && span[i] == '-')
-                {
-                    i++;
-                    if (i < span.Length && char.IsDigit(span[i]))
-                        num2 = ReadNumber(span, ref i);
-                    else
-                        return false;
-                }
-
-                if (i < span.Length && span[i] == '/')
-                {
-                    i++;
-                    if (i < span.Length && char.IsDigit(span[i]))
-                        step = ReadNumber(span, ref i);
-                    else
-                        return false;
-                }
-
-                if (num2 == -1) num2 = num1;
-                if (num1 < min || num2 > max || num1 > num2 || step < 1 || step > max)
-                    return false;
-
-                for (var v = num1; v <= num2; v += step)
-                    values.Add(v);
-
-                if (i < span.Length && span[i] == ',')
-                    i++;
-            }
-
-            return values.Count > 0;
-        }
-
-        private static int ReadNumber(ReadOnlySpan<char> span, ref int index)
-        {
-            int num = 0;
-            while (index < span.Length && char.IsDigit(span[index]))
-            {
-                num = num * 10 + (span[index] - '0');
-                index++;
-            }
-
-            return num;
         }
 
         private static (string, (string, string)) BuildSingleDelegate(

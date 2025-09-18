@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using TickerQ.Utilities.Entities;
-using TickerQ.Utilities.Entities.BaseEntity;
 
 namespace TickerQ.EntityFrameworkCore.Configurations
 {

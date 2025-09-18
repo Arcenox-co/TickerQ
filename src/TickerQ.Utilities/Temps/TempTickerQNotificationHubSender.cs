@@ -64,7 +64,7 @@ namespace TickerQ.Utilities.Temps
             return Task.CompletedTask;
         }
 
-        public Task UpdateTimeTickerFromInternalFunctionContext<TTimeTickerEntity>(InternalFunctionContext internalFunctionContext) where TTimeTickerEntity : TimeTickerEntity, new()
+        public Task UpdateTimeTickerFromInternalFunctionContext<TTimeTickerEntity>(InternalFunctionContext internalFunctionContext) where TTimeTickerEntity : TimeTickerEntity<TTimeTickerEntity>, new()
         {
             return Task.CompletedTask;
         }

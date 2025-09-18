@@ -17,7 +17,7 @@ namespace TickerQ.Dashboard.Controllers
     [BasicAuth]
     [Route("api")]
     public class TickerQController<TTimeTicker, TCronTicker> : ControllerBase
-        where TTimeTicker : TimeTickerEntity, new()
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         private ITickerDashboardRepository<TTimeTicker, TCronTicker> TickerDashboardRepository
@@ -179,7 +179,7 @@ namespace TickerQ.Dashboard.Controllers
         }
 
         [HttpPut("time-ticker/:update")]
-        public async Task<IActionResult> UpdateTimeTickerAsync([FromQuery] Guid id, [FromBody] UpdateTimeTickerRequest request)
+        public async Task<IActionResult> UpdateTimeTickerAsync([FromQuery] Guid id, [FromBody] TTimeTicker request)
         {
             await TickerDashboardRepository.UpdateTimeTickerAsync(id, request);
             return Ok();
@@ -193,7 +193,7 @@ namespace TickerQ.Dashboard.Controllers
         }
 
         [HttpPost("cron-ticker/:add")]
-        public async Task<IActionResult> AddCronTickerAsync([FromBody] AddCronTickerRequest request)
+        public async Task<IActionResult> AddCronTickerAsync([FromBody] TTimeTicker request)
         {
             await TickerDashboardRepository.AddCronTickerAsync(request);
             return Ok();

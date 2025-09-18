@@ -10,7 +10,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure;
 
 public static class TickerQueryExtensions
 {
-    public static IQueryable<TTimeTicker> WhereCanAcquire<TTimeTicker>(this IQueryable<TTimeTicker> q, string lockHolder) where TTimeTicker : TimeTickerEntity
+    public static IQueryable<TTimeTicker> WhereCanAcquire<TTimeTicker>(this IQueryable<TTimeTicker> q, string lockHolder) where TTimeTicker : TimeTickerEntity<TTimeTicker>
     {
         Expression<Func<TTimeTicker, bool>> pred = e =>
             ((e.Status == TickerStatus.Idle || e.Status == TickerStatus.Queued) && e.LockHolder == lockHolder) || 

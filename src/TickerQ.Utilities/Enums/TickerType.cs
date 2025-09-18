@@ -2,7 +2,7 @@
 {
     public enum TickerType
     {
-        CronExpression,
-        Timer
+        CronTickerOccurrence,
+        TimeTicker
     }
 }

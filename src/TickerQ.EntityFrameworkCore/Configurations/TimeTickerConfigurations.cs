@@ -4,7 +4,7 @@ using TickerQ.Utilities.Entities;
 
 namespace TickerQ.EntityFrameworkCore.Configurations
 {
-    public class TimeTickerConfigurations<TTimeTicker> : IEntityTypeConfiguration<TTimeTicker> where TTimeTicker : TimeTickerEntity, new()
+    public class TimeTickerConfigurations<TTimeTicker> : IEntityTypeConfiguration<TTimeTicker> where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     {
         private readonly string _schema;
 
@@ -13,16 +13,18 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
         public void Configure(EntityTypeBuilder<TTimeTicker> builder)
         {
-            builder.HasKey("Id");
+            builder.HasKey(x => x.Id);
 
             builder.Property(x => x.LockHolder)
-                .IsConcurrencyToken()
+                .IsRequired(false);
+            
+            builder.Property(x => x.ExecutionTime)
                 .IsRequired(false);
 
-            builder.HasOne<TTimeTicker>()
-                .WithMany()
-                .HasForeignKey(e => e.ParentId)
-                .OnDelete(DeleteBehavior.NoAction);
+            builder.HasOne(x => x.Parent)
+                .WithMany(x => x.Children)
+                .HasForeignKey(x => x.ParentId)
+                .OnDelete(DeleteBehavior.Cascade);
             
             builder.HasIndex("ExecutionTime")
                 .HasDatabaseName("IX_TimeTicker_ExecutionTime");

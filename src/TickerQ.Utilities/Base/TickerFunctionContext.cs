@@ -1,39 +1,39 @@
 ﻿using System;
-using System.Threading.Tasks;
 using TickerQ.Utilities.Enums;
 
-namespace TickerQ.Utilities.Base
+namespace TickerQ.Utilities.Base;
+
+public class TickerFunctionContext<TRequest> : TickerFunctionContext
 {
-    public class TickerFunctionContext<TRequest> : TickerFunctionContext
+    public TickerFunctionContext(TickerFunctionContext tickerFunctionContext, TRequest request) 
     {
-        public TickerFunctionContext(TickerFunctionContext tickerFunctionContext, TRequest request) : 
-            base(tickerFunctionContext.Id, tickerFunctionContext.Type, tickerFunctionContext.RetryCount, tickerFunctionContext.IsDue, tickerFunctionContext.DeleteAsync, tickerFunctionContext.CancelTicker)
-        {
-            Request = request;
-        }
-        
-        public TRequest Request { get; }
+        Request = request;
+        Id = tickerFunctionContext.Id;
+        Type = tickerFunctionContext.Type;
+        RetryCount = tickerFunctionContext.RetryCount;
+        IsDue = tickerFunctionContext.IsDue;
+        CancelOperationAction = tickerFunctionContext.CancelOperationAction;
+        CronOccurrenceOperations = tickerFunctionContext.CronOccurrenceOperations;
     }
 
-    public class TickerFunctionContext
-    {
-        internal TickerFunctionContext(Guid id, TickerType type, int retryCount, bool isDue, Func<Task> deleteAsync, Action cancelTicker)
-        {
-            Id = id;
-            Type = type;
-            RetryCount = retryCount;
-            IsDue = isDue;
-            DeleteAsync = deleteAsync;
-            CancelTicker = cancelTicker;
-        }
-        public Guid Id { get; }
-        public TickerType Type { get; }
-        public int RetryCount { get; }
-        public bool IsDue { get; }
-        /// <summary>
-        /// Deletes current Ticker and terminates it
-        /// </summary>
-        public Func<Task> DeleteAsync { get; }
-        public Action CancelTicker { get; }
-    }
+    public readonly TRequest Request;
+}
+
+public class TickerFunctionContext
+{
+    internal Action CancelOperationAction { get; set; }
+    public Guid Id { get; internal set; }
+    public TickerType Type { get; internal set; }
+    public int RetryCount { get; internal set; }
+    public bool IsDue { get; internal set; }
+    public CronOccurrenceOperations CronOccurrenceOperations { get; internal set; }
+    public void CancelOperation() 
+        => CancelOperationAction();
+}
+
+public class CronOccurrenceOperations
+{
+    internal Action SkipIfAlreadyRunningAction { get; set; }
+    public void SkipIfAlreadyRunning()
+        => SkipIfAlreadyRunningAction();
 }

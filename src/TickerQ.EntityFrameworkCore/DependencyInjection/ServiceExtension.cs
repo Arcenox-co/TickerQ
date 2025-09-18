@@ -11,26 +11,29 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
     public static class ServiceExtension
     {
         
-        public static TickerOptionsBuilder<TTimeTicker, TCronTicker> AddOperationalStore<TTimeTicker, TCronTicker>(this TickerOptionsBuilder<TTimeTicker,TCronTicker> tickerConfiguration, Action<EfCoreOptionBuilder<TTimeTicker, TCronTicker>> efConfiguration = null)
-            where TTimeTicker : TimeTickerEntity, new()
+        public static TickerOptionsBuilder<TTimeTicker, TCronTicker> AddOperationalStore<TTimeTicker, TCronTicker>(this TickerOptionsBuilder<TTimeTicker,TCronTicker> tickerConfiguration, Action<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>> efConfiguration = null)
+            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
-            var efCoreOptionBuilder = new EfCoreOptionBuilder<TTimeTicker, TCronTicker>();
+            var efCoreOptionBuilder = new TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>();
 
             efConfiguration?.Invoke(efCoreOptionBuilder);
-
+            
             if (efCoreOptionBuilder.PoolSize <= 0)
                 throw new ArgumentOutOfRangeException(nameof(efCoreOptionBuilder.PoolSize), "Pool size must be greater than 0");
             
-            tickerConfiguration.ExternalProviderConfigServiceAction = efCoreOptionBuilder.ConfigureServices;
-                
+            tickerConfiguration.ExternalProviderConfigServiceAction += (services) 
+                => services.AddSingleton(_ => efCoreOptionBuilder);
+            
+            tickerConfiguration.ExternalProviderConfigServiceAction += efCoreOptionBuilder.ConfigureServices;
+            
             UseApplicationService(tickerConfiguration, efCoreOptionBuilder);
             
             return tickerConfiguration;
         }
         
-        private static void UseApplicationService<TTimeTicker, TCronTicker>(TickerOptionsBuilder<TTimeTicker, TCronTicker> tickerConfiguration, EfCoreOptionBuilder<TTimeTicker, TCronTicker> options)
-            where TTimeTicker : TimeTickerEntity, new()
+        private static void UseApplicationService<TTimeTicker, TCronTicker>(TickerOptionsBuilder<TTimeTicker, TCronTicker> tickerConfiguration, TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> options)
+            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
             tickerConfiguration.UseExternalProviderApplication(async (serviceProvider) =>

@@ -4,24 +4,23 @@ namespace TickerQ.Utilities.Models
 {
     public class TickerResult<TEntity> where TEntity : class
     {
-        public TickerResult(Exception exception) : this(false)
+        internal TickerResult(Exception exception) : this(false)
             => Exception = exception;
-        public TickerResult(TEntity result) : this(true)
+        internal TickerResult(TEntity result) : this(true)
             => Result = result;
-        public TickerResult(int affectedRows) : this(true)
+        internal TickerResult(int affectedRows) : this(true)
             => AffectedRows = affectedRows;
+        private TickerResult(bool isSucceeded)
+            => IsSucceeded = isSucceeded;
 
-        public TickerResult(TEntity result, int affectedRows) : this(true)
+        internal TickerResult(TEntity result, int affectedRows) : this(true)
         {
             Result = result;
             AffectedRows = affectedRows;
         }
-        
-        private TickerResult(bool isSucceeded)
-            => isSucceeded = isSucceeded;
 
-        public readonly bool isSucceeded;
-        public int AffectedRows;
+        public readonly bool IsSucceeded;
+        public readonly int AffectedRows;
         public readonly TEntity Result;
         public readonly Exception Exception;
     }

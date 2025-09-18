@@ -5,6 +5,6 @@ namespace TickerQ
 {
     public class TickerSystemClock : ITickerClock
     {
-        public DateTime Now => DateTime.UtcNow;
+        public DateTime UtcNow => DateTime.UtcNow;
     }
 }

@@ -45,5 +45,6 @@ namespace TickerQ.Utilities
         public TickerType Type { get; set; }
         public bool IsDue { get; set; }
         public CancellationTokenSource CancellationSource { get; set; }
+        public Guid ParentId { get; set; }
     }
 }

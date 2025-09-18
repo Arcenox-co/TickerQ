@@ -77,14 +77,14 @@ namespace TickerQ.Dashboard.Hubs
             await _hubContext.Clients.Group(groupId.ToString()).SendAsync("UpdateCronOccurrenceNotification", occurrence);
         }
 
-        public async Task UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(InternalFunctionContext internalFunctionContext) where TTimeTicker : TimeTickerEntity, new()
+        public async Task UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(InternalFunctionContext internalFunctionContext) where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         {
             var timeTicker = new TTimeTicker
             {
                 Id = internalFunctionContext.TickerId,
                 Status = internalFunctionContext.Status,
                 ExecutedAt = internalFunctionContext.ExecutedAt,
-                Exception = internalFunctionContext.ExceptionDetails,
+                ExceptionMessage = internalFunctionContext.ExceptionDetails,
                 ElapsedTime = internalFunctionContext.ElapsedTime,
                 RetryCount = internalFunctionContext.RetryCount,
                 UpdatedAt = internalFunctionContext.ExecutedAt
@@ -99,15 +99,15 @@ namespace TickerQ.Dashboard.Hubs
             {
                 Id = internalFunctionContext.TickerId,
                 Status = internalFunctionContext.Status,
-                CronTickerId = internalFunctionContext.CronTickerId,
+                CronTickerId = internalFunctionContext.ParentId!.Value,
                 ExecutedAt = internalFunctionContext.ExecutedAt,
-                Exception = internalFunctionContext.ExceptionDetails,
+                ExceptionMessage = internalFunctionContext.ExceptionDetails,
                 ElapsedTime = internalFunctionContext.ElapsedTime,
                 RetryCount = internalFunctionContext.RetryCount,
                 UpdatedAt = internalFunctionContext.ExecutedAt
             };
             
-            await _hubContext.Clients.Group(internalFunctionContext.CronTickerId.ToString()).SendAsync("UpdateCronOccurrenceNotification", cronOccurrence);
+            await _hubContext.Clients.Group(internalFunctionContext.ParentId.ToString()).SendAsync("UpdateCronOccurrenceNotification", cronOccurrence);
         }
 
         public async Task CanceledTickerNotifyAsync(Guid id)

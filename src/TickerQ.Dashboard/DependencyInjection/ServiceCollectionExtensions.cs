@@ -7,7 +7,6 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
-using TickerQ.Dashboard.Controllers;
 using TickerQ.Dashboard.Hubs;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -19,7 +18,7 @@ namespace TickerQ.Dashboard.DependencyInjection
     internal static class ServiceCollectionExtensions
     {
         internal static void AddDashboardService<TTimeTicker, TCronTicker>(this IServiceCollection services, DashboardOptionsBuilder config)
-            where TTimeTicker : TimeTickerEntity, new()
+            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
             services.AddRouting();

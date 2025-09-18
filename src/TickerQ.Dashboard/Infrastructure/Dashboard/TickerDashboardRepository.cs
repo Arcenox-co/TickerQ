@@ -11,12 +11,11 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
-using static TickerQ.Utilities.TickerExecutionContext;
 
 namespace TickerQ.Dashboard.Infrastructure.Dashboard
 {
     internal class TickerDashboardRepository<TTimeTicker, TCronTicker> : ITickerDashboardRepository<TTimeTicker, TCronTicker> 
-        where TTimeTicker : TimeTickerEntity, new()
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         private readonly ITickerPersistenceProvider<TTimeTicker, TCronTicker> _persistenceProvider;
@@ -143,13 +142,16 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var startDate = today.AddDays(pastDays);
             var endDate = today.AddDays(futureDays);
 
-            var timeTickers = await _persistenceProvider.GetTimeTickers(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate, cancellationToken);
+            var timeTickers = await _persistenceProvider.GetTimeTickers(x =>
+                    (x.ExecutionTime != null) &&
+                    (x.ExecutionTime.Value.Date >= startDate && x.ExecutionTime.Value.Date <= endDate),
+                cancellationToken);
 
             // Get all possible statuses once
             var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
 
             var rawData = timeTickers
-                .GroupBy(x => new { x.ExecutionTime.Date, x.Status })
+                .GroupBy(x => new { x.ExecutionTime!.Value.Date, x.Status })
                 .Select(g => new
                 {
                     g.Key.Date,
@@ -325,7 +327,10 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var endDate = DateTime.UtcNow.Date;
             var startDate = endDate.AddDays(-7);
 
-            var timeTickers = await _persistenceProvider.GetTimeTickers(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate, cancellationToken);
+            var timeTickers = await _persistenceProvider.GetTimeTickers(x =>
+                    (x.ExecutionTime != null) &&
+                    (x.ExecutionTime.Value.Date >= startDate && x.ExecutionTime.Value.Date <= endDate)
+                , cancellationToken);
             
             var timeTickerStatuses = timeTickers
                 .Select(x => x.Status)
@@ -342,7 +347,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var allStatuses = timeTickerStatuses.Concat(cronTickerStatuses).ToList();
 
             // Count per type
-            var doneOrDueDoneCount = allStatuses.Count(x => x == TickerStatus.Done || x == TickerStatus.DueDone);
+            var doneOrDueDoneCount = allStatuses.Count(x => x is TickerStatus.Done or TickerStatus.DueDone);
             var failedCount = allStatuses.Count(x => x == TickerStatus.Failed);
             var totalCount = allStatuses.Count;
 
@@ -613,7 +618,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             byte[] jsonRequestBytes;
             string functionName;
 
-            if (tickerType == TickerType.Timer)
+            if (tickerType == TickerType.TimeTicker)
             {
                 var timeTicker = await _persistenceProvider.GetTimeTickerById(tickerId, cancellationToken);
 
@@ -660,8 +665,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                         out var functionTypeContext))
                 {
                     JsonExampleGenerator.TryGenerateExampleJson(functionTypeContext.Item2, out var exampleJson);
-                    yield return (tickerFunction.Key,
-                        (functionTypeContext.Item1, exampleJson, tickerFunction.Priority));
+                    yield return (tickerFunction.Key, (functionTypeContext.Item1, exampleJson, tickerFunction.Priority));
                 }
                 else
                 {
@@ -671,80 +675,32 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         }
 
         // New method that accepts request models
-        public async Task UpdateTimeTickerAsync(Guid id, UpdateTimeTickerRequest request, CancellationToken cancellationToken)
+        public async Task UpdateTimeTickerAsync(Guid id, TTimeTicker request, CancellationToken cancellationToken)
         {
-            var timeTicker = await _persistenceProvider.GetTimeTickerById(id, cancellationToken);
-            var requestType = GetRequestType(request.Function);
-
-            timeTicker.UpdatedAt = DateTime.UtcNow;
-            timeTicker.LockedAt = null;
-            timeTicker.LockHolder = null;
-            timeTicker.Status = TickerStatus.Idle;
-            timeTicker.Function = request.Function;
-            timeTicker.Description = request.Description;
-            timeTicker.Retries = request.Retries;
-            timeTicker.RetryIntervals = request.Intervals ?? [30];
+            request.Id = id;
             
-            // Process the request using the function
-            if (!string.IsNullOrWhiteSpace(request.Request))
-            {
-                var serializedRequest = JsonSerializer.Deserialize<object>(request.Request);
-                timeTicker.Request = TickerHelper.CreateTickerRequest(serializedRequest);
-            }
-
-            timeTicker.ExecutionTime = !string.IsNullOrEmpty(request.ExecutionTime) 
-                ? DateTime.Parse(request.ExecutionTime).ToUniversalTime()
-                : DateTime.UtcNow.AddSeconds(1);
-
-            _tickerHost.RestartIfNeeded(timeTicker.ExecutionTime);
-
-            await _persistenceProvider.UpdateTimeTickers([timeTicker], cancellationToken);
-            await NotifyOrUpdateUpdate(timeTicker, requestType, false);
+            if(request.ExecutionTime == default)
+                request.ExecutionTime = _clock.UtcNow.AddSeconds(1);
+            
+            await _timeTickerManager.UpdateAsync(request, cancellationToken);
         }
 
         
         public async Task AddTimeTickerAsync(TTimeTicker request, CancellationToken cancellationToken)
         {
             if(request.ExecutionTime == default)
-                request.ExecutionTime = _clock.Now.AddSeconds(1);
-                
-            Console.WriteLine($"---Current{request.ExecutionTime}");
-
+                request.ExecutionTime = _clock.UtcNow.AddSeconds(1);
+            
             await _timeTickerManager.AddAsync(request, cancellationToken);
         }
 
         // New method that accepts request models
-        public async Task AddCronTickerAsync(AddCronTickerRequest request, CancellationToken cancellationToken)
+        public async Task AddCronTickerAsync(TTimeTicker request, CancellationToken cancellationToken)
         {
-            var requestType = GetRequestType(request.Function);
-
-            var cronTicker = new TCronTicker
-            {
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
-                Function = request.Function,
-                Expression = request.Expression,
-                Description = request.Description ?? string.Empty,
-                Retries = request.Retries ?? 0,
-                RetryIntervals = request.Intervals ?? [30]
-            };
-
-            // Process the request using the function
-            if (!string.IsNullOrWhiteSpace(request.Request))
-            {
-                var serializedRequest = JsonSerializer.Deserialize<object>(request.Request);
-                cronTicker.Request = TickerHelper.CreateTickerRequest(serializedRequest);
-            }
-
+            if(request.ExecutionTime == default)
+                request.ExecutionTime = _clock.UtcNow.AddSeconds(1);
             
-            await _persistenceProvider.InsertCronTickers([cronTicker], cancellationToken);
-
-            var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression)?.GetNextOccurrence(DateTime.UtcNow);
-
-            if (nextOccurrence != null)
-                _tickerHost.RestartIfNeeded(nextOccurrence.Value);
-
-            await NotifyOrUpdateUpdate(cronTicker, requestType, true);
+            await _timeTickerManager.AddAsync(request, cancellationToken);
         }
 
         // New method that accepts request models

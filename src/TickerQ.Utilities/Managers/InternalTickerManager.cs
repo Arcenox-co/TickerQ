@@ -16,7 +16,7 @@ namespace TickerQ.Utilities.Managers
         ITickerClock clock,
         ITickerQNotificationHubSender notificationHubSender)
         : IInternalTickerManager
-        where TTimeTicker : TimeTickerEntity, new()
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         protected readonly ITickerPersistenceProvider<TTimeTicker, TCronTicker> PersistenceProvider = persistenceProvider;
@@ -35,9 +35,8 @@ namespace TickerQ.Utilities.Managers
                 var (minCronGroup, minTimeTickers) = (await minCronGroupTask, await minTimeTickersTask);
                 
                 var minTimeTickerTime = minTimeTickers.Length != 0
-                    ? minTimeTickers[0].ExecutionTime
+                    ? minTimeTickers[0].ExecutionTime ?? default
                     : default;
-                
 
                 var minTimeRemaining = CalculateMinTimeRemaining(minCronGroup, minTimeTickerTime, out var typesToQueue);
 
@@ -58,7 +57,7 @@ namespace TickerQ.Utilities.Managers
             DateTime minTimeTicker,
             out TickerType[] sources)
         {
-            var now = Clock.Now;
+            var now = Clock.UtcNow;
 
             DateTime? cron = minCronTicker?.Key;
             DateTime? time = minTimeTicker == default ? null : minTimeTicker;
@@ -73,14 +72,14 @@ namespace TickerQ.Utilities.Managers
             // only cron
             if (time is null)
             {
-                sources = [TickerType.CronExpression];
+                sources = [TickerType.CronTickerOccurrence];
                 return cron.Value - now;
             }
 
             // only time
             if (cron is null)
             {
-                sources = [TickerType.Timer];
+                sources = [TickerType.TimeTicker];
                 return time.Value - now;
             }
 
@@ -91,7 +90,7 @@ namespace TickerQ.Utilities.Managers
             // same second → both tickers win
             if (cronSec == timeSec)
             {
-                sources = [TickerType.CronExpression, TickerType.Timer];
+                sources = [TickerType.CronTickerOccurrence, TickerType.TimeTicker];
                 var earliest = cron < time ? cron.Value : time.Value; // with ms
                 return earliest - now;
             }
@@ -99,11 +98,11 @@ namespace TickerQ.Utilities.Managers
             // different seconds → only earliest ticker wins
             if (cron < time)
             {
-                sources = [TickerType.CronExpression];
+                sources = [TickerType.CronTickerOccurrence];
                 return cron.Value - now;
             }
 
-            sources = [TickerType.Timer];
+            sources = [TickerType.TimeTicker];
             return time.Value - now;
 
             DateTime TruncateToSecond(DateTime dt) 
@@ -117,7 +116,7 @@ namespace TickerQ.Utilities.Managers
             CancellationToken cancellationToken = default)
         {
             
-            if (typesToQueue.Contains(TickerType.CronExpression) && typesToQueue.Contains(TickerType.Timer))
+            if (typesToQueue.Contains(TickerType.CronTickerOccurrence) && typesToQueue.Contains(TickerType.TimeTicker))
             {
                 var nextCronTickersTask = QueueNextCronTickersAsync(minCronTicker!.Value, cancellationToken);
                 var nextTimeTickersTask = QueueNextTimeTickersAsync(minTimeTicker, cancellationToken);
@@ -129,7 +128,7 @@ namespace TickerQ.Utilities.Managers
                 return nextCronTickers.Union(nextTimeTickers).ToArray();
             }
 
-            if (typesToQueue.Contains(TickerType.Timer))
+            if (typesToQueue.Contains(TickerType.TimeTicker))
                 return await QueueNextTimeTickersAsync(minTimeTicker, cancellationToken).ConfigureAwait(false);
             else
                 return await QueueNextCronTickersAsync(minCronTicker!.Value, cancellationToken).ConfigureAwait(false);
@@ -145,9 +144,30 @@ namespace TickerQ.Utilities.Managers
                 {
                     FunctionName = updatedTimeTicker.Function,
                     TickerId = updatedTimeTicker.Id,
-                    Type = TickerType.Timer,
+                    Type = TickerType.TimeTicker,
                     Retries = updatedTimeTicker.Retries,
-                    RetryIntervals = updatedTimeTicker.RetryIntervals
+                    RetryIntervals = updatedTimeTicker.RetryIntervals,
+                    ParentId = updatedTimeTicker.ParentId,
+                    TimeTickerChildren = updatedTimeTicker.Children.Select(ch => new InternalFunctionContext
+                    {
+                        FunctionName = ch.Function,
+                        TickerId = ch.Id,
+                        Type = TickerType.TimeTicker,
+                        Retries = ch.Retries,
+                        RetryIntervals = ch.RetryIntervals,
+                        ParentId = ch.ParentId,
+                        RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus,
+                        TimeTickerChildren = ch.Children.Select(gch => new InternalFunctionContext
+                        {
+                            FunctionName = gch.Function,
+                            TickerId = gch.Id,
+                            Type = TickerType.TimeTicker,
+                            Retries = gch.Retries,
+                            RetryIntervals = gch.RetryIntervals,
+                            ParentId = gch.ParentId,
+                            RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus
+                        }).ToList()
+                    }).ToList()
                 });
                 
                 await NotificationHubSender.UpdateTimeTickerNotifyAsync(updatedTimeTicker);
@@ -164,10 +184,10 @@ namespace TickerQ.Utilities.Managers
             {
                 results.Add(new InternalFunctionContext
                 {
-                    CronTickerId = occurrence.CronTickerId,
+                    ParentId = occurrence.CronTickerId,
                     FunctionName = occurrence.CronTicker.Function,
                     TickerId = occurrence.Id,
-                    Type = TickerType.CronExpression,
+                    Type = TickerType.CronTickerOccurrence,
                     Retries = occurrence.CronTicker.Retries,
                     RetryIntervals = occurrence.CronTicker.RetryIntervals
                 });
@@ -183,7 +203,7 @@ namespace TickerQ.Utilities.Managers
         
         private async Task<(DateTime Key, InternalManagerContext[] Items)?> GetEarliestCronTickerGroupAsync(CancellationToken cancellationToken = default)
         {
-            var now = Clock.Now;
+            var now = Clock.UtcNow;
 
             var cronTickers = await PersistenceProvider
                 .GetAllCronTickerExpressions(cancellationToken)
@@ -216,7 +236,7 @@ namespace TickerQ.Utilities.Managers
                 if (min is null || n < min)
                 {
                     min = n;
-                    first = new InternalManagerContext(cronTicker.Id, TickerType.CronExpression)
+                    first = new InternalManagerContext(cronTicker.Id)
                     {
                         FunctionName = cronTicker.Function,
                         Expression = cronTicker.Expression,
@@ -229,7 +249,7 @@ namespace TickerQ.Utilities.Managers
                 else if (n == min)
                 {
                     ties ??= new List<InternalManagerContext>(2) { first };
-                    ties.Add(new InternalManagerContext(cronTicker.Id, TickerType.CronExpression)
+                    ties.Add(new InternalManagerContext(cronTicker.Id)
                     {
                         FunctionName = cronTicker.Function,
                         Expression = cronTicker.Expression,
@@ -243,7 +263,7 @@ namespace TickerQ.Utilities.Managers
             if (earliestStored is not null)
             {
                 var storedTime = earliestStored.ExecutionTime;
-                var storedItem = new InternalManagerContext(earliestStored.CronTickerId, TickerType.CronExpression)
+                var storedItem = new InternalManagerContext(earliestStored.CronTickerId)
                 {
                     FunctionName = earliestStored.CronTicker.Function,
                     Expression = earliestStored.CronTicker.Expression,
@@ -281,10 +301,10 @@ namespace TickerQ.Utilities.Managers
 
         public async Task SetTickersInProgress(InternalFunctionContext[] resources, CancellationToken cancellationToken = default)
         {
-            var unifiedFunctionContext = new InternalFunctionContext().SetProperty(x => x.Status, TickerStatus.Inprogress);
+            var unifiedFunctionContext = new InternalFunctionContext().SetProperty(x => x.Status, TickerStatus.InProgress);
             
-            var cronTickerIds = resources.Where(x => x.Type == TickerType.CronExpression).Select(x => x.TickerId).ToArray();
-            var timeTickerIds = resources.Where(x => x.Type == TickerType.Timer).Select(x => x.TickerId).ToArray();
+            var cronTickerIds = resources.Where(x => x.Type == TickerType.CronTickerOccurrence).Select(x => x.TickerId).ToArray();
+            var timeTickerIds = resources.Where(x => x.Type == TickerType.TimeTicker).Select(x => x.TickerId).ToArray();
 
             if (cronTickerIds.Length != 0 && timeTickerIds.Length != 0)
             {
@@ -303,9 +323,9 @@ namespace TickerQ.Utilities.Managers
             
             foreach (var resource in resources)
             {
-                resource.Status = TickerStatus.Inprogress;
+                resource.Status = TickerStatus.InProgress;
                 
-                if(resource.Type == TickerType.Timer)
+                if(resource.Type == TickerType.TimeTicker)
                     await NotificationHubSender.UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(resource).ConfigureAwait(false);
                 else
                     await NotificationHubSender.UpdateCronOccurrenceFromInternalFunctionContext<TCronTicker>(resource).ConfigureAwait(false);
@@ -316,13 +336,13 @@ namespace TickerQ.Utilities.Managers
         {
             var cronTickerIds = resources.Length == 0 
                 ? [] 
-                : resources.Where(x => x.Type == TickerType.CronExpression).Select(x => x.TickerId).ToArray();
+                : resources.Where(x => x.Type == TickerType.CronTickerOccurrence).Select(x => x.TickerId).ToArray();
             
             await PersistenceProvider.ReleaseAcquiredCronTickerOccurrences(cronTickerIds, cancellationToken).ConfigureAwait(false);
             
             var timeTickerIds = resources.Length == 0
                 ? []
-                : resources.Where(x => x.Type == TickerType.Timer).Select(x => x.TickerId).ToArray();
+                : resources.Where(x => x.Type == TickerType.TimeTicker).Select(x => x.TickerId).ToArray();
             
             await PersistenceProvider.ReleaseAcquiredTimeTickers(timeTickerIds, cancellationToken).ConfigureAwait(false);
         }
@@ -330,7 +350,7 @@ namespace TickerQ.Utilities.Managers
 
         public async Task UpdateTickerAsync(InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         {
-            if (functionContext.Type == TickerType.CronExpression)
+            if (functionContext.Type == TickerType.CronTickerOccurrence)
             {
                 await PersistenceProvider.UpdateCronTickerOccurrence(functionContext, cancellationToken).ConfigureAwait(false);
                 await NotificationHubSender.UpdateCronOccurrenceFromInternalFunctionContext<TCronTicker>(functionContext).ConfigureAwait(false);
@@ -344,7 +364,7 @@ namespace TickerQ.Utilities.Managers
 
         public async Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, CancellationToken cancellationToken = default)
         {
-            var request = type == TickerType.CronExpression
+            var request = type == TickerType.CronTickerOccurrence
                 ? await PersistenceProvider.GetCronTickerOccurrenceRequest(tickerId, cancellationToken: cancellationToken).ConfigureAwait(false)
                 : await PersistenceProvider.GetTimeTickerRequest(tickerId, cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -361,7 +381,7 @@ namespace TickerQ.Utilities.Managers
                 {
                     FunctionName = timedOutTimeTicker.Function,
                     TickerId = timedOutTimeTicker.Id,
-                    Type = TickerType.Timer,
+                    Type = TickerType.TimeTicker,
                     Retries = timedOutTimeTicker.Retries,
                     RetryIntervals = timedOutTimeTicker.RetryIntervals
                 };
@@ -375,10 +395,10 @@ namespace TickerQ.Utilities.Managers
                 {
                     FunctionName = timedOutCronTicker.CronTicker.Function,
                     TickerId = timedOutCronTicker.Id,
-                    Type = TickerType.Timer,
+                    Type = TickerType.TimeTicker,
                     Retries = timedOutCronTicker.CronTicker.Retries,
                     RetryIntervals = timedOutCronTicker.CronTicker.RetryIntervals,
-                    CronTickerId = timedOutCronTicker.CronTickerId
+                    ParentId = timedOutCronTicker.CronTickerId
                 };
                 
                 results.Add(functionContext);
@@ -393,7 +413,7 @@ namespace TickerQ.Utilities.Managers
 
         public async Task DeleteTicker(Guid tickerId, TickerType type, CancellationToken cancellationToken = default)
         {
-            if (type == TickerType.CronExpression)
+            if (type == TickerType.CronTickerOccurrence)
                await PersistenceProvider.RemoveTimeTickers([tickerId], cancellationToken).ConfigureAwait(false);
             else
                 await PersistenceProvider.RemoveCronTickers([tickerId], cancellationToken).ConfigureAwait(false);

@@ -9,7 +9,7 @@ using TickerQ.Utilities.Enums;
 namespace TickerQ.Utilities.Interfaces
 {
     internal interface ITickerDashboardRepository<TTimeTicker, TCronTicker> 
-        where TTimeTicker : TimeTickerEntity, new()
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         Task<TTimeTicker[]> GetTimeTickersAsync(CancellationToken cancellationToken = default);
@@ -30,9 +30,9 @@ namespace TickerQ.Utilities.Interfaces
         Task DeleteCronTickerOccurrenceByIdAsync(Guid id, CancellationToken cancellationToken = default);
         Task<(string, int)> GetTickerRequestByIdAsync(Guid tickerId, TickerType tickerType, CancellationToken cancellationToken = default);
         IEnumerable<(string, (string, string, TickerTaskPriority))> GetTickerFunctions();
-        Task UpdateTimeTickerAsync(Guid id, UpdateTimeTickerRequest request, CancellationToken cancellationToken = default);
+        Task UpdateTimeTickerAsync(Guid id, TTimeTicker request, CancellationToken cancellationToken = default);
         Task AddTimeTickerAsync(TTimeTicker request, CancellationToken cancellationToken = default);
-        Task AddCronTickerAsync(AddCronTickerRequest request, CancellationToken cancellationToken = default);
+        Task AddCronTickerAsync(TTimeTicker request, CancellationToken cancellationToken = default);
         Task UpdateCronTickerAsync(Guid id, UpdateCronTickerRequest request, CancellationToken cancellationToken = default);
         Task<IList<(int, int)>> GetLastWeekJobStatusesAsync(CancellationToken cancellationToken = default);
         Task<IList<(TickerStatus, int)>> GetOverallJobStatusesAsync(CancellationToken cancellationToken = default);

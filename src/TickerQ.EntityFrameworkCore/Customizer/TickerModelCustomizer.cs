@@ -6,7 +6,7 @@ using TickerQ.Utilities.Entities;
 namespace TickerQ.EntityFrameworkCore.Customizer
 {
     internal class TickerModelCustomizer<TTimeTicker, TCronTicker> : RelationalModelCustomizer
-        where TTimeTicker : TimeTickerEntity, new()
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         public TickerModelCustomizer(ModelCustomizerDependencies dependencies)

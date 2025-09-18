@@ -9,7 +9,7 @@ using TickerQ.Utilities.Entities;
 namespace TickerQ.Dashboard;
 
 public class GenericControllerFeatureProvider<TTimeTicker, TCronTicker> : IApplicationFeatureProvider<ControllerFeature>
-    where TTimeTicker : TimeTickerEntity, new()
+    where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
     public void PopulateFeature(IEnumerable<ApplicationPart> parts, ControllerFeature feature)

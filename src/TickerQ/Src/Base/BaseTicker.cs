@@ -95,8 +95,6 @@ namespace TickerQ.Base
                 
                 try
                 {
-                    await Task.Delay(Timeout.InfiniteTimeSpan, CtsTickerDelayAwaiter.Token).ConfigureAwait(false);
-
                     (var timeRemaining, functions) = await InternalTickerManager.GetNextTickers(CtsTickerChecker.Token).ConfigureAwait(false);
                     
                     _executionContext.SetFunctions(functions);
@@ -108,7 +106,7 @@ namespace TickerQ.Base
                     }
                     else
                     {
-                        _executionContext.SetNextPlannedOccurrence(Clock.Now.Add(timeRemaining));
+                        _executionContext.SetNextPlannedOccurrence(Clock.UtcNow.Add(timeRemaining));
                         _executionContext.NotifyCoreAction(_executionContext.NextPlannedOccurrence, CoreNotifyActionType.NotifyNextOccurence);
 
                         var sleepDuration = timeRemaining > TimeSpan.FromDays(1)

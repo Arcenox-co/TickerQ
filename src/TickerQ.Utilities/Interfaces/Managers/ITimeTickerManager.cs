@@ -6,11 +6,10 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Interfaces.Managers
 {
-    public interface ITimeTickerManager<TTimeTicker> where TTimeTicker : TimeTickerEntity
+    public interface ITimeTickerManager<TTimeTicker> where TTimeTicker : TimeTickerEntity<TTimeTicker>
     {
         Task<TickerResult<TTimeTicker>> AddAsync(TTimeTicker entity, CancellationToken cancellationToken = default);
-        Task<TickerResult<TTimeTicker>> UpdateAsync(TTimeTicker timeTicker,
-            CancellationToken cancellationToken = default);
+        Task<TickerResult<TTimeTicker>> UpdateAsync(TTimeTicker timeTicker, CancellationToken cancellationToken = default);
         Task<TickerResult<TTimeTicker>> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
     }
 }

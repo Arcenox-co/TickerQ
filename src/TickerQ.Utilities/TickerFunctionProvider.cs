@@ -2,52 +2,76 @@ using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces.Managers;
-using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities
 {
-    public delegate Task TickerFunctionDelegate(CancellationToken cancellationToken, IServiceProvider serviceProvider,
-        TickerFunctionContext context);
+    public delegate Task TickerFunctionDelegate(CancellationToken cancellationToken, IServiceProvider serviceProvider, TickerFunctionContext context);
 
     public static class TickerFunctionProvider
     {
-        internal static IReadOnlyDictionary<string, (string, Type)> TickerFunctionRequestTypes { get; private set; }
+        private static MergeReadOnlyDictionary<string, (string, Type)> _tickerFunctionRequestTypes;
+        internal static IReadOnlyDictionary<string, (string, Type)> TickerFunctionRequestTypes => _tickerFunctionRequestTypes;
 
-        public static IReadOnlyDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)> TickerFunctions { get; private set; }
+        private static MergeReadOnlyDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)> _tickerFunctions;
+        public static IReadOnlyDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)> TickerFunctions => _tickerFunctions;
 
-        public static void RegisterFunctions(
-            IDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)> functions)
+        public static void RegisterFunctions(IDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)> functions)
         {
-            if (TickerFunctionRequestTypes == null)
-            {
-                TickerFunctions =
-                    new ReadOnlyDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>(functions);
-            }
-            else
-            {
-                var merged = TickerFunctions
-                    .Concat(functions)
-                    .ToDictionary(kv => kv.Key, kv => kv.Value);
-
-                TickerFunctions = new ReadOnlyDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>(merged);
-            }
+            _tickerFunctions = MergeDictionaries(_tickerFunctions, functions, preserveExisting: true);
         }
 
         public static void RegisterRequestType(IDictionary<string, (string, Type)> requestTypes)
         {
-            TickerFunctionRequestTypes = new ReadOnlyDictionary<string, (string, Type)>(requestTypes);
+            _tickerFunctionRequestTypes = MergeDictionaries(_tickerFunctionRequestTypes, requestTypes, preserveExisting: true);
         }
 
         internal static void MapCronExpressionsFromIConfigurations(IDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)> functions)
         {
-            TickerFunctions =
-                new ReadOnlyDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>(functions);
+            _tickerFunctions = MergeDictionaries(_tickerFunctions, functions, preserveExisting: false);
+        }
+
+        private static MergeReadOnlyDictionary<TKey, TValue> MergeDictionaries<TKey, TValue>(
+            MergeReadOnlyDictionary<TKey, TValue> existing,
+            IDictionary<TKey, TValue> incoming,
+            bool preserveExisting = true)
+        {
+            if (existing == null)
+            {
+                existing = new MergeReadOnlyDictionary<TKey, TValue>(incoming);
+            }
+            else if (preserveExisting)
+            {
+                foreach (var kvp in incoming)
+                {
+                    existing.Dictionary.TryAdd(kvp.Key, kvp.Value);
+                }
+            }
+            else
+            {
+                foreach (var kvp in incoming)
+                {
+                    existing.Dictionary[kvp.Key] = kvp.Value;
+                }
+            }
+
+            return existing;
+        }
+
+        /// <summary>
+        /// A ReadOnlyDictionary that exposes its internal dictionary for merging purposes.
+        /// Used so that we don't have to create a new dictionary every time we want to add new items.
+        /// </summary>
+        private class MergeReadOnlyDictionary<TKey, TValue> : ReadOnlyDictionary<TKey, TValue>
+        {
+            internal MergeReadOnlyDictionary(IDictionary<TKey, TValue> dictionary) : base(dictionary)
+            { }
+
+            internal new IDictionary<TKey, TValue> Dictionary => base.Dictionary;
         }
     }
 

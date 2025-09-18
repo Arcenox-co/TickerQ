@@ -1,5 +1,4 @@
 ﻿using System;
-using TickerQ.Utilities.Entities.BaseEntity;
 using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.Entities
@@ -14,7 +13,8 @@ namespace TickerQ.Utilities.Entities
         public virtual DateTime? LockedAt { get; set; }
         public virtual DateTime? ExecutedAt { get; set; }
         public virtual TCronTicker CronTicker { get; set; }
-        public virtual string Exception { get; set; }
+        public virtual string ExceptionMessage { get; set; }
+        public virtual string SkippedReason { get; set; }
         public virtual long ElapsedTime { get; set; }
         public virtual int RetryCount { get; set; }
         public virtual DateTime CreatedAt { get; set; }

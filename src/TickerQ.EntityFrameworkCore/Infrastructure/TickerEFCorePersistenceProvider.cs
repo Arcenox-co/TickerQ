@@ -15,10 +15,10 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         BasePersistenceProvider<TDbContext, TTimeTicker, TCronTicker>,
         ITickerPersistenceProvider<TTimeTicker, TCronTicker>
         where TDbContext : DbContext
-        where TTimeTicker : TimeTickerEntity, new()
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        public TickerEfCorePersistenceProvider(ITickerQDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, TickerExecutionContext executionContext) 
+        public TickerEfCorePersistenceProvider(IDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, TickerExecutionContext executionContext) 
             :  base(dbContextFactory, clock, executionContext) { }
         
         #region Time_Ticker_Implementations

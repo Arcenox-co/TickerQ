@@ -13,7 +13,7 @@ namespace TickerQ.Utilities.Models
         private HashSet<string> ParametersToUpdate { get; set; } = [];
         public string FunctionName { get; set; }
         public Guid TickerId { get; set; }
-        public Guid CronTickerId { get; set; }
+        public Guid? ParentId { get; set; }
         public TickerType Type { get; set; }
         public int Retries { get; set; }
         public int RetryCount { get; set; }
@@ -24,6 +24,8 @@ namespace TickerQ.Utilities.Models
         public int[] RetryIntervals { get; set; }
         public bool ReleaseLock { get; set; }
         public DateTime ExecutionTime { get; set; }
+        public RunCondition RunCondition { get; set; }
+        public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 
         [DynamicDependency(DynamicallyAccessedMemberTypes.PublicProperties, typeof(InternalFunctionContext))]
         public InternalFunctionContext SetProperty<T>(Expression<Func<InternalFunctionContext, T>> property, T value)

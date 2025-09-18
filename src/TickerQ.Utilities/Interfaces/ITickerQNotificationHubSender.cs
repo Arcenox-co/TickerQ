@@ -19,7 +19,7 @@ namespace TickerQ.Utilities.Interfaces
         void UpdateHostException(object exceptionMessage);
         Task AddCronOccurrenceAsync(Guid groupId, object occurrence);
         Task UpdateCronOccurrenceAsync(Guid groupId, object occurrence);
-        Task UpdateTimeTickerFromInternalFunctionContext<TTimeTickerEntity>(InternalFunctionContext internalFunctionContext) where TTimeTickerEntity : TimeTickerEntity, new();
+        Task UpdateTimeTickerFromInternalFunctionContext<TTimeTickerEntity>(InternalFunctionContext internalFunctionContext) where TTimeTickerEntity : TimeTickerEntity<TTimeTickerEntity>, new();
         Task UpdateCronOccurrenceFromInternalFunctionContext<TCronTickerEntity>(InternalFunctionContext internalFunctionContext) where TCronTickerEntity : CronTickerEntity, new();
         Task CanceledTickerNotifyAsync(Guid id);
     }

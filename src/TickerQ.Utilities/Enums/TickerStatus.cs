@@ -4,11 +4,11 @@
     {
         Idle,
         Queued,
-        Inprogress,
+        InProgress,
         Done,
         DueDone,
         Failed,
         Cancelled,
-        Batched
+        Skipped
     }
 }
