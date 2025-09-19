@@ -15,7 +15,7 @@ namespace TickerQ.Utilities
 
     public static class TickerFunctionProvider
     {
-        internal static IReadOnlyDictionary<string, (string, Type)> TickerFunctionRequestTypes { get; private set; }
+        public static IReadOnlyDictionary<string, (string, Type)> TickerFunctionRequestTypes { get; private set; }
 
         public static IReadOnlyDictionary<string, (string cronExpression, TickerTaskPriority Priority,
                 TickerFunctionDelegate Delegate)>
