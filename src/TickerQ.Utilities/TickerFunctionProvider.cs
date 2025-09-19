@@ -16,11 +16,11 @@ namespace TickerQ.Utilities
     public static class TickerFunctionProvider
     {
         public static IReadOnlyDictionary<string, (string, Type)> TickerFunctionRequestTypes { get; private set; }
+            = new Dictionary<string, (string, Type)>();
 
-        public static IReadOnlyDictionary<string, (string cronExpression, TickerTaskPriority Priority,
-                TickerFunctionDelegate Delegate)>
-            TickerFunctions
-        { get; private set; }
+        public static IReadOnlyDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)>
+            TickerFunctions { get; private set; }
+            = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)>();
 
         public static void RegisterFunctions(
             IDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)> functions)
