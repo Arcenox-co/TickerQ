@@ -49,7 +49,7 @@ namespace TickerQ.Dashboard.DependencyInjection
 
         internal static void UseDashboard(this IApplicationBuilder app, DashboardOptionsBuilder config)
         {
-            // Get the assembly and set up the embedded file provider (adjust the namespace as needed)
+            // Get the assembly and set up the embedded file provider
             var assembly = Assembly.GetExecutingAssembly();
             var embeddedFileProvider = new EmbeddedFileProvider(assembly, "TickerQ.Dashboard.wwwroot.dist");
 
@@ -65,7 +65,16 @@ namespace TickerQ.Dashboard.DependencyInjection
                 // Serve static files from the embedded provider
                 dashboardApp.UseStaticFiles(new StaticFileOptions
                 {
-                    FileProvider = embeddedFileProvider
+                    FileProvider = embeddedFileProvider,
+                    OnPrepareResponse = ctx =>
+                    {
+                        // Cache static assets for 1 hour
+                        if (ctx.File.Name.EndsWith(".js") || ctx.File.Name.EndsWith(".css") || 
+                            ctx.File.Name.EndsWith(".ico") || ctx.File.Name.EndsWith(".png"))
+                        {
+                            ctx.Context.Response.Headers.CacheControl = "public,max-age=3600";
+                        }
+                    }
                 });
 
                 // Set up routing and CORS for this branch
@@ -82,28 +91,26 @@ namespace TickerQ.Dashboard.DependencyInjection
                 // Combine all endpoint registrations into one call
                 dashboardApp.UseEndpoints(endpoints =>
                 {
-                    // Map controller routes (e.g., Home/Index)
-                    var controllerRoute = endpoints.MapControllerRoute(
-                        name: "default",
-                        pattern: "{controller=Home}/{action=Index}/{id?}"
-                    );
-
-                    // Map the SignalR hub.
-                    // Inside the branch, map with a relative path.
-                    endpoints.MapHub<TickerQNotificationHub>("/ticker-notification-hub");
-
-
-                    // Add role-based or policy-based authorization if specified
-                    if (config.RequiredRoles.Any())
+                    // Map API controllers
+                    var apiEndpoints = endpoints.MapControllers();
+                    
+                    // Map SignalR hub with conditional authorization
+                    var hubEndpoint = endpoints.MapHub<TickerQNotificationHub>("/ticker-notification-hub");
+                    
+                    // Apply the same authorization as controllers
+                    if (config.RequiredRoles.Length != 0)
                     {
-                        controllerRoute.RequireAuthorization(new AuthorizeAttribute()
+                        var authAttribute = new AuthorizeAttribute()
                         {
                             Roles = string.Join(",", config.RequiredRoles)
-                        });
+                        };
+                        
+                        apiEndpoints.RequireAuthorization(authAttribute);
+                        hubEndpoint.RequireAuthorization(authAttribute);
                     }
-                    else if (config.RequiredPolicies.Any())
+                    else if (config.RequiredPolicies.Length != 0)
                     {
-                        controllerRoute.RequireAuthorization(config.RequiredPolicies);
+                        apiEndpoints.RequireAuthorization(config.RequiredPolicies);
                     }
                 });
 
@@ -176,16 +183,16 @@ namespace TickerQ.Dashboard.DependencyInjection
 
             // Inline bootstrap: set TickerQConfig and derive __dynamic_base__ (vite-plugin-dynamic-base)
             var script = $@"<script>
-(function() {{
-  try {{
-    // Expose config
-    window.TickerQConfig = {json};
+                (function() {{
+                try {{
+                    // Expose config
+                    window.TickerQConfig = {json};
 
-    // Derive dynamic base for vite-plugin-dynamic-base
-    window.__dynamic_base__ = window.TickerQConfig.basePath;
-  }} catch (e) {{ console.error('Runtime config injection failed:', e); }}
-}})();
-</script>";
+                    // Derive dynamic base for vite-plugin-dynamic-base
+                    window.__dynamic_base__ = window.TickerQConfig.basePath;
+                }} catch (e) {{ console.error('Runtime config injection failed:', e); }}
+                }})();
+                </script>";
 
             var fullInjection = baseTag + script;
             // Prefer inject immediately after opening <head ...>

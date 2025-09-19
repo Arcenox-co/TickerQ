@@ -1,10 +1,12 @@
 ﻿using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -12,6 +14,7 @@ namespace TickerQ.Base
 {
     internal abstract class BaseTicker : ITickerHost
     {
+        protected readonly ITickerQInstrumentation TickerQInstrumentation;
         protected readonly ITickerClock Clock;
         private readonly TickerExecutionContext _executionContext;
         private SafeCancellationTokenSource CtsTickerChecker { get; set; }
@@ -24,9 +27,10 @@ namespace TickerQ.Base
         protected readonly IServiceProvider ServiceProvider;
         protected abstract Task OnTimerTick(InternalFunctionContext[] functions, bool dueDone, CancellationToken cancellationToken);
 
-        protected BaseTicker(TickerExecutionContext executionContext, ILogger<TickerHost> logger, ITickerClock clock, IServiceProvider serviceProvider)
+        protected BaseTicker(TickerExecutionContext executionContext, ITickerClock clock, IServiceProvider serviceProvider, ITickerQInstrumentation tickerQInstrumentation)
         {
             ServiceProvider = serviceProvider;
+            TickerQInstrumentation = tickerQInstrumentation ?? throw new ArgumentNullException(nameof(tickerQInstrumentation));
             Clock = clock ?? throw new ArgumentNullException(nameof(clock));
             TickerTaskScheduler = new TickerTaskScheduler(executionContext);
             _executionContext = executionContext ?? throw new ArgumentNullException(nameof(executionContext));
@@ -96,7 +100,7 @@ namespace TickerQ.Base
                 try
                 {
                     (var timeRemaining, functions) = await InternalTickerManager.GetNextTickers(CtsTickerChecker.Token).ConfigureAwait(false);
-                    
+
                     _executionContext.SetFunctions(functions);
                     if (timeRemaining == Timeout.InfiniteTimeSpan)
                     {

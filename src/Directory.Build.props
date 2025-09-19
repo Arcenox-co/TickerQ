@@ -1,6 +1,7 @@
 ﻿<Project>
 
     <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
         <RepositoryUrl>https://github.com/arcenox/TickerQ</RepositoryUrl>
         <PackageProjectUrl>https://tickerq.arcenox.com/</PackageProjectUrl>
         <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
@@ -8,6 +9,7 @@
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
         <Version>2.5.2</Version>
+        <LangVersion>latest</LangVersion>
     </PropertyGroup>
 
     <ItemGroup>

@@ -4,7 +4,6 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
-using TickerQ.EntityFrameworkCore.DbContextFactory;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
@@ -18,8 +17,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        public TickerEfCorePersistenceProvider(IDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, TickerExecutionContext executionContext) 
-            :  base(dbContextFactory, clock, executionContext) { }
+        public TickerEfCorePersistenceProvider(IDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, TickerExecutionContext executionContext, ITickerQRedisContext  redisContext) 
+            :  base(dbContextFactory, clock, executionContext, redisContext) { }
         
         #region Time_Ticker_Implementations
 

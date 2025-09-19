@@ -1,8 +1,6 @@
-﻿using Microsoft.Extensions.Logging;
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Linq;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,17 +9,18 @@ using TickerQ.Exceptions;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ;
 
-internal class TickerHost : BaseTicker
+internal class TickerHost : BaseTicker, IDisposable
 {
     private readonly SemaphoreSlim _semaphoreSlim = new(1, 1);
 
-    public TickerHost(IServiceProvider serviceProvider, TickerExecutionContext executionContext, ILogger<TickerHost> logger, ITickerClock clock)
-        : base(executionContext, logger, clock, serviceProvider)
+    public TickerHost(IServiceProvider serviceProvider, TickerExecutionContext executionContext, ITickerClock clock, ITickerQInstrumentation tickerQInstrumentation)
+        : base(executionContext, clock, serviceProvider, tickerQInstrumentation)
     {
     }
 
@@ -30,32 +29,44 @@ internal class TickerHost : BaseTicker
     {
         await _semaphoreSlim.WaitAsync(cancellationToken);
 
-        foreach (var context in functions)
+        try
         {
-            if (!TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
-                continue;
-
-            if (tickerItem.Priority == TickerTaskPriority.LongRunning)
-                _ = Task.Factory.StartNew(
-                    async () => await ExecuteTaskAsync(context, tickerItem.Delegate, dueDone, cancellationToken),
-                    TaskCreationOptions.LongRunning).Unwrap();
-            else
+            foreach (var context in functions)
             {
-                var taskDetails = Task.Factory.StartNew(
-                    async () => await ExecuteTaskAsync(context, tickerItem.Delegate, dueDone, cancellationToken),
-                    cancellationToken, TaskCreationOptions.DenyChildAttach, TickerTaskScheduler).Unwrap();
-                    
-                TickerTaskScheduler.SetQueuedTaskPriority(taskDetails.Id, tickerItem.Priority);
-            }
-        }
+                if (context.CachedDelegate == null) continue;
 
-        TickerTaskScheduler.ExecutePriorityTasks();
-        _semaphoreSlim.Release();
+                if (context.CachedPriority == TickerTaskPriority.LongRunning)
+                {
+                    var context1 = context;
+                    _ = Task.Factory.StartNew(
+                        async () => await ExecuteTaskAsync(context1, context1.CachedDelegate, dueDone,
+                            cancellationToken),
+                        TaskCreationOptions.LongRunning).Unwrap();
+                }
+                else
+                {
+                    var taskDetails = Task.Factory.StartNew(
+                        async () => await ExecuteTaskAsync(context, context.CachedDelegate, dueDone, cancellationToken),
+                        cancellationToken, TaskCreationOptions.DenyChildAttach, TickerTaskScheduler).Unwrap();
+
+                    TickerTaskScheduler.SetQueuedTaskPriority(taskDetails.Id, context.CachedPriority);
+                }
+            }
+            
+            TickerTaskScheduler.ExecutePriorityTasks();
+        }
+        finally
+        {
+            _semaphoreSlim.Release();
+        }
     }
 
     private async Task ExecuteTaskAsync(InternalFunctionContext context, TickerFunctionDelegate delegateFunction,
         bool isDue, CancellationToken cancellationToken = default)
     {
+        TickerQInstrumentation.LogJobStarted(context.TickerId, context.FunctionName, context.Type.ToString());
+        
+        var stopwatch = Stopwatch.StartNew();
         var hasChildren = context.TimeTickerChildren.Count > 0;
         
         var parentTask = RunContextFunctionAsync(context, delegateFunction, isDue, cancellationToken);
@@ -66,15 +77,8 @@ internal class TickerHost : BaseTicker
                 .Where(x => x.RunCondition == RunCondition.InProgress)
                 .Select(async childContext =>
                 {
-                    try
-                    {
-                        if (TickerFunctionProvider.TickerFunctions.TryGetValue(childContext.FunctionName, out var childTickerItem))
-                            await RunContextFunctionAsync(childContext, childTickerItem.Delegate, isDue, cancellationToken, true);
-                    }
-                    catch (Exception)
-                    {
-                        // Don't rethrow - let other children continue
-                    }
+                    if (childContext.CachedDelegate != null)
+                        await RunContextFunctionAsync(childContext, childContext.CachedDelegate, isDue, cancellationToken, true);
                 })
                 .Where(x => x != null).ToList();
             
@@ -84,6 +88,9 @@ internal class TickerHost : BaseTicker
         }
         else
             await parentTask;
+            
+        stopwatch.Stop();
+        TickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, stopwatch.ElapsedMilliseconds, true);
 
         if (hasChildren)
         {
@@ -92,15 +99,8 @@ internal class TickerHost : BaseTicker
                 .Where(x => ShouldRunChild(x, context.Status))
                 .Select(async childContext =>
                 {
-                    try
-                    {
-                        if (TickerFunctionProvider.TickerFunctions.TryGetValue(childContext.FunctionName, out var childTickerItem))
-                            await RunContextFunctionAsync(childContext, childTickerItem.Delegate, isDue, cancellationToken, true);
-                    }
-                    catch (Exception)
-                    {
-                        // Don't rethrow - let other children continue
-                    }
+                    if (childContext.CachedDelegate != null) 
+                        await RunContextFunctionAsync(childContext, childContext.CachedDelegate, isDue, cancellationToken, true);
                 }).ToArray();
             
             if(childExecutions.Length > 0)
@@ -111,115 +111,126 @@ internal class TickerHost : BaseTicker
     private async Task RunContextFunctionAsync(InternalFunctionContext context, TickerFunctionDelegate delegateFunction,
         bool isDue, CancellationToken cancellationToken, bool isChild = false)
     {
-        context.SetProperty(x => x.Status, TickerStatus.InProgress);
-        
-        if(isChild)
-            await InternalTickerManager.UpdateTickerAsync(context, cancellationToken);
-        
-        var stopWatch = new Stopwatch();
         var cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        TickerCancellationTokenManager.AddTickerCancellationToken(cancellationTokenSource, context, isDue);
         
-        var tickerFunctionContext = new TickerFunctionContext
+        try
         {
-            Id = context.TickerId,
-            Type = context.Type,
-            IsDue = isDue,
-            CancelOperationAction = () => cancellationTokenSource.Cancel(),
-            CronOccurrenceOperations = new CronOccurrenceOperations
+            context.SetProperty(x => x.Status, TickerStatus.InProgress);
+
+            if (isChild)
+                await InternalTickerManager.UpdateTickerAsync(context, cancellationToken);
+
+            var stopWatch = new Stopwatch();
+
+            var tickerFunctionContext = new TickerFunctionContext
             {
-                SkipIfAlreadyRunningAction = () =>
+                Id = context.TickerId,
+                Type = context.Type,
+                IsDue = isDue,
+                CancelOperationAction = () => cancellationTokenSource.Cancel(),
+                CronOccurrenceOperations = new CronOccurrenceOperations
                 {
-                    if(context.Type == TickerType.TimeTicker)
-                        return;
-                    
-                    var isRunning = TickerCancellationTokenManager.TickerCancellationTokens.Any(x => x.Value.ParentId == context.ParentId);
-                    
-                    if(isRunning)
-                        throw new TerminateExecutionException("Another CronOccurrence is already running!");
-                },
-            }
-        };
+                    SkipIfAlreadyRunningAction = () =>
+                    {
+                        if (context.Type == TickerType.TimeTicker)
+                            return;
 
-        TickerCancellationTokenManager.AddTickerCancellationToken(cancellationTokenSource, context.FunctionName, context.TickerId, context.Type, isDue);
+                        var isRunning = context.ParentId.HasValue &&
+                                        TickerCancellationTokenManager.IsParentRunning(context.ParentId.Value);
 
-        Exception lastException = null;
-        var success = false;
+                        if (isRunning)
+                            throw new TerminateExecutionException("Another CronOccurrence is already running!");
+                    }
+                }
+            };
 
-        for (var attempt = context.RetryCount; attempt <= context.Retries; attempt++)
-        {
-            tickerFunctionContext.RetryCount = context.RetryCount;
-            
-            try
+            Exception lastException = null;
+            var success = false;
+
+            for (var attempt = context.RetryCount; attempt <= context.Retries; attempt++)
             {
-                if (await WaitForRetry(context, cancellationToken, attempt, cancellationTokenSource)) break;
+                tickerFunctionContext.RetryCount = context.RetryCount;
 
-                stopWatch.Start();
-                    
-                await using var scope = ServiceProvider.CreateAsyncScope();
-                tickerFunctionContext.SetServiceScope(scope);
-                await delegateFunction(cancellationTokenSource.Token, scope.ServiceProvider, tickerFunctionContext);
+                try
+                {
+                    if (await WaitForRetry(context, cancellationToken, attempt, cancellationTokenSource)) break;
 
-                success = true;
-                context.RetryCount = attempt;
-                break;
+                    stopWatch.Start();
+
+                    await using var scope = ServiceProvider.CreateAsyncScope();
+                    tickerFunctionContext.SetServiceScope(scope);
+                    await delegateFunction(cancellationTokenSource.Token, scope.ServiceProvider, tickerFunctionContext);
+
+                    success = true;
+                    context.RetryCount = attempt;
+                    break;
+                }
+                catch (TaskCanceledException ex)
+                {
+                    TickerQInstrumentation.LogJobCancelled(context.TickerId, context.FunctionName, ex.Message);
+
+                    context.SetProperty(x => x.Status, TickerStatus.Cancelled)
+                        .SetProperty(x => x.ExecutedAt, Clock.UtcNow)
+                        .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
+                        .SetProperty(x => x.ExceptionDetails, ToShortExceptionMessage(context.TickerId, lastException));
+
+                    var handler = ServiceProvider.GetService<ITickerExceptionHandler>();
+
+                    if (handler != null)
+                        await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type);
+
+                    await InternalTickerManager.UpdateTickerAsync(context, cancellationToken);
+                }
+                catch (TerminateExecutionException ex)
+                {
+                    TickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
+
+                    context.SetProperty(x => x.Status, TickerStatus.Skipped)
+                        .SetProperty(x => x.ExecutedAt, Clock.UtcNow)
+                        .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
+                        .SetProperty(x => x.ExceptionDetails, ex.Message);
+
+                    await InternalTickerManager.UpdateTickerAsync(context, cancellationToken);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    lastException = ex;
+                    TickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, attempt);
+                }
             }
-            catch (TaskCanceledException ex)
+
+            stopWatch.Stop();
+
+            context.SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
+                .SetProperty(x => x.ExecutedAt, Clock.UtcNow);
+
+            if (success)
             {
-                context.SetProperty(x => x.Status, TickerStatus.Cancelled)
-                    .SetProperty(x => x.ExecutedAt, Clock.UtcNow)
-                    .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
-                    .SetProperty(x => x.ExceptionDetails, SerializeException(lastException));
+                context.SetProperty(x => x.Status, isDue ? TickerStatus.DueDone : TickerStatus.Done);
+
+                await InternalTickerManager.UpdateTickerAsync(context, cancellationToken);
+            }
+            else if (lastException != null)
+            {
+                context.SetProperty(x => x.Status, TickerStatus.Failed)
+                    .SetProperty(x => x.ExceptionDetails, ToShortExceptionMessage(context.TickerId, lastException));
 
                 var handler = ServiceProvider.GetService<ITickerExceptionHandler>();
 
                 if (handler != null)
-                    await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type);
+                    await handler.HandleExceptionAsync(lastException, context.TickerId, context.Type);
 
                 await InternalTickerManager.UpdateTickerAsync(context, cancellationToken);
             }
-            catch (TerminateExecutionException ex)
-            {
-                context.SetProperty(x => x.Status, TickerStatus.Skipped)
-                    .SetProperty(x => x.ExecutedAt, Clock.UtcNow)
-                    .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
-                    .SetProperty(x => x.ExceptionDetails, ex.Message);
-                
-                await InternalTickerManager.UpdateTickerAsync(context, cancellationToken);
-                return;
-            }
-            catch (Exception ex)
-            {
-                lastException = ex;
-            }
         }
-
-        stopWatch.Stop();
-            
-        context.SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
-            .SetProperty(x => x.ExecutedAt, Clock.UtcNow);
-            
-        if (success)
+        finally
         {
-            context.SetProperty(x => x.Status, isDue ? TickerStatus.DueDone : TickerStatus.Done);
-                
-            await InternalTickerManager.UpdateTickerAsync(context, cancellationToken);
+            cancellationTokenSource.Dispose();
+            TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
         }
-        else if (lastException != null)
-        {
-            context.SetProperty(x => x.Status, TickerStatus.Failed)
-                .SetProperty(x => x.ExceptionDetails, SerializeException(lastException));
-
-            var handler = ServiceProvider.GetService<ITickerExceptionHandler>();
-                
-            if (handler != null)
-                await handler.HandleExceptionAsync(lastException, context.TickerId, context.Type);
-                
-            await InternalTickerManager.UpdateTickerAsync(context, cancellationToken);
-        }
-            
-            
-        cancellationTokenSource.Dispose();
-        TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
     }
 
     private async Task<bool> WaitForRetry(InternalFunctionContext context, CancellationToken cancellationToken,
@@ -248,24 +259,10 @@ internal class TickerHost : BaseTicker
         return false;
     }
 
-    private static Exception GetRootException(Exception ex)
-    {
-        while (ex.InnerException != null)
-            ex = ex.InnerException;
-        return ex;
-    }
-
-    private static string SerializeException(Exception ex)
-    {
-        var rootException = GetRootException(ex);
-        var stackTrace = new StackTrace(rootException, true);
-        var frame = stackTrace.GetFrame(0);
-
-        return JsonSerializer.Serialize(new ExceptionDetailClassForSerialization
-        {
-            Message = ex.Message,
-            StackTrace = frame?.ToString() ?? rootException.StackTrace
-        });
+    private static string ToShortExceptionMessage(Guid correlationId, Exception ex)
+    { 
+        var msg = ex.Message.Length > 500 ? ex.Message[..500] + "..." : ex.Message;
+        return $"CorrelationId={correlationId} | Exception: {msg}";
     }
     
     private static bool ShouldRunChild(InternalFunctionContext childContext, TickerStatus parentStatus)
@@ -280,5 +277,11 @@ internal class TickerHost : BaseTicker
             RunCondition.OnAnyCompletedStatus => parentStatus is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed or TickerStatus.Cancelled,
             _ => false
         };
+    }
+
+    public void Dispose()
+    {
+        TickerTaskScheduler?.Dispose();
+        _semaphoreSlim?.Dispose();
     }
 }

@@ -125,7 +125,14 @@ namespace TickerQ.Utilities.Managers
                 
                 var (nextCronTickers, nextTimeTickers) = (await nextCronTickersTask, await nextTimeTickersTask);
                 
-                return nextCronTickers.Union(nextTimeTickers).ToArray();
+                // Safety check for extremely large datasets
+                var totalLength = nextCronTickers.Length + nextTimeTickers.Length;
+         
+    
+                var merged = new InternalFunctionContext[totalLength];
+                nextCronTickers.AsSpan().CopyTo(merged.AsSpan(0, nextCronTickers.Length));
+                nextTimeTickers.AsSpan().CopyTo(merged.AsSpan(nextCronTickers.Length, nextTimeTickers.Length));
+                return merged;
             }
 
             if (typesToQueue.Contains(TickerType.TimeTicker))
@@ -334,20 +341,30 @@ namespace TickerQ.Utilities.Managers
 
         public async Task ReleaseAcquiredResources(InternalFunctionContext[] resources, CancellationToken cancellationToken = default)
         {
+            if (resources is null)
+            {
+                await Task.WhenAll(
+                    PersistenceProvider.ReleaseAcquiredCronTickerOccurrences([], cancellationToken),
+                    PersistenceProvider.ReleaseAcquiredTimeTickers([], cancellationToken)
+                    );
+                return;
+            }
+            
             var cronTickerIds = resources.Length == 0 
                 ? [] 
                 : resources.Where(x => x.Type == TickerType.CronTickerOccurrence).Select(x => x.TickerId).ToArray();
             
-            await PersistenceProvider.ReleaseAcquiredCronTickerOccurrences(cronTickerIds, cancellationToken).ConfigureAwait(false);
+            if(cronTickerIds.Length != 0)
+                await PersistenceProvider.ReleaseAcquiredCronTickerOccurrences(cronTickerIds, cancellationToken).ConfigureAwait(false);
             
             var timeTickerIds = resources.Length == 0
                 ? []
                 : resources.Where(x => x.Type == TickerType.TimeTicker).Select(x => x.TickerId).ToArray();
             
-            await PersistenceProvider.ReleaseAcquiredTimeTickers(timeTickerIds, cancellationToken).ConfigureAwait(false);
+            if (timeTickerIds.Length != 0)
+                await PersistenceProvider.ReleaseAcquiredTimeTickers(timeTickerIds, cancellationToken).ConfigureAwait(false);
         }
         
-
         public async Task UpdateTickerAsync(InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         {
             if (functionContext.Type == TickerType.CronTickerOccurrence)

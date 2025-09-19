@@ -36,7 +36,12 @@ namespace TickerQ.Dashboard.DependencyInjection
                 {
                     // The host application should configure authentication services
                     // We just ensure they're available
-                    if (!services.Any(s => s.ServiceType.Name.Contains("Authentication")))
+                    // Check for specific authentication services instead of string matching
+                    var hasAuthenticationService = services.Any(s => 
+                        s.ServiceType == typeof(Microsoft.AspNetCore.Authentication.IAuthenticationService) ||
+                        s.ServiceType.Name == "IAuthenticationSchemeProvider");
+                        
+                    if (!hasAuthenticationService)
                     {
                         services.AddAuthentication();
                         services.AddAuthorization();

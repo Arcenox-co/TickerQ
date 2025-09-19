@@ -18,9 +18,10 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
-    public BasePersistenceProvider(IDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, TickerExecutionContext executionContext)
+    public BasePersistenceProvider(IDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, TickerExecutionContext executionContext, ITickerQRedisContext redisContext)
     {
         _clock = clock;
+        RedisContext = redisContext;
         DbContextFactory = dbContextFactory;
         _lockHolder = executionContext.InstanceIdentifier;
     }
@@ -28,6 +29,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     protected readonly IDbContextFactory<TDbContext>  DbContextFactory;
     private readonly string _lockHolder;
     private readonly ITickerClock _clock;
+    protected readonly ITickerQRedisContext  RedisContext;
     
     #region Core_Time_Ticker_Methods
     public async IAsyncEnumerable<TimeTickerEntity> QueueTimeTickers(TimeTickerEntity[] timeTickers, [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -150,8 +152,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             return [];
         
         var startOfSecond = new DateTime(
-            minExecutionTime.Value.Year, 
-            minExecutionTime.Value.Month, 
+            minExecutionTime.Value.Year,
+            minExecutionTime.Value.Month,
             minExecutionTime.Value.Day,
             minExecutionTime.Value.Hour, 
             minExecutionTime.Value.Minute,
@@ -180,7 +182,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     #region Core_Cron_Ticker_Methods
     public async Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
     {
-        await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
+        await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var now = _clock.UtcNow;
 
         var entitiesToUpsert = cronTickers.Select(x =>
@@ -207,6 +209,21 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         
     public async Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken = default)
     {
+        var result = await RedisContext.GetOrSetArrayAsync(
+            cacheKey: "cron:expressions",
+            factory: async (ct) =>
+            {
+                await using var dbContext = await DbContextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+                return await dbContext.Set<TCronTicker>()
+                    .AsNoTracking()
+                    .Select(MappingExtensions.ForCronTickerExpressions<CronTickerEntity>())
+                    .ToArrayAsync(ct)
+                    .ConfigureAwait(false);
+            },
+            expiration: TimeSpan.FromMinutes(10),
+            cancellationToken: cancellationToken);
+        
+        
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         return await dbContext.Set<TCronTicker>()
             .AsNoTracking()
@@ -338,28 +355,30 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                             .SetProperty(y => y.Status, TickerStatus.Queued),
                         cancellationToken)
                     .ConfigureAwait(false);
-                
+
                 if (affectedUpdate <= 0)
-                    yield return new CronTickerOccurrenceEntity<TCronTicker>
+                    continue;
+                
+                yield return new CronTickerOccurrenceEntity<TCronTicker>
+                {
+                    Id = item.NextCronOccurrence.Id,
+                    CronTickerId = item.Id,
+                    ExecutionTime = now,
+                    Status = TickerStatus.Queued,
+                    LockHolder = _lockHolder,
+                    LockedAt = now,
+                    UpdatedAt = now,
+                    CreatedAt = item.NextCronOccurrence.CreatedAt,
+                    CronTicker = new TCronTicker
                     {
-                        Id = item.NextCronOccurrence.Id,
-                        CronTickerId = item.Id,
-                        ExecutionTime = now,
-                        Status = TickerStatus.Queued,
-                        LockHolder = _lockHolder,
-                        LockedAt = now,
-                        UpdatedAt = now,
-                        CreatedAt = item.NextCronOccurrence.CreatedAt,
-                        CronTicker = new TCronTicker
-                        {
-                            Id = item.Id,
-                            Function = item.FunctionName,
-                            InitIdentifier = _lockHolder,
-                            Expression = item.Expression,
-                            Retries = item.Retries,
-                            RetryIntervals = item.RetryIntervals
-                        }
-                    };
+                        Id = item.Id,
+                        Function = item.FunctionName,
+                        InitIdentifier = _lockHolder,
+                        Expression = item.Expression,
+                        Retries = item.Retries,
+                        RetryIntervals = item.RetryIntervals
+                    }
+                };
             }
         }
     }

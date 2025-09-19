@@ -11,6 +11,12 @@ namespace TickerQ.Utilities.Models
     public class InternalFunctionContext
     {
         private HashSet<string> ParametersToUpdate { get; set; } = [];
+        
+        // Cached function delegate and priority for performance optimization
+        // Eliminates dictionary lookups during execution
+        public TickerFunctionDelegate CachedDelegate { get; set; }
+        public TickerTaskPriority CachedPriority { get; set; }
+        
         public string FunctionName { get; set; }
         public Guid TickerId { get; set; }
         public Guid? ParentId { get; set; }

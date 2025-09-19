@@ -42,6 +42,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "workflows", "workflows", "{
 		.github\workflows\publish.yml = .github\workflows\publish.yml
 	EndProjectSection
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Caching.StackExchangeRedis", "src\TickerQ.Caching.StackExchangeRedis\TickerQ.Caching.StackExchangeRedis.csproj", "{B3049104-9C15-4933-A440-CA62CFBC5F70}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Instrumentation.OpenTelemetry", "src\TickerQ.Instrumentation.OpenTelemetry\TickerQ.Instrumentation.OpenTelemetry.csproj", "{D87B9599-22C7-4E82-B300-1239E504E097}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -160,6 +164,30 @@ Global
 		{BC5C1469-A073-4609-8C77-59096440E7F4}.Release|x64.Build.0 = Release|Any CPU
 		{BC5C1469-A073-4609-8C77-59096440E7F4}.Release|x86.ActiveCfg = Release|Any CPU
 		{BC5C1469-A073-4609-8C77-59096440E7F4}.Release|x86.Build.0 = Release|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Debug|x64.Build.0 = Debug|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Debug|x86.Build.0 = Debug|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Release|x64.ActiveCfg = Release|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Release|x64.Build.0 = Release|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Release|x86.ActiveCfg = Release|Any CPU
+		{B3049104-9C15-4933-A440-CA62CFBC5F70}.Release|x86.Build.0 = Release|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Debug|x64.Build.0 = Debug|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Debug|x86.Build.0 = Debug|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Release|x64.ActiveCfg = Release|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Release|x64.Build.0 = Release|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Release|x86.ActiveCfg = Release|Any CPU
+		{D87B9599-22C7-4E82-B300-1239E504E097}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -175,5 +203,7 @@ Global
 		{FC775FFF-3856-434A-9E5F-D8D6477981BA} = {45D577FA-DB7A-4B96-BB3F-97DDA0A929D5}
 		{BC5C1469-A073-4609-8C77-59096440E7F4} = {45D577FA-DB7A-4B96-BB3F-97DDA0A929D5}
 		{9E6EC713-AD6D-4909-8617-B909D76A6E3A} = {9A4EB4A4-FB92-477C-A6D8-0735579B7BAB}
+		{B3049104-9C15-4933-A440-CA62CFBC5F70} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
+		{D87B9599-22C7-4E82-B300-1239E504E097} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
 	EndGlobalSection
 EndGlobal

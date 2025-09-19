@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Exceptions;
+using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
@@ -20,12 +21,14 @@ namespace TickerQ.Utilities.Managers
     {
         private readonly ITickerHost _tickerHost;
         private readonly TickerExecutionContext _executionContext;
+        private readonly ITickerQInstrumentation _tickerQInstrumentation;
         public TickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
-            ITickerHost tickerHost, ITickerClock clock, ITickerQNotificationHubSender notificationHubSender, TickerExecutionContext executionContext)
+            ITickerHost tickerHost, ITickerClock clock, ITickerQNotificationHubSender notificationHubSender, TickerExecutionContext executionContext, ITickerQInstrumentation tickerQInstrumentation)
             : base(persistenceProvider, clock, notificationHubSender)
         {
             _tickerHost = tickerHost ?? throw new ArgumentNullException(nameof(tickerHost));
             _executionContext = executionContext ?? throw new ArgumentNullException(nameof(executionContext));
+            _tickerQInstrumentation = tickerQInstrumentation ?? throw new ArgumentNullException(nameof(tickerQInstrumentation));
         }
 
         Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.AddAsync(TCronTicker entity, CancellationToken cancellationToken)
@@ -50,6 +53,8 @@ namespace TickerQ.Utilities.Managers
         {
             if (entity.Id == Guid.Empty)
                 entity.Id = Guid.NewGuid();
+
+            _tickerQInstrumentation.LogJobEnqueued("TimeTicker", entity.Function, entity.Id, "API");
 
             if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity?.Function))
                 return new TickerResult<TTimeTicker>(
@@ -86,6 +91,8 @@ namespace TickerQ.Utilities.Managers
            
             if (entity.Id == Guid.Empty)
                 entity.Id = Guid.NewGuid();
+
+            _tickerQInstrumentation.LogJobEnqueued("CronTicker", entity.Function, entity.Id, "API");
 
             if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity?.Function))
                 return new TickerResult<TCronTicker>(
@@ -211,5 +218,6 @@ namespace TickerQ.Utilities.Managers
 
             return new TickerResult<TTimeTicker>(affectedRows);
         }
+
     }
 }

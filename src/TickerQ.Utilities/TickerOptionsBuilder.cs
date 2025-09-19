@@ -14,7 +14,6 @@ namespace TickerQ.Utilities
         private readonly TickerExecutionContext _tickerExecutionContext;
         internal TickerOptionsBuilder(TickerExecutionContext tickerExecutionContext)
             => _tickerExecutionContext = tickerExecutionContext;
-        
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
         internal Type TickerExceptionHandlerType { get; private set; }
@@ -52,7 +51,7 @@ namespace TickerQ.Utilities
         /// Timeout checker default is 1 minute, cannot set less than 30 seconds
         /// </summary>
         /// <param name="timeSpan"></param>
-        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UpdateMissedJobCheckDelay(TimeSpan timeSpan)
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> FallbackIntervalChecker(TimeSpan timeSpan)
         {
             _tickerExecutionContext.TimeOutChecker = timeSpan < TimeSpan.FromSeconds(30)
                 ? TimeSpan.FromSeconds(30)

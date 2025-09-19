@@ -1,7 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFrameworks>net8.0;</TargetFrameworks>
 		<PackageId>TickerQ.EntityFrameworkCore</PackageId>
 		<Description>Entity Framework Core integration for scheduling and persisting cron/time-based jobs using TickerQ.</Description>
 		<PackageTags>$(PackageTags);efcore;entityframework</PackageTags>
@@ -13,8 +12,8 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="FlexLabs.EntityFrameworkCore.Upsert" Version="[8.0.0,)" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="[8.0.0,)" />
+		<PackageReference Include="FlexLabs.EntityFrameworkCore.Upsert" Version="[8.0.0,9.0.0)" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="[8.0.0,9.0.0)" />
 		<ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
 	</ItemGroup>
 

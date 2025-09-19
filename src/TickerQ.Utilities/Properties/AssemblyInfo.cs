@@ -4,5 +4,7 @@
 [assembly: InternalsVisibleTo("TickerQ.EntityFrameworkCore")]
 [assembly: InternalsVisibleTo("TickerQ.Dashboard")]
 [assembly: InternalsVisibleTo("TickerQ.Tests")]
+[assembly: InternalsVisibleTo("TickerQ.Instrumentation.OpenTelemetry")]
+[assembly: InternalsVisibleTo("TickerQ.Caching.StackExchangeRedis")]
 // To be testable using NSubsitute
 [assembly: InternalsVisibleTo("DynamicProxyGenAssembly2")]

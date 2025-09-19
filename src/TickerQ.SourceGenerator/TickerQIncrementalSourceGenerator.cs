@@ -413,34 +413,50 @@ namespace TickerQ.SourceGenerator
         /// </summary>
         private static void GenerateInitializeMethodWithFullNamespaces(StringBuilder sb, IEnumerable<string> delegates)
         {
+            var delegateList = delegates.ToList();
+            var delegateCount = delegateList.Count;
+            
             sb.AppendLine("        [System.Runtime.CompilerServices.ModuleInitializer]");
             sb.AppendLine("        public static void Initialize()");
             sb.AppendLine("        {");
-            sb.AppendLine("            var tickerFunctionDelegateDict = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>();");
             
-            foreach (var delegateCode in delegates)
+            if (delegateCount > 0)
             {
-                sb.Append(delegateCode);
+                sb.AppendLine($"            var tickerFunctionDelegateDict = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>({delegateCount});");
+                
+                foreach (var delegateCode in delegateList)
+                {
+                    sb.Append(delegateCode);
+                }
+                
+                sb.AppendLine($"            TickerFunctionProvider.RegisterFunctions(tickerFunctionDelegateDict, {delegateCount});");
             }
             
-            sb.AppendLine("            TickerFunctionProvider.RegisterFunctions(tickerFunctionDelegateDict);");
             sb.AppendLine("            RegisterRequestTypes();");
             sb.AppendLine("        }");
         }
 
         private static void GenerateInitializeMethod(StringBuilder sb, IEnumerable<string> delegates)
         {
+            var delegateList = delegates.ToList();
+            var delegateCount = delegateList.Count;
+            
             sb.AppendLine("[System.Runtime.CompilerServices.ModuleInitializer]");
             sb.AppendLine("    public static void Initialize()");
             sb.AppendLine("    {");
-            sb.AppendLine("      var tickerFunctionDelegateDict = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>();");
             
-            foreach (var delegateCode in delegates)
+            if (delegateCount > 0)
             {
-                sb.Append(delegateCode);
+                sb.AppendLine($"      var tickerFunctionDelegateDict = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>({delegateCount});");
+                
+                foreach (var delegateCode in delegateList)
+                {
+                    sb.Append(delegateCode);
+                }
+                
+                sb.AppendLine($"      TickerFunctionProvider.RegisterFunctions(tickerFunctionDelegateDict, {delegateCount});");
             }
             
-            sb.AppendLine("      TickerFunctionProvider.RegisterFunctions(tickerFunctionDelegateDict);");
             sb.AppendLine("      RegisterRequestTypes();");
             sb.AppendLine("    }");
         }
@@ -495,22 +511,28 @@ namespace TickerQ.SourceGenerator
             IEnumerable<(string GenericTypeName, string FunctionName)> requestTypes,
             HashSet<string> typeNameConflicts = null)
         {
+            var requestTypesList = requestTypes.ToList();
+            var requestTypesWithGeneric = requestTypesList.Where(rt => !string.IsNullOrEmpty(rt.GenericTypeName)).ToList();
+            var requestTypesCount = requestTypesWithGeneric.Count;
+            
             sb.AppendLine("        private static void RegisterRequestTypes()");
             sb.AppendLine("        {");
-            sb.AppendLine("            var requestTypes = new Dictionary<string, (string, Type)>();");
             
-            foreach (var (genericTypeName, functionName) in requestTypes)
+            if (requestTypesCount > 0)
             {
-                if (!string.IsNullOrEmpty(genericTypeName))
+                sb.AppendLine($"            var requestTypes = new Dictionary<string, (string, Type)>({requestTypesCount});");
+                
+                foreach (var (genericTypeName, functionName) in requestTypesWithGeneric)
                 {
                     // Use the simple type name if no conflicts exist, otherwise use full name
                     var typeName = GetTypeNameForGeneration(genericTypeName, typeNameConflicts);
                     
                     sb.AppendLine($"            requestTypes.TryAdd(\"{functionName}\", (typeof({typeName}).FullName, typeof({typeName})));");
                 }
+                
+                sb.AppendLine($"            TickerFunctionProvider.RegisterRequestType(requestTypes, {requestTypesCount});");
             }
             
-            sb.AppendLine("            TickerFunctionProvider.RegisterRequestType(requestTypes);");
             sb.AppendLine("        }");
         }
 
@@ -519,22 +541,28 @@ namespace TickerQ.SourceGenerator
             IEnumerable<(string GenericTypeName, string FunctionName)> requestTypes,
             HashSet<string> typeNameConflicts = null)
         {
+            var requestTypesList = requestTypes.ToList();
+            var requestTypesWithGeneric = requestTypesList.Where(rt => !string.IsNullOrEmpty(rt.GenericTypeName)).ToList();
+            var requestTypesCount = requestTypesWithGeneric.Count;
+            
             sb.AppendLine("    private static void RegisterRequestTypes()");
             sb.AppendLine("    {");
-            sb.AppendLine("      var requestTypes = new Dictionary<string, (string, Type)>();");
             
-            foreach (var (genericTypeName, functionName) in requestTypes)
+            if (requestTypesCount > 0)
             {
-                if (!string.IsNullOrEmpty(genericTypeName))
+                sb.AppendLine($"      var requestTypes = new Dictionary<string, (string, Type)>({requestTypesCount});");
+                
+                foreach (var (genericTypeName, functionName) in requestTypesWithGeneric)
                 {
                     // Use the simple type name if no conflicts exist, otherwise use full name
                     var typeName = GetTypeNameForGeneration(genericTypeName, typeNameConflicts);
                     
                     sb.AppendLine($"      requestTypes.TryAdd(\"{functionName}\", (typeof({typeName}).FullName, typeof({typeName})));");
                 }
+                
+                sb.AppendLine($"      TickerFunctionProvider.RegisterRequestType(requestTypes, {requestTypesCount});");
             }
             
-            sb.AppendLine("      TickerFunctionProvider.RegisterRequestType(requestTypes);");
             sb.AppendLine("    }");
         }
 
