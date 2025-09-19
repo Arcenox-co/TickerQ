@@ -404,7 +404,8 @@ namespace TickerQ.SourceGenerator
             sb.AppendLine("#if NET5_0_OR_GREATER\n    [System.Runtime.CompilerServices.ModuleInitializer]\n #endif");
             sb.AppendLine("    public static void Initialize()");
             sb.AppendLine("    {");
-            sb.AppendLine("      var tickerFunctionDelegateDict = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>();");
+            sb.AppendLine("      var previousFuncDict = TickerFunctionProvider.TickerFunctions;");
+            sb.AppendLine("      var tickerFunctionDelegateDict = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>(previousFuncDict);");
             foreach (var d in delegates) sb.AppendLine(d);
             sb.AppendLine("      TickerFunctionProvider.RegisterFunctions(tickerFunctionDelegateDict);");
             sb.AppendLine("      RegisterRequestTypes();");
@@ -421,7 +422,8 @@ namespace TickerQ.SourceGenerator
             sb.AppendLine("    }");
             sb.AppendLine("    private static void RegisterRequestTypes()");
             sb.AppendLine("    {");
-            sb.AppendLine("      var requestTypes = new Dictionary<string, (string, Type)>();");
+            sb.AppendLine("      var previousTypesDict = TickerFunctionProvider.TickerFunctionRequestTypes;");
+            sb.AppendLine("      var requestTypes = new Dictionary<string, (string, Type)>(previousTypesDict);");
             foreach (var rt in requestTypes)
             {
                 if (!string.IsNullOrEmpty(rt.Item1))
