@@ -3,20 +3,26 @@ using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.Base
 {
-    public class TickerFunctionAttribute : Attribute
+    [AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = false)]
+    public sealed class TickerFunctionAttribute : Attribute
     {
+        public string Name { get; set; }
+        public string CronExpression { get; set; }
+        public TickerTaskPriority Priority { get; set; }
+        
         public TickerFunctionAttribute(string functionName, string cronExpression = null,
             TickerTaskPriority taskPriority = TickerTaskPriority.Normal)
         {
-            _ = functionName;
-            _ = cronExpression;
-            _ = taskPriority;
+            Name = functionName;
+            CronExpression = cronExpression;
+            Priority = taskPriority;
         }
 
         public TickerFunctionAttribute(string functionName, TickerTaskPriority taskPriority)
         {
-            _ = functionName;
-            _ = taskPriority;
+            Name = functionName;
+            CronExpression = null;
+            Priority = taskPriority;
         }
     }
 }
