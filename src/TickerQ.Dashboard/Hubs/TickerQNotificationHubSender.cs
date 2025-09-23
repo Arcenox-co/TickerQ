@@ -67,6 +67,11 @@ namespace TickerQ.Dashboard.Hubs
             _ = _hubContext.Clients.All.SendAsync("UpdateHostExceptionNotification", exceptionMessage);
         }
 
+        public async Task UpdateNodeHeartBeatAsync(object nodeHeartBeat)
+        {
+            await _hubContext.Clients.All.SendAsync("UpdateNodeHeartBeat", nodeHeartBeat);
+        }
+
         public async Task AddCronOccurrenceAsync(Guid groupId, object occurrence)
         {
             await _hubContext.Clients.Group(groupId.ToString()).SendAsync("AddCronOccurrenceNotification", occurrence);

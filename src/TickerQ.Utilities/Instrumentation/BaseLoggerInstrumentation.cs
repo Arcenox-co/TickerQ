@@ -8,10 +8,11 @@ namespace TickerQ.Utilities.Instrumentation;
 public abstract class BaseLoggerInstrumentation
 {
     private readonly ILogger _logger;
-
-    protected BaseLoggerInstrumentation(ILogger logger)
+    private readonly string _instanceIdentifier;
+    protected BaseLoggerInstrumentation(ILogger logger, string instanceIdentifier)
     {
         _logger = logger;
+        _instanceIdentifier = instanceIdentifier;
     }
 
     public abstract Activity StartJobActivity(string activityName, InternalFunctionContext context);
@@ -51,13 +52,13 @@ public abstract class BaseLoggerInstrumentation
         _logger.LogInformation("TickerQ Job skipped: {Function} ({JobId}) - {Reason}", functionName, jobId, reason);
     }
     
-    public virtual void LogSeedingDataStarted(string seedingDataType, string environmentName)
+    public virtual void LogSeedingDataStarted(string seedingDataType)
     {
-        _logger.LogInformation("TickerQ start seeding data: {TickerType} ({EnvironmentName})", seedingDataType, environmentName);
+        _logger.LogInformation("TickerQ start seeding data: {TickerType} ({EnvironmentName})", seedingDataType, _instanceIdentifier);
     }
 
-    public virtual void LogSeedingDataCompleted(string seedingDataType, string environmentName)
+    public virtual void LogSeedingDataCompleted(string seedingDataType)
     {
-        _logger.LogInformation("TickerQ completed seeding data: {TickerType} ({EnvironmentName})", seedingDataType, environmentName);
+        _logger.LogInformation("TickerQ completed seeding data: {TickerType} ({EnvironmentName})", seedingDataType, _instanceIdentifier);
     }
 }

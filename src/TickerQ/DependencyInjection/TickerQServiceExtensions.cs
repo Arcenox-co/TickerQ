@@ -1,13 +1,12 @@
 ﻿using System;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Hosting;
+using TickerQ.BackgroundServices;
 using TickerQ.Provider;
+using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -29,69 +28,54 @@ namespace TickerQ.DependencyInjection
             where TCronTicker : CronTickerEntity, new()
         {
             var tickerExecutionContext = new TickerExecutionContext();
-            var optionInstance = new TickerOptionsBuilder<TTimeTicker,TCronTicker>(tickerExecutionContext);
+            var schedulerOptionsBuilder = new SchedulerOptionsBuilder();
+            var optionInstance = new TickerOptionsBuilder<TTimeTicker,TCronTicker>(tickerExecutionContext, schedulerOptionsBuilder);
             optionsBuilder?.Invoke(optionInstance);
 
             services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
-            services.AddSingleton<IInternalTickerManager, TickerManager<TTimeTicker, TCronTicker>>();
+            services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ITickerQNotificationHubSender, TempTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
-            services.AddSingleton<ITickerHost, TickerHost>();
-            services.AddSingleton<ITickerQRedisContext, NoOpTickerQRedisContext>();
-
+            services.AddSingleton<TickerQSchedulerBackgroundService>();
+            services.AddSingleton<ITickerQHostScheduler>(provider => 
+                provider.GetRequiredService<TickerQSchedulerBackgroundService>());
+            services.AddHostedService(provider => 
+                provider.GetRequiredService<TickerQSchedulerBackgroundService>());
+            services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
+            services.AddSingleton<TickerQFallbackBackgroundService>();
+            services.AddSingleton<TickerExecutionTaskHandler>();
+            services.AddSingleton(sp =>
+            {
+                var notification = sp.GetRequiredService<ITickerQNotificationHubSender>();
+                var notifyDebounce = new SoftSchedulerNotifyDebounce((value) => notification.UpdateActiveThreads(value));
+                return new TickerQTaskScheduler(schedulerOptionsBuilder.MaxConcurrency, schedulerOptionsBuilder.IdleWorkerTimeOut, notifyDebounce);
+            });
+            
             optionInstance.ExternalProviderConfigServiceAction?.Invoke(services);
             optionInstance.DashboardServiceAction?.Invoke(services);
 
             if (optionInstance.TickerExceptionHandlerType != null)
                 services.AddSingleton(typeof(ITickerExceptionHandler), optionInstance.TickerExceptionHandlerType);
-
-            if (tickerExecutionContext.MaxConcurrency <= 0)
-                optionInstance.SetMaxConcurrency(0);
-
-            if (string.IsNullOrEmpty(tickerExecutionContext.InstanceIdentifier))
-                optionInstance.SetInstanceIdentifier(Environment.MachineName);
             
-            services.AddSingleton<TickerOptionsBuilder<TTimeTicker, TCronTicker>>(_ => optionInstance);
-            services.AddSingleton<TickerExecutionContext>(_ => tickerExecutionContext);
-            
+            services.AddSingleton(_ => optionInstance);
+            services.AddSingleton(_ => tickerExecutionContext);
+            services.AddSingleton(_ => schedulerOptionsBuilder);
             return services;
         }
         
-        public static TickerOptionsBuilder<TTimeTicker, TCronTicker> AddInstrumentation<TTimeTicker, TCronTicker>(
-            this TickerOptionsBuilder<TTimeTicker, TCronTicker> tickerConfiguration)
-            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-            where TCronTicker : CronTickerEntity, new()
-        {
-            tickerConfiguration.ExternalProviderConfigServiceAction += services =>
-            {
-                services.TryAddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
-            };
-
-            return tickerConfiguration;
-        }
-        
-        
-        public static async Task UseTickerQAsync(this IApplicationBuilder app, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
+        public static IApplicationBuilder UseTickerQ(this IApplicationBuilder app, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
         {
             var serviceProvider = app.ApplicationServices;
-            
-            var lifetime = app.ApplicationServices.GetRequiredService<IHostApplicationLifetime>();
             var tickerExecutionContext = serviceProvider.GetService<TickerExecutionContext>();
             var configuration = serviceProvider.GetService<IConfiguration>();
             var notificationHubSender = serviceProvider.GetService<ITickerQNotificationHubSender>();
-            var loggerInstrumentation = serviceProvider.GetService<ITickerQInstrumentation>();
+            
             TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
             TickerFunctionProvider.Build();
 
-            if (tickerExecutionContext?.DashboardApplicationAction != null)
-            {
-                tickerExecutionContext.DashboardApplicationAction(app);
-                tickerExecutionContext.DashboardApplicationAction = null;
-            }
-            
-            tickerExecutionContext!.NotifyCoreAction = (value, type) =>
+            tickerExecutionContext.NotifyCoreAction += (value, type) =>
             {
                 if (type == CoreNotifyActionType.NotifyHostExceptionMessage)
                 {
@@ -108,38 +92,22 @@ namespace TickerQ.DependencyInjection
 
             if (tickerExecutionContext.ExternalProviderApplicationAction != null)
             {
-                lifetime.ApplicationStarted.Register(() =>
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        await tickerExecutionContext.ExternalProviderApplicationAction(serviceProvider).ConfigureAwait(false);
-                        tickerExecutionContext.ExternalProviderApplicationAction =  null;
-                    });
-                });
-
-                lifetime.ApplicationStopped.Register(() =>
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
-                        await internalTickerManager.ReleaseAcquiredResources(null, CancellationToken.None).ConfigureAwait(false);
-                    });
-                });
+                tickerExecutionContext.ExternalProviderApplicationAction(serviceProvider);
+                tickerExecutionContext.ExternalProviderApplicationAction = null;
             }
             else
-                await SeedDefinedCronTickers(serviceProvider).ConfigureAwait(false);
+                SeedDefinedCronTickers(serviceProvider).GetAwaiter().GetResult();
             
-            lifetime.ApplicationStarted.Register(() =>
+            if (tickerExecutionContext?.DashboardApplicationAction != null)
             {
-                if (qStartMode == TickerQStartMode.Manual) 
-                    return;
+                tickerExecutionContext.DashboardApplicationAction(app);
+                tickerExecutionContext.DashboardApplicationAction = null;
+            }
 
-                var tickerHost = serviceProvider.GetRequiredService<ITickerHost>();
-            
-                tickerHost.Run();
-            });
+            return app;
         }
         
+
         private static async Task SeedDefinedCronTickers(IServiceProvider serviceProvider)
         {
             var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();

@@ -12,58 +12,42 @@ namespace TickerQ.Utilities
         where TCronTicker : CronTickerEntity, new()
     {
         private readonly TickerExecutionContext _tickerExecutionContext;
-        internal TickerOptionsBuilder(TickerExecutionContext tickerExecutionContext)
-            => _tickerExecutionContext = tickerExecutionContext;
+        private readonly SchedulerOptionsBuilder _schedulerOptions;
+
+        internal TickerOptionsBuilder(TickerExecutionContext tickerExecutionContext, SchedulerOptionsBuilder schedulerOptions)
+        {
+            _tickerExecutionContext = tickerExecutionContext;
+            _schedulerOptions = schedulerOptions;
+        }
+
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
         internal Type TickerExceptionHandlerType { get; private set; }
         
-        /// <summary>
-        /// Default max concurrency is Environment.ProcessorCount
-        /// </summary>
-        /// <param name="maxConcurrency"></param>
-        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SetMaxConcurrency(int maxConcurrency)
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureScheduler(Action<SchedulerOptionsBuilder> schedulerOptionsBuilder)
         {
-             _tickerExecutionContext.MaxConcurrency = maxConcurrency <= 0 
-                 ? Environment.ProcessorCount 
-                 : maxConcurrency;
-             
-             return this;
-        }
-
-        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SetInstanceIdentifier(string instanceIdentifier)
-        {
-            _tickerExecutionContext.InstanceIdentifier = instanceIdentifier;
+            schedulerOptionsBuilder?.Invoke(_schedulerOptions);
             return this;
         }
-
-        /// <summary>
-        /// Set Ticker Exception Handler
-        /// </summary>
-        /// <typeparam name="THandler"></typeparam>
+        
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> SetExceptionHandler<THandler>() where THandler : ITickerExceptionHandler
         {
             TickerExceptionHandlerType = typeof(THandler);
             return this;
         }
 
-        /// <summary>
-        /// Timeout checker default is 1 minute, cannot set less than 30 seconds
-        /// </summary>
-        /// <param name="timeSpan"></param>
-        public TickerOptionsBuilder<TTimeTicker, TCronTicker> FallbackIntervalChecker(TimeSpan timeSpan)
-        {
-            _tickerExecutionContext.TimeOutChecker = timeSpan < TimeSpan.FromSeconds(30)
-                ? TimeSpan.FromSeconds(30)
-                : timeSpan;
-            
-            return this;
-        }
-
-        internal void UseExternalProviderApplication(Func<IServiceProvider, Task> func)
-            => _tickerExecutionContext.ExternalProviderApplicationAction = func;
+        internal void UseExternalProviderApplication(Action<IServiceProvider> action)
+            => _tickerExecutionContext.ExternalProviderApplicationAction = action;
         
         internal void UseDashboardApplication(Action<IApplicationBuilder> action)
             => _tickerExecutionContext.DashboardApplicationAction = action;
+    }
+
+    public class SchedulerOptionsBuilder
+    {
+        public string NodeIdentifier { get; set; } = Environment.MachineName;
+        public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
+        public TimeSpan IdleWorkerTimeOut { get; set; } = TimeSpan.FromMinutes(1);
+        public TimeSpan FallbackIntervalChecker { get; set; } = TimeSpan.FromSeconds(30);
     }
 }

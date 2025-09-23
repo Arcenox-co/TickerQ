@@ -18,12 +18,12 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
-    public BasePersistenceProvider(IDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, TickerExecutionContext executionContext, ITickerQRedisContext redisContext)
+    public BasePersistenceProvider(IDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, SchedulerOptionsBuilder optionsBuilder, ITickerQRedisContext redisContext)
     {
         _clock = clock;
         RedisContext = redisContext;
         DbContextFactory = dbContextFactory;
-        _lockHolder = executionContext.InstanceIdentifier;
+        _lockHolder = optionsBuilder.NodeIdentifier;
     }
     
     protected readonly IDbContextFactory<TDbContext>  DbContextFactory;

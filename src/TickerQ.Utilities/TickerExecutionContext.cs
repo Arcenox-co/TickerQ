@@ -1,5 +1,5 @@
 using System;
-using System.Threading.Tasks;
+using System.Threading;
 using Microsoft.AspNetCore.Builder;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
@@ -8,29 +8,29 @@ namespace TickerQ.Utilities;
 
 internal class TickerExecutionContext
 {
-   internal Func<IServiceProvider, Task> ExternalProviderApplicationAction { get; set; }
+   private long _nextOccurrenceTicks;
+   internal Action<IServiceProvider> ExternalProviderApplicationAction { get; set; }
    internal Action<IApplicationBuilder> DashboardApplicationAction { get; set; }
    public Action<object, CoreNotifyActionType> NotifyCoreAction { get; set; }
-   public int MaxConcurrency { get; set; }
-   public string InstanceIdentifier { get; set; }
-   public static int ActiveThreads;
    public string LastHostExceptionMessage { get; set; }
-   public TimeSpan TimeOutChecker { get; set; } = TimeSpan.FromMinutes(1);
-   public DateTime? NextPlannedOccurrence { get; private set; }
    
    internal volatile InternalFunctionContext[] Functions = [];
    
-   public void SetNextPlannedOccurrence(DateTime? occurrence)
-      => NextPlannedOccurrence = occurrence;
+   public void SetNextPlannedOccurrence(DateTime? dt) =>
+      Interlocked.Exchange(ref _nextOccurrenceTicks, dt?.Ticks ?? -1);
+   
+   public DateTime? GetNextPlannedOccurrence()
+   {
+      var t = Interlocked.Read(ref _nextOccurrenceTicks);
+      return t < 0 ? null : new DateTime(t, DateTimeKind.Utc);
+   }
    
    public void SetFunctions(ReadOnlySpan<InternalFunctionContext> functions)
    {
       var copy = new InternalFunctionContext[functions.Length];
       functions.CopyTo(copy.AsSpan());
       
-      // Cache function delegates for performance optimization
       CacheFunctionReferences(copy.AsSpan());
-      
       Functions = copy;
    }
 

@@ -1,6 +1,8 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Instrumentation;
@@ -37,36 +39,44 @@ public static class ServiceExtension
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        tickerConfiguration.UseExternalProviderApplication(async (serviceProvider) =>
+        tickerConfiguration.UseExternalProviderApplication((serviceProvider) =>
         {
             var loggerInstrumentation = serviceProvider.GetService<ITickerQInstrumentation>();
             var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
-            var tickerExecutionContext = serviceProvider.GetService<TickerExecutionContext>();
+            var timeTickerManager = serviceProvider.GetService<ITimeTickerManager<TTimeTicker>>();
+            var cronTickerManager = serviceProvider.GetService<ICronTickerManager<TCronTicker>>();
+            var hostLifetime = serviceProvider.GetService<IHostApplicationLifetime>();
 
-            var functionsToSeed = TickerFunctionProvider.TickerFunctions
-                .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
-                .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
-
-            if (options.SeedDefinedCronTickers)
+            hostLifetime.ApplicationStarted.Register(() =>
             {
-                loggerInstrumentation.LogSeedingDataStarted($"SeedDefinedCronTickers({typeof(TCronTicker).Name})", tickerExecutionContext.InstanceIdentifier);
-                await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed);
-                loggerInstrumentation.LogSeedingDataCompleted($"SeedDefinedCronTickers({typeof(TCronTicker).Name})", tickerExecutionContext.InstanceIdentifier);
-            }
+                Task.Run(async () =>
+                {
+                    var functionsToSeed = TickerFunctionProvider.TickerFunctions
+                        .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
+                        .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
 
-            if (options.TimeSeeder != null)
-            {
-                loggerInstrumentation.LogSeedingDataStarted(typeof(TCronTicker).Name, tickerExecutionContext.InstanceIdentifier);
-                await options.TimeSeeder((TickerManager<TTimeTicker, TCronTicker>)internalTickerManager);
-                loggerInstrumentation.LogSeedingDataCompleted(typeof(TCronTicker).Name, tickerExecutionContext.InstanceIdentifier);
-            }
+                    if (options.SeedDefinedCronTickers)
+                    {
+                        loggerInstrumentation.LogSeedingDataStarted($"SeedDefinedCronTickers({typeof(TCronTicker).Name})");
+                        await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed);
+                        loggerInstrumentation.LogSeedingDataCompleted($"SeedDefinedCronTickers({typeof(TCronTicker).Name})");
+                    }
 
-            if (options.CronSeeder != null)
-            {
-                loggerInstrumentation.LogSeedingDataStarted(typeof(TCronTicker).Name, tickerExecutionContext.InstanceIdentifier);
-                await options.CronSeeder((TickerManager<TTimeTicker, TCronTicker>)internalTickerManager);
-                loggerInstrumentation.LogSeedingDataCompleted(typeof(TCronTicker).Name, tickerExecutionContext.InstanceIdentifier);
-            }
+                    if (options.TimeSeeder != null)
+                    {
+                        loggerInstrumentation.LogSeedingDataStarted(typeof(TCronTicker).Name);
+                        await options.TimeSeeder(timeTickerManager);
+                        loggerInstrumentation.LogSeedingDataCompleted(typeof(TCronTicker).Name);
+                    }
+
+                    if (options.CronSeeder != null)
+                    {
+                        loggerInstrumentation.LogSeedingDataStarted(typeof(TCronTicker).Name);
+                        await options.CronSeeder(cronTickerManager);
+                        loggerInstrumentation.LogSeedingDataCompleted(typeof(TCronTicker).Name);
+                    }
+                });
+            });
         });
     }
 }

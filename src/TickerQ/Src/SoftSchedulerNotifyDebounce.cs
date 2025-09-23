@@ -1,13 +1,11 @@
 using System;
 using System.Threading;
-using TickerQ.Utilities;
-using TickerQ.Utilities.Enums;
 
 namespace TickerQ
 {
     internal sealed class SoftSchedulerNotifyDebounce : IDisposable
     {
-        private readonly TickerExecutionContext _executionContext;
+        private readonly Action<string> _notifyCoreAction;
         private readonly Timer _timer;
 
         private int _latest;
@@ -16,9 +14,9 @@ namespace TickerQ
         private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(100);
         private int _disposed;
 
-        public SoftSchedulerNotifyDebounce(TickerExecutionContext executionContext)
+        public SoftSchedulerNotifyDebounce(Action<string> notifyCoreAction)
         {
-            _executionContext = executionContext ?? throw new ArgumentNullException(nameof(executionContext));
+            _notifyCoreAction = notifyCoreAction;
             _timer = new Timer(Callback, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         }
 
@@ -52,7 +50,7 @@ namespace TickerQ
             Callback(null);
         }
 
-        private void Callback(object? _)
+        private void Callback(object _)
         {
             if (Volatile.Read(ref _disposed) == 1)
                 return;
@@ -64,7 +62,8 @@ namespace TickerQ
                 return;
 
             Volatile.Write(ref _lastNotified, latest);
-            _executionContext.NotifyCoreAction?.Invoke(latest, CoreNotifyActionType.NotifyThreadCount);
+            
+            _notifyCoreAction?.Invoke(latest.ToString());
         }
 
         public void Dispose()
@@ -74,7 +73,6 @@ namespace TickerQ
 
             try { _timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan); } catch { /* ignore */ }
             _timer.Dispose();
-            GC.SuppressFinalize(this);
         }
     }
 }

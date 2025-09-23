@@ -1,17 +1,18 @@
 using System;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using TickerQ.Utilities;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Instrumentation.OpenTelemetry
 {
-    public class OpenTelemetryInstrumentation : BaseLoggerInstrumentation , ITickerQInstrumentation
+    internal class OpenTelemetryInstrumentation : BaseLoggerInstrumentation , ITickerQInstrumentation
     {
         private readonly ILogger<OpenTelemetryInstrumentation> _logger;
         private static readonly ActivitySource ActivitySource = new("TickerQ", "1.0.0");
 
-        public OpenTelemetryInstrumentation(ILogger<OpenTelemetryInstrumentation> logger) : base(logger)
+        public OpenTelemetryInstrumentation(ILogger<OpenTelemetryInstrumentation> logger, SchedulerOptionsBuilder optionsBuilder) : base(logger, optionsBuilder.NodeIdentifier)
         {
             _logger = logger;
         }

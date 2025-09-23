@@ -17,8 +17,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        public TickerEfCorePersistenceProvider(IDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, TickerExecutionContext executionContext, ITickerQRedisContext  redisContext) 
-            :  base(dbContextFactory, clock, executionContext, redisContext) { }
+        public TickerEfCorePersistenceProvider(IDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, SchedulerOptionsBuilder optionsBuilder, ITickerQRedisContext  redisContext) 
+            :  base(dbContextFactory, clock, optionsBuilder, redisContext) { }
         
         #region Time_Ticker_Implementations
 

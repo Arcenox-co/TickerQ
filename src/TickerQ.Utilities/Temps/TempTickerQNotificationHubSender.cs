@@ -54,6 +54,11 @@ namespace TickerQ.Utilities.Temps
         {
         }
 
+        public Task UpdateNodeHeartBeatAsync(object nodeHeartBeat)
+        {
+            return Task.CompletedTask;
+        }
+
         public Task AddCronOccurrenceAsync(Guid groupId, object occurrence)
         { 
             return Task.CompletedTask;

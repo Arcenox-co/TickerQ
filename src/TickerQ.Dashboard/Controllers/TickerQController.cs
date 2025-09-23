@@ -23,8 +23,8 @@ namespace TickerQ.Dashboard.Controllers
         private ITickerDashboardRepository<TTimeTicker, TCronTicker> TickerDashboardRepository
             => HttpContext.RequestServices.GetService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
         
-        private ITickerHost TickerHost
-            => HttpContext.RequestServices.GetService<ITickerHost>();
+        private ITickerQHostScheduler TickerQHostScheduler
+            => HttpContext.RequestServices.GetService<ITickerQHostScheduler>();
 
         private TickerExecutionContext TickerExecutionContext
             => HttpContext.RequestServices.GetService<TickerExecutionContext>();
@@ -34,8 +34,8 @@ namespace TickerQ.Dashboard.Controllers
         {
             return Ok(new
             {
-                MaxConcurrency = TickerExecutionContext.MaxConcurrency,
-                CurrentMachine = TickerExecutionContext.InstanceIdentifier,
+                // MaxConcurrency = TickerExecutionContext.MaxConcurrency,
+                // CurrentMachine = TickerExecutionContext.InstanceIdentifier,
                 LastHostExceptionMessage = TickerExecutionContext.LastHostExceptionMessage,
             });
         }
@@ -218,7 +218,7 @@ namespace TickerQ.Dashboard.Controllers
         {
             var result = new
             {
-                NextOccurrence = TickerExecutionContext.NextPlannedOccurrence
+                NextOccurrence = TickerExecutionContext.GetNextPlannedOccurrence()
             };
             return Ok(result);
         }
@@ -226,28 +226,29 @@ namespace TickerQ.Dashboard.Controllers
         [HttpPost("ticker-host/:stop")]
         public IActionResult StopTickerHostAsync()
         {
-            TickerHost.Stop();
+            // TickerQHostScheduler.Stop();
             return Ok();
         }
 
         [HttpPost("ticker-host/:start")]
         public IActionResult StartTickerHostAsync()
         {
-            TickerHost.Run();
+            // TickerQHostScheduler.Run();
             return Ok();
         }
 
         [HttpPost("ticker-host/:restart")]
         public IActionResult RestartTickerHostAsync()
         {
-            TickerHost.Restart();
+            // TickerQHostScheduler.Restart();
             return Ok();
         }
 
         [HttpGet("ticker-host/:status")]
         public IActionResult GetTickerHostStatusAsync()
         {
-            return Ok(new { IsRunning = TickerHost.IsRunning() });
+            return Ok();
+            // return Ok(new { IsRunning = TickerQHostScheduler.IsRunning() });
         }
 
         [HttpGet("ticker/statuses/:get-last-week")]

@@ -12,4 +12,9 @@ internal class NoOpTickerQRedisContext : ITickerQRedisContext
     {
         return factory(cancellationToken);
     }
+
+    public Task NotifyNodeAliveAsync()
+    {
+       return Task.CompletedTask;
+    }
 }
