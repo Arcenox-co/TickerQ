@@ -35,7 +35,7 @@ namespace TickerQ.Utilities
             TickerExceptionHandlerType = typeof(THandler);
             return this;
         }
-
+        
         internal void UseExternalProviderApplication(Action<IServiceProvider> action)
             => _tickerExecutionContext.ExternalProviderApplicationAction = action;
         
@@ -49,5 +49,6 @@ namespace TickerQ.Utilities
         public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
         public TimeSpan IdleWorkerTimeOut { get; set; } = TimeSpan.FromMinutes(1);
         public TimeSpan FallbackIntervalChecker { get; set; } = TimeSpan.FromSeconds(30);
+        public TimeZoneInfo SchedulerTimeZone = TimeZoneInfo.Local;
     }
 }

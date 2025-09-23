@@ -69,10 +69,7 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TTimeTicker>(new TickerValidatorException("Invalid ExecutionTime!"));
             
             entity.ExecutionTime ??= _clock.UtcNow;
-            
-            entity.ExecutionTime = entity.ExecutionTime.Value.Kind == DateTimeKind.Utc
-                ? entity.ExecutionTime 
-                : entity.ExecutionTime.Value.ToUniversalTime();
+            entity.ExecutionTime = ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
             
             try
             {
@@ -100,11 +97,10 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TCronTicker>(
                     new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
 
-            if (CrontabSchedule.TryParse(entity.Expression) is not { } crontabSchedule)
+            if (CronScheduleCache.GetNextOccurrenceOrDefault(entity.Expression, _clock.UtcNow) is not { } nextOccurrence)
                 return new TickerResult<TCronTicker>(
                     new TickerValidatorException($"Cannot parse expression {entity.Expression}"));
 
-            var nextOccurrence = crontabSchedule.GetNextOccurrence(_clock.UtcNow);
             
             entity.CreatedAt = _clock.UtcNow;
             entity.UpdatedAt = _clock.UtcNow;
@@ -136,10 +132,7 @@ namespace TickerQ.Utilities.Managers
                     new TickerValidatorException($"Ticker ExecutionTime must not be null!"));
             
             timeTicker.UpdatedAt = _clock.UtcNow;
-            
-            timeTicker.ExecutionTime = timeTicker.ExecutionTime.Value.Kind == DateTimeKind.Utc
-                ? timeTicker.ExecutionTime.Value
-                : timeTicker.ExecutionTime.Value.ToUniversalTime();
+            timeTicker.ExecutionTime = ConvertToUtcIfNeeded(timeTicker.ExecutionTime.Value);
             
             try {
                 var affectedRows = await _persistenceProvider.UpdateTimeTickers([timeTicker], cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -167,12 +160,10 @@ namespace TickerQ.Utilities.Managers
                     new TickerValidatorException($"Cannot find TickerFunction with name {cronTicker.Function}"));
 
 
-            if (CrontabSchedule.TryParse(cronTicker.Expression) is not { } crontabSchedule)
+            if (CronScheduleCache.GetNextOccurrenceOrDefault(cronTicker.Expression, _clock.UtcNow) is not { } nextOccurrence)
                 return new TickerResult<TCronTicker>(
                     new TickerValidatorException($"Cannot parse expression {cronTicker.Expression}"));
             
-            var nextOccurrence = crontabSchedule.GetNextOccurrence(_clock.UtcNow);
-
             try
             {
                 cronTicker.UpdatedAt = _clock.UtcNow;
@@ -218,6 +209,18 @@ namespace TickerQ.Utilities.Managers
                 _tickerQHostScheduler.Restart();
 
             return new TickerResult<TTimeTicker>(affectedRows);
+        }
+        
+        private static DateTime ConvertToUtcIfNeeded(DateTime dateTime)
+        {
+            // If DateTime.Kind is Unspecified, assume it's in system timezone
+            return dateTime.Kind switch
+            {
+                DateTimeKind.Utc => dateTime,
+                DateTimeKind.Local => dateTime.ToUniversalTime(),
+                DateTimeKind.Unspecified => TimeZoneInfo.ConvertTimeToUtc(dateTime, CronScheduleCache.TimeZoneInfo),
+                _ => dateTime
+            };
         }
     }
 }

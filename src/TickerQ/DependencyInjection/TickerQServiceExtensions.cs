@@ -31,7 +31,7 @@ namespace TickerQ.DependencyInjection
             var schedulerOptionsBuilder = new SchedulerOptionsBuilder();
             var optionInstance = new TickerOptionsBuilder<TTimeTicker,TCronTicker>(tickerExecutionContext, schedulerOptionsBuilder);
             optionsBuilder?.Invoke(optionInstance);
-
+            CronScheduleCache.TimeZoneInfo = schedulerOptionsBuilder.SchedulerTimeZone;
             services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();

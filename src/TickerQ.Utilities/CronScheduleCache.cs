@@ -5,8 +5,10 @@ using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using NCrontab;
 
-public static partial class CronScheduleCache
+internal static partial class CronScheduleCache
 {
+    public static TimeZoneInfo TimeZoneInfo { get; internal set; } = TimeZoneInfo.Local;
+    
     private static readonly ConcurrentDictionary<string, CrontabSchedule> Cache = new(StringComparer.Ordinal);
 
     private static readonly CrontabSchedule.ParseOptions Opts = new()
@@ -29,12 +31,23 @@ public static partial class CronScheduleCache
     }
 
     public static DateTime? GetNextOccurrenceOrDefault(string expression, DateTime dateTime)
-        => Get(Normalize(expression))?.GetNextOccurrence(dateTime);
-    
+    {
+        var parsed = Get(Normalize(expression));
+        
+        if (parsed == null)
+            return null;
+        
+        var localTime = TimeZoneInfo.ConvertTimeFromUtc(dateTime, TimeZoneInfo);
+        
+        var nextOccurrence = parsed.GetNextOccurrence(localTime);
+        
+        var utcDateTime = TimeZoneInfo.ConvertTimeToUtc(nextOccurrence, TimeZoneInfo);
+        
+        return utcDateTime;
+    }
+
     public static bool Invalidate(string expression) =>
         Cache.TryRemove(Normalize(expression), out _);
-
-    public static void Clear() => Cache.Clear();
     
     [GeneratedRegex(@"\s+")]
     private static partial Regex ReplaceRegex();
