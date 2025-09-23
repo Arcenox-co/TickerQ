@@ -89,6 +89,17 @@ internal class TickerExecutionTaskHandler
 
     private async Task RunContextFunctionAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken, bool isChild = false)
     {
+        // Start OpenTelemetry activity for the entire job execution
+        using var jobActivity = _tickerQInstrumentation.StartJobActivity($"tickerq.job.execute.{context.Type.ToString().ToLowerInvariant()}", context);
+        
+        // Add additional tags to the activity
+        jobActivity?.SetTag("tickerq.job.is_due", isDue);
+        jobActivity?.SetTag("tickerq.job.is_child", isChild);
+        jobActivity?.SetTag("tickerq.job.retries", context.Retries);
+        
+        // Log job enqueued/started (using the available method)
+        _tickerQInstrumentation.LogJobEnqueued(context.Type.ToString(), context.FunctionName, context.TickerId, "ExecutionTaskHandler");
+        
         context.SetProperty(x => x.Status, TickerStatus.InProgress);
 
         if (isChild)
@@ -127,6 +138,9 @@ internal class TickerExecutionTaskHandler
         for (var attempt = context.RetryCount; attempt <= context.Retries; attempt++)
         {
             tickerFunctionContext.RetryCount = context.RetryCount;
+            
+            // Update activity with current attempt information
+            jobActivity?.SetTag("tickerq.job.current_attempt", attempt + 1);
 
             try
             {
@@ -148,6 +162,13 @@ internal class TickerExecutionTaskHandler
                     .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
                     .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
                     .SetProperty(x => x.ExceptionDetails, SerializeException(lastException));
+                
+                // Add cancellation tags to activity
+                jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
+                jobActivity?.SetTag("tickerq.job.cancellation_reason", "Task was cancelled");
+                
+                // Log job cancelled
+                _tickerQInstrumentation.LogJobCancelled(context.TickerId, context.FunctionName, "Task was cancelled");
 
                 var handler = _serviceProvider.GetService(typeof(ITickerExceptionHandler)) as ITickerExceptionHandler;
 
@@ -162,6 +183,13 @@ internal class TickerExecutionTaskHandler
                     .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
                     .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
                     .SetProperty(x => x.ExceptionDetails, ex.Message);
+                
+                // Add skip tags to activity
+                jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
+                jobActivity?.SetTag("tickerq.job.skip_reason", ex.Message);
+                
+                // Log job skipped
+                _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
 
                 await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
                 return;
@@ -180,6 +208,13 @@ internal class TickerExecutionTaskHandler
         if (success)
         {
             context.SetProperty(x => x.Status, isDue ? TickerStatus.DueDone : TickerStatus.Done);
+            
+            // Add success tags to activity
+            jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
+            jobActivity?.SetTag("tickerq.job.final_retry_count", context.RetryCount);
+            
+            // Log job completed successfully
+            _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, stopWatch.ElapsedMilliseconds, true);
 
             await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
         }
@@ -187,6 +222,15 @@ internal class TickerExecutionTaskHandler
         {
             context.SetProperty(x => x.Status, TickerStatus.Failed)
                 .SetProperty(x => x.ExceptionDetails, SerializeException(lastException));
+            
+            // Add failure tags to activity
+            jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
+            jobActivity?.SetTag("tickerq.job.final_retry_count", context.RetryCount);
+            jobActivity?.SetTag("tickerq.job.error_type", lastException.GetType().Name);
+            
+            // Log job failed
+            _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, lastException, context.RetryCount);
+            _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, stopWatch.ElapsedMilliseconds, false);
 
             var handler = _serviceProvider.GetService(typeof(ITickerExceptionHandler)) as ITickerExceptionHandler;
 

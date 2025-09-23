@@ -8,14 +8,14 @@ using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.Caching.StackExchangeRedis;
 
-public class TickerQRedisContext : ITickerQRedisContext
+internal class TickerQRedisContext : ITickerQRedisContext
 {
     private readonly IDistributedCache _cache;
     private readonly SchedulerOptionsBuilder _schedulerOptions;
     private readonly ServiceExtension.TickerQRedisOptionBuilder _tickerQRedisOptionBuilder;
     private readonly ITickerQNotificationHubSender _notificationHubSender;
 
-    internal TickerQRedisContext([FromKeyedServices("tickerq")] IDistributedCache cache, SchedulerOptionsBuilder schedulerOptions, ServiceExtension.TickerQRedisOptionBuilder tickerQRedisOptionBuilder, ITickerQNotificationHubSender notificationHubSender)
+    public TickerQRedisContext([FromKeyedServices("tickerq")] IDistributedCache cache, SchedulerOptionsBuilder schedulerOptions, ServiceExtension.TickerQRedisOptionBuilder tickerQRedisOptionBuilder, ITickerQNotificationHubSender notificationHubSender)
     {
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _schedulerOptions = schedulerOptions ??  throw new ArgumentNullException(nameof(schedulerOptions));

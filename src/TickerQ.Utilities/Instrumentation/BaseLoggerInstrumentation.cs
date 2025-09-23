@@ -8,7 +8,7 @@ namespace TickerQ.Utilities.Instrumentation;
 public abstract class BaseLoggerInstrumentation
 {
     private readonly ILogger _logger;
-    private readonly string _instanceIdentifier;
+    protected readonly string _instanceIdentifier;
     protected BaseLoggerInstrumentation(ILogger logger, string instanceIdentifier)
     {
         _logger = logger;
