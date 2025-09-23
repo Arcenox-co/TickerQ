@@ -82,8 +82,9 @@ namespace TickerQ.Dashboard.DependencyInjection
                 {
                     // Map controller routes (e.g., Home/Index)
                     var controllerRoute = endpoints.MapControllerRoute(
-                        name: "default",
-                        pattern: "{controller=Home}/{action=Index}/{id?}"
+                        name: "TickerQ",
+                        pattern: "{controller=Home}/{action=Index}/{id?}",
+                        constraints: new { controller = "TickerQController" }
                     );
 
                     // Map the SignalR hub.
