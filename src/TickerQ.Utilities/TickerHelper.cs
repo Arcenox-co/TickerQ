@@ -8,7 +8,7 @@ namespace TickerQ.Utilities
 {
     public static class TickerHelper
     {
-        private static readonly byte[] GZipSignature = { 0x1f, 0x8b, 0x08, 0x00 };
+        private static readonly byte[] GZipSignature = [0x1f, 0x8b, 0x08, 0x00];
 
         public static byte[] CreateTickerRequest<T>(T data)
         {
@@ -28,7 +28,7 @@ namespace TickerQ.Utilities
             var returnVal = new byte[compressedBytes.Length + GZipSignature.Length];
             var returnValSpan = returnVal.AsSpan();
             compressedBytes.CopyTo(returnValSpan);
-            GZipSignature.AsSpan().CopyTo(returnValSpan.Slice(compressedBytes.Length));
+            GZipSignature.AsSpan().CopyTo(returnValSpan[compressedBytes.Length..]);
 
             return returnVal;
         }

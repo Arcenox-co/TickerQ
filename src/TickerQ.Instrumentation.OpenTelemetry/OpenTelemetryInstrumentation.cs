@@ -27,7 +27,7 @@ namespace TickerQ.Instrumentation.OpenTelemetry
                 activity.SetTag("tickerq.job.type", context.Type.ToString());
                 activity.SetTag("tickerq.job.function", context.FunctionName);
                 activity.SetTag("tickerq.job.priority", context.CachedPriority.ToString());
-                activity.SetTag("tickerq.job.machine", Environment.MachineName);
+                activity.SetTag("tickerq.job.machine", _instanceIdentifier);
                 
                 if (context.ParentId.HasValue)
                 {
