@@ -1,13 +1,14 @@
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Caching.Distributed;
 using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.Utilities.Temps;
 
 internal class NoOpTickerQRedisContext : ITickerQRedisContext
 {
+    public IDistributedCache DistributedCache => null;
     public bool HasRedisConnection => false;
 
     public Task<TResult[]> GetOrSetArrayAsync<TResult>(string cacheKey, Func<CancellationToken, Task<TResult[]>> factory, TimeSpan? expiration = null,

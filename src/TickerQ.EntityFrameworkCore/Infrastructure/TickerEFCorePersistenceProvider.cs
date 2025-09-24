@@ -106,7 +106,12 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
             await dbContext.Set<TCronTicker>().AddRangeAsync(tickers, cancellationToken).ConfigureAwait(false);
             
-            return await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            var result = await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            
+            if(RedisContext.HasRedisConnection)
+                await RedisContext.DistributedCache.RemoveAsync("cron:expressions", cancellationToken).ConfigureAwait(false);
+            
+            return result;
         }
 
         public async Task<int> UpdateCronTickers(TCronTicker[] cronTickers, CancellationToken cancellationToken = default)
@@ -114,15 +119,25 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
 
             dbContext.Set<TCronTicker>().UpdateRange(cronTickers);
+
+            var result =  await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             
-            return await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            if(RedisContext.HasRedisConnection)
+                await RedisContext.DistributedCache.RemoveAsync("cron:expressions", cancellationToken).ConfigureAwait(false);
+            
+            return result;
         }
 
         public async Task<int> RemoveCronTickers(Guid[] cronTickerIds, CancellationToken cancellationToken)
         {
             await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-            return await dbContext.Set<TCronTicker>().Where(x => cronTickerIds.Contains(x.Id))
+            var result = await dbContext.Set<TCronTicker>().Where(x => cronTickerIds.Contains(x.Id))
                 .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+            
+            if(RedisContext.HasRedisConnection)
+                await RedisContext.DistributedCache.RemoveAsync("cron:expressions", cancellationToken).ConfigureAwait(false);
+            
+            return result;
         }
 
         #endregion

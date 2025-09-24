@@ -467,6 +467,7 @@ namespace TickerQ.Utilities.Managers
                 
                 if (needsRestart)
                     _tickerQHostScheduler.Restart();
+                
                 else if (nextOccurrences.Any())
                 {
                     var earliestOccurrence = nextOccurrences.Min();

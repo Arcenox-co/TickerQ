@@ -36,7 +36,7 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
-            services.AddSingleton<ITickerQNotificationHubSender, TempTickerQNotificationHubSender>();
+            services.AddSingleton<ITickerQNotificationHubSender, NoOpTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
             services.AddSingleton<TickerQSchedulerBackgroundService>();
             services.AddSingleton<ITickerQHostScheduler>(provider => 

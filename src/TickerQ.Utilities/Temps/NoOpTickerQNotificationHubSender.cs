@@ -6,7 +6,7 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Temps
 {
-    internal class TempTickerQNotificationHubSender : ITickerQNotificationHubSender
+    internal class NoOpTickerQNotificationHubSender : ITickerQNotificationHubSender
     {
         public Task AddCronTickerNotifyAsync(object cronTicker)
         {
