@@ -6,7 +6,7 @@ namespace TickerQ.Dashboard;
 
 public class DashboardOptionsBuilder
 {
-    public string BasePath { get; set; } = "/tickerq-dashboard";
+    public string BasePath { get; set; } = "/";
     public string[] CorsOrigins { get; set; } = ["*"];
         
     // Backend API Configuration

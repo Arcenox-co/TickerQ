@@ -5,6 +5,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using System;
 using System.Linq;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using TickerQ.Utilities.Entities;
 

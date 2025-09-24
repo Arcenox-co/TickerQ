@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.AspNetCore.Builder;
 using TickerQ.Utilities.Enums;
@@ -43,6 +44,12 @@ internal class TickerExecutionContext
          {
             context.CachedDelegate = tickerItem.Delegate;
             context.CachedPriority = tickerItem.Priority;
+         }
+      
+         if (context.TimeTickerChildren is { Count: > 0 })
+         {
+            var childrenSpan = CollectionsMarshal.AsSpan(context.TimeTickerChildren);
+            CacheFunctionReferences(childrenSpan);
          }
       }
    }

@@ -16,6 +16,7 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task<InternalFunctionContext[]> RunTimedOutTickers(CancellationToken cancellationToken = default);
         Task MigrateDefinedCronTickers((string, string)[] cronExpressions, CancellationToken cancellationToken = default);
         Task DeleteTicker(Guid tickerId, TickerType type, CancellationToken cancellationToken = default);
-        Task CascadeBatchUpdate(Guid parentTickerId, TickerStatus currentStatus, CancellationToken cancellationToken = default);
+        Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default);
+        Task UpdateSkipTimeTickersWithUnifiedContextAsync(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
     }
 }

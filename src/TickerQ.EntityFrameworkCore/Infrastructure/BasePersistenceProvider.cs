@@ -29,7 +29,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     protected readonly IDbContextFactory<TDbContext>  DbContextFactory;
     private readonly string _lockHolder;
     private readonly ITickerClock _clock;
-    protected readonly ITickerQRedisContext  RedisContext;
+    protected readonly ITickerQRedisContext RedisContext;
     
     #region Core_Time_Ticker_Methods
     public async IAsyncEnumerable<TimeTickerEntity> QueueTimeTickers(TimeTickerEntity[] timeTickers, [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -177,6 +177,30 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .Select(x => x.Request)
             .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
     }
+    
+    public async Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default)
+    {
+        var now = _clock.UtcNow;
+        await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        
+        await dbContext.Set<TimeTickerEntity>()
+            .WhereCanAcquire(instanceIdentifier)
+            .ExecuteUpdateAsync(setter => setter
+                .SetProperty(x => x.LockHolder, _ => null)
+                .SetProperty(x => x.LockedAt, _ => null)
+                .SetProperty(x => x.Status, TickerStatus.Idle)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+            .ConfigureAwait(false);
+        
+        await dbContext.Set<TimeTickerEntity>()
+            .Where(x => x.LockHolder == instanceIdentifier && x.Status == TickerStatus.InProgress)
+            .ExecuteUpdateAsync(setter => setter
+                .SetProperty(x => x.Status, TickerStatus.Skipped)
+                .SetProperty(x => x.SkippedReason, "Node is not alive!")
+                .SetProperty(x => x.ExecutedAt, now)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+            .ConfigureAwait(false);
+    }
     #endregion
         
     #region Core_Cron_Ticker_Methods
@@ -276,6 +300,30 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
             yield return cronTickerOccurrence;
         }
+    }
+    
+    public async Task ReleaseDeadNodeOccurrenceResources(string instanceIdentifier, CancellationToken cancellationToken = default)
+    {
+        var now = _clock.UtcNow;
+        await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+           
+        await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+            .WhereCanAcquire(instanceIdentifier)
+            .ExecuteUpdateAsync(setter => setter
+                .SetProperty(x => x.LockHolder, _ => null)
+                .SetProperty(x => x.LockedAt, _ => null)
+                .SetProperty(x => x.Status, TickerStatus.Idle)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+            .ConfigureAwait(false);
+        
+        await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+            .Where(x => x.LockHolder == instanceIdentifier && x.Status == TickerStatus.InProgress)
+            .ExecuteUpdateAsync(setter => setter
+                .SetProperty(x => x.Status, TickerStatus.Skipped)
+                .SetProperty(x => x.SkippedReason, "Node is not alive!")
+                .SetProperty(x => x.ExecutedAt, now)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+            .ConfigureAwait(false);
     }
     
     public async Task ReleaseAcquiredCronTickerOccurrences(Guid[] occurrenceIds, CancellationToken cancellationToken = default)

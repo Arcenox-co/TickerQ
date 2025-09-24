@@ -71,6 +71,8 @@ namespace TickerQ.DependencyInjection
             var tickerExecutionContext = serviceProvider.GetService<TickerExecutionContext>();
             var configuration = serviceProvider.GetService<IConfiguration>();
             var notificationHubSender = serviceProvider.GetService<ITickerQNotificationHubSender>();
+            var backgroundScheduler = serviceProvider.GetService<TickerQSchedulerBackgroundService>();
+            backgroundScheduler.SkipFirstRun = qStartMode == TickerQStartMode.Manual;
             
             TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
             TickerFunctionProvider.Build();

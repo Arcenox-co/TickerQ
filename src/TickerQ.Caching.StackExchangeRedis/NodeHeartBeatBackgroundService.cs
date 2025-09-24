@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using TickerQ.Caching.StackExchangeRedis.DependencyInjection;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Interfaces.Managers;
 
 namespace TickerQ.Caching.StackExchangeRedis;
 
@@ -9,10 +10,12 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
     private int _started;
     private readonly ITickerQRedisContext _context;
     private readonly PeriodicTimer _tickerHeartBeatPeriodicTimer;
+    private readonly IInternalTickerManager  _internalTickerManager;
 
-    public NodeHeartBeatBackgroundService(ServiceExtension.TickerQRedisOptionBuilder schedulerOptionsBuilder, ITickerQRedisContext context)
+    public NodeHeartBeatBackgroundService(ServiceExtension.TickerQRedisOptionBuilder schedulerOptionsBuilder, ITickerQRedisContext context, IInternalTickerManager internalTickerManager)
     {
         _context = context;
+        _internalTickerManager = internalTickerManager;
         _tickerHeartBeatPeriodicTimer = new PeriodicTimer(schedulerOptionsBuilder.NodeHeartbeatInterval);
     }
     
@@ -33,6 +36,16 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
 
         while (await _tickerHeartBeatPeriodicTimer.WaitForNextTickAsync(stoppingToken))
         {
+            var deadNodes = await _context.GetDeadNodesAsync();
+            
+            if (deadNodes.Length != 0)
+            {
+                foreach (var deadNode in deadNodes)
+                {
+                    await _internalTickerManager.ReleaseDeadNodeResources(deadNode, stoppingToken);
+                }
+            }
+            
             await _context.NotifyNodeAliveAsync();
         }
     }

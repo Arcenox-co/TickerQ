@@ -384,6 +384,24 @@ namespace TickerQ.Utilities.Managers
                 await _notificationHubSender.UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(functionContext).ConfigureAwait(false);
             }
         }
+        
+        public async Task UpdateSkipTimeTickersWithUnifiedContextAsync(InternalFunctionContext[] resources, CancellationToken cancellationToken = default)
+        {
+            var unifiedFunctionContext = new InternalFunctionContext()
+                .SetProperty(x => x.Status, TickerStatus.Skipped)
+                .SetProperty(x => x.ExceptionDetails, "Rule RunCondition did not match!");
+            
+            if (resources.Length != 0)
+                await _persistenceProvider.UpdateTimeTickersWithUnifiedContext(resources.Select(x => x.TickerId).ToArray(), unifiedFunctionContext, cancellationToken).ConfigureAwait(false);
+            
+            foreach (var resource in resources)
+            {
+                if(resource.Type == TickerType.TimeTicker)
+                    await _notificationHubSender.UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(resource).ConfigureAwait(false);
+                else
+                    await _notificationHubSender.UpdateCronOccurrenceFromInternalFunctionContext<TCronTicker>(resource).ConfigureAwait(false);
+            }
+        }
 
         public async Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, CancellationToken cancellationToken = default)
         {
@@ -442,24 +460,13 @@ namespace TickerQ.Utilities.Managers
                 await _persistenceProvider.RemoveCronTickers([tickerId], cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task CascadeBatchUpdate(Guid parentTickerId, TickerStatus currentStatus, CancellationToken cancellationToken = default)
+        public async Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default)
         {
-            // var childTickers = await PersistenceProvider.GetChildTickersByParentId(parentTickerId, cancellationToken);
-            //
-            // foreach (var child in childTickers)
-            // {
-            //     child.Status = child.BatchRunCondition switch
-            //     {
-            //         BatchRunCondition.OnSuccess when _successConditions.Contains(currentStatus) => TickerStatus
-            //             .Idle,
-            //         BatchRunCondition.OnAnyCompletedStatus when _completedStatuses.Contains(currentStatus) =>
-            //             TickerStatus.Idle,
-            //         _ => child.Status
-            //     };
-            // }
-
-            //TODO
-            // await PersistenceProvider.UpdateTimeTickers(childTickers, cancellationToken: cancellationToken);
+            var cronOccurrence = _persistenceProvider.ReleaseDeadNodeOccurrenceResources(instanceIdentifier, cancellationToken);
+            
+            var timeTickers = _persistenceProvider.ReleaseDeadNodeTimeTickerResources(instanceIdentifier, cancellationToken);
+            
+            await Task.WhenAll(cronOccurrence, timeTickers).ConfigureAwait(false);
         }
     }
 }

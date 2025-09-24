@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 using TickerQ.Utilities.Entities.BaseEntity;
 using TickerQ.Utilities.Enums;
 
@@ -23,6 +24,7 @@ namespace TickerQ.Utilities.Entities
         public virtual int RetryCount { get; internal set; }
         public virtual int[] RetryIntervals { get; set; }
         public virtual Guid? ParentId { get; internal set; }
+        [JsonIgnore]
         public virtual TTicker Parent { get; internal set; }
         public virtual ICollection<TTicker> Children { get; internal set; } = new List<TTicker>();
         public virtual RunCondition? RunCondition { get; internal set; }

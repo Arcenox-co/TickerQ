@@ -23,6 +23,8 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private readonly TickerQTaskScheduler  _taskScheduler;
     private readonly TickerExecutionTaskHandler  _taskHandler;
     private int _started;
+    public bool SkipFirstRun;
+
     
     public TickerQSchedulerBackgroundService(
         TickerExecutionContext executionContext,
@@ -39,6 +41,14 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     
     public override Task StartAsync(CancellationToken ct)
     {
+        if (SkipFirstRun)
+        {
+            Console.WriteLine("Skip first run");
+            _taskScheduler.Freeze();
+            SkipFirstRun = false;
+            return Task.CompletedTask;
+        }
+        
         _taskScheduler.Resume();
         return Interlocked.CompareExchange(ref _started, 1, 0) != 0 
             ? Task.CompletedTask : base.StartAsync(ct);

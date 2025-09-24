@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Models;
 
@@ -28,10 +29,16 @@ namespace TickerQ.Instrumentation.OpenTelemetry
                 activity.SetTag("tickerq.job.function", context.FunctionName);
                 activity.SetTag("tickerq.job.priority", context.CachedPriority.ToString());
                 activity.SetTag("tickerq.job.machine", _instanceIdentifier);
+                activity.SetTag("tickerq.job.retries", context.Retries);
                 
                 if (context.ParentId.HasValue)
                 {
                     activity.SetTag("tickerq.job.parent_id", context.ParentId.Value.ToString());
+                }
+
+                if (context.Type == TickerType.TimeTicker && context.ParentId.HasValue)
+                {
+                    activity.SetTag("tickerq.job.run_condition", context.RunCondition.ToString());
                 }
             }
             

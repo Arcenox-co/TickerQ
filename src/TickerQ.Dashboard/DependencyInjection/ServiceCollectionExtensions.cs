@@ -26,7 +26,7 @@ namespace TickerQ.Dashboard.DependencyInjection
 
             services.AddCors(options =>
             {
-                options.AddPolicy("Allow_TickerQ_Dashboard", policy =>
+                options.AddPolicy("TickerQ_Dashboard_CORS", policy =>
                 {
                     if (config.CorsOrigins.Contains("*"))
                     {
@@ -79,7 +79,7 @@ namespace TickerQ.Dashboard.DependencyInjection
 
                 // Set up routing and CORS for this branch
                 dashboardApp.UseRouting();
-                dashboardApp.UseCors("Allow_TickerQ_Dashboard");
+                dashboardApp.UseCors("TickerQ_Dashboard_CORS");
 
                 // Add authentication and authorization if using host authentication
                 if (config.UseHostAuthentication)

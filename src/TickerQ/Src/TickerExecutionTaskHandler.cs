@@ -1,6 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -33,57 +33,77 @@ internal class TickerExecutionTaskHandler
 
     public async Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
     {
+        var childrenToRunAfter = new InternalFunctionContext[5];
+        var tasksToRunNow = new Task[6];
+        
+        var childrenToRunAfterCount = 0;
+        var tasksToRunNowCount = 0;
+
         var hasChildren = context.TimeTickerChildren.Count > 0;
 
-        var parentTask = RunContextFunctionAsync(context, isDue, cancellationToken);
+        // Add parent task
+        tasksToRunNow[tasksToRunNowCount++] = RunContextFunctionAsync(context, isDue, cancellationToken);
 
         if (hasChildren)
         {
-            var functionsToRunImmediately = context.TimeTickerChildren
-                .Where(x => x.RunCondition == RunCondition.InProgress)
-                .Select(async childContext =>
+            // Process children - separate InProgress from others
+            for (var i = 0; i < context.TimeTickerChildren.Count; i++)
+            {
+                var child = context.TimeTickerChildren[i];
+                if (child.CachedDelegate != null)
                 {
-                    try
+                    if (child.RunCondition == RunCondition.InProgress)
+                        tasksToRunNow[tasksToRunNowCount++] = SafeRecursiveExecution(child, isDue, cancellationToken);
+                    else
                     {
-                        // Use cached delegate instead of dictionary lookup
-                        if (childContext.CachedDelegate != null)
-                            await RunContextFunctionAsync(childContext, isDue, cancellationToken, true);
+                        childrenToRunAfter[childrenToRunAfterCount++] = child;
                     }
-                    catch
-                    {
-                        // Don't rethrow - let other children continue
-                    }
-                })
-                .Where(x => x != null).ToList();
-
-            functionsToRunImmediately.Add(parentTask);
-
-            await Task.WhenAll(functionsToRunImmediately);
+                }
+            }
         }
-        else
-            await parentTask;
+        
+        // Wait for concurrent tasks (parent + InProgress children)
+        await Task.WhenAll(tasksToRunNow.AsSpan(0, tasksToRunNowCount).ToArray());
 
-        if (hasChildren)
+        // Process deferred children after parent completion
+        if (childrenToRunAfterCount > 0)
         {
-            var childExecutions = context.TimeTickerChildren
-                .Where(x => x.RunCondition != RunCondition.InProgress)
-                .Where(x => ShouldRunChild(x, context.Status))
-                .Select(async childContext =>
+            var childrenToSkip = new List<InternalFunctionContext>(30); // Pre-sized for performance
+            var childrenToRunAfterTask = new Task[childrenToRunAfterCount];
+            
+            var taskCount = 0;
+            
+            for (var i = 0; i < childrenToRunAfterCount; i++)
+            {
+                var child = childrenToRunAfter[i];
+                if (child.CachedDelegate != null)
                 {
-                    try
+                    if (ShouldRunChild(child, context.Status))
+                        childrenToRunAfterTask[taskCount++] = SafeRecursiveExecution(child, isDue, cancellationToken);
+                    else
                     {
-                        // Use cached delegate instead of dictionary lookup
-                        if (childContext.CachedDelegate != null)
-                            await RunContextFunctionAsync(childContext, isDue, cancellationToken, true);
+                        _tickerQInstrumentation.LogJobSkipped(
+                            child.TickerId, 
+                            child.FunctionName, 
+                            $"Condition {child.RunCondition} not met (Parent status: {context.Status})"
+                        );
+                        
+                        childrenToSkip.Add(child);
+                        
+                        // Recursively gather all descendants to skip
+                        GatherDescendantsToSkip(child, childrenToSkip);
                     }
-                    catch
-                    {
-                        // Don't rethrow - let other children continue
-                    }
-                }).ToArray();
+                }
+            }
 
-            if (childExecutions.Length > 0)
-                await Task.WhenAll(childExecutions);
+            // Bulk update skipped children
+            if (childrenToSkip.Count > 0)
+                await _internalTickerManager.UpdateSkipTimeTickersWithUnifiedContextAsync(
+                    childrenToSkip.ToArray(), cancellationToken);
+            
+            // Wait for deferred tasks
+            if (taskCount > 0)
+                await Task.WhenAll(childrenToRunAfterTask.AsSpan(0, taskCount).ToArray());
         }
     }
 
@@ -95,7 +115,6 @@ internal class TickerExecutionTaskHandler
         // Add additional tags to the activity
         jobActivity?.SetTag("tickerq.job.is_due", isDue);
         jobActivity?.SetTag("tickerq.job.is_child", isChild);
-        jobActivity?.SetTag("tickerq.job.retries", context.Retries);
         
         // Log job enqueued/started (using the available method)
         _tickerQInstrumentation.LogJobEnqueued(context.Type.ToString(), context.FunctionName, context.TickerId, "ExecutionTaskHandler");
@@ -304,5 +323,33 @@ internal class TickerExecutionTaskHandler
                 or TickerStatus.Failed or TickerStatus.Cancelled,
             _ => false
         };
+    }
+
+    private static void GatherDescendantsToSkip(InternalFunctionContext parent, List<InternalFunctionContext> skipList)
+    {
+        if (parent.TimeTickerChildren == null || parent.TimeTickerChildren.Count == 0)
+            return;
+
+        foreach (var child in parent.TimeTickerChildren)
+        {
+            skipList.Add(child);
+            
+            // Recursively gather grandchildren
+            GatherDescendantsToSkip(child, skipList);
+        }
+    }
+
+    private Task SafeRecursiveExecution(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return ExecuteTaskAsync(context, isDue, cancellationToken);
+        }
+        catch
+        {
+            // ignored
+        }
+
+        return Task.CompletedTask;
     }
 }

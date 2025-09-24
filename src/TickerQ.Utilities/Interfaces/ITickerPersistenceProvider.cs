@@ -25,6 +25,7 @@ namespace TickerQ.Utilities.Interfaces
         #region Cron_Ticker_Core_Methods
         Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default);
         Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken);
+        Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         #endregion
         
         #region Cron_TickerOccurrence_Core_Methods
@@ -35,6 +36,7 @@ namespace TickerQ.Utilities.Interfaces
         Task ReleaseAcquiredCronTickerOccurrences(Guid[] occurrenceIds, CancellationToken cancellationToken = default);
         Task<byte[]> GetCronTickerOccurrenceRequest(Guid tickerId, CancellationToken cancellationToken = default);
         Task UpdateCronTickerOccurrencesWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default);
+        Task ReleaseDeadNodeOccurrenceResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         #endregion
         
         #region Time_Ticker_Shared_Methods

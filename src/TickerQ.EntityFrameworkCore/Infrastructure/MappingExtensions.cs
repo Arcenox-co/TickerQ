@@ -36,12 +36,14 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     Function = ch.Function,
                     Retries = ch.Retries,
                     RetryIntervals = ch.RetryIntervals,
+                    RunCondition = ch.RunCondition,
                     Children = ch.Children.Select(gch => new TimeTickerEntity
                     {
                         Function = gch.Function,
                         Retries = gch.Retries,
                         RetryIntervals = gch.RetryIntervals,
-                        Id = gch.Id
+                        Id = gch.Id,
+                        RunCondition = gch.RunCondition
                     }).ToArray()
                 }).ToArray()
             };
