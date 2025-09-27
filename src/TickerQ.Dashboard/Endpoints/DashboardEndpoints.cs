@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Linq;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.SignalR;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,7 +10,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using TickerQ.Dashboard.Hubs;
 using TickerQ.Dashboard.Infrastructure;
-using TickerQ.Dashboard.Requests;
 using TickerQ.Utilities;
 using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Entities;
@@ -60,14 +58,6 @@ public static class DashboardEndpoints
         apiGroup.MapGet("/time-tickers/graph-data", GetTimeTickersGraphData<TTimeTicker, TCronTicker>)
             .WithName("GetTimeTickersGraphData")
             .WithSummary("Get time tickers graph data");
-
-        apiGroup.MapPost("/time-tickers/set-batch-parent", SetBatchParent<TTimeTicker, TCronTicker>)
-            .WithName("SetBatchParent")
-            .WithSummary("Set batch parent for time ticker");
-
-        apiGroup.MapPost("/time-tickers/unbatch", UnbatchTimeTicker<TTimeTicker, TCronTicker>)
-            .WithName("UnbatchTimeTicker")
-            .WithSummary("Remove time ticker from batch");
 
         apiGroup.MapPost("/time-ticker/add", CreateChainJobs<TTimeTicker, TCronTicker>)
             .WithName("CreateChainJobs")
@@ -279,28 +269,6 @@ public static class DashboardEndpoints
     {
         var result = await repository.GetTimeTickerFullDataAsync(cancellationToken);
         return Results.Ok(result);
-    }
-
-    private static async Task<IResult> SetBatchParent<TTimeTicker, TCronTicker>(
-        SetBatchParentRequest request,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
-        CancellationToken cancellationToken)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        await repository.SetTimeTickerBatchParent(request.TargetId, request.ParentId, request.BatchRunCondition);
-        return Results.Ok();
-    }
-
-    private static async Task<IResult> UnbatchTimeTicker<TTimeTicker, TCronTicker>(
-        UnbatchTickerRequest request,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
-        CancellationToken cancellationToken)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        await repository.UnbatchTimeTickerAsync(request.TickerId);
-        return Results.Ok();
     }
 
     private static async Task<IResult> CreateChainJobs<TTimeTicker, TCronTicker>(

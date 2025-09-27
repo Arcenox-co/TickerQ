@@ -51,16 +51,6 @@ export class UpdateTimeTickerRequest {
     intervals?:number[];
 }
 
-export class SetBatchParentRequest {
-  parentId!:string;
-  batchRunCondition?:number;
-  targetId!:string;
-}
-
-export class UnbatchTickerRequest {
-  tickerId!:string;
-}
-
 export class AddChainJobsRequest {
   function!: string;
   description!: string;

@@ -7,8 +7,7 @@ import {
   AddChainJobsRequest,
   GetTimeTickerGraphDataRangeResponse,
   GetTimeTickerGraphDataResponse,
-  GetTimeTickerResponse, SetBatchParentRequest,
-  UnbatchTickerRequest,
+  GetTimeTickerResponse,
   UpdateTimeTickerRequest
 } from './types/timeTickerService.types'
 import { nameof } from '@/utilities/nameof';
@@ -25,26 +24,35 @@ const getTimeTickers = () => {
                 return response;
             }
 
-            // Safely set status with null check
-            if (response.status !== undefined && response.status !== null) {
-                response.status = Status[response.status as any];
-            }
+            // Recursive function to process item and its children
+            const processItem = (item: GetTimeTickerResponse): GetTimeTickerResponse => {
+                // Safely set status with null check
+                if (item.status !== undefined && item.status !== null) {
+                    item.status = Status[item.status as any];
+                }
 
-            if (response.executedAt != null || response.executedAt != undefined)
-                response.executedAt = `${format(response.executedAt)} (took ${formatTime(response.elapsedTime as number, true)})`;
+                if (item.executedAt != null || item.executedAt != undefined)
+                    item.executedAt = `${format(item.executedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
 
-            response.executionTimeFormatted = formatDate(response.executionTime);
-            response.requestType = functionNamesStore.getNamespaceOrNull(response.function) ?? '';
+                item.executionTimeFormatted = formatDate(item.executionTime);
+                item.requestType = functionNamesStore.getNamespaceOrNull(item.function) ?? '';
 
+                if (item.retryIntervals == null || item.retryIntervals.length == 0 && item.retries != null && (item.retries as number) > 0)
+                    item.retryIntervals = Array(1).fill(`${30}s`);
+                else
+                    item.retryIntervals = (item.retryIntervals as string[]).map((x: any) => formatTime(x as number, false));
 
-            if (response.retryIntervals == null || response.retryIntervals.length == 0 && response.retries != null && (response.retries as number) > 0)
-                response.retryIntervals = Array(1).fill(`${30}s`);
-            else
-                response.retryIntervals = (response.retryIntervals as string[]).map((x: any) => formatTime(x as number, false));
+                item.lockHolder = item.lockHolder ?? '-';
 
-            response.lockHolder = response.lockHolder ?? '-';
+                // Process children recursively
+                if (item.children && Array.isArray(item.children)) {
+                    item.children = item.children.map(child => processItem(child));
+                }
 
-            return response;
+                return item;
+            };
+
+            return processItem(response);
         })
         .FixToHeaders((header) => {
             if (nameof<GetTimeTickerResponse>(x => x.actions) == header.key) {
@@ -112,7 +120,7 @@ const getTimeTickersGraphData = () => {
 const deleteTimeTicker = () => {
     const baseHttp = useBaseHttpService<object, object>('single');
 
-    const requestAsync = async (id: string) => (await baseHttp.sendAsync("DELETE", "time-ticker/:delete", { paramData: { id: id } }));
+    const requestAsync = async (id: string) => (await baseHttp.sendAsync("DELETE", "time-ticker/delete", { paramData: { id: id } }));
 
     return {
         ...baseHttp,
@@ -123,7 +131,7 @@ const deleteTimeTicker = () => {
 const addTimeTicker = () => {
     const baseHttp = useBaseHttpService<AddTimeTickerRequest, object>('single');
 
-    const requestAsync = async (data: AddTimeTickerRequest) => (await baseHttp.sendAsync("POST", "time-ticker/:add", { bodyData: data }));
+    const requestAsync = async (data: AddTimeTickerRequest) => (await baseHttp.sendAsync("POST", "time-ticker/add", { bodyData: data }));
 
     return {
         ...baseHttp,
@@ -134,34 +142,12 @@ const addTimeTicker = () => {
 const updateTimeTicker = () => {
     const baseHttp = useBaseHttpService<UpdateTimeTickerRequest, object>('single');
 
-    const requestAsync = async (id: string, data: UpdateTimeTickerRequest) => (await baseHttp.sendAsync("PUT", "time-ticker/:update", { bodyData: data, paramData: { id: id } }));
+    const requestAsync = async (id: string, data: UpdateTimeTickerRequest) => (await baseHttp.sendAsync("PUT", "time-ticker/update", { bodyData: data, paramData: { id: id } }));
 
     return {
         ...baseHttp,
         requestAsync
     };
-}
-
-const setBatchParent = () => {
-  const baseHttp = useBaseHttpService<SetBatchParentRequest, object>('single');
-
-  const requestAsync = async (data: SetBatchParentRequest) => (await baseHttp.sendAsync("POST", "time-tickers/set-batch-parent", { bodyData: data}));
-
-  return {
-    ...baseHttp,
-    requestAsync
-  };
-}
-
-const unbatchTicker = () => {
-  const baseHttp = useBaseHttpService<UnbatchTickerRequest, object>('single');
-
-  const requestAsync = async (data: UnbatchTickerRequest) => (await baseHttp.sendAsync("POST", "time-tickers/unbatch", { bodyData: data}));
-
-  return {
-    ...baseHttp,
-    requestAsync
-  };
 }
 
 const addChainJobs = () => {
@@ -184,7 +170,5 @@ export const timeTickerService = {
     getTimeTickersGraphData,
     addTimeTicker,
     updateTimeTicker,
-    setBatchParent,
-    unbatchTicker,
     addChainJobs
 };

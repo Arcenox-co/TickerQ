@@ -74,9 +74,19 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         public async Task<int> RemoveTimeTickers(Guid[] timeTickerIds, CancellationToken cancellationToken)
         {
             await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
-            return await dbContext.Set<TTimeTicker>()
+            
+            // Load the entities to be deleted (including children for cascade delete)
+            var tickersToDelete = await dbContext.Set<TTimeTicker>()
+                .Include(x => x.Children)
+                .ThenInclude(x => x.Children) // Include grandchildren if needed
                 .Where(x => timeTickerIds.Contains(x.Id))
-                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+            
+            // Remove using Entity Framework (respects cascade delete configuration)
+            dbContext.Set<TTimeTicker>().RemoveRange(tickersToDelete);
+            
+            return await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
         #endregion
 

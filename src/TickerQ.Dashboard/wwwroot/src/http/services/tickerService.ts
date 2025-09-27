@@ -5,7 +5,7 @@ import { CancelTickerRequest, CancelTickerResponse, GetFunctionDataRequest, GetJ
 const requestCancel = () => {
     const baseHttp = useBaseHttpService<CancelTickerRequest, CancelTickerResponse>('single');
 
-    const requestAsync = async (id: string) => (await baseHttp.sendAsync("POST", "ticker/:cancel", { paramData: { id: id } }));
+    const requestAsync = async (id: string) => (await baseHttp.sendAsync("POST", "ticker/cancel", { paramData: { id: id } }));
 
     return {
         ...baseHttp,
@@ -16,7 +16,7 @@ const requestCancel = () => {
 const getRequestData = () => {
     const baseHttp = useBaseHttpService<GetTickerDataRequest, GetTickerDataResponse>('single');
 
-    const requestAsync = async (id: string, type: number) => (await baseHttp.sendAsync("GET", "ticker-request/:id", { paramData: { tickerId: id, tickerType: type } }));
+    const requestAsync = async (id: string, type: number) => (await baseHttp.sendAsync("GET", "ticker-request/id", { paramData: { tickerId: id, tickerType: type } }));
 
     return {
         ...baseHttp,
@@ -38,7 +38,7 @@ const getFunctionData = () => {
 const getNextPlannedTicker = () => {
     const baseHttp = useBaseHttpService<object, GetNextPlannedTickerResponse>('single');
 
-    const requestAsync = async () => (await baseHttp.sendAsync("GET", "ticker-host/:next-ticker"));
+    const requestAsync = async () => (await baseHttp.sendAsync("GET", "ticker-host/next-ticker"));
 
     return {
         ...baseHttp,
@@ -49,7 +49,7 @@ const getNextPlannedTicker = () => {
 const stopTicker = () => {
     const baseHttp = useBaseHttpService<object, object>('single');
 
-    const requestAsync = async () => (await baseHttp.sendAsync("POST", "ticker-host/:stop"));
+    const requestAsync = async () => (await baseHttp.sendAsync("POST", "ticker-host/stop"));
 
     return {
         ...baseHttp,
@@ -60,7 +60,7 @@ const stopTicker = () => {
 const startTicker = () => {
     const baseHttp = useBaseHttpService<object, object>('single');
 
-    const requestAsync = async () => (await baseHttp.sendAsync("POST", "ticker-host/:start"));
+    const requestAsync = async () => (await baseHttp.sendAsync("POST", "ticker-host/start"));
 
     return {
         ...baseHttp,
@@ -71,7 +71,7 @@ const startTicker = () => {
 const restartTicker = () => {
     const baseHttp = useBaseHttpService<object, object>('single');
 
-    const requestAsync = async () => (await baseHttp.sendAsync("POST", "ticker-host/:restart"));
+    const requestAsync = async () => (await baseHttp.sendAsync("POST", "ticker-host/restart"));
 
     return {
         ...baseHttp,
@@ -82,7 +82,7 @@ const restartTicker = () => {
 const getTickerHostStatus = () => {
     const baseHttp = useBaseHttpService<object, GetTickerHostStatusResponse>('single');
 
-    const requestAsync = async () => (await baseHttp.sendAsync("GET", "ticker-host/:status"));
+    const requestAsync = async () => (await baseHttp.sendAsync("GET", "ticker-host/status"));
 
     return {
         ...baseHttp,
@@ -104,7 +104,7 @@ const getOptions = () => {
 const getMachineJobs = () => {
     const baseHttp = useBaseHttpService<object, GetMachineJobs>('array');
 
-    const requestAsync = async () => (await baseHttp.sendAsync("GET", "ticker/machine/:jobs"));
+    const requestAsync = async () => (await baseHttp.sendAsync("GET", "ticker/machine/jobs"));
 
     return {
         ...baseHttp,
@@ -116,7 +116,7 @@ const getMachineJobs = () => {
 const getJobStatusesPastWeek = () => {
     const baseHttp = useBaseHttpService<object, GetJobStatusesPastWeek>('array');
 
-    const requestAsync = async () => (await baseHttp.sendAsync("GET", "/ticker/statuses/:get-last-week"));
+    const requestAsync = async () => (await baseHttp.sendAsync("GET", "/ticker/statuses/get-last-week"));
 
     return {
         ...baseHttp,
@@ -127,7 +127,7 @@ const getJobStatusesPastWeek = () => {
 const getJobStatusesOverall = () => {
     const baseHttp = useBaseHttpService<object, GetJobStatusesOverall>('array');
 
-    const requestAsync = async () => (await baseHttp.sendAsync("GET", "/ticker/statuses/:get"));
+    const requestAsync = async () => (await baseHttp.sendAsync("GET", "/ticker/statuses/get"));
 
     return {
         ...baseHttp,
