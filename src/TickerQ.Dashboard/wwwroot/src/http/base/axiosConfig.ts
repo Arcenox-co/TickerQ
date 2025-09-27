@@ -7,7 +7,8 @@ const authStore = useAuthStore();
 const alertStore = useAlertStore();
 
 const axiosInstance: AxiosInstance = axios.create({
-  baseURL: getApiBaseUrl(),
+  // baseURL: getApiBaseUrl(),
+  baseURL: 'https://localhost:7231/api/tickerq/dashboard',
 });
 
 // ✅ Request Interceptor: Set Authorization header from localStorage

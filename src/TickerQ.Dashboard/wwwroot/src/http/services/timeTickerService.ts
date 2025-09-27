@@ -4,6 +4,7 @@ import { useBaseHttpService } from '../base/baseHttpService';
 import { Status } from './types/base/baseHttpResponse.types';
 import {
   AddTimeTickerRequest,
+  AddChainJobsRequest,
   GetTimeTickerGraphDataRangeResponse,
   GetTimeTickerGraphDataResponse,
   GetTimeTickerResponse, SetBatchParentRequest,
@@ -163,6 +164,18 @@ const unbatchTicker = () => {
   };
 }
 
+const addChainJobs = () => {
+  const baseHttp = useBaseHttpService<AddChainJobsRequest, object>('single');
+
+  const requestAsync = async (data: AddChainJobsRequest) => (await baseHttp.sendAsync("POST", "time-ticker/:add", { bodyData: data }));
+
+  return {
+    ...baseHttp,
+    requestAsync
+  };
+}
+
+
 
 export const timeTickerService = {
     getTimeTickers,
@@ -172,5 +185,6 @@ export const timeTickerService = {
     addTimeTicker,
     updateTimeTicker,
     setBatchParent,
-    unbatchTicker
+    unbatchTicker,
+    addChainJobs
 };

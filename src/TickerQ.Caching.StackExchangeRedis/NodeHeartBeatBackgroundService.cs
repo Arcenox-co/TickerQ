@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using TickerQ.Caching.StackExchangeRedis.DependencyInjection;
+using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 
@@ -11,11 +13,13 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
     private readonly ITickerQRedisContext _context;
     private readonly PeriodicTimer _tickerHeartBeatPeriodicTimer;
     private readonly IInternalTickerManager  _internalTickerManager;
+    private readonly ILogger<NodeHeartBeatBackgroundService> _logger;
 
-    public NodeHeartBeatBackgroundService(ServiceExtension.TickerQRedisOptionBuilder schedulerOptionsBuilder, ITickerQRedisContext context, IInternalTickerManager internalTickerManager)
+    public NodeHeartBeatBackgroundService(ServiceExtension.TickerQRedisOptionBuilder schedulerOptionsBuilder, ITickerQRedisContext context, IInternalTickerManager internalTickerManager, ILogger<NodeHeartBeatBackgroundService> logger)
     {
         _context = context;
         _internalTickerManager = internalTickerManager;
+        _logger = logger;
         _tickerHeartBeatPeriodicTimer = new PeriodicTimer(schedulerOptionsBuilder.NodeHeartbeatInterval);
     }
     
@@ -27,7 +31,14 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await RunTickerQFallbackAsync(stoppingToken);
+        try
+        {
+            await RunTickerQFallbackAsync(stoppingToken);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("Heartbeat background service failed: {Exception}", e);
+        }
     }
     
     private async Task RunTickerQFallbackAsync(CancellationToken stoppingToken)

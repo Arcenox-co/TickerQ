@@ -107,13 +107,14 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
             _executionContext.SetFunctions(functions);
 
-            var sleepDuration = timeRemaining > TimeSpan.FromDays(1)
+            var sleepDuration = timeRemaining > TimeSpan.FromDays(1) || timeRemaining == Timeout.InfiniteTimeSpan
                 ? TimeSpan.FromDays(1)
                 : timeRemaining;
 
-            _tickerJobPeriodicTimer.Period = sleepDuration == TimeSpan.Zero
-                ? TimeSpan.FromMilliseconds(5)
-                : sleepDuration;
+            if (sleepDuration <= TimeSpan.Zero)
+                sleepDuration = TimeSpan.FromMilliseconds(5);
+
+            _tickerJobPeriodicTimer.Period = sleepDuration;
             
             if (timeRemaining == Timeout.InfiniteTimeSpan)
                 _executionContext.SetNextPlannedOccurrence(null);

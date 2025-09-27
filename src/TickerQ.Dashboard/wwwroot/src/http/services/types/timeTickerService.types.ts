@@ -20,6 +20,7 @@ export class GetTimeTickerResponse {
     exception?:string;
     batchParent?:string;
     batchRunCondition?:string|number;
+    children?:GetTimeTickerResponse[];
 }
 
 export class GetTimeTickerGraphDataRangeResponse{
@@ -58,4 +59,15 @@ export class SetBatchParentRequest {
 
 export class UnbatchTickerRequest {
   tickerId!:string;
+}
+
+export class AddChainJobsRequest {
+  function!: string;
+  description!: string;
+  executionTime?: string | null;
+  retries!: number;
+  request!: string | null; // string that gets converted to bytes by custom converter, or null if not set
+  intervals?: number[];
+  runCondition?: number;
+  children?: AddChainJobsRequest[];
 }

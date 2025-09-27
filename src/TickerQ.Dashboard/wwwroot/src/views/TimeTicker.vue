@@ -6,6 +6,7 @@ import { Status } from '@/http/services/types/base/baseHttpResponse.types'
 import { tickerService } from '@/http/services/tickerService'
 import { useDialog } from '@/composables/useDialog'
 import { ConfirmDialogProps } from '@/components/common/ConfirmDialog.vue'
+import ChainJobsModal from '@/components/ChainJobsModal.vue'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, PieChart } from 'echarts/charts'
@@ -65,6 +66,11 @@ const createBatchDialog = ref({
 const requestMatchType = ref(new Map<string, number>())
 const crudTimeTickerDialogRef = ref(null)
 
+// Chain Jobs Modal
+const chainJobsModal = ref({
+  isOpen: false
+})
+
 const expandedParents = ref(new Set<string>())
 const tableSearch = ref('')
 
@@ -101,7 +107,7 @@ const availableChildren = computed(() => {
     .filter((item) => {
       if (item.id === createBatchDialog.value.selectedParentId) return false
       if (!isStatusBatchable(item.status)) return false
-      if (item.batchParent) return false // Already has a parent
+      if (item.isChild) return false // Already has a parent
 
       const childTime = item.executionTime ? Date.parse(item.executionTime) : 0
       return isNaN(parentTime) || isNaN(childTime) ? true : childTime >= parentTime
@@ -204,41 +210,20 @@ const processedTableData = computed(() => {
   const rawData = getTimeTickers.response.value || []
   const result: any[] = []
 
-  // Create maps for quick lookup
-  const parentMap = new Map<string, any>()
-  const childrenMap = new Map<string, any[]>()
-
-  // First pass: separate parents and children
+  // Process parents and their children
   rawData.forEach((item) => {
-    if (!item.batchParent) {
-      // This is a parent item
-      parentMap.set(item.id, { ...item, isParent: true, children: [] })
-    } else {
-      // This is a child item
-      if (!childrenMap.has(item.batchParent)) {
-        childrenMap.set(item.batchParent, [])
-      }
-      childrenMap.get(item.batchParent)?.push({ ...item, isChild: true })
+    // Add the parent item with proper flags
+    const parentItem = {
+      ...item,
+      isParent: item.children && item.children.length > 0,
+      children: item.children || []
     }
-  })
-
-  parentMap.forEach((parent, parentId) => {
-    const children = childrenMap.get(parentId) || []
-    parent.children = children
-    result.push(parent)
+    result.push(parentItem)
 
     // Add children to result if parent is expanded
-    if (expandedParents.value.has(parentId)) {
-      children.forEach((child) => {
-        result.push(child)
-      })
-    }
-  })
-
-  childrenMap.forEach((children, parentId) => {
-    if (!parentMap.has(parentId)) {
-      children.forEach((child) => {
-        result.push({ ...child, isOrphan: true })
+    if (expandedParents.value.has(item.id) && item.children && item.children.length > 0) {
+      item.children.forEach((child) => {
+        result.push({ ...child, isChild: true })
       })
     }
   })
@@ -289,6 +274,16 @@ const openCreateBatchDialog = () => {
   createBatchDialog.value.selectedChildrenIds = []
   createBatchDialog.value.step = 1
   createBatchDialog.value.isOpen = true
+}
+
+// Chain Jobs Modal Methods
+const openChainJobsModal = () => {
+  chainJobsModal.value.isOpen = true
+}
+
+const onChainJobsCreated = async (result: any) => {
+  console.log('Chain jobs created successfully!', result)
+  await getTimeTickers.requestAsync()
 }
 
 const handleBatchOperationConfirm = () => {
@@ -345,7 +340,7 @@ const unbatchItem = async (itemId: string) => {
   if (!item) return
 
   // Only unbatch this specific item, not its relationships
-  if (item.batchParent) {
+  if (item.isChild) {
     try {
       await unbatchTicker.requestAsync({ tickerId: itemId })
     } catch (error) {
@@ -1288,6 +1283,17 @@ watch(
                   <span class="btn-text">Create Batch</span>
                   <div class="btn-shine"></div>
                 </button>
+
+                <button
+                  class="premium-action-btn tertiary-action"
+                  @click="openChainJobsModal()"
+                >
+                  <div class="btn-icon">
+                    <v-icon size="18">mdi-family-tree</v-icon>
+                  </div>
+                  <span class="btn-text">Chain Jobs</span>
+                  <div class="btn-shine"></div>
+                </button>
               </div>
             </div>
 
@@ -1417,6 +1423,79 @@ watch(
                   >
                     {{ getChildrenCount(item.id) }}
                   </v-chip>
+
+                  <!-- Child Jobs Dropdown for Parents -->
+                  <v-menu
+                    v-if="item.isParent && getChildrenCount(item.id) > 0"
+                    offset-y
+                    max-height="500"
+                    max-width="800"
+                    class="ml-2"
+                  >
+                    <template v-slot:activator="{ props }">
+                      <v-btn
+                        v-bind="props"
+                        size="x-small"
+                        variant="outlined"
+                        color="primary"
+                        class="child-dropdown-btn"
+                      >
+                        <v-icon size="small">mdi-chevron-down</v-icon>
+                        Children
+                      </v-btn>
+                    </template>
+                    <div class="child-jobs-dropdown">
+                      <div class="child-dropdown-header">
+                        <span class="child-dropdown-title">Child Jobs ({{ item.children.length }})</span>
+                      </div>
+                      <div class="child-jobs-table">
+                        <div class="child-table-header">
+                          <div class="child-col child-col-function">Function</div>
+                          <div class="child-col child-col-status">Status</div>
+                          <div class="child-col child-col-execution">Execution Time</div>
+                          <div class="child-col child-col-executed">Executed At</div>
+                          <div class="child-col child-col-actions">Actions</div>
+                        </div>
+                        <div
+                          v-for="child in item.children"
+                          :key="child.id"
+                          class="child-table-row"
+                        >
+                          <div class="child-col child-col-function">
+                            <span class="child-function-name">{{ child.function }}</span>
+                          </div>
+                          <div class="child-col child-col-status">
+                            <v-chip
+                              :color="getStatusColor(child.status)"
+                              :variant="getStatusVariant(child.status)"
+                              size="x-small"
+                            >
+                              {{ child.status }}
+                            </v-chip>
+                          </div>
+                          <div class="child-col child-col-execution">
+                            <span class="child-execution-time">{{ child.executionTimeFormatted || child.executionTime }}</span>
+                          </div>
+                          <div class="child-col child-col-executed">
+                            <span class="child-executed-at">{{ child.executedAt || '-' }}</span>
+                          </div>
+                          <div class="child-col child-col-actions">
+                            <v-btn
+                              icon
+                              size="x-small"
+                              variant="text"
+                              color="error"
+                              @click="unbatchItem(child.id)"
+                              :disabled="unbatchTicker.loader.value"
+                              class="child-action-btn"
+                            >
+                              <v-icon size="small">mdi-link-variant-off</v-icon>
+                            </v-btn>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </v-menu>
                 </div>
               </div>
             </template>
@@ -1536,7 +1615,7 @@ watch(
                 </div>
 
                 <!-- Unbatch Button - Only for child items -->
-                <div v-if="item.batchParent" class="action-btn-wrapper">
+                <div v-if="item.isChild" class="action-btn-wrapper">
                   <v-tooltip location="top">
                     <template v-slot:activator="{ props }">
                       <button
@@ -1813,6 +1892,12 @@ watch(
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- Chain Jobs Modal -->
+    <ChainJobsModal
+      v-model="chainJobsModal.isOpen"
+      @created="onChainJobsCreated"
+    />
   </div>
 </template>
 
@@ -2510,6 +2595,24 @@ watch(
   color: #64b5f6;
 }
 
+.tertiary-action {
+  background: linear-gradient(135deg, rgba(156, 39, 176, 0.1) 0%, rgba(156, 39, 176, 0.05) 100%);
+  color: #e0e0e0;
+  border: 1px solid rgba(156, 39, 176, 0.15);
+}
+
+.tertiary-action:hover {
+  transform: translateY(-2px);
+  background: linear-gradient(135deg, rgba(156, 39, 176, 0.15) 0%, rgba(156, 39, 176, 0.08) 100%);
+  border-color: rgba(156, 39, 176, 0.25);
+  box-shadow: 0 8px 25px rgba(156, 39, 176, 0.2);
+}
+
+.tertiary-action .btn-icon {
+  background: rgba(156, 39, 176, 0.2);
+  color: #ab47bc;
+}
+
 /* Search and Info Group */
 .search-info-group {
   display: flex;
@@ -2860,6 +2963,131 @@ watch(
 .orphan-row {
   border-left: 4px solid #ff5722;
   background: linear-gradient(135deg, rgba(255, 87, 34, 0.05) 0%, rgba(255, 87, 34, 0.02) 100%);
+}
+
+/* Child Jobs Dropdown */
+.child-dropdown-btn {
+  font-size: 0.7rem;
+  min-width: auto;
+  padding: 2px 6px;
+  height: 24px;
+  border-radius: 12px;
+  text-transform: none;
+  letter-spacing: 0.3px;
+}
+
+.child-jobs-dropdown {
+  background: rgba(42, 42, 42, 0.98);
+  backdrop-filter: blur(20px);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  min-width: 700px;
+  max-width: 800px;
+}
+
+.child-dropdown-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(135deg, rgba(100, 181, 246, 0.15) 0%, rgba(100, 181, 246, 0.05) 100%);
+}
+
+.child-dropdown-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #ffffff;
+  letter-spacing: 0.3px;
+}
+
+.child-jobs-table {
+  padding: 0;
+}
+
+.child-table-header {
+  display: flex;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: #bdbdbd;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.child-table-row {
+  display: flex;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background-color 0.2s ease;
+  align-items: center;
+}
+
+.child-table-row:hover {
+  background-color: rgba(100, 181, 246, 0.08);
+}
+
+.child-table-row:last-child {
+  border-bottom: none;
+}
+
+.child-col {
+  display: flex;
+  align-items: center;
+  font-size: 0.8rem;
+}
+
+.child-col-function {
+  flex: 2;
+  min-width: 200px;
+}
+
+.child-col-status {
+  flex: 1;
+  min-width: 100px;
+  justify-content: center;
+}
+
+.child-col-execution {
+  flex: 1.5;
+  min-width: 140px;
+}
+
+.child-col-executed {
+  flex: 1.5;
+  min-width: 140px;
+}
+
+.child-col-actions {
+  flex: 0.5;
+  min-width: 60px;
+  justify-content: center;
+}
+
+.child-function-name {
+  font-weight: 600;
+  color: #e0e0e0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.child-execution-time,
+.child-executed-at {
+  font-size: 0.75rem;
+  color: #bdbdbd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.child-action-btn {
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+}
+
+.child-table-row:hover .child-action-btn {
+  opacity: 1;
 }
 
 /* Utility classes */

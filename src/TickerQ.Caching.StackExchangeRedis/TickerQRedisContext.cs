@@ -57,7 +57,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
         if (string.IsNullOrEmpty(nodesJson)) return [];
     
         var allNodes = JsonSerializer.Deserialize<HashSet<string>>(nodesJson);
-        var deadNodes = new List<string>();
+        var deadNodes = new HashSet<string>();
 
         // Check which ones are dead
         foreach (var node in allNodes)
@@ -68,9 +68,26 @@ internal class TickerQRedisContext : ITickerQRedisContext
                 deadNodes.Add(node);
             }
         }
+        
+        if (deadNodes.Count != 0)
+            await RemoveNodesFromRegistryAsync(deadNodes);
+        
         //if(deadNodes.Count != 0)
             //Todo notification
         return deadNodes.ToArray();
+    }
+    
+    private async Task RemoveNodesFromRegistryAsync(HashSet<string> nodes)
+    {
+        var nodesJson = await _cache.GetStringAsync("nodes:registry");
+        var nodesList = string.IsNullOrEmpty(nodesJson) 
+            ? []
+            : JsonSerializer.Deserialize<HashSet<string>>(nodesJson);
+        
+            nodesList.RemoveWhere(nodes.Contains);
+            
+            await _cache.SetStringAsync("nodes:registry", JsonSerializer.Serialize(nodesList),
+                new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromDays(30) });
     }
     
     private async Task AddNodeToRegistryAsync(string node)
@@ -103,7 +120,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
                     return cached;
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             // ignored
         }
@@ -123,7 +140,11 @@ internal class TickerQRedisContext : ITickerQRedisContext
 
             await _cache.SetAsync(cacheKey, bufferWriter.WrittenMemory.ToArray(), cancellationToken);
         }
-        catch (Exception ex) { }
+        catch (Exception)
+        {
+            // ignored
+        }
+
         return null;
     }
 }

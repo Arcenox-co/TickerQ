@@ -28,6 +28,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
             return await dbContext.Set<TTimeTicker>()
                 .AsNoTracking()
+                .Include(x => x.Children)
                 .FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -37,12 +38,14 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
 
             var baseQuery = dbContext.Set<TTimeTicker>()
+                .Include(x => x.Children)
                 .AsNoTracking();
             
             if (predicate != null)
                 baseQuery = baseQuery.Where(predicate);
             
             return await baseQuery
+                .Where(x => x.ParentId == null)
                 .OrderByDescending(x => x.ExecutionTime)
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);

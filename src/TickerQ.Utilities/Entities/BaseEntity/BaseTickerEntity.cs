@@ -8,7 +8,7 @@ namespace TickerQ.Utilities.Entities.BaseEntity
         public virtual string Function { get; set; }
         public virtual string Description { get; set; }
         public virtual string InitIdentifier { get; internal set; }
-        public virtual DateTime CreatedAt { get; internal set; }
-        public virtual DateTime UpdatedAt { get; internal set; }
+        public virtual DateTime CreatedAt { get; internal set; } = DateTime.UtcNow;
+        public virtual DateTime UpdatedAt { get; internal set; } = DateTime.UtcNow;
     }
 }

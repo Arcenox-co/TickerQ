@@ -614,9 +614,9 @@ namespace TickerQ.Utilities.Managers
             return this;
         }
 
-        public ParentBuilder<TTimeTicker> SetRequest(byte[] request)
+        public ParentBuilder<TTimeTicker> SetRequest<T>(T request)
         {
-            _parent.Request = request;
+            _parent.Request = TickerHelper.CreateTickerRequest(request);
             return this;
         }
 
@@ -664,9 +664,9 @@ namespace TickerQ.Utilities.Managers
             return this;
         }
 
-        public ChildBuilder<TTimeTicker> SetRequest(byte[] request)
+        public ChildBuilder<TTimeTicker> SetRequest<T>(T request)
         {
-            _child.Request = request;
+            _child.Request = TickerHelper.CreateTickerRequest(request);
             return this;
         }
 
@@ -714,9 +714,9 @@ namespace TickerQ.Utilities.Managers
             return this;
         }
 
-        public GrandChildBuilder<TTimeTicker> SetRequest(byte[] request)
+        public GrandChildBuilder<TTimeTicker> SetRequest<T>(T request)
         {
-            _grandChild.Request = request;
+            _grandChild.Request = TickerHelper.CreateTickerRequest(request);
             return this;
         }
 

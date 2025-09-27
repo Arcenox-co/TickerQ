@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
@@ -11,6 +12,10 @@ using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Interfaces.Managers;
+using System.Text.Json;
+using TickerQ.Dashboard.Infrastructure;
+
 namespace TickerQ.Dashboard.Controllers
 {
     [ApiController]
@@ -82,6 +87,33 @@ namespace TickerQ.Dashboard.Controllers
             await TickerDashboardRepository.UnbatchTimeTickerAsync(request.TickerId);
             
             return Ok();
+        }
+
+        [HttpPost("time-ticker/:add")]
+        public async Task<IActionResult> CreateChainJobs(CancellationToken cancellationToken)
+        {
+            // Read the raw JSON from request body
+            using var reader = new StreamReader(Request.Body);
+            var jsonString = await reader.ReadToEndAsync(cancellationToken);
+            
+            // Create JsonSerializerOptions with our custom converter for this endpoint only
+            var jsonOptions = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                Converters = { new StringToByteArrayConverter() }
+            };
+            
+            // Deserialize with custom converter
+            var chainRoot = JsonSerializer.Deserialize<TTimeTicker>(jsonString, jsonOptions);
+            
+            var timeTickerManager = HttpContext.RequestServices.GetService<ITimeTickerManager<TTimeTicker>>();
+            var result = await timeTickerManager.AddAsync(chainRoot, cancellationToken);
+            
+            return Ok(new { 
+                success = result.IsSucceeded, 
+                message = result.IsSucceeded ? "Chain jobs created successfully" : "Failed to create chain jobs",
+                tickerId = result.Result?.Id
+            });
         }
 
         [HttpGet("cron-tickers/:graph-data-range")]
@@ -185,12 +217,6 @@ namespace TickerQ.Dashboard.Controllers
             return Ok();
         }
 
-        [HttpPost("time-ticker/:add")]
-        public async Task<IActionResult> AddTimeTickerAsync([FromBody] TTimeTicker request)
-        {
-            await TickerDashboardRepository.AddTimeTickerAsync(request);
-            return Ok();
-        }
 
         [HttpPost("cron-ticker/:add")]
         public async Task<IActionResult> AddCronTickerAsync([FromBody] TTimeTicker request)

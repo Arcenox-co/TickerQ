@@ -84,11 +84,12 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TTimeTicker>(
                     new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
             
-            if (entity.ExecutionTime == null)
-                return new TickerResult<TTimeTicker>(new TickerValidatorException("Invalid ExecutionTime!"));
+            entity.ExecutionTime = entity.ExecutionTime == null 
+                ? _clock.UtcNow.AddSeconds(1) 
+                : ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
             
-            entity.ExecutionTime ??= _clock.UtcNow;
-            entity.ExecutionTime = ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
+            entity.CreatedAt = _clock.UtcNow;
+            entity.UpdatedAt = _clock.UtcNow;
             
             try
             {

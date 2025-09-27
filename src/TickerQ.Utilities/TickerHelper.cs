@@ -12,8 +12,17 @@ namespace TickerQ.Utilities
 
         public static byte[] CreateTickerRequest<T>(T data)
         {
+            // If data is already a compressed byte array with signature, return as-is
+            if (data is byte[] existingBytes && existingBytes.Length >= GZipSignature.Length && 
+                existingBytes.TakeLast(GZipSignature.Length).SequenceEqual(GZipSignature))
+            {
+                return existingBytes;
+            }
+            
             Span<byte> compressedBytes;
-            var serialized = JsonSerializer.SerializeToUtf8Bytes(data);
+            var serialized = data is byte[] bytes
+                ? bytes
+                : JsonSerializer.SerializeToUtf8Bytes(data);
             
             using (var memoryStream = new MemoryStream())
             {

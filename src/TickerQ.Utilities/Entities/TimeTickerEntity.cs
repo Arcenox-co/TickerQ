@@ -26,7 +26,7 @@ namespace TickerQ.Utilities.Entities
         public virtual Guid? ParentId { get; internal set; }
         [JsonIgnore]
         public virtual TTicker Parent { get; internal set; }
-        public virtual ICollection<TTicker> Children { get; internal set; } = new List<TTicker>();
-        public virtual RunCondition? RunCondition { get; internal set; }
+        public virtual ICollection<TTicker> Children { get; set; } = new List<TTicker>();
+        public virtual RunCondition? RunCondition { get; set; }
     }
 }

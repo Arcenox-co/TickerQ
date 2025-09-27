@@ -1,4 +1,5 @@
-﻿using TickerQ.Utilities.Entities.BaseEntity;
+﻿using System.Text.Json.Serialization;
+using TickerQ.Utilities.Entities.BaseEntity;
 
 namespace TickerQ.Utilities.Entities
 {
