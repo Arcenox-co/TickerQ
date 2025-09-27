@@ -39,6 +39,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
             var baseQuery = dbContext.Set<TTimeTicker>()
                 .Include(x => x.Children)
+                .ThenInclude(x => x.Children)
                 .AsNoTracking();
             
             if (predicate != null)

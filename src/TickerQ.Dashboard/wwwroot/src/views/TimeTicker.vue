@@ -25,8 +25,6 @@ import VChart, { THEME_KEY } from 'vue-echarts'
 
 const getTimeTickers = timeTickerService.getTimeTickers()
 const deleteTimeTicker = timeTickerService.deleteTimeTicker()
-const setBatchParent = timeTickerService.setBatchParent()
-const unbatchTicker = timeTickerService.unbatchTicker()
 const requestCancelTicker = tickerService.requestCancel()
 const getTimeTickersGraphDataRange = timeTickerService.getTimeTickersGraphDataRange()
 const getTimeTickersGraphData = timeTickerService.getTimeTickersGraphData()
@@ -49,19 +47,6 @@ const exceptionDialog = useDialog<ConfirmDialogProps>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
 )
 
-const batchOperationDialog = ref({
-  isOpen: false,
-  selectedItems: [] as any[],
-  batchRunCondition: 0,
-})
-
-const createBatchDialog = ref({
-  isOpen: false,
-  selectedParentId: '',
-  selectedChildrenIds: [] as string[],
-  batchRunCondition: 0,
-  step: 1, 
-})
 
 const requestMatchType = ref(new Map<string, number>())
 const crudTimeTickerDialogRef = ref(null)
@@ -81,43 +66,6 @@ function findItemById(id: string) {
   return processedTableData.value.find((x) => x.id === id)
 }
 
-function isStatusBatchable(status: string) {
-  return status === 'Idle' || status === 'Queued'
-}
-
-const availableParents = computed(() => {
-  return processedTableData.value
-    .filter((item) => isStatusBatchable(item.status))
-    .map((item) => ({
-      title: `${item.function} (${item.status})`,
-      value: item.id,
-      subtitle: `Execution: ${item.executionTime}`,
-    }))
-})
-
-const availableChildren = computed(() => {
-  if (!createBatchDialog.value.selectedParentId) return []
-
-  const parent = findItemById(createBatchDialog.value.selectedParentId)
-  if (!parent) return []
-
-  const parentTime = parent.executionTime ? Date.parse(parent.executionTime) : 0
-
-  return processedTableData.value
-    .filter((item) => {
-      if (item.id === createBatchDialog.value.selectedParentId) return false
-      if (!isStatusBatchable(item.status)) return false
-      if (item.isChild) return false // Already has a parent
-
-      const childTime = item.executionTime ? Date.parse(item.executionTime) : 0
-      return isNaN(parentTime) || isNaN(childTime) ? true : childTime >= parentTime
-    })
-    .map((item) => ({
-      title: `${item.function} (${item.status})`,
-      value: item.id,
-      subtitle: `Execution: ${item.executionTime}`,
-    }))
-})
 
 onMounted(async () => {
   try {
@@ -205,28 +153,44 @@ const addHubListeners = async () => {
   })
 }
 
-// Process data to create hierarchical structure
+// Process data to create hierarchical structure with nested children
 const processedTableData = computed(() => {
   const rawData = getTimeTickers.response.value || []
   const result: any[] = []
 
-  // Process parents and their children
-  rawData.forEach((item) => {
-    // Add the parent item with proper flags
-    const parentItem = {
-      ...item,
-      isParent: item.children && item.children.length > 0,
-      children: item.children || []
-    }
-    result.push(parentItem)
-
-    // Add children to result if parent is expanded
-    if (expandedParents.value.has(item.id) && item.children && item.children.length > 0) {
-      item.children.forEach((child) => {
-        result.push({ ...child, isChild: true })
+  // Simple function to flatten the hierarchy based on expanded state
+  const flattenData = (items: any[], depth: number = 0) => {
+    items.forEach((item) => {
+      // Add the current item
+      const processedItem = {
+        ...item,
+        isChild: depth > 0,
+        depth: depth,
+        isParent: item.children && item.children.length > 0,
+        children: item.children || []
+      }
+      result.push(processedItem)
+      console.log('--------------------------------')
+      console.log(item);
+      console.log(`Processing item ${item.id}:`, {
+        function: item.function,
+        depth: depth,
+        isChild: depth > 0,
+        isParent: !!(item.children && item.children.length > 0),
+        hasChildren: !!(item.children && item.children.length > 0),
+        childrenCount: item.children?.length || 0,
+        isExpanded: expandedParents.value.has(item.id)
       })
-    }
-  })
+
+      // If this item is expanded and has children, add them recursively
+      if (expandedParents.value.has(item.id) && item.children && item.children.length > 0) {
+        flattenData(item.children, depth + 1)
+      }
+    })
+  }
+
+  // Start flattening from root level
+  flattenData(rawData, 0)
 
   return result
 })
@@ -260,21 +224,6 @@ const clearSelection = () => {
   selectedItems.value.clear()
 }
 
-const openBatchOperationDialog = () => {
-  if (selectedItems.value.size === 0) return
-
-  batchOperationDialog.value.selectedItems = processedTableData.value.filter((item) =>
-    selectedItems.value.has(item.id),
-  )
-  batchOperationDialog.value.isOpen = true
-}
-
-const openCreateBatchDialog = () => {
-  createBatchDialog.value.selectedParentId = ''
-  createBatchDialog.value.selectedChildrenIds = []
-  createBatchDialog.value.step = 1
-  createBatchDialog.value.isOpen = true
-}
 
 // Chain Jobs Modal Methods
 const openChainJobsModal = () => {
@@ -286,77 +235,22 @@ const onChainJobsCreated = async (result: any) => {
   await getTimeTickers.requestAsync()
 }
 
-const handleBatchOperationConfirm = () => {
-  // This is now just a legacy function, actual batching happens in create batch dialog
-  batchOperationDialog.value.isOpen = false
-  batchOperationDialog.value.selectedItems = []
-  clearSelection()
-}
-
-const handleBatchOperationCancel = () => {
-  batchOperationDialog.value.isOpen = false
-  batchOperationDialog.value.selectedItems = []
-}
-
-const handleCreateBatchConfirm = () => {
-  const { selectedParentId, selectedChildrenIds, batchRunCondition } = createBatchDialog.value
-
-  if (!selectedParentId || selectedChildrenIds.length === 0) return
-
-  selectedChildrenIds.forEach((childId) => {
-    setBatchParent.requestAsync({
-      batchRunCondition: batchRunCondition,
-      parentId: selectedParentId,
-      targetId: childId,
-    })
-  })
-
-  createBatchDialog.value.isOpen = false
-  createBatchDialog.value.selectedParentId = ''
-  createBatchDialog.value.selectedChildrenIds = []
-  createBatchDialog.value.step = 1
-}
-
-const handleCreateBatchCancel = () => {
-  createBatchDialog.value.isOpen = false
-  createBatchDialog.value.selectedParentId = ''
-  createBatchDialog.value.selectedChildrenIds = []
-  createBatchDialog.value.step = 1
-}
-
-const nextStep = () => {
-  if (createBatchDialog.value.selectedParentId) {
-    createBatchDialog.value.step = 2
-  }
-}
-
-const previousStep = () => {
-  createBatchDialog.value.step = 1
-}
-
-// Unbatch functionality for individual items only
-const unbatchItem = async (itemId: string) => {
-  const item = findItemById(itemId)
-  if (!item) return
-
-  // Only unbatch this specific item, not its relationships
-  if (item.isChild) {
-    try {
-      await unbatchTicker.requestAsync({ tickerId: itemId })
-    } catch (error) {
-      // Failed to unbatch item
-    }
-  }
-}
 
 const toggleParentExpansion = (parentId: string) => {
+  console.log('Toggling expansion for:', parentId)
+  console.log('Current expanded parents:', Array.from(expandedParents.value))
+  
   if (expandedParents.value.has(parentId)) {
     expandedParents.value.delete(parentId)
+    console.log('Collapsed:', parentId)
   } else {
     expandedParents.value.add(parentId)
+    console.log('Expanded:', parentId)
   }
   // Trigger reactivity
   expandedParents.value = new Set(expandedParents.value)
+  
+  console.log('New expanded parents:', Array.from(expandedParents.value))
 }
 
 const isParentExpanded = (parentId: string) => {
@@ -364,8 +258,56 @@ const isParentExpanded = (parentId: string) => {
 }
 
 const getChildrenCount = (parentId: string) => {
-  const parent = processedTableData.value.find((item) => item.id === parentId && item.isParent)
+  // First check in raw data
+  const rawData = getTimeTickers.response.value || []
+  
+  // Recursive function to find item by ID in nested structure
+  const findItemById = (items: any[], id: string): any => {
+    for (const item of items) {
+      if (item.id === id) {
+        return item
+      }
+      if (item.children && item.children.length > 0) {
+        const found = findItemById(item.children, id)
+        if (found) return found
+      }
+    }
+    return null
+  }
+  
+  const parent = findItemById(rawData, parentId)
   return parent?.children?.length || 0
+}
+
+// Helper functions for depth-based styling
+const getDepthColor = (depth: number) => {
+  const colors = {
+    1: '#ffb74d', // Orange
+    2: '#4caf50', // Green  
+    3: '#9c27b0', // Purple
+    4: '#ff5722'  // Deep Orange
+  }
+  return colors[depth as keyof typeof colors] || colors[1]
+}
+
+const getDepthIcon = (depth: number) => {
+  const icons = {
+    1: 'mdi-subdirectory-arrow-right',
+    2: 'mdi-chevron-double-right', 
+    3: 'mdi-chevron-triple-right',
+    4: 'mdi-arrow-right-bold'
+  }
+  return icons[depth as keyof typeof icons] || icons[1]
+}
+
+const getDepthLabel = (depth: number) => {
+  const labels = {
+    1: 'Child',
+    2: 'Grandchild',
+    3: 'Great-grandchild', 
+    4: 'Great-great-grandchild'
+  }
+  return labels[depth as keyof typeof labels] || `Level ${depth}`
 }
 
 const closeCrudTimeTickerDialog = () => {
@@ -555,7 +497,6 @@ const getTimeTickersGraphDataRangeAndParseToGraph = async (startDate: number, en
       'DueDone',
       'Failed',
       'Cancelled',
-      'Batched',
     ]
 
     const seriesNames = composedData.filter((x) => x.data.some((y) => y > 0)).map((x) => x.name)
@@ -612,7 +553,6 @@ const seriesColors: { [key: string]: string } = {
   DueDone: '#008000', // Green
   Failed: '#FF0000', // Red
   Cancelled: '#FFD700', // Gold/Yellow
-  Batched: '#A9A9A9', // Dark Gray
 }
 
 // Helper functions for status styling
@@ -629,8 +569,6 @@ const getStatusColor = (status: string) => {
       return 'error'
     case 'Cancelled':
       return 'warning'
-    case 'Batched':
-      return 'secondary'
     default:
       return 'grey'
   }
@@ -754,9 +692,14 @@ const setRowProp = (propContext: any) => {
   }
 
   if (propContext.item.isChild) {
-    classes.push('child-row')
+    const depth = propContext.item.depth || 1
+    classes.push(`child-row depth-${depth}`)
+    
+    // Calculate indentation based on depth
+    const leftPadding = 20 + (depth * 20) // 40px for depth 1, 60px for depth 2, etc.
+    
     return {
-      style: `${baseStyle}; padding-left: 40px; background-color: rgba(255, 255, 255, 0.02);`,
+      style: `${baseStyle}; padding-left: ${leftPadding}px; background-color: rgba(255, 255, 255, 0.02);`,
       class: classes.join(' '),
     }
   } else if (propContext.item.isParent) {
@@ -1273,16 +1216,6 @@ watch(
                   <div class="btn-shine"></div>
                 </button>
 
-                <button
-                  class="premium-action-btn secondary-action"
-                  @click="openCreateBatchDialog()"
-                >
-                  <div class="btn-icon">
-                    <v-icon size="18">mdi-link-plus</v-icon>
-                  </div>
-                  <span class="btn-text">Create Batch</span>
-                  <div class="btn-shine"></div>
-                </button>
 
                 <button
                   class="premium-action-btn tertiary-action"
@@ -1369,6 +1302,7 @@ watch(
             <!-- Selection Column -->
             <template v-slot:item.selection="{ item }">
               <v-checkbox
+                v-if="!item.isChild"
                 :model-value="selectedItems.has(item.id)"
                 @update:model-value="toggleItemSelection(item.id)"
                 color="primary"
@@ -1380,6 +1314,7 @@ watch(
 
             <template v-slot:item.function="{ item }">
               <div class="d-flex align-center">
+                <!-- Expand button for any item that has children (parents or children with grandchildren) -->
                 <v-btn
                   v-if="item.isParent && getChildrenCount(item.id) > 0"
                   :icon="isParentExpanded(item.id) ? 'mdi-chevron-down' : 'mdi-chevron-right'"
@@ -1391,9 +1326,6 @@ watch(
                 >
                 </v-btn>
 
-                <!-- Indentation for Child Items -->
-                <div v-else-if="item.isChild" class="ml-4"></div>
-
                 <!-- Function Name with Hierarchy Indicators -->
                 <div class="d-flex align-center">
                   <v-icon
@@ -1404,7 +1336,20 @@ watch(
                   >
                     mdi-folder-outline
                   </v-icon>
-                  <v-icon v-else-if="item.isChild" size="small" class="mr-1" color="secondary">
+                  <v-icon 
+                    v-else-if="item.isChild && item.isParent" 
+                    size="small" 
+                    class="mr-1" 
+                    :color="getDepthColor(item.depth || 1)"
+                  >
+                    mdi-folder-open-outline
+                  </v-icon>
+                  <v-icon 
+                    v-else-if="item.isChild" 
+                    size="small" 
+                    class="mr-1" 
+                    :color="getDepthColor(item.depth || 1)"
+                  >
                     mdi-subdirectory-arrow-right
                   </v-icon>
                   <v-icon v-else-if="item.isOrphan" size="small" class="mr-1" color="warning">
@@ -1413,89 +1358,16 @@ watch(
 
                   <span class="function-name">{{ item.function }}</span>
 
-                  <!-- Child Count Badge for Parents -->
+                  <!-- Child Count Badge for any item that has children -->
                   <v-chip
                     v-if="item.isParent && getChildrenCount(item.id) > 0"
                     size="x-small"
-                    color="primary"
+                    :color="item.isChild ? getDepthColor(item.depth || 1) : 'primary'"
                     variant="tonal"
                     class="ml-1"
                   >
                     {{ getChildrenCount(item.id) }}
                   </v-chip>
-
-                  <!-- Child Jobs Dropdown for Parents -->
-                  <v-menu
-                    v-if="item.isParent && getChildrenCount(item.id) > 0"
-                    offset-y
-                    max-height="500"
-                    max-width="800"
-                    class="ml-2"
-                  >
-                    <template v-slot:activator="{ props }">
-                      <v-btn
-                        v-bind="props"
-                        size="x-small"
-                        variant="outlined"
-                        color="primary"
-                        class="child-dropdown-btn"
-                      >
-                        <v-icon size="small">mdi-chevron-down</v-icon>
-                        Children
-                      </v-btn>
-                    </template>
-                    <div class="child-jobs-dropdown">
-                      <div class="child-dropdown-header">
-                        <span class="child-dropdown-title">Child Jobs ({{ item.children.length }})</span>
-                      </div>
-                      <div class="child-jobs-table">
-                        <div class="child-table-header">
-                          <div class="child-col child-col-function">Function</div>
-                          <div class="child-col child-col-status">Status</div>
-                          <div class="child-col child-col-execution">Execution Time</div>
-                          <div class="child-col child-col-executed">Executed At</div>
-                          <div class="child-col child-col-actions">Actions</div>
-                        </div>
-                        <div
-                          v-for="child in item.children"
-                          :key="child.id"
-                          class="child-table-row"
-                        >
-                          <div class="child-col child-col-function">
-                            <span class="child-function-name">{{ child.function }}</span>
-                          </div>
-                          <div class="child-col child-col-status">
-                            <v-chip
-                              :color="getStatusColor(child.status)"
-                              :variant="getStatusVariant(child.status)"
-                              size="x-small"
-                            >
-                              {{ child.status }}
-                            </v-chip>
-                          </div>
-                          <div class="child-col child-col-execution">
-                            <span class="child-execution-time">{{ child.executionTimeFormatted || child.executionTime }}</span>
-                          </div>
-                          <div class="child-col child-col-executed">
-                            <span class="child-executed-at">{{ child.executedAt || '-' }}</span>
-                          </div>
-                          <div class="child-col child-col-actions">
-                            <v-btn
-                              icon
-                              size="x-small"
-                              variant="text"
-                              color="error"
-                              @click="unbatchItem(child.id)"
-                              :disabled="unbatchTicker.loader.value"
-                              class="child-action-btn"
-                            >
-                              <v-icon size="small">mdi-link-variant-off</v-icon>
-                            </v-btn>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </v-menu>
                 </div>
               </div>
             </template>
@@ -1614,31 +1486,6 @@ watch(
                   </v-tooltip>
                 </div>
 
-                <!-- Unbatch Button - Only for child items -->
-                <div v-if="item.isChild" class="action-btn-wrapper">
-                  <v-tooltip location="top">
-                    <template v-slot:activator="{ props }">
-                      <button
-                        v-bind="props"
-                        @click="unbatchItem(item.id)"
-                        :disabled="unbatchTicker.loader.value"
-                        class="modern-action-btn unbatch-btn"
-                        :class="{ 'loading': unbatchTicker.loader.value }"
-                      >
-                        <v-progress-circular
-                          v-if="unbatchTicker.loader.value"
-                          indeterminate
-                          size="12"
-                          width="2"
-                          color="white"
-                        ></v-progress-circular>
-                        <v-icon v-else size="16">mdi-link-variant-off</v-icon>
-                      </button>
-                    </template>
-                    <span>Unbatch from Parent</span>
-                  </v-tooltip>
-                </div>
-
                 <!-- Edit/Duplicate Button -->
                 <div class="action-btn-wrapper">
                   <v-tooltip location="top">
@@ -1737,161 +1584,7 @@ watch(
       :dialog-props="exceptionDialog.propData"
     />
 
-    <!-- Simple Batch Operation Dialog -->
-    <v-dialog v-model="batchOperationDialog.isOpen" max-width="450" persistent>
-      <v-card density="compact">
-        <v-card-title class="d-flex align-center pa-3">
-          <v-icon class="mr-2" color="secondary">mdi-format-list-bulleted</v-icon>
-          Create Batch
-        </v-card-title>
 
-        <v-card-text class="pa-3">
-          <p class="text-body-2 mb-3">
-            Create batch with
-            <strong>{{ batchOperationDialog.selectedItems.length }} selected items</strong>
-          </p>
-
-          <v-select
-            v-model="batchOperationDialog.batchRunCondition"
-            label="When to run children"
-            :items="[
-              { title: 'When parent completes (any status)', value: 0 },
-              { title: 'Only when parent succeeds', value: 1 },
-            ]"
-            variant="outlined"
-            density="compact"
-            class="mb-3"
-          ></v-select>
-
-          <div class="text-caption text-grey-darken-1 pa-2 bg-grey-lighten-4 rounded">
-            <v-icon size="small" class="mr-1">mdi-information</v-icon>
-            First item becomes parent, others run when it finishes
-          </div>
-        </v-card-text>
-
-        <v-card-actions class="pa-3">
-          <v-spacer></v-spacer>
-          <v-btn variant="text" @click="handleBatchOperationCancel">Cancel</v-btn>
-          <v-btn color="primary" variant="elevated" @click="handleBatchOperationConfirm"
-            >Create Batch</v-btn
-          >
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
-
-    <!-- Step-by-Step Create Batch Dialog -->
-    <v-dialog v-model="createBatchDialog.isOpen" max-width="600" persistent>
-      <v-card density="compact">
-        <v-card-title class="d-flex align-center pa-3">
-          <v-icon class="mr-2" color="primary">mdi-link-plus</v-icon>
-          Create Batch - Step {{ createBatchDialog.step }} of 2
-        </v-card-title>
-
-        <!-- Step 1: Select Parent -->
-        <v-card-text v-if="createBatchDialog.step === 1" class="pa-3">
-          <h3 class="text-h6 mb-3">Step 1: Select Parent Item</h3>
-          <p class="text-body-2 mb-3">Choose which item will be the parent of the batch</p>
-
-          <v-select
-            v-model="createBatchDialog.selectedParentId"
-            label="Select Parent Item"
-            :items="availableParents"
-            variant="outlined"
-            density="compact"
-            class="mb-3"
-            hint="Only Idle and Queued items can be parents"
-            persistent-hint
-          >
-            <template v-slot:item="{ props, item }">
-              <v-list-item v-bind="props" :subtitle="item.raw.subtitle">
-                <template v-slot:prepend>
-                  <v-icon color="primary" size="small">mdi-account-supervisor</v-icon>
-                </template>
-              </v-list-item>
-            </template>
-          </v-select>
-
-          <div class="text-caption text-grey-darken-1 pa-2 bg-grey-lighten-4 rounded">
-            <v-icon size="small" class="mr-1">mdi-information</v-icon>
-            The parent item controls when children items will execute
-          </div>
-        </v-card-text>
-
-        <!-- Step 2: Select Children -->
-        <v-card-text v-if="createBatchDialog.step === 2" class="pa-3">
-          <h3 class="text-h6 mb-3">Step 2: Select Children Items</h3>
-          <p class="text-body-2 mb-3">
-            Choose which items will be children of
-            <strong>{{ findItemById(createBatchDialog.selectedParentId)?.function }}</strong>
-          </p>
-
-          <v-select
-            v-model="createBatchDialog.selectedChildrenIds"
-            label="Select Children Items"
-            :items="availableChildren"
-            variant="outlined"
-            density="compact"
-            class="mb-3"
-            multiple
-            chips
-            closable-chips
-            hint="Children must have execution time >= parent time"
-            persistent-hint
-          >
-            <template v-slot:item="{ props, item }">
-              <v-list-item v-bind="props" :subtitle="item.raw.subtitle">
-                <template v-slot:prepend>
-                  <v-icon color="secondary" size="small">mdi-subdirectory-arrow-right</v-icon>
-                </template>
-              </v-list-item>
-            </template>
-          </v-select>
-
-          <v-select
-            v-model="createBatchDialog.batchRunCondition"
-            label="When to run children"
-            :items="[
-              { title: 'When parent completes (any status)', value: 0 },
-              { title: 'Only when parent succeeds', value: 1 },
-            ]"
-            variant="outlined"
-            density="compact"
-            class="mb-3"
-          ></v-select>
-
-          <div class="text-caption text-grey-darken-1 pa-2 bg-grey-lighten-4 rounded">
-            <v-icon size="small" class="mr-1">mdi-information</v-icon>
-            Selected items will run after the parent completes based on the condition above
-          </div>
-        </v-card-text>
-
-        <v-card-actions class="pa-3">
-          <v-btn v-if="createBatchDialog.step === 2" variant="text" @click="previousStep">
-            Back
-          </v-btn>
-          <v-spacer></v-spacer>
-          <v-btn variant="text" @click="handleCreateBatchCancel">Cancel</v-btn>
-          <v-btn
-            v-if="createBatchDialog.step === 1"
-            color="primary"
-            variant="elevated"
-            :disabled="!createBatchDialog.selectedParentId"
-            @click="nextStep"
-          >
-            Next
-          </v-btn>
-          <v-btn
-            v-if="createBatchDialog.step === 2"
-            color="primary"
-            variant="elevated"
-            :disabled="createBatchDialog.selectedChildrenIds.length === 0"
-            @click="handleCreateBatchConfirm"
-          >
-            Create Batch
-          </v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
 
     <!-- Chain Jobs Modal -->
     <ChainJobsModal
@@ -2894,11 +2587,12 @@ watch(
   min-height: 40px;
 }
 
+
 :deep(.enhanced-table .v-data-table__tr::after) {
   content: '';
   position: absolute;
   bottom: 0;
-  left: 0;
+  left: 40px; /* Start after the selection column */
   right: 0;
   height: 1px;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
@@ -2919,6 +2613,17 @@ watch(
 /* Selection styles */
 .selection-checkbox {
   margin: 0;
+}
+
+
+/* Remove ::after for selection column specifically */
+:deep(.enhanced-table .v-data-table__td:first-child::after) {
+  display: none !important;
+}
+
+:deep(.enhanced-table .v-data-table__tr .v-data-table__td:first-child::after) {
+  content: none !important;
+  display: none !important;
 }
 
 :deep(.selection-checkbox .v-selection-control) {
@@ -2945,9 +2650,114 @@ watch(
 }
 
 .child-row {
-  border-left: 4px solid #ffb74d;
-  background: linear-gradient(135deg, rgba(255, 183, 77, 0.05) 0%, rgba(255, 183, 77, 0.02) 100%);
+  border-left: 4px solid #ffb74d !important;
+  border-right: 4px solid #ffb74d !important;
+  background: linear-gradient(135deg, rgba(255, 183, 77, 0.05) 0%, rgba(255, 183, 77, 0.02) 100%) !important;
   position: relative;
+  margin-right: 8px !important;
+  padding-right: 20px !important;
+}
+
+/* Depth-specific styling for nested children */
+.depth-1 {
+  border-left: 4px solid #ffb74d !important;
+  border-right: 4px solid #ffb74d !important;
+  background: linear-gradient(135deg, rgba(255, 183, 77, 0.05) 0%, rgba(255, 183, 77, 0.02) 100%) !important;
+}
+
+.depth-2 {
+  border-left: 4px solid #4caf50 !important;
+  border-right: 4px solid #4caf50 !important;
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.05) 0%, rgba(76, 175, 80, 0.02) 100%) !important;
+}
+
+.depth-3 {
+  border-left: 4px solid #9c27b0 !important;
+  border-right: 4px solid #9c27b0 !important;
+  background: linear-gradient(135deg, rgba(156, 39, 176, 0.05) 0%, rgba(156, 39, 176, 0.02) 100%) !important;
+}
+
+.depth-4 {
+  border-left: 4px solid #ff5722 !important;
+  border-right: 4px solid #ff5722 !important;
+  background: linear-gradient(135deg, rgba(255, 87, 34, 0.05) 0%, rgba(255, 87, 34, 0.02) 100%) !important;
+}
+
+/* More specific selector for Vuetify table rows */
+:deep(.enhanced-table .v-data-table__tr.child-row) {
+  border-left: 4px solid #ffb74d !important;
+  border-right: 4px solid #ffb74d !important;
+  padding-left: 40px !important;
+  padding-right: 20px !important;
+  margin-right: 8px !important;
+}
+
+/* Target the first and last table cells in child rows for padding */
+:deep(.enhanced-table .child-row .v-data-table__td:first-child) {
+  padding-left: 40px !important;
+}
+
+:deep(.enhanced-table .child-row .v-data-table__td:last-child) {
+  padding-right: 20px !important;
+}
+
+/* Add margin to the entire child row */
+:deep(.enhanced-table .child-row) {
+  margin-right: 8px !important;
+}
+
+/* Alternative - target all cells in child rows */
+:deep(.child-row td) {
+  background: rgba(255, 183, 77, 0.02) !important;
+}
+
+:deep(.child-row td:first-child) {
+  padding-left: 40px !important;
+}
+
+:deep(.child-row td:last-child) {
+  padding-right: 20px !important;
+}
+
+/* Most specific approach - target the table wrapper */
+:deep(.v-table .child-row) {
+  margin-right: 8px !important;
+}
+
+:deep(.v-table .child-row td) {
+  background: rgba(255, 183, 77, 0.02) !important;
+}
+
+:deep(.v-table .child-row td:first-child) {
+  padding-left: 40px !important;
+  border-left: 4px solid #ffb74d !important;
+}
+
+:deep(.v-table .child-row td:last-child) {
+  padding-right: 20px !important;
+  border-right: 4px solid #ffb74d !important;
+}
+
+/* Try with tbody as well */
+:deep(tbody .child-row td:first-child) {
+  padding-left: 40px !important;
+}
+
+:deep(tbody .child-row td:last-child) {
+  padding-right: 20px !important;
+}
+
+/* Final attempt - override the existing enhanced-table cell padding */
+:deep(.enhanced-table .child-row .v-data-table__td) {
+  padding: 8px 12px !important;
+}
+
+:deep(.enhanced-table .child-row .v-data-table__td:first-child) {
+  padding: 8px 12px 8px 40px !important;
+}
+
+:deep(.enhanced-table .child-row .v-data-table__td:last-child) {
+  padding: 8px 20px 8px 12px !important;
 }
 
 .child-row::before {
@@ -2958,6 +2768,16 @@ watch(
   bottom: 0;
   width: 2px;
   background: linear-gradient(to bottom, rgba(255, 183, 77, 0.5), rgba(255, 183, 77, 0.2));
+}
+
+.child-row::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(to bottom, rgba(255, 183, 77, 0.3), rgba(255, 183, 77, 0.1));
 }
 
 .orphan-row {
