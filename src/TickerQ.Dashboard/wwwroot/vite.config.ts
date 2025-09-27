@@ -21,7 +21,7 @@ export default defineConfig(({ mode }) => {
 
     build: {
       outDir: 'dist',
-      assetsDir: 'tickerqassets',
+      assetsDir: 'assets',
     },
 
     resolve: {

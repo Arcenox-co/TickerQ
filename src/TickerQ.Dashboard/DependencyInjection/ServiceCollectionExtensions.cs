@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
+using TickerQ.Dashboard.Authentication;
+using TickerQ.Dashboard.Endpoints;
 using TickerQ.Dashboard.Hubs;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -23,6 +25,12 @@ namespace TickerQ.Dashboard.DependencyInjection
         {
             services.AddRouting();
             services.AddSignalR();
+
+            // Always add authentication services since endpoints may require authorization
+            // The authentication handler will determine if authentication is actually needed
+            services.AddAuthentication("Basic")
+                .AddScheme<BasicAuthenticationSchemeOptions, BasicAuthenticationHandler>("Basic", options => { });
+            services.AddAuthorization();
 
             services.AddCors(options =>
             {
@@ -42,12 +50,11 @@ namespace TickerQ.Dashboard.DependencyInjection
                         .AllowCredentials();
                 });
             });
-
-            services.AddControllers()
-                .ConfigureApplicationPartManager(cm => cm.FeatureProviders.Add(new GenericControllerFeatureProvider<TTimeTicker, TCronTicker>()));
         }
 
-        internal static void UseDashboard(this IApplicationBuilder app, DashboardOptionsBuilder config)
+        internal static void UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(this IApplicationBuilder app, DashboardOptionsBuilder config)
+            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+            where TCronTicker : CronTickerEntity, new()
         {
             // Get the assembly and set up the embedded file provider
             var assembly = Assembly.GetExecutingAssembly();
@@ -56,11 +63,11 @@ namespace TickerQ.Dashboard.DependencyInjection
             // Validate and normalize base path
             var basePath = NormalizeBasePath(config.BasePath);
 
-            // Map a branch for the basePath
+            // Map a branch for the basePath to properly isolate dashboard
             app.Map(basePath, dashboardApp =>
             {
-                // Execute custom middleware if provided
-                config.CustomMiddleware?.Invoke(dashboardApp);
+                // Execute pre-dashboard middleware
+                config.PreDashboardMiddleware?.Invoke(dashboardApp);
 
                 // Serve static files from the embedded provider
                 dashboardApp.UseStaticFiles(new StaticFileOptions
@@ -81,46 +88,91 @@ namespace TickerQ.Dashboard.DependencyInjection
                 dashboardApp.UseRouting();
                 dashboardApp.UseCors("TickerQ_Dashboard_CORS");
 
-                // Add authentication and authorization if using host authentication
-                if (config.UseHostAuthentication)
-                {
-                    dashboardApp.UseAuthentication();
-                    dashboardApp.UseAuthorization();
-                }
+                // Add authentication and authorization
+                // Always add these middlewares as endpoints may require authorization
+                dashboardApp.UseAuthentication();
+                dashboardApp.UseAuthorization();
 
-                // Combine all endpoint registrations into one call
+                // Execute custom middleware if provided
+                config.CustomMiddleware?.Invoke(dashboardApp);
+
+                // Map Minimal API endpoints and SignalR hub
                 dashboardApp.UseEndpoints(endpoints =>
                 {
-                    // Map API controllers
-                    var apiEndpoints = endpoints.MapControllers();
-                    
-                    // Map SignalR hub with conditional authorization
-                    var hubEndpoint = endpoints.MapHub<TickerQNotificationHub>("/ticker-notification-hub");
-                    
-                    // Apply the same authorization as controllers
-                    if (config.RequiredRoles.Length != 0)
-                    {
-                        var authAttribute = new AuthorizeAttribute()
-                        {
-                            Roles = string.Join(",", config.RequiredRoles)
-                        };
-                        
-                        apiEndpoints.RequireAuthorization(authAttribute);
-                        hubEndpoint.RequireAuthorization(authAttribute);
-                    }
-                    else if (config.RequiredPolicies.Length != 0)
-                    {
-                        apiEndpoints.RequireAuthorization(config.RequiredPolicies);
-                    }
+                    endpoints.MapDashboardEndpoints<TTimeTicker, TCronTicker>(config);
                 });
+
+                // Execute post-dashboard middleware
+                config.PostDashboardMiddleware?.Invoke(dashboardApp);
 
                 // SPA fallback middleware: if no route is matched, serve the modified index.html
                 dashboardApp.Use(async (context, next) =>
                 {
                     await next();
 
-                    if (context.Response.StatusCode == 404 &&
-                        context.Request.PathBase.Value?.StartsWith(basePath) == true)
+                    if (context.Response.StatusCode == 404)
+                    {
+                        var file = embeddedFileProvider.GetFileInfo("index.html");
+                        if (file.Exists)
+                        {
+                            await using var stream = file.CreateReadStream();
+                            using var reader = new StreamReader(stream);
+                            var htmlContent = await reader.ReadToEndAsync();
+
+                            // Inject the base tag and other replacements into the HTML
+                            htmlContent = ReplaceBasePath(htmlContent, basePath, config);
+
+                            context.Response.ContentType = "text/html";
+                            context.Response.StatusCode = 200;
+                            await context.Response.WriteAsync(htmlContent);
+                        }
+                    }
+                });
+            });
+        }
+
+        internal static void UseDashboard(this IApplicationBuilder app, DashboardOptionsBuilder config)
+        {
+            // Get the assembly and set up the embedded file provider
+            var assembly = Assembly.GetExecutingAssembly();
+            var embeddedFileProvider = new EmbeddedFileProvider(assembly, "TickerQ.Dashboard.wwwroot.dist");
+
+            // Validate and normalize base path
+            var basePath = NormalizeBasePath(config.BasePath);
+
+            // Map a branch for the basePath to properly isolate dashboard
+            app.Map(basePath, dashboardApp =>
+            {
+                // Execute pre-dashboard middleware
+                config.PreDashboardMiddleware?.Invoke(dashboardApp);
+
+                // Serve static files from the embedded provider
+                dashboardApp.UseStaticFiles(new StaticFileOptions
+                {
+                    FileProvider = embeddedFileProvider,
+                    OnPrepareResponse = ctx =>
+                    {
+                        // Cache static assets for 1 hour
+                        if (ctx.File.Name.EndsWith(".js") || ctx.File.Name.EndsWith(".css") || 
+                            ctx.File.Name.EndsWith(".ico") || ctx.File.Name.EndsWith(".png"))
+                        {
+                            ctx.Context.Response.Headers.CacheControl = "public,max-age=3600";
+                        }
+                    }
+                });
+
+                // Execute custom middleware if provided
+                config.CustomMiddleware?.Invoke(dashboardApp);
+
+                // Execute post-dashboard middleware
+                config.PostDashboardMiddleware?.Invoke(dashboardApp);
+
+                // SPA fallback middleware: if no route is matched, serve the modified index.html
+                dashboardApp.Use(async (context, next) =>
+                {
+                    await next();
+
+                    if (context.Response.StatusCode == 404)
                     {
                         var file = embeddedFileProvider.GetFileInfo("index.html");
                         if (file.Exists)
@@ -151,6 +203,7 @@ namespace TickerQ.Dashboard.DependencyInjection
 
             return basePath.TrimEnd('/');
         }
+
 
         private static string ReplaceBasePath(string htmlContent, string basePath, DashboardOptionsBuilder config)
         {

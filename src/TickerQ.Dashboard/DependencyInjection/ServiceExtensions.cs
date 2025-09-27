@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using TickerQ.Dashboard.Endpoints;
 using TickerQ.Dashboard.Hubs;
 using TickerQ.Dashboard.Infrastructure.Dashboard;
 using TickerQ.Utilities;
@@ -63,13 +64,8 @@ namespace TickerQ.Dashboard.DependencyInjection
         {
             tickerConfiguration.UseDashboardApplication((app) =>
             {
-                // Execute pre-dashboard middleware
-                dashboardConfig.PreDashboardMiddleware?.Invoke(app);
-                
-                app.UseDashboard(dashboardConfig);
-                
-                // Execute post-dashboard middleware
-                dashboardConfig.PostDashboardMiddleware?.Invoke(app);
+                // Configure static files and middleware with endpoints
+                app.UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(dashboardConfig);
             });
         }
     }
