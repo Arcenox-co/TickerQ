@@ -73,7 +73,7 @@ onMounted(async () => {
     
 })
 
-onUnmounted(() => {  
+onUnmounted(() => {
   TickerNotificationHub.stopReceiver(methodName.onReceiveAddTimeTicker)
   TickerNotificationHub.stopReceiver(methodName.onReceiveUpdateTimeTicker)
   TickerNotificationHub.stopReceiver(methodName.onReceiveDeleteTimeTicker)
@@ -103,33 +103,46 @@ const addHubListeners = async () => {
   })
 }
 
-// Process data to create hierarchical structure with nested children
+// Process data to create tree table structure with proper hierarchy
 const processedTableData = computed(() => {
   const rawData = getTimeTickers.response.value || []
   const result: any[] = []
 
-  // Simple function to flatten the hierarchy based on expanded state
-  const flattenData = (items: any[], depth: number = 0) => {
-    items.forEach((item) => {
-      // Add the current item
-      const processedItem = {
-        ...item,
-        isChild: depth > 0,
+  // Recursive function to build tree structure with proper indentation
+  const buildTreeData = (items: any[], depth: number = 0, parentPath: string = '') => {
+    items.forEach((item, index) => {
+      const currentPath = parentPath ? `${parentPath}.${index}` : `${index}`
+      const hasChildren = item.children && item.children.length > 0
+      const isExpanded = expandedParents.value.has(item.id)
+      
+      // Add the current item with tree metadata
+      const treeItem = {
+      ...item,
+        // Tree structure properties
         depth: depth,
-        isParent: item.children && item.children.length > 0,
-        children: item.children || []
-      }
-      result.push(processedItem)
+        isParent: hasChildren,
+        isChild: depth > 0,
+        isExpanded: isExpanded,
+        hasChildren: hasChildren,
+        childrenCount: item.children?.length || 0,
+        treePath: currentPath,
+        // Visual properties for tree rendering
+        isFirstChild: index === 0,
+        isLastChild: index === items.length - 1,
+      children: item.children || []
+    }
+      
+      result.push(treeItem)
 
       // If this item is expanded and has children, add them recursively
-      if (expandedParents.value.has(item.id) && item.children && item.children.length > 0) {
-        flattenData(item.children, depth + 1)
+      if (isExpanded && hasChildren) {
+        buildTreeData(item.children, depth + 1, currentPath)
       }
     })
   }
 
-  // Start flattening from root level
-  flattenData(rawData, 0)
+  // Build the tree structure starting from root level
+  buildTreeData(rawData, 0)
 
   return result
 })
@@ -179,6 +192,76 @@ const toggleParentExpansion = (parentId: string) => {
   expandedParents.value = new Set(expandedParents.value)
 }
 
+// Enhanced tree navigation functions
+const expandAll = () => {
+  const allParentIds = processedTableData.value
+    .filter(item => item.hasChildren)
+    .map(item => item.id)
+  
+  expandedParents.value = new Set(allParentIds)
+}
+
+const collapseAll = () => {
+  expandedParents.value.clear()
+  expandedParents.value = new Set()
+}
+
+const expandToLevel = (maxDepth: number) => {
+  const parentsToExpand = processedTableData.value
+    .filter(item => item.hasChildren && item.depth < maxDepth)
+    .map(item => item.id)
+  
+  expandedParents.value = new Set(parentsToExpand)
+}
+
+// Row props function to style rows based on tree depth and type
+const getRowProps = (item: any) => {
+  const classes = []
+  const styles: any = {}
+  
+  // Add tree-specific classes
+  if (item.hasChildren) {
+    classes.push('tree-parent-row')
+  } else {
+    classes.push('tree-leaf-row')
+  }
+  
+  // Add depth-specific classes and styling
+  if (item.depth > 0) {
+    classes.push('tree-child-row')
+    classes.push(`tree-depth-${item.depth}`)
+    
+    // Add subtle background tinting based on depth
+    const depthColors = {
+      1: 'rgba(100, 181, 246, 0.03)', // Light blue tint for level 1
+      2: 'rgba(76, 175, 80, 0.03)',   // Light green tint for level 2  
+      3: 'rgba(156, 39, 176, 0.03)',  // Light purple tint for level 3
+      4: 'rgba(255, 152, 0, 0.03)',   // Light orange tint for level 4
+      5: 'rgba(244, 67, 54, 0.03)'    // Light red tint for level 5
+    }
+    
+    // Text colors based on depth for better hierarchy
+    const textColors = {
+      1: '#e0e0e0', // Slightly dimmed for level 1
+      2: '#d0d0d0', // More dimmed for level 2
+      3: '#c0c0c0', // Even more dimmed for level 3
+      4: '#b0b0b0', // Further dimmed for level 4
+      5: '#a0a0a0'  // Most dimmed for level 5
+    }
+    
+    styles.backgroundColor = depthColors[item.depth as keyof typeof depthColors] || depthColors[1]
+    styles.color = textColors[item.depth as keyof typeof textColors] || textColors[1]
+  } else {
+    classes.push('tree-root-row')
+    styles.color = '#ffffff' // Bright white for root rows
+  }
+  
+  return {
+    class: classes.join(' '),
+    style: styles
+  }
+}
+
 const isParentExpanded = (parentId: string) => {
   return expandedParents.value.has(parentId)
 }
@@ -215,6 +298,80 @@ const getDepthColor = (depth: number) => {
     5: '#ec407a'  // Pink for depth 5
   }
   return colors[depth as keyof typeof colors] || colors[1]
+}
+
+// Enhanced tree table helper functions
+const getTreeIcon = (item: any) => {
+  if (!item.hasChildren) {
+    // Leaf nodes - different icons based on status or type
+    switch (item.status?.toLowerCase()) {
+      case 'done':
+      case 'duedone':
+        return 'mdi-check-circle'
+      case 'failed':
+        return 'mdi-alert-circle'
+      case 'inprogress':
+        return 'mdi-play-circle'
+      case 'queued':
+        return 'mdi-clock-outline'
+      default:
+        return 'mdi-file-document-outline'
+    }
+  }
+  
+  // Parent nodes - folder icons
+  if (item.depth === 0) {
+    return item.isExpanded ? 'mdi-folder-open-outline' : 'mdi-folder-outline'
+      } else {
+    return item.isExpanded ? 'mdi-folder-multiple-outline' : 'mdi-folder-multiple'
+  }
+}
+
+const getTreeIconColor = (item: any) => {
+  if (!item.hasChildren) {
+    // Leaf nodes - color based on status
+    switch (item.status?.toLowerCase()) {
+      case 'done':
+      case 'duedone':
+        return 'success'
+      case 'failed':
+        return 'error'
+      case 'inprogress':
+        return 'primary'
+      case 'queued':
+        return 'warning'
+      default:
+        return 'blue-grey-lighten-1'
+    }
+  }
+  
+  // Parent nodes - different colors by depth
+  if (item.depth === 0) {
+    return 'amber'
+  } else if (item.depth === 1) {
+    return 'blue'
+  } else {
+    return 'purple'
+  }
+}
+
+const getFunctionNameClass = (item: any) => {
+  const classes = ['function-name']
+  
+  if (item.hasChildren) {
+    classes.push('parent-function')
+    if (item.depth === 0) {
+      classes.push('root-function')
+    }
+  } else {
+    classes.push('leaf-function')
+  }
+  
+  if (item.isChild) {
+    classes.push('child-function')
+  }
+  
+  return classes.join(' ')
 }
 
 
@@ -478,6 +635,60 @@ const canBeForceDeleted = ref<string[]>([]);
               </div>
             </div>
 
+            <!-- Tree Navigation Controls -->
+            <div class="tree-controls">
+              <v-btn-group variant="outlined" density="compact" class="tree-nav-group">
+                <v-btn
+                  @click="expandAll"
+                  size="small"
+                  prepend-icon="mdi-unfold-more-horizontal"
+                  class="tree-nav-btn"
+                >
+                  Expand All
+                </v-btn>
+                <v-btn
+                  @click="collapseAll"
+                  size="small"
+                  prepend-icon="mdi-unfold-less-horizontal"
+                  class="tree-nav-btn"
+                >
+                  Collapse All
+                </v-btn>
+                <v-menu>
+                  <template v-slot:activator="{ props }">
+                    <v-btn
+                      v-bind="props"
+                      size="small"
+                      append-icon="mdi-chevron-down"
+                      class="tree-nav-btn"
+                    >
+                      Expand to Level
+                    </v-btn>
+                  </template>
+                  <v-list density="compact">
+                    <v-list-item @click="expandToLevel(1)" class="tree-level-item">
+                      <template v-slot:prepend>
+                        <v-icon>mdi-numeric-1-box</v-icon>
+                      </template>
+                      <v-list-item-title>Level 1</v-list-item-title>
+                    </v-list-item>
+                    <v-list-item @click="expandToLevel(2)" class="tree-level-item">
+                      <template v-slot:prepend>
+                        <v-icon>mdi-numeric-2-box</v-icon>
+                      </template>
+                      <v-list-item-title>Level 2</v-list-item-title>
+                    </v-list-item>
+                    <v-list-item @click="expandToLevel(3)" class="tree-level-item">
+                      <template v-slot:prepend>
+                        <v-icon>mdi-numeric-3-box</v-icon>
+                      </template>
+                      <v-list-item-title>Level 3</v-list-item-title>
+                    </v-list-item>
+                  </v-list>
+                </v-menu>
+              </v-btn-group>
+            </div>
+
             <!-- Search and Info Group -->
             <div class="search-info-group">
               <v-text-field
@@ -537,7 +748,7 @@ const canBeForceDeleted = ref<string[]>([]);
         <div class="table-container">
           <v-data-table
             density="compact"
-            :row-props="setRowProp"
+            :row-props="getRowProps"
             :headers="headersWithSelection"
             :loading="getTimeTickers.loader.value"
             :items="processedTableData"
@@ -562,34 +773,89 @@ const canBeForceDeleted = ref<string[]>([]);
             </template>
 
             <template v-slot:item.function="{ item }">
-              <div class="d-flex align-center">
-                <!-- Expand button for any item that has children (parents or children with grandchildren) -->
+              <div class="tree-cell" :style="{ paddingLeft: (item.depth * 28) + 'px' }">
+                <!-- Tree Structure with improved lines -->
+                <div class="tree-structure" v-if="item.depth > 0">
+                  <svg class="tree-svg" :width="item.depth * 28" height="32">
+                    <!-- Draw vertical lines for each parent level -->
+                    <line
+                      v-for="level in item.depth"
+                      :key="`v-${level}`"
+                      :x1="(level - 1) * 28 + 14"
+                      :x2="(level - 1) * 28 + 14"
+                      :y1="0"
+                      :y2="item.isLastChild && level === item.depth ? 16 : 32"
+                      stroke="rgba(100, 181, 246, 0.4)"
+                      stroke-width="1"
+                      stroke-dasharray="2,2"
+                    />
+                    <!-- Draw horizontal connector line -->
+                    <line
+                      :x1="(item.depth - 1) * 28 + 14"
+                      :x2="(item.depth - 1) * 28 + 26"
+                      :y1="16"
+                      :y2="16"
+                      stroke="rgba(100, 181, 246, 0.4)"
+                      stroke-width="1"
+                      stroke-dasharray="2,2"
+                    />
+                  </svg>
+                </div>
+
+                <div class="tree-content d-flex align-center">
+                  <!-- Expand/Collapse Button with animation -->
                 <v-btn
-                  v-if="item.isParent && getChildrenCount(item.id) > 0"
-                  :icon="isParentExpanded(item.id) ? 'mdi-chevron-down' : 'mdi-chevron-right'"
-                  size="small"
+                    v-if="item.hasChildren"
+                    :icon="item.isExpanded ? 'mdi-chevron-down' : 'mdi-chevron-right'"
+                    size="x-small"
                   variant="text"
                   @click="toggleParentExpansion(item.id)"
-                  class="mr-2 expansion-button"
+                    class="tree-expand-btn"
                   color="primary"
+                    density="compact"
                 >
                 </v-btn>
 
-                <!-- Function Name with Hierarchy Indicators -->
-                <div class="d-flex align-center">
+                  <!-- Placeholder for alignment when no expand button -->
+                  <div v-else class="tree-expand-placeholder"></div>
 
-                  <span class="function-name">{{ item.function }}</span>
-
-                  <!-- Child Count Badge for any item that has children -->
+                  <!-- Tree Node Icon with children count -->
+                  <div class="tree-icon-wrapper" v-if="item.hasChildren">
+                  <v-icon
+                      :icon="getTreeIcon(item)"
+                    size="small"
+                      :color="getTreeIconColor(item)"
+                      class="tree-icon"
+                    ></v-icon>
+                    <!-- Children Count positioned over/next to icon -->
                   <v-chip
-                    v-if="item.isParent && getChildrenCount(item.id) > 0"
+                      v-if="item.hasChildren"
                     size="x-small"
-                    :color="item.isChild ? getDepthColor(item.depth || 1) : 'primary'"
-                    variant="tonal"
-                    class="ml-1"
-                  >
-                    {{ getChildrenCount(item.id) }}
-                  </v-chip>
+                    color="primary"
+                        variant="outlined"
+                      class="children-count-chip"
+                    >
+                      {{ item.childrenCount }}
+                    </v-chip>
+                      </div>
+
+                  <!-- Function Name with improved typography -->
+                  <div class="function-content">
+                    <span class="function-name" :class="getFunctionNameClass(item)">
+                      {{ item.function }}
+                    </span>
+                    
+                    <!-- Function Type Badge -->
+                            <v-chip
+                      v-if="item.hasChildren"
+                              size="x-small"
+                      :color="item.depth === 0 ? 'primary' : 'secondary'"
+                      variant="tonal"
+                      class="ml-2 function-type-chip"
+                            >
+                      {{ item.depth === 0 ? 'Parent' : 'Container' }}
+                            </v-chip>
+                          </div>
                 </div>
               </div>
             </template>
@@ -815,6 +1081,302 @@ const canBeForceDeleted = ref<string[]>([]);
 </template>
 
 <style scoped>
+/* Enhanced Tree Table Styles */
+.tree-cell {
+  position: relative;
+  min-height: 36px;
+  padding: 4px 0;
+}
+
+.tree-structure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.tree-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.tree-content {
+  position: relative;
+  z-index: 1;
+  gap: 8px;
+}
+
+.tree-expand-btn {
+  min-width: 24px !important;
+  width: 24px !important;
+  height: 24px !important;
+  margin-right: 4px;
+  transition: all 0.2s ease;
+  border-radius: 4px !important;
+}
+
+.tree-expand-btn:hover {
+  background-color: rgba(100, 181, 246, 0.1) !important;
+  transform: scale(1.1);
+}
+
+.tree-expand-placeholder {
+  width: 28px;
+  height: 24px;
+  margin-right: 4px;
+}
+
+.tree-icon-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 32px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  transition: all 0.2s ease;
+}
+
+.tree-icon-wrapper:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateY(-1px);
+}
+
+.tree-icon {
+  transition: all 0.2s ease;
+}
+
+.function-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Function Name Styling */
+.function-name {
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+  line-height: 1.4;
+}
+
+.function-name.root-function {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.function-name.parent-function {
+  font-weight: 600;
+  color: #f5f5f5;
+}
+
+.function-name.leaf-function {
+  font-weight: 400;
+  color: #e0e0e0;
+}
+
+.function-name.child-function {
+  color: #d0d0d0;
+}
+
+/* Function Type Chips */
+.function-type-chip {
+  font-size: 9px !important;
+  height: 16px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.5px;
+}
+
+/* Children Count Chip positioned next to icon */
+.tree-icon-wrapper .children-count-chip {
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  font-size: 8px !important;
+  height: 14px !important;
+  min-width: 14px !important;
+  padding: 0 4px !important;
+  font-weight: 700 !important;
+  z-index: 2;
+}
+
+
+
+/* Animation for expand/collapse */
+@keyframes treeExpand {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tree-cell {
+  animation: treeExpand 0.2s ease-out;
+}
+
+/* Tree Navigation Controls */
+.tree-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px;
+}
+
+.tree-nav-group {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tree-nav-btn {
+  font-size: 0.75rem !important;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  color: #e0e0e0 !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  transition: all 0.2s ease;
+}
+
+.tree-nav-btn:hover {
+  background: rgba(100, 181, 246, 0.1) !important;
+  color: #64b5f6 !important;
+  border-color: rgba(100, 181, 246, 0.3) !important;
+  transform: translateY(-1px);
+}
+
+.tree-level-item {
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+}
+
+.tree-level-item:hover {
+  background: rgba(100, 181, 246, 0.1);
+  color: #64b5f6;
+}
+
+/* Tree Row Styling */
+:deep(.tree-root-row) {
+  background-color: rgba(255, 255, 255, 0.02) !important;
+  border-left: 3px solid transparent !important;
+  color: #ffffff !important;
+}
+
+:deep(.tree-root-row .v-data-table__td) {
+  color: #ffffff !important;
+  font-weight: 500;
+}
+
+:deep(.tree-parent-row) {
+  font-weight: 500;
+}
+
+:deep(.tree-parent-row .v-data-table__td) {
+  font-weight: 500;
+}
+
+:deep(.tree-leaf-row) {
+  font-weight: 400;
+}
+
+:deep(.tree-leaf-row .v-data-table__td) {
+  font-weight: 400;
+}
+
+:deep(.tree-child-row) {
+  position: relative;
+}
+
+:deep(.tree-child-row):before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(to bottom, 
+    rgba(100, 181, 246, 0.4) 0%,
+    rgba(100, 181, 246, 0.2) 50%,
+    rgba(100, 181, 246, 0.1) 100%
+  );
+}
+
+/* Depth-specific styling */
+:deep(.tree-depth-1) {
+  border-left: 3px solid rgba(100, 181, 246, 0.3) !important;
+}
+
+:deep(.tree-depth-1 .v-data-table__td) {
+  color: #e0e0e0 !important;
+}
+
+:deep(.tree-depth-2) {
+  border-left: 3px solid rgba(76, 175, 80, 0.3) !important;
+}
+
+:deep(.tree-depth-2 .v-data-table__td) {
+  color: #d0d0d0 !important;
+}
+
+:deep(.tree-depth-3) {
+  border-left: 3px solid rgba(156, 39, 176, 0.3) !important;
+}
+
+:deep(.tree-depth-3 .v-data-table__td) {
+  color: #c0c0c0 !important;
+}
+
+:deep(.tree-depth-4) {
+  border-left: 3px solid rgba(255, 152, 0, 0.3) !important;
+}
+
+:deep(.tree-depth-4 .v-data-table__td) {
+  color: #b0b0b0 !important;
+}
+
+:deep(.tree-depth-5) {
+  border-left: 3px solid rgba(244, 67, 54, 0.3) !important;
+}
+
+:deep(.tree-depth-5 .v-data-table__td) {
+  color: #a0a0a0 !important;
+}
+
+/* Hover effects for tree rows */
+:deep(.tree-root-row):hover {
+  background-color: rgba(100, 181, 246, 0.05) !important;
+  border-left-color: rgba(100, 181, 246, 0.5) !important;
+}
+
+:deep(.tree-child-row):hover {
+  background-color: rgba(100, 181, 246, 0.04) !important;
+}
+
+:deep(.tree-parent-row):hover {
+  background-color: rgba(100, 181, 246, 0.06) !important;
+}
+
+/* Responsive Tree Controls */
+@media (max-width: 768px) {
+  .tree-controls {
+    margin: 8px 0;
+    justify-content: center;
+  }
+  
+  .tree-nav-btn {
+    font-size: 0.7rem !important;
+    padding: 4px 8px !important;
+  }
+}
+
 /* Dashboard Layout */
 .time-ticker-dashboard {
   background: linear-gradient(135deg, #212121 0%, #2d2d2d 100%);
@@ -1396,134 +1958,10 @@ const canBeForceDeleted = ref<string[]>([]);
   padding-right: 20px !important;
 }
 
-/* Depth-specific styling for nested children - now handled by inline styles */
 
-/* All depth-specific styling is now handled by inline styles in setRowProp */
 
-/* More specific selector for Vuetify table rows - Default child styling */
-:deep(.enhanced-table .v-data-table__tr.child-row) {
-  /* Border colors are now handled by inline styles */
-  padding-left: 40px !important;
-  padding-right: 20px !important;
-  margin-right: 8px !important;
-}
 
-/* Let DataTable use original styling */
 
-/* Child row styling using CSS custom properties set by inline styles */
-:deep(.enhanced-table .v-data-table__tr.child-row) {
-  border: none !important;
-}
-
-/* Remove default table borders for child rows */
-:deep(.enhanced-table .child-row .v-data-table__td) {
-  border-bottom: none !important;
-  border-top: none !important;
-  border-radius: 0 !important;
-}
-
-:deep(.enhanced-table .child-row .v-data-table__td:first-child) {
-  border-left: var(--child-border-width, 4px) solid var(--child-border-color, rgba(66, 66, 66, 0.9)) !important;
-  padding-left: 44px !important; /* Increased to account for border */
-  border-radius: 0 !important;
-}
-
-:deep(.enhanced-table .child-row .v-data-table__td:last-child) {
-  border-right: var(--child-border-width, 4px) solid var(--child-border-color, rgba(66, 66, 66, 0.9)) !important;
-  padding-right: 24px !important; /* Increased to account for border */
-  border-radius: 0 !important;
-}
-
-/* Target the first and last table cells in child rows for padding */
-:deep(.enhanced-table .child-row .v-data-table__td:first-child) {
-  padding-left: 40px !important;
-}
-
-:deep(.enhanced-table .child-row .v-data-table__td:last-child) {
-  padding-right: 20px !important;
-}
-
-/* Add margin to the entire child row */
-:deep(.enhanced-table .child-row) {
-  margin-right: 8px !important;
-}
-
-/* Alternative - target all cells in child rows */
-:deep(.child-row td) {
-  background: rgba(255, 183, 77, 0.02) !important;
-}
-
-:deep(.child-row td:first-child) {
-  padding-left: 40px !important;
-}
-
-:deep(.child-row td:last-child) {
-  padding-right: 20px !important;
-}
-
-/* Most specific approach - target the table wrapper */
-:deep(.v-table .child-row) {
-  margin-right: 8px !important;
-}
-
-:deep(.v-table .child-row td) {
-  background: rgba(255, 183, 77, 0.02) !important;
-}
-
-:deep(.v-table .child-row td:first-child) {
-  padding-left: 40px !important;
-  /* Border color is now handled by inline styles */
-}
-
-:deep(.v-table .child-row td:last-child) {
-  padding-right: 20px !important;
-  /* Border color is now handled by inline styles */
-}
-
-/* Try with tbody as well */
-:deep(tbody .child-row td:first-child) {
-  padding-left: 40px !important;
-}
-
-:deep(tbody .child-row td:last-child) {
-  padding-right: 20px !important;
-}
-
-/* Dense child row styling */
-:deep(.enhanced-table .child-row .v-data-table__td) {
-  padding: 4px 6px !important;
-  font-size: 0.85rem;
-  min-height: 32px;
-  height: 32px;
-}
-
-:deep(.enhanced-table .child-row .v-data-table__td:first-child) {
-  padding: 4px 6px 4px 30px !important;
-}
-
-:deep(.enhanced-table .child-row .v-data-table__td:last-child) {
-  padding: 4px 16px 4px 6px !important;
-}
-
-.child-row::before {
-  content: '';
-  position: absolute;
-  left: -4px;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: linear-gradient(to bottom, rgba(255, 183, 77, 0.5), rgba(255, 183, 77, 0.2));
-}
-
-.child-row::after {
-  content: '';
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: linear-gradient(to bottom, rgba(255, 183, 77, 0.3), rgba(255, 183, 77, 0.1));
-}
 
 .orphan-row {
   border-left: 4px solid #ff5722;
