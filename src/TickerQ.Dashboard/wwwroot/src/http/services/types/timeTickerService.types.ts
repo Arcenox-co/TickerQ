@@ -17,7 +17,8 @@ export class GetTimeTickerResponse {
     executedAt!:string;
     elapsedTime!:string|number;
     actions:string|undefined = undefined;
-    exception?:string;
+    exceptionMessage?:string;
+    skippedReason?:string;
     batchParent?:string;
     batchRunCondition?:string|number;
     children?:GetTimeTickerResponse[];

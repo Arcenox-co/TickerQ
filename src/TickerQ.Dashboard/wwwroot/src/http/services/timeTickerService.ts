@@ -58,7 +58,7 @@ const getTimeTickers = () => {
             if (nameof<GetTimeTickerResponse>(x => x.actions) == header.key) {
                 header.sortable = false;
             }
-            if (nameof<GetTimeTickerResponse>(x => x.id, x => x.exception, x => x.retries, x => x.lockedAt, x => x.createdAt, x => x.updatedAt, x => x.retryCount, x => x.elapsedTime, x => x.executionTime, x => x.children).includes(header.key)) {
+            if (nameof<GetTimeTickerResponse>(x => x.id, x => x.exceptionMessage,x => x.skippedReason, x => x.retries, x => x.lockedAt, x => x.createdAt, x => x.updatedAt, x => x.retryCount, x => x.elapsedTime, x => x.executionTime, x => x.children).includes(header.key)) {
                 header.visibility = false;
             }
             if (nameof<GetTimeTickerResponse>(x => x.executedAt) == header.key) {

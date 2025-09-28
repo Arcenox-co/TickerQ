@@ -6,7 +6,7 @@ export enum Status {
     DueDone = 4,
     Failed = 5,
     Cancelled = 6,
-    Batched = 7,
+    Skipped = 7,
   }
 
   export const getStatusValueSafe = (statusString: string | number): number => {

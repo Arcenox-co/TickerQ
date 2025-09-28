@@ -13,27 +13,50 @@ class BaseHub {
         const basePath = getBasePath();
         const backendUrl = getBackendUrl();
 
-        // Get auth token lazily when building the connection
-        const getAuthToken = () => {
+        // Get auth token and type lazily when building the connection
+        const getAuthInfo = () => {
             try {
-                // Access localStorage directly instead of using the store during initialization
-                return localStorage.getItem('auth') || 'ZHVtbXk6ZHVtbXk=';
+                // Check for Bearer token first
+                const bearerToken = localStorage.getItem('bearer_token');
+                if (bearerToken) {
+                    return {
+                        type: 'Bearer',
+                        token: bearerToken
+                    };
+                }
+
+                // Fallback to Basic auth
+                const basicAuth = localStorage.getItem('auth') || 'ZHVtbXk6ZHVtbXk=';
+                return {
+                    type: 'Basic',
+                    token: basicAuth
+                };
             } catch (error) {
-                // Could not access auth token, using default
-                return 'ZHVtbXk6ZHVtbXk=';
+                // Could not access auth token, using default Basic auth
+                return {
+                    type: 'Basic',
+                    token: 'ZHVtbXk6ZHVtbXk='
+                };
             }
         };
 
         // Use backend domain for WebSocket if configured, otherwise use base path
         let hubUrl: string;
         if (backendUrl) {
-            hubUrl = `${backendUrl}/ticker-notification-hub?auth=${encodeURIComponent(getAuthToken())}`;
+            hubUrl = `${backendUrl}/ticker-notification-hub`;
         } else {
-            hubUrl = `${basePath}/ticker-notification-hub?auth=${encodeURIComponent(getAuthToken())}`;
+            hubUrl = `${basePath}/ticker-notification-hub`;
         }
 
+        const authInfo = getAuthInfo();
+        
         return new signalR.HubConnectionBuilder()
-            .withUrl(hubUrl)
+            .withUrl(hubUrl, {
+                // Use headers for authentication - supports both Basic and Bearer
+                headers: {
+                    'Authorization': `${authInfo.type} ${authInfo.token}`
+                }
+            })
             .withAutomaticReconnect()
             .configureLogging(signalR.LogLevel.Information)
             .build();

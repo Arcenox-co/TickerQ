@@ -9,10 +9,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using TickerQ.Dashboard.Authentication;
 using TickerQ.Dashboard.Endpoints;
-using TickerQ.Dashboard.Hubs;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Microsoft.AspNetCore.Authorization;
 using TickerQ.Utilities.Entities;
 
 namespace TickerQ.Dashboard.DependencyInjection
@@ -28,10 +26,12 @@ namespace TickerQ.Dashboard.DependencyInjection
 
             // Always add authentication services since endpoints may require authorization
             // The authentication handler will determine if authentication is actually needed
-            services.AddAuthentication("Basic")
-                .AddScheme<BasicAuthenticationSchemeOptions, BasicAuthenticationHandler>("Basic", options => { });
-            services.AddAuthorization();
+            if (config.EnableBasicAuth){
+                services.AddAuthentication("Basic")
+                .AddScheme<BasicAuthenticationSchemeOptions, BasicAuthenticationHandler>("Basic", _ => { });
+            }
 
+            services.AddAuthorization();
             services.AddCors(options =>
             {
                 options.AddPolicy("TickerQ_Dashboard_CORS", policy =>
@@ -131,68 +131,6 @@ namespace TickerQ.Dashboard.DependencyInjection
             });
         }
 
-        internal static void UseDashboard(this IApplicationBuilder app, DashboardOptionsBuilder config)
-        {
-            // Get the assembly and set up the embedded file provider
-            var assembly = Assembly.GetExecutingAssembly();
-            var embeddedFileProvider = new EmbeddedFileProvider(assembly, "TickerQ.Dashboard.wwwroot.dist");
-
-            // Validate and normalize base path
-            var basePath = NormalizeBasePath(config.BasePath);
-
-            // Map a branch for the basePath to properly isolate dashboard
-            app.Map(basePath, dashboardApp =>
-            {
-                // Execute pre-dashboard middleware
-                config.PreDashboardMiddleware?.Invoke(dashboardApp);
-
-                // Serve static files from the embedded provider
-                dashboardApp.UseStaticFiles(new StaticFileOptions
-                {
-                    FileProvider = embeddedFileProvider,
-                    OnPrepareResponse = ctx =>
-                    {
-                        // Cache static assets for 1 hour
-                        if (ctx.File.Name.EndsWith(".js") || ctx.File.Name.EndsWith(".css") || 
-                            ctx.File.Name.EndsWith(".ico") || ctx.File.Name.EndsWith(".png"))
-                        {
-                            ctx.Context.Response.Headers.CacheControl = "public,max-age=3600";
-                        }
-                    }
-                });
-
-                // Execute custom middleware if provided
-                config.CustomMiddleware?.Invoke(dashboardApp);
-
-                // Execute post-dashboard middleware
-                config.PostDashboardMiddleware?.Invoke(dashboardApp);
-
-                // SPA fallback middleware: if no route is matched, serve the modified index.html
-                dashboardApp.Use(async (context, next) =>
-                {
-                    await next();
-
-                    if (context.Response.StatusCode == 404)
-                    {
-                        var file = embeddedFileProvider.GetFileInfo("index.html");
-                        if (file.Exists)
-                        {
-                            await using var stream = file.CreateReadStream();
-                            using var reader = new StreamReader(stream);
-                            var htmlContent = await reader.ReadToEndAsync();
-
-                            // Inject the base tag and other replacements into the HTML
-                            htmlContent = ReplaceBasePath(htmlContent, basePath, config);
-
-                            context.Response.ContentType = "text/html";
-                            context.Response.StatusCode = 200;
-                            await context.Response.WriteAsync(htmlContent);
-                        }
-                    }
-                });
-            });
-        }
-
         private static string NormalizeBasePath(string basePath)
         {
             if (string.IsNullOrEmpty(basePath))
@@ -203,7 +141,6 @@ namespace TickerQ.Dashboard.DependencyInjection
 
             return basePath.TrimEnd('/');
         }
-
 
         private static string ReplaceBasePath(string htmlContent, string basePath, DashboardOptionsBuilder config)
         {

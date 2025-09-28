@@ -164,20 +164,9 @@ public static class DashboardEndpoints
             .WithSummary("Get machine jobs");
 
         // SignalR Hub
-        endpoints.MapHub<TickerQNotificationHub>("/ticker-notification-hub")
+        endpoints.MapHub<TickerQNotificationHub>($"/ticker-notification-hub")
             .RequireAuthorization(GetAuthorizationPolicy(config));
 
-    }
-
-    private static string NormalizeBasePath(string basePath)
-    {
-        if (string.IsNullOrEmpty(basePath))
-            return "";
-
-        if (!basePath.StartsWith('/'))
-            basePath = "/" + basePath;
-
-        return basePath.TrimEnd('/');
     }
 
     private static Action<AuthorizationPolicyBuilder> GetAuthorizationPolicy(DashboardOptionsBuilder config)
@@ -200,30 +189,6 @@ public static class DashboardEndpoints
                 policy.RequireAuthenticatedUser();
             }
         };
-    }
-
-    private static async Task<string> ReadFileContent(Microsoft.Extensions.FileProviders.IFileInfo file)
-    {
-        await using var stream = file.CreateReadStream();
-        using var reader = new StreamReader(stream);
-        return await reader.ReadToEndAsync();
-    }
-
-    private static string ReplaceBasePath(string htmlContent, string basePath, DashboardOptionsBuilder config)
-    {
-        if (string.IsNullOrEmpty(htmlContent))
-            return htmlContent;
-
-        // Replace base href
-        if (!string.IsNullOrEmpty(basePath))
-        {
-            htmlContent = htmlContent.Replace("<base href=\"/\">", $"<base href=\"{basePath}/\">");
-        }
-
-        // Add any other custom replacements from config
-        // You can extend this based on your DashboardOptionsBuilder properties
-
-        return htmlContent;
     }
 
     #region Endpoint Handlers

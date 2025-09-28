@@ -33,13 +33,12 @@ const exceptionDialog = useDialog<ConfirmDialogProps>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
 )
 
-
 const requestMatchType = ref(new Map<string, number>())
 const crudTimeTickerDialogRef = ref(null)
 
 // Chain Jobs Modal
 const chainJobsModal = ref({
-  isOpen: false
+  isOpen: false,
 })
 
 const expandedParents = ref(new Set<string>())
@@ -48,29 +47,27 @@ const tableSearch = ref('')
 const selectedItems = ref(new Set<string>())
 
 onMounted(async () => {
-    // Initialize WebSocket connection
-    try {
-      const connectionStore = useConnectionStore()
-      if (!connectionStore.isInitialized) {
-        await connectionStore.initializeConnectionWithRetry()
-      }
-    } 
-    catch (error: any) {}
-    
-    // Load initial data
-    try {
-      await getTimeTickers.requestAsync()
-    } catch (error) {
-      // Failed to load time tickers
+  // Initialize WebSocket connection
+  try {
+    const connectionStore = useConnectionStore()
+    if (!connectionStore.isInitialized) {
+      await connectionStore.initializeConnectionWithRetry()
     }
-    
-    // Add hub listeners
-    try {
-      await addHubListeners()
-    } catch (error) {
-      // Failed to add hub listeners
-    }
-    
+  } catch (error: any) {}
+
+  // Load initial data
+  try {
+    await getTimeTickers.requestAsync()
+  } catch (error) {
+    // Failed to load time tickers
+  }
+
+  // Add hub listeners
+  try {
+    await addHubListeners()
+  } catch (error) {
+    // Failed to add hub listeners
+  }
 })
 
 onUnmounted(() => {
@@ -114,10 +111,10 @@ const processedTableData = computed(() => {
       const currentPath = parentPath ? `${parentPath}.${index}` : `${index}`
       const hasChildren = item.children && item.children.length > 0
       const isExpanded = expandedParents.value.has(item.id)
-      
+
       // Add the current item with tree metadata
       const treeItem = {
-      ...item,
+        ...item,
         // Tree structure properties
         depth: depth,
         isParent: hasChildren,
@@ -129,9 +126,9 @@ const processedTableData = computed(() => {
         // Visual properties for tree rendering
         isFirstChild: index === 0,
         isLastChild: index === items.length - 1,
-      children: item.children || []
-    }
-      
+        children: item.children || [],
+      }
+
       result.push(treeItem)
 
       // If this item is expanded and has children, add them recursively
@@ -152,6 +149,12 @@ const headersWithSelection = computed(() => {
   headers.unshift({
     title: '',
     key: 'selection',
+    sortable: false,
+    visibility: true,
+  })
+  headers.push({
+    title: '',
+    key: 'treeMarker',
     sortable: false,
     visibility: true,
   })
@@ -181,8 +184,7 @@ const onChainJobsCreated = async (result: any) => {
   await getTimeTickers.requestAsync()
 }
 
-
-const toggleParentExpansion = (parentId: string) => {  
+const toggleParentExpansion = (parentId: string) => {
   if (expandedParents.value.has(parentId)) {
     expandedParents.value.delete(parentId)
   } else {
@@ -195,9 +197,9 @@ const toggleParentExpansion = (parentId: string) => {
 // Enhanced tree navigation functions
 const expandAll = () => {
   const allParentIds = processedTableData.value
-    .filter(item => item.hasChildren)
-    .map(item => item.id)
-  
+    .filter((item) => item.hasChildren)
+    .map((item) => item.id)
+
   expandedParents.value = new Set(allParentIds)
 }
 
@@ -208,9 +210,9 @@ const collapseAll = () => {
 
 const expandToLevel = (maxDepth: number) => {
   const parentsToExpand = processedTableData.value
-    .filter(item => item.hasChildren && item.depth < maxDepth)
-    .map(item => item.id)
-  
+    .filter((item) => item.hasChildren && item.depth < maxDepth)
+    .map((item) => item.id)
+
   expandedParents.value = new Set(parentsToExpand)
 }
 
@@ -218,133 +220,27 @@ const expandToLevel = (maxDepth: number) => {
 const getRowProps = (item: any) => {
   const classes = []
   const styles: any = {}
-  
-  // Add tree-specific classes
-  if (item.hasChildren) {
-    classes.push('tree-parent-row')
-  } else {
-    classes.push('tree-leaf-row')
-  }
-  
-  // Add depth-specific classes and styling
-  if (item.depth > 0) {
-    classes.push('tree-child-row')
-    classes.push(`tree-depth-${item.depth}`)
-    
-    // Add subtle background tinting based on depth
-    const depthColors = {
-      1: 'rgba(100, 181, 246, 0.03)', // Light blue tint for level 1
-      2: 'rgba(76, 175, 80, 0.03)',   // Light green tint for level 2  
-      3: 'rgba(156, 39, 176, 0.03)',  // Light purple tint for level 3
-      4: 'rgba(255, 152, 0, 0.03)',   // Light orange tint for level 4
-      5: 'rgba(244, 67, 54, 0.03)'    // Light red tint for level 5
-    }
-    
-    // Text colors based on depth for better hierarchy
-    const textColors = {
-      1: '#e0e0e0', // Slightly dimmed for level 1
-      2: '#d0d0d0', // More dimmed for level 2
-      3: '#c0c0c0', // Even more dimmed for level 3
-      4: '#b0b0b0', // Further dimmed for level 4
-      5: '#a0a0a0'  // Most dimmed for level 5
-    }
-    
-    styles.backgroundColor = depthColors[item.depth as keyof typeof depthColors] || depthColors[1]
-    styles.color = textColors[item.depth as keyof typeof textColors] || textColors[1]
-  } else {
-    classes.push('tree-root-row')
-    styles.color = '#ffffff' // Bright white for root rows
-  }
-  
+
+  classes.push('tree-leaf-row')
+  classes.push('tree-root-row')
+
   return {
     class: classes.join(' '),
-    style: styles
+    style: styles,
   }
-}
-
-const isParentExpanded = (parentId: string) => {
-  return expandedParents.value.has(parentId)
-}
-
-const getChildrenCount = (parentId: string) => {
-  // First check in raw data
-  const rawData = getTimeTickers.response.value || []
-  
-  // Recursive function to find item by ID in nested structure
-  const findItemById = (items: any[], id: string): any => {
-    for (const item of items) {
-      if (item.id === id) {
-        return item
-      }
-      if (item.children && item.children.length > 0) {
-        const found = findItemById(item.children, id)
-        if (found) return found
-      }
-    }
-    return null
-  }
-  
-  const parent = findItemById(rawData, parentId)
-  return parent?.children?.length || 0
-}
-
-// Helper functions for depth-based styling
-const getDepthColor = (depth: number) => {
-  const colors = {
-    1: 'rgba(66, 66, 66, 0.9)', // Orange for children
-    2: '#66bb6a', // Light Green for grandchildren  
-    3: '#42a5f5', // Light Blue for great-grandchildren
-    4: '#ab47bc', // Purple for depth 4
-    5: '#ec407a'  // Pink for depth 5
-  }
-  return colors[depth as keyof typeof colors] || colors[1]
 }
 
 // Enhanced tree table helper functions
 const getTreeIcon = (item: any) => {
-  if (!item.hasChildren) {
-    // Leaf nodes - different icons based on status or type
-    switch (item.status?.toLowerCase()) {
-      case 'done':
-      case 'duedone':
-        return 'mdi-check-circle'
-      case 'failed':
-        return 'mdi-alert-circle'
-      case 'inprogress':
-        return 'mdi-play-circle'
-      case 'queued':
-        return 'mdi-clock-outline'
-      default:
-        return 'mdi-file-document-outline'
-    }
-  }
-  
   // Parent nodes - folder icons
   if (item.depth === 0) {
     return item.isExpanded ? 'mdi-folder-open-outline' : 'mdi-folder-outline'
-      } else {
+  } else {
     return item.isExpanded ? 'mdi-folder-multiple-outline' : 'mdi-folder-multiple'
   }
 }
 
 const getTreeIconColor = (item: any) => {
-  if (!item.hasChildren) {
-    // Leaf nodes - color based on status
-    switch (item.status?.toLowerCase()) {
-      case 'done':
-      case 'duedone':
-        return 'success'
-      case 'failed':
-        return 'error'
-      case 'inprogress':
-        return 'primary'
-      case 'queued':
-        return 'warning'
-      default:
-        return 'blue-grey-lighten-1'
-    }
-  }
-  
   // Parent nodes - different colors by depth
   if (item.depth === 0) {
     return 'amber'
@@ -354,26 +250,6 @@ const getTreeIconColor = (item: any) => {
     return 'purple'
   }
 }
-
-const getFunctionNameClass = (item: any) => {
-  const classes = ['function-name']
-  
-  if (item.hasChildren) {
-    classes.push('parent-function')
-    if (item.depth === 0) {
-      classes.push('root-function')
-    }
-  } else {
-    classes.push('leaf-function')
-  }
-  
-  if (item.isChild) {
-    classes.push('child-function')
-  }
-  
-  return classes.join(' ')
-}
-
 
 const closeCrudTimeTickerDialog = () => {
   crudTimeTickerDialog.close()
@@ -397,16 +273,6 @@ const getRequestMatchType = computed(() => {
       return { id: item[0], icon: 'mdi-alert-decagram', color: '#212121', class: 'red-badge' }
   })
 })
-
-const seriesColors: { [key: string]: string } = {
-  Idle: '#A9A9A9', // Dark Gray
-  Queued: '#00CED1', // Dark Turquoise
-  InProgress: '#6495ED', // Royal Blue
-  Done: '#32CD32', // Lime Green
-  DueDone: '#008000', // Green
-  Failed: '#FF0000', // Red
-  Cancelled: '#FFD700', // Gold/Yellow
-}
 
 // Helper functions for status styling
 const getStatusColor = (status: string) => {
@@ -522,68 +388,7 @@ const onSubmitConfirmDialog = async () => {
   await deleteTimeTicker.requestAsync(confirmDialog.propData?.id!)
 }
 
-const setRowProp = (propContext: any) => {
-  const baseStyle = `color:${seriesColors[propContext.item.status]}`
-  let classes = []
-
-  if (selectedItems.value.has(propContext.item.id)) {
-    classes.push('selected-row')
-  }
-
-  if (propContext.item.isChild) {
-    const depth = propContext.item.depth || 1
-    classes.push(`child-row depth-${depth}`)
-    
-    
-    // Calculate indentation based on depth
-    const leftPadding = 20 + (depth * 20) // 40px for depth 1, 60px for depth 2, etc.
-    
-    // Get depth-specific border color
-    const depthColors = {
-      1: 'rgba(66, 66, 66, 0.9)', // Dark gray for children
-      2: 'rgba(66, 66, 66, 0.9)', // Same dark gray for grandchildren  
-      3: 'rgba(66, 66, 66, 0.9)', // Same dark gray for great-grandchildren
-      4: 'rgba(66, 66, 66, 0.9)', // Same dark gray for depth 4
-      5: 'rgba(66, 66, 66, 0.9)'  // Same dark gray for depth 5
-    }
-    const borderColor = depthColors[depth as keyof typeof depthColors] || depthColors[1]
-    
-    // Get depth-specific border width
-    const depthBorderWidths = {
-      1: '8px', // 4px for children
-      2: '16px', // 8px for grandchildren
-      3: '4px', // 4px for great-grandchildren
-      4: '4px', // 4px for depth 4
-      5: '4px'  // 4px for depth 5
-    }
-    const borderWidth = depthBorderWidths[depth as keyof typeof depthBorderWidths] || depthBorderWidths[1]
-    
-    return {
-      style: `${baseStyle}; padding-left: ${leftPadding}px; --child-border-color: ${borderColor}; --child-border-width: ${borderWidth}; margin-right: 8px;`,
-      class: classes.join(' '),
-    }
-  } else if (propContext.item.isParent) {
-    classes.push('parent-row')
-    return {
-      style: `${baseStyle}; font-weight: 500;`,
-      class: classes.join(' '),
-    }
-  } else if (propContext.item.isOrphan) {
-    classes.push('orphan-row')
-    return {
-      style: `${baseStyle}; font-style: italic; opacity: 0.8;`,
-      class: classes.join(' '),
-    }
-  }
-
-  return {
-    style: baseStyle,
-    class: classes.join(' '),
-  }
-}
-
-const canBeForceDeleted = ref<string[]>([]);
-
+const canBeForceDeleted = ref<string[]>([])
 </script>
 
 <template>
@@ -591,8 +396,7 @@ const canBeForceDeleted = ref<string[]>([]);
     <!-- Content Section -->
     <div class="dashboard-content">
       <!-- Analytics Section -->
-      <div class="content-card analytics-overview">
-      </div>
+      <div class="content-card analytics-overview"></div>
 
       <!-- Operations Table Section -->
       <div class="table-section">
@@ -621,11 +425,7 @@ const canBeForceDeleted = ref<string[]>([]);
                   <div class="btn-shine"></div>
                 </button>
 
-
-                <button
-                  class="premium-action-btn tertiary-action"
-                  @click="openChainJobsModal()"
-                >
+                <button class="premium-action-btn tertiary-action" @click="openChainJobsModal()">
                   <div class="btn-icon">
                     <v-icon size="18">mdi-family-tree</v-icon>
                   </div>
@@ -758,7 +558,6 @@ const canBeForceDeleted = ref<string[]>([]);
             :search="tableSearch"
             :item-height="32"
           >
-          
             <!-- Selection Column -->
             <template v-slot:item.selection="{ item }">
               <v-checkbox
@@ -773,7 +572,7 @@ const canBeForceDeleted = ref<string[]>([]);
             </template>
 
             <template v-slot:item.function="{ item }">
-              <div class="tree-cell" :style="{ paddingLeft: (item.depth * 28) + 'px' }">
+              <div class="tree-cell" :style="{ paddingLeft: item.depth * 28 + 'px' }">
                 <!-- Tree Structure with improved lines -->
                 <div class="tree-structure" v-if="item.depth > 0">
                   <svg class="tree-svg" :width="item.depth * 28" height="32">
@@ -804,58 +603,37 @@ const canBeForceDeleted = ref<string[]>([]);
 
                 <div class="tree-content d-flex align-center">
                   <!-- Expand/Collapse Button with animation -->
-                <v-btn
+                  <v-btn
                     v-if="item.hasChildren"
                     :icon="item.isExpanded ? 'mdi-chevron-down' : 'mdi-chevron-right'"
                     size="x-small"
-                  variant="text"
-                  @click="toggleParentExpansion(item.id)"
+                    variant="text"
+                    @click="toggleParentExpansion(item.id)"
                     class="tree-expand-btn"
-                  color="primary"
+                    color="primary"
                     density="compact"
-                >
-                </v-btn>
+                  >
+                  </v-btn>
 
                   <!-- Placeholder for alignment when no expand button -->
                   <div v-else class="tree-expand-placeholder"></div>
 
                   <!-- Tree Node Icon with children count -->
                   <div class="tree-icon-wrapper" v-if="item.hasChildren">
-                  <v-icon
+                    <v-icon
                       :icon="getTreeIcon(item)"
-                    size="small"
+                      size="small"
                       :color="getTreeIconColor(item)"
                       class="tree-icon"
                     ></v-icon>
-                    <!-- Children Count positioned over/next to icon -->
-                  <v-chip
-                      v-if="item.hasChildren"
-                    size="x-small"
-                    color="primary"
-                        variant="outlined"
-                      class="children-count-chip"
-                    >
-                      {{ item.childrenCount }}
-                    </v-chip>
-                      </div>
+                  </div>
 
                   <!-- Function Name with improved typography -->
                   <div class="function-content">
-                    <span class="function-name" :class="getFunctionNameClass(item)">
+                    <span class="function-name">
                       {{ item.function }}
                     </span>
-                    
-                    <!-- Function Type Badge -->
-                            <v-chip
-                      v-if="item.hasChildren"
-                              size="x-small"
-                      :color="item.depth === 0 ? 'primary' : 'secondary'"
-                      variant="tonal"
-                      class="ml-2 function-type-chip"
-                            >
-                      {{ item.depth === 0 ? 'Parent' : 'Container' }}
-                            </v-chip>
-                          </div>
+                  </div>
                 </div>
               </div>
             </template>
@@ -868,15 +646,15 @@ const canBeForceDeleted = ref<string[]>([]);
                   size="x-small"
                   class="status-chip"
                   @click="
-                    hasStatus(item.status, Status.Failed)
+                        hasStatus(item.status, Status.Failed) || hasStatus(item.status, Status.Skipped)
                       ? exceptionDialog.open({
                           ...new ConfirmDialogProps(),
-                          title: 'Exception Details',
-                          text: item.exception!,
+                          title: hasStatus(item.status, Status.Skipped) ? 'Skipped Reason' : 'Exception Details',
+                          text: hasStatus(item.status, Status.Skipped) ? item.skippedReason! : item.exceptionMessage!,
                           showConfirm: false,
                           maxWidth: '900',
-                          icon: 'mdi-bug-outline',
-                          isException: true,
+                          icon: hasStatus(item.status, Status.Failed) ? 'mdi-bug-outline' : 'mdi-information-outline',
+                          isException: hasStatus(item.status, Status.Skipped)? false : true,
                         })
                       : null
                   "
@@ -884,6 +662,8 @@ const canBeForceDeleted = ref<string[]>([]);
                   <v-icon size="x-small" class="mr-1" v-if="hasStatus(item.status, Status.Failed)">
                     mdi-bug-outline
                   </v-icon>
+                  <v-icon size="x-small" class="mr-1" v-else-if="hasStatus(item.status, Status.Done) || hasStatus(item.status, Status.DueDone)"> mdi-check-circle </v-icon>
+                  <v-icon size="x-small" class="mr-1" v-else-if="hasStatus(item.status, Status.Skipped)"> mdi-debug-step-over </v-icon>
                   <span class="font-weight-medium text-caption">{{ item.status }}</span>
                 </v-chip>
               </div>
@@ -929,7 +709,7 @@ const canBeForceDeleted = ref<string[]>([]);
 
             <template v-slot:item.retryIntervals="{ item }">
               <div class="retry-display" v-if="getRetryIntervalsArray(item.retryIntervals)?.length">
-                <span  class="retry-sequence">
+                <span class="retry-sequence">
                   <template v-for="(interval, index) in getDisplayIntervals(item)" :key="index">
                     <span class="retry-item" :class="getRetryStatus(interval.originalIndex, item)"
                       >{{ interval.originalIndex + 1 }}:{{ interval.value }}</span
@@ -960,10 +740,15 @@ const canBeForceDeleted = ref<string[]>([]);
                     <template v-slot:activator="{ props }">
                       <button
                         v-bind="props"
-                        @click="requestCancel(item.id).catch(() => {
-                          canBeForceDeleted.push(item.id)
-                        })"
-                        :disabled="!hasStatus(item.status, Status.InProgress) || canBeForceDeleted.includes(item.id)"
+                        @click="
+                          requestCancel(item.id).catch(() => {
+                            canBeForceDeleted.push(item.id)
+                          })
+                        "
+                        :disabled="
+                          !hasStatus(item.status, Status.InProgress) ||
+                          canBeForceDeleted.includes(item.id)
+                        "
                         class="modern-action-btn cancel-btn"
                         :class="{ active: hasStatus(item.status, Status.InProgress) }"
                       >
@@ -1021,23 +806,144 @@ const canBeForceDeleted = ref<string[]>([]);
                 <!-- Delete Button -->
                 <div
                   class="action-btn-wrapper"
-                  :class="{ 'action-btn-disabled': hasStatus(item.status, Status.InProgress) && !canBeForceDeleted.includes(item.id) }"
+                  :class="{
+                    'action-btn-disabled':
+                      hasStatus(item.status, Status.InProgress) &&
+                      !canBeForceDeleted.includes(item.id),
+                  }"
                 >
                   <v-tooltip location="top">
                     <template v-slot:activator="{ props }">
                       <button
                         v-bind="props"
                         @click="confirmDialog.open({ id: item.id })"
-                        :disabled="hasStatus(item.status, Status.InProgress) && !canBeForceDeleted.includes(item.id)"
+                        :disabled="
+                          hasStatus(item.status, Status.InProgress) &&
+                          !canBeForceDeleted.includes(item.id)
+                        "
                         class="modern-action-btn delete-btn"
-                        :class="{ active: !hasStatus(item.status, Status.InProgress) || canBeForceDeleted.includes(item.id) }"
+                        :class="{
+                          active:
+                            !hasStatus(item.status, Status.InProgress) ||
+                            canBeForceDeleted.includes(item.id),
+                        }"
                       >
                         <v-icon size="16">mdi-trash-can</v-icon>
                       </button>
                     </template>
-                    <span>{{ canBeForceDeleted.includes(item.id) ? 'Force Delete Ticker' : 'Delete Ticker' }}</span>
+                    <span>{{
+                      canBeForceDeleted.includes(item.id) ? 'Force Delete Ticker' : 'Delete Ticker'
+                    }}</span>
                   </v-tooltip>
                 </div>
+              </div>
+            </template>
+
+            <!-- Tree Marker Column -->
+            <template v-slot:item.treeMarker="{ item }">
+              <div class="tree-marker">
+                <svg width="32" height="32" viewBox="0 0 32 32" class="tree-marker-svg">
+                  <!-- Mirror the left side tree structure on the right -->
+                  <g v-if="item.depth > 0">
+                    <!-- Vertical dashed lines for each depth level (mirrored from right) -->
+                    <line
+                      v-for="level in item.depth"
+                      :key="`v-${level}`"
+                      :x1="32 - (level - 1) * 6 - 6"
+                      :x2="32 - (level - 1) * 6 - 6"
+                      :y1="0"
+                      :y2="item.isLastChild && level === item.depth ? 16 : 32"
+                      stroke="rgba(100, 181, 246, 0.4)"
+                      stroke-width="1"
+                      stroke-dasharray="2,2"
+                    />
+                    <!-- Horizontal connector line (mirrored from right) -->
+                    <line
+                      :x1="32 - (item.depth - 1) * 6 - 6"
+                      :x2="32 - (item.depth - 1) * 6 - 18"
+                      :y1="16"
+                      :y2="16"
+                      stroke="rgba(100, 181, 246, 0.4)"
+                      stroke-width="1"
+                      stroke-dasharray="2,2"
+                    />
+                    <!-- Dotted path to parent - vertical connection upward with rounded end -->
+                    <path
+                      :d="`M ${32 - (item.depth - 1) * 6 - 6} 0 L ${32 - (item.depth - 1) * 6 - 6} -6 Q ${32 - (item.depth - 1) * 6 - 6} -8 ${32 - (item.depth - 1) * 6 - 4} -8`"
+                      stroke="rgba(100, 181, 246, 0.4)"
+                      stroke-width="1"
+                      stroke-dasharray="1,1"
+                      fill="none"
+                      stroke-linecap="round"
+                    />
+
+                    <!-- Downward tree structure for child items that have grandchildren (only when expanded) -->
+                    <g v-if="item.hasChildren && item.isExpanded">
+                      <!-- Vertical dashed line going downward -->
+                      <line
+                        :x1="32 - item.depth * 6 - 6"
+                        :x2="32 - item.depth * 6 - 6"
+                        y1="24"
+                        y2="32"
+                        stroke="rgba(100, 181, 246, 0.4)"
+                        stroke-width="1"
+                        stroke-dasharray="2,2"
+                      />
+                      <!-- Horizontal connector line (positioned lower to avoid overlap) -->
+                      <line
+                        :x1="32 - item.depth * 6 - 6"
+                        :x2="32 - item.depth * 6 - 18"
+                        y1="24"
+                        y2="24"
+                        stroke="rgba(100, 181, 246, 0.4)"
+                        stroke-width="1"
+                        stroke-dasharray="2,2"
+                      />
+                      <!-- Dotted path downward with rounded end -->
+                      <path
+                        :d="`M ${32 - item.depth * 6 - 6} 32 L ${32 - item.depth * 6 - 6} 38 Q ${32 - item.depth * 6 - 6} 40 ${32 - item.depth * 6 - 4} 40`"
+                        stroke="rgba(100, 181, 246, 0.4)"
+                        stroke-width="1"
+                        stroke-dasharray="1,1"
+                        fill="none"
+                        stroke-linecap="round"
+                      />
+                    </g>
+                  </g>
+                  <!-- For root items that have children, show downward tree structure -->
+                  <g v-else-if="item.hasChildren">
+                    <!-- Vertical dashed line going downward (positioned like depth 1) -->
+                    <line
+                      x1="26"
+                      x2="26"
+                      y1="16"
+                      y2="32"
+                      stroke="rgba(100, 181, 246, 0.4)"
+                      stroke-width="1"
+                      stroke-dasharray="2,2"
+                    />
+                    <!-- Horizontal connector line -->
+                    <line
+                      x1="26"
+                      x2="14"
+                      y1="16"
+                      y2="16"
+                      stroke="rgba(100, 181, 246, 0.4)"
+                      stroke-width="1"
+                      stroke-dasharray="2,2"
+                    />
+                    <!-- Dotted path downward with rounded end -->
+                    <path
+                      d="M 26 32 L 26 38 Q 26 40 28 40"
+                      stroke="rgba(100, 181, 246, 0.4)"
+                      stroke-width="1"
+                      stroke-dasharray="1,1"
+                      fill="none"
+                      stroke-linecap="round"
+                    />
+                  </g>
+                  <!-- No content for items without children -->
+                </svg>
               </div>
             </template>
           </v-data-table>
@@ -1073,10 +979,7 @@ const canBeForceDeleted = ref<string[]>([]);
     />
 
     <!-- Chain Jobs Modal -->
-    <ChainJobsModal
-      v-model="chainJobsModal.isOpen"
-      @created="onChainJobsCreated"
-    />
+    <ChainJobsModal v-model="chainJobsModal.isOpen" @created="onChainJobsCreated" />
   </div>
 </template>
 
@@ -1156,34 +1059,6 @@ const canBeForceDeleted = ref<string[]>([]);
   gap: 8px;
 }
 
-/* Function Name Styling */
-.function-name {
-  font-size: 0.875rem;
-  transition: all 0.2s ease;
-  line-height: 1.4;
-}
-
-.function-name.root-function {
-  font-weight: 700;
-  font-size: 0.95rem;
-  color: #ffffff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-}
-
-.function-name.parent-function {
-  font-weight: 600;
-  color: #f5f5f5;
-}
-
-.function-name.leaf-function {
-  font-weight: 400;
-  color: #e0e0e0;
-}
-
-.function-name.child-function {
-  color: #d0d0d0;
-}
-
 /* Function Type Chips */
 .function-type-chip {
   font-size: 9px !important;
@@ -1204,8 +1079,6 @@ const canBeForceDeleted = ref<string[]>([]);
   font-weight: 700 !important;
   z-index: 2;
 }
-
-
 
 /* Animation for expand/collapse */
 @keyframes treeExpand {
@@ -1246,13 +1119,7 @@ const canBeForceDeleted = ref<string[]>([]);
   transition: all 0.2s ease;
 }
 
-.tree-nav-btn:hover {
-  background: rgba(100, 181, 246, 0.1) !important;
-  color: #64b5f6 !important;
-  border-color: rgba(100, 181, 246, 0.3) !important;
-  transform: translateY(-1px);
-}
-
+/* 
 .tree-level-item {
   font-size: 0.875rem;
   transition: all 0.2s ease;
@@ -1261,107 +1128,48 @@ const canBeForceDeleted = ref<string[]>([]);
 .tree-level-item:hover {
   background: rgba(100, 181, 246, 0.1);
   color: #64b5f6;
-}
+} */
 
-/* Tree Row Styling */
+/* Tree Row Styling
 :deep(.tree-root-row) {
   background-color: rgba(255, 255, 255, 0.02) !important;
   border-left: 3px solid transparent !important;
-  color: #ffffff !important;
-}
-
-:deep(.tree-root-row .v-data-table__td) {
-  color: #ffffff !important;
-  font-weight: 500;
-}
-
-:deep(.tree-parent-row) {
-  font-weight: 500;
-}
-
-:deep(.tree-parent-row .v-data-table__td) {
-  font-weight: 500;
-}
-
-:deep(.tree-leaf-row) {
-  font-weight: 400;
-}
+} */
 
 :deep(.tree-leaf-row .v-data-table__td) {
   font-weight: 400;
+  color: #d0d0d0 !important;
 }
 
 :deep(.tree-child-row) {
   position: relative;
 }
 
-:deep(.tree-child-row):before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: linear-gradient(to bottom, 
-    rgba(100, 181, 246, 0.4) 0%,
-    rgba(100, 181, 246, 0.2) 50%,
-    rgba(100, 181, 246, 0.1) 100%
-  );
+/* Tree Marker Column Styles */
+.tree-marker {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  height: 32px;
+  padding-right: 4px;
 }
 
-/* Depth-specific styling */
-:deep(.tree-depth-1) {
-  border-left: 3px solid rgba(100, 181, 246, 0.3) !important;
+.tree-marker-svg {
+  transition: all 0.2s ease;
 }
 
-:deep(.tree-depth-1 .v-data-table__td) {
-  color: #e0e0e0 !important;
+.tree-marker:hover .tree-marker-svg line {
+  stroke: rgba(100, 181, 246, 0.6) !important;
 }
 
-:deep(.tree-depth-2) {
-  border-left: 3px solid rgba(76, 175, 80, 0.3) !important;
-}
-
-:deep(.tree-depth-2 .v-data-table__td) {
-  color: #d0d0d0 !important;
-}
-
-:deep(.tree-depth-3) {
-  border-left: 3px solid rgba(156, 39, 176, 0.3) !important;
-}
-
-:deep(.tree-depth-3 .v-data-table__td) {
-  color: #c0c0c0 !important;
-}
-
-:deep(.tree-depth-4) {
-  border-left: 3px solid rgba(255, 152, 0, 0.3) !important;
-}
-
-:deep(.tree-depth-4 .v-data-table__td) {
-  color: #b0b0b0 !important;
-}
-
-:deep(.tree-depth-5) {
-  border-left: 3px solid rgba(244, 67, 54, 0.3) !important;
-}
-
-:deep(.tree-depth-5 .v-data-table__td) {
-  color: #a0a0a0 !important;
+.tree-marker:hover .tree-marker-svg circle {
+  fill: rgba(100, 181, 246, 0.6) !important;
 }
 
 /* Hover effects for tree rows */
 :deep(.tree-root-row):hover {
-  background-color: rgba(100, 181, 246, 0.05) !important;
-  border-left-color: rgba(100, 181, 246, 0.5) !important;
-}
-
-:deep(.tree-child-row):hover {
-  background-color: rgba(100, 181, 246, 0.04) !important;
-}
-
-:deep(.tree-parent-row):hover {
-  background-color: rgba(100, 181, 246, 0.06) !important;
+  background-color: rgba(100, 180, 246, 0.1) !important;
 }
 
 /* Responsive Tree Controls */
@@ -1370,7 +1178,7 @@ const canBeForceDeleted = ref<string[]>([]);
     margin: 8px 0;
     justify-content: center;
   }
-  
+
   .tree-nav-btn {
     font-size: 0.7rem !important;
     padding: 4px 8px !important;
@@ -1396,7 +1204,6 @@ const canBeForceDeleted = ref<string[]>([]);
   margin: 0 auto;
   padding: 32px 24px 16px 24px;
 }
-
 
 /* Table Section */
 .table-section {
@@ -1817,16 +1624,8 @@ const canBeForceDeleted = ref<string[]>([]);
   padding: 4px 6px !important;
   font-size: 0.875rem;
   line-height: 1.2;
-  min-height: 32px;
-  height: 32px;
-}
-
-:deep(.enhanced-table .v-data-table-header__td) {
-  padding: 6px 6px !important;
-  font-size: 0.75rem;
-  font-weight: 600;
-  min-height: 36px;
-  height: 36px;
+  min-height: 64px;
+  height: 64px;
 }
 
 :deep(.enhanced-table .v-data-table__wrapper) {
@@ -1862,7 +1661,6 @@ const canBeForceDeleted = ref<string[]>([]);
   min-height: 32px !important;
   height: 32px !important;
 }
-
 
 :deep(.enhanced-table .v-data-table__tr::after) {
   content: '';
@@ -1920,7 +1718,6 @@ const canBeForceDeleted = ref<string[]>([]);
   margin: 0;
 }
 
-
 /* Remove ::after for selection column specifically */
 :deep(.enhanced-table .v-data-table__td:first-child::after) {
   display: none !important;
@@ -1957,11 +1754,6 @@ const canBeForceDeleted = ref<string[]>([]);
   margin-right: 8px !important;
   padding-right: 20px !important;
 }
-
-
-
-
-
 
 .orphan-row {
   border-left: 4px solid #ff5722;
@@ -2113,7 +1905,10 @@ const canBeForceDeleted = ref<string[]>([]);
 }
 
 .no-retries {
-  content:"—"; color:#6b7280; font-style:italic; display:inline-block;
+  content: '—';
+  color: #6b7280;
+  font-style: italic;
+  display: inline-block;
 }
 
 .retry-sequence {
@@ -2179,8 +1974,6 @@ const canBeForceDeleted = ref<string[]>([]);
 }
 
 @media (max-width: 1024px) {
-
-
   .header-content,
   .dashboard-content {
     padding-left: 24px;
@@ -2200,8 +1993,6 @@ const canBeForceDeleted = ref<string[]>([]);
   .dashboard-content {
     padding: 20px 16px 16px 16px;
   }
-
-
 
   .title-icon {
     padding: 8px;
@@ -2242,10 +2033,18 @@ const canBeForceDeleted = ref<string[]>([]);
   .table-section {
     padding: 16px;
   }
-
 }
 
-::v-deep(.v-data-table) { empty-cells: show; }
-::v-deep(td.v-data-table__td:empty) { position: relative; }
-::v-deep(td.v-data-table__td:empty)::after { content:"—"; color:#6b7280; font-style:italic; display:inline-block; }
+::v-deep(.v-data-table) {
+  empty-cells: show;
+}
+::v-deep(td.v-data-table__td:empty) {
+  position: relative;
+}
+::v-deep(td.v-data-table__td:empty)::after {
+  content: '—';
+  color: #6b7280;
+  font-style: italic;
+  display: inline-block;
+}
 </style>
