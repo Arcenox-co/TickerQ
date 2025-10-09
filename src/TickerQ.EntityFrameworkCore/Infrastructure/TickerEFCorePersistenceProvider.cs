@@ -986,6 +986,11 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
                     try
                     {
+                        var occurrenceExists = await cronTickerOccurrenceContext.AnyAsync(x =>
+                            x.ExecutionTime == entity.ExecutionTime && x.CronTickerId == entity.CronTickerId, cancellationToken);
+                        
+                        if (occurrenceExists) continue;
+
                         cronTickerOccurrenceContext.Add(entity);
 
                         await DbContext.SaveChangesAsync(cancellationToken);
