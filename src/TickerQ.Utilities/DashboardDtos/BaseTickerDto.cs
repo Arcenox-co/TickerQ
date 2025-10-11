@@ -2,7 +2,7 @@ using System;
 
 namespace TickerQ.Utilities.DashboardDtos
 {
-    internal class BaseTickerDto
+    public class BaseTickerDto
     {
         public Guid Id { get; set; }
         public string Function { get; set; }

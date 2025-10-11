@@ -7,7 +7,7 @@ using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.Interfaces
 {
-    internal interface ITickerDashboardRepository
+    public interface ITickerDashboardRepository
     {
         Task<IList<TimeTickerDto>> GetTimeTickersAsync();
         Task SetTimeTickerBatchParent(Guid targetId, Guid parentId, BatchRunCondition? batchRunCondition = null);

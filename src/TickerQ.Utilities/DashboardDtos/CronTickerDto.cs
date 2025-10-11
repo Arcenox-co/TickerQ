@@ -1,6 +1,6 @@
 namespace TickerQ.Utilities.DashboardDtos
 {
-    internal class CronTickerDto : BaseTickerDto
+    public class CronTickerDto : BaseTickerDto
     {
         public string Expression { get; set; }
         public string RequestType { get; set; }
