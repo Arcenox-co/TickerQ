@@ -3,7 +3,7 @@ using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.DashboardDtos
 {
-    internal class TimeTickerDto : BaseTickerDto
+    public class TimeTickerDto : BaseTickerDto
     {
         public string Description { get; set; }
         public TickerStatus Status { get; set; }

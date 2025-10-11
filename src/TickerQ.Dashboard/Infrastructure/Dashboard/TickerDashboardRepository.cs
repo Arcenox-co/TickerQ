@@ -14,7 +14,7 @@ using TickerQ.Utilities.Models.Ticker;
 
 namespace TickerQ.Dashboard.Infrastructure.Dashboard
 {
-    internal class TickerDashboardRepository<TTimeTicker, TCronTicker> : ITickerDashboardRepository
+    public class TickerDashboardRepository<TTimeTicker, TCronTicker> : ITickerDashboardRepository
         where TTimeTicker : TimeTicker, new()
         where TCronTicker : CronTicker, new()
     {
