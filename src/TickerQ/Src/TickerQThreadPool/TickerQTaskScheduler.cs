@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Enums;
-using System.Runtime.CompilerServices;
 
 namespace TickerQ.TickerQThreadPool;
 
@@ -82,12 +81,13 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
 
         // Get worker using round-robin with overflow protection
         var nextId = Interlocked.Increment(ref _nextWorkerId);
-        // Prevent overflow by resetting when approaching int.MaxValue
-        if (nextId > 1_000_000_000)
+        // Prevent overflow by resetting when approaching int.MaxValue or when negative
+        if (nextId < 0 || nextId > 1_000_000_000)
         {
             Interlocked.CompareExchange(ref _nextWorkerId, 0, nextId);
+            nextId = Math.Abs(nextId); // Handle negative case
         }
-        var workerId = Math.Abs(nextId) % _maxConcurrency;
+        var workerId = nextId % _maxConcurrency;
         var workerQueue = GetOrCreateWorkerQueue(workerId);
 
         // Wait for capacity (both global and per-worker limits)
@@ -161,9 +161,9 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
         {
             var current = _activeWorkers;
             
-            // For continuations, allow temporary +1 oversubscription to prevent deadlocks
-            var maxAllowed = allowOversubscriptionForContinuations ? _maxConcurrency + 1 : _maxConcurrency;
-            if (current >= maxAllowed) return;
+            // Strict limit enforcement - no oversubscription
+            // Continuations run directly on existing workers via SynchronizationContext
+            if (current >= _maxConcurrency) return;
             
             newWorkerCount = current + 1;
             if (Interlocked.CompareExchange(ref _activeWorkers, newWorkerCount, current) == current)
@@ -172,13 +172,9 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
             _notifyDebounce.NotifySafely(_activeWorkers);
         }
 
-        // For continuation workers, use existing worker IDs to reuse queues
-        // This prevents IndexOutOfRangeException and enables proper work stealing
         var workerId = (newWorkerCount - 1) % _maxConcurrency;
         
-        var threadName = allowOversubscriptionForContinuations ? 
-            $"TickerQ.ContinuationWorker-{workerId}" : 
-            $"TickerQ.Worker-{workerId}";
+        var threadName = $"TickerQ.Worker-{workerId}";
             
         var thread = new Thread(() => WorkerLoop(workerId)) { IsBackground = true, Name = threadName };
         thread.Start();
@@ -190,10 +186,10 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
         {
             WorkerLoopAsync(workerId).GetAwaiter().GetResult();
         }
-        catch (Exception ex)
+        catch
         {
-            Console.WriteLine($"[ERROR] Worker {workerId} crashed: {ex}");
-            // Worker thread will exit, but we log the error
+            // Worker thread will exit, exception is logged by instrumentation if available
+            // Silently exit to prevent console spam in production
         }
     }
 
@@ -251,17 +247,21 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
                     var idleTime = DateTime.UtcNow - lastWorkTime;
                     if (idleTime > _idleWorkerTimeout)
                     {
-                        Console.WriteLine($"[DEBUG] Worker {workerId} exiting due to idle timeout ({idleTime.TotalSeconds:F1}s > {_idleWorkerTimeout.TotalSeconds:F1}s)");
                         break; // Exit worker due to idle timeout - elastic scaling
                     }
 
                     // Adaptive delay strategy to balance responsiveness vs CPU usage
                     consecutiveNoWorkCount++;
                     
-                    if (consecutiveNoWorkCount < 100)
+                    if (consecutiveNoWorkCount < 1)
                     {
-                        // First 100 cycles: tight loop for immediate responsiveness
+                        // First cycle only: no delay for immediate task response
                         // No delay - just continue loop
+                    }
+                    else if (consecutiveNoWorkCount < 100)
+                    {
+                        // Next 99 cycles: yield to scheduler, minimal delay
+                        Thread.Sleep(0); // Yield to other threads
                     }
                     else if (consecutiveNoWorkCount < 1000)
                     {
@@ -284,6 +284,13 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
         {
             // Restore original SynchronizationContext
             SynchronizationContext.SetSynchronizationContext(originalContext);
+            
+            // Clean up thread-local storage to prevent memory leaks in long-running apps
+            _tempTasks = null;
+            IsTickerQWorkerThread = false;
+            _cachedNow = default;
+            _lastCacheTicks = 0;
+            
             Interlocked.Decrement(ref _activeWorkers);
             _notifyDebounce.NotifySafely(_activeWorkers);
         }
@@ -446,11 +453,12 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
 
         // Use round-robin to distribute continuations across all workers for better performance
         var nextId = Interlocked.Increment(ref _nextWorkerId);
-        if (nextId > 1_000_000_000)
+        if (nextId < 0 || nextId > 1_000_000_000)
         {
             Interlocked.CompareExchange(ref _nextWorkerId, 0, nextId);
+            nextId = Math.Abs(nextId);
         }
-        var workerId = Math.Abs(nextId) % _maxConcurrency;
+        var workerId = nextId % _maxConcurrency;
         var workerQueue = GetOrCreateWorkerQueue(workerId);
         workerQueue.Enqueue(continuationTask);
         
@@ -467,8 +475,6 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
 
-        Console.WriteLine($"[DEBUG] Disposing scheduler, signaling {_activeWorkers} workers to exit");
-
         // Cancel the shutdown token first to signal workers to exit
         await _shutdownCts.CancelAsync();
 
@@ -481,12 +487,9 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
             // Safety timeout - if workers don't exit after 5 seconds, force continue
             if ((DateTime.UtcNow - startTime).TotalSeconds > 5)
             {
-                Console.WriteLine($"[WARNING] Workers not exiting cleanly after 5 seconds, forcing disposal");
                 break;
             }
         }
-
-        Console.WriteLine($"[DEBUG] All workers exited, cleaning up resources");
 
         // Clean up resources
         _notifyDebounce.Dispose();

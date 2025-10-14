@@ -53,8 +53,11 @@ namespace TickerQ.Utilities.Managers
 
                 if (nextTickers.Length != 0) 
                     return (minTimeRemaining, nextTickers);
-
-                await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(50, 201)), cancellationToken).ConfigureAwait(false);
+                
+                if(typesToQueue.All(x => x == TickerType.CronTickerOccurrence))
+                    await Task.Delay(minTimeRemaining, cancellationToken).ConfigureAwait(false);
+                else
+                    await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(50, 201)), cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -133,8 +136,7 @@ namespace TickerQ.Utilities.Managers
                 
                 // Safety check for extremely large datasets
                 var totalLength = nextCronTickers.Length + nextTimeTickers.Length;
-         
-    
+                
                 var merged = new InternalFunctionContext[totalLength];
                 nextCronTickers.AsSpan().CopyTo(merged.AsSpan(0, nextCronTickers.Length));
                 nextTimeTickers.AsSpan().CopyTo(merged.AsSpan(nextCronTickers.Length, nextTimeTickers.Length));
