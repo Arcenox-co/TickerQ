@@ -3,9 +3,11 @@ declare global {
     TickerQConfig?: {
       basePath: string;
       backendDomain?: string;
-      useHostAuthentication?: boolean;
-      enableBuiltInAuth?: boolean;
-      enableBasicAuth?: boolean;
+      auth: {
+        mode: 'none' | 'basic' | 'apikey' | 'host' | 'custom';
+        enabled: boolean;
+        sessionTimeout: number;
+      };
     };
   }
 }

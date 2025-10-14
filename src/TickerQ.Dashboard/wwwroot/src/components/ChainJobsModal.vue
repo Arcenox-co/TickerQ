@@ -22,7 +22,7 @@
       <v-divider class="header-divider" />
 
       <!-- Main Content -->
-      <div class="chain-content">
+      <v-card-text class="chain-content">
         <v-row no-gutters class="content-row">
           <!-- Left Sidebar - Progress & Example -->
           <v-col cols="12" md="4" class="sidebar">
@@ -535,14 +535,14 @@
             </div>
           </v-col>
         </v-row>
-      </div>
+      </v-card-text>
     </v-card>
   </v-dialog>
 
   <!-- Grandchildren Modal -->
   <v-dialog v-model="grandchildrenModal.isOpen" max-width="900" persistent scrollable>
-    <v-card>
-      <v-card-title class="d-flex align-center pa-4">
+    <v-card class="grandchildren-modal">
+      <v-card-title class="d-flex align-center pa-4 flex-shrink-0">
         <v-icon class="mr-2" color="secondary">mdi-account-group</v-icon>
         Manage Grandchildren for Child {{ grandchildrenModal.parentChildIndex + 1 }}
         <v-spacer />
@@ -554,9 +554,9 @@
         />
       </v-card-title>
       
-      <v-divider />
+      <v-divider class="flex-shrink-0" />
       
-      <v-card-text class="pa-0">
+      <v-card-text class="grandchildren-content">
         <!-- Grandchildren Header with Add/Remove -->
         <div class="grandchildren-header">
           <div class="grandchildren-title">
@@ -733,7 +733,7 @@
         </v-window>
       </v-card-text>
 
-      <v-card-actions class="pa-4">
+      <v-card-actions class="pa-4 flex-shrink-0">
         <v-spacer />
         <v-btn
           color="primary"
@@ -1245,6 +1245,7 @@ onMounted(async () => {
 /* Main Modal Styles */
 .chain-modal {
   height: 85vh;
+  max-height: 85vh;
   display: flex;
   flex-direction: column;
 }
@@ -1254,6 +1255,7 @@ onMounted(async () => {
   background: linear-gradient(135deg, rgba(25, 118, 210, 0.1) 0%, rgba(25, 118, 210, 0.05) 100%);
   border-bottom: 1px solid rgba(25, 118, 210, 0.2);
   padding: 12px 20px;
+  flex-shrink: 0;
 }
 
 .header-content {
@@ -1283,22 +1285,28 @@ onMounted(async () => {
 
 .header-divider {
   border-color: rgba(25, 118, 210, 0.2);
+  flex-shrink: 0;
 }
 
 /* Content Layout */
 .chain-content {
   flex: 1;
   overflow: hidden;
+  height: calc(85vh - 120px); /* Account for header and padding */
+  min-height: 0;
 }
 
 .content-row {
   height: 100%;
+  min-height: 0;
 }
 
 /* Sidebar Styles */
 .sidebar {
   background: rgba(0, 0, 0, 0.1);
   border-right: 1px solid rgba(255, 255, 255, 0.1);
+  height: 100%;
+  min-height: 0;
 }
 
 .sidebar-inner {
@@ -1308,6 +1316,7 @@ onMounted(async () => {
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;
+  min-height: 0;
 }
 
 /* Progress Tracker */
@@ -1443,12 +1452,15 @@ onMounted(async () => {
 .form-area {
   display: flex;
   flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
 
 .form-inner {
   height: 100%;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 /* Step Navigation */
@@ -1456,6 +1468,7 @@ onMounted(async () => {
   background: rgba(0, 0, 0, 0.1);
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   padding: 12px 20px;
+  flex-shrink: 0;
 }
 
 .nav-header {
@@ -1484,12 +1497,14 @@ onMounted(async () => {
   padding: 16px 20px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
 }
 
 /* Form Content */
 .form-content {
   flex: 1;
   overflow: hidden;
+  min-height: 0;
 }
 
 .step-window {
@@ -1500,6 +1515,7 @@ onMounted(async () => {
   height: 100%;
   padding: 16px 20px;
   overflow-y: auto;
+  min-height: 0;
 }
 
 .step-alert {
@@ -1581,17 +1597,35 @@ onMounted(async () => {
 }
 
 /* Grandchildren Modal */
+.grandchildren-modal {
+  height: 70vh;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.grandchildren-content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 0 !important;
+}
+
 .grandchildren-tabs {
   background: rgba(156, 39, 176, 0.1);
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
 }
 
 .grandchildren-window {
-  min-height: 400px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .grandchild-content {
   padding: 20px;
+  overflow-y: auto;
 }
 
 /* Review Styles */

@@ -21,34 +21,21 @@ namespace TickerQ.Dashboard.DependencyInjection
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
+            // Register the dashboard configuration for DI
+            services.AddSingleton(config);
+            services.AddSingleton(config.Auth);
+            services.AddScoped<IAuthService, AuthService>();
+            
             services.AddRouting();
             services.AddSignalR();
 
-            // Always add authentication services since endpoints may require authorization
-            // The authentication handler will determine if authentication is actually needed
-            if (config.EnableBasicAuth){
-                services.AddAuthentication("Basic")
-                .AddScheme<BasicAuthenticationSchemeOptions, BasicAuthenticationHandler>("Basic", _ => { });
-            }
+            // The new authentication system is registered in ServiceExtensions.cs
+            // This method is kept for backward compatibility with existing middleware pipeline
 
             services.AddAuthorization();
             services.AddCors(options =>
             {
-                options.AddPolicy("TickerQ_Dashboard_CORS", policy =>
-                {
-                    if (config.CorsOrigins.Contains("*"))
-                    {
-                        policy.SetIsOriginAllowed(_ => true);
-                    }
-                    else
-                    {
-                        policy.WithOrigins(config.CorsOrigins);
-                    }
-
-                    policy.AllowAnyHeader()
-                        .AllowAnyMethod()
-                        .AllowCredentials();
-                });
+                options.AddPolicy("TickerQ_Dashboard_CORS", config.CorsPolicyBuilder);
             });
         }
 
@@ -69,7 +56,8 @@ namespace TickerQ.Dashboard.DependencyInjection
                 // Execute pre-dashboard middleware
                 config.PreDashboardMiddleware?.Invoke(dashboardApp);
 
-                // Serve static files from the embedded provider
+                // CRITICAL: Serve static files FIRST, before any authentication
+                // This ensures static assets (JS, CSS, images) are served without auth challenges
                 dashboardApp.UseStaticFiles(new StaticFileOptions
                 {
                     FileProvider = embeddedFileProvider,
@@ -84,14 +72,15 @@ namespace TickerQ.Dashboard.DependencyInjection
                     }
                 });
 
-                // Set up routing and CORS for this branch
+                // Set up routing and CORS
                 dashboardApp.UseRouting();
                 dashboardApp.UseCors("TickerQ_Dashboard_CORS");
 
-                // Add authentication and authorization
-                // Always add these middlewares as endpoints may require authorization
-                dashboardApp.UseAuthentication();
-                dashboardApp.UseAuthorization();
+                // Add authentication middleware (only protects API endpoints)
+                if (config.Auth.IsEnabled)
+                {
+                    dashboardApp.UseMiddleware<AuthMiddleware>();
+                }
 
                 // Execute custom middleware if provided
                 config.CustomMiddleware?.Invoke(dashboardApp);
@@ -148,13 +137,18 @@ namespace TickerQ.Dashboard.DependencyInjection
                 return htmlContent ?? string.Empty;
 
             // Build the config object
+            var authInfo = new
+            {
+                mode = config.Auth.Mode.ToString().ToLower(),
+                enabled = config.Auth.IsEnabled,
+                sessionTimeout = config.Auth.SessionTimeoutMinutes
+            };
+            
             var envConfig = new
             {
                 basePath,
                 backendDomain = config.BackendDomain,
-                useHostAuthentication = config.UseHostAuthentication,
-                enableBuiltInAuth = config.EnableBuiltInAuth,
-                enableBasicAuth = config.EnableBasicAuth
+                auth = authInfo
             };
 
             // Serialize without over-escaping, but make sure it won't break </script>

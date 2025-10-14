@@ -15,6 +15,7 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
         IsDue = tickerFunctionContext.IsDue;
         CancelOperationAction = tickerFunctionContext.CancelOperationAction;
         CronOccurrenceOperations = tickerFunctionContext.CronOccurrenceOperations;
+        FunctionName = tickerFunctionContext.FunctionName;
     }
 
     public readonly TRequest Request;
@@ -28,6 +29,7 @@ public class TickerFunctionContext
     public TickerType Type { get; internal set; }
     public int RetryCount { get; internal set; }
     public bool IsDue { get; internal set; }
+    public string FunctionName { get; internal set; }
     public CronOccurrenceOperations CronOccurrenceOperations { get; internal set; }
     public void CancelOperation() 
         => CancelOperationAction();

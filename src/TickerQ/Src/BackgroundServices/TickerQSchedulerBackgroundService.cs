@@ -16,26 +16,26 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 {
     private PeriodicTimer _tickerJobPeriodicTimer;
     private readonly RestartThrottleManager _restartThrottle;
-    private IInternalTickerManager _internalTickerManager;
-    private readonly IServiceProvider _serviceProvider;
+    private readonly IInternalTickerManager _internalTickerManager;
     private readonly TickerExecutionContext _executionContext;
     private SafeCancellationTokenSource _schedulerLoopCancellationTokenSource;
     private readonly TickerQTaskScheduler  _taskScheduler;
     private readonly TickerExecutionTaskHandler  _taskHandler;
     private int _started;
     public bool SkipFirstRun;
+    public bool IsRunning => _started == 1;
 
     
     public TickerQSchedulerBackgroundService(
         TickerExecutionContext executionContext,
         TickerExecutionTaskHandler taskHandler, 
         TickerQTaskScheduler taskScheduler, 
-        IServiceProvider serviceProvider)
+        IInternalTickerManager  internalTickerManager)
     {
         _executionContext = executionContext;
         _taskHandler = taskHandler;
         _taskScheduler = taskScheduler;
-        _serviceProvider = serviceProvider;
+        _internalTickerManager = internalTickerManager ?? throw new ArgumentNullException(nameof(internalTickerManager));
         _restartThrottle = new RestartThrottleManager(() => _schedulerLoopCancellationTokenSource?.Cancel());
     }
     
@@ -43,7 +43,6 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     {
         if (SkipFirstRun)
         {
-            Console.WriteLine("Skip first run");
             _taskScheduler.Freeze();
             SkipFirstRun = false;
             return Task.CompletedTask;
@@ -56,8 +55,6 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _internalTickerManager ??= _serviceProvider.GetService<IInternalTickerManager>();
-        
         while (!stoppingToken.IsCancellationRequested)
         {
             _schedulerLoopCancellationTokenSource = SafeCancellationTokenSource.CreateLinked(stoppingToken);

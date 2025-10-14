@@ -10,33 +10,41 @@ class BaseHub {
 
     private createConnection(): signalR.HubConnection {
 
-        const basePath = getBasePath();
+       // const basePath = getBasePath();
+       const basePath = 'https://localhost:7231/tickerq/dashboard';
         const backendUrl = getBackendUrl();
 
         // Get auth token and type lazily when building the connection
         const getAuthInfo = () => {
             try {
-                // Check for Bearer token first
-                const bearerToken = localStorage.getItem('bearer_token');
-                if (bearerToken) {
-                    return {
-                        type: 'Bearer',
-                        token: bearerToken
-                    };
+                // Check window config to determine auth mode
+                const config = window.TickerQConfig;
+                
+                if (config?.auth?.mode === 'bearer') {
+                    const bearerToken = localStorage.getItem('tickerq_bearer_token');
+                    if (bearerToken) {
+                        return {
+                            type: 'Bearer',
+                            token: bearerToken
+                        };
+                    }
                 }
-
-                // Fallback to Basic auth
-                const basicAuth = localStorage.getItem('auth') || 'ZHVtbXk6ZHVtbXk=';
-                return {
-                    type: 'Basic',
-                    token: basicAuth
-                };
+                
+                if (config?.auth?.mode === 'basic') {
+                    const basicAuth = localStorage.getItem('tickerq_basic_auth');
+                    if (basicAuth) {
+                        return {
+                            type: 'Basic',
+                            token: basicAuth
+                        };
+                    }
+                }
+                
+                // No auth configured or no token available
+                return null;
             } catch (error) {
-                // Could not access auth token, using default Basic auth
-                return {
-                    type: 'Basic',
-                    token: 'ZHVtbXk6ZHVtbXk='
-                };
+                // Could not access auth token
+                return null;
             }
         };
 
@@ -50,16 +58,66 @@ class BaseHub {
 
         const authInfo = getAuthInfo();
         
-        return new signalR.HubConnectionBuilder()
-            .withUrl(hubUrl, {
-                // Use headers for authentication - supports both Basic and Bearer
-                headers: {
+        // WebSockets cannot send custom headers, so we need to use query parameters
+        // For other transports (ServerSentEvents, LongPolling), we can use headers
+        const useWebSocketsOnly = true; // Set to false if you want to allow fallback transports
+        
+        if (useWebSocketsOnly) {
+            // WebSocket transport - use access_token query parameter for auth
+            const connectionOptions: any = {
+                transport: signalR.HttpTransportType.WebSockets
+            };
+            
+            let finalHubUrl = hubUrl;
+            
+            if (authInfo) {
+                const authQuery = authInfo.type === 'Basic' ? authInfo.token : `Bearer:${authInfo.token}`;
+                finalHubUrl = `${hubUrl}?access_token=${encodeURIComponent(authQuery)}`;
+            }
+            
+            return new signalR.HubConnectionBuilder()
+                .withUrl(finalHubUrl, connectionOptions)
+                .withAutomaticReconnect({
+                    nextRetryDelayInMilliseconds: retryContext => {
+                        // Exponential backoff with max 3 retries
+                        if (retryContext.previousRetryCount >= 3) {
+                            console.log('🛑 SignalR: Max retry attempts reached, stopping reconnection');
+                            return null; // Stop retrying
+                        }
+                        const delay = Math.min(1000 * Math.pow(2, retryContext.previousRetryCount), 30000);
+                        console.log(`🔄 SignalR: Retrying connection in ${delay}ms (attempt ${retryContext.previousRetryCount + 1}/3)`);
+                        return delay;
+                    }
+                })
+                .configureLogging(signalR.LogLevel.Information)
+                .build();
+        } else {
+            // Allow fallback transports - use headers for auth
+            const connectionOptions: any = {};
+            
+            if (authInfo) {
+                connectionOptions.headers = {
                     'Authorization': `${authInfo.type} ${authInfo.token}`
-                }
-            })
-            .withAutomaticReconnect()
-            .configureLogging(signalR.LogLevel.Information)
-            .build();
+                };
+            }
+            
+            return new signalR.HubConnectionBuilder()
+                .withUrl(hubUrl, connectionOptions)
+                .withAutomaticReconnect({
+                    nextRetryDelayInMilliseconds: retryContext => {
+                        // Exponential backoff with max 3 retries
+                        if (retryContext.previousRetryCount >= 3) {
+                            console.log('🛑 SignalR: Max retry attempts reached, stopping reconnection (fallback transport)');
+                            return null; // Stop retrying
+                        }
+                        const delay = Math.min(1000 * Math.pow(2, retryContext.previousRetryCount), 30000);
+                        console.log(`🔄 SignalR: Retrying connection in ${delay}ms (attempt ${retryContext.previousRetryCount + 1}/3)`);
+                        return delay;
+                    }
+                })
+                .configureLogging(signalR.LogLevel.Information)
+                .build();
+        }
     }
 
     // Method to rebuild connection with new auth token
@@ -94,9 +152,22 @@ class BaseHub {
         }
         
         try {
+            console.log('🔗 SignalR: Starting connection...');
             await this.connection.start();
-        } catch (err) {
-            // SignalR Connection Error
+            console.log('✅ SignalR: Connection established successfully');
+        } catch (err: any) {
+            console.error('🚨 SignalR Connection Error:', err);
+            
+            // Check if it's an authentication error
+            if (err?.message?.includes('401') || 
+                err?.message?.includes('Unauthorized') ||
+                err?.message?.includes('Authentication failed')) {
+                console.error('🚫 SignalR: Authentication failed - connection will not retry');
+                // Don't rethrow authentication errors to prevent infinite retry
+                return;
+            }
+            
+            // For other errors, rethrow to allow normal error handling and retry logic
             throw err;
         }
     }

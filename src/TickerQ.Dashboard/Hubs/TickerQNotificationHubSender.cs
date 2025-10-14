@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 
@@ -89,10 +90,12 @@ namespace TickerQ.Dashboard.Hubs
                 Id = internalFunctionContext.TickerId,
                 Status = internalFunctionContext.Status,
                 ExecutedAt = internalFunctionContext.ExecutedAt,
-                ExceptionMessage = internalFunctionContext.ExceptionDetails,
+                ExceptionMessage = internalFunctionContext.Status != TickerStatus.Skipped ? internalFunctionContext.ExceptionDetails : null,
                 ElapsedTime = internalFunctionContext.ElapsedTime,
                 RetryCount = internalFunctionContext.RetryCount,
-                UpdatedAt = internalFunctionContext.ExecutedAt
+                UpdatedAt = internalFunctionContext.ExecutedAt,
+                ParentId = internalFunctionContext.ParentId,
+                SkippedReason = internalFunctionContext.Status == TickerStatus.Skipped ? internalFunctionContext.ExceptionDetails : null
             };
             
             await _hubContext.Clients.All.SendAsync("UpdateTimeTickerNotification", timeTicker);

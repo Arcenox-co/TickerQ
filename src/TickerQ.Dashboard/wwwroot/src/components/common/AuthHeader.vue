@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { useAuth } from '../../composables/useAuth'
-import { authService } from '@/services/authService'
+import { useAuthStore } from '@/stores/authStore'
+import { authService } from '@/services/auth'
 
 // Props
 interface Props {
@@ -22,7 +23,8 @@ const emit = defineEmits<{
   logout: []
 }>()
 
-// Auth composable
+// Auth stores and composables
+const authStore = useAuthStore()
 const {
   isAuthenticated,
   username,
@@ -41,20 +43,35 @@ const { showSuccess, showError, showWarning, showInfo } = useAlert()
 const isLoginFormVisible = ref(false)
 const localUsername = ref('')
 const localPassword = ref('')
+const localApiKey = ref('')
 
-// Check if basic auth is enabled
+// Check authentication modes
 const isBasicAuthEnabled = computed(() => {
-  return window.TickerQConfig?.enableBasicAuth || false
+  return window.TickerQConfig?.auth?.mode === 'basic' || false
 })
 
-// Check if host authentication is enabled
+const isBearerAuthEnabled = computed(() => {
+  return window.TickerQConfig?.auth?.mode === 'bearer' || false
+})
+
 const isHostAuthEnabled = computed(() => {
-  return window.TickerQConfig?.useHostAuthentication || false
+  return window.TickerQConfig?.auth?.mode === 'host' || false
 })
 
-// Show login form automatically if basic auth is enabled and user is not authenticated
+const requiresAuth = computed(() => {
+  return window.TickerQConfig?.auth?.enabled || false
+})
+
+const authMode = computed(() => {
+  if (isBasicAuthEnabled.value) return 'basic'
+  if (isBearerAuthEnabled.value) return 'bearer'
+  if (isHostAuthEnabled.value) return 'host'
+  return 'none'
+})
+
+// Show login form automatically if auth is required and user is not authenticated
 const shouldShowLoginForm = computed(() => {
-  if (isBasicAuthEnabled.value && !isAuthenticated.value) {
+  if (requiresAuth.value && !isAuthenticated.value) {
     return true
   }
   return isLoginFormVisible.value
@@ -62,68 +79,54 @@ const shouldShowLoginForm = computed(() => {
 
 // Methods
 const toggleLoginForm = () => {
-  if (isBasicAuthEnabled.value) {
-    // For basic auth, we can't toggle - user must authenticate
+  if (requiresAuth.value) {
+    // If auth is required, we can't toggle - user must authenticate
     return
   }
   isLoginFormVisible.value = !isLoginFormVisible.value
 }
 
 const handleLogin = async () => {
-  // Get credentials from the form
-  if (!localUsername.value || !localPassword.value) {
-    return
-  }
-
   try {
-    let result
-    
-    if (isBasicAuthEnabled.value) {
-      // Use the new auth service for basic auth
-      const success = await authService.handleBasicAuthLogin(
-        localUsername.value,
-        localPassword.value
-      )
-      result = { success }
-    } else {
-      // Use the existing auth composable for other auth types
-      result = await login({
-        username: localUsername.value,
-        password: localPassword.value
-      })
+    // Set credentials in auth store
+    if (authMode.value === 'basic') {
+      authStore.credentials.username = localUsername.value
+      authStore.credentials.password = localPassword.value
+    } else if (authMode.value === 'bearer') {
+      authStore.credentials.apiKey = localApiKey.value
     }
     
-    if (result.success) {
+    // Attempt login
+    const success = await authStore.login()
+    
+    if (success) {
       isLoginFormVisible.value = false
       showSuccess('Login successful!')
       emit('login', true)
       
-      // For basic auth, reload the page to ensure all components are properly authenticated
-      if (isBasicAuthEnabled.value) {
-        window.location.reload()
-      }
+      // Clear local form fields
+      localUsername.value = ''
+      localPassword.value = ''
+      localApiKey.value = ''
     } else {
-      // Don't emit login event on failure, just show the error
+      // Error message is handled by auth store
+      showError(authStore.errorMessage || 'Login failed')
     }
   } catch (error) {
-    // Login error
+    console.error('Login error:', error)
+    showError('Login failed. Please try again.')
   }
 }
 
 const handleLogout = async () => {
   try {
-    if (isBasicAuthEnabled.value) {
-      // Use the new auth service for basic auth
-      authService.logout()
-    } else {
-      // Use the existing auth composable for other auth types
-      await logout()
-    }
+    // Use auth store logout for all modes
+    authStore.logout()
     
     showInfo('Logged out successfully')
     emit('logout')
   } catch (error) {
-    // Logout error
+    console.error('Logout error:', error)
     showError('Logout failed')
     emit('logout')
   }
@@ -131,8 +134,8 @@ const handleLogout = async () => {
 
 // Check auth status on mount
 onMounted(() => {
-  // If basic auth is enabled and user is not authenticated, show login form
-  if (isBasicAuthEnabled.value && !isAuthenticated.value) {
+  // If auth is required and user is not authenticated, show login form
+  if (requiresAuth.value && !isAuthenticated.value) {
     isLoginFormVisible.value = true
   }
 })
@@ -141,8 +144,8 @@ onMounted(() => {
 watch(isAuthenticated, (newValue) => {
   if (newValue) {
     isLoginFormVisible.value = false
-  } else if (isBasicAuthEnabled.value) {
-    // For basic auth, show login form when user becomes unauthenticated
+  } else if (requiresAuth.value) {
+    // If auth is required, show login form when user becomes unauthenticated
     isLoginFormVisible.value = true
   }
 })
@@ -168,53 +171,75 @@ watch(isAuthenticated, (newValue) => {
       </div>
       
       <div v-else class="login-form">
-        <div v-if="isBasicAuthEnabled" class="basic-auth-notice">
+        <div v-if="requiresAuth" class="auth-notice">
           <v-alert
             type="info"
             variant="tonal"
             density="compact"
             class="info-alert"
           >
-            Basic Authentication Required
+            <span v-if="authMode === 'basic'">Basic Authentication Required</span>
+            <span v-else-if="authMode === 'bearer'">API Key Authentication Required</span>
+            <span v-else-if="authMode === 'host'">Host Authentication Required</span>
+            <span v-else>Authentication Required</span>
           </v-alert>
         </div>
         
         <div class="form-row">
-          <v-text-field
-            v-model="localUsername"
-            label="Username"
-            variant="outlined"
-            density="compact"
-            size="small"
-            class="username-field"
-            :disabled="isLoading"
-            @keyup.enter="handleLogin"
-          />
-          <v-text-field
-            v-model="localPassword"
-            label="Password"
-            type="password"
-            variant="outlined"
-            density="compact"
-            size="small"
-            class="password-field"
-            :disabled="isLoading"
-            @keyup.enter="handleLogin"
-          />
+          <!-- Basic Auth Fields -->
+          <template v-if="authMode === 'basic'">
+            <v-text-field
+              v-model="localUsername"
+              label="Username"
+              variant="outlined"
+              density="compact"
+              size="small"
+              class="username-field"
+              :disabled="isLoading"
+              @keyup.enter="handleLogin"
+            />
+            <v-text-field
+              v-model="localPassword"
+              label="Password"
+              type="password"
+              variant="outlined"
+              density="compact"
+              size="small"
+              class="password-field"
+              :disabled="isLoading"
+              @keyup.enter="handleLogin"
+            />
+          </template>
+          
+          <!-- Bearer Token Field -->
+          <template v-else-if="authMode === 'bearer'">
+            <v-text-field
+              v-model="localApiKey"
+              label="API Key"
+              type="password"
+              variant="outlined"
+              density="compact"
+              size="small"
+              class="api-key-field"
+              :disabled="isLoading"
+              @keyup.enter="handleLogin"
+              placeholder="Enter your API key"
+            />
+          </template>
           <v-btn
             color="primary"
             variant="elevated"
             size="small"
             @click="handleLogin"
             :loading="isLoading"
-            :disabled="!localUsername || !localPassword"
+            :disabled="(authMode === 'basic' && (!localUsername || !localPassword)) || (authMode === 'bearer' && !localApiKey)"
             class="submit-btn"
           >
             <v-icon start>mdi-login</v-icon>
             Login
           </v-btn>
           <v-btn
-            v-if="!isBasicAuthEnabled"
+            v-if="!requiresAuth"
             variant="text"
             size="small"
             @click="toggleLoginForm"
@@ -300,7 +325,7 @@ watch(isAuthenticated, (newValue) => {
   min-width: 400px;
 }
 
-.basic-auth-notice {
+.auth-notice {
   margin-bottom: 8px;
 }
 
@@ -315,7 +340,8 @@ watch(isAuthenticated, (newValue) => {
 }
 
 .username-field,
-.password-field {
+.password-field,
+.api-key-field {
   flex: 1;
   min-width: 120px;
 }
@@ -406,7 +432,8 @@ watch(isAuthenticated, (newValue) => {
   }
   
   .username-field,
-  .password-field {
+  .password-field,
+  .api-key-field {
     min-width: auto;
   }
 }

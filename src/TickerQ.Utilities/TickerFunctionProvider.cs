@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces.Managers;
 
 namespace TickerQ.Utilities
@@ -169,8 +170,19 @@ namespace TickerQ.Utilities
     {
         public static async Task<T> GetRequestAsync<T>(TickerFunctionContext context, CancellationToken cancellationToken)
         {
-            var internalTickerManager = context.ServiceScope.ServiceProvider.GetService<IInternalTickerManager>();
-            return await internalTickerManager.GetRequestAsync<T>(context.Id, context.Type, cancellationToken);
+            try
+            {
+                var internalTickerManager = context.ServiceScope.ServiceProvider.GetService<IInternalTickerManager>();
+                return await internalTickerManager.GetRequestAsync<T>(context.Id, context.Type, cancellationToken);
+            }
+            catch (Exception e)
+            {
+                var logger = context.ServiceScope.ServiceProvider.GetService<ITickerQInstrumentation>();
+                
+                logger.LogRequestDeserializationFailure(typeof(T).FullName, context.FunctionName, context.Id, context.Type, e);
+            }
+            
+            return default;
         }
     }
 }

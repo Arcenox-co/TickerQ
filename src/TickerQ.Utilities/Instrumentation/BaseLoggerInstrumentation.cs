@@ -1,18 +1,19 @@
 using System;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Instrumentation;
 
-public abstract class BaseLoggerInstrumentation
+public abstract class TickerQBaseLoggerInstrumentation
 {
     private readonly ILogger _logger;
-    protected readonly string _instanceIdentifier;
-    protected BaseLoggerInstrumentation(ILogger logger, string instanceIdentifier)
+    protected readonly string InstanceIdentifier;
+    protected TickerQBaseLoggerInstrumentation(ILogger logger, string instanceIdentifier)
     {
         _logger = logger;
-        _instanceIdentifier = instanceIdentifier;
+        InstanceIdentifier = instanceIdentifier;
     }
 
     public abstract Activity StartJobActivity(string activityName, InternalFunctionContext context);
@@ -54,11 +55,16 @@ public abstract class BaseLoggerInstrumentation
     
     public virtual void LogSeedingDataStarted(string seedingDataType)
     {
-        _logger.LogInformation("TickerQ start seeding data: {TickerType} ({EnvironmentName})", seedingDataType, _instanceIdentifier);
+        _logger.LogInformation("TickerQ start seeding data: {TickerType} ({EnvironmentName})", seedingDataType, InstanceIdentifier);
     }
 
     public virtual void LogSeedingDataCompleted(string seedingDataType)
     {
-        _logger.LogInformation("TickerQ completed seeding data: {TickerType} ({EnvironmentName})", seedingDataType, _instanceIdentifier);
+        _logger.LogInformation("TickerQ completed seeding data: {TickerType} ({EnvironmentName})", seedingDataType, InstanceIdentifier);
+    }
+
+    public virtual void LogRequestDeserializationFailure(string requestType, string functionName, Guid tickerId, TickerType type, Exception exception)
+    {
+        _logger.LogError("Failed to deserialize request to {RequestType} - {TickerId} - {TickerType}: {Exception}", requestType, tickerId, type, exception);
     }
 }

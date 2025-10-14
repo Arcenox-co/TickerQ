@@ -118,7 +118,7 @@ const statuses: Ref<Array<{ name: string; count: number; percentage: string }>> 
   { name: 'DueDone', count: 0, percentage: '0' },
   { name: 'Failed', count: 0, percentage: '0' },
   { name: 'Cancelled', count: 0, percentage: '0' },
-  { name: 'Batched', count: 0, percentage: '0' },
+  { name: 'Skipped', count: 0, percentage: '0' },
 ])
 
 const hasError = computed(

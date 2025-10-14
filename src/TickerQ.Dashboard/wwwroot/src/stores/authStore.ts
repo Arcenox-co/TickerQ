@@ -1,123 +1,180 @@
-// stores/authStore.ts
 import { defineStore } from 'pinia';
-import { ref, computed, reactive, watch, type Ref } from 'vue';
-import { validateCredentials } from '../config/auth.config';
-import { useConnectionStore } from './connectionStore';
-import { isBasicAuthEnabled } from '@/utilities/pathResolver';
+import { ref, computed, reactive } from 'vue';
+import { authService, type AuthStatus, type LoginCredentials } from '@/services/auth';
 
 export const useAuthStore = defineStore('auth', () => {
-  // 1. Authentication state
-  const auth = ref('')
-  const isInitialized = ref(false)
-  const errorMessage = ref('')
-  
-  // 2. Reactive credentials for the login form
-  const credentials = reactive({
+  // State
+  const isInitialized = ref(false);
+  const authStatus = ref<AuthStatus>({
+    authenticated: false,
     username: '',
-    password: ''
-  })
+    message: ''
+  });
+  const errorMessage = ref('');
+  const isLoading = ref(false);
+  const forceUpdate = ref(0); // Force reactivity trigger
 
-  // 3. Initialize auth state from localStorage
+  // Form credentials
+  const credentials = reactive<LoginCredentials>({
+    username: '',
+    password: '',
+    apiKey: '',
+    hostAccessKey: ''
+  });
+
+  // Computed properties
+  const isLoggedIn = computed(() => {
+    forceUpdate.value; // Force reactivity
+    if (!isInitialized.value) return false;
+    return authStatus.value.authenticated;
+  });
+
+  const username = computed(() => authStatus.value.username || '');
+
+  // Actions
   const initializeAuth = async () => {
     try {
-      // Longer delay to ensure loading state is visible and prevent flash
-      await new Promise(resolve => setTimeout(resolve, 800))
+      isLoading.value = true;
       
-      const storedAuth = localStorage.getItem('auth')
-      if (storedAuth) {
-        auth.value = storedAuth
-      }
+      // Initialize the auth service
+      await authService.initialize();
+      
+      // Get the current auth status
+      authStatus.value = authService.getStatus();
+      
     } catch (error) {
-      // Failed to initialize auth from localStorage
+      console.error('Auth initialization failed:', error);
+      authStatus.value = {
+        authenticated: false,
+        username: '',
+        message: 'Authentication service unavailable'
+      };
+      errorMessage.value = 'Failed to initialize authentication';
     } finally {
-      isInitialized.value = true
+      isInitialized.value = true;
+      isLoading.value = false;
     }
-  }
+  };
 
-  // Watch for auth token changes and update WebSocket connection
-  watch(auth, async (newVal) => {
-    if (newVal && newVal !== 'ZHVtbXk6ZHVtbXk=') {
-      try {
-        const connectionStore = useConnectionStore()
-        await connectionStore.updateAuthToken(newVal)
-      } catch (error) {
-        // Failed to update auth token in connection
-      }
-    }
-  })
-
-
-  // 5. Computed login state - only true if initialized and has auth
-  const isLoggedIn = computed(() => (isInitialized.value && !!auth.value) || !isBasicAuthEnabled())
-
-  // 5. Login method
-  const login = async () => {
+  const login = async (): Promise<boolean> => {
     try {
-      // Validate credentials using the config
-      const validation = validateCredentials(credentials.username, credentials.password)
+      isLoading.value = true;
+      errorMessage.value = '';
       
-      if (validation.isValid) {
-        setToLocalStorage();
-        errorMessage.value = '';
+      console.log('🔐 Attempting login...');
+      
+      const success = await authService.login(credentials);
+      
+      if (success) {
+        authStatus.value = authService.getStatus();
+        console.log('✅ Login successful:', authStatus.value);
+        
+        // Clear form
+        credentials.username = '';
+        credentials.password = '';
+        credentials.apiKey = '';
+        
         return true;
       } else {
-        errorMessage.value = validation.error || 'Invalid credentials. Please try again.';
-        throw new Error(validation.error || 'Invalid credentials');
+        authStatus.value = authService.getStatus();
+        errorMessage.value = authStatus.value.message || 'Login failed';
+        console.log('❌ Login failed:', authStatus.value);
+        return false;
       }
     } catch (error) {
-      if (!errorMessage.value) {
-        errorMessage.value = 'Login failed. Please try again.';
-      }
-      throw error;
+      console.error('❌ Login error:', error);
+      errorMessage.value = 'Login failed';
+      authStatus.value = {
+        authenticated: false,
+        username: '',
+        message: 'Login failed'
+      };
+      return false;
+    } finally {
+      isLoading.value = false;
     }
   };
 
-  // 6. Set to localStorage (legacy method)
-  const setToLocalStorage = () => {
-    const authHeader = btoa(`${credentials.username}:${credentials.password}`);
-    auth.value = authHeader;
-    localStorage.setItem('auth', authHeader);
-    localStorage.setItem('username', credentials.username);
+  const logout = async () => {
+    try {
+      console.log('🚪 Logging out...');
+      
+      await authService.logout();
+      authStatus.value = authService.getStatus();
+      
+      // Clear form and errors
+      credentials.username = '';
+      credentials.password = '';
+      credentials.apiKey = '';
+      errorMessage.value = '';
+      
+      console.log('✅ Logout successful');
+    } catch (error) {
+      console.error('❌ Logout error:', error);
+    }
   };
 
-  // 7. Logout
-  const logout = () => {
-    auth.value = '';
+  const revalidate = async () => {
+    try {
+      console.log('🔄 Revalidating authentication...');
+      
+      await authService.validateStoredCredentials();
+      authStatus.value = authService.getStatus();
+      
+      console.log('✅ Revalidation complete:', authStatus.value);
+    } catch (error) {
+      console.error('❌ Revalidation failed:', error);
+      authStatus.value = {
+        authenticated: false,
+        username: '',
+        message: 'Revalidation failed'
+      };
+    }
+  };
+
+  const handle401Error = () => {
+    console.log('🚨 Handling 401 error - clearing credentials');
+    
+    // Clear credentials and status
+    authService.logout();
+    authStatus.value = {
+      authenticated: false,
+      username: '',
+      message: 'Session expired. Please log in again.'
+    };
+    
+    // Clear form
     credentials.username = '';
     credentials.password = '';
-    errorMessage.value = '';
-    localStorage.removeItem('auth');
-    localStorage.removeItem('username');
+    credentials.apiKey = '';
+    errorMessage.value = 'Session expired. Please log in again.';
+    
+    // Force reactivity update
+    forceUpdate.value++;
   };
 
-  // 8. Clear error message
   const clearError = () => {
     errorMessage.value = '';
   };
 
-  // 9. Manually update WebSocket connection (useful for testing)
-  const updateWebSocketConnection = async () => {
-    if (auth.value) {
-      try {
-        const connectionStore = useConnectionStore()
-        await connectionStore.updateAuthToken(auth.value)
-      } catch (error) {
-        // Failed to manually update WebSocket connection
-      }
-    }
-  };
-
   return {
-    auth,
-    credentials,
-    isLoggedIn,
+    // State
     isInitialized,
+    authStatus,
+    errorMessage,
+    isLoading,
+    credentials,
+    
+    // Computed
+    isLoggedIn,
+    username,
+    
+    // Actions
     initializeAuth,
     login,
-    setToLocalStorage,
     logout,
-    errorMessage,
-    clearError,
-    updateWebSocketConnection
-  }
+    revalidate,
+    handle401Error,
+    clearError
+  };
 });

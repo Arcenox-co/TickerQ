@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Instrumentation
@@ -17,5 +18,6 @@ namespace TickerQ.Utilities.Instrumentation
         void LogJobSkipped(Guid jobId, string functionName, string reason);
         void LogSeedingDataStarted(string seedingDataType);
         void LogSeedingDataCompleted(string seedingDataType);
+        void LogRequestDeserializationFailure(string requestType, string functionName, Guid tickerId, TickerType type, Exception exception);
     }
 }

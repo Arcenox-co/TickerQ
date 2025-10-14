@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Enums;
+using System.Runtime.CompilerServices;
 
 namespace TickerQ.TickerQThreadPool;
 
@@ -10,7 +11,7 @@ namespace TickerQ.TickerQThreadPool;
 /// Process-lifetime singleton task scheduler with optimized memory usage and elastic workers.
 /// Fire-and-forget execution with strict priority ordering and work stealing.
 /// </summary>
-internal sealed class TickerQTaskScheduler : IAsyncDisposable
+public sealed class TickerQTaskScheduler : IAsyncDisposable
 {
     private readonly int _maxConcurrency;
     private readonly TimeSpan _idleWorkerTimeout;
@@ -39,10 +40,8 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
     // Thread-local flag to detect if we're on a TickerQ worker thread
     [ThreadStatic] public static bool IsTickerQWorkerThread;
     
-    // Cached delay task to avoid repeated Task.Delay allocations
-    private static readonly Task DelayTask = Task.Delay(10);
 
-    public TickerQTaskScheduler(int maxConcurrency, TimeSpan? idleWorkerTimeout, SoftSchedulerNotifyDebounce notifyDebounce)
+    public TickerQTaskScheduler(int maxConcurrency, TimeSpan? idleWorkerTimeout = null, SoftSchedulerNotifyDebounce notifyDebounce = null)
     {
         if (maxConcurrency <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxConcurrency));
@@ -50,10 +49,12 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(maxConcurrency), "Maximum 64 workers supported due to bitfield limitations");
 
         _maxConcurrency = maxConcurrency;
-        _idleWorkerTimeout = idleWorkerTimeout ?? TimeSpan.FromSeconds(30);
+        // Default to 60 seconds idle timeout for elastic worker management
+        // Workers will exit after 60s of inactivity to free resources
+        _idleWorkerTimeout = idleWorkerTimeout ?? TimeSpan.FromSeconds(60);
         _maxCapacityPerWorker = 1024; // Fixed optimal capacity per worker
         _maxTotalCapacity = maxConcurrency * 1024; // Auto-calculated: queues × 1024
-        _notifyDebounce =  notifyDebounce;
+        _notifyDebounce =  notifyDebounce ?? new SoftSchedulerNotifyDebounce(_ => { }); // Default no-op notifier
         // Lazy initialization - only create queues when needed
         _workerQueues = new ConcurrentQueue<PriorityTask>[maxConcurrency];
         _workerInitialized = 0; // Bitfield initialized to 0
@@ -79,15 +80,21 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
             return;
         }
 
-        // Get worker using round-robin
-        var workerId = Interlocked.Increment(ref _nextWorkerId) % _maxConcurrency;
+        // Get worker using round-robin with overflow protection
+        var nextId = Interlocked.Increment(ref _nextWorkerId);
+        // Prevent overflow by resetting when approaching int.MaxValue
+        if (nextId > 1_000_000_000)
+        {
+            Interlocked.CompareExchange(ref _nextWorkerId, 0, nextId);
+        }
+        var workerId = Math.Abs(nextId) % _maxConcurrency;
         var workerQueue = GetOrCreateWorkerQueue(workerId);
 
         // Wait for capacity (both global and per-worker limits)
         await WaitForCapacity(workerQueue, userCancellationToken);
 
         // Create optimized priority task (no wrapper needed)
-        var priorityTask = new PriorityTask(priority, work, userCancellationToken);
+        var priorityTask = new PriorityTask(priority, work, userCancellationToken, shouldDecrementTotal: true);
 
         Interlocked.Increment(ref _totalQueuedTasks);
         workerQueue.Enqueue(priorityTask);
@@ -96,15 +103,16 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
 
     private async ValueTask WaitForCapacity(ConcurrentQueue<PriorityTask> targetQueue, CancellationToken cancellationToken)
     {
-        // Optimization: Cache queue count to avoid multiple property access
         var queueCount = targetQueue.Count;
+
         while (queueCount >= _maxCapacityPerWorker || _totalQueuedTasks >= _maxTotalCapacity)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            
-            // Brief delay before checking again (hybrid backpressure)
-            await Task.Delay(10, cancellationToken);
-            
+
+            // CRITICAL: Always add a delay to prevent busy-wait CPU spike
+            // This is a backpressure mechanism - if we're at capacity, slow down
+            await Task.Delay(5, cancellationToken); // 5ms delay when at capacity
+
             // Re-check queue count after delay
             queueCount = targetQueue.Count;
         }
@@ -193,47 +201,82 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
     {
         // Mark this thread as a TickerQ worker thread
         IsTickerQWorkerThread = true;
-        
+
         // Set custom SynchronizationContext to keep all async continuations on TickerQ threads
         // Continuations can now run on any available TickerQ worker for better performance
         var originalContext = SynchronizationContext.Current;
         var tickerQContext = new TickerQSynchronizationContext(this);
         SynchronizationContext.SetSynchronizationContext(tickerQContext);
-        
+
         try
         {
             var lastWorkTime = DateTime.UtcNow;
-            
+            var consecutiveNoWorkCount = 0;
+
             while (true)
             {
                 var work = TryGetWork(workerId);
-                
+
                 if (work != null)
                 {
                     // Update work time when we actually execute work
                     lastWorkTime = DateTime.UtcNow;
-                    
+                    consecutiveNoWorkCount = 0;
+
                     try
                     {
+                        // Check for cancellation before executing task
+                        _shutdownCts.Token.ThrowIfCancellationRequested();
+
                         await work(); // No ConfigureAwait(false) - stay on TickerQ thread
+
+                        // Check for disposal after task execution
+                        if (_disposed)
+                            break;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Task was cancelled, exit worker
+                        break;
                     }
                     catch
                     {
-                        // swallow by design
+                        // swallow other exceptions by design
                     }
                 }
                 else
                 {
                     // No work available - check if should exit due to idle timeout
-                    if (DateTime.UtcNow - lastWorkTime > _idleWorkerTimeout)
-                        break; // Exit worker due to idle timeout
-                        
-                    // Brief delay before trying again to avoid tight loop - use cached task
-                    await DelayTask; // Reuse static delay task to avoid allocations
+                    // This allows elastic scaling: workers exit when idle to free resources
+                    var idleTime = DateTime.UtcNow - lastWorkTime;
+                    if (idleTime > _idleWorkerTimeout)
+                    {
+                        Console.WriteLine($"[DEBUG] Worker {workerId} exiting due to idle timeout ({idleTime.TotalSeconds:F1}s > {_idleWorkerTimeout.TotalSeconds:F1}s)");
+                        break; // Exit worker due to idle timeout - elastic scaling
+                    }
+
+                    // Adaptive delay strategy to balance responsiveness vs CPU usage
+                    consecutiveNoWorkCount++;
+                    
+                    if (consecutiveNoWorkCount < 100)
+                    {
+                        // First 100 cycles: tight loop for immediate responsiveness
+                        // No delay - just continue loop
+                    }
+                    else if (consecutiveNoWorkCount < 1000)
+                    {
+                        // Next 900 cycles: start adding minimal delay
+                        Thread.Sleep(1); // 1ms delay
+                    }
+                    else
+                    {
+                        // After 1000 cycles: longer delay to reduce CPU
+                        Thread.Sleep(5); // 5ms delay - worker will likely exit soon anyway
+                    }
                 }
-                
-                // Exit if frozen or shutdown
-                if (_isFrozen || _shutdownCts.IsCancellationRequested)
+
+                // Exit if frozen, shutdown, or disposed
+                if (_isFrozen || _shutdownCts.IsCancellationRequested || _disposed)
                     break;
             }
         }
@@ -271,7 +314,7 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
     {
         work = null;
         
-        // Initialize thread-local temp array if needed
+        // Initialize thread-local temp array if needed (reuse existing if possible)
         _tempTasks ??= new PriorityTask[32];
         
         // Look for highest priority task in queue using pooled array
@@ -326,17 +369,20 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
         {
             work = async () =>
             {
-                try 
-                { 
+                try
+                {
                     await bestTask.Value.Work(bestTask.Value.UserToken); // No ConfigureAwait(false) - stay on TickerQ thread
-                } 
-                catch 
-                { 
-                    /* swallow */ 
+                }
+                catch
+                {
+                    /* swallow */
                 }
                 finally
                 {
-                    Interlocked.Decrement(ref _totalQueuedTasks);
+                    if (bestTask.Value.ShouldDecrementTotal)
+                    {
+                        Interlocked.Decrement(ref _totalQueuedTasks);
+                    }
                 }
             };
             return true;
@@ -382,23 +428,29 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
         // Create a high-priority task for the continuation
         var continuationTask = new PriorityTask(
             TickerTaskPriority.High, // Continuations get highest priority to maintain execution flow
-            ct => 
+            ct =>
             {
-                try 
-                { 
+                try
+                {
                     continuation();
-                } 
-                catch 
-                { 
-                    /* swallow continuation exceptions */ 
+                }
+                catch
+                {
+                    /* swallow continuation exceptions */
                 }
                 return Task.CompletedTask; // Direct return - no async overhead
             },
-            CancellationToken.None // Continuations don't need user cancellation
+            CancellationToken.None, // Continuations don't need user cancellation
+            shouldDecrementTotal: false // Continuations should not decrement the total count
         );
 
         // Use round-robin to distribute continuations across all workers for better performance
-        var workerId = Interlocked.Increment(ref _nextWorkerId) % _maxConcurrency;
+        var nextId = Interlocked.Increment(ref _nextWorkerId);
+        if (nextId > 1_000_000_000)
+        {
+            Interlocked.CompareExchange(ref _nextWorkerId, 0, nextId);
+        }
+        var workerId = Math.Abs(nextId) % _maxConcurrency;
         var workerQueue = GetOrCreateWorkerQueue(workerId);
         workerQueue.Enqueue(continuationTask);
         
@@ -415,14 +467,29 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
 
-        // Mark as disposed - workers will exit naturally due to check in loop
+        Console.WriteLine($"[DEBUG] Disposing scheduler, signaling {_activeWorkers} workers to exit");
 
-        // Wait for workers to finish (they'll exit when channels are drained or idle timeout hits)
-        while (_activeWorkers > 0)
-            await DelayTask;
-
-        // Now cancel to release any lingering waits (should be unnecessary but safe)
+        // Cancel the shutdown token first to signal workers to exit
         await _shutdownCts.CancelAsync();
+
+        // Wait for workers to finish (they should exit quickly due to _disposed check)
+        var startTime = DateTime.UtcNow;
+        while (_activeWorkers > 0)
+        {
+            await Task.Delay(10);
+
+            // Safety timeout - if workers don't exit after 5 seconds, force continue
+            if ((DateTime.UtcNow - startTime).TotalSeconds > 5)
+            {
+                Console.WriteLine($"[WARNING] Workers not exiting cleanly after 5 seconds, forcing disposal");
+                break;
+            }
+        }
+
+        Console.WriteLine($"[DEBUG] All workers exited, cleaning up resources");
+
+        // Clean up resources
+        _notifyDebounce.Dispose();
         _shutdownCts.Dispose();
     }
 
@@ -451,6 +518,21 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
     public bool IsFrozen => _isFrozen;
 
     /// <summary>
+    /// Gets the current number of active worker threads.
+    /// </summary>
+    public int ActiveWorkers => _activeWorkers;
+
+    /// <summary>
+    /// Gets the current total number of queued tasks (excluding continuations).
+    /// </summary>
+    public int TotalQueuedTasks => _totalQueuedTasks;
+
+    /// <summary>
+    /// Gets whether the scheduler has been disposed.
+    /// </summary>
+    public bool IsDisposed => _disposed;
+
+    /// <summary>
     /// Waits for all currently running tasks to complete.
     /// Does not prevent new tasks from being queued unless scheduler is frozen.
     /// </summary>
@@ -464,8 +546,8 @@ internal sealed class TickerQTaskScheduler : IAsyncDisposable
         {
             if (DateTime.UtcNow > deadline)
                 return false; // Timeout
-                
-            await DelayTask;
+
+            await Task.Delay(10);
         }
 
         return true; // All tasks completed

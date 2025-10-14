@@ -61,7 +61,6 @@ onMounted(async () => {
   } catch (error) {
     // Failed to load time tickers
   }
-
   // Add hub listeners
   try {
     await addHubListeners()
@@ -78,11 +77,21 @@ onUnmounted(() => {
 
 const addHubListeners = async () => {
   TickerNotificationHub.onReceiveAddTimeTicker<GetTimeTickerResponse>((response) => {
+    console.log('Add Time Ticker', response)
     getTimeTickers.addToResponse(response)
   })
 
   TickerNotificationHub.onReceiveUpdateTimeTicker<GetTimeTickerResponse>((response) => {
-    getTimeTickers.updateByKey('id', response, ['requestType'])
+    getTimeTickers.updateByNestedKey('children', 'id', response, ['requestType', 'createdAt', 'executionTime','executionTimeFormatted', 'function', 'lockHolder', 'lockedAt', 'children', 'description'])
+
+    if(response.children && response.children.length > 0) {
+      for(let i = 0; i < response.children!.length; i++) {
+        response = response.children![i]
+        getTimeTickers.updateByNestedKey('children', 'id', response, ['requestType', 'createdAt', 'executionTime','executionTimeFormatted', 'function', 'lockHolder', 'lockedAt', 'children', 'description'])
+      }
+    }
+
+
     if (crudTimeTickerDialog.isOpen && crudTimeTickerDialog.propData?.id == response.id) {
       crudTimeTickerDialog.setPropData({
         ...response,

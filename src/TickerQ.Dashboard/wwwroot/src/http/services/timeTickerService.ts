@@ -97,7 +97,7 @@ const getTimeTickersGraphDataRange = () => {
             }
         });
 
-    const requestAsync = async (startDate: number, endDate: number) => (await baseHttp.sendAsync("GET", "time-tickers/:graph-data-range", {paramData: {pastDays: startDate, futureDays: endDate}}));
+    const requestAsync = async (startDate: number, endDate: number) => (await baseHttp.sendAsync("GET", "time-tickers/graph-data-range", {paramData: {pastDays: startDate, futureDays: endDate}}));
 
     return {
         ...baseHttp,
@@ -153,7 +153,7 @@ const updateTimeTicker = () => {
 const addChainJobs = () => {
   const baseHttp = useBaseHttpService<AddChainJobsRequest, object>('single');
 
-  const requestAsync = async (data: AddChainJobsRequest) => (await baseHttp.sendAsync("POST", "time-ticker/:add", { bodyData: data }));
+  const requestAsync = async (data: AddChainJobsRequest) => (await baseHttp.sendAsync("POST", "time-ticker/add", { bodyData: data }));
 
   return {
     ...baseHttp,

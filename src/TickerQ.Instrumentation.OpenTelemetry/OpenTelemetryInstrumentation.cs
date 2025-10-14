@@ -6,140 +6,148 @@ using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Models;
 
-namespace TickerQ.Instrumentation.OpenTelemetry
+namespace TickerQ.Instrumentation.OpenTelemetry;
+
+internal class OpenTelemetryInstrumentation : TickerQBaseLoggerInstrumentation , ITickerQInstrumentation
 {
-    internal class OpenTelemetryInstrumentation : BaseLoggerInstrumentation , ITickerQInstrumentation
+    private readonly ILogger<OpenTelemetryInstrumentation> _logger;
+    private static readonly ActivitySource ActivitySource = new("TickerQ", "1.0.0");
+
+    public OpenTelemetryInstrumentation(ILogger<OpenTelemetryInstrumentation> logger, SchedulerOptionsBuilder optionsBuilder) : base(logger, optionsBuilder.NodeIdentifier)
     {
-        private readonly ILogger<OpenTelemetryInstrumentation> _logger;
-        private static readonly ActivitySource ActivitySource = new("TickerQ", "1.0.0");
+        _logger = logger;
+    }
 
-        public OpenTelemetryInstrumentation(ILogger<OpenTelemetryInstrumentation> logger, SchedulerOptionsBuilder optionsBuilder) : base(logger, optionsBuilder.NodeIdentifier)
-        {
-            _logger = logger;
-        }
-
-        public override Activity? StartJobActivity(string activityName, InternalFunctionContext context)
-        {
-            var activity = ActivitySource.StartActivity(activityName);
+    public override Activity? StartJobActivity(string activityName, InternalFunctionContext context)
+    {
+        var activity = ActivitySource.StartActivity(activityName);
             
-            if (activity != null)
-            {
-                activity.SetTag("tickerq.job.id", context.TickerId.ToString());
-                activity.SetTag("tickerq.job.type", context.Type.ToString());
-                activity.SetTag("tickerq.job.function", context.FunctionName);
-                activity.SetTag("tickerq.job.priority", context.CachedPriority.ToString());
-                activity.SetTag("tickerq.job.machine", _instanceIdentifier);
-                activity.SetTag("tickerq.job.retries", context.Retries);
+        if (activity != null)
+        {
+            activity.SetTag("tickerq.job.id", context.TickerId.ToString());
+            activity.SetTag("tickerq.job.type", context.Type.ToString());
+            activity.SetTag("tickerq.job.function", context.FunctionName);
+            activity.SetTag("tickerq.job.priority", context.CachedPriority.ToString());
+            activity.SetTag("tickerq.job.machine", InstanceIdentifier);
+            activity.SetTag("tickerq.job.retries", context.Retries);
                 
-                if (context.ParentId.HasValue)
-                {
-                    activity.SetTag("tickerq.job.parent_id", context.ParentId.Value.ToString());
-                }
-
-                if (context.Type == TickerType.TimeTicker && context.ParentId.HasValue)
-                {
-                    activity.SetTag("tickerq.job.run_condition", context.RunCondition.ToString());
-                }
-            }
-            
-            return activity;
-        }
-
-        public override void LogJobEnqueued(string jobType, string functionName, Guid jobId, string? enqueuedFrom = null)
-        {
-            using var activity = ActivitySource.StartActivity("tickerq.job.enqueued");
-            activity?.SetTag("tickerq.job.id", jobId.ToString());
-            activity?.SetTag("tickerq.job.type", jobType);
-            activity?.SetTag("tickerq.job.function", functionName);
-            
-            // Get detailed caller information for OpenTelemetry
-            var callerInfo = string.IsNullOrEmpty(enqueuedFrom) ? CallerInfoHelper.GetCallerInfo(6) : enqueuedFrom;
-            activity?.SetTag("tickerq.job.enqueued_from", callerInfo);
-            
-            _logger.LogInformation("TickerQ Job enqueued: {JobType} - {Function} ({JobId}) from {EnqueuedFrom}", 
-                jobType, functionName, jobId, callerInfo);
-        }
-
-        public override void LogJobCompleted(Guid jobId, string functionName, long executionTimeMs, bool success)
-        {
-            using var activity = ActivitySource.StartActivity("tickerq.job.completed");
-            activity?.SetTag("tickerq.job.id", jobId.ToString());
-            activity?.SetTag("tickerq.job.function", functionName);
-            activity?.SetTag("tickerq.job.execution_time_ms", executionTimeMs);
-            activity?.SetTag("tickerq.job.success", success);
-            
-            // Set activity status based on success
-            if (activity != null)
+            if (context.ParentId.HasValue)
             {
-                activity.SetStatus(success ? ActivityStatusCode.Ok : ActivityStatusCode.Error);
+                activity.SetTag("tickerq.job.parent_id", context.ParentId.Value.ToString());
             }
-            
-            base.LogJobCompleted(jobId, functionName, executionTimeMs, success);
-        }
 
-        public override void LogJobFailed(Guid jobId, string functionName, Exception exception, int retryCount)
-        {
-            using var activity = ActivitySource.StartActivity("tickerq.job.failed");
-            activity?.SetTag("tickerq.job.id", jobId.ToString());
-            activity?.SetTag("tickerq.job.function", functionName);
-            activity?.SetTag("tickerq.job.retry_count", retryCount);
-            activity?.SetTag("tickerq.job.error_type", exception.GetType().Name);
-            activity?.SetTag("tickerq.job.error_message", exception.Message);
-            
-            if (activity != null)
+            if (context.Type == TickerType.TimeTicker && context.ParentId.HasValue)
             {
-                activity.SetStatus(ActivityStatusCode.Error, exception.Message);
-                // Record exception information in tags instead of RecordException (not available in all .NET versions)
-                if (exception.StackTrace != null)
-                {
-                    activity.SetTag("tickerq.job.error_stack_trace", exception.StackTrace);
-                }
+                activity.SetTag("tickerq.job.run_condition", context.RunCondition.ToString());
             }
-            
-            base.LogJobFailed(jobId, functionName, exception, retryCount);
         }
-
-        public override void LogJobCancelled(Guid jobId, string functionName, string reason)
-        {
-            using var activity = ActivitySource.StartActivity("tickerq.job.cancelled");
-            activity?.SetTag("tickerq.job.id", jobId.ToString());
-            activity?.SetTag("tickerq.job.function", functionName);
-            activity?.SetTag("tickerq.job.cancellation_reason", reason);
             
-            if (activity != null)
+        return activity;
+    }
+
+    public override void LogJobEnqueued(string jobType, string functionName, Guid jobId, string? enqueuedFrom = null)
+    {
+        using var activity = ActivitySource.StartActivity("tickerq.job.enqueued");
+        activity?.SetTag("tickerq.job.id", jobId.ToString());
+        activity?.SetTag("tickerq.job.type", jobType);
+        activity?.SetTag("tickerq.job.function", functionName);
+            
+        // Get detailed caller information for OpenTelemetry
+        var callerInfo = string.IsNullOrEmpty(enqueuedFrom) ? CallerInfoHelper.GetCallerInfo(6) : enqueuedFrom;
+        activity?.SetTag("tickerq.job.enqueued_from", callerInfo);
+            
+        _logger.LogInformation("TickerQ Job enqueued: {JobType} - {Function} ({JobId}) from {EnqueuedFrom}", 
+            jobType, functionName, jobId, callerInfo);
+    }
+
+    public override void LogJobCompleted(Guid jobId, string functionName, long executionTimeMs, bool success)
+    {
+        using var activity = ActivitySource.StartActivity("tickerq.job.completed");
+        activity?.SetTag("tickerq.job.id", jobId.ToString());
+        activity?.SetTag("tickerq.job.function", functionName);
+        activity?.SetTag("tickerq.job.execution_time_ms", executionTimeMs);
+        activity?.SetTag("tickerq.job.success", success);
+            
+        // Set activity status based on success
+        if (activity != null)
+        {
+            activity.SetStatus(success ? ActivityStatusCode.Ok : ActivityStatusCode.Error);
+        }
+            
+        base.LogJobCompleted(jobId, functionName, executionTimeMs, success);
+    }
+
+    public override void LogJobFailed(Guid jobId, string functionName, Exception exception, int retryCount)
+    {
+        using var activity = ActivitySource.StartActivity("tickerq.job.failed");
+        activity?.SetTag("tickerq.job.id", jobId.ToString());
+        activity?.SetTag("tickerq.job.function", functionName);
+        activity?.SetTag("tickerq.job.retry_count", retryCount);
+        activity?.SetTag("tickerq.job.error_type", exception.GetType().Name);
+        activity?.SetTag("tickerq.job.error_message", exception.Message);
+            
+        if (activity != null)
+        {
+            activity.SetStatus(ActivityStatusCode.Error, exception.Message);
+            // Record exception information in tags instead of RecordException (not available in all .NET versions)
+            if (exception.StackTrace != null)
             {
-                activity.SetStatus(ActivityStatusCode.Error, reason);
+                activity.SetTag("tickerq.job.error_stack_trace", exception.StackTrace);
             }
-            
-            base.LogJobCancelled(jobId, functionName, reason);
         }
+            
+        base.LogJobFailed(jobId, functionName, exception, retryCount);
+    }
 
-        public override void LogJobSkipped(Guid jobId, string functionName, string reason)
-        {
-            using var activity = ActivitySource.StartActivity("tickerq.job.skipped");
-            activity?.SetTag("tickerq.job.id", jobId.ToString());
-            activity?.SetTag("tickerq.job.function", functionName);
-            activity?.SetTag("tickerq.job.skip_reason", reason);
+    public override void LogJobCancelled(Guid jobId, string functionName, string reason)
+    {
+        using var activity = ActivitySource.StartActivity("tickerq.job.cancelled");
+        activity?.SetTag("tickerq.job.id", jobId.ToString());
+        activity?.SetTag("tickerq.job.function", functionName);
+        activity?.SetTag("tickerq.job.cancellation_reason", reason);
             
-            base.LogJobSkipped(jobId, functionName, reason);
+        if (activity != null)
+        {
+            activity.SetStatus(ActivityStatusCode.Error, reason);
         }
+            
+        base.LogJobCancelled(jobId, functionName, reason);
+    }
 
-        public override void LogSeedingDataStarted(string seedingDataType)
-        {
-            using var activity = ActivitySource.StartActivity("tickerq.seeding.started");
-            activity?.SetTag("tickerq.seeding.type", seedingDataType);
-            activity?.SetTag("tickerq.seeding.environment", _instanceIdentifier);
+    public override void LogJobSkipped(Guid jobId, string functionName, string reason)
+    {
+        using var activity = ActivitySource.StartActivity("tickerq.job.skipped");
+        activity?.SetTag("tickerq.job.id", jobId.ToString());
+        activity?.SetTag("tickerq.job.function", functionName);
+        activity?.SetTag("tickerq.job.skip_reason", reason);
             
-            base.LogSeedingDataStarted(seedingDataType);
-        }
+        base.LogJobSkipped(jobId, functionName, reason);
+    }
 
-        public override void LogSeedingDataCompleted(string seedingDataType)
-        {
-            using var activity = ActivitySource.StartActivity("tickerq.seeding.completed");
-            activity?.SetTag("tickerq.seeding.type", seedingDataType);
-            activity?.SetTag("tickerq.seeding.environment", _instanceIdentifier);
+    public override void LogSeedingDataStarted(string seedingDataType)
+    {
+        using var activity = ActivitySource.StartActivity("tickerq.seeding.started");
+        activity?.SetTag("tickerq.seeding.type", seedingDataType);
+        activity?.SetTag("tickerq.seeding.environment", InstanceIdentifier);
             
-            base.LogSeedingDataCompleted(seedingDataType);
-        }
+        base.LogSeedingDataStarted(seedingDataType);
+    }
+
+    public override void LogSeedingDataCompleted(string seedingDataType)
+    {
+        using var activity = ActivitySource.StartActivity("tickerq.seeding.completed");
+        activity?.SetTag("tickerq.seeding.type", seedingDataType);
+        activity?.SetTag("tickerq.seeding.environment", InstanceIdentifier);
+            
+        base.LogSeedingDataCompleted(seedingDataType);
+    }
+
+    public override void LogRequestDeserializationFailure(string requestType, string functionName, Guid tickerId, TickerType type, Exception exception)
+    {
+        using var activity = ActivitySource.StartActivity("tickerq.job_request_serialization.failed");
+        activity?.SetTag("tickerq.job.id", tickerId.ToString());
+        activity?.SetTag("tickerq.job.function", functionName);
+        activity?.SetTag("tickerq.job.cancellation_reason", exception.Message);
+        base.LogRequestDeserializationFailure(requestType, functionName, tickerId, type, exception);
     }
 }

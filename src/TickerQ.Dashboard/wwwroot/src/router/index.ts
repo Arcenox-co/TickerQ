@@ -1,10 +1,16 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/authStore'
-import { getBasePath } from '@/utilities/pathResolver'
+import { getBasePath, requiresAuthentication } from '@/utilities/pathResolver'
 
 const router = createRouter({
   history: createWebHistory(getBasePath()),
   routes: [
+    {
+      path: '/login',
+      name: 'Login',
+      component: () => import('../views/Login.vue'),
+      meta: { requiresAuth: false, hideForAuthenticated: true }
+    },
     {
       path: '/',
       name: 'Dashboard',
@@ -20,30 +26,50 @@ const router = createRouter({
     {
       path: '/time-tickers',
       name: 'TimeTicker',
-      // route level code-splitting
-      // this generates a separate chunk (About.[hash].js) for this route
-      // which is lazy-loaded when the route is visited.
       component: () => import('../views/TimeTicker.vue'),
       meta: { requiresAuth: true }
     },
   ],
 })
 
-// Navigation guard to check authentication
-router.beforeEach((to, from, next) => {
-  const authStore = useAuthStore()
+// Navigation guard for authentication
+router.beforeEach(async (to, from, next) => {
+  // Always allow access to login page
+  if (to.name === 'Login') {
+    next();
+    return;
+  }
   
-  // If route requires auth and user is not logged in, redirect to root
-  if (to.meta.requiresAuth && !authStore.isLoggedIn) {
-    // Only redirect if auth has been initialized (prevents flash)
-    if (authStore.isInitialized) {
-      next('/')
-    } else {
-      // Wait for auth to initialize
-      next()
+  // Check if authentication is required globally
+  const authRequired = requiresAuthentication();
+  
+  // If no authentication is required globally, allow all routes
+  if (!authRequired) {
+    next();
+    return;
+  }
+  
+  // Authentication is required - get auth store
+  const authStore = useAuthStore();
+  
+  // Initialize auth if not already done
+  if (!authStore.isInitialized) {
+    try {
+      await authStore.initializeAuth();
+    } catch (error) {
+      console.error('Auth initialization failed:', error);
+      next({ name: 'Login' });
+      return;
     }
+  }
+  
+  // Check authentication status
+  const isAuthenticated = authStore.isLoggedIn;
+  
+  if (isAuthenticated) {
+    next();
   } else {
-    next()
+    next({ name: 'Login', query: { redirect: to.fullPath } });
   }
 })
 

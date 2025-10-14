@@ -43,6 +43,7 @@ namespace TickerQ.DependencyInjection
                 provider.GetRequiredService<TickerQSchedulerBackgroundService>());
             services.AddHostedService(provider => 
                 provider.GetRequiredService<TickerQSchedulerBackgroundService>());
+            services.AddHostedService(provider => provider.GetRequiredService<TickerQFallbackBackgroundService>());
             services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
             services.AddSingleton<TickerQFallbackBackgroundService>();
             services.AddSingleton<TickerExecutionTaskHandler>();

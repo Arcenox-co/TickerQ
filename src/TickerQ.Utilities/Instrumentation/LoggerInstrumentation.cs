@@ -8,7 +8,7 @@ namespace TickerQ.Utilities.Instrumentation
     /// <summary>
     /// No-operation implementation of ITickerQInstrumentation
     /// </summary>
-    public sealed class LoggerInstrumentation : BaseLoggerInstrumentation, ITickerQInstrumentation
+    public sealed class LoggerInstrumentation : TickerQBaseLoggerInstrumentation, ITickerQInstrumentation
     {
         public LoggerInstrumentation(ILogger<LoggerInstrumentation> logger, SchedulerOptionsBuilder optionsBuilder) : base(logger,  optionsBuilder.NodeIdentifier)
         {

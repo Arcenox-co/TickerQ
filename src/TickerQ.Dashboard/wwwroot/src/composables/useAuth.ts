@@ -1,8 +1,7 @@
 import { computed, ref, watch, readonly } from 'vue'
 import { useAuthStore } from '../stores/authStore'
-import { authService } from '../services/authService'
 
-// Define the types locally since they're not exported from authService anymore
+// Define the types locally
 export interface AuthCredentials {
   username: string
   password: string
@@ -18,10 +17,12 @@ export function useAuth() {
   const isLoading = ref(false)
   const error = ref('')
 
+  // Get auth store
+  const authStore = useAuthStore()
+
   // Computed properties - these will be reactive to store changes
   const isAuthenticated = computed(() => {
     try {
-      const authStore = useAuthStore()
       return authStore.isLoggedIn
     } catch {
       return false
@@ -30,8 +31,7 @@ export function useAuth() {
   
   const username = computed(() => {
     try {
-      const authStore = useAuthStore()
-      return localStorage.getItem('username') || authStore.credentials.username
+      return authStore.username
     } catch {
       return ''
     }
@@ -39,8 +39,11 @@ export function useAuth() {
   
   const authToken = computed(() => {
     try {
-      const authStore = useAuthStore()
-      return authStore.auth
+      // Return the stored token based on auth mode
+      const apiKey = localStorage.getItem('tickerq_api_key')
+      const basicAuth = localStorage.getItem('tickerq_basic_auth')
+      const hostAccessKey = localStorage.getItem('tickerq_host_access_key')
+      return apiKey || basicAuth || hostAccessKey || ''
     } catch {
       return ''
     }
@@ -48,10 +51,9 @@ export function useAuth() {
   
   const errorMessage = computed(() => {
     try {
-      const authStore = useAuthStore()
-      return authStore.errorMessage
+      return authStore.errorMessage || error.value
     } catch {
-      return ''
+      return error.value
     }
   })
 
@@ -61,31 +63,19 @@ export function useAuth() {
     error.value = ''
     
     try {
-      // Use the new authService method for basic auth login
-      const success = await authService.handleBasicAuthLogin(
-        credentials.username,
-        credentials.password
-      )
+      // Set credentials in auth store
+      authStore.credentials.username = credentials.username
+      authStore.credentials.password = credentials.password
+      
+      // Attempt login
+      const success = await authStore.login()
       
       if (!success) {
-        error.value = 'Invalid username or password'
-        // Also update the store error message for consistency
-        try {
-          const authStore = useAuthStore()
-          authStore.errorMessage = 'Invalid username or password'
-        } catch {
-          // Store not available, ignore
-        }
-        return { success: false, error: 'Invalid username or password' }
+        error.value = authStore.errorMessage || 'Invalid username or password'
+        return { success: false, error: error.value }
       } else {
         // Clear any previous errors on success
         error.value = ''
-        try {
-          const authStore = useAuthStore()
-          authStore.clearError()
-        } catch {
-          // Store not available, ignore
-        }
         return { success: true }
       }
     } catch (err) {
@@ -102,7 +92,7 @@ export function useAuth() {
     error.value = ''
     
     try {
-      authService.logout()
+      authStore.logout()
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Logout failed'
       error.value = errorMsg
@@ -115,7 +105,6 @@ export function useAuth() {
   const clearError = (): void => {
     error.value = ''
     try {
-      const authStore = useAuthStore()
       authStore.clearError()
     } catch {
       // Store not available, just clear local error
@@ -151,4 +140,4 @@ export function useAuth() {
     logout,
     clearError
   }
-} 
+}

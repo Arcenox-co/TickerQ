@@ -9,7 +9,6 @@ import { nameof } from '@/utilities/nameof';
 const getByCronTickerId = () => {
     const baseHttp = useBaseHttpService<GetCronTickerOccurrenceRequest, GetCronTickerOccurrenceResponse>('array')
         .FixToResponseModel(GetCronTickerOccurrenceResponse, response => {
-            // Add null check to prevent "Cannot set properties of undefined" error
             if (!response) {
                 return response;
             }
@@ -48,7 +47,7 @@ const getByCronTickerId = () => {
         .ReOrganizeResponse((res) => res.sort((a, b) => new Date(b.executionTime).getTime() - new Date(a.executionTime).getTime()));
 
 
-    const requestAsync = async (id: string | undefined) => (await baseHttp.sendAsync("GET", "cron-ticker-occurrences/:cronTickerId", { paramData: { cronTickerId: id } }));
+    const requestAsync = async (id: string | undefined) => (await baseHttp.sendAsync("GET", `cron-ticker-occurrences/${id}`));
 
     return {
         ...baseHttp,
@@ -59,7 +58,7 @@ const getByCronTickerId = () => {
 const deleteCronTickerOccurrence = () => {
     const baseHttp = useBaseHttpService<object, object>('single');
 
-    const requestAsync = async (id: string) => (await baseHttp.sendAsync("DELETE", "cron-ticker-occurrence/:delete", { paramData: { id: id } }));
+    const requestAsync = async (id: string) => (await baseHttp.sendAsync("DELETE", "cron-ticker-occurrence/delete", { paramData: { id: id } }));
 
     return {
         ...baseHttp,
@@ -78,7 +77,7 @@ const getCronTickerOccurrenceGraphData = () => {
             }
         });
 
-    const requestAsync = async (id: string) => (await baseHttp.sendAsync("GET", "cron-ticker-occurrences/:cronTickerId/:graph-data", { paramData: { cronTickerId: id } }));
+    const requestAsync = async (id: string) => (await baseHttp.sendAsync("GET", `cron-ticker-occurrences/${id}/graph-data`));
 
     return {
         ...baseHttp,

@@ -111,10 +111,6 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
                 setExpression = ExpressionHelper.CombineSetters(setExpression,
                     s => s.SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime));
-            
-            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.ExecutionTime, functionContext.ExecutionTime));
 
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
                 setExpression = ExpressionHelper.CombineSetters(setExpression,

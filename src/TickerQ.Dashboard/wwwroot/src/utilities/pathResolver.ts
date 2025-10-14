@@ -2,17 +2,6 @@
  * Utility functions for resolving paths using the TickerQ configuration
  */
 
-declare global {
-  interface Window {
-    TickerQConfig?: {
-      basePath: string;
-      backendDomain?: string;
-      useHostAuthentication: boolean;
-      enableBuiltInAuth: boolean;
-      enableBasicAuth: boolean;
-    };
-  }
-}
 
 /**
  * Resolve a path relative to the TickerQ base path
@@ -122,7 +111,29 @@ export function getApiBaseUrl(): string {
 
 export function isBasicAuthEnabled(): boolean {
   const config = window.TickerQConfig;
-  return config?.enableBasicAuth || false;
+  return config?.auth?.mode === 'basic' || false;
+}
+
+export function isApiKeyAuthEnabled(): boolean {
+  const config = window.TickerQConfig;
+  return config?.auth?.mode === 'apikey' || false;
+}
+
+export function isHostAuthEnabled(): boolean {
+  const config = window.TickerQConfig;
+  return config?.auth?.mode === 'host' || false;
+}
+
+export function requiresAuthentication(): boolean {
+  const config = window.TickerQConfig;
+  return config?.auth?.enabled || false;
+}
+
+export function getAuthMode(): 'basic' | 'apikey' | 'host' | 'none' {
+  const config = window.TickerQConfig;
+  if (!config?.auth) return 'none';
+  
+  return config.auth.mode as 'basic' | 'apikey' | 'host' | 'none';
 }
 
 /**

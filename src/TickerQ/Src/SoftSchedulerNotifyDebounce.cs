@@ -3,7 +3,7 @@ using System.Threading;
 
 namespace TickerQ
 {
-    internal sealed class SoftSchedulerNotifyDebounce : IDisposable
+    public sealed class SoftSchedulerNotifyDebounce : IDisposable
     {
         private readonly Action<string> _notifyCoreAction;
         private readonly Timer _timer;

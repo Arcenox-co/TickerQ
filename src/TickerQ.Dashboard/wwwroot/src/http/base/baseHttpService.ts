@@ -1,7 +1,7 @@
 // useBaseHttpService.ts
 
-import axios, {type Method } from "axios";
-import {type Ref, ref } from "vue";
+import axios, { type Method } from "axios";
+import { type Ref, ref } from "vue";
 import http from "./axiosConfig";
 import type { Path, PathValue } from "@/utilities/pathTypes";
 import { useAlert } from "@/composables/useAlert";
@@ -30,10 +30,10 @@ export interface TableHeader {
 function formatKeyToTitle(key: string): string {
   // Replace underscores with spaces
   let result = key.replace(/_/g, ' ');
-  
+
   // Insert spaces before capital letters (for camelCase)
   result = result.replace(/([A-Z])/g, ' $1');
-  
+
   // Capitalize the first letter of each word
   return result.replace(/\b\w/g, char => char.toUpperCase()).trim();
 }
@@ -90,6 +90,7 @@ export interface BaseHttpServiceArray<TRequest, TItem extends object> {
   addToResponse(newItem: TItem): void;
   removeFromResponse<T extends Path<TItem>>(key: T, value: PathValue<TItem, T>): void;
   updateByKey<T extends Path<TItem>>(key: T, value: TItem, ignoreKeys: T[]): void;
+  updateByNestedKey(nestedObjectKey: string, key: string, value: TItem, ignoreKeys: string[]): void;
   updatePropertyByKey<T extends Path<TItem>, V extends Path<TItem>>(key: T, keyValue: PathValue<TItem, T>, property: V, value: PathValue<TItem, V>): void;
   updateProperty<T extends Path<TItem>>(key: T, keyValue: PathValue<TItem, T>): void;
 
@@ -241,14 +242,14 @@ export function useBaseHttpService(
           }),
         });
 
-        if(res.data.status != undefined) {
+        if (res.data.status != undefined) {
           res.data.status = getStatusValueSafe(res.data.status);
         }
-    
+
 
         const processed = processResponse(res.data, responseModelKeys.value, transformFn);
 
-        if(reOrganizeFn) {
+        if (reOrganizeFn) {
           response.value = reOrganizeFn(processed) as any;
         } else {
           response.value = processed as any;
@@ -309,10 +310,10 @@ export function useBaseHttpService(
       headers.value = defaultHeaders;
       return baseHttpService;
     };
-    
+
 
     const updateProperty = (property: string, value: any) => {
-        response.value[property] = value;
+      response.value[property] = value;
     };
 
     const baseHttpService: BaseHttpServiceSingle<any, any> = {
@@ -354,9 +355,9 @@ export function useBaseHttpService(
             cancelRequest.value = exec;
           }),
         });
-        
+
         res.data = res.data.map((item: any) => {
-          if(item.status != undefined) {
+          if (item.status != undefined) {
             item.status = getStatusValueSafe(item.status);
           }
           return item;
@@ -365,7 +366,7 @@ export function useBaseHttpService(
         const organized = reOrganizeFn ? reOrganizeFn(res.data) : res.data;
 
         const processed = processResponse(organized, responseModelKeys.value, transformFn);
-        
+
         response.value = processed as any[];
 
         return response.value;
@@ -389,7 +390,7 @@ export function useBaseHttpService(
     };
 
     const updateResponse = (newResponse: any[] | undefined) => {
-      if(reOrganizeFn) {
+      if (reOrganizeFn) {
         newResponse = reOrganizeFn(newResponse);
       }
       const processed = processResponse(newResponse, responseModelKeys.value, transformFn);
@@ -399,28 +400,75 @@ export function useBaseHttpService(
     const addToResponse = (newItem: any) => {
       const processed = processResponse(newItem, responseModelKeys.value, transformFn);
       response.value?.push(processed);
-      if(reOrganizeFn) {
+      if (reOrganizeFn) {
         response.value = reOrganizeFn(response.value);
       }
     };
 
     const removeFromResponse = (key: any, value: any) => {
       if (!response.value) return;
-      
+
       // Handle both string and GUID comparisons for better reliability
       const filtered = response.value.filter(item => {
         const itemValue = item[key];
         // Convert both values to strings for comparison to handle GUID/string mismatches
         return String(itemValue) !== String(value);
       });
-      
+
       response.value = filtered;
-      
+
       // Apply reorganization if needed
       if (reOrganizeFn) {
         response.value = reOrganizeFn(response.value);
       }
     };
+
+      const updateByNestedKey = (nestedObjectKey: string, key: string, value: any, ignoreKeys: string[] = []) => {
+        // First try to find at root level
+        let itemToUpdate = response.value?.find(item => item[key] == value[key]);
+        
+        // Recursive function to search in nested children at any depth
+        const findInNestedChildren = (items: any[], nestedKey: string): any => {
+          for (const item of items) {
+            // Check if this item has the nested property (e.g., 'children')
+            if (item[nestedKey] && Array.isArray(item[nestedKey])) {
+              // Search in direct children
+              const foundChild = item[nestedKey].find((child: any) => child[key] == value[key]);
+              if (foundChild) {
+                return foundChild;
+              }
+              
+              // Recursively search in grandchildren, great-grandchildren, etc.
+              const foundInDeeper = findInNestedChildren(item[nestedKey], nestedKey);
+              if (foundInDeeper) {
+                return foundInDeeper;
+              }
+            }
+          }
+          return null;
+        };
+        
+        // If not found at root, search recursively in nested children
+        if (!itemToUpdate && response.value) {
+          itemToUpdate = findInNestedChildren(response.value, nestedObjectKey);
+        }
+
+        if (!itemToUpdate) {
+          return; // Exit early if no matching item found anywhere
+        }
+
+        const processed = processResponse(value, responseModelKeys.value, transformFn);
+
+        Object.keys(processed).forEach((itemKey) => {
+          if (!ignoreKeys.includes(itemKey)) {
+            (itemToUpdate as any)[itemKey] = processed[itemKey] as any;
+          }
+        });
+
+        if (reOrganizeFn) {
+          response.value = reOrganizeFn(response.value);
+        }
+      }
 
     const updateByKey = (key: string, value: any, ignoreKeys: string[] = []) => {
       const item = response.value?.find(item => item[key] == value[key]);
@@ -428,16 +476,16 @@ export function useBaseHttpService(
       if (!item) {
         return; // Exit early if no matching item found
       }
-      
+
       const processed = processResponse(value, responseModelKeys.value, transformFn);
 
       Object.keys(processed).forEach((itemKey) => {
-        if(!ignoreKeys.includes(itemKey)) {
+        if (!ignoreKeys.includes(itemKey)) {
           (item as any)[itemKey] = processed[itemKey] as any;
         }
       });
 
-      if(reOrganizeFn) {
+      if (reOrganizeFn) {
         response.value = reOrganizeFn(response.value);
       }
     };
@@ -453,13 +501,13 @@ export function useBaseHttpService(
       response.value?.forEach(x => {
         x[property] = value
       })
-  };
+    };
 
     const ReOrganizeResponse = (transform: (response: any[]) => any[]) => {
       reOrganizeFn = transform;
       return baseHttpService;
     };
-    
+
     /**
      * FixToHeaders
      * Derive default headers from the model's keys,
@@ -503,6 +551,7 @@ export function useBaseHttpService(
       addToResponse,
       removeFromResponse,
       updateByKey,
+      updateByNestedKey,
       ReOrganizeResponse,
       updatePropertyByKey,
       updateProperty

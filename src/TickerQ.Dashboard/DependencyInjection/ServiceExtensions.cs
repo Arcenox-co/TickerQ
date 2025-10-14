@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Dashboard.Endpoints;
 using TickerQ.Dashboard.Hubs;
 using TickerQ.Dashboard.Infrastructure.Dashboard;
+using TickerQ.Dashboard.Authentication;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using System;
@@ -20,10 +21,10 @@ namespace TickerQ.Dashboard.DependencyInjection
         {
             var dashboardConfig = new DashboardOptionsBuilder
             {
-                CorsOrigins = ["*"],
-                EnableBuiltInAuth = true,
-                UseHostAuthentication = false,
-                EnableBasicAuth = false
+                CorsPolicyBuilder = cors => cors
+                    .SetIsOriginAllowed(_ => true)
+                    .AllowAnyHeader()
+                    .AllowCredentials()
             };
             
             configureDashboard?.Invoke(dashboardConfig);
@@ -33,12 +34,18 @@ namespace TickerQ.Dashboard.DependencyInjection
                 services.AddScoped<ITickerDashboardRepository<TTimeTicker, TCronTicker>, TickerDashboardRepository<TTimeTicker, TCronTicker>>();
                 services.Replace(ServiceDescriptor.Singleton(services.AddSingleton<ITickerQNotificationHubSender, TickerQNotificationHubSender>()));
                 
+                // Validate configuration
+                dashboardConfig.Validate();
+                
+                // Register authentication system
+                services.AddSingleton(dashboardConfig.Auth);
+                services.AddScoped<IAuthService, AuthService>();
+                
                 // Add authentication services if using host authentication
-                if (dashboardConfig.UseHostAuthentication)
+                if (dashboardConfig.Auth.Mode == AuthMode.Host)
                 {
                     // The host application should configure authentication services
                     // We just ensure they're available
-                    // Check for specific authentication services instead of string matching
                     var hasAuthenticationService = services.Any(s => 
                         s.ServiceType == typeof(Microsoft.AspNetCore.Authentication.IAuthenticationService) ||
                         s.ServiceType.Name == "IAuthenticationSchemeProvider");
@@ -49,6 +56,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                         services.AddAuthorization();
                     }
                 }
+                
                 services.AddDashboardService<TTimeTicker, TCronTicker>(dashboardConfig);
                 services.AddSingleton<DashboardOptionsBuilder>(_ => dashboardConfig);
             };

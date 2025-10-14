@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using TickerQ.Dashboard.Authentication;
 using TickerQ.Dashboard.Hubs;
 using TickerQ.Dashboard.Infrastructure;
 using TickerQ.Utilities;
@@ -25,22 +26,32 @@ public static class DashboardEndpoints
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        var apiGroup = endpoints.MapGroup("/api").WithTags("TickerQ Dashboard");
+        // New authentication endpoints
+        endpoints.MapGet("/api/auth/info", (IAuthService authService) => GetAuthInfo(authService))
+            .WithName("GetAuthInfo")
+            .WithSummary("Get authentication configuration")
+            .WithTags("TickerQ Dashboard")
+            .RequireCors("TickerQ_Dashboard_CORS")
+            .AllowAnonymous();
+            
+        endpoints.MapPost("/api/auth/validate", (HttpContext context, IAuthService authService) => ValidateAuth(context, authService))
+            .WithName("ValidateAuth")
+            .WithSummary("Validate authentication credentials")
+            .WithTags("TickerQ Dashboard")
+            .RequireCors("TickerQ_Dashboard_CORS")
+            .AllowAnonymous();
+            
+        var apiGroup = endpoints.MapGroup("/api").WithTags("TickerQ Dashboard").RequireCors("TickerQ_Dashboard_CORS");
 
         // Apply authentication if configured
-        if (config.RequiredRoles.Length != 0)
+        if (config.Auth.Mode == AuthMode.Host)
         {
-            apiGroup.RequireAuthorization(policy => policy.RequireRole(config.RequiredRoles));
-        }
-        else if (config.RequiredPolicies.Length != 0)
-        {
-            apiGroup.RequireAuthorization(config.RequiredPolicies);
-        }
-        else if (config.EnableBasicAuth || config.EnableBuiltInAuth)
-        {
+            // For host authentication, use default authorization
             apiGroup.RequireAuthorization();
         }
-
+        // For other auth modes (Basic, Bearer, Custom), authentication is handled by AuthMiddleware
+        // API endpoints are automatically protected when auth is enabled
+            
         // Options endpoint
         apiGroup.MapGet("/options", GetOptions<TTimeTicker, TCronTicker>)
             .WithName("GetOptions")
@@ -163,44 +174,64 @@ public static class DashboardEndpoints
             .WithName("GetMachineJobs")
             .WithSummary("Get machine jobs");
 
-        // SignalR Hub
+        // SignalR Hub - authentication handled in hub OnConnectedAsync
         endpoints.MapHub<TickerQNotificationHub>($"/ticker-notification-hub")
-            .RequireAuthorization(GetAuthorizationPolicy(config));
+            .AllowAnonymous();
 
     }
 
-    private static Action<AuthorizationPolicyBuilder> GetAuthorizationPolicy(DashboardOptionsBuilder config)
+    // Authorization policy helper for host authentication
+    private static Action<AuthorizationPolicyBuilder> GetHostAuthorizationPolicy()
     {
-        return policy =>
-        {
-            if (config.RequiredRoles.Length != 0)
-            {
-                policy.RequireRole(config.RequiredRoles);
-            }
-            else if (config.RequiredPolicies.Length != 0)
-            {
-                foreach (var policyName in config.RequiredPolicies)
-                {
-                    policy.RequireAuthenticatedUser(); // Basic requirement, specific policies handled elsewhere
-                }
-            }
-            else if (config.EnableBasicAuth || config.EnableBuiltInAuth)
-            {
-                policy.RequireAuthenticatedUser();
-            }
-        };
+        return policy => policy.RequireAuthenticatedUser();
     }
 
     #region Endpoint Handlers
+    
+    private static IResult GetAuthInfo(IAuthService authService)
+    {
+        var authInfo = authService.GetAuthInfo();
+        
+        // Return in format expected by frontend
+        var response = new
+        {
+            mode = authInfo.Mode.ToString().ToLower(),
+            enabled = authInfo.IsEnabled,
+            sessionTimeout = authInfo.SessionTimeoutMinutes
+        };
+        
+        return Results.Ok(response);
+    }
+
+    private static async Task<IResult> ValidateAuth(HttpContext context, IAuthService authService)
+    {
+        var authResult = await authService.AuthenticateAsync(context);
+        
+        if (authResult.IsAuthenticated)
+        {
+            return Results.Ok(new
+            {
+                authenticated = true,
+                username = authResult.Username,
+                message = "Authentication successful"
+            });
+        }
+
+        return Results.Unauthorized();
+    }
+    
 
     private static IResult GetOptions<TTimeTicker, TCronTicker>(
-        TickerExecutionContext executionContext)
+        TickerExecutionContext executionContext, SchedulerOptionsBuilder schedulerOptions)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         return Results.Ok(new
         {
-            LastHostExceptionMessage = executionContext.LastHostExceptionMessage,
+            maxConcurrency = schedulerOptions.MaxConcurrency,
+            schedulerOptions.IdleWorkerTimeOut,
+            currentMachine = schedulerOptions.NodeIdentifier,
+            executionContext.LastHostExceptionMessage
         });
     }
 
@@ -470,36 +501,35 @@ public static class DashboardEndpoints
         return Results.Ok(result);
     }
 
-    private static IResult StopTickerHost<TTimeTicker, TCronTicker>()
+    private static async Task<IResult> StopTickerHost<TTimeTicker, TCronTicker>(ITickerQHostScheduler scheduler)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        // TickerQHostScheduler.Stop();
+        await scheduler.StopAsync();
         return Results.Ok();
     }
 
-    private static IResult StartTickerHost<TTimeTicker, TCronTicker>()
+    private static async Task<IResult> StartTickerHost<TTimeTicker, TCronTicker>(ITickerQHostScheduler scheduler)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        // TickerQHostScheduler.Run();
+        await scheduler.StartAsync();
         return Results.Ok();
     }
 
-    private static IResult RestartTickerHost<TTimeTicker, TCronTicker>()
+    private static IResult RestartTickerHost<TTimeTicker, TCronTicker>(ITickerQHostScheduler scheduler)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        // TickerQHostScheduler.Restart();
+        scheduler.Restart();
         return Results.Ok();
     }
 
-    private static IResult GetTickerHostStatus<TTimeTicker, TCronTicker>()
+    private static IResult GetTickerHostStatus<TTimeTicker, TCronTicker>(ITickerQHostScheduler scheduler)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        return Results.Ok();
-        // return Results.Ok(new { IsRunning = TickerQHostScheduler.IsRunning() });
+        return Results.Ok(new { scheduler.IsRunning });
     }
 
     private static async Task<IResult> GetLastWeekJobStatus<TTimeTicker, TCronTicker>(

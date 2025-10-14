@@ -46,11 +46,14 @@ public static class ServiceExtension
             var timeTickerManager = serviceProvider.GetService<ITimeTickerManager<TTimeTicker>>();
             var cronTickerManager = serviceProvider.GetService<ICronTickerManager<TCronTicker>>();
             var hostLifetime = serviceProvider.GetService<IHostApplicationLifetime>();
+            var schedulerOptions = serviceProvider.GetService<SchedulerOptionsBuilder>();
 
             hostLifetime.ApplicationStarted.Register(() =>
             {
                 Task.Run(async () =>
                 {
+                    await internalTickerManager.ReleaseDeadNodeResources(schedulerOptions.NodeIdentifier);
+                    
                     var functionsToSeed = TickerFunctionProvider.TickerFunctions
                         .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
                         .Select(x => (x.Key, x.Value.cronExpression)).ToArray();

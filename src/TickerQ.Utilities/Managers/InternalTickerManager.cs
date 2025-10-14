@@ -389,6 +389,7 @@ namespace TickerQ.Utilities.Managers
         {
             var unifiedFunctionContext = new InternalFunctionContext()
                 .SetProperty(x => x.Status, TickerStatus.Skipped)
+                .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
                 .SetProperty(x => x.ExceptionDetails, "Rule RunCondition did not match!");
             
             if (resources.Length != 0)
@@ -396,6 +397,9 @@ namespace TickerQ.Utilities.Managers
             
             foreach (var resource in resources)
             {
+                resource.ExecutedAt = _clock.UtcNow;
+                resource.Status = TickerStatus.Skipped;
+                resource.ExceptionDetails = "Rule RunCondition did not match!";
                 if(resource.Type == TickerType.TimeTicker)
                     await _notificationHubSender.UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(resource).ConfigureAwait(false);
                 else
@@ -418,16 +422,37 @@ namespace TickerQ.Utilities.Managers
             
             await foreach(var timedOutTimeTicker in _persistenceProvider.QueueTimedOutTimeTickers(cancellationToken).ConfigureAwait(false))
             {
-                var functionContext = new InternalFunctionContext
+                results.Add(new InternalFunctionContext
                 {
                     FunctionName = timedOutTimeTicker.Function,
                     TickerId = timedOutTimeTicker.Id,
                     Type = TickerType.TimeTicker,
                     Retries = timedOutTimeTicker.Retries,
-                    RetryIntervals = timedOutTimeTicker.RetryIntervals
-                };
-                results.Add(functionContext);
-                await _notificationHubSender.UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(functionContext).ConfigureAwait(false);
+                    RetryIntervals = timedOutTimeTicker.RetryIntervals,
+                    ParentId = timedOutTimeTicker.ParentId,
+                    TimeTickerChildren = timedOutTimeTicker.Children.Select(ch => new InternalFunctionContext
+                    {
+                        FunctionName = ch.Function,
+                        TickerId = ch.Id,
+                        Type = TickerType.TimeTicker,
+                        Retries = ch.Retries,
+                        RetryIntervals = ch.RetryIntervals,
+                        ParentId = ch.ParentId,
+                        RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus,
+                        TimeTickerChildren = ch.Children.Select(gch => new InternalFunctionContext
+                        {
+                            FunctionName = gch.Function,
+                            TickerId = gch.Id,
+                            Type = TickerType.TimeTicker,
+                            Retries = gch.Retries,
+                            RetryIntervals = gch.RetryIntervals,
+                            ParentId = gch.ParentId,
+                            RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus
+                        }).ToList()
+                    }).ToList()
+                });
+                
+                await _notificationHubSender.UpdateTimeTickerNotifyAsync(timedOutTimeTicker).ConfigureAwait(false);
             }
 
             await foreach (var timedOutCronTicker in _persistenceProvider.QueueTimedOutCronTickerOccurrences(cancellationToken).ConfigureAwait(false))
@@ -436,7 +461,7 @@ namespace TickerQ.Utilities.Managers
                 {
                     FunctionName = timedOutCronTicker.CronTicker.Function,
                     TickerId = timedOutCronTicker.Id,
-                    Type = TickerType.TimeTicker,
+                    Type = TickerType.CronTickerOccurrence,
                     Retries = timedOutCronTicker.CronTicker.Retries,
                     RetryIntervals = timedOutCronTicker.CronTicker.RetryIntervals,
                     ParentId = timedOutCronTicker.CronTickerId

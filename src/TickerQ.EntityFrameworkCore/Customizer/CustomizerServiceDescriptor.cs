@@ -27,7 +27,7 @@ public static class ServiceBuilder
                 if (originalDescriptor == null)
                     throw new Exception($"Ticker: Cannot use UseModelCustomizer with empty {typeof(TContext).Name} configurations");
 
-                var newDescriptor = new Microsoft.Extensions.DependencyInjection.ServiceDescriptor(
+                var newDescriptor = new ServiceDescriptor(
                     typeof(DbContextOptions<TContext>),
                     provider => UpdateDbContextOptionsService<TContext, TTimeTicker, TCronTicker>(provider, originalDescriptor.ImplementationFactory),
                     originalDescriptor.Lifetime

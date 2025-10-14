@@ -33,13 +33,22 @@ internal class TickerExecutionTaskHandler
 
     public async Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
     {
+        Console.WriteLine($"[DEBUG] ExecuteTaskAsync called for {context.FunctionName} (ID: {context.TickerId}, Type: {context.Type}, Children: {context.TimeTickerChildren?.Count ?? 0})");
+
+        if (context.Type == TickerType.CronTickerOccurrence)
+        {
+            await RunContextFunctionAsync(context, isDue, cancellationToken);
+            return;
+        }
+
         var childrenToRunAfter = new InternalFunctionContext[5];
         var tasksToRunNow = new Task[6];
-        
+
         var childrenToRunAfterCount = 0;
         var tasksToRunNowCount = 0;
 
         var hasChildren = context.TimeTickerChildren.Count > 0;
+        Console.WriteLine($"[DEBUG] Parent {context.FunctionName} has {context.TimeTickerChildren.Count} children");
 
         // Add parent task
         tasksToRunNow[tasksToRunNowCount++] = RunContextFunctionAsync(context, isDue, cancellationToken);
@@ -50,20 +59,32 @@ internal class TickerExecutionTaskHandler
             for (var i = 0; i < context.TimeTickerChildren.Count; i++)
             {
                 var child = context.TimeTickerChildren[i];
+                Console.WriteLine($"[DEBUG] Processing child {child.FunctionName} (ID: {child.TickerId}, RunCondition: {child.RunCondition}, HasDelegate: {child.CachedDelegate != null})");
+                
                 if (child.CachedDelegate != null)
                 {
                     if (child.RunCondition == RunCondition.InProgress)
+                    {
+                        Console.WriteLine($"[DEBUG] Adding InProgress child {child.FunctionName} to run now");
                         tasksToRunNow[tasksToRunNowCount++] = SafeRecursiveExecution(child, isDue, cancellationToken);
+                    }
                     else
                     {
+                        Console.WriteLine($"[DEBUG] Deferring child {child.FunctionName} to run after parent completes");
                         childrenToRunAfter[childrenToRunAfterCount++] = child;
                     }
+                }
+                else
+                {
+                    Console.WriteLine($"[WARNING] Child {child.FunctionName} has no delegate!");
                 }
             }
         }
         
         // Wait for concurrent tasks (parent + InProgress children)
+        Console.WriteLine($"[DEBUG] Waiting for {tasksToRunNowCount} tasks to run now (parent + InProgress children)");
         await Task.WhenAll(tasksToRunNow.AsSpan(0, tasksToRunNowCount).ToArray());
+        Console.WriteLine($"[DEBUG] Completed tasks that run now, parent status: {context.Status}");
 
         // Process deferred children after parent completion
         if (childrenToRunAfterCount > 0)
@@ -73,23 +94,31 @@ internal class TickerExecutionTaskHandler
             
             var taskCount = 0;
             
+            Console.WriteLine($"[DEBUG] Processing {childrenToRunAfterCount} deferred children after parent completion");
+            
             for (var i = 0; i < childrenToRunAfterCount; i++)
             {
                 var child = childrenToRunAfter[i];
+                Console.WriteLine($"[DEBUG] Checking deferred child {child.FunctionName} (RunCondition: {child.RunCondition}, Parent status: {context.Status})");
+                
                 if (child.CachedDelegate != null)
                 {
                     if (ShouldRunChild(child, context.Status))
+                    {
+                        Console.WriteLine($"[DEBUG] Running deferred child {child.FunctionName}");
                         childrenToRunAfterTask[taskCount++] = SafeRecursiveExecution(child, isDue, cancellationToken);
+                    }
                     else
                     {
+                        Console.WriteLine($"[DEBUG] Skipping child {child.FunctionName} - condition {child.RunCondition} not met (Parent status: {context.Status})");
                         _tickerQInstrumentation.LogJobSkipped(
-                            child.TickerId, 
-                            child.FunctionName, 
+                            child.TickerId,
+                            child.FunctionName,
                             $"Condition {child.RunCondition} not met (Parent status: {context.Status})"
                         );
-                        
+                        child.ParentId = context.TickerId;
                         childrenToSkip.Add(child);
-                        
+
                         // Recursively gather all descendants to skip
                         GatherDescendantsToSkip(child, childrenToSkip);
                     }
@@ -103,12 +132,24 @@ internal class TickerExecutionTaskHandler
             
             // Wait for deferred tasks
             if (taskCount > 0)
+            {
+                Console.WriteLine($"[DEBUG] Waiting for {taskCount} deferred children to complete");
                 await Task.WhenAll(childrenToRunAfterTask.AsSpan(0, taskCount).ToArray());
+                Console.WriteLine($"[DEBUG] All deferred children completed");
+            }
+            else
+            {
+                Console.WriteLine($"[DEBUG] No deferred children to execute");
+            }
         }
+        
+        Console.WriteLine($"[DEBUG] ExecuteTaskAsync completed for {context.FunctionName}");
     }
 
     private async Task RunContextFunctionAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken, bool isChild = false)
     {
+        Console.WriteLine($"[DEBUG] RunContextFunctionAsync called for {context.FunctionName} (IsChild: {isChild})");
+        
         // Start OpenTelemetry activity for the entire job execution
         using var jobActivity = _tickerQInstrumentation.StartJobActivity($"tickerq.job.execute.{context.Type.ToString().ToLowerInvariant()}", context);
         
@@ -129,6 +170,7 @@ internal class TickerExecutionTaskHandler
 
         var tickerFunctionContext = new TickerFunctionContext
         {
+            FunctionName = context.FunctionName,
             Id = context.TickerId,
             Type = context.Type,
             IsDue = isDue,

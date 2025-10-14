@@ -1,31 +1,40 @@
 import { useAuthStore } from '@/stores/authStore';
 import { useAlertStore } from '@/stores/alertStore';
-import axios, {AxiosError, type AxiosInstance, type AxiosResponse } from 'axios';
-import { getApiBaseUrl, getBackendUrl } from '@/utilities/pathResolver';
-
-const authStore = useAuthStore();
-const alertStore = useAlertStore();
+import axios, { AxiosError, type AxiosInstance, type AxiosResponse } from 'axios';
+import { getApiBaseUrl, getAuthMode } from '@/utilities/pathResolver';
 
 const axiosInstance: AxiosInstance = axios.create({
-  //baseURL: getApiBaseUrl(),
-   baseURL: 'https://localhost:7231/tickerq/dashboard/api',
+  baseURL: getApiBaseUrl(),
 });
 
-// ✅ Request Interceptor: Set Authorization header from localStorage
+// Request Interceptor: Set Authorization header
 axiosInstance.interceptors.request.use(
   (config: any) => {
-    const auth = authStore.auth;
-
-    if (auth) {
-      if (!config.headers) {
-        config.headers = {};
-      }
-
-      // Handle modern AxiosHeaders or plain object
+    // Get auth headers from localStorage (using correct keys)
+    const apiKey = localStorage.getItem('tickerq_api_key');
+    const basicAuth = localStorage.getItem('tickerq_basic_auth');
+    const hostAccessKey = localStorage.getItem('tickerq_host_access_key');
+    
+    if (apiKey) {
+      config.headers = config.headers || {};
       if (typeof config.headers.set === 'function') {
-        (config.headers as any).set('Authorization', `Basic ${auth}`);
+        config.headers.set('Authorization', `Bearer ${apiKey}`);
       } else {
-        config.headers['Authorization'] = `Basic ${auth}`;
+        config.headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+    } else if (basicAuth) {
+      config.headers = config.headers || {};
+      if (typeof config.headers.set === 'function') {
+        config.headers.set('Authorization', `Basic ${basicAuth}`);
+      } else {
+        config.headers['Authorization'] = `Basic ${basicAuth}`;
+      }
+    } else if (hostAccessKey) {
+      config.headers = config.headers || {};
+      if (typeof config.headers.set === 'function') {
+        config.headers.set('Authorization', hostAccessKey);
+      } else {
+        config.headers['Authorization'] = hostAccessKey;
       }
     }
 
@@ -36,25 +45,31 @@ axiosInstance.interceptors.request.use(
   }
 );
 
-// ✅ Response Interceptor: Handle errors and auth
+// Response Interceptor: Handle errors and auth
 axiosInstance.interceptors.response.use(
   (response: AxiosResponse) => response,
-  (error: AxiosError) => {
+  async (error: AxiosError) => {
     try {
       // Handle 401 authentication errors
       if (error.response?.status === 401) {
-        authStore.auth = '';
-        authStore.errorMessage = 'Authentication failed. Please log in again.';
+        console.log('401 Unauthorized - handling authentication failure');
+        
+        // Get auth store and handle 401
+        const authStore = useAuthStore();
+        await authStore.handle401Error();
+        
+        // Don't show alert for 401 errors - let the auth system handle it
+        return Promise.reject(error);
       }
 
-      // Show error alert for HTTP errors (except 401 which is handled by auth flow)
-      // Also avoid showing alerts for cancelled requests
-      if (error.response?.status !== 401 && !error.message?.includes('canceled')) {
+      // Show error alert for other HTTP errors
+      if (!error.message?.includes('canceled')) {
+        const alertStore = useAlertStore();
         alertStore.showHttpError(error);
       }
     } catch (alertError) {
       // Prevent infinite loops if alert system has issues
-      console.error('Error showing alert:', alertError);
+      console.error('Error in response interceptor:', alertError);
     }
 
     return Promise.reject(error);
