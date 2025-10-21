@@ -4,16 +4,23 @@ using TickerQ.EntityFrameworkCore.Entities;
 
 namespace TickerQ.EntityFrameworkCore.Configurations
 {
-    public class TimeTickerConfigurations : IEntityTypeConfiguration<TimeTickerEntity>
+    public class TimeTickerConfigurations : TimeTickerConfigurations<TimeTickerEntity>
+    {
+    }
+
+    public class TimeTickerConfigurations<TTimeTickerEntity> : IEntityTypeConfiguration<TTimeTickerEntity>
+        where TTimeTickerEntity : TimeTickerEntity
     {
         private readonly string _schema;
+        private readonly string _tableName;
 
-        public TimeTickerConfigurations(string schema = Constants.DefaultSchema)
+        public TimeTickerConfigurations(string schema = Constants.DefaultSchema, string tableName = "TimeTickers")
         {
             _schema = schema;
+            _tableName = tableName;
         }
-        
-        public void Configure(EntityTypeBuilder<TimeTickerEntity> builder)
+
+        public virtual void Configure(EntityTypeBuilder<TTimeTickerEntity> builder)
         {
             builder.HasKey("Id");
 
@@ -21,18 +28,18 @@ namespace TickerQ.EntityFrameworkCore.Configurations
                 .IsConcurrencyToken()
                 .IsRequired(false);
 
-            builder.HasOne(e => e.ParentJob)
-                .WithMany(x => x.ChildJobs)
+            builder.HasOne<TTimeTickerEntity>("ParentJob")
+                .WithMany("ChildJobs")
                 .HasForeignKey(x => x.BatchParent)
                 .OnDelete(DeleteBehavior.Restrict);
-            
+
             builder.HasIndex("ExecutionTime")
-                .HasName("IX_TimeTicker_ExecutionTime");
+                .HasName($"IX_{_tableName}_ExecutionTime");
 
             builder.HasIndex("Status", "ExecutionTime")
-                .HasName("IX_TimeTicker_Status_ExecutionTime");
+                .HasName($"IX_{_tableName}_Status_ExecutionTime");
 
-            builder.ToTable("TimeTickers", _schema);
+            builder.ToTable(_tableName, _schema);
         }
     }
 }

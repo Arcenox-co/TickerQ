@@ -11,7 +11,6 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
-using TickerQ.Utilities.Models.Ticker;
 
 namespace TickerQ.EntityFrameworkCore.DependencyInjection
 {
@@ -43,7 +42,13 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
             where TTimeTickerEntity : TimeTickerEntity, new()
             where TCronTickerEntity : CronTickerEntity, new()
         {
-            var efCoreOptionBuilder = new EfCoreOptionBuilder();
+            var efCoreOptionBuilder = new EfCoreOptionBuilder
+            {
+                TimeTickerType = tickerConfiguration.TimeTickerType,
+                CronTickerType = tickerConfiguration.CronTickerType,
+                TimeTickerEntityType = typeof(TTimeTickerEntity),
+                CronTickerEntityType = typeof(TCronTickerEntity)
+            };
 
             optionsBuilderAction?.Invoke(efCoreOptionBuilder);
 
@@ -65,8 +70,21 @@ namespace TickerQ.EntityFrameworkCore.DependencyInjection
                     services.Remove(originalDescriptor);
                     services.Add(newDescriptor);
                 }
-              
-                services.AddScoped<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerEfCorePersistenceProvider<TContext, TimeTicker, CronTicker>>();
+
+                var tickerTimeType = tickerConfiguration.TimeTickerType;
+                var tickerCronType = tickerConfiguration.CronTickerType;
+
+                services.AddSingleton(
+                    typeof(ITimeTickerMapper<,>).MakeGenericType(tickerTimeType, typeof(TTimeTickerEntity)),
+                    efCoreOptionBuilder.TimeTickerMapperType ??
+                    typeof(DefaultTimeTickerMapper<,>).MakeGenericType(tickerTimeType, typeof(TTimeTickerEntity)));
+                services.AddSingleton(
+                    typeof(ICronTickerMapper<,>).MakeGenericType(tickerCronType, typeof(TCronTickerEntity)),
+                    efCoreOptionBuilder.CronTickerMapperType ??
+                    typeof(DefaultCronTickerMapper<,>).MakeGenericType(tickerCronType, typeof(TCronTickerEntity)));
+                services.AddScoped(
+                    typeof(ITickerPersistenceProvider<,>).MakeGenericType(tickerTimeType, tickerCronType),
+                    typeof(TickerEfCorePersistenceProvider<,,,,>).MakeGenericType(typeof(TContext), tickerTimeType, typeof(TTimeTickerEntity), tickerCronType, typeof(TCronTickerEntity)));
             };
 
             UseApplicationService(tickerConfiguration, efCoreOptionBuilder);

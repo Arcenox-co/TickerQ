@@ -25,13 +25,31 @@ namespace TickerQ.DependencyInjection
         /// <returns></returns>
         public static IServiceCollection AddTickerQ(this IServiceCollection services, Action<TickerOptionsBuilder> optionsBuilder = null)
         {
-            services.AddScoped<ICronTickerManager<CronTicker>, TickerManager<TimeTicker, CronTicker>>();
-            services.AddScoped<ITimeTickerManager<TimeTicker>, TickerManager<TimeTicker, CronTicker>>();
-            services.AddScoped<IInternalTickerManager, TickerManager<TimeTicker, CronTicker>>();
+            return AddTickerQ<TimeTicker, CronTicker>(services, optionsBuilder);
+        }
 
-            services.AddSingleton<ITickerPersistenceProvider<TimeTicker, CronTicker>, TickerInMemoryPersistenceProvider<TimeTicker, CronTicker>>();
+        /// <summary>
+        /// Adds Ticker to the service collection.
+        /// </summary>
+        /// <param name="services"></param>
+        /// <param name="optionsBuilder"></param>
+        /// <returns></returns>
+        public static IServiceCollection AddTickerQ<TTimeTicker, TCronTicker>(
+            this IServiceCollection services, Action<TickerOptionsBuilder> optionsBuilder = null)
+            where TTimeTicker : TimeTicker, new()
+            where TCronTicker : CronTicker, new()
+        {
+            var optionInstance = new TickerOptionsBuilder
+            {
+                TimeTickerType = typeof(TTimeTicker),
+                CronTickerType = typeof(TCronTicker)
+            };
 
-            var optionInstance = new TickerOptionsBuilder();
+            services.AddScoped<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
+            services.AddScoped<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
+            services.AddScoped<IInternalTickerManager, TickerManager<TTimeTicker, TCronTicker>>();
+
+            services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
 
             optionsBuilder?.Invoke(optionInstance);
 
@@ -59,8 +77,8 @@ namespace TickerQ.DependencyInjection
 
             return services;
         }
-        
-        public static void UseTickerQ(this IApplicationBuilder app, 
+
+        public static void UseTickerQ(this IApplicationBuilder app,
             TickerQStartMode qStartMode = TickerQStartMode.Immediate)
         {
             var tickerOptBuilder = app.ApplicationServices.GetService<TickerOptionsBuilder>();
