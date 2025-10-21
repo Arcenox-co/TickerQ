@@ -7,6 +7,8 @@ namespace TickerQ.Utilities
 {
     public class TickerOptionsBuilder
     {
+        internal Type TimeTickerType { get; set; }
+        internal Type CronTickerType { get; set; }
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceProvider> ExternalProviderConfigApplicationAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }

@@ -61,7 +61,9 @@ namespace TickerQ.Dashboard.DependencyInjection
             
             tickerConfiguration.DashboardServiceAction = (services) =>
             {
-                services.AddScoped<ITickerDashboardRepository, TickerDashboardRepository<TimeTicker, CronTicker>>();
+                services.AddScoped(
+                    typeof(ITickerDashboardRepository),
+                    typeof(TickerDashboardRepository<,>).MakeGenericType(tickerConfiguration.TimeTickerType, tickerConfiguration.CronTickerType));
                 services.AddSingleton<ITickerQNotificationHubSender, TickerQNotificationHubSender>();
                 
                 

@@ -10,7 +10,9 @@ using TickerQ.Utilities.Enums;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
-    internal abstract class BasePersistenceProvider<TDbContext> where TDbContext : DbContext
+    internal abstract class BasePersistenceProvider<TDbContext, TTimeTickerEntity, TCronTickerEntity> where TDbContext : DbContext
+        where TTimeTickerEntity : TimeTickerEntity, new()
+        where TCronTickerEntity : CronTickerEntity, new()
     {
         protected readonly TDbContext DbContext;
 
@@ -35,15 +37,15 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 tracked.CurrentValues.SetValues(entity);
 
-                if (entity is TimeTickerEntity _)
+                if (entity is TTimeTickerEntity _)
                 {
                     var lockHolderProp = tracked.Property(nameof(TimeTickerEntity.LockHolder));
                     lockHolderProp.IsModified = true;
                 }
 
-                if (entity is CronTickerOccurrenceEntity<CronTickerEntity> _)
+                if (entity is CronTickerOccurrenceEntity<TCronTickerEntity> _)
                 {
-                    var lockHolderProp = tracked.Property(nameof(CronTickerOccurrenceEntity<CronTickerEntity>.LockHolder));
+                    var lockHolderProp = tracked.Property(nameof(CronTickerOccurrenceEntity<TCronTickerEntity>.LockHolder));
                     lockHolderProp.IsModified = true;
                 }
 
@@ -56,7 +58,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     var entry = DbContext.Attach(entity);
                     entry.State = state;
 
-                    if (entity is TimeTickerEntity timeTickerEntity)
+                    if (entity is TTimeTickerEntity timeTickerEntity)
                     {
                         var lockHolderProp = entry.Property(nameof(TimeTickerEntity.LockHolder));
 
@@ -71,9 +73,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         }
                     }
 
-                    if (entity is CronTickerOccurrenceEntity<CronTickerEntity> cronOccurrenceEntity)
+                    if (entity is CronTickerOccurrenceEntity<TCronTickerEntity> cronOccurrenceEntity)
                     {
-                        var lockHolderProp = entry.Property(nameof(CronTickerOccurrenceEntity<CronTickerEntity>.LockHolder));
+                        var lockHolderProp = entry.Property(nameof(CronTickerOccurrenceEntity<TCronTickerEntity>.LockHolder));
 
                         if (cronOccurrenceEntity.Status == TickerStatus.Queued || cronOccurrenceEntity.Status == TickerStatus.Idle || cronOccurrenceEntity.Status == TickerStatus.Cancelled)
                         {
