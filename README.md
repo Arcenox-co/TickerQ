@@ -69,7 +69,7 @@ builder.Services.AddTickerQ(options =>
     options.AddDashboard(uiopt =>                                                
     {
         uiopt.BasePath = "/tickerq-dashboard"; 
-        uiopt.AddDashboardBasicAuth();
+        uiopt.EnableBasicAuth = true;
     });
 });
 
