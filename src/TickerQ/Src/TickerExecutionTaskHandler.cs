@@ -152,7 +152,7 @@ internal class TickerExecutionTaskHandler
                         return;
 
                     var isRunning = context.ParentId.HasValue &&
-                                    TickerCancellationTokenManager.IsParentRunning(context.ParentId.Value);
+                                    TickerCancellationTokenManager.IsParentRunningExcludingSelf(context.ParentId.Value, context.TickerId);
 
                     if (isRunning)
                         throw new TerminateExecutionException("Another CronOccurrence is already running!");

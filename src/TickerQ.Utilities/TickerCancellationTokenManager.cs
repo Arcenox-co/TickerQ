@@ -92,6 +92,21 @@ namespace TickerQ.Utilities
         {
             return ParentIdIndex.ContainsKey(parentId);
         }
+        
+        /// <summary>
+        /// Checks if any OTHER tickers (excluding the current one) are running for a given parent ID.
+        /// Used to prevent false positives when checking if a sibling occurrence is already running.
+        /// </summary>
+        /// <param name="parentId">The parent ID to check</param>
+        /// <param name="excludeTickerId">The ticker ID to exclude from the check (usually the current ticker)</param>
+        /// <returns>True if any other tickers are running for this parent ID</returns>
+        public static bool IsParentRunningExcludingSelf(Guid parentId, Guid excludeTickerId)
+        {
+            if (!ParentIdIndex.TryGetValue(parentId, out var tickerSet))
+                return false;
+            
+            return tickerSet.HasOtherItemsBesides(excludeTickerId);
+        }
     }
 
     public class TickerCancellationTokenDetails 
@@ -132,6 +147,31 @@ namespace TickerQ.Utilities
                 _lock.EnterReadLock();
                 try { return _set.Count == 0; }
                 finally { _lock.ExitReadLock(); }
+            }
+        }
+        
+        /// <summary>
+        /// Checks if there are any items in the set other than the specified excluded item.
+        /// </summary>
+        /// <param name="excludeItem">The item to exclude from the check</param>
+        /// <returns>True if there are other items besides the excluded one</returns>
+        public bool HasOtherItemsBesides(T excludeItem)
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                if (_set.Count == 0)
+                    return false;
+                    
+                if (_set.Count == 1)
+                    return !_set.Contains(excludeItem);
+                    
+                // Multiple items - at least one must be different from excludeItem
+                return true;
+            }
+            finally
+            {
+                _lock.ExitReadLock();
             }
         }
         

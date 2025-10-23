@@ -5,15 +5,16 @@ namespace TickerQ.SourceGenerator.Validation
 {
     public static class CronValidator
     {
-        // Format: seconds, minutes, hours, day, month, day-of-week
-        private static readonly int[] MinValuesArray = { 0, 0, 0, 1, 1, 0 };
-        private static readonly int[] MaxValuesArray = { 59, 59, 23, 31, 12, 6 };
+        // Format with seconds (6 parts): seconds, minutes, hours, day, month, day-of-week
+        private static readonly int[] MinValuesArray6Part = { 0, 0, 0, 1, 1, 0 };
+        private static readonly int[] MaxValuesArray6Part = { 59, 59, 23, 31, 12, 6 };
         
-        private static ReadOnlySpan<int> MinValues => MinValuesArray;
-        private static ReadOnlySpan<int> MaxValues => MaxValuesArray;
+        // Format without seconds (5 parts): minutes, hours, day, month, day-of-week
+        private static readonly int[] MinValuesArray5Part = { 0, 0, 1, 1, 0 };
+        private static readonly int[] MaxValuesArray5Part = { 59, 23, 31, 12, 6 };
         
         // Performance constants
-        private const int ExpectedPartsCount = 6;
+        private const int MaxPartsCount = 6;
 
         public static bool IsValidCronExpression(string expression)
         {
@@ -21,17 +22,23 @@ namespace TickerQ.SourceGenerator.Validation
 
             // Use Span for efficient string splitting without allocations
             var expressionSpan = expression.AsSpan();
-            var parts = new string[ExpectedPartsCount];
+            var parts = new string[MaxPartsCount];
             var partCount = SplitIntoSpan(expressionSpan, parts);
             
-            if (partCount != ExpectedPartsCount) 
-                return false; // must have exactly 6 parts
+            // Support both 5-part (without seconds) and 6-part (with seconds) cron expressions
+            if (partCount != 5 && partCount != 6) 
+                return false;
 
-            // Use Span-based iteration for better performance
-            var minSpan = MinValues;
-            var maxSpan = MaxValues;
+            // Select appropriate min/max values based on part count
+            ReadOnlySpan<int> minSpan = partCount == 6 
+                ? MinValuesArray6Part 
+                : MinValuesArray5Part;
             
-            for (int i = 0; i < ExpectedPartsCount; i++)
+            ReadOnlySpan<int> maxSpan = partCount == 6 
+                ? MaxValuesArray6Part 
+                : MaxValuesArray5Part;
+            
+            for (int i = 0; i < partCount; i++)
             {
                 if (!ValidatePart(parts[i], minSpan[i], maxSpan[i]))
                     return false;
