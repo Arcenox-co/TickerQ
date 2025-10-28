@@ -5,6 +5,13 @@ import { AddCronTickerRequest, GetCronTickerGraphDataRangeResponse, GetCronTicke
 import { nameof } from '@/utilities/nameof';
 import { useFunctionNameStore } from '@/stores/functionNames';
 
+interface PaginatedCronTickerResponse {
+    items: GetCronTickerResponse[]
+    totalCount: number
+    pageNumber: number
+    pageSize: number
+}
+
 const getCronTickers = () => {
     const functionNamesStore = useFunctionNameStore();
 
@@ -35,6 +42,46 @@ const getCronTickers = () => {
 
     const requestAsync = async () => (await baseHttp.sendAsync("GET", "cron-tickers"));
 
+    return {
+        ...baseHttp,
+        requestAsync
+    };
+}
+
+const getCronTickersPaginated = () => {
+    const functionNamesStore = useFunctionNameStore();
+    
+    const baseHttp = useBaseHttpService<object, PaginatedCronTickerResponse>('single');
+    
+    const processResponse = (response: PaginatedCronTickerResponse): PaginatedCronTickerResponse => {
+            // Process items in the paginated response
+            if (response && response.items && Array.isArray(response.items)) {
+                response.items = response.items.map((item: GetCronTickerResponse) => {
+                    item.requestType = functionNamesStore.getNamespaceOrNull(item.function) ?? 'N/A';
+                    item.createdAt = formatDate(item.createdAt);
+                    item.updatedAt = formatDate(item.updatedAt);
+                    item.initIdentifier = item.initIdentifier?.split("_").slice(0, 2).join("_");
+                    if ((item.retryIntervals == null || item.retryIntervals.length == 0) && (item.retries == null || (item.retries as number) == 0))
+                        item.retryIntervals = [];
+                    else if ((item.retryIntervals == null || item.retryIntervals.length == 0) && (item.retries != null && (item.retries as number) > 0))
+                        item.retryIntervals = Array(1).fill(`${30}s`);
+                    else 
+                        item.retryIntervals = (item.retryIntervals as string[]).map((x: any) => formatTime(x as number, false));
+                    
+                    return item;
+                });
+            }
+            
+            return response;
+    };
+    
+    const requestAsync = async (pageNumber: number = 1, pageSize: number = 20) => {
+        const response = await baseHttp.sendAsync("GET", "cron-tickers/paginated", { 
+            paramData: { pageNumber, pageSize } 
+        });
+        return processResponse(response);
+    };
+    
     return {
         ...baseHttp,
         requestAsync
@@ -90,7 +137,7 @@ const getTimeTickersGraphDataRange = () => {
             }
         });
 
-    const requestAsync = async (startDate: number, endDate: number) => (await baseHttp.sendAsync("GET", "cron-tickers/:graph-data-range", {paramData: {pastDays: startDate, futureDays: endDate}}));
+    const requestAsync = async (startDate: number, endDate: number) => (await baseHttp.sendAsync("GET", "cron-tickers/graph-data-range", {paramData: {pastDays: startDate, futureDays: endDate}}));
 
     return {
         ...baseHttp,
@@ -107,7 +154,7 @@ const getTimeTickersGraphDataRangeById = () => {
             }
         });
 
-    const requestAsync = async (id:string ,startDate: number, endDate: number) => (await baseHttp.sendAsync("GET", "cron-tickers/:graph-data-range-id", {paramData: {id: id, pastDays: startDate, futureDays: endDate}}));
+    const requestAsync = async (id:string ,startDate: number, endDate: number) => (await baseHttp.sendAsync("GET", "cron-tickers/graph-data-range-id", {paramData: {id: id, pastDays: startDate, futureDays: endDate}}));
 
     return {
         ...baseHttp,
@@ -118,7 +165,7 @@ const getTimeTickersGraphDataRangeById = () => {
 const getTimeTickersGraphData = () => {
     const baseHttp = useBaseHttpService<object, GetCronTickerGraphDataResponse>('array');
 
-    const requestAsync = async () => (await baseHttp.sendAsync("GET", "cron-tickers/:graph-data"));
+    const requestAsync = async () => (await baseHttp.sendAsync("GET", "cron-tickers/graph-data"));
 
     return {
         ...baseHttp,
@@ -128,6 +175,7 @@ const getTimeTickersGraphData = () => {
 
 export const cronTickerService = {
     getCronTickers,
+    getCronTickersPaginated,
     updateCronTicker,
     addCronTicker,
     deleteCronTicker,

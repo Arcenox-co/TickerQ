@@ -11,6 +11,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.Dashboard.Infrastructure.Dashboard
 {
@@ -40,6 +41,9 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
         public async Task<TTimeTicker[]> GetTimeTickersAsync(CancellationToken cancellationToken)
             => await _persistenceProvider.GetTimeTickers(null, cancellationToken);
+        
+        public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginatedAsync(int pageNumber, int pageSize, CancellationToken cancellationToken)
+            => await _persistenceProvider.GetTimeTickersPaginated(null, pageNumber, pageSize, cancellationToken);
 
         public async Task SetTimeTickerBatchParent(Guid targetId, Guid parentId, RunCondition? batchRunCondition = null)
         {
@@ -440,6 +444,18 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         public async Task<CronTickerEntity[]> GetCronTickersAsync(CancellationToken cancellationToken)
             => await _persistenceProvider.GetCronTickers(null, cancellationToken);
         
+        public async Task<PaginationResult<CronTickerEntity>> GetCronTickersPaginatedAsync(int pageNumber, int pageSize, CancellationToken cancellationToken)
+        {
+            // We need to cast TCronTicker[] to CronTickerEntity[] for the pagination result
+            var result = await _persistenceProvider.GetCronTickersPaginated(null, pageNumber, pageSize, cancellationToken);
+            return new PaginationResult<CronTickerEntity>(
+                result.Items.Cast<CronTickerEntity>(),
+                result.TotalCount,
+                result.PageNumber,
+                result.PageSize
+            );
+        }
+        
         public async Task AddOnDemandCronTickerOccurrenceAsync(Guid id, CancellationToken cancellationToken)
         {
             var now = DateTime.UtcNow;
@@ -463,6 +479,11 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetCronTickersOccurrencesAsync(Guid cronTickerId, CancellationToken cancellationToken)
         {
             return await _persistenceProvider.GetAllCronTickerOccurrences(x => x.CronTickerId == cronTickerId, cancellationToken);
+        }
+        
+        public async Task<PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>> GetCronTickersOccurrencesPaginatedAsync(Guid cronTickerId, int pageNumber, int pageSize, CancellationToken cancellationToken)
+        {
+            return await _persistenceProvider.GetAllCronTickerOccurrencesPaginated(x => x.CronTickerId == cronTickerId, pageNumber, pageSize, cancellationToken);
         }
 
         public async Task<IList<CronOccurrenceTickerGraphData>> GetCronTickersOccurrencesGraphDataAsync(Guid guid, CancellationToken cancellationToken)

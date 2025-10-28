@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { watch, type PropType, toRef, onMounted, onUnmounted } from 'vue'
+import { watch, type PropType, toRef, onMounted, onUnmounted, ref } from 'vue'
 import { cronTickerOccurrenceService } from '@/http/services/cronTickerOccurrenceService'
 import { Status } from '@/http/services/types/base/baseHttpResponse.types'
 import { tickerService } from '@/http/services/tickerService'
@@ -8,6 +8,7 @@ import { useDialog } from '@/composables/useDialog'
 import { methodName, type TickerNotificationHubType } from '@/hub/tickerNotificationHub'
 import type { GetCronTickerOccurrenceResponse } from '@/http/services/types/cronTickerOccurrenceService.types'
 import { ConfirmDialogProps } from '@/components/common/ConfirmDialog.vue'
+import PaginationFooter from '@/components/PaginationFooter.vue'
 
 const confirmDialog = useDialog<{ data: string }>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
@@ -17,9 +18,26 @@ const exceptionDialog = useDialog<ConfirmDialogProps>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
 )
 
-const getByCronTickerId = cronTickerOccurrenceService.getByCronTickerId()
+// Use paginated service
+const getByCronTickerIdPaginated = cronTickerOccurrenceService.getByCronTickerIdPaginated()
 const requestCancelTicker = tickerService.requestCancel()
 const deleteCronOccurrence = cronTickerOccurrenceService.deleteCronTickerOccurrence()
+
+// Pagination state
+const currentPage = ref(1)
+const pageSize = ref(20)
+const totalCount = ref(0)
+
+// Define headers manually for paginated response
+const headers = ref([
+  { title: 'Status', key: 'status', sortable: true, visibility: true },
+  { title: 'Executed At (Elapsed Time)', key: 'executedAt', sortable: false, visibility: true },
+  { title: 'Execution Time', key: 'executionTimeFormatted', sortable: true, visibility: true },
+  { title: 'Locked At', key: 'lockedAt', sortable: false, visibility: true },
+  { title: 'Lock Holder', key: 'lockHolder', sortable: false, visibility: true },
+  { title: 'Retry Count', key: 'retryCount', sortable: false, visibility: true },
+  { title: 'Actions', key: 'actions', sortable: false, visibility: true },
+])
 
 const props = defineProps({
   dialogProps: {
@@ -40,14 +58,42 @@ const emit = defineEmits<{
   (e: 'close'): void
 }>()
 
+// Load page data with pagination
+const loadPageData = async () => {
+  if (props.dialogProps.id != undefined) {
+    try {
+      const response = await getByCronTickerIdPaginated.requestAsync(props.dialogProps.id, currentPage.value, pageSize.value)
+      if (response) {
+        totalCount.value = response.totalCount || 0
+      }
+    } catch (error) {
+      console.error('Failed to load paginated data:', error)
+    }
+  }
+}
+
+// Handle page change
+const handlePageChange = async (page: number) => {
+  currentPage.value = page
+  await loadPageData()
+}
+
+// Handle page size change  
+const handlePageSizeChange = async (size: number) => {
+  pageSize.value = size
+  currentPage.value = 1  // Reset to first page when changing page size
+  await loadPageData()
+}
+
 const addHubListeners = async () => {
   props.tickerNotificationHub.onReceiveUpdateCronTickerOccurrence((val:GetCronTickerOccurrenceResponse) => {
-    getByCronTickerId.updateByKey('id', val, []);
+    // Reload current page when item is updated
+    loadPageData();
   });
 
   props.tickerNotificationHub.onReceiveAddCronTickerOccurrence((val:GetCronTickerOccurrenceResponse) => {
-    getByCronTickerId.addToResponse(val);
-    getByCronTickerId.updatePropertyByKey('id', val.id,'retryIntervals', props.dialogProps.retryIntervals);
+    // Reload current page when new item is added
+    loadPageData();
   });
 }
 
@@ -74,9 +120,8 @@ watch(
   () => props.dialogProps.id,
   async () => {
     if (props.dialogProps.id != undefined){
-      await getByCronTickerId.requestAsync(props.dialogProps.id).then(() => {
-        getByCronTickerId.updateProperty('retryIntervals', props.dialogProps.retryIntervals);
-      })
+      currentPage.value = 1 // Reset to first page when id changes
+      await loadPageData()
     }
   },
 )
@@ -89,7 +134,7 @@ const requestCancel = async (id: string) => {
     .requestAsync(id)
     .then(async () => await sleep(100))
     .then(async () => {
-      await getByCronTickerId.requestAsync(props.dialogProps.id)
+      await loadPageData()
     })
 }
 
@@ -99,7 +144,7 @@ const onSubmitConfirmDialog = async () => {
     .requestAsync(confirmDialog.propData?.data!)
     .then(async () => await sleep(100))
     .then(async () => {
-      await getByCronTickerId.requestAsync(props.dialogProps.id)
+      await loadPageData()
     })
 }
 
@@ -110,8 +155,8 @@ const seriesColors: { [key: string]: string } = {
   Done: '#32CD32', // Lime Green
   DueDone: '#008000', // Green
   Failed: '#FF0000', // Red
-  Cancelled: '#FFD700', // Gold/Yellow,
-  Batched: '#A9A9A9', // Dark Gray
+  Cancelled: '#FFD700', // Gold/Yellow
+  Skipped: '#BA68C8', // Medium Orchid (Purple)
 }
 
 const getStatusColor = (status: string | number) => {
@@ -129,7 +174,7 @@ const getStatusIcon = (status: string | number) => {
     case 'DueDone': return 'mdi-check-circle-outline'
     case 'Failed': return 'mdi-alert-circle'
     case 'Cancelled': return 'mdi-cancel'
-    case 'Batched': return 'mdi-layers'
+    case 'Skipped': return 'mdi-skip-forward'
     default: return 'mdi-help-circle'
   }
 }
@@ -212,12 +257,12 @@ const setRowProp = (propContext: any) => {
 
       <!-- Content -->
       <v-card-text class="dialog-content">
-        <div v-if="getByCronTickerId.loader.value" class="loading-container">
+        <div v-if="getByCronTickerIdPaginated.loader.value" class="loading-container">
           <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
           <p class="loading-text">Loading occurrences...</p>
         </div>
 
-        <div v-else-if="!getByCronTickerId.response.value || getByCronTickerId.response.value.length === 0" class="empty-state">
+        <div v-else-if="!getByCronTickerIdPaginated.response.value || getByCronTickerIdPaginated.response.value?.items?.length === 0" class="empty-state">
           <v-icon size="64" color="grey-lighten-1">mdi-calendar-remove</v-icon>
           <h3 class="empty-title">No Occurrences Found</h3>
           <p class="empty-subtitle">This cron ticker hasn't been executed yet.</p>
@@ -225,12 +270,14 @@ const setRowProp = (propContext: any) => {
 
         <div v-else class="table-container">
           <v-data-table
-            :headers="getByCronTickerId.headers.value"
-            :loading="getByCronTickerId.loader.value"
-            :items="getByCronTickerId.response.value"
+            :headers="headers"
+            :loading="getByCronTickerIdPaginated.loader.value"
+            :items="getByCronTickerIdPaginated.response.value?.items || []"
             item-value="Id"
             :row-props="setRowProp"
             key="Id"
+            :items-per-page="-1"
+            hide-default-footer
             class="enhanced-table"
             density="compact"
             hover
@@ -356,6 +403,16 @@ const setRowProp = (propContext: any) => {
               </div>
             </template>
           </v-data-table>
+          
+          <!-- Custom pagination footer -->
+          <PaginationFooter
+            :page="currentPage"
+            :page-size="pageSize"
+            :total-count="totalCount"
+            :page-size-options="[10, 20, 50, 100]"
+            @update:page="handlePageChange"
+            @update:page-size="handlePageSizeChange"
+          />
         </div>
       </v-card-text>
     </v-card>

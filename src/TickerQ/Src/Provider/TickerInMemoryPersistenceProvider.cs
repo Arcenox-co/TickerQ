@@ -127,6 +127,12 @@ namespace TickerQ.Provider
             throw new NotImplementedException();
         }
 
+        public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(Expression<Func<TTimeTicker, bool>> predicate, int pageNumber, int pageSize,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
         public Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
         {
             throw new NotImplementedException();
@@ -152,6 +158,12 @@ namespace TickerQ.Provider
             throw new NotImplementedException();
         }
 
+        public async Task<PaginationResult<TCronTicker>> GetCronTickersPaginated(Expression<Func<TCronTicker, bool>> predicate, int pageNumber, int pageSize,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
         public Task<int> InsertCronTickers(TCronTicker[] tickers, CancellationToken cancellationToken)
         {
             throw new NotImplementedException();
@@ -168,6 +180,12 @@ namespace TickerQ.Provider
         }
 
         public Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetAllCronTickerOccurrences(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public async Task<PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>> GetAllCronTickerOccurrencesPaginated(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, int pageNumber, int pageSize,
+            CancellationToken cancellationToken = default)
         {
             throw new NotImplementedException();
         }

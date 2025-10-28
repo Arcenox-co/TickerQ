@@ -137,6 +137,10 @@ internal class TickerExecutionTaskHandler
         var stopWatch = new Stopwatch();
         var cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+        // IMPORTANT: Register the ticker FIRST, before creating the SkipIfAlreadyRunningAction callback
+        // This ensures the current occurrence is properly tracked when the callback checks for siblings
+        TickerCancellationTokenManager.AddTickerCancellationToken(cancellationTokenSource, context, isDue);
+
         var tickerFunctionContext = new TickerFunctionContext
         {
             FunctionName = context.FunctionName,
@@ -151,6 +155,8 @@ internal class TickerExecutionTaskHandler
                     if (context.Type == TickerType.TimeTicker)
                         return;
 
+                    // Check for other running occurrences of the same parent (excluding self)
+                    // Since we're already registered, we need to exclude ourselves from the check
                     var isRunning = context.ParentId.HasValue &&
                                     TickerCancellationTokenManager.IsParentRunningExcludingSelf(context.ParentId.Value, context.TickerId);
 
@@ -159,8 +165,6 @@ internal class TickerExecutionTaskHandler
                 },
             }
         };
-
-        TickerCancellationTokenManager.AddTickerCancellationToken(cancellationTokenSource, context, isDue);
 
         Exception lastException = null;
         var success = false;
@@ -200,9 +204,7 @@ internal class TickerExecutionTaskHandler
                 // Log job cancelled
                 _tickerQInstrumentation.LogJobCancelled(context.TickerId, context.FunctionName, "Task was cancelled");
 
-                var handler = _serviceProvider.GetService(typeof(ITickerExceptionHandler)) as ITickerExceptionHandler;
-
-                if (handler != null)
+                if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
                     await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type);
 
                 await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);

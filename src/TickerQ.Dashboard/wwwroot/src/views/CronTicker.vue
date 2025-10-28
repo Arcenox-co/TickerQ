@@ -4,6 +4,7 @@ import { cronTickerService } from '@/http/services/cronTickerService'
 import { Status } from '@/http/services/types/base/baseHttpResponse.types'
 import { useDialog } from '@/composables/useDialog'
 import { ConfirmDialogProps } from '@/components/common/ConfirmDialog.vue'
+import PaginationFooter from '@/components/PaginationFooter.vue'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, PieChart } from 'echarts/charts'
@@ -23,11 +24,41 @@ import {
 } from 'echarts/components'
 import VChart, { THEME_KEY } from 'vue-echarts'
 const getCronTickerRangeGraphData = cronTickerService.getTimeTickersGraphDataRange()
-const getCronTickers = cronTickerService.getCronTickers()
+const getCronTickersPaginated = cronTickerService.getCronTickersPaginated()
 const getCronTickerRangeGraphDataById = cronTickerService.getTimeTickersGraphDataRangeById()
 const getCronTickersGraphDataAndParseToGraph = cronTickerService.getTimeTickersGraphData()
 const deleteCronTicker = cronTickerService.deleteCronTicker()
 const runCronTickerOnDemand = cronTickerService.runCronTickerOnDemand()
+
+// Pagination state
+const currentPage = ref(1)
+const pageSize = ref(20)
+const totalCount = ref(0)
+
+// Load page data with pagination
+const loadPageData = async () => {
+  try {
+    const response = await getCronTickersPaginated.requestAsync(currentPage.value, pageSize.value)
+    if (response) {
+      totalCount.value = response.totalCount || 0
+    }
+  } catch (error) {
+    console.error('Failed to load paginated data:', error)
+  }
+}
+
+// Handle page change
+const handlePageChange = async (page: number) => {
+  currentPage.value = page
+  await loadPageData()
+}
+
+// Handle page size change  
+const handlePageSizeChange = async (size: number) => {
+  pageSize.value = size
+  currentPage.value = 1  // Reset to first page when changing page size
+  await loadPageData()
+}
 
 const confirmDialog = useDialog<ConfirmDialogProps & { id: string }>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
@@ -54,7 +85,7 @@ const onSubmitConfirmDialog = async () => {
     confirmDialog.close()
     
     // Immediately remove from UI for better UX
-    getCronTickers.removeFromResponse('id', deletedId)
+    // Reload page after deletion
     
     // Perform the actual deletion
     await deleteCronTicker.requestAsync(deletedId)
@@ -145,14 +176,19 @@ const getTimeTickersGraphDataAndParseToGraph = async () => {
     }
     
     const chartData = res
+      .filter(item => item && item.item1 !== undefined && item.item2 !== undefined)
       .sort((a, b) => a.item2 - b.item2)
-      .map((item) => ({
-        name: `${Status[item.item1]} (${item.item2})`,
-        value: item.item2,
-        itemStyle: {
-          color: seriesColors[Status[item.item1]] || '#999', // fallback color
-        },
-      }))
+      .map((item) => {
+        const statusName = Status[item.item1] || `Status ${item.item1}`
+        const color = statusColors[item.item1] || '#999999' // fallback color
+        return {
+          name: `${statusName} (${item.item2})`,
+          value: item.item2,
+          itemStyle: {
+            color: color
+          }
+        }
+      })
 
     // Update pieChartData to trigger reactivity
     pieChartData.value = chartData
@@ -194,13 +230,17 @@ const updatePieChartForSelectedTicker = async (tickerId: string, min: number, ma
     const chartData = Array.from(statusCounts.entries())
       .filter(([_, count]) => count > 0) // Only show statuses with data
       .sort(([_, a], [__, b]) => b - a) // Sort by count descending
-      .map(([statusId, count]) => ({
-        name: `${Status[statusId]} (${count})`,
-        value: count,
-        itemStyle: {
-          color: seriesColors[Status[statusId]] || '#999',
-        },
-      }))
+      .map(([statusId, count]) => {
+        const statusName = Status[statusId] || `Status ${statusId}`
+        const color = statusColors[statusId] || '#999999'
+        return {
+          name: `${statusName} (${count})`,
+          value: count,
+          itemStyle: {
+            color: color
+          }
+        }
+      })
     
     // If no data, show a message
     if (chartData.length === 0) {
@@ -274,14 +314,14 @@ const GetCronTickerRangeGraphData = (res: GetCronTickerGraphDataRangeResponse[])
       symbol: 'circle',
       symbolSize: 6,
       lineStyle: {
-        color: seriesColors[Status[item1]],
+        color: statusColors[item1] || '#999999',
         width: 3,
         shadowBlur: 10,
-        shadowColor: seriesColors[Status[item1]],
+        shadowColor: statusColors[item1] || '#999999',
         shadowOffsetY: 2,
       },
       itemStyle: {
-        color: seriesColors[Status[item1]],
+        color: statusColors[item1] || '#999999',
         borderColor: '#ffffff',
         borderWidth: 2,
         shadowBlur: 10,
@@ -296,15 +336,15 @@ const GetCronTickerRangeGraphData = (res: GetCronTickerGraphDataRangeResponse[])
           x2: 0,
           y2: 1,
           colorStops: [
-            { offset: 0, color: seriesColors[Status[item1]] + '40' },
-            { offset: 1, color: seriesColors[Status[item1]] + '10' },
+            { offset: 0, color: (statusColors[item1] || '#999999') + '40' },
+            { offset: 1, color: (statusColors[item1] || '#999999') + '10' },
           ],
         },
       },
       emphasis: {
         itemStyle: {
           shadowBlur: 20,
-          shadowColor: seriesColors[Status[item1]],
+          shadowColor: statusColors[item1] || '#999999',
           scale: true,
           scaleSize: 2,
         },
@@ -322,7 +362,6 @@ const GetCronTickerRangeGraphData = (res: GetCronTickerGraphDataRangeResponse[])
       'DueDone',
       'Failed',
       'Cancelled',
-      'Batched',
     ]
 
     const seriesNames = composedData.filter((x) => x.data.some((y) => y > 0)).map((x) => x.name)
@@ -411,7 +450,7 @@ const ShowCronTickerOccurrenceGraphData = async (functionName: string, id: strin
 const RunCronTickerOnDemand = async (id: string) => {
   await runCronTickerOnDemand.requestAsync(id)
   await sleep(1000)
-  await getCronTickers.requestAsync()
+  await loadPageData()
 }
 
 onMounted(async () => {
@@ -431,7 +470,7 @@ onMounted(async () => {
     
     // Load cron tickers data
     try {
-      await getCronTickers.requestAsync()
+      await loadPageData()
     } catch (error: any) {
     }
     
@@ -480,29 +519,28 @@ onUnmounted(() => {
 
 const addHubListeners = async () => {
   TickerNotificationHub.onReceiveAddCronTicker<GetCronTickerResponse>((response) => {
-    getCronTickers.addToResponse(response)
+    // Reload current page when new item is added
+    loadPageData()
     
     // Update charts to reflect the new ticker
     updateChartsAfterDataChange(response.id)
   })
 
   TickerNotificationHub.onReceiveUpdateCronTicker<GetCronTickerResponse>((response) => {
-    getCronTickers.updateByKey('id', response, ['requestType'])
+    // For paginated data, we need to refresh the current page
+    loadPageData()
     
     // Update charts to reflect the updated ticker
     updateChartsAfterDataChange(response.id)
   })
 
   TickerNotificationHub.onReceiveDeleteCronTicker<string>((id) => {
-    // Ensure immediate removal from the data table
-    getCronTickers.removeFromResponse('id', id)
+    // Reload current page when item is deleted
+    loadPageData()
     
     // Force a reactive update by triggering a re-render
     nextTick(() => {
-      // This ensures the UI updates immediately
-      if (getCronTickers.response.value) {
-        getCronTickers.response.value = [...getCronTickers.response.value]
-      }
+      // Update UI after deletion
     })
     
     // Update charts to reflect the deletion
@@ -773,15 +811,15 @@ const totalOption = computed(() => ({
   ],
 }))
 
-const seriesColors: { [key: string]: string } = {
-  Idle: '#A9A9A9', // Dark Gray
-  Queued: '#00CED1', // Dark Turquoise
-  InProgress: '#6495ED', // Royal Blue
-  Done: '#32CD32', // Lime Green
-  DueDone: '#008000', // Green
-  Failed: '#FF0000', // Red
-  Cancelled: '#FFD700', // Gold/Yellow
-  Batched: '#A9A9A9', // Dark Gray
+const statusColors: { [key: number]: string } = {
+  0: '#A9A9A9', // Idle - Dark Gray
+  1: '#00CED1', // Queued - Dark Turquoise
+  2: '#6495ED', // InProgress - Royal Blue
+  3: '#32CD32', // Done - Lime Green
+  4: '#008000', // DueDone - Green
+  5: '#FF0000', // Failed - Red
+  6: '#FFD700', // Cancelled - Gold/Yellow
+  7: '#BA68C8', // Skipped - Medium Orchid (Purple)
 }
 
 const range = ref([-3, 3])
@@ -877,9 +915,20 @@ watch(
   { deep: true }
 )
 
-const headersWithoutReadable = computed(() =>
-  getCronTickers.headers.value?.filter((h) => h.key !== 'expressionReadable')
-)
+const headersWithoutReadable = computed(() => {
+  // Define headers manually for paginated response
+  return [
+    { title: 'Function', key: 'function', sortable: true, visibility: true },
+    { title: 'Expression', key: 'expression', sortable: true, visibility: true },
+    { title: 'Request Type', key: 'requestType', sortable: false, visibility: true },
+    { title: 'Description', key: 'description', sortable: true, visibility: true },
+    { title: 'Retry Configuration', key: 'retryIntervals', sortable: false, visibility: true },
+    { title: 'Init Identifier', key: 'initIdentifier', sortable: false, visibility: true },
+    { title: 'Created At', key: 'createdAt', sortable: true, visibility: true },
+    { title: 'Updated At', key: 'updatedAt', sortable: true, visibility: true },
+    { title: 'Actions', key: 'actions', sortable: false, visibility: true },
+  ]
+})
 
 // Chart toggle state
 const activeChart = ref('line') // Default to line chart (Time Series Analysis)
@@ -891,7 +940,7 @@ const resetRange = () => {
 
 const refreshData = async () => {
   try {
-    await getCronTickers.requestAsync()
+    await loadPageData()
     // Reset to all tickers view when refreshing
     selectedCronTickerGraphData.value = undefined
     chartData.value.title = 'Job statuses for all Cron Tickers'
@@ -1058,16 +1107,16 @@ const refreshData = async () => {
             <!-- Search and Info Group -->
             <div class="search-info-group">
               <v-chip
-                :color="getCronTickers.loader.value ? 'warning' : 'success'"
+                :color="getCronTickersPaginated.loader.value ? 'warning' : 'success'"
                 variant="tonal"
                 size="small"
                 class="status-chip"
               >
                 <v-icon size="small" class="mr-1">
-                  {{ getCronTickers.loader.value ? 'mdi-loading' : 'mdi-check' }}
+                  {{ getCronTickersPaginated.loader.value ? 'mdi-loading' : 'mdi-check' }}
                 </v-icon>
                 {{
-                  getCronTickers.loader.value ? 'Loading...' : `${getCronTickers.response.value?.length || 0} items`
+                  getCronTickersPaginated.loader.value ? 'Loading...' : `${totalCount} total items`
                 }}
               </v-chip>
             </div>
@@ -1092,9 +1141,11 @@ const refreshData = async () => {
           <v-data-table
             density="compact"
             :headers="headersWithoutReadable"
-            :loading="getCronTickers.loader.value"
-            :items="getCronTickers.response.value"
+            :loading="getCronTickersPaginated.loader.value"
+            :items="getCronTickersPaginated.response.value?.items || []"
             item-value="id"
+            :items-per-page="-1"
+            hide-default-footer
             class="enhanced-table"
           >
             <template v-slot:item.expression="{ item }">
@@ -1109,12 +1160,16 @@ const refreshData = async () => {
             </template>
 
             <template v-slot:item.retryIntervals="{ item }">
-              <div class="retry-display" v-if="item.retryIntervals?.length">
-                <span class="retry-sequence">
+              <div class="retry-display" v-if="item.retryIntervals?.length || (item.retries && item.retries > 0)">
+                <div class="retry-header" v-if="item.retries > 0">
+                  <span class="retry-count-label">Max Retries: {{ item.retries }}</span>
+                </div>
+                <span class="retry-sequence" v-if="item.retryIntervals?.length">
                   <template v-for="(interval, index) in item.retryIntervals" :key="index">
                     <span class="retry-item">{{ index + 1 }}:{{ interval }}</span>
                   </template>
                 </span>
+                <span v-else class="no-intervals">(Default: 30s)</span>
               </div>
               <span v-else class="no-retries">—</span>
             </template>
@@ -1222,6 +1277,16 @@ const refreshData = async () => {
               </div>
             </template>
           </v-data-table>
+          
+          <!-- Custom pagination footer -->
+          <PaginationFooter
+            :page="currentPage"
+            :page-size="pageSize"
+            :total-count="totalCount"
+            :page-size-options="[10, 20, 50, 100]"
+            @update:page="handlePageChange"
+            @update:page-size="handlePageSizeChange"
+          />
         </div>
       </div>
     </div>
@@ -1397,7 +1462,7 @@ const refreshData = async () => {
 }
 
 .chart-section .chart-container {
-  height: 250px;
+  height: 400px;
   width: 100%;
   max-width: 100%;
   margin: 0;
@@ -1501,8 +1566,8 @@ const refreshData = async () => {
 }
 
 .chart-container {
-  height: 250px;
-  min-height: 200px;
+  height: 400px;
+  min-height: 350px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1972,6 +2037,25 @@ const refreshData = async () => {
   font-family: 'JetBrains Mono', 'Monaco', 'Consolas', monospace;
   font-size: 0.75rem;
   line-height: 1.2;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.retry-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.retry-count-label {
+  font-weight: 600;
+  color: #4caf50;
+  font-size: 0.8rem;
+  padding: 2px 6px;
+  background: rgba(76, 175, 80, 0.15);
+  border-radius: 4px;
 }
 
 .retry-sequence {
@@ -1990,6 +2074,12 @@ const refreshData = async () => {
 
 .no-retries {
   color: #6b7280;
+  font-style: italic;
+}
+
+.no-intervals {
+  color: #888;
+  font-size: 0.7rem;
   font-style: italic;
 }
 
@@ -2018,7 +2108,7 @@ const refreshData = async () => {
   }
 
   .chart-section .chart-container {
-    height: 220px;
+    height: 350px;
     max-width: 100%;
   }
 
@@ -2054,7 +2144,7 @@ const refreshData = async () => {
   }
 
   .chart-section .chart-container {
-    height: 200px;
+    height: 300px;
   }
 
   .card-title {

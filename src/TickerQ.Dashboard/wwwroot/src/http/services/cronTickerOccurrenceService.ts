@@ -6,6 +6,13 @@ import { GetCronTickerOccurrenceGraphDataRequest, GetCronTickerOccurrenceGraphDa
 import { format} from 'timeago.js';
 import { nameof } from '@/utilities/nameof';
 
+interface PaginatedCronTickerOccurrenceResponse {
+    items: GetCronTickerOccurrenceResponse[]
+    totalCount: number
+    pageNumber: number
+    pageSize: number
+}
+
 const getByCronTickerId = () => {
     const baseHttp = useBaseHttpService<GetCronTickerOccurrenceRequest, GetCronTickerOccurrenceResponse>('array')
         .FixToResponseModel(GetCronTickerOccurrenceResponse, response => {
@@ -55,6 +62,55 @@ const getByCronTickerId = () => {
     };
 }
 
+const getByCronTickerIdPaginated = () => {
+    const baseHttp = useBaseHttpService<object, PaginatedCronTickerOccurrenceResponse>('single');
+    
+    const processResponse = (response: PaginatedCronTickerOccurrenceResponse): PaginatedCronTickerOccurrenceResponse => {
+            // Process items in the paginated response
+            if (response && response.items && Array.isArray(response.items)) {
+                response.items = response.items.map((item: GetCronTickerOccurrenceResponse) => {
+                    if (!item) return item;
+                    
+                    // Safely set status with null check
+                    if (item.status !== undefined && item.status !== null) {
+                        item.status = Status[item.status as any];
+                    }
+                    
+                    if (item.executedAt != null || item.executedAt != undefined) {
+                        // Ensure the datetime is treated as UTC by adding 'Z' if missing
+                        const utcExecutedAt = item.executedAt.endsWith('Z') ? item.executedAt : item.executedAt + 'Z';
+                        item.executedAt = `${format(utcExecutedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
+                    }
+                    
+                    const utcExecutionTime = item.executionTime.endsWith('Z') ? item.executionTime : item.executionTime + 'Z';
+                    item.executionTimeFormatted = formatDate(utcExecutionTime);
+                    item.lockedAt = formatDate(item.lockedAt);
+                    
+                    return item;
+                });
+                
+                // Sort items
+                response.items.sort((a: GetCronTickerOccurrenceResponse, b: GetCronTickerOccurrenceResponse) => 
+                    new Date(b.executionTime).getTime() - new Date(a.executionTime).getTime()
+                );
+            }
+            
+            return response;
+    };
+    
+    const requestAsync = async (id: string | undefined, pageNumber: number = 1, pageSize: number = 20) => {
+        const response = await baseHttp.sendAsync("GET", `cron-ticker-occurrences/${id}/paginated`, { 
+            paramData: { pageNumber, pageSize } 
+        });
+        return processResponse(response);
+    };
+    
+    return {
+        ...baseHttp,
+        requestAsync
+    };
+}
+
 const deleteCronTickerOccurrence = () => {
     const baseHttp = useBaseHttpService<object, object>('single');
 
@@ -87,6 +143,7 @@ const getCronTickerOccurrenceGraphData = () => {
 
 export const cronTickerOccurrenceService = {
     getByCronTickerId,
+    getByCronTickerIdPaginated,
     deleteCronTickerOccurrence,
     getCronTickerOccurrenceGraphData
 };

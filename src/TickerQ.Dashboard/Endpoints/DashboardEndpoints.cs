@@ -27,14 +27,14 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         // New authentication endpoints
-        endpoints.MapGet("/api/auth/info", (IAuthService authService) => GetAuthInfo(authService))
+        endpoints.MapGet("/api/auth/info", GetAuthInfo)
             .WithName("GetAuthInfo")
             .WithSummary("Get authentication configuration")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous();
             
-        endpoints.MapPost("/api/auth/validate", (HttpContext context, IAuthService authService) => ValidateAuth(context, authService))
+        endpoints.MapPost("/api/auth/validate", ValidateAuth)
             .WithName("ValidateAuth")
             .WithSummary("Validate authentication credentials")
             .WithTags("TickerQ Dashboard")
@@ -61,6 +61,10 @@ public static class DashboardEndpoints
         apiGroup.MapGet("/time-tickers", GetTimeTickers<TTimeTicker, TCronTicker>)
             .WithName("GetTimeTickers")
             .WithSummary("Get all time tickers");
+        
+        apiGroup.MapGet("/time-tickers/paginated", GetTimeTickersPaginated<TTimeTicker, TCronTicker>)
+            .WithName("GetTimeTickersPaginated")
+            .WithSummary("Get paginated time tickers");
 
         apiGroup.MapGet("/time-tickers/graph-data-range", GetTimeTickersGraphDataRange<TTimeTicker, TCronTicker>)
             .WithName("GetTimeTickersGraphDataRange")
@@ -86,6 +90,10 @@ public static class DashboardEndpoints
         apiGroup.MapGet("/cron-tickers", GetCronTickers<TTimeTicker, TCronTicker>)
             .WithName("GetCronTickers")
             .WithSummary("Get all cron tickers");
+        
+        apiGroup.MapGet("/cron-tickers/paginated", GetCronTickersPaginated<TTimeTicker, TCronTicker>)
+            .WithName("GetCronTickersPaginated")
+            .WithSummary("Get paginated cron tickers");
 
         apiGroup.MapGet("/cron-tickers/graph-data-range", GetCronTickersGraphDataRange<TTimeTicker, TCronTicker>)
             .WithName("GetCronTickersGraphDataRange")
@@ -102,6 +110,10 @@ public static class DashboardEndpoints
         apiGroup.MapGet("/cron-ticker-occurrences/{cronTickerId}", GetCronTickerOccurrences<TTimeTicker, TCronTicker>)
             .WithName("GetCronTickerOccurrences")
             .WithSummary("Get cron ticker occurrences");
+        
+        apiGroup.MapGet("/cron-ticker-occurrences/{cronTickerId}/paginated", GetCronTickerOccurrencesPaginated<TTimeTicker, TCronTicker>)
+            .WithName("GetCronTickerOccurrencesPaginated")
+            .WithSummary("Get paginated cron ticker occurrences");
 
         apiGroup.MapGet("/cron-ticker-occurrences/{cronTickerId}/graph-data", GetCronTickerOccurrencesGraphData<TTimeTicker, TCronTicker>)
             .WithName("GetCronTickerOccurrencesGraphData")
@@ -244,6 +256,18 @@ public static class DashboardEndpoints
         var result = await repository.GetTimeTickersAsync(cancellationToken);
         return Results.Ok(result);
     }
+    
+    private static async Task<IResult> GetTimeTickersPaginated<TTimeTicker, TCronTicker>(
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        int pageNumber = 1,
+        int pageSize = 20,
+        CancellationToken cancellationToken = default)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var result = await repository.GetTimeTickersPaginatedAsync(pageNumber, pageSize, cancellationToken);
+        return Results.Ok(result);
+    }
 
     private static async Task<IResult> GetTimeTickersGraphDataRange<TTimeTicker, TCronTicker>(
         ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
@@ -329,6 +353,18 @@ public static class DashboardEndpoints
         var result = await repository.GetCronTickersAsync(cancellationToken);
         return Results.Ok(result);
     }
+    
+    private static async Task<IResult> GetCronTickersPaginated<TTimeTicker, TCronTicker>(
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        int pageNumber = 1,
+        int pageSize = 20,
+        CancellationToken cancellationToken = default)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var result = await repository.GetCronTickersPaginatedAsync(pageNumber, pageSize, cancellationToken);
+        return Results.Ok(result);
+    }
 
     private static async Task<IResult> GetCronTickersGraphDataRange<TTimeTicker, TCronTicker>(
         ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
@@ -373,6 +409,19 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetCronTickersOccurrencesAsync(cronTickerId, cancellationToken);
+        return Results.Ok(result);
+    }
+    
+    private static async Task<IResult> GetCronTickerOccurrencesPaginated<TTimeTicker, TCronTicker>(
+        Guid cronTickerId,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        int pageNumber = 1,
+        int pageSize = 20,
+        CancellationToken cancellationToken = default)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var result = await repository.GetCronTickersOccurrencesPaginatedAsync(cronTickerId, pageNumber, pageSize, cancellationToken);
         return Results.Ok(result);
     }
 

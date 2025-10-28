@@ -49,6 +49,11 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
             {
                 foreach (var function in functions)
                 {
+                    if (TickerFunctionProvider.TickerFunctions.TryGetValue(function.FunctionName, out var tickerItem))
+                    {
+                        function.CachedDelegate = tickerItem.Delegate;
+                        function.CachedPriority = tickerItem.Priority;
+                    }
                     await _tickerQTaskScheduler.QueueAsync(ct => _tickerExecutionTaskHandler.ExecuteTaskAsync(function, true, ct), function.CachedPriority, stoppingToken);
                 }
 

@@ -42,6 +42,7 @@ namespace TickerQ.Utilities.Interfaces
         #region Time_Ticker_Shared_Methods
         Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default);
         Task<TTimeTicker[]> GetTimeTickers(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken = default);
+        Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(Expression<Func<TTimeTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
         Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default);
         Task<int> UpdateTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default);
         Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default);
@@ -50,6 +51,7 @@ namespace TickerQ.Utilities.Interfaces
         #region Cron_Ticker_Shared_Methods
         Task<TCronTicker> GetCronTickerById(Guid id, CancellationToken cancellationToken);
         Task<TCronTicker[]> GetCronTickers(Expression<Func<TCronTicker, bool>> predicate, CancellationToken cancellationToken);
+        Task<PaginationResult<TCronTicker>> GetCronTickersPaginated(Expression<Func<TCronTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
         Task<int> InsertCronTickers(TCronTicker[] tickers, CancellationToken cancellationToken);
         Task<int> UpdateCronTickers(TCronTicker[] cronTicker, CancellationToken cancellationToken);
         Task<int> RemoveCronTickers(Guid[] cronTickerIds, CancellationToken cancellationToken);
@@ -57,6 +59,7 @@ namespace TickerQ.Utilities.Interfaces
         
         #region Cron_TickerOccurrence_Shared_Methods
         Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetAllCronTickerOccurrences(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, CancellationToken cancellationToken = default);
+        Task<PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>> GetAllCronTickerOccurrencesPaginated(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
         Task<int> InsertCronTickerOccurrences(CronTickerOccurrenceEntity<TCronTicker>[] cronTickerOccurrences, CancellationToken cancellationToken);
         Task<int> RemoveCronTickerOccurrences(Guid[] cronTickerOccurrences, CancellationToken cancellationToken);
         #endregion

@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
@@ -50,6 +51,29 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .OrderByDescending(x => x.ExecutionTime)
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
+        }
+        
+        public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(
+            Expression<Func<TTimeTicker, bool>> predicate, 
+            int pageNumber, 
+            int pageSize, 
+            CancellationToken cancellationToken)
+        {
+            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+            var baseQuery = dbContext.Set<TTimeTicker>()
+                .Include(x => x.Children)
+                .ThenInclude(x => x.Children)
+                .AsNoTracking();
+            
+            if (predicate != null)
+                baseQuery = baseQuery.Where(predicate);
+            
+            baseQuery = baseQuery
+                .Where(x => x.ParentId == null)
+                .OrderByDescending(x => x.ExecutionTime);
+            
+            return await baseQuery.ToPaginatedListAsync(pageNumber, pageSize, cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken)
@@ -113,6 +137,25 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .OrderByDescending(x => x.CreatedAt)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
         }
+        
+        public async Task<PaginationResult<TCronTicker>> GetCronTickersPaginated(
+            Expression<Func<TCronTicker, bool>> predicate, 
+            int pageNumber, 
+            int pageSize, 
+            CancellationToken cancellationToken)
+        {
+            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+            var baseQuery = dbContext.Set<TCronTicker>()
+                .AsNoTracking();
+            
+            if (predicate != null)
+                baseQuery = baseQuery.Where(predicate);
+            
+            baseQuery = baseQuery.OrderByDescending(x => x.CreatedAt);
+            
+            return await baseQuery.ToPaginatedListAsync(pageNumber, pageSize, cancellationToken).ConfigureAwait(false);
+        }
 
         public async Task<int> InsertCronTickers(TCronTicker[] tickers, CancellationToken cancellationToken)
         {
@@ -168,6 +211,26 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 : cronTickerOccurrenceContext.Include(x => x.CronTicker).Where(predicate);
             
             return await query.OrderByDescending(x => x.ExecutionTime).ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        }
+        
+        public async Task<PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>> GetAllCronTickerOccurrencesPaginated(
+            Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, 
+            int pageNumber, 
+            int pageSize, 
+            CancellationToken cancellationToken)
+        {
+            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            
+            var baseQuery = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                .Include(x => x.CronTicker)
+                .AsNoTracking();
+
+            if (predicate != null)
+                baseQuery = baseQuery.Where(predicate);
+            
+            baseQuery = baseQuery.OrderByDescending(x => x.ExecutionTime);
+            
+            return await baseQuery.ToPaginatedListAsync(pageNumber, pageSize, cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<int> InsertCronTickerOccurrences(CronTickerOccurrenceEntity<TCronTicker>[] cronTickerOccurrences, CancellationToken cancellationToken = default)

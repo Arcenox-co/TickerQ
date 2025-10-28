@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Interfaces
 {
@@ -13,6 +14,7 @@ namespace TickerQ.Utilities.Interfaces
         where TCronTicker : CronTickerEntity, new()
     {
         Task<TTimeTicker[]> GetTimeTickersAsync(CancellationToken cancellationToken = default);
+        Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginatedAsync(int pageNumber, int pageSize, CancellationToken cancellationToken = default);
         Task SetTimeTickerBatchParent(Guid targetId, Guid parentId, RunCondition? batchRunCondition = null);
         Task UnbatchTimeTickerAsync(Guid tickerId);
         Task<IList<Tuple<TickerStatus, int>>> GetTimeTickerFullDataAsync(CancellationToken cancellationToken);
@@ -21,8 +23,10 @@ namespace TickerQ.Utilities.Interfaces
         Task<IList<TickerGraphData>> GetCronTickersGraphSpecificDataByIdAsync(Guid id, int pastDays, int futureDays,CancellationToken cancellationToken);
         Task<IList<Tuple<TickerStatus, int>>> GetCronTickerFullDataAsync(CancellationToken cancellationToken);
         Task<CronTickerEntity[]> GetCronTickersAsync(CancellationToken cancellationToken = default);
+        Task<PaginationResult<CronTickerEntity>> GetCronTickersPaginatedAsync(int pageNumber, int pageSize, CancellationToken cancellationToken = default);
         Task AddOnDemandCronTickerOccurrenceAsync(Guid id, CancellationToken cancellationToken = default);
         Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetCronTickersOccurrencesAsync(Guid guid, CancellationToken cancellationToken = default);
+        Task<PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>> GetCronTickersOccurrencesPaginatedAsync(Guid guid, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
         Task<IList<CronOccurrenceTickerGraphData>> GetCronTickersOccurrencesGraphDataAsync(Guid guid, CancellationToken cancellationToken = default);
         bool CancelTickerById(Guid tickerId);
         Task DeleteCronTickerByIdAsync(Guid id, CancellationToken cancellationToken = default);

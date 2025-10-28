@@ -14,6 +14,13 @@ import { nameof } from '@/utilities/nameof';
 import { format} from 'timeago.js';
 import { useFunctionNameStore } from '@/stores/functionNames';
 
+interface PaginatedTimeTickerResponse {
+    items: GetTimeTickerResponse[]
+    totalCount: number
+    pageNumber: number
+    pageSize: number
+}
+
 const getTimeTickers = () => {
     const functionNamesStore = useFunctionNameStore();
 
@@ -88,6 +95,65 @@ const getTimeTickers = () => {
     };
 }
 
+const getTimeTickersPaginated = () => {
+    const functionNamesStore = useFunctionNameStore();
+    
+    const baseHttp = useBaseHttpService<object, PaginatedTimeTickerResponse>('single');
+    
+    const processResponse = (response: PaginatedTimeTickerResponse): PaginatedTimeTickerResponse => {
+            // Process items in the paginated response
+            if (response && response.items && Array.isArray(response.items)) {
+                response.items = response.items.map((item: GetTimeTickerResponse) => {
+                    const processItem = (item: GetTimeTickerResponse): GetTimeTickerResponse => {
+                        if (item.status !== undefined && item.status !== null) {
+                            item.status = Status[item.status as any];
+                        }
+                        
+                        if (item.executedAt != null || item.executedAt != undefined)
+                            item.executedAt = `${format(item.executedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
+                        
+                        item.executionTimeFormatted = formatDate(item.executionTime);
+                        item.requestType = functionNamesStore.getNamespaceOrNull(item.function) ?? '';
+                        
+                        if (item.retryIntervals == null || item.retryIntervals.length == 0 && item.retries != null && (item.retries as number) > 0)
+                            item.retryIntervals = Array(1).fill(`${30}s`);
+                        else
+                            item.retryIntervals = (item.retryIntervals as string[]).map((x: any) => formatTime(x as number, false));
+                        
+                        item.lockHolder = item.lockHolder ?? '-';
+                        
+                        if (item.children && Array.isArray(item.children)) {
+                            item.children = item.children.map(child => processItem(child));
+                        }
+                        
+                        return item;
+                    };
+                    
+                    return processItem(item);
+                });
+                
+                // Sort items
+                response.items.sort((a: GetTimeTickerResponse, b: GetTimeTickerResponse) => 
+                    new Date(b.executionTime).getTime() - new Date(a.executionTime).getTime()
+                );
+            }
+            
+            return response;
+    };
+    
+    const requestAsync = async (pageNumber: number = 1, pageSize: number = 20) => {
+        const response = await baseHttp.sendAsync("GET", "time-tickers/paginated", { 
+            paramData: { pageNumber, pageSize } 
+        });
+        return processResponse(response);
+    };
+    
+    return {
+        ...baseHttp,
+        requestAsync
+    };
+}
+
 const getTimeTickersGraphDataRange = () => {
     const baseHttp = useBaseHttpService<object, GetTimeTickerGraphDataRangeResponse>('array')
         .FixToResponseModel(GetTimeTickerGraphDataRangeResponse, (item) => {
@@ -108,7 +174,7 @@ const getTimeTickersGraphDataRange = () => {
 const getTimeTickersGraphData = () => {
     const baseHttp = useBaseHttpService<object, GetTimeTickerGraphDataResponse>('array');
 
-    const requestAsync = async () => (await baseHttp.sendAsync("GET", "time-tickers/:graph-data"));
+    const requestAsync = async () => (await baseHttp.sendAsync("GET", "time-tickers/graph-data"));
 
     return {
         ...baseHttp,
@@ -165,6 +231,7 @@ const addChainJobs = () => {
 
 export const timeTickerService = {
     getTimeTickers,
+    getTimeTickersPaginated,
     deleteTimeTicker,
     getTimeTickersGraphDataRange,
     getTimeTickersGraphData,

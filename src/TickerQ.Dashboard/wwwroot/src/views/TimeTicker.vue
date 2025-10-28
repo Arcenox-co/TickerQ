@@ -10,10 +10,44 @@ import ChainJobsModal from '@/components/ChainJobsModal.vue'
 import TickerNotificationHub, { methodName } from '@/hub/tickerNotificationHub'
 import { formatDate, formatFromUtcToLocal } from '@/utilities/dateTimeParser'
 import { useConnectionStore } from '@/stores/connectionStore'
+import PaginationFooter from '@/components/PaginationFooter.vue'
+import { use } from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
+import { LineChart, PieChart } from 'echarts/charts'
+import {
+  TitleComponent,
+  TooltipComponent,
+  LegendComponent,
+  ToolboxComponent,
+  GridComponent,
+  DataZoomComponent,
+} from 'echarts/components'
+import VChart, { THEME_KEY } from 'vue-echarts'
+import type { GetTimeTickerGraphDataRangeResponse } from '@/http/services/types/timeTickerService.types'
 
-const getTimeTickers = timeTickerService.getTimeTickers()
+use([
+  CanvasRenderer,
+  LineChart,
+  PieChart,
+  TitleComponent,
+  TooltipComponent,
+  LegendComponent,
+  GridComponent,
+  ToolboxComponent,
+  DataZoomComponent
+])
+
+// Use paginated service instead of regular one
+const getTimeTickersPaginated = timeTickerService.getTimeTickersPaginated()
 const deleteTimeTicker = timeTickerService.deleteTimeTicker()
 const requestCancelTicker = tickerService.requestCancel()
+const getTimeTickersGraphDataRange = timeTickerService.getTimeTickersGraphDataRange()
+const getTimeTickersGraphData = timeTickerService.getTimeTickersGraphData()
+
+// Pagination state
+const currentPage = ref(1)
+const pageSize = ref(20)
+const totalCount = ref(0)
 
 const crudTimeTickerDialog = useDialog<
   GetTimeTickerResponse & { isFromDuplicate: boolean }
@@ -46,6 +80,22 @@ const tableSearch = ref('')
 
 const selectedItems = ref(new Set<string>())
 
+// Chart related state
+const activeChart = ref<'line' | 'pie'>('line')
+const chartLoading = ref(false)
+const chartKey = ref(0)
+const chartData = ref({
+  xAxisData: [] as string[],
+  series: [] as any[],
+  legend: {} as any,
+  title: 'Job statuses for all Time Tickers',
+})
+const pieChartData = ref<any[]>([])
+const pieChartKey = ref(0)
+
+// Provide theme for charts
+provide(THEME_KEY, 'dark')
+
 onMounted(async () => {
   // Initialize WebSocket connection
   try {
@@ -55,12 +105,21 @@ onMounted(async () => {
     }
   } catch (error: any) {}
 
-  // Load initial data
+  // Load initial data with pagination
   try {
-    await getTimeTickers.requestAsync()
+    await loadPageData()
   } catch (error) {
     // Failed to load time tickers
   }
+  
+  // Load chart data
+  try {
+    await loadTimeSeriesChartData(-3, 3)
+    await loadPieChartData()
+  } catch (error) {
+    console.error('Failed to load chart data:', error)
+  }
+  
   // Add hub listeners
   try {
     await addHubListeners()
@@ -75,21 +134,196 @@ onUnmounted(() => {
   TickerNotificationHub.stopReceiver(methodName.onReceiveDeleteTimeTicker)
 })
 
+// Load page data with pagination
+const loadPageData = async () => {
+  try {
+    const response = await getTimeTickersPaginated.requestAsync(currentPage.value, pageSize.value)
+    if (response) {
+      totalCount.value = response.totalCount || 0
+    }
+  } catch (error) {
+    console.error('Failed to load paginated data:', error)
+  }
+}
+
+// Handle page change
+const handlePageChange = async (page: number) => {
+  currentPage.value = page
+  await loadPageData()
+}
+
+// Handle page size change  
+const handlePageSizeChange = async (size: number) => {
+  pageSize.value = size
+  currentPage.value = 1  // Reset to first page when changing page size
+  await loadPageData()
+}
+
+// Chart data loading functions
+const loadTimeSeriesChartData = async (min: number, max: number) => {
+  try {
+    chartLoading.value = true
+    const res = await getTimeTickersGraphDataRange.requestAsync(min, max)
+    processTimeSeriesData(res)
+  } catch (error: any) {
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+      return
+    }
+    console.error('Failed to load time series chart data:', error)
+  } finally {
+    chartLoading.value = false
+  }
+}
+
+const loadPieChartData = async () => {
+  try {
+    const res = await getTimeTickersGraphData.requestAsync()
+    processPieChartData(res)
+  } catch (error: any) {
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+      return
+    }
+    console.error('Failed to load pie chart data:', error)
+  }
+}
+
+const processTimeSeriesData = (data: GetTimeTickerGraphDataRangeResponse[]) => {
+  if (!data || !Array.isArray(data)) {
+    chartData.value.xAxisData = []
+    chartData.value.series = []
+    chartData.value.legend = { data: [] }
+    return
+  }
+
+  const allStatuses = new Set<number>()
+  const dateMap = new Map<string, Map<number, number>>()
+
+  data.forEach((item) => {
+    if (!item.results) return
+    item.results.forEach((result: any) => {
+      allStatuses.add(result.item1)
+      if (!dateMap.has(item.date)) {
+        dateMap.set(item.date, new Map())
+      }
+      dateMap.get(item.date)!.set(result.item1, result.item2)
+    })
+  })
+
+  const uniqueDates = Array.from(dateMap.keys()).sort()
+  const statusArray = Array.from(allStatuses).sort((a, b) => a - b)
+
+  // Use the same statusColors mapping
+  const statusColors: { [key: number]: string } = {
+    0: '#A9A9A9', // Idle - Dark Gray
+    1: '#00CED1', // Queued - Dark Turquoise
+    2: '#6495ED', // InProgress - Royal Blue
+    3: '#32CD32', // Done - Lime Green
+    4: '#008000', // DueDone - Green
+    5: '#FF0000', // Failed - Red
+    6: '#FFD700', // Cancelled - Gold/Yellow
+    7: '#BA68C8', // Skipped - Medium Orchid (Purple)
+  }
+
+  const composedData = statusArray.map((status) => ({
+    name: Status[status] || `Status ${status}`,
+    type: 'line',
+    smooth: true,
+    symbol: 'circle',
+    symbolSize: 6,
+    itemStyle: { color: statusColors[status] || '#808080' },
+    lineStyle: { 
+      width: 2,
+      color: statusColors[status] || '#808080'
+    },
+    areaStyle: {
+      color: {
+        type: 'linear',
+        x: 0,
+        y: 0,
+        x2: 0,
+        y2: 1,
+        colorStops: [
+          { offset: 0, color: (statusColors[status] || '#808080') + '30' },
+          { offset: 1, color: (statusColors[status] || '#808080') + '05' }
+        ]
+      }
+    },
+    data: uniqueDates.map((date) => {
+      const statusMap = dateMap.get(date)
+      return statusMap ? (statusMap.get(status) || 0) : 0
+    }),
+  }))
+
+  chartData.value = {
+    xAxisData: uniqueDates,
+    series: composedData,
+    legend: { data: composedData.map(s => s.name) },
+    title: chartData.value.title
+  }
+  
+  chartKey.value++
+}
+
+const processPieChartData = (data: any[]) => {
+  if (!data || !Array.isArray(data)) {
+    pieChartData.value = []
+    return
+  }
+
+  const statusColors: { [key: number]: string } = {
+    0: '#A9A9A9', // Idle - Dark Gray
+    1: '#00CED1', // Queued - Dark Turquoise
+    2: '#6495ED', // InProgress - Royal Blue
+    3: '#32CD32', // Done - Lime Green
+    4: '#008000', // DueDone - Green
+    5: '#FF0000', // Failed - Red
+    6: '#FFD700', // Cancelled - Gold/Yellow
+    7: '#BA68C8', // Skipped - Medium Orchid (Purple)
+  }
+
+  const chartDataProcessed = data
+    .filter(item => item && item.item1 !== undefined && item.item2 !== undefined)
+    .sort((a, b) => a.item2 - b.item2)
+    .map((item) => {
+      const statusName = Status[item.item1] || `Status ${item.item1}`
+      const color = statusColors[item.item1] || '#999999' // Default gray if status not found
+      return {
+        name: `${statusName} (${item.item2})`,
+        value: item.item2,
+        itemStyle: {
+          color: color
+        }
+      }
+    })
+
+  // If no data, add a placeholder
+  if (chartDataProcessed.length === 0) {
+    chartDataProcessed.push({
+      name: 'No Data Available',
+      value: 1,
+      itemStyle: { color: '#9e9e9e' }
+    })
+  }
+
+  pieChartData.value = chartDataProcessed
+  pieChartKey.value++
+}
+
 const addHubListeners = async () => {
   TickerNotificationHub.onReceiveAddTimeTicker<GetTimeTickerResponse>((response) => {
     console.log('Add Time Ticker', response)
-    getTimeTickers.addToResponse(response)
+    // Reload current page when new item is added
+    loadPageData()
+    // Update charts
+    loadPieChartData()
   })
 
   TickerNotificationHub.onReceiveUpdateTimeTicker<GetTimeTickerResponse>((response) => {
-    getTimeTickers.updateByNestedKey('children', 'id', response, ['requestType', 'createdAt', 'executionTime','executionTimeFormatted', 'function', 'lockHolder', 'lockedAt', 'children', 'description'])
-
-    if(response.children && response.children.length > 0) {
-      for(let i = 0; i < response.children!.length; i++) {
-        response = response.children![i]
-        getTimeTickers.updateByNestedKey('children', 'id', response, ['requestType', 'createdAt', 'executionTime','executionTimeFormatted', 'function', 'lockHolder', 'lockedAt', 'children', 'description'])
-      }
-    }
+    // For paginated data, we need to refresh the current page
+    // instead of updating in-memory array
+    loadPageData()
+    // Update charts
+    loadPieChartData()
 
 
     if (crudTimeTickerDialog.isOpen && crudTimeTickerDialog.propData?.id == response.id) {
@@ -105,13 +339,185 @@ const addHubListeners = async () => {
   })
 
   TickerNotificationHub.onReceiveDeleteTimeTicker<string>((id) => {
-    getTimeTickers.removeFromResponse('id', id)
+    // Reload current page when item is deleted
+    loadPageData()
+    // Update charts
+    loadPieChartData()
   })
 }
 
+// Chart configurations
+const lineChartOption = computed(() => ({
+  backgroundColor: 'transparent',
+  title: {
+    text: 'Time Series Analysis',
+    subtext: chartData.value.title,
+    left: 'center',
+    top: '2%',
+    textStyle: {
+      color: '#e0e0e0',
+      fontSize: 14,
+      fontWeight: 600,
+    },
+    subtextStyle: {
+      color: '#9e9e9e',
+      fontSize: 11,
+    },
+  },
+  tooltip: {
+    trigger: 'axis',
+    backgroundColor: 'rgba(42, 42, 42, 0.95)',
+    borderColor: '#666',
+    borderWidth: 1,
+    axisPointer: {
+      type: 'cross',
+      label: {
+        backgroundColor: 'rgba(66, 66, 66, 0.9)',
+        color: '#fff',
+      },
+    },
+  },
+  legend: chartData.value.legend,
+  grid: {
+    left: '8%',
+    right: '8%',
+    bottom: '10%',
+    top: '18%',
+    containLabel: true,
+  },
+  xAxis: {
+    type: 'category',
+    boundaryGap: false,
+    data: chartData.value.xAxisData,
+    axisLabel: {
+      color: '#bdbdbd',
+      fontSize: 10,
+      rotate: 45,
+    },
+    axisLine: {
+      lineStyle: { color: '#424242' },
+    },
+  },
+  yAxis: {
+    type: 'value',
+    axisLabel: {
+      color: '#bdbdbd',
+      fontSize: 10,
+    },
+    axisLine: {
+      lineStyle: { color: '#424242' },
+    },
+    splitLine: {
+      lineStyle: {
+        color: 'rgba(255, 255, 255, 0.05)',
+        type: 'dashed',
+      },
+    },
+  },
+  dataZoom: [
+    {
+      type: 'inside',
+      start: 0,
+      end: 100,
+    },
+    {
+      show: true,
+      type: 'slider',
+      bottom: '2%',
+      start: 0,
+      end: 100,
+      backgroundColor: 'rgba(47, 47, 47, 0.5)',
+      borderColor: '#666',
+      fillerColor: 'rgba(100, 181, 246, 0.2)',
+      handleStyle: {
+        color: '#64b5f6',
+        borderColor: '#64b5f6',
+      },
+    },
+  ],
+  series: chartData.value.series,
+  animation: true,
+  animationDuration: 1000,
+  animationEasing: 'cubicOut' as const,
+}))
+
+const pieChartOption = computed(() => ({
+  backgroundColor: 'transparent',
+  title: {
+    text: 'Status Distribution',
+    subtext: 'Current Overview',
+    left: 'center',
+    top: '2%',
+    textStyle: {
+      color: '#e0e0e0',
+      fontSize: 14,
+      fontWeight: 600,
+    },
+    subtextStyle: {
+      color: '#9e9e9e',
+      fontSize: 11,
+    },
+  },
+  tooltip: {
+    trigger: 'item',
+    formatter: '{b}: {c} ({d}%)',
+    backgroundColor: 'rgba(42, 42, 42, 0.95)',
+    borderColor: '#666',
+    borderWidth: 1,
+  },
+  legend: {
+    orient: 'vertical',
+    right: '8%',
+    top: 'center',
+    textStyle: {
+      color: '#bdbdbd',
+      fontSize: 11,
+    },
+  },
+  series: [
+    {
+      name: 'Status',
+      type: 'pie',
+      radius: ['40%', '70%'],
+      center: ['35%', '50%'],
+      avoidLabelOverlap: false,
+      itemStyle: {
+        borderRadius: 10,
+        borderColor: 'rgba(30, 30, 30, 0.8)',
+        borderWidth: 2,
+      },
+      label: {
+        show: false,
+        position: 'center',
+      },
+      emphasis: {
+        label: {
+          show: true,
+          fontSize: 16,
+          fontWeight: 'bold',
+          color: '#fff',
+        },
+        itemStyle: {
+          shadowBlur: 10,
+          shadowOffsetX: 0,
+          shadowColor: 'rgba(0, 0, 0, 0.5)',
+        },
+      },
+      labelLine: {
+        show: false,
+      },
+      data: pieChartData.value,
+    },
+  ],
+  animation: true,
+  animationDuration: 1000,
+  animationEasing: 'cubicOut' as const,
+}))
+
 // Process data to create tree table structure with proper hierarchy
 const processedTableData = computed(() => {
-  const rawData = getTimeTickers.response.value || []
+  const paginatedData = getTimeTickersPaginated.response.value
+  const rawData = paginatedData?.items || []
   const result: any[] = []
 
   // Recursive function to build tree structure with proper indentation
@@ -154,7 +560,18 @@ const processedTableData = computed(() => {
 })
 
 const headersWithSelection = computed(() => {
-  const headers = [...(getTimeTickers.headers.value || [])]
+  // For now, define headers manually since paginated response might not have headers
+  const headers = [
+    { title: 'Function', key: 'function', sortable: true, visibility: true },
+    { title: 'Status', key: 'status', sortable: true, visibility: true },
+    { title: 'Request Type', key: 'RequestType', sortable: false, visibility: true },
+    { title: 'Description', key: 'description', sortable: true, visibility: true },
+    { title: 'Execution Time', key: 'executionTimeFormatted', sortable: true, visibility: true },
+    { title: 'Executed At (Elapsed Time)', key: 'executedAt', sortable: false, visibility: true },
+    { title: 'Lock Holder', key: 'lockHolder', sortable: false, visibility: true },
+    { title: 'Retry Status', key: 'retryIntervals', sortable: false, visibility: true },
+    { title: 'Actions', key: 'actions', sortable: false, visibility: true },
+  ]
   headers.unshift({
     title: '',
     key: 'selection',
@@ -190,7 +607,7 @@ const openChainJobsModal = () => {
 
 const onChainJobsCreated = async (result: any) => {
   console.log('Chain jobs created successfully!', result)
-  await getTimeTickers.requestAsync()
+  await loadPageData()
 }
 
 const toggleParentExpansion = (parentId: string) => {
@@ -284,8 +701,11 @@ const getRequestMatchType = computed(() => {
 })
 
 // Helper functions for status styling
-const getStatusColor = (status: string) => {
-  switch (status) {
+const getStatusColor = (status: string | number) => {
+  // Convert numeric status to string name
+  const statusStr = typeof status === 'number' ? Status[status] : status
+  
+  switch (statusStr) {
     case 'Done':
     case 'DueDone':
       return 'success'
@@ -297,13 +717,47 @@ const getStatusColor = (status: string) => {
       return 'error'
     case 'Cancelled':
       return 'warning'
+    case 'Idle':
+      return 'grey'
+    case 'Skipped':
+      return 'deep-purple'
     default:
       return 'grey'
   }
 }
 
-const getStatusVariant = (status: string) => {
-  switch (status) {
+// Get the actual hex color for a status
+const getStatusHexColor = (status: string | number) => {
+  // Convert numeric status to string name
+  const statusStr = typeof status === 'number' ? Status[status] : status
+  
+  switch (statusStr) {
+    case 'Done':
+      return '#32CD32' // Lime Green
+    case 'DueDone':
+      return '#008000' // Green
+    case 'InProgress':
+      return '#6495ED' // Royal Blue
+    case 'Queued':
+      return '#00CED1' // Dark Turquoise
+    case 'Idle':
+      return '#A9A9A9' // Dark Gray
+    case 'Failed':
+      return '#FF0000' // Red
+    case 'Cancelled':
+      return '#FFD700' // Gold/Yellow
+    case 'Skipped':
+      return '#BA68C8' // Medium Orchid (Purple)
+    default:
+      return '#808080' // Default gray
+  }
+}
+
+const getStatusVariant = (status: string | number) => {
+  // Convert numeric status to string name
+  const statusStr = typeof status === 'number' ? Status[status] : status
+  
+  switch (statusStr) {
     case 'Done':
     case 'DueDone':
     case 'InProgress':
@@ -316,7 +770,7 @@ const getStatusVariant = (status: string) => {
 }
 
 const refreshData = async () => {
-  await getTimeTickers.requestAsync()
+  await loadPageData()
 }
 
 const getRetryIntervalsArray = (retryIntervals: string[] | string | null): string[] => {
@@ -405,7 +859,60 @@ const canBeForceDeleted = ref<string[]>([])
     <!-- Content Section -->
     <div class="dashboard-content">
       <!-- Analytics Section -->
-      <div class="content-card analytics-overview"></div>
+      <div class="content-card analytics-overview">
+        <!-- Chart Toggle Switch - Vertical Edge Design -->
+        <div class="chart-toggle-vertical">
+          <div class="chart-switch-vertical">
+            <div class="toggle-label">Charts</div>
+            <v-btn
+              :color="activeChart === 'line' ? 'primary' : 'default'"
+              variant="elevated"
+              density="compact"
+              class="chart-btn-vertical"
+              @click="activeChart = 'line'"
+            >
+              <v-icon class="mb-1 chart-icon">mdi-chart-line</v-icon>
+              <span class="btn-text">Time</span>
+            </v-btn>
+            <v-btn
+              :color="activeChart === 'pie' ? 'primary' : 'default'"
+              variant="elevated"
+              density="compact"
+              class="chart-btn-vertical"
+              @click="activeChart = 'pie'"
+            >
+              <v-icon class="mb-1 chart-icon">mdi-chart-pie</v-icon>
+              <span class="btn-text">Status</span>
+            </v-btn>
+          </div>
+        </div>
+
+        <!-- Time Series Analysis Chart -->
+        <div v-if="activeChart === 'line'" class="chart-section">
+          <div class="chart-wrapper">
+            <v-chart
+              class="chart-compact"
+              :option="lineChartOption"
+              :key="`chart-${chartKey}`"
+              :loading="chartLoading"
+              autoresize
+            />
+          </div>
+        </div>
+
+        <!-- Status Distribution Pie Chart -->
+        <div v-if="activeChart === 'pie'" class="chart-section">
+          <div class="chart-wrapper">
+            <v-chart
+              class="chart-compact"
+              :option="pieChartOption"
+              :key="`pie-${pieChartKey}`"
+              :loading="chartLoading"
+              autoresize
+            />
+          </div>
+        </div>
+      </div>
 
       <!-- Operations Table Section -->
       <div class="table-section">
@@ -512,16 +1019,16 @@ const canBeForceDeleted = ref<string[]>([])
               ></v-text-field>
 
               <v-chip
-                :color="getTimeTickers.loader.value ? 'warning' : 'success'"
+                :color="getTimeTickersPaginated.loader.value ? 'warning' : 'success'"
                 variant="tonal"
                 size="small"
                 class="status-chip"
               >
                 <v-icon size="small" class="mr-1">
-                  {{ getTimeTickers.loader.value ? 'mdi-loading' : 'mdi-check' }}
+                  {{ getTimeTickersPaginated.loader.value ? 'mdi-loading' : 'mdi-check' }}
                 </v-icon>
                 {{
-                  getTimeTickers.loader.value ? 'Loading...' : `${processedTableData.length} items`
+                  getTimeTickersPaginated.loader.value ? 'Loading...' : `${totalCount} total items`
                 }}
               </v-chip>
             </div>
@@ -559,12 +1066,13 @@ const canBeForceDeleted = ref<string[]>([])
             density="compact"
             :row-props="getRowProps"
             :headers="headersWithSelection"
-            :loading="getTimeTickers.loader.value"
+            :loading="getTimeTickersPaginated.loader.value"
             :items="processedTableData"
             item-value="Id"
-            :items-per-page="20"
+            :items-per-page="-1"
             class="enhanced-table dense-table"
             :search="tableSearch"
+            hide-default-footer
             :item-height="32"
           >
             <!-- Selection Column -->
@@ -650,8 +1158,12 @@ const canBeForceDeleted = ref<string[]>([])
             <template v-slot:item.status="{ item }">
               <div class="d-flex align-center">
                 <v-chip
-                  :color="getStatusColor(item.status)"
-                  :variant="getStatusVariant(item.status)"
+                  :style="{ 
+                    backgroundColor: getStatusHexColor(item.status) + '20', 
+                    color: getStatusHexColor(item.status) + ' !important', 
+                    borderColor: getStatusHexColor(item.status),
+                    border: '1px solid ' + getStatusHexColor(item.status)
+                  }"
                   size="x-small"
                   class="status-chip"
                   @click="
@@ -717,8 +1229,11 @@ const canBeForceDeleted = ref<string[]>([])
             </template>
 
             <template v-slot:item.retryIntervals="{ item }">
-              <div class="retry-display" v-if="getRetryIntervalsArray(item.retryIntervals)?.length">
-                <span class="retry-sequence">
+              <div class="retry-display" v-if="getRetryIntervalsArray(item.retryIntervals)?.length || (item.retries && item.retries > 0)">
+                <div class="retry-header" v-if="item.retries > 0">
+                  <span class="retry-count-label">Attempt {{ item.retryCount || 0 }}/{{ item.retries }}</span>
+                </div>
+                <span class="retry-sequence" v-if="getRetryIntervalsArray(item.retryIntervals)?.length">
                   <template v-for="(interval, index) in getDisplayIntervals(item)" :key="index">
                     <span class="retry-item" :class="getRetryStatus(interval.originalIndex, item)"
                       >{{ interval.originalIndex + 1 }}:{{ interval.value }}</span
@@ -728,7 +1243,9 @@ const canBeForceDeleted = ref<string[]>([])
                     +{{ getHiddenCount(item) }}
                   </span>
                 </span>
+                <span v-else class="no-intervals">(Default: 30s)</span>
               </div>
+              <span v-else class="no-retries">—</span>
             </template>
 
             <template v-slot:item.lockHolder="{ item }">
@@ -956,6 +1473,16 @@ const canBeForceDeleted = ref<string[]>([])
               </div>
             </template>
           </v-data-table>
+          
+          <!-- Custom pagination footer -->
+          <PaginationFooter
+            :page="currentPage"
+            :page-size="pageSize"
+            :total-count="totalCount"
+            :page-size-options="[10, 20, 50, 100]"
+            @update:page="handlePageChange"
+            @update:page-size="handlePageSizeChange"
+          />
         </div>
       </div>
     </div>
@@ -1911,6 +2438,25 @@ const canBeForceDeleted = ref<string[]>([])
   font-family: 'JetBrains Mono', 'Monaco', 'Consolas', monospace;
   font-size: 0.75rem;
   line-height: 1.2;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.retry-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.retry-count-label {
+  font-weight: 600;
+  color: #64b5f6;
+  font-size: 0.8rem;
+  padding: 2px 6px;
+  background: rgba(100, 181, 246, 0.15);
+  border-radius: 4px;
 }
 
 .no-retries {
@@ -1918,6 +2464,12 @@ const canBeForceDeleted = ref<string[]>([])
   color: #6b7280;
   font-style: italic;
   display: inline-block;
+}
+
+.no-intervals {
+  color: #888;
+  font-size: 0.7rem;
+  font-style: italic;
 }
 
 .retry-sequence {
@@ -2055,5 +2607,155 @@ const canBeForceDeleted = ref<string[]>([])
   color: #6b7280;
   font-style: italic;
   display: inline-block;
+}
+
+/* Chart Styles */
+.chart-toggle-vertical {
+  position: absolute;
+  top: 20px;
+  left: -70px;
+  z-index: 10;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 20px;
+  padding: 8px;
+}
+
+.chart-switch-vertical {
+  background: rgba(66, 66, 66, 0.95);
+  backdrop-filter: blur(20px);
+  border-radius: 16px;
+  border: 1px solid rgba(100, 181, 246, 0.4);
+  box-shadow: 0 8px 32px rgba(100, 181, 246, 0.2);
+  overflow: hidden;
+  padding: 8px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chart-switch-vertical .toggle-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #bdbdbd;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 4px 0;
+  text-align: center;
+}
+
+.chart-btn-vertical {
+  min-width: 60px;
+  min-height: 70px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 4px;
+  font-size: 0.75rem;
+  text-transform: none;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid transparent;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.chart-btn-vertical.v-btn--active {
+  background: linear-gradient(135deg, #64b5f6, #42a5f5);
+  box-shadow: 0 4px 12px rgba(100, 181, 246, 0.3);
+  border: 1px solid rgba(100, 181, 246, 0.6);
+}
+
+.chart-btn-vertical:not(.v-btn--active):hover {
+  background: rgba(100, 181, 246, 0.1);
+  border: 1px solid rgba(100, 181, 246, 0.3);
+}
+
+.chart-btn-vertical .chart-icon {
+  font-size: 20px;
+  margin-bottom: 4px;
+}
+
+.chart-btn-vertical .btn-text {
+  font-size: 0.7rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.chart-section {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: center;
+  width: 100%;
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+.chart-wrapper {
+  height: 420px;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.chart-compact {
+  width: 100%;
+  height: 100%;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Responsive Chart Styles */
+@media (max-width: 1400px) {
+  .chart-toggle-vertical {
+    top: 16px;
+    left: -52px;
+  }
+
+  .chart-btn-vertical {
+    min-width: 50px;
+    min-height: 60px;
+    font-size: 0.7rem;
+  }
+
+  .chart-wrapper {
+    height: 380px;
+  }
+}
+
+@media (max-width: 768px) {
+  .chart-toggle-vertical {
+    top: 12px;
+    left: -45px;
+  }
+
+  .chart-btn-vertical {
+    min-width: 40px;
+    min-height: 50px;
+    font-size: 0.65rem;
+    padding: 6px 3px;
+  }
+
+  .btn-text {
+    font-size: 0.6rem;
+  }
+
+  .chart-wrapper {
+    height: 320px;
+  }
 }
 </style>
