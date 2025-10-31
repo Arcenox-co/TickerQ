@@ -1,7 +1,7 @@
 using System;
 using System.Threading;
 
-namespace TickerQ.Base;
+namespace TickerQ;
 
 public sealed class RestartThrottleManager
 {

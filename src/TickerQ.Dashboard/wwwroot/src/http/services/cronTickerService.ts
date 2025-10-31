@@ -90,7 +90,7 @@ const getCronTickersPaginated = () => {
 
 const updateCronTicker = () => {
     const baseHttp = useBaseHttpService<UpdateCronTickerRequest, object>('single')
-    const requestAsync = async (id: string, request: UpdateCronTickerRequest) => (await baseHttp.sendAsync("PUT", "cron-ticker/:update", { bodyData: request, paramData: { id } }));
+    const requestAsync = async (id: string, request: UpdateCronTickerRequest) => (await baseHttp.sendAsync("PUT", "cron-ticker/update", { bodyData: request, paramData: { id } }));
 
     return {
         ...baseHttp,
@@ -100,7 +100,7 @@ const updateCronTicker = () => {
 
 const addCronTicker = () => {
     const baseHttp = useBaseHttpService<AddCronTickerRequest, object>('single')
-    const requestAsync = async (request: AddCronTickerRequest) => (await baseHttp.sendAsync("POST", "cron-ticker/:add", { bodyData: request }));
+    const requestAsync = async (request: AddCronTickerRequest) => (await baseHttp.sendAsync("POST", "cron-ticker/add", { bodyData: request }));
 
     return {
         ...baseHttp,
@@ -110,7 +110,7 @@ const addCronTicker = () => {
 
 const deleteCronTicker = () => {
     const baseHttp = useBaseHttpService<object, object>('single')
-    const requestAsync = async (id: string) => (await baseHttp.sendAsync("DELETE", "cron-ticker/:delete", { paramData: { id } }));
+    const requestAsync = async (id: string) => (await baseHttp.sendAsync("DELETE", "cron-ticker/delete", { paramData: { id } }));
 
     return {
         ...baseHttp,
@@ -120,7 +120,7 @@ const deleteCronTicker = () => {
 
 const runCronTickerOnDemand = () => {
     const baseHttp = useBaseHttpService<object, object>('single')
-    const requestAsync = async (id: string) => (await baseHttp.sendAsync("POST", "cron-ticker/:run", { paramData: { id } }));
+    const requestAsync = async (id: string) => (await baseHttp.sendAsync("POST", "cron-ticker/run", { paramData: { id } }));
 
     return {
         ...baseHttp,

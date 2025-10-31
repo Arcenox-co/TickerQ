@@ -11,7 +11,6 @@ using TickerQ.SourceGenerator.AttributeSyntaxes;
 using TickerQ.SourceGenerator.Generators;
 using TickerQ.SourceGenerator.Utilities;
 using TickerQ.SourceGenerator.Validation;
-using static TickerQ.SourceGenerator.Utilities.NetStandardExtensions;
 
 namespace TickerQ.SourceGenerator
 {

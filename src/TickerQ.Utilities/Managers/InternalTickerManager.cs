@@ -57,7 +57,7 @@ namespace TickerQ.Utilities.Managers
                 if(typesToQueue.All(x => x == TickerType.CronTickerOccurrence))
                     await Task.Delay(minTimeRemaining, cancellationToken).ConfigureAwait(false);
                 else
-                    await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(50, 201)), cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromMilliseconds(10), cancellationToken).ConfigureAwait(false);  // Faster retry for time-sensitive tasks
             }
         }
 
@@ -92,19 +92,18 @@ namespace TickerQ.Utilities.Managers
                 return time.Value - now;
             }
 
-            // both present
-            var cronSec = TruncateToSecond(cron.Value);
-            var timeSec = TruncateToSecond(time.Value);
-
-            // same second → both tickers win
-            if (cronSec == timeSec)
+            // both present - check if they're close enough to batch together
+            var timeDiff = Math.Abs((cron.Value - time.Value).TotalMilliseconds);
+            
+            // Only batch if within 50ms of each other for efficiency
+            if (timeDiff <= 50)
             {
                 sources = [TickerType.CronTickerOccurrence, TickerType.TimeTicker];
-                var earliest = cron < time ? cron.Value : time.Value; // with ms
+                var earliest = cron < time ? cron.Value : time.Value;
                 return earliest - now;
             }
 
-            // different seconds → only earliest ticker wins
+            // Different times - only process the earliest one
             if (cron < time)
             {
                 sources = [TickerType.CronTickerOccurrence];
@@ -113,9 +112,6 @@ namespace TickerQ.Utilities.Managers
 
             sources = [TickerType.TimeTicker];
             return time.Value - now;
-
-            DateTime TruncateToSecond(DateTime dt) 
-                => new(dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, dt.Second, dt.Kind);
         }
 
         private async Task<InternalFunctionContext[]>RetrieveEligibleTickersAsync(

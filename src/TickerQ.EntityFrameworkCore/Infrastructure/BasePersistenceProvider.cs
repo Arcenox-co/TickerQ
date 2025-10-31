@@ -67,14 +67,14 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     {
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         var context = dbContext.Set<TTimeTicker>();
-        var nowShifted = _clock.UtcNow.AddSeconds(-1);
         var now = _clock.UtcNow;
+        var fallbackThreshold = now.AddMilliseconds(-100);  // Fallback picks up tasks overdue by > 100ms
             
         var timeTickersToUpdate =  await context
             .AsNoTracking()
             .Where(x => x.ExecutionTime != null)
             .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
-            .Where(x => x.ExecutionTime <= nowShifted)
+            .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks overdue by more than 100ms
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);;
@@ -136,12 +136,13 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     {
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var now = _clock.UtcNow;
+        var mainSchedulerThreshold = now.AddMilliseconds(-100);  // Main scheduler handles tasks up to 100ms overdue
             
         var baseQuery = dbContext.Set<TTimeTicker>()
             .AsNoTracking()
             .Where(x => x.ExecutionTime != null)
             .WhereCanAcquire(_lockHolder)
-            .Where(x => x.ExecutionTime >= now);
+            .Where(x => x.ExecutionTime >= mainSchedulerThreshold);  // Only recent/upcoming tasks (not heavily overdue)
         
         var minExecutionTime = await baseQuery
             .OrderBy(x => x.ExecutionTime)
@@ -151,19 +152,12 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         if (minExecutionTime == null)
             return [];
         
-        var startOfSecond = new DateTime(
-            minExecutionTime.Value.Year,
-            minExecutionTime.Value.Month,
-            minExecutionTime.Value.Day,
-            minExecutionTime.Value.Hour, 
-            minExecutionTime.Value.Minute,
-            minExecutionTime.Value.Second, DateTimeKind.Utc);
-    
-        var endOfSecond = startOfSecond.AddSeconds(1);
+        // Get tasks within 50ms window of the earliest task for batching efficiency
+        var batchWindow = minExecutionTime.Value.AddMilliseconds(50);
     
         return await baseQuery
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
-            .Where(x => x.ExecutionTime.Value >= startOfSecond && x.ExecutionTime.Value < endOfSecond)
+            .Where(x => x.ExecutionTime.Value <= batchWindow)
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -268,8 +262,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     
     public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueTimedOutCronTickerOccurrences([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var nowShifted = _clock.UtcNow.AddSeconds(-1);
         var now = _clock.UtcNow;
+        var fallbackThreshold = now.AddMilliseconds(-100);  // Fallback picks up tasks overdue by > 100ms
         
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         var context = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>();
@@ -278,7 +272,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .AsNoTracking()
             .Include(x => x.CronTicker)
             .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
-            .Where(x => x.ExecutionTime <= nowShifted)
+            .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks overdue by more than 100ms
             .Select(MappingExtensions.ForQueueCronTickerOccurrence<CronTickerOccurrenceEntity<TCronTicker>, TCronTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
@@ -434,12 +428,13 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     public async Task<CronTickerOccurrenceEntity<TCronTicker>> GetEarliestAvailableCronOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
     {
         var now = _clock.UtcNow;
+        var mainSchedulerThreshold = now.AddMilliseconds(-100);  // Main scheduler handles tasks up to 100ms overdue
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .AsNoTracking()
             .Include(x => x.CronTicker)
             .Where(x => ids.Contains(x.CronTickerId))
-            .Where(x => x.ExecutionTime >= now)
+            .Where(x => x.ExecutionTime >= mainSchedulerThreshold)  // Only recent/upcoming tasks (not heavily overdue)
             .WhereCanAcquire(_lockHolder)
             .OrderBy(x => x.ExecutionTime)
             .Select(MappingExtensions.ForLatestQueuedCronTickerOccurrence<CronTickerOccurrenceEntity<TCronTicker>, TCronTicker>())

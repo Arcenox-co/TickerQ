@@ -54,6 +54,25 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
                         function.CachedDelegate = tickerItem.Delegate;
                         function.CachedPriority = tickerItem.Priority;
                     }
+
+                    foreach (var child in function.TimeTickerChildren)
+                    {
+                        if (TickerFunctionProvider.TickerFunctions.TryGetValue(child.FunctionName, out var childItem))
+                        {
+                            child.CachedDelegate = childItem.Delegate;
+                            child.CachedPriority = childItem.Priority;
+                        }
+
+                        foreach (var grandChild in child.TimeTickerChildren)
+                        {
+                            if (TickerFunctionProvider.TickerFunctions.TryGetValue(grandChild.FunctionName, out var grandChildItem))
+                            {
+                                grandChild.CachedDelegate = grandChildItem.Delegate;
+                                grandChild.CachedPriority = grandChildItem.Priority;
+                            }
+                        }
+                    }
+                    
                     await _tickerQTaskScheduler.QueueAsync(ct => _tickerExecutionTaskHandler.ExecuteTaskAsync(function, true, ct), function.CachedPriority, stoppingToken);
                 }
 

@@ -327,10 +327,16 @@ const addHubListeners = async () => {
 
 
     if (crudTimeTickerDialog.isOpen && crudTimeTickerDialog.propData?.id == response.id) {
+      // Merge the update with existing data, preserving fields that aren't updated
+      const currentData = crudTimeTickerDialog.propData
       crudTimeTickerDialog.setPropData({
-        ...response,
-        executionTime: formatFromUtcToLocal(response.executionTime),
+        ...currentData,  // Keep existing data (including lockHolder, function, etc.)
+        ...response,      // Apply updates (status, executedAt, etc.)
+        executionTime: response.executionTime ? formatFromUtcToLocal(response.executionTime) : currentData.executionTime,
         isFromDuplicate: false,
+        // Preserve fields that WebSocket updates don't include
+        lockHolder: response.lockHolder || currentData.lockHolder,
+        function: response.function || currentData.function,
       })
       nextTick(() => {
         ;(crudTimeTickerDialogRef.value as any)?.resetForm()
@@ -700,32 +706,6 @@ const getRequestMatchType = computed(() => {
   })
 })
 
-// Helper functions for status styling
-const getStatusColor = (status: string | number) => {
-  // Convert numeric status to string name
-  const statusStr = typeof status === 'number' ? Status[status] : status
-  
-  switch (statusStr) {
-    case 'Done':
-    case 'DueDone':
-      return 'success'
-    case 'InProgress':
-      return 'primary'
-    case 'Queued':
-      return 'info'
-    case 'Failed':
-      return 'error'
-    case 'Cancelled':
-      return 'warning'
-    case 'Idle':
-      return 'grey'
-    case 'Skipped':
-      return 'deep-purple'
-    default:
-      return 'grey'
-  }
-}
-
 // Get the actual hex color for a status
 const getStatusHexColor = (status: string | number) => {
   // Convert numeric status to string name
@@ -750,22 +730,6 @@ const getStatusHexColor = (status: string | number) => {
       return '#BA68C8' // Medium Orchid (Purple)
     default:
       return '#808080' // Default gray
-  }
-}
-
-const getStatusVariant = (status: string | number) => {
-  // Convert numeric status to string name
-  const statusStr = typeof status === 'number' ? Status[status] : status
-  
-  switch (statusStr) {
-    case 'Done':
-    case 'DueDone':
-    case 'InProgress':
-      return 'tonal'
-    case 'Failed':
-      return 'elevated'
-    default:
-      return 'outlined'
   }
 }
 
@@ -2607,6 +2571,24 @@ const canBeForceDeleted = ref<string[]>([])
   color: #6b7280;
   font-style: italic;
   display: inline-block;
+}
+
+/* Analytics Overview Card */
+.analytics-overview {
+  background: rgba(66, 66, 66, 0.9);
+  backdrop-filter: blur(20px);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+  overflow: visible;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  margin-top: 24px;
+}
+
+.analytics-overview:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.6);
 }
 
 /* Chart Styles */

@@ -182,6 +182,7 @@ internal class TickerExecutionTaskHandler
 
                 stopWatch.Start();
 
+                // Create service scope - will be disposed automatically via await using
                 await using var scope = _serviceProvider.CreateAsyncScope();
                 tickerFunctionContext.SetServiceScope(scope);
                 await context.CachedDelegate(cancellationTokenSource.Token, scope.ServiceProvider, tickerFunctionContext);
@@ -208,6 +209,11 @@ internal class TickerExecutionTaskHandler
                     await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type);
 
                 await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+                
+                // Clean up and exit early on cancellation
+                cancellationTokenSource?.Dispose();
+                TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
+                return;
             }
             catch (TerminateExecutionException ex)
             {
@@ -224,6 +230,10 @@ internal class TickerExecutionTaskHandler
                 _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
 
                 await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+                
+                // Clean up and exit early on termination
+                cancellationTokenSource?.Dispose();
+                TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
                 return;
             }
             catch (Exception ex)
@@ -273,7 +283,8 @@ internal class TickerExecutionTaskHandler
         }
 
 
-        cancellationTokenSource.Dispose();
+        // IMPORTANT: Always dispose CancellationTokenSource to prevent memory leaks
+        cancellationTokenSource?.Dispose();
         TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
     }
 

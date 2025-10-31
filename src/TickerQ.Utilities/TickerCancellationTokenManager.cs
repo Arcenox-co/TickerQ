@@ -38,15 +38,34 @@ namespace TickerQ.Utilities
         {
             var removed = TickerCancellationTokens.TryRemove(tickerId, out var details);
             
-            // Remove from parent index if it exists
-            if (removed && details?.ParentId != null && details.ParentId != Guid.Empty)
+            if (removed && details != null)
             {
-                if (ParentIdIndex.TryGetValue(details.ParentId, out var set))
+                // CRITICAL: Dispose CancellationTokenSource to prevent memory leak
+                try
                 {
-                    set.Remove(tickerId);
-                    // Clean up empty sets
-                    if (set.IsEmpty)
-                        ParentIdIndex.TryRemove(details.ParentId, out _);
+                    details.CancellationSource?.Dispose();
+                }
+                catch
+                {
+                    // Ignore disposal errors
+                }
+                
+                // Remove from parent index if it exists
+                if (details.ParentId != Guid.Empty)
+                {
+                    if (ParentIdIndex.TryGetValue(details.ParentId, out var set))
+                    {
+                        set.Remove(tickerId);
+                        // Clean up empty sets
+                        if (set.IsEmpty)
+                        {
+                            if (ParentIdIndex.TryRemove(details.ParentId, out var removedSet))
+                            {
+                                // Dispose the ConcurrentHashSet to free ReaderWriterLockSlim
+                                removedSet?.Dispose();
+                            }
+                        }
+                    }
                 }
             }
             
@@ -55,7 +74,34 @@ namespace TickerQ.Utilities
 
         internal static void CleanUpTickerCancellationTokens()
         {
+            // CRITICAL: Must dispose all CancellationTokenSources before clearing to prevent memory leaks
+            foreach (var kvp in TickerCancellationTokens)
+            {
+                try
+                {
+                    kvp.Value.CancellationSource?.Dispose();
+                }
+                catch
+                {
+                    // Ignore disposal errors during cleanup
+                }
+            }
+            
             TickerCancellationTokens.Clear();
+            
+            // Dispose all ConcurrentHashSet instances
+            foreach (var kvp in ParentIdIndex)
+            {
+                try
+                {
+                    kvp.Value?.Dispose();
+                }
+                catch
+                {
+                    // Ignore disposal errors during cleanup
+                }
+            }
+            
             ParentIdIndex.Clear();
         }
 
@@ -65,7 +111,15 @@ namespace TickerQ.Utilities
             
             if(existTickerCancellationToken)
             {
-                tickerCancellationToken.CancellationSource.Cancel();
+                try
+                {
+                    tickerCancellationToken.CancellationSource.Cancel();
+                }
+                finally
+                {
+                    // CRITICAL: Must dispose CancellationTokenSource to prevent memory leak
+                    tickerCancellationToken.CancellationSource?.Dispose();
+                }
                 
                 // Remove from parent index if it exists
                 if (tickerCancellationToken.ParentId != Guid.Empty)
@@ -74,7 +128,13 @@ namespace TickerQ.Utilities
                     {
                         set.Remove(tickerId);
                         if (set.IsEmpty)
-                            ParentIdIndex.TryRemove(tickerCancellationToken.ParentId, out _);
+                        {
+                            if (ParentIdIndex.TryRemove(tickerCancellationToken.ParentId, out var removedSet))
+                            {
+                                // Dispose the ConcurrentHashSet to free ReaderWriterLockSlim
+                                removedSet?.Dispose();
+                            }
+                        }
                     }
                 }
             }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Enums;
@@ -43,17 +44,23 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
     public TickerQTaskScheduler(int maxConcurrency, TimeSpan? idleWorkerTimeout = null, SoftSchedulerNotifyDebounce notifyDebounce = null)
     {
         if (maxConcurrency <= 0)
-            throw new ArgumentOutOfRangeException(nameof(maxConcurrency));
+            throw new ArgumentOutOfRangeException(nameof(maxConcurrency), maxConcurrency, "Must be greater than zero");
         if (maxConcurrency > 64)
-            throw new ArgumentOutOfRangeException(nameof(maxConcurrency), "Maximum 64 workers supported due to bitfield limitations");
+            throw new ArgumentOutOfRangeException(nameof(maxConcurrency), maxConcurrency, "Maximum 64 workers supported due to bitfield limitations");
+
+        // Validate idle worker timeout
+        var timeout = idleWorkerTimeout ?? TimeSpan.FromSeconds(60);
+        if (timeout < TimeSpan.FromSeconds(1))
+            throw new ArgumentOutOfRangeException(nameof(idleWorkerTimeout), timeout, "Idle timeout must be at least 1 second");
+        if (timeout > TimeSpan.FromHours(24))
+            throw new ArgumentOutOfRangeException(nameof(idleWorkerTimeout), timeout, "Idle timeout cannot exceed 24 hours");
 
         _maxConcurrency = maxConcurrency;
-        // Default to 60 seconds idle timeout for elastic worker management
-        // Workers will exit after 60s of inactivity to free resources
-        _idleWorkerTimeout = idleWorkerTimeout ?? TimeSpan.FromSeconds(60);
+        _idleWorkerTimeout = timeout;
         _maxCapacityPerWorker = 1024; // Fixed optimal capacity per worker
         _maxTotalCapacity = maxConcurrency * 1024; // Auto-calculated: queues × 1024
-        _notifyDebounce =  notifyDebounce ?? new SoftSchedulerNotifyDebounce(_ => { }); // Default no-op notifier
+        _notifyDebounce = notifyDebounce ?? new SoftSchedulerNotifyDebounce(_ => { }); // Default no-op notifier
+        
         // Lazy initialization - only create queues when needed
         _workerQueues = new ConcurrentQueue<PriorityTask>[maxConcurrency];
         _workerInitialized = 0; // Bitfield initialized to 0
@@ -62,6 +69,9 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
 
     public async ValueTask QueueAsync(Func<CancellationToken, Task> work, TickerTaskPriority priority, CancellationToken userCancellationToken = default)
     {
+        if (work == null)
+            throw new ArgumentNullException(nameof(work));
+            
         if (_disposed)
             throw new ObjectDisposedException(nameof(TickerQTaskScheduler));
         
@@ -79,15 +89,8 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
             return;
         }
 
-        // Get worker using round-robin with overflow protection
-        var nextId = Interlocked.Increment(ref _nextWorkerId);
-        // Prevent overflow by resetting when approaching int.MaxValue or when negative
-        if (nextId < 0 || nextId > 1_000_000_000)
-        {
-            Interlocked.CompareExchange(ref _nextWorkerId, 0, nextId);
-            nextId = Math.Abs(nextId); // Handle negative case
-        }
-        var workerId = nextId % _maxConcurrency;
+        // Get worker using thread-safe round-robin
+        var workerId = GetNextWorkerId();
         var workerQueue = GetOrCreateWorkerQueue(workerId);
 
         // Wait for capacity (both global and per-worker limits)
@@ -104,51 +107,108 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
     private async ValueTask WaitForCapacity(ConcurrentQueue<PriorityTask> targetQueue, CancellationToken cancellationToken)
     {
         var queueCount = targetQueue.Count;
+        var waitCount = 0;
 
         while (queueCount >= _maxCapacityPerWorker || _totalQueuedTasks >= _maxTotalCapacity)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // CRITICAL: Always add a delay to prevent busy-wait CPU spike
-            // This is a backpressure mechanism - if we're at capacity, slow down
-            await Task.Delay(5, cancellationToken); // 5ms delay when at capacity
+            // Adaptive backpressure mechanism
+            // Start with small delays and increase as we wait longer
+            int delayMs;
+            if (waitCount < 5)
+            {
+                delayMs = 1; // First 5 attempts: 1ms
+            }
+            else if (waitCount < 20)
+            {
+                delayMs = 5; // Next 15 attempts: 5ms
+            }
+            else if (waitCount < 100)
+            {
+                delayMs = 10; // Next 80 attempts: 10ms
+            }
+            else
+            {
+                delayMs = 25; // After 100 attempts: 25ms (significant backpressure)
+            }
+
+            await Task.Delay(delayMs, cancellationToken);
+            waitCount++;
 
             // Re-check queue count after delay
             queueCount = targetQueue.Count;
+            
+            // If we've been waiting too long, try to spawn another worker
+            // This helps prevent deadlocks when all workers are busy
+            if (waitCount == 50 && _activeWorkers < _maxConcurrency)
+            {
+                TryStartWorker();
+            }
         }
     }
 
     private ConcurrentQueue<PriorityTask> GetOrCreateWorkerQueue(int workerId)
     {
-        if (workerId >= 64)
-            throw new ArgumentOutOfRangeException(nameof(workerId), "Maximum 64 workers supported");
+        if (workerId < 0 || workerId >= 64)
+            throw new ArgumentOutOfRangeException(nameof(workerId), workerId, "Worker ID must be between 0 and 63");
             
         ulong workerBit = 1UL << workerId;
         
-        // Optimization: Cache first read to avoid duplicate atomic operations
+        // Fast path: Check if already initialized using atomic read
         var initialized = Interlocked.Read(ref _workerInitialized);
-        if ((initialized & workerBit) == 0)
+        if ((initialized & workerBit) != 0)
         {
-            lock (_workerQueues)
+            // Queue already initialized - return it
+            // This is safe because queues are never removed once created
+            return _workerQueues[workerId];
+        }
+        
+        // Slow path: Need to initialize the queue
+        lock (_workerQueues)
+        {
+            // Double-check pattern: Re-read inside lock to handle race conditions
+            initialized = Interlocked.Read(ref _workerInitialized);
+            if ((initialized & workerBit) == 0)
             {
-                // Re-check with fresh read inside lock
-                initialized = Interlocked.Read(ref _workerInitialized);
-                if ((initialized & workerBit) == 0)
+                // Create the queue
+                _workerQueues[workerId] = new ConcurrentQueue<PriorityTask>();
+                
+                // Atomically set the bit to indicate this worker queue is initialized
+                // Use CAS loop to ensure thread-safe bitfield update
+                ulong currentValue, newValue;
+                do
                 {
-                    _workerQueues[workerId] = new ConcurrentQueue<PriorityTask>();
-                    
-                    // Use Interlocked to set the bit atomically
-                    ulong currentValue, newValue;
-                    do
-                    {
-                        currentValue = initialized;
-                        newValue = currentValue | workerBit;
-                        initialized = Interlocked.CompareExchange(ref _workerInitialized, newValue, currentValue);
-                    } while (initialized != currentValue);
-                }
+                    currentValue = Interlocked.Read(ref _workerInitialized);
+                    newValue = currentValue | workerBit;
+                } while (Interlocked.CompareExchange(ref _workerInitialized, newValue, currentValue) != currentValue);
             }
         }
+        
         return _workerQueues[workerId];
+    }
+
+    /// <summary>
+    /// Thread-safe method to get the next worker ID using round-robin with proper overflow handling.
+    /// </summary>
+    private int GetNextWorkerId()
+    {
+        uint nextId;
+        uint currentId;
+        
+        // Use unsigned arithmetic to handle overflow gracefully
+        do
+        {
+            currentId = (uint)_nextWorkerId;
+            nextId = currentId + 1;
+            
+            // Reset to 0 if we've exceeded a reasonable limit (prevent int overflow issues)
+            if (nextId > 1_000_000_000)
+                nextId = 0;
+                
+        } while (Interlocked.CompareExchange(ref _nextWorkerId, (int)nextId, (int)currentId) != (int)currentId);
+        
+        return (int)(nextId % (uint)_maxConcurrency);
     }
 
     private void TryStartWorker(bool allowOversubscriptionForContinuations = false)
@@ -161,9 +221,13 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
         {
             var current = _activeWorkers;
             
-            // Strict limit enforcement - no oversubscription
-            // Continuations run directly on existing workers via SynchronizationContext
-            if (current >= _maxConcurrency) return;
+            // For continuations, allow temporary oversubscription to prevent deadlocks
+            // when all workers are busy with tasks that have continuations
+            var maxAllowed = allowOversubscriptionForContinuations 
+                ? _maxConcurrency + (_maxConcurrency / 2) // Allow 50% oversubscription for continuations
+                : _maxConcurrency;
+            
+            if (current >= maxAllowed) return;
             
             newWorkerCount = current + 1;
             if (Interlocked.CompareExchange(ref _activeWorkers, newWorkerCount, current) == current)
@@ -253,25 +317,30 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
                     // Adaptive delay strategy to balance responsiveness vs CPU usage
                     consecutiveNoWorkCount++;
                     
-                    if (consecutiveNoWorkCount < 1)
+                    if (consecutiveNoWorkCount < 10)
                     {
-                        // First cycle only: no delay for immediate task response
-                        // No delay - just continue loop
+                        // First 10 cycles: yield to scheduler only
+                        Thread.Yield(); // Yield CPU to other threads without blocking
                     }
                     else if (consecutiveNoWorkCount < 100)
                     {
-                        // Next 99 cycles: yield to scheduler, minimal delay
-                        Thread.Sleep(0); // Yield to other threads
+                        // Next 90 cycles: minimal sleep
+                        Thread.Sleep(0); // Sleep(0) yields to equal/higher priority threads
                     }
                     else if (consecutiveNoWorkCount < 1000)
                     {
-                        // Next 900 cycles: start adding minimal delay
+                        // Next 900 cycles: 1ms delay
                         Thread.Sleep(1); // 1ms delay
+                    }
+                    else if (consecutiveNoWorkCount < 10000)
+                    {
+                        // Next 9000 cycles: 10ms delay
+                        Thread.Sleep(10); // 10ms delay
                     }
                     else
                     {
-                        // After 1000 cycles: longer delay to reduce CPU
-                        Thread.Sleep(5); // 5ms delay - worker will likely exit soon anyway
+                        // After 10000 cycles: longer delay to reduce CPU significantly
+                        Thread.Sleep(50); // 50ms delay - worker will likely exit soon anyway
                     }
                 }
 
@@ -289,7 +358,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
             _tempTasks = null;
             IsTickerQWorkerThread = false;
             _cachedNow = default;
-            _lastCacheTicks = 0;
+            _lastCacheUpdateTicks = 0;
             
             Interlocked.Decrement(ref _activeWorkers);
             _notifyDebounce.NotifySafely(_activeWorkers);
@@ -303,11 +372,30 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
         if (ownQueue != null && TryDequeueByPriority(ownQueue, out var work))
             return work;
 
-        // No local work - try stealing from other workers with randomized order for fairness
-        var startWorker = Interlocked.Increment(ref _randomSeed) % _maxConcurrency;
-        for (int offset = 1; offset < _maxConcurrency; offset++)
+        // No local work - try stealing from other workers
+        // Use two-phase approach: first look for overloaded queues, then do random stealing
+        
+        // Phase 1: Look for heavily loaded queues (more than 2x average load)
+        var averageLoad = Math.Max(1, _totalQueuedTasks / _maxConcurrency);
+        var overloadThreshold = averageLoad * 2;
+        
+        for (int i = 0; i < _maxConcurrency; i++)
         {
-            var i = (startWorker + offset) % _maxConcurrency;
+            if (i == workerId || _workerQueues[i] == null) continue;
+            
+            // Check if this queue is overloaded
+            if (_workerQueues[i].Count > overloadThreshold)
+            {
+                if (TryDequeueByPriority(_workerQueues[i], out work))
+                    return work;
+            }
+        }
+        
+        // Phase 2: Random stealing for better load distribution
+        var startWorker = (uint)Interlocked.Increment(ref _randomSeed) % (uint)_maxConcurrency;
+        for (uint offset = 1; offset < _maxConcurrency; offset++)
+        {
+            var i = (int)((startWorker + offset) % (uint)_maxConcurrency);
             if (i == workerId || _workerQueues[i] == null) continue;
             
             if (TryDequeueByPriority(_workerQueues[i], out work))
@@ -321,55 +409,123 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
     {
         work = null;
         
-        // Initialize thread-local temp array if needed (reuse existing if possible)
-        _tempTasks ??= new PriorityTask[32];
+        // Initialize thread-local temp array if needed (increased size for better coverage)
+        const int maxExamineCount = 128; // Examine more tasks for better priority handling
         
-        // Look for highest priority task in queue using pooled array
+        // IMPORTANT: Check if we need to resize or recreate the array
+        // This prevents unbounded growth if someone changes maxExamineCount
+        if (_tempTasks == null || _tempTasks.Length != maxExamineCount)
+        {
+            _tempTasks = new PriorityTask[maxExamineCount];
+        }
+        
+        // Look for highest priority task in queue
         PriorityTask? bestTask = null;
         int tempCount = 0;
+        int examinedCount = 0;
+        
+        // First pass: find if there are any high priority tasks
+        // This prevents examining too many tasks if we have urgent work
+        var queueSnapshot = queue.Count;
+        var maxToExamine = Math.Min(queueSnapshot, maxExamineCount);
+        
+        // Use a List to handle overflow cases without losing tasks
+        List<PriorityTask> overflowTasks = null;
         
         // Dequeue tasks to find the highest priority (considering age)
-        while (queue.TryDequeue(out var task) && tempCount < 32)
+        while (queue.TryDequeue(out var task) && examinedCount < maxToExamine)
         {
+            examinedCount++;
             var effectivePriority = GetEffectivePriority(task);
             
             // Early exit optimization: If we find a High priority task, use it immediately
             if (effectivePriority == TickerTaskPriority.High)
             {
-                // Re-enqueue any tasks we've already dequeued - use Span for better performance
-                var earlyExitTasks = _tempTasks.AsSpan(0, tempCount);
-                foreach (var tempTask in earlyExitTasks)
+                // Re-enqueue any tasks we've already dequeued
+                if (tempCount > 0)
                 {
-                    queue.Enqueue(tempTask);
+                    var earlyExitTasks = _tempTasks.AsSpan(0, tempCount);
+                    foreach (var tempTask in earlyExitTasks)
+                    {
+                        queue.Enqueue(tempTask);
+                    }
                 }
                 if (bestTask.HasValue)
                 {
                     queue.Enqueue(bestTask.Value);
+                }
+                // Re-enqueue overflow tasks if any
+                if (overflowTasks != null)
+                {
+                    foreach (var overflowTask in overflowTasks)
+                    {
+                        queue.Enqueue(overflowTask);
+                    }
                 }
                 
                 bestTask = task;
                 break;
             }
             
-            var bestEffectivePriority = bestTask.HasValue ? GetEffectivePriority(bestTask.Value) : TickerTaskPriority.Low;
-            
-            if (bestTask == null || effectivePriority < bestEffectivePriority)
+            // Compare priorities and keep the best one
+            if (!bestTask.HasValue)
             {
-                if (bestTask.HasValue)
-                    _tempTasks[tempCount++] = bestTask.Value;
                 bestTask = task;
             }
             else
             {
-                _tempTasks[tempCount++] = task;
+                var bestEffectivePriority = GetEffectivePriority(bestTask.Value);
+                
+                if (effectivePriority < bestEffectivePriority || 
+                    (effectivePriority == bestEffectivePriority && task.QueueTime < bestTask.Value.QueueTime))
+                {
+                    // New task is better - store old best task
+                    if (tempCount < maxExamineCount)
+                    {
+                        _tempTasks[tempCount++] = bestTask.Value;
+                    }
+                    else
+                    {
+                        // Buffer full - store in overflow list instead of immediate re-queue
+                        overflowTasks ??= new List<PriorityTask>();
+                        overflowTasks.Add(bestTask.Value);
+                    }
+                    bestTask = task;
+                }
+                else
+                {
+                    // Current best is still better
+                    if (tempCount < maxExamineCount)
+                    {
+                        _tempTasks[tempCount++] = task;
+                    }
+                    else
+                    {
+                        // Buffer full - store in overflow list instead of immediate re-queue
+                        overflowTasks ??= new List<PriorityTask>();
+                        overflowTasks.Add(task);
+                    }
+                }
             }
         }
         
-        // Re-enqueue the tasks we didn't take - use Span for better performance
-        var tasksToRequeue = _tempTasks.AsSpan(0, tempCount);
-        foreach (var task in tasksToRequeue)
+        // Re-enqueue ALL tasks we didn't take (including overflow)
+        if (tempCount > 0)
         {
-            queue.Enqueue(task);
+            var tasksToRequeue = _tempTasks.AsSpan(0, tempCount);
+            foreach (var task in tasksToRequeue)
+            {
+                queue.Enqueue(task);
+            }
+        }
+        
+        // Re-enqueue overflow tasks
+        if (overflowTasks != null)
+        {
+            foreach (var task in overflowTasks)
+            {
+                queue.Enqueue(task);
+            }
         }
         
         if (bestTask.HasValue)
@@ -400,27 +556,40 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
 
     // Thread-local cached time to avoid repeated DateTime.UtcNow calls
     [ThreadStatic] private static DateTime _cachedNow;
-    [ThreadStatic] private static long _lastCacheTicks;
+    [ThreadStatic] private static long _lastCacheUpdateTicks;
     
     private TickerTaskPriority GetEffectivePriority(PriorityTask task)
     {
         // Cache DateTime.UtcNow per batch to avoid repeated system calls
-        var nowTicks = Environment.TickCount64;
-        if (nowTicks - _lastCacheTicks > 10) // Refresh cache every 10ms
+        // Use Environment.TickCount64 which is monotonic and doesn't wrap in practice
+        var currentTicks = Environment.TickCount64;
+        
+        // Refresh cache every 10ms or if we detect time going backwards (shouldn't happen with TickCount64)
+        var ticksDiff = currentTicks - _lastCacheUpdateTicks;
+        if (ticksDiff > 10 || ticksDiff < 0)
         {
             _cachedNow = DateTime.UtcNow;
-            _lastCacheTicks = nowTicks;
+            _lastCacheUpdateTicks = currentTicks;
         }
         
         var age = _cachedNow - task.QueueTime;
         var priority = task.Priority;
         
-        // Age-based priority promotion
-        if (age.TotalMinutes > 2 && priority == TickerTaskPriority.Low)
-            return TickerTaskPriority.Normal;
-        if (age.TotalMinutes > 5 && priority == TickerTaskPriority.Normal)
-            return TickerTaskPriority.High;
-            
+        // Age-based priority promotion with starvation prevention
+        // Tasks get promoted based on how long they've been waiting
+        if (priority == TickerTaskPriority.Low)
+        {
+            if (age.TotalMinutes > 5)
+                return TickerTaskPriority.High; // Very old low priority tasks become high
+            if (age.TotalMinutes > 2)
+                return TickerTaskPriority.Normal; // Old low priority tasks become normal
+        }
+        else if (priority == TickerTaskPriority.Normal)
+        {
+            if (age.TotalMinutes > 10)
+                return TickerTaskPriority.High; // Very old normal tasks become high
+        }
+        
         return priority;
     }
 
@@ -452,13 +621,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
         );
 
         // Use round-robin to distribute continuations across all workers for better performance
-        var nextId = Interlocked.Increment(ref _nextWorkerId);
-        if (nextId < 0 || nextId > 1_000_000_000)
-        {
-            Interlocked.CompareExchange(ref _nextWorkerId, 0, nextId);
-            nextId = Math.Abs(nextId);
-        }
-        var workerId = nextId % _maxConcurrency;
+        var workerId = GetNextWorkerId();
         var workerQueue = GetOrCreateWorkerQueue(workerId);
         workerQueue.Enqueue(continuationTask);
         

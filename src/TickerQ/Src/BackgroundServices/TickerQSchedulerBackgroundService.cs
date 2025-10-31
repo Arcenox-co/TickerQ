@@ -1,10 +1,7 @@
 using System;
-using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using TickerQ.Base;
 using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
@@ -67,21 +64,32 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             }
             catch (OperationCanceledException) when (_schedulerLoopCancellationTokenSource.Token.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
             {
+                // This is a restart request - release resources and continue loop
                 await _internalTickerManager.ReleaseAcquiredResources(_executionContext.Functions, stoppingToken);
+                // Small delay to allow resources to be released
+                await Task.Delay(100, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                await _internalTickerManager.ReleaseAcquiredResources(_executionContext.Functions, stoppingToken);
+                // Application is shutting down - release resources and exit
+                await _internalTickerManager.ReleaseAcquiredResources(_executionContext.Functions, CancellationToken.None);
                 break;
             }
             catch (Exception ex)
             {
                 await ReleaseAllResourcesAsync(ex);
-                break;
+                // Continue running - don't exit the scheduler loop on exceptions
+                // Add a small delay to prevent tight loop if errors persist
+                await Task.Delay(1000, stoppingToken);
             }
             finally
             {
+                // CRITICAL: Must dispose PeriodicTimer to prevent memory leak
+                _tickerJobPeriodicTimer?.Dispose();
+                _tickerJobPeriodicTimer = null;
+                
                 _schedulerLoopCancellationTokenSource?.Dispose();
+                _schedulerLoopCancellationTokenSource = null;
             }
         }
     }
@@ -110,7 +118,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 : timeRemaining;
 
             if (sleepDuration <= TimeSpan.Zero)
-                sleepDuration = TimeSpan.FromMilliseconds(5);
+                sleepDuration = TimeSpan.FromMilliseconds(1);
 
             _tickerJobPeriodicTimer.Period = sleepDuration;
             
@@ -141,7 +149,10 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         
         var nextPlannedOccurrence = _executionContext.GetNextPlannedOccurrence();
         
-        if (nextPlannedOccurrence == null || (nextPlannedOccurrence.Value - dateTime.Value).TotalSeconds >= 1)
+        // Restart if:
+        // 1. No tasks are currently planned, OR
+        // 2. The new task should execute BEFORE the currently planned task
+        if (nextPlannedOccurrence == null || dateTime.Value < nextPlannedOccurrence.Value)
             _restartThrottle.RequestRestart();
     }
 
