@@ -28,7 +28,11 @@ jobs:
         run: unzip artifact.zip -d ./nupkgs
 
       - name: Publish to NuGet
+        continue-on-error: true
         run: |
           for f in ./nupkgs/*.nupkg; do
-            dotnet nuget push "$f" --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }}
+            dotnet nuget push "$f" \
+              --source https://api.nuget.org/v3/index.json \
+              --api-key ${{ secrets.NUGET_API_KEY }} \
+              --skip-duplicate
           done
