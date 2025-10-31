@@ -1,9 +1,11 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net8.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
-        <LangVersion>latest</LangVersion>
+        <PackageId>TickerQ.Caching.StackExchangeRedis</PackageId>
+        <Title>TickerQ StackExchange.Redis Caching</Title>
+        <Description>Redis caching and distributed synchronization provider for TickerQ job scheduler using StackExchange.Redis</Description>
+        <PackageTags>$(PackageTags);Redis;Caching;Distributed;StackExchange</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>
@@ -11,6 +13,6 @@
     </ItemGroup>
     
     <ItemGroup>
-      <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
+      <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
     </ItemGroup>
 </Project>
