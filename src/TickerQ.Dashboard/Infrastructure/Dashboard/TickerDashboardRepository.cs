@@ -470,7 +470,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
             await _persistenceProvider.InsertCronTickerOccurrences([onDemandOccurrence], cancellationToken);
 
-            // _tickerQHostScheduler.RestartIfNeeded(onDemandOccurrence.ExecutionTime);
+            _tickerQHostScheduler.RestartIfNeeded(onDemandOccurrence.ExecutionTime);
 
             if (_notificationHubSender != null)
                 await _notificationHubSender.AddCronOccurrenceAsync(id, onDemandOccurrence);
@@ -608,8 +608,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         {
             await _persistenceProvider.RemoveCronTickers([id], cancellationToken);
 
-            // if (_executionContext.Functions.Any(x => x.TickerId == id))
-            //     _tickerQHostScheduler.Restart();
+            if (_executionContext.Functions.Any(x => x.TickerId == id))
+                _tickerQHostScheduler.Restart();
 
             if (_notificationHubSender != null)
                 await _notificationHubSender.RemoveCronTickerNotifyAsync(id);
@@ -619,8 +619,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         {
             await _persistenceProvider.RemoveTimeTickers([id], cancellationToken);
             
-            // if (_executionContext.Functions.Any(x => x.TickerId == id))
-            //     _tickerQHostScheduler.Restart();
+            if (_executionContext.Functions.Any(x => x.TickerId == id))
+                _tickerQHostScheduler.Restart();
 
             if (_notificationHubSender != null)
                 await _notificationHubSender.RemoveTimeTickerNotifyAsync(id);
@@ -630,8 +630,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         {
             await _persistenceProvider.RemoveCronTickerOccurrences([id], cancellationToken);
             
-            // if(_executionContext.Functions.Any(x => x.TickerId == id))
-            //     _tickerQHostScheduler.Restart();
+            if(_executionContext.Functions.Any(x => x.TickerId == id))
+                _tickerQHostScheduler.Restart();
         }
 
         public async Task<(string, int)> GetTickerRequestByIdAsync(Guid tickerId, TickerType tickerType, CancellationToken cancellationToken)
@@ -716,12 +716,28 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         }
 
         // New method that accepts request models
-        public async Task AddCronTickerAsync(TTimeTicker request, CancellationToken cancellationToken)
+        public async Task AddCronTickerAsync(TCronTicker request, CancellationToken cancellationToken)
         {
-            if(request.ExecutionTime == default)
-                request.ExecutionTime = _clock.UtcNow.AddSeconds(1);
+            if(request.Id == default)
+                request.Id = Guid.NewGuid();
             
-            await _timeTickerManager.AddAsync(request, cancellationToken);
+            if(request.CreatedAt == default)
+                request.CreatedAt = _clock.UtcNow;
+            
+            request.UpdatedAt = request.CreatedAt;
+            
+            // Insert the cron ticker using persistence provider
+            await _persistenceProvider.InsertCronTickers(new[] { request }, cancellationToken);
+            
+            // Parse the cron expression to get next occurrence
+            var nextOccurrence = CrontabSchedule.TryParse(request.Expression)?.GetNextOccurrence(_clock.UtcNow);
+            
+            if (nextOccurrence != null)
+                _tickerQHostScheduler.RestartIfNeeded(nextOccurrence.Value);
+            
+            // Notify about the new cron ticker
+            var requestType = GetRequestType(request.Function);
+            await NotifyOrUpdateUpdate(request, requestType, true);
         }
 
         // New method that accepts request models
@@ -752,8 +768,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
             var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression)?.GetNextOccurrence(DateTime.UtcNow);
 
-            // if (nextOccurrence != null)
-            //     _tickerQHostScheduler.RestartIfNeeded(nextOccurrence.Value);
+            if (nextOccurrence != null)
+                _tickerQHostScheduler.RestartIfNeeded(nextOccurrence.Value);
 
             await NotifyOrUpdateUpdate(cronTicker, requestType, false);
         }

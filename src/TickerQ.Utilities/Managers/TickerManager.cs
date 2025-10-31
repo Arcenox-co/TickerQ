@@ -338,7 +338,7 @@ namespace TickerQ.Utilities.Managers
             {
                 await _persistenceProvider.InsertCronTickers(validEntities.ToArray(), cancellationToken: cancellationToken);
 
-                if (validEntities.Any())
+                if (validEntities.Count != 0)
                 {
                     // Restart scheduler for earliest occurrence
                     var earliestOccurrence = nextOccurrences.Min();

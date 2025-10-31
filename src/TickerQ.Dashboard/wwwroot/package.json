@@ -15,6 +15,7 @@
   "dependencies": {
     "@microsoft/signalr": "^8.0.7",
     "axios": "^1.7.9",
+    "cronstrue": "^3.9.0",
     "echarts": "^5.6.0",
     "pinia": "^2.3.0",
     "timeago.js": "^4.0.2",

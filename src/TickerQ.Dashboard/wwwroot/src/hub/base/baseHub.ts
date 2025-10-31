@@ -10,8 +10,7 @@ class BaseHub {
 
     private createConnection(): signalR.HubConnection {
 
-       // const basePath = getBasePath();
-       const basePath = 'https://localhost:7231/tickerq/dashboard';
+        const basePath = getBasePath();
         const backendUrl = getBackendUrl();
 
         // Get auth token and type lazily when building the connection

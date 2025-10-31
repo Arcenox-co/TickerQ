@@ -5,7 +5,6 @@ export class GetCronTickerResponse {
     id!:string;
     function!:string;
     expression!:string;
-    expressionReadable!:string;
     initIdentifier!:string;
     retryIntervals!:string[];
     description!:string;

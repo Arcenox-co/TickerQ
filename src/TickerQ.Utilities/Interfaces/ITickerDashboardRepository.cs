@@ -36,7 +36,7 @@ namespace TickerQ.Utilities.Interfaces
         IEnumerable<(string, (string, string, TickerTaskPriority))> GetTickerFunctions();
         Task UpdateTimeTickerAsync(Guid id, TTimeTicker request, CancellationToken cancellationToken = default);
         Task AddTimeTickerAsync(TTimeTicker request, CancellationToken cancellationToken = default);
-        Task AddCronTickerAsync(TTimeTicker request, CancellationToken cancellationToken = default);
+        Task AddCronTickerAsync(TCronTicker request, CancellationToken cancellationToken = default);
         Task UpdateCronTickerAsync(Guid id, UpdateCronTickerRequest request, CancellationToken cancellationToken = default);
         Task<IList<(int, int)>> GetLastWeekJobStatusesAsync(CancellationToken cancellationToken = default);
         Task<IList<(TickerStatus, int)>> GetOverallJobStatusesAsync(CancellationToken cancellationToken = default);

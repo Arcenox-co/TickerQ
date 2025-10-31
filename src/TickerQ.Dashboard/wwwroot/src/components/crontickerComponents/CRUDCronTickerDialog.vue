@@ -6,6 +6,7 @@ import { tickerService } from '@/http/services/tickerService'
 import type { GetCronTickerResponse } from '@/http/services/types/cronTickerService.types'
 import { cronTickerService } from '@/http/services/cronTickerService'
 import { formatTime } from '@/utilities/dateTimeParser'
+import cronstrue from 'cronstrue'
 const functionNamesStore = useFunctionNameStore()
 const getTickerRequestData = tickerService.getRequestData()
 const updateCronTicker = cronTickerService.updateCronTicker()
@@ -55,10 +56,40 @@ const formatJsonForDisplay = (json: string, isHtml: boolean = false) => {
   }
 }
 
-// Regex supports both 5-part (without seconds) and 6-part (with seconds) cron expressions
-// Format: [seconds] minutes hours day month day-of-week
-const cronRegex =
-  /^(?:(\*|([0-5]?\d)(\/[0-5]?\d)?|(\*\/[0-5]?\d)|([0-5]?\d(-[0-5]?\d)?)(,[0-5]?\d(-[0-5]?\d)?)*)\s+)?(\*|([0-5]?\d)(\/[0-5]?\d)?|(\*\/[0-5]?\d)|([0-5]?\d(-[0-5]?\d)?)(,[0-5]?\d(-[0-5]?\d)?)*)\s+(\*|([0-1]?\d|2[0-3])(\/[0-1]?\d|\/2[0-3])?|(\*\/[0-1]?\d|\/2[0-3])|([0-1]?\d|2[0-3])(-([0-1]?\d|2[0-3]))?(,([0-1]?\d|2[0-3]))*)\s+(\*|([1-9]|[12]\d|3[01])(\/[1-9]|\/[12]\d|\/3[01])?|(\*\/[1-9]|\/[12]\d|\/3[01])|([1-9]|[12]\d|3[01])(-([1-9]|[12]\d|3[01]))?(,([1-9]|[12]\d|3[01]))*)\s+(\*|(1[0-2]|[1-9])(\/(1[0-2]|[1-9]))?|(\*\/(1[0-2]|[1-9]))|(1[0-2]|[1-9])(-([1-9]|1[0-2]))?(,(1[0-2]|[1-9]))*)\s+(\*|([0-6])(\/*[0-6])?|(\*\/[0-6])|([0-6])(-[0-6])?(,[0-6])*)$/
+// Validate cron expression using cronstrue
+// Cronstrue will throw an error if the expression is invalid
+// We require 6-segment format (with seconds)
+const validateCronExpression = (value: string): boolean => {
+  if (!value) return false
+  
+  // Check if it has 6 segments (seconds included)
+  const segments = value.trim().split(/\s+/)
+  if (segments.length !== 6) {
+    return false
+  }
+  
+  try {
+    // Try to parse the expression with cronstrue
+    // If it's invalid, it will throw an error
+    cronstrue.toString(value)
+    return true
+  } catch (error) {
+    return false
+  }
+}
+
+// Get readable expression for display
+const readableExpression = computed(() => {
+  const expression = values.expression
+  if (!expression || !validateCronExpression(expression)) {
+    return ''
+  }
+  try {
+    return cronstrue.toString(expression)
+  } catch (error) {
+    return ''
+  }
+})
 
 const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values } = useForm({
   initialValues: {
@@ -74,7 +105,7 @@ const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values
     expression: validator
       .string()
       .required('Expression is required')
-      .matches(cronRegex, 'Invalid expression'),
+      .test('valid-cron', 'Invalid expression. Must be a valid 6-segment cron expression (seconds minutes hours day month day-of-week)', validateCronExpression),
   }),
   onFieldUpdate: {
     functionName: (value, update) => {
@@ -312,6 +343,8 @@ defineExpose({
                       v-bind="bindField('expression')"
                       variant="outlined"
                       label="Expression"
+                      :hint="readableExpression || 'Enter a valid 6-segment cron expression (seconds minutes hours day month day-of-week)'"
+                      persistent-hint
                     ></v-text-field>
                   </v-col>
                   <v-col cols="12">

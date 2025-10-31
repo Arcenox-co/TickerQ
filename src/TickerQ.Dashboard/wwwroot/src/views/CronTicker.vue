@@ -23,6 +23,18 @@ import {
   GridComponent,
 } from 'echarts/components'
 import VChart, { THEME_KEY } from 'vue-echarts'
+import cronstrue from 'cronstrue'
+
+// Helper function to get readable cron expression
+const getReadableCronExpression = (expression: string): string => {
+  try {
+    // cronstrue expects 6-part format with seconds
+    return cronstrue.toString(expression)
+  } catch (error) {
+    return 'Invalid cron expression'
+  }
+}
+
 const getCronTickerRangeGraphData = cronTickerService.getTimeTickersGraphDataRange()
 const getCronTickersPaginated = cronTickerService.getCronTickersPaginated()
 const getCronTickerRangeGraphDataById = cronTickerService.getTimeTickersGraphDataRangeById()
@@ -1155,7 +1167,7 @@ const refreshData = async () => {
                     {{ item.expression }}
                   </span>
                 </template>
-                <span>{{ item.expressionReadable }}</span>
+                <span>{{ getReadableCronExpression(item.expression) }}</span>
               </v-tooltip>
             </template>
 

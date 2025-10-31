@@ -437,7 +437,7 @@ public static class DashboardEndpoints
     }
 
     private static async Task<IResult> AddCronTicker<TTimeTicker, TCronTicker>(
-        TTimeTicker request,
+        TCronTicker request,
         ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
