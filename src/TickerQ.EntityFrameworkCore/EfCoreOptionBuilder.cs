@@ -25,6 +25,18 @@ namespace TickerQ.EntityFrameworkCore
             return this;
         }
 
+        public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(Func<ITimeTickerManager<TTimeTicker>, Task> timeTickerAsync)
+        {
+            TimeSeeder = async t => await timeTickerAsync(t);
+            return this;
+        }
+
+        public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(Func<ICronTickerManager<TCronTicker>, Task> cronTickerAsync)
+        {
+            CronSeeder = async c => await cronTickerAsync(c);
+            return this;
+        }
+
         public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(Func<ITimeTickerManager<TTimeTicker>, Task> timeTickerAsync, Func<ICronTickerManager<TCronTicker>, Task> cronTickerAsync)
         {
             TimeSeeder = async t => await timeTickerAsync(t);
