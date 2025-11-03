@@ -5,7 +5,8 @@ export class GetCronTickerOccurrenceRequest {
 export class GetCronTickerOccurrenceResponse {
     id!: string;
     status!:number|string;
-    exception?:string;
+    exceptionMessage?:string;
+    skippedReason?:string;
     retryIntervals!:string[]|string|null;
     lockHolder!:string;
     lockedAt!:string;

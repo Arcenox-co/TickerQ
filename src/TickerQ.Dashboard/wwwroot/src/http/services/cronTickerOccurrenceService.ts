@@ -40,7 +40,7 @@ const getByCronTickerId = () => {
             if (header.key == nameof<GetCronTickerOccurrenceResponse>(x => x.actions)) {
                 header.sortable = false;
             }
-            if (nameof<GetCronTickerOccurrenceResponse>(x => x.id, x => x.elapsedTime, x => x.executionTime, x => x.retryCount, x => x.exception).includes(header.key)) {
+            if (nameof<GetCronTickerOccurrenceResponse>(x => x.id, x => x.elapsedTime, x => x.executionTime, x => x.retryCount, x => x.exceptionMessage, x => x.skippedReason).includes(header.key)) {
                 header.visibility = false;
             }
             if (nameof<GetCronTickerOccurrenceResponse>(x => x.executedAt) == header.key) {

@@ -292,22 +292,26 @@ const setRowProp = (propContext: any) => {
                   <span class="status-text">{{ item.status }}</span>
                 </div>
                 
-                <!-- Exception indicator for failed statuses -->
+                <!-- Exception indicator for failed or skipped statuses -->
                 <div 
-                  v-if="hasStatus(item.status, Status.Failed) && item.exception"
+                  v-if="(hasStatus(item.status, Status.Failed) && item.exceptionMessage) || (hasStatus(item.status, Status.Skipped) && item.skippedReason)"
                   class="exception-indicator"
                   @click="exceptionDialog.open({
                     ...new ConfirmDialogProps(),
-                    title: 'Exception Details',
-                    text: item.exception,
+                    title: hasStatus(item.status, Status.Skipped) ? 'Skipped Reason' : 'Exception Details',
+                    text: hasStatus(item.status, Status.Skipped) ? item.skippedReason! : item.exceptionMessage!,
                     showConfirm: false,
                     maxWidth: '900',
-                    icon: 'mdi-bug-outline',
-                    isException: true,
+                    icon: hasStatus(item.status, Status.Failed) ? 'mdi-bug-outline' : 'mdi-information-outline',
+                    isException: hasStatus(item.status, Status.Failed),
                   })"
                 >
-                  <v-icon size="16" color="error">mdi-bug-outline</v-icon>
-                  <v-tooltip activator="parent" location="top">View Exception Details</v-tooltip>
+                  <v-icon size="16" :color="hasStatus(item.status, Status.Failed) ? 'error' : 'warning'">
+                    {{ hasStatus(item.status, Status.Failed) ? 'mdi-bug-outline' : 'mdi-information-outline' }}
+                  </v-icon>
+                  <v-tooltip activator="parent" location="top">
+                    {{ hasStatus(item.status, Status.Failed) ? 'View Exception Details' : 'View Skipped Reason' }}
+                  </v-tooltip>
                 </div>
               </div>
             </template>

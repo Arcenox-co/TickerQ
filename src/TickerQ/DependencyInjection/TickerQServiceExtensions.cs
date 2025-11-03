@@ -35,6 +35,7 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();
+            services.AddSingleton<ITickerQRedisContext, NoOpTickerQRedisContext>();
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ITickerQNotificationHubSender, NoOpTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
@@ -110,7 +111,6 @@ namespace TickerQ.DependencyInjection
             return app;
         }
         
-
         private static async Task SeedDefinedCronTickers(IServiceProvider serviceProvider)
         {
             var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
