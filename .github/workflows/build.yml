@@ -26,7 +26,7 @@ jobs:
         id: check
         run: |
           VERSION="${{ steps.get-version.outputs.version }}"
-          PACKAGE_IDS=(tickerq tickerq.dashboard tickerq.utilities tickerq.entityframeworkcore tickerq.instrumentation.opentelemetry tickerq.caching.stackexchangeredis tickerq.discovery)
+          PACKAGE_IDS=(tickerq tickerq.dashboard tickerq.utilities tickerq.entityframeworkcore tickerq.instrumentation.opentelemetry tickerq.caching.stackexchangeredis)
           MISSING=0
 
           for ID in "${PACKAGE_IDS[@]}"; do
@@ -99,7 +99,6 @@ jobs:
           dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release
           dotnet build src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj --configuration Release
           dotnet build src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release
-          dotnet build src/TickerQ.Discovery/TickerQ.Discovery.csproj --configuration Release
 
       - name: Pack other projects
         run: |
@@ -108,7 +107,6 @@ jobs:
           dotnet pack src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs
           dotnet pack src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj --configuration Release --output ./nupkgs
           dotnet pack src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release --output ./nupkgs
-          dotnet pack src/TickerQ.Discovery/TickerQ.Discovery.csproj --configuration Release --output ./nupkgs
 
       - name: Show .nupkg file sizes
         run: |

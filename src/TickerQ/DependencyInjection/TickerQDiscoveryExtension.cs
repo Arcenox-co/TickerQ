@@ -7,7 +7,7 @@ using System.Runtime.CompilerServices;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 
-namespace TickerQ.Discovery;
+namespace TickerQ.DependencyInjection;
 
 public static class TickerQDiscoveryExtension
 {

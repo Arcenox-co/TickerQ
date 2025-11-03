@@ -392,7 +392,7 @@ namespace TickerQ.SourceGenerator
         {
             sb.AppendLine($"namespace {assemblyName}");
             sb.AppendLine("{");
-            sb.AppendLine($"    public static class TickerQInstanceFactoryExtensions_{assemblyName}");
+            sb.AppendLine($"    public static class TickerQInstanceFactoryExtensions");
             sb.AppendLine("    {");
         }
 
@@ -400,7 +400,7 @@ namespace TickerQ.SourceGenerator
         {
             sb.AppendLine($"namespace {assemblyName}");
             sb.AppendLine("{");
-            sb.AppendLine($"  public static class TickerQInstanceFactoryExtensions_{assemblyName}");
+            sb.AppendLine($"  public static class TickerQInstanceFactoryExtensions");
             sb.AppendLine("  {");
         }
 

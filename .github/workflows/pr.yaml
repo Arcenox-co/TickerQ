@@ -53,7 +53,6 @@ jobs:
           dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release
           dotnet build src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj --configuration Release
           dotnet build src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release
-          dotnet build src/TickerQ.Discovery/TickerQ.Discovery.csproj --configuration Release
 
       - name: Run tests
         run: dotnet test tests/TickerQ.Tests/ --no-build
