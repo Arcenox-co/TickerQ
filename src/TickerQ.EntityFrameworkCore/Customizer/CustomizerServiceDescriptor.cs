@@ -60,6 +60,7 @@ public static class ServiceBuilder
     {
         builder.ConfigureServices = (services) =>
         {
+            services.AddDbContext<TContext>(optionsAction);
             services.TryAddSingleton<IDbContextFactory<TContext>>(sp =>
             {
                 var optionsBuilder = new DbContextOptionsBuilder<TContext>();
