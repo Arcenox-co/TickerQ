@@ -40,6 +40,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Caching.StackExchan
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Instrumentation.OpenTelemetry", "src\TickerQ.Instrumentation.OpenTelemetry\TickerQ.Instrumentation.OpenTelemetry.csproj", "{D87B9599-22C7-4E82-B300-1239E504E097}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Discovery", "src\TickerQ.Discovery\TickerQ.Discovery.csproj", "{1153FB06-BCC9-4F7D-96C6-286443C66E97}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -146,6 +148,18 @@ Global
 		{D87B9599-22C7-4E82-B300-1239E504E097}.Release|x64.Build.0 = Release|Any CPU
 		{D87B9599-22C7-4E82-B300-1239E504E097}.Release|x86.ActiveCfg = Release|Any CPU
 		{D87B9599-22C7-4E82-B300-1239E504E097}.Release|x86.Build.0 = Release|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Debug|x64.Build.0 = Debug|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Debug|x86.Build.0 = Debug|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Release|x64.ActiveCfg = Release|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Release|x64.Build.0 = Release|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Release|x86.ActiveCfg = Release|Any CPU
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -160,5 +174,6 @@ Global
 		{9E6EC713-AD6D-4909-8617-B909D76A6E3A} = {9A4EB4A4-FB92-477C-A6D8-0735579B7BAB}
 		{B3049104-9C15-4933-A440-CA62CFBC5F70} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
 		{D87B9599-22C7-4E82-B300-1239E504E097} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
+		{1153FB06-BCC9-4F7D-96C6-286443C66E97} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
 	EndGlobalSection
 EndGlobal
