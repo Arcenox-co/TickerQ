@@ -24,7 +24,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.HasOne(x => x.Parent)
                 .WithMany(x => x.Children)
                 .HasForeignKey(x => x.ParentId)
-                .OnDelete(DeleteBehavior.Cascade);
+                .OnDelete(DeleteBehavior.NoAction);
             
             builder.HasIndex("ExecutionTime")
                 .HasDatabaseName("IX_TimeTicker_ExecutionTime");

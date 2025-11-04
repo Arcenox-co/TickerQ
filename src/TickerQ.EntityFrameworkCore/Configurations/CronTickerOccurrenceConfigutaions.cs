@@ -33,7 +33,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
             builder.HasOne(x => x.CronTicker)
                 .WithMany()
-                .HasForeignKey("CronTickerId")
+                .HasForeignKey(x => x.CronTickerId)
                 .OnDelete(DeleteBehavior.Cascade);
 
             builder.HasIndex("CronTickerId", "ExecutionTime")
