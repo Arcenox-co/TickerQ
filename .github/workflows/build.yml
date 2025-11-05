@@ -168,3 +168,57 @@ jobs:
             } else {
               console.log(`✅ Successfully triggered publish with artifact ID: ${artifactId}`);
             }
+
+      - name: Send Discord Notification
+        if: always()
+        run: |
+          # Safely handle the commit message
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          BRANCH="${GITHUB_REF#refs/heads/}"
+
+          if [[ "${{ github.event.head_commit.message }}" =~ ^Merge\ pull\ request ]]; then
+            PR_BRANCH=$(echo "${{ github.event.head_commit.message }}" | sed -n "s/Merge pull request #[0-9]\+ from [^/]*\/\(.*\)/\1/p")
+            MESSAGE="📦 *${REPO_NAME}* | Branch: \`${BRANCH}\` | Merged from: \`${PR_BRANCH}\`"
+          else
+            # Use a shortened commit message to avoid issues
+            SHORT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -n1)
+            MESSAGE="📦 *${REPO_NAME}* | Branch: \`${BRANCH}\` | Commit: \`${SHORT_MSG}\`"
+          fi
+
+          if [ "${{ job.status }}" != "success" ]; then
+            STATUS_EMOJI="❌"
+            STATUS_TEXT="Failed"
+            COLOR="15158332"
+          else
+            STATUS_EMOJI="✅"
+            STATUS_TEXT="Successful"
+            COLOR="3066993"
+          fi
+
+          # Create a proper JSON payload in a separate file
+          cat > payload.json << EOF
+          {
+            "embeds": [
+              {
+                "title": "${STATUS_EMOJI} TickerQ Deployment ${STATUS_TEXT}",
+                "description": "${MESSAGE}",
+                "color": ${COLOR},
+                "fields": [
+                  {
+                    "name": "Version",
+                    "value": "${{ steps.set_version.outputs.deploy_version }}",
+                    "inline": true
+                  }
+                ],
+                "footer": {
+                  "text": "Deployed on $(date +'%Y-%m-%d %H:%M UTC')"
+                }
+              }
+            ]
+          }
+          EOF
+
+          # Send with the file as payload
+          curl -H "Content-Type: application/json" \
+            -X POST "${{ secrets.DISCORD_WEBHOOK }}" \
+            --data @payload.json
