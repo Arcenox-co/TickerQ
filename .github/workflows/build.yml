@@ -126,11 +126,15 @@ jobs:
     needs:
       - check-nuget
       - build
+    # Allow this job to run even if build is skipped
+    if: always() && needs.check-nuget.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
       - name: Get artifact ID for nupkgs
         id: get_artifact
+        # Only try to get artifact if build actually ran
+        if: needs.build.result == 'success'
         run: |
           artifacts=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)
           id=$(echo "$artifacts" | jq '.artifacts[] | select(.name=="nupkgs") | .id')
@@ -139,6 +143,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Trigger publish.yml with artifact ID
+        # Only trigger publish if build succeeded and created artifact
+        if: needs.build.result == 'success'
         uses: actions/github-script@v7
         env:
           GH_PAT: ${{ secrets.PAT_TOKEN }}
@@ -185,9 +191,18 @@ jobs:
             MESSAGE="📦 *${REPO_NAME}* | Branch: \`${BRANCH}\` | Commit: \`${SHORT_MSG}\`"
           fi
 
-          if [ "${{ job.status }}" != "success" ]; then
+          # Determine status based on check-nuget and build results
+          if [ "${{ needs.check-nuget.result }}" != "success" ]; then
             STATUS_EMOJI="❌"
             STATUS_TEXT="Failed"
+            COLOR="15158332"
+          elif [ "${{ needs.build.result }}" == "skipped" ]; then
+            STATUS_EMOJI="⏭️"
+            STATUS_TEXT="Skipped (Packages already exist)"
+            COLOR="16776960"
+          elif [ "${{ needs.build.result }}" != "success" ]; then
+            STATUS_EMOJI="❌"
+            STATUS_TEXT="Build Failed"
             COLOR="15158332"
           else
             STATUS_EMOJI="✅"
@@ -206,7 +221,12 @@ jobs:
                 "fields": [
                   {
                     "name": "Version",
-                    "value": "${{ steps.set_version.outputs.deploy_version }}",
+                    "value": "${{ needs.check-nuget.outputs.version }}",
+                    "inline": true
+                  },
+                  {
+                    "name": "Build Status",
+                    "value": "${{ needs.build.result }}",
                     "inline": true
                   }
                 ],
