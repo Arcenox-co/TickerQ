@@ -59,7 +59,10 @@ namespace TickerQ.SourceGenerator.Generators
             HashSet<string> typeNameConflicts = null)
         {
             var sb = new StringBuilder(1024); // Delegate methods are medium-sized
-            var asyncFlag = (methodInfo.UsesGenericContext || isAwaitable) ? "async " : "";
+            // Only use async if we actually need to await something (generic context conversion or awaitable method)
+            // This ensures we always have an await when async is used
+            var needsAsync = methodInfo.UsesGenericContext || isAwaitable;
+            var asyncFlag = needsAsync ? "async " : "";
             var cronExprFlag = string.IsNullOrEmpty(cronExpression) ? "string.Empty" : $"\"{cronExpression}\"";
 
             // Generate delegate registration with proper multiline format
@@ -145,6 +148,7 @@ namespace TickerQ.SourceGenerator.Generators
             }
 
             var parameters = string.Join(", ", parametersList);
+            var isVoidMethod = !SourceGeneratorUtilities.IsMethodAwaitable(methodDeclaration);
             
             if (SourceGeneratorUtilities.IsMethodAwaitable(methodDeclaration))
             {
@@ -153,6 +157,12 @@ namespace TickerQ.SourceGenerator.Generators
             else
             {
                 sb.AppendLine($"                {methodCall}({parameters});");
+                // If method is void, we must return Task.CompletedTask to satisfy the Task-returning delegate
+                // This is required whether the lambda is async or not
+                if (isVoidMethod)
+                {
+                    sb.AppendLine("                return Task.CompletedTask;");
+                }
             }
         }
 
