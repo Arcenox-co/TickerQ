@@ -148,21 +148,19 @@ namespace TickerQ.SourceGenerator.Generators
             }
 
             var parameters = string.Join(", ", parametersList);
-            var isVoidMethod = !SourceGeneratorUtilities.IsMethodAwaitable(methodDeclaration);
             
             if (SourceGeneratorUtilities.IsMethodAwaitable(methodDeclaration))
             {
+                // For Task-returning methods, await returns the Task (satisfies TickerFunctionDelegate)
                 sb.AppendLine($"                await {methodCall}({parameters});");
             }
             else
             {
+                // For void methods, we must explicitly return Task.CompletedTask to satisfy TickerFunctionDelegate
                 sb.AppendLine($"                {methodCall}({parameters});");
-                // If method is void, we must return Task.CompletedTask to satisfy the Task-returning delegate
+                // Always return Task.CompletedTask for void methods to satisfy the Task-returning delegate
                 // This is required whether the lambda is async or not
-                if (isVoidMethod)
-                {
-                    sb.AppendLine("                return Task.CompletedTask;");
-                }
+                sb.AppendLine("                return Task.CompletedTask;");
             }
         }
 
