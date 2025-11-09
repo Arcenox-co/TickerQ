@@ -55,9 +55,9 @@ namespace TickerQ.Utilities.Managers
                     return (minTimeRemaining, nextTickers);
                 
                 if(typesToQueue.All(x => x == TickerType.CronTickerOccurrence))
-                    await Task.Delay(minTimeRemaining, cancellationToken).ConfigureAwait(false);
-                else
-                    await Task.Delay(TimeSpan.FromMilliseconds(10), cancellationToken).ConfigureAwait(false);  // Faster retry for time-sensitive tasks
+                    return (minTimeRemaining, nextTickers);
+                
+                await Task.Delay(TimeSpan.FromMilliseconds(10), cancellationToken).ConfigureAwait(false);  // Faster retry for time-sensitive tasks
             }
         }
 
@@ -96,7 +96,7 @@ namespace TickerQ.Utilities.Managers
             var timeDiff = Math.Abs((cron.Value - time.Value).TotalMilliseconds);
             
             // Only batch if within 50ms of each other for efficiency
-            if (timeDiff <= 50)
+            if (timeDiff <= 250)
             {
                 sources = [TickerType.CronTickerOccurrence, TickerType.TimeTicker];
                 var earliest = cron < time ? cron.Value : time.Value;

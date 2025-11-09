@@ -59,7 +59,8 @@ namespace TickerQ.SourceGenerator.Generators
             HashSet<string> typeNameConflicts = null)
         {
             var sb = new StringBuilder(1024); // Delegate methods are medium-sized
-            // Only make async if we need to await something (generic context conversion or awaitable method)
+            // Only use async if we actually need to await something (generic context conversion or awaitable method)
+            // This ensures we always have an await when async is used
             var needsAsync = methodInfo.UsesGenericContext || isAwaitable;
             var asyncFlag = needsAsync ? "async " : "";
             var cronExprFlag = string.IsNullOrEmpty(cronExpression) ? "string.Empty" : $"\"{cronExpression}\"";
@@ -147,21 +148,19 @@ namespace TickerQ.SourceGenerator.Generators
             }
 
             var parameters = string.Join(", ", parametersList);
-            var isVoidMethod = !SourceGeneratorUtilities.IsMethodAwaitable(methodDeclaration);
             
             if (SourceGeneratorUtilities.IsMethodAwaitable(methodDeclaration))
             {
+                // For Task-returning methods, await returns the Task (satisfies TickerFunctionDelegate)
                 sb.AppendLine($"                await {methodCall}({parameters});");
             }
             else
             {
+                // For void methods, we must explicitly return Task.CompletedTask to satisfy TickerFunctionDelegate
                 sb.AppendLine($"                {methodCall}({parameters});");
-                // If method is void, we need to return Task.CompletedTask to satisfy the Task-returning delegate
-                // This is needed whether the lambda is async or not
-                if (isVoidMethod)
-                {
-                    sb.AppendLine("                return Task.CompletedTask;");
-                }
+                // Always return Task.CompletedTask for void methods to satisfy the Task-returning delegate
+                // This is required whether the lambda is async or not
+                sb.AppendLine("                return Task.CompletedTask;");
             }
         }
 

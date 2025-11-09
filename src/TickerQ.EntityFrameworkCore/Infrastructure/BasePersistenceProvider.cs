@@ -136,15 +136,15 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     {
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var now = _clock.UtcNow;
-        var mainSchedulerThreshold = now.AddMilliseconds(-100);  // Main scheduler handles tasks up to 100ms overdue
-            
+        var mainSchedulerThreshold = now.AddMilliseconds(-now.Millisecond);
+
         var baseQuery = dbContext.Set<TTimeTicker>()
             .AsNoTracking()
             .Where(x => x.ExecutionTime != null)
-            .WhereCanAcquire(_lockHolder)
-            .Where(x => x.ExecutionTime >= mainSchedulerThreshold);  // Only recent/upcoming tasks (not heavily overdue)
+            .WhereCanAcquire(_lockHolder);
         
         var minExecutionTime = await baseQuery
+            .Where(x => x.ExecutionTime >= mainSchedulerThreshold)
             .OrderBy(x => x.ExecutionTime)
             .Select(x => x.ExecutionTime)
             .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
@@ -152,12 +152,9 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         if (minExecutionTime == null)
             return [];
         
-        // Get tasks within 50ms window of the earliest task for batching efficiency
-        var batchWindow = minExecutionTime.Value.AddMilliseconds(50);
-    
         return await baseQuery
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
-            .Where(x => x.ExecutionTime.Value <= batchWindow)
+            .Where(x => x.ExecutionTime.Value >= minExecutionTime && x.ExecutionTime <= now.AddSeconds(1).AddMilliseconds(-now.Millisecond))
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
     }
