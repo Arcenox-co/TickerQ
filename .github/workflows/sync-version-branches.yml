@@ -23,7 +23,9 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write  # Required to push commits to the repository
+      contents: write      # Required to push commits to the repository
+      pull-requests: write # Required to create pull requests
+      issues: write        # Required to create and manage labels
 
     # Only run sync logic when triggered from main branch (prevents infinite loops)
     if: github.ref == 'refs/heads/main'
@@ -34,16 +36,32 @@ jobs:
       fail-fast: false
 
     steps:
+      - name: Check PAT_TOKEN exists
+        run: |
+          if [ -z "${{ secrets.PAT_TOKEN }}" ]; then
+            echo "❌ ERROR: PAT_TOKEN secret is not configured!"
+            echo "Please add a Personal Access Token with 'repo' scope to repository secrets."
+            echo "Go to: Settings → Secrets and variables → Actions → New repository secret"
+            echo "Name: PAT_TOKEN"
+            echo "Value: Your GitHub Personal Access Token"
+            exit 1
+          fi
+          echo "✅ PAT_TOKEN is configured"
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
+          persist-credentials: true
 
       - name: Setup Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Configure git to use the PAT for authentication
+          git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Extract target branches from input
         if: github.event_name == 'workflow_dispatch'
@@ -76,55 +94,170 @@ jobs:
             echo "✅ New commits found, merge needed"
           fi
 
-      - name: Perform merge
+      - name: Create sync branch and apply changes
         if: steps.check_merge.outputs.needs_merge == 'true'
         run: |
-          echo "🔀 Merging main into ${{ matrix.target_branch }}"
+          echo "🔄 Creating sync branch from ${{ matrix.target_branch }}"
 
-          # Merge without committing
-          git merge main --no-commit --no-ff
+          # Create a new branch for the PR
+          sync_branch="sync-main-to-${{ matrix.target_branch }}-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$sync_branch" ${{ matrix.target_branch }}
 
-          # Reset .csproj files
-          echo "📝 Resetting .csproj files..."
-          find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
+          # Get the commits that need to be applied
+          commits_to_apply=$(git log "${{ matrix.target_branch }}..main" --oneline --no-merges | cut -d' ' -f1 | tac)
 
-          # Update version and target framework in Directory.Build.props
-          dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
-          if [ -f "src/Directory.Build.props" ]; then
-            echo "🔄 Updating version and target framework to .NET $dotnet_version..."
-            # Update version number (9.0.x → 8.0.x)
-            sed -i "s/<Version>9\.0\./<Version>$dotnet_version.0./g" src/Directory.Build.props
-            # Update target framework (net9.0 → net8.0)
-            sed -i "s/<TargetFramework>net9\.0</<TargetFramework>net$dotnet_version.0</g" src/Directory.Build.props
+          if [ -n "$commits_to_apply" ]; then
+            echo "📋 Applying commits: $commits_to_apply"
+
+            # Cherry-pick each commit individually to avoid merge conflicts
+            for commit in $commits_to_apply; do
+              echo "🍒 Cherry-picking $commit..."
+              if git cherry-pick --no-commit "$commit"; then
+                echo "✅ Cherry-pick successful for $commit"
+              else
+                echo "⚠️  Cherry-pick failed for $commit, skipping..."
+                git cherry-pick --abort || true
+                git reset --hard HEAD
+              fi
+            done
+
+            # Reset .csproj files to target branch versions
+            echo "📝 Resetting .csproj files to ${{ matrix.target_branch }} versions..."
+            find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
+
+            # Update version and target framework in Directory.Build.props
+            dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
+            echo "dotnet_version=$dotnet_version" >> $GITHUB_ENV
+            if [ -f "src/Directory.Build.props" ]; then
+              echo "🔄 Updating version and target framework to .NET $dotnet_version..."
+              # Update version number (9.0.x → 8.0.x)
+              sed -i "s/<Version>9\.0\./<Version>$dotnet_version.0./g" src/Directory.Build.props
+              # Update target framework (net9.0 → net8.0)
+              sed -i "s/<TargetFramework>net9\.0</<TargetFramework>net$dotnet_version.0</g" src/Directory.Build.props
+            fi
+
+            # Stage all changes
+            git add -A
+
+            # Check if there are changes to commit
+            if git diff --cached --quiet; then
+              echo "ℹ️  No changes to commit after processing"
+              git checkout main
+              git branch -D "$sync_branch"
+              exit 0
+            fi
+
+            # Commit the changes
+            git commit -m "Sync changes from main to ${{ matrix.target_branch }} - Applied recent commits, updated versions & framework, preserved .csproj files"
+
+            echo "📤 Attempting to push sync branch: $sync_branch"
+            
+            # Try to push to origin, if it fails try to push to a fork
+            if git push origin "$sync_branch" 2>/dev/null; then
+              echo "✅ Pushed to origin successfully"
+              PUSH_REPO="${{ github.repository }}"
+            else
+              echo "⚠️ Cannot push to origin, trying fork approach..."
+              
+              # Check if we have a fork configured
+              FORK_OWNER="${{ vars.FORK_OWNER || 'arcenox' }}"
+              FORK_URL="https://${{ secrets.PAT_TOKEN }}@github.com/${FORK_OWNER}/TickerQ.git"
+              
+              # Add fork as remote if not exists
+              git remote add fork "$FORK_URL" 2>/dev/null || git remote set-url fork "$FORK_URL"
+              
+              # Push to fork
+              if git push fork "$sync_branch"; then
+                echo "✅ Pushed to fork: ${FORK_OWNER}/TickerQ"
+                PUSH_REPO="${FORK_OWNER}/TickerQ"
+              else
+                echo "❌ Failed to push to both origin and fork"
+                exit 1
+              fi
+            fi
+
+            # Store branch name and repo for PR creation
+            echo "sync_branch=$sync_branch" >> $GITHUB_ENV
+            echo "push_repo=$PUSH_REPO" >> $GITHUB_ENV
+          else
+            echo "ℹ️  No commits to apply"
+            git checkout main
+            exit 0
           fi
 
-      - name: Check for changes
+      - name: Ensure labels exist
         if: steps.check_merge.outputs.needs_merge == 'true'
-        id: check_changes
         run: |
-          if git diff --cached --name-only | grep -v '\.csproj$' | head -1 | grep -q .; then
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "📋 Changes detected"
-          else
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "ℹ️  No changes to commit"
-            git merge --abort
-          fi
+          # Create labels if they don't exist (ignore errors if they already exist)
+          gh label create "automated" --description "Automated PR" --color "0E8A16" 2>/dev/null || true
+          gh label create "sync" --description "Branch synchronization" --color "1D76DB" 2>/dev/null || true
+          gh label create "${{ matrix.target_branch }}" --description "Target: ${{ matrix.target_branch }} branch" --color "FEF2C0" 2>/dev/null || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
-      - name: Commit and push
-        if: steps.check_changes.outputs.has_changes == 'true'
+      - name: Create Pull Request
+        if: steps.check_merge.outputs.needs_merge == 'true' && env.sync_branch != ''
         run: |
-          echo "📝 Committing changes..."
-          git add -A
-          git commit -m "Sync main into ${{ matrix.target_branch }} (ignore .csproj, update version & target framework to .NET $(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g'))"
+          # Create PR using GitHub CLI (gh)
+          PR_BODY=$(cat << 'EOF'
+          ## 🤖 Automated Branch Sync
 
-          if [ "${{ github.event.inputs.dry_run }}" != "true" ]; then
-            echo "📤 Pushing to ${{ matrix.target_branch }}..."
-            git push origin ${{ matrix.target_branch }}
-            echo "✅ Successfully synced ${{ matrix.target_branch }}"
+          This PR syncs recent changes from `main` branch to `${{ matrix.target_branch }}`.
+
+          ### Changes Applied:
+          - ✅ Applied recent commits from main
+          - ✅ Updated version numbers (9.0.x → 8.0.x for net8 branch)
+          - ✅ Updated target framework (net9.0 → net8.0 for net8 branch)
+          - ✅ Preserved .csproj files from ${{ matrix.target_branch }} branch
+
+          ### Review Notes:
+          - All .csproj files maintain ${{ matrix.target_branch }} configurations
+          - Directory.Build.props has been updated for ${{ matrix.target_branch }} compatibility
+          - Ready for testing on ${{ matrix.target_branch }} environment
+
+          ---
+          _Created automatically by branch sync workflow_
+          EOF
+          )
+
+          # Create PR (from fork if necessary)
+          if [ "${{ env.push_repo }}" = "${{ github.repository }}" ]; then
+            # Creating PR from same repo
+            gh pr create \
+              --base "${{ matrix.target_branch }}" \
+              --head "${{ env.sync_branch }}" \
+              --title "🔄 Sync main branch changes to ${{ matrix.target_branch }}" \
+              --body "$PR_BODY" \
+              2>&1 | tee pr_output.txt
           else
-            echo "🔍 Dry run - not pushing changes"
+            # Creating PR from fork
+            FORK_OWNER=$(echo "${{ env.push_repo }}" | cut -d'/' -f1)
+            gh pr create \
+              --base "${{ matrix.target_branch }}" \
+              --head "${FORK_OWNER}:${{ env.sync_branch }}" \
+              --repo "${{ github.repository }}" \
+              --title "🔄 Sync main branch changes to ${{ matrix.target_branch }}" \
+              --body "$PR_BODY" \
+              2>&1 | tee pr_output.txt
           fi
+          
+          # Extract PR number if created
+          PR_NUMBER=$(grep -oP '(?<=pull/)\d+' pr_output.txt || echo "")
+          
+          if [ -n "$PR_NUMBER" ]; then
+            echo "✅ Created PR #$PR_NUMBER"
+            
+            # Try to add labels if they exist (ignore errors)
+            gh pr edit "$PR_NUMBER" --add-label "automated" 2>/dev/null || true
+            gh pr edit "$PR_NUMBER" --add-label "sync" 2>/dev/null || true
+            gh pr edit "$PR_NUMBER" --add-label "${{ matrix.target_branch }}" 2>/dev/null || true
+            
+            echo "📋 PR URL: https://github.com/${{ github.repository }}/pull/$PR_NUMBER"
+          else
+            echo "⚠️ PR might already exist or creation failed. Check if a PR already exists for branch: ${{ env.sync_branch }}"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
       - name: Skip notification
         if: steps.check_merge.outputs.needs_merge == 'false'
@@ -159,11 +292,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ needs.sync-branches.result }}" = "success" ]; then
-            echo "✅ All branch syncs completed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "✅ All branch sync PRs created successfully" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ Some branch syncs failed" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Target Branches:" >> $GITHUB_STEP_SUMMARY
-          echo "- net8 (and any others in TARGET_BRANCHES variable)" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "- Review and merge the created PRs" >> $GITHUB_STEP_SUMMARY
+          echo "- Test changes on target branches" >> $GITHUB_STEP_SUMMARY
+          echo "- Target branches: net8 (and any others in TARGET_BRANCHES variable)" >> $GITHUB_STEP_SUMMARY
