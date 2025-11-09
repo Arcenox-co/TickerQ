@@ -1,7 +1,7 @@
 ﻿<Project>
 
     <PropertyGroup>
-        <TargetFramework>net9.0</TargetFramework>
+        <TargetFramework>net8.0</TargetFramework>
         <RepositoryUrl>https://github.com/arcenox/TickerQ</RepositoryUrl>
         <PackageProjectUrl>https://tickerq.net/</PackageProjectUrl>
         <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>

@@ -84,11 +84,14 @@ jobs:
           echo "📝 Resetting .csproj files..."
           find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
 
-          # Update version in Directory.Build.props
+          # Update version and target framework in Directory.Build.props
           dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
           if [ -f "src/Directory.Build.props" ]; then
-            echo "🔄 Updating version to .NET $dotnet_version..."
+            echo "🔄 Updating version and target framework to .NET $dotnet_version..."
+            # Update version number (9.0.x → 8.0.x)
             sed -i "s/<Version>9\.0\./<Version>$dotnet_version.0./g" src/Directory.Build.props
+            # Update target framework (net9.0 → net8.0)
+            sed -i "s/<TargetFramework>net9\.0</<TargetFramework>net$dotnet_version.0</g" src/Directory.Build.props
           fi
 
       - name: Check for changes
@@ -109,7 +112,7 @@ jobs:
         run: |
           echo "📝 Committing changes..."
           git add -A
-          git commit -m "Sync main into ${{ matrix.target_branch }} (ignore .csproj, update to .NET $(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g'))"
+          git commit -m "Sync main into ${{ matrix.target_branch }} (ignore .csproj, update version & target framework to .NET $(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g'))"
 
           if [ "${{ github.event.inputs.dry_run }}" != "true" ]; then
             echo "📤 Pushing to ${{ matrix.target_branch }}..."
