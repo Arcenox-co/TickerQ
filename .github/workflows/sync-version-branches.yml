@@ -1,0 +1,142 @@
+name: Sync Version Branches
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      target_branches:
+        description: 'Comma-separated list of target branches (default: net8)'
+        required: false
+        default: 'net8'
+        type: string
+      dry_run:
+        description: 'Run without making changes'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  sync-branches:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        target_branch: ${{ fromJSON(vars.TARGET_BRANCHES || '["net8"]') }}
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Extract target branches from input
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ -n "${{ github.event.inputs.target_branches }}" ]; then
+            echo "TARGET_BRANCHES=[$(echo '${{ github.event.inputs.target_branches }}' | sed 's/,/","/g' | sed 's/^/"/;s/$/"/')]" >> $GITHUB_ENV
+          fi
+
+      - name: Check if merge is needed
+        id: check_merge
+        run: |
+          echo "🔍 Checking if merge is needed for ${{ matrix.target_branch }}"
+
+          # Check if target branch exists
+          if ! git ls-remote --heads origin ${{ matrix.target_branch }} | grep -q ${{ matrix.target_branch }}; then
+            echo "branch_exists=false" >> $GITHUB_OUTPUT
+            echo "❌ Target branch ${{ matrix.target_branch }} does not exist"
+            exit 0
+          fi
+
+          # Check if main has new commits
+          git checkout main
+          git checkout ${{ matrix.target_branch }}
+
+          if git merge-base --is-ancestor main ${{ matrix.target_branch }}; then
+            echo "needs_merge=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  No new commits to merge"
+          else
+            echo "needs_merge=true" >> $GITHUB_OUTPUT
+            echo "✅ New commits found, merge needed"
+          fi
+
+      - name: Perform merge
+        if: steps.check_merge.outputs.needs_merge == 'true'
+        run: |
+          echo "🔀 Merging main into ${{ matrix.target_branch }}"
+
+          # Merge without committing
+          git merge main --no-commit --no-ff
+
+          # Reset .csproj files
+          echo "📝 Resetting .csproj files..."
+          find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
+
+          # Update version in Directory.Build.props
+          dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
+          if [ -f "src/Directory.Build.props" ]; then
+            echo "🔄 Updating version to .NET $dotnet_version..."
+            sed -i "s/<Version>9\.0\./<Version>$dotnet_version.0./g" src/Directory.Build.props
+          fi
+
+      - name: Check for changes
+        if: steps.check_merge.outputs.needs_merge == 'true'
+        id: check_changes
+        run: |
+          if git diff --cached --name-only | grep -v '\.csproj$' | head -1 | grep -q .; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "📋 Changes detected"
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  No changes to commit"
+            git merge --abort
+          fi
+
+      - name: Commit and push
+        if: steps.check_changes.outputs.has_changes == 'true'
+        run: |
+          echo "📝 Committing changes..."
+          git add -A
+          git commit -m "Sync main into ${{ matrix.target_branch }} (ignore .csproj, update to .NET $(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g'))"
+
+          if [ "${{ github.event.inputs.dry_run }}" != "true" ]; then
+            echo "📤 Pushing to ${{ matrix.target_branch }}..."
+            git push origin ${{ matrix.target_branch }}
+            echo "✅ Successfully synced ${{ matrix.target_branch }}"
+          else
+            echo "🔍 Dry run - not pushing changes"
+          fi
+
+      - name: Skip notification
+        if: steps.check_merge.outputs.needs_merge == 'false'
+        run: echo "ℹ️  No merge needed for ${{ matrix.target_branch }}"
+
+  summary:
+    needs: sync-branches
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Branch Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.sync-branches.result }}" = "success" ]; then
+            echo "✅ All branch syncs completed successfully" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Some branch syncs failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Target Branches:" >> $GITHUB_STEP_SUMMARY
+          echo "- net8 (and any others in TARGET_BRANCHES variable)" >> $GITHUB_STEP_SUMMARY
