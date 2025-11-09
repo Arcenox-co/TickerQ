@@ -86,7 +86,7 @@ jobs:
           git checkout -b "$sync_branch" ${{ matrix.target_branch }}
 
           # Get the commits that need to be applied
-          commits_to_apply=$(git log ${{ matrix.target_branch }}..main --oneline --no-merges | cut -d' ' -f1 | tac)
+          commits_to_apply=$(git log "${{ matrix.target_branch }}..main" --oneline --no-merges | cut -d' ' -f1 | tac)
 
           if [ -n "$commits_to_apply" ]; then
             echo "📋 Applying commits: $commits_to_apply"
@@ -105,7 +105,7 @@ jobs:
 
             # Reset .csproj files to target branch versions
             echo "📝 Resetting .csproj files to ${{ matrix.target_branch }} versions..."
-            git checkout ${{ matrix.target_branch }} -- *.csproj
+            find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
 
             # Update version and target framework in Directory.Build.props
             dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
