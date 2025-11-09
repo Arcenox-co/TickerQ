@@ -137,6 +137,11 @@ jobs:
 
             # Store branch name for PR creation
             echo "sync_branch=$sync_branch" >> $GITHUB_ENV
+          else
+            echo "ℹ️  No commits to apply"
+            git checkout main
+            exit 0
+          fi
 
       - name: Create Pull Request
         if: steps.check_merge.outputs.needs_merge == 'true' && env.sync_branch != ''
