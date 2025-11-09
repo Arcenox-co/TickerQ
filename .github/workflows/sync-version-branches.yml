@@ -23,7 +23,9 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write  # Required to push commits to the repository
+      contents: write      # Required to push commits to the repository
+      pull-requests: write # Required to create pull requests
+      issues: write        # Required to create and manage labels
 
     # Only run sync logic when triggered from main branch (prevents infinite loops)
     if: github.ref == 'refs/heads/main'
