@@ -143,6 +143,16 @@ jobs:
             exit 0
           fi
 
+      - name: Ensure labels exist
+        if: steps.check_merge.outputs.needs_merge == 'true'
+        run: |
+          # Create labels if they don't exist (ignore errors if they already exist)
+          gh label create "automated" --description "Automated PR" --color "0E8A16" 2>/dev/null || true
+          gh label create "sync" --description "Branch synchronization" --color "1D76DB" 2>/dev/null || true
+          gh label create "${{ matrix.target_branch }}" --description "Target: ${{ matrix.target_branch }} branch" --color "FEF2C0" 2>/dev/null || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create Pull Request
         if: steps.check_merge.outputs.needs_merge == 'true' && env.sync_branch != ''
         run: |
@@ -168,15 +178,29 @@ jobs:
           EOF
           )
 
+          # Create PR without labels first (they might not exist)
           gh pr create \
             --base "${{ matrix.target_branch }}" \
             --head "${{ env.sync_branch }}" \
             --title "🔄 Sync main branch changes to ${{ matrix.target_branch }}" \
             --body "$PR_BODY" \
-            --label "automated" \
-            --label "sync" \
-            --label "${{ matrix.target_branch }}" \
-            || echo "PR might already exist or creation failed"
+            2>&1 | tee pr_output.txt
+          
+          # Extract PR number if created
+          PR_NUMBER=$(grep -oP '(?<=pull/)\d+' pr_output.txt || echo "")
+          
+          if [ -n "$PR_NUMBER" ]; then
+            echo "✅ Created PR #$PR_NUMBER"
+            
+            # Try to add labels if they exist (ignore errors)
+            gh pr edit "$PR_NUMBER" --add-label "automated" 2>/dev/null || true
+            gh pr edit "$PR_NUMBER" --add-label "sync" 2>/dev/null || true
+            gh pr edit "$PR_NUMBER" --add-label "${{ matrix.target_branch }}" 2>/dev/null || true
+            
+            echo "📋 PR URL: https://github.com/${{ github.repository }}/pull/$PR_NUMBER"
+          else
+            echo "⚠️ PR might already exist or creation failed. Check if a PR already exists for branch: ${{ env.sync_branch }}"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
