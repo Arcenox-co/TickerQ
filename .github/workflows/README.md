@@ -17,14 +17,22 @@ This workflow automatically syncs changes from `main` branch to version-specific
 
 ### 1. Personal Access Token (PAT) - REQUIRED
 
+**IMPORTANT**: The PAT must be created by a user with write access to the repository!
+
 Create a Personal Access Token with the following permissions:
-1. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
-2. Generate new token with these scopes:
+1. **Log in as a user with write access** to `Arcenox-co/TickerQ`
+2. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
+3. Generate new token with these scopes:
    - ✅ `repo` (Full control of private repositories)
    - ✅ `workflow` (Update GitHub Action workflows)
-3. Add to repository secrets:
+4. Add to repository secrets:
    - Go to Repository → Settings → Secrets and variables → Actions
    - Add new secret: `PAT_TOKEN` with your token value
+
+**Troubleshooting Access Issues:**
+- If you see "Permission denied", the PAT is from wrong user
+- Token must be from user with write access to the repository
+- For organization repos, user must be org member with appropriate permissions
 
 ### 2. Repository Variables
 
