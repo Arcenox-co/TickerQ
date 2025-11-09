@@ -153,8 +153,8 @@ jobs:
 
             ### Changes Applied:
             - ✅ Applied recent commits from main
-            - ✅ Updated version numbers (9.0.x → ${{ format('{0}.0.x', replace(matrix.target_branch, 'net', '')) }})
-            - ✅ Updated target framework (net9.0 → net${{ replace(matrix.target_branch, 'net', '') }}.0)
+            - ✅ Updated version numbers (9.0.x → 8.0.x for net8 branch)
+            - ✅ Updated target framework (net9.0 → net8.0 for net8 branch)
             - ✅ Preserved .csproj files from ${{ matrix.target_branch }} branch
 
             ### Review Notes:
