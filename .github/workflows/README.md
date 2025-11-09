@@ -17,22 +17,36 @@ This workflow automatically syncs changes from `main` branch to version-specific
 
 ### 1. Personal Access Token (PAT) - REQUIRED
 
-**IMPORTANT**: The PAT must be created by a user with write access to the repository!
+**IMPORTANT**: Use a **Classic PAT** for simplicity, or configure Fine-grained PAT correctly.
 
-Create a Personal Access Token with the following permissions:
-1. **Log in as a user with write access** to `Arcenox-co/TickerQ`
-2. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
-3. Generate new token with these scopes:
+#### Option A: Classic Personal Access Token (Recommended)
+1. **Log in as a user with write access** to the repository
+2. Go to: https://github.com/settings/tokens
+3. Click "Generate new token (classic)"
+4. Select scopes:
    - ✅ `repo` (Full control of private repositories)
    - ✅ `workflow` (Update GitHub Action workflows)
-4. Add to repository secrets:
-   - Go to Repository → Settings → Secrets and variables → Actions
-   - Add new secret: `PAT_TOKEN` with your token value
+
+#### Option B: Fine-grained Personal Access Token
+1. Go to: https://github.com/settings/personal-access-tokens/fine-grained
+2. Create/edit token with:
+   - **Repository access**: Select `Arcenox-co/TickerQ`
+   - **Repository permissions**:
+     - Contents: Read and Write
+     - Pull requests: Read and Write
+     - Issues: Read and Write (for labels)
+     - Actions: Read
+     - Metadata: Read
+     - Workflows: Write (if needed)
+
+#### Add Token to Repository
+1. Go to Repository → Settings → Secrets and variables → Actions
+2. Add new secret: `PAT_TOKEN` with your token value
 
 **Troubleshooting Access Issues:**
-- If you see "Permission denied", the PAT is from wrong user
-- Token must be from user with write access to the repository
-- For organization repos, user must be org member with appropriate permissions
+- Fine-grained tokens need explicit repository access configured
+- Classic tokens are simpler and work with `repo` scope
+- Error 403 usually means token lacks repository access
 
 ### 2. Repository Variables
 

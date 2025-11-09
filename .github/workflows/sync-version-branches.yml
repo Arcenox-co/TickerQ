@@ -53,11 +53,15 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT_TOKEN }}
+          persist-credentials: true
 
       - name: Setup Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Configure git to use the PAT for authentication
+          git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Extract target branches from input
         if: github.event_name == 'workflow_dispatch'
@@ -146,11 +150,35 @@ jobs:
             # Commit the changes
             git commit -m "Sync changes from main to ${{ matrix.target_branch }} - Applied recent commits, updated versions & framework, preserved .csproj files"
 
-            echo "📤 Pushing sync branch: $sync_branch"
-            git push origin "$sync_branch"
+            echo "📤 Attempting to push sync branch: $sync_branch"
+            
+            # Try to push to origin, if it fails try to push to a fork
+            if git push origin "$sync_branch" 2>/dev/null; then
+              echo "✅ Pushed to origin successfully"
+              PUSH_REPO="${{ github.repository }}"
+            else
+              echo "⚠️ Cannot push to origin, trying fork approach..."
+              
+              # Check if we have a fork configured
+              FORK_OWNER="${{ vars.FORK_OWNER || 'arcenox' }}"
+              FORK_URL="https://${{ secrets.PAT_TOKEN }}@github.com/${FORK_OWNER}/TickerQ.git"
+              
+              # Add fork as remote if not exists
+              git remote add fork "$FORK_URL" 2>/dev/null || git remote set-url fork "$FORK_URL"
+              
+              # Push to fork
+              if git push fork "$sync_branch"; then
+                echo "✅ Pushed to fork: ${FORK_OWNER}/TickerQ"
+                PUSH_REPO="${FORK_OWNER}/TickerQ"
+              else
+                echo "❌ Failed to push to both origin and fork"
+                exit 1
+              fi
+            fi
 
-            # Store branch name for PR creation
+            # Store branch name and repo for PR creation
             echo "sync_branch=$sync_branch" >> $GITHUB_ENV
+            echo "push_repo=$PUSH_REPO" >> $GITHUB_ENV
           else
             echo "ℹ️  No commits to apply"
             git checkout main
@@ -192,13 +220,26 @@ jobs:
           EOF
           )
 
-          # Create PR without labels first (they might not exist)
-          gh pr create \
-            --base "${{ matrix.target_branch }}" \
-            --head "${{ env.sync_branch }}" \
-            --title "🔄 Sync main branch changes to ${{ matrix.target_branch }}" \
-            --body "$PR_BODY" \
-            2>&1 | tee pr_output.txt
+          # Create PR (from fork if necessary)
+          if [ "${{ env.push_repo }}" = "${{ github.repository }}" ]; then
+            # Creating PR from same repo
+            gh pr create \
+              --base "${{ matrix.target_branch }}" \
+              --head "${{ env.sync_branch }}" \
+              --title "🔄 Sync main branch changes to ${{ matrix.target_branch }}" \
+              --body "$PR_BODY" \
+              2>&1 | tee pr_output.txt
+          else
+            # Creating PR from fork
+            FORK_OWNER=$(echo "${{ env.push_repo }}" | cut -d'/' -f1)
+            gh pr create \
+              --base "${{ matrix.target_branch }}" \
+              --head "${FORK_OWNER}:${{ env.sync_branch }}" \
+              --repo "${{ github.repository }}" \
+              --title "🔄 Sync main branch changes to ${{ matrix.target_branch }}" \
+              --body "$PR_BODY" \
+              2>&1 | tee pr_output.txt
+          fi
           
           # Extract PR number if created
           PR_NUMBER=$(grep -oP '(?<=pull/)\d+' pr_output.txt || echo "")
