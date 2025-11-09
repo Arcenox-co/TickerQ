@@ -109,6 +109,7 @@ jobs:
 
             # Update version and target framework in Directory.Build.props
             dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
+            echo "dotnet_version=$dotnet_version" >> $GITHUB_ENV
             if [ -f "src/Directory.Build.props" ]; then
               echo "🔄 Updating version and target framework to .NET $dotnet_version..."
               # Update version number (9.0.x → 8.0.x)
@@ -129,15 +130,19 @@ jobs:
             fi
 
             # Commit the changes
-            cat > commit_msg.txt << EOF
-Sync changes from main to ${{ matrix.target_branch }}
+            - name: Create commit message
+              run: |
+                cat > commit_msg.txt << 'EOF'
+                Sync changes from main to ${{ matrix.target_branch }}
 
-- Applied recent commits from main
-- Updated version numbers (9.0.x → $dotnet_version.0.x)
-- Updated target framework (net9.0 → net$dotnet_version.0)
-- Preserved .csproj files from ${{ matrix.target_branch }} branch
-EOF
-            git commit -F commit_msg.txt
+                - Applied recent commits from main
+                - Updated version numbers (9.0.x → ${{ env.dotnet_version }}.0.x)
+                - Updated target framework (net9.0 → net${{ env.dotnet_version }}.0)
+                - Preserved .csproj files from ${{ matrix.target_branch }} branch
+                EOF
+
+            - name: Commit changes
+              run: git commit -F commit_msg.txt
 
             echo "📤 Pushing sync branch: $sync_branch"
             git push origin "$sync_branch"
