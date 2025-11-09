@@ -153,7 +153,7 @@ jobs:
           gh label create "sync" --description "Branch synchronization" --color "1D76DB" 2>/dev/null || true
           gh label create "${{ matrix.target_branch }}" --description "Target: ${{ matrix.target_branch }} branch" --color "FEF2C0" 2>/dev/null || true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Create Pull Request
         if: steps.check_merge.outputs.needs_merge == 'true' && env.sync_branch != ''
@@ -204,7 +204,7 @@ jobs:
             echo "⚠️ PR might already exist or creation failed. Check if a PR already exists for branch: ${{ env.sync_branch }}"
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Skip notification
         if: steps.check_merge.outputs.needs_merge == 'false'
