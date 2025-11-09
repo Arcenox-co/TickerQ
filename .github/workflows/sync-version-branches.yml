@@ -76,55 +76,108 @@ jobs:
             echo "✅ New commits found, merge needed"
           fi
 
-      - name: Perform merge
+      - name: Create sync branch and apply changes
         if: steps.check_merge.outputs.needs_merge == 'true'
         run: |
-          echo "🔀 Merging main into ${{ matrix.target_branch }}"
+          echo "🔄 Creating sync branch from ${{ matrix.target_branch }}"
 
-          # Merge without committing
-          git merge main --no-commit --no-ff
+          # Create a new branch for the PR
+          sync_branch="sync-main-to-${{ matrix.target_branch }}-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$sync_branch" ${{ matrix.target_branch }}
 
-          # Reset .csproj files
-          echo "📝 Resetting .csproj files..."
-          find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
+          # Get the commits that need to be applied
+          commits_to_apply=$(git log ${{ matrix.target_branch }}..main --oneline --no-merges | cut -d' ' -f1 | tac)
 
-          # Update version and target framework in Directory.Build.props
-          dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
-          if [ -f "src/Directory.Build.props" ]; then
-            echo "🔄 Updating version and target framework to .NET $dotnet_version..."
-            # Update version number (9.0.x → 8.0.x)
-            sed -i "s/<Version>9\.0\./<Version>$dotnet_version.0./g" src/Directory.Build.props
-            # Update target framework (net9.0 → net8.0)
-            sed -i "s/<TargetFramework>net9\.0</<TargetFramework>net$dotnet_version.0</g" src/Directory.Build.props
-          fi
+          if [ -n "$commits_to_apply" ]; then
+            echo "📋 Applying commits: $commits_to_apply"
 
-      - name: Check for changes
-        if: steps.check_merge.outputs.needs_merge == 'true'
-        id: check_changes
-        run: |
-          if git diff --cached --name-only | grep -v '\.csproj$' | head -1 | grep -q .; then
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "📋 Changes detected"
+            # Cherry-pick each commit individually to avoid merge conflicts
+            for commit in $commits_to_apply; do
+              echo "🍒 Cherry-picking $commit..."
+              if git cherry-pick --no-commit "$commit"; then
+                echo "✅ Cherry-pick successful for $commit"
+              else
+                echo "⚠️  Cherry-pick failed for $commit, skipping..."
+                git cherry-pick --abort || true
+                git reset --hard HEAD
+              fi
+            done
+
+            # Reset .csproj files to target branch versions
+            echo "📝 Resetting .csproj files to ${{ matrix.target_branch }} versions..."
+            git checkout ${{ matrix.target_branch }} -- *.csproj
+
+            # Update version and target framework in Directory.Build.props
+            dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
+            if [ -f "src/Directory.Build.props" ]; then
+              echo "🔄 Updating version and target framework to .NET $dotnet_version..."
+              # Update version number (9.0.x → 8.0.x)
+              sed -i "s/<Version>9\.0\./<Version>$dotnet_version.0./g" src/Directory.Build.props
+              # Update target framework (net9.0 → net8.0)
+              sed -i "s/<TargetFramework>net9\.0</<TargetFramework>net$dotnet_version.0</g" src/Directory.Build.props
+            fi
+
+            # Stage all changes
+            git add -A
+
+            # Check if there are changes to commit
+            if git diff --cached --quiet; then
+              echo "ℹ️  No changes to commit after processing"
+              git checkout main
+              git branch -D "$sync_branch"
+              exit 0
+            fi
+
+            # Commit the changes
+            git commit -m "Sync changes from main to ${{ matrix.target_branch }}
+
+- Applied recent commits from main
+- Updated version numbers (9.0.x → $dotnet_version.0.x)
+- Updated target framework (net9.0 → net$dotnet_version.0)
+- Preserved .csproj files from ${{ matrix.target_branch }} branch"
+
+            echo "📤 Pushing sync branch: $sync_branch"
+            git push origin "$sync_branch"
+
+            # Store branch name for PR creation
+            echo "sync_branch=$sync_branch" >> $GITHUB_ENV
           else
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "ℹ️  No changes to commit"
-            git merge --abort
+            echo "ℹ️  No commits to apply"
+            git checkout main
+            exit 0
           fi
 
-      - name: Commit and push
-        if: steps.check_changes.outputs.has_changes == 'true'
-        run: |
-          echo "📝 Committing changes..."
-          git add -A
-          git commit -m "Sync main into ${{ matrix.target_branch }} (ignore .csproj, update version & target framework to .NET $(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g'))"
+      - name: Create Pull Request
+        if: steps.check_merge.outputs.needs_merge == 'true' && env.sync_branch != ''
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ env.sync_branch }}
+          base: ${{ matrix.target_branch }}
+          title: "🔄 Sync main branch changes to ${{ matrix.target_branch }}"
+          body: |
+            ## 🤖 Automated Branch Sync
 
-          if [ "${{ github.event.inputs.dry_run }}" != "true" ]; then
-            echo "📤 Pushing to ${{ matrix.target_branch }}..."
-            git push origin ${{ matrix.target_branch }}
-            echo "✅ Successfully synced ${{ matrix.target_branch }}"
-          else
-            echo "🔍 Dry run - not pushing changes"
-          fi
+            This PR syncs recent changes from `main` branch to `${{ matrix.target_branch }}`.
+
+            ### Changes Applied:
+            - ✅ Applied recent commits from main
+            - ✅ Updated version numbers (9.0.x → ${{ format('{0}.0.x', matrix.target_branch | replace('net', '')) }})
+            - ✅ Updated target framework (net9.0 → net${{ matrix.target_branch | replace('net', '') }}.0)
+            - ✅ Preserved .csproj files from ${{ matrix.target_branch }} branch
+
+            ### Review Notes:
+            - All .csproj files maintain ${{ matrix.target_branch }} configurations
+            - Directory.Build.props has been updated for ${{ matrix.target_branch }} compatibility
+            - Ready for testing on ${{ matrix.target_branch }} environment
+
+            ---
+            _Created automatically by branch sync workflow_
+          labels: |
+            automated
+            sync
+            ${{ matrix.target_branch }}
+          draft: false
 
       - name: Skip notification
         if: steps.check_merge.outputs.needs_merge == 'false'
@@ -159,11 +212,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ needs.sync-branches.result }}" = "success" ]; then
-            echo "✅ All branch syncs completed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "✅ All branch sync PRs created successfully" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ Some branch syncs failed" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Target Branches:" >> $GITHUB_STEP_SUMMARY
-          echo "- net8 (and any others in TARGET_BRANCHES variable)" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "- Review and merge the created PRs" >> $GITHUB_STEP_SUMMARY
+          echo "- Test changes on target branches" >> $GITHUB_STEP_SUMMARY
+          echo "- Target branches: net8 (and any others in TARGET_BRANCHES variable)" >> $GITHUB_STEP_SUMMARY
