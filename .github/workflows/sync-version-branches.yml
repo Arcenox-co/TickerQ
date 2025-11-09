@@ -130,12 +130,43 @@ jobs:
             echo "dotnet_version=$dotnet_version" >> $GITHUB_ENV
             if [ -f "src/Directory.Build.props" ]; then
               echo "🔄 Updating version and target framework to .NET $dotnet_version..."
-              # Update version number (9.0.x → 8.0.x)
-              sed -i "s/<Version>9\.0\./<Version>$dotnet_version.0./g" src/Directory.Build.props
+              
+              # Get current version from main
+              current_version=$(grep -oP '<Version>\K[^<]+' src/Directory.Build.props)
+              echo "Current version from main: $current_version"
+              
+              # Replace the major version (9 → 8) while keeping the rest
+              new_version=$(echo "$current_version" | sed "s/^9\./$dotnet_version./")
+              echo "New version for ${{ matrix.target_branch }}: $new_version"
+              
+              # Update version number
+              sed -i "s|<Version>$current_version</Version>|<Version>$new_version</Version>|g" src/Directory.Build.props
+              
               # Update target framework (net9.0 → net8.0)
-              sed -i "s/<TargetFramework>net9\.0</<TargetFramework>net$dotnet_version.0</g" src/Directory.Build.props
+              sed -i "s|<TargetFramework>net9\.0</TargetFramework>|<TargetFramework>net$dotnet_version.0</TargetFramework>|g" src/Directory.Build.props
+              
+              # Show the changes
+              echo "Updated Directory.Build.props:"
+              grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
             fi
 
+            # Verify Directory.Build.props was updated correctly
+            if [ -f "src/Directory.Build.props" ]; then
+              if grep -q "<TargetFramework>net9" src/Directory.Build.props; then
+                echo "❌ ERROR: TargetFramework still shows net9.0, update failed!"
+                echo "Content of Directory.Build.props:"
+                cat src/Directory.Build.props
+                exit 1
+              fi
+              if grep -q "<Version>9\." src/Directory.Build.props; then
+                echo "❌ ERROR: Version still starts with 9., update failed!"
+                echo "Content of Directory.Build.props:"
+                cat src/Directory.Build.props
+                exit 1
+              fi
+              echo "✅ Directory.Build.props updated successfully"
+            fi
+            
             # Stage all changes
             git add -A
 
