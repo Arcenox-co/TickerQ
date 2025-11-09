@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - net8  # Allows manual pushes to net8 to be visible, but sync logic only runs from main
   workflow_dispatch:
     inputs:
       target_branches:
@@ -23,6 +24,9 @@ jobs:
 
     permissions:
       contents: write  # Required to push commits to the repository
+
+    # Only run sync logic when triggered from main branch (prevents infinite loops)
+    if: github.ref == 'refs/heads/main'
 
     strategy:
       matrix:
@@ -126,10 +130,27 @@ jobs:
         if: steps.check_merge.outputs.needs_merge == 'false'
         run: echo "ℹ️  No merge needed for ${{ matrix.target_branch }}"
 
+  net8-push-notification:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/net8' && github.actor == 'github-actions[bot]'
+
+    steps:
+      - name: Notify about bot push to net8
+        run: |
+          echo "## 🤖 Bot Push to net8 Detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This push to net8 branch was made by github-actions[bot] as part of the automated sync from main." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### What happened:" >> $GITHUB_STEP_SUMMARY
+          echo "- Changes from main were merged into net8" >> $GITHUB_STEP_SUMMARY
+          echo "- Version numbers updated (9.0.x → 8.0.x)" >> $GITHUB_STEP_SUMMARY
+          echo "- TargetFramework updated (net9.0 → net8.0)" >> $GITHUB_STEP_SUMMARY
+          echo "- .csproj files preserved from net8 branch" >> $GITHUB_STEP_SUMMARY
+
   summary:
     needs: sync-branches
     runs-on: ubuntu-latest
-    if: always()
+    if: always() && github.ref == 'refs/heads/main'
 
     steps:
       - name: Generate summary
