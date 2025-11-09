@@ -130,30 +130,13 @@ jobs:
             fi
 
             # Commit the changes
-            - name: Create commit message
-              run: |
-                cat > commit_msg.txt << 'EOF'
-                Sync changes from main to ${{ matrix.target_branch }}
-
-                - Applied recent commits from main
-                - Updated version numbers (9.0.x → ${{ env.dotnet_version }}.0.x)
-                - Updated target framework (net9.0 → net${{ env.dotnet_version }}.0)
-                - Preserved .csproj files from ${{ matrix.target_branch }} branch
-                EOF
-
-            - name: Commit changes
-              run: git commit -F commit_msg.txt
+            git commit -m "Sync changes from main to ${{ matrix.target_branch }} - Applied recent commits, updated versions & framework, preserved .csproj files"
 
             echo "📤 Pushing sync branch: $sync_branch"
             git push origin "$sync_branch"
 
             # Store branch name for PR creation
             echo "sync_branch=$sync_branch" >> $GITHUB_ENV
-          else
-            echo "ℹ️  No commits to apply"
-            git checkout main
-            exit 0
-          fi
 
       - name: Create Pull Request
         if: steps.check_merge.outputs.needs_merge == 'true' && env.sync_branch != ''
