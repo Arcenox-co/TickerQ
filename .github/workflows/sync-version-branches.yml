@@ -122,17 +122,31 @@ jobs:
             done
 
             # Reset files that should stay as they are in the target branch
-            echo "📝 Resetting files that should remain from ${{ matrix.target_branch }}..."
+            echo "📝 Processing configuration files..."
             
             # Reset all .csproj files
             find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
             
-            # Reset Directory.Build.props to keep the net8 version
+            # Update Directory.Build.props - change version from 9.x to 8.x
             if [ -f "src/Directory.Build.props" ]; then
-              echo "📝 Resetting Directory.Build.props to ${{ matrix.target_branch }} version..."
-              git checkout ${{ matrix.target_branch }} -- src/Directory.Build.props
+              echo "📝 Updating Directory.Build.props for ${{ matrix.target_branch }}..."
               
-              echo "Directory.Build.props from ${{ matrix.target_branch }}:"
+              # Get the target .NET version
+              dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
+              
+              # Show current state from main
+              echo "Directory.Build.props from main (before update):"
+              grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
+              
+              # Update version (9.x.x → 8.x.x) keeping the same minor/patch/suffix
+              current_version=$(grep -oP '<Version>\K[^<]+' src/Directory.Build.props)
+              new_version=$(echo "$current_version" | sed "s/^9\./$dotnet_version./")
+              sed -i "s|<Version>$current_version</Version>|<Version>$new_version</Version>|g" src/Directory.Build.props
+              
+              # Update target framework (net9.0 → net8.0)
+              sed -i "s|<TargetFramework>net9\.0</TargetFramework>|<TargetFramework>net$dotnet_version.0</TargetFramework>|g" src/Directory.Build.props
+              
+              echo "Directory.Build.props after update:"
               grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
             fi
             
