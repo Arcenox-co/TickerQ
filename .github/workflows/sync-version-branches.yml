@@ -127,9 +127,12 @@ jobs:
             # Reset all .csproj files
             find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
             
-            # Update Directory.Build.props - change version from 9.x to 8.x
+            # Get Directory.Build.props from main and update it for net8
             if [ -f "src/Directory.Build.props" ]; then
-              echo "📝 Updating Directory.Build.props for ${{ matrix.target_branch }}..."
+              echo "📝 Getting Directory.Build.props from main and updating for ${{ matrix.target_branch }}..."
+              
+              # Explicitly get the file from main branch
+              git checkout main -- src/Directory.Build.props
               
               # Get the target .NET version
               dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
