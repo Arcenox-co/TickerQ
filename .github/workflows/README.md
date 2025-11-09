@@ -15,7 +15,18 @@ This workflow automatically syncs changes from `main` branch to version-specific
 
 ## Setup
 
-### 1. Repository Variables
+### 1. Personal Access Token (PAT) - REQUIRED
+
+Create a Personal Access Token with the following permissions:
+1. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
+2. Generate new token with these scopes:
+   - ✅ `repo` (Full control of private repositories)
+   - ✅ `workflow` (Update GitHub Action workflows)
+3. Add to repository secrets:
+   - Go to Repository → Settings → Secrets and variables → Actions
+   - Add new secret: `PAT_TOKEN` with your token value
+
+### 2. Repository Variables
 
 Configure target branches via GitHub repository variables:
 

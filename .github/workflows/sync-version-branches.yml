@@ -36,11 +36,23 @@ jobs:
       fail-fast: false
 
     steps:
+      - name: Check PAT_TOKEN exists
+        run: |
+          if [ -z "${{ secrets.PAT_TOKEN }}" ]; then
+            echo "❌ ERROR: PAT_TOKEN secret is not configured!"
+            echo "Please add a Personal Access Token with 'repo' scope to repository secrets."
+            echo "Go to: Settings → Secrets and variables → Actions → New repository secret"
+            echo "Name: PAT_TOKEN"
+            echo "Value: Your GitHub Personal Access Token"
+            exit 1
+          fi
+          echo "✅ PAT_TOKEN is configured"
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Setup Git
         run: |
@@ -153,7 +165,7 @@ jobs:
           gh label create "sync" --description "Branch synchronization" --color "1D76DB" 2>/dev/null || true
           gh label create "${{ matrix.target_branch }}" --description "Target: ${{ matrix.target_branch }} branch" --color "FEF2C0" 2>/dev/null || true
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
       - name: Create Pull Request
         if: steps.check_merge.outputs.needs_merge == 'true' && env.sync_branch != ''
@@ -204,7 +216,7 @@ jobs:
             echo "⚠️ PR might already exist or creation failed. Check if a PR already exists for branch: ${{ env.sync_branch }}"
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
       - name: Skip notification
         if: steps.check_merge.outputs.needs_merge == 'false'
