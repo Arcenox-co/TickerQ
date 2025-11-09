@@ -6,7 +6,7 @@ This workflow automatically syncs changes from `main` branch to version-specific
 
 - ✅ Automatic merging from `main` to version branches on every push
 - ✅ Preserves `.csproj` files from target branches (keeps correct .NET versions)
-- ✅ Updates version numbers in `Directory.Build.props` (e.g., `9.0.x` → `8.0.x`)
+- ✅ Updates version numbers and target framework in `Directory.Build.props` (e.g., `9.0.x` → `8.0.x`, `net9.0` → `net8.0`)
 - ✅ Only commits when there are actual code changes
 - ✅ Parallel processing of multiple target branches
 - ✅ Manual trigger support with custom branch selection
@@ -38,7 +38,7 @@ The workflow will automatically trigger on pushes to `main`. For the first run o
 2. **Branch Check**: Verifies target branches exist
 3. **Merge Analysis**: Checks if new commits need merging
 4. **Smart Merge**: Merges code while preserving `.csproj` files
-5. **Version Update**: Transforms version numbers (e.g., `9.0.0-beta.10` → `8.0.0-beta.10`)
+5. **Version & Framework Update**: Transforms version numbers and target framework (e.g., `9.0.0-beta.10` → `8.0.0-beta.10`, `net9.0` → `net8.0`)
 6. **Selective Commit**: Only commits if there are meaningful changes
 7. **Push**: Updates target branches with merged changes
 
