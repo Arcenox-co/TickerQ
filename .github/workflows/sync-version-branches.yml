@@ -121,17 +121,25 @@ jobs:
               fi
             done
 
-            # Reset .csproj files and Directory.Build.props to target branch versions
-            echo "📝 Resetting .csproj files and Directory.Build.props to ${{ matrix.target_branch }} versions..."
+            # Reset files that should stay as they are in the target branch
+            echo "📝 Resetting files that should remain from ${{ matrix.target_branch }}..."
+            
+            # Reset all .csproj files
             find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
             
-            # Also reset Directory.Build.props to keep the net8 version
+            # Reset Directory.Build.props to keep the net8 version
             if [ -f "src/Directory.Build.props" ]; then
               echo "📝 Resetting Directory.Build.props to ${{ matrix.target_branch }} version..."
               git checkout ${{ matrix.target_branch }} -- src/Directory.Build.props
               
               echo "Directory.Build.props from ${{ matrix.target_branch }}:"
               grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
+            fi
+            
+            # Reset workflow files to avoid including workflow changes in the PR
+            echo "📝 Resetting workflow files to ${{ matrix.target_branch }} version..."
+            if [ -d ".github/workflows" ]; then
+              git checkout ${{ matrix.target_branch }} -- .github/workflows/ || true
             fi
 
             
