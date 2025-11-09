@@ -145,35 +145,40 @@ jobs:
 
       - name: Create Pull Request
         if: steps.check_merge.outputs.needs_merge == 'true' && env.sync_branch != ''
-        uses: peter-evans/create-pull-request@v5
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ env.sync_branch }}
-          base: ${{ matrix.target_branch }}
-          title: "🔄 Sync main branch changes to ${{ matrix.target_branch }}"
-          body: |
-            ## 🤖 Automated Branch Sync
+        run: |
+          # Create PR using GitHub CLI (gh)
+          PR_BODY=$(cat << 'EOF'
+          ## 🤖 Automated Branch Sync
 
-            This PR syncs recent changes from `main` branch to `${{ matrix.target_branch }}`.
+          This PR syncs recent changes from `main` branch to `${{ matrix.target_branch }}`.
 
-            ### Changes Applied:
-            - ✅ Applied recent commits from main
-            - ✅ Updated version numbers (9.0.x → 8.0.x for net8 branch)
-            - ✅ Updated target framework (net9.0 → net8.0 for net8 branch)
-            - ✅ Preserved .csproj files from ${{ matrix.target_branch }} branch
+          ### Changes Applied:
+          - ✅ Applied recent commits from main
+          - ✅ Updated version numbers (9.0.x → 8.0.x for net8 branch)
+          - ✅ Updated target framework (net9.0 → net8.0 for net8 branch)
+          - ✅ Preserved .csproj files from ${{ matrix.target_branch }} branch
 
-            ### Review Notes:
-            - All .csproj files maintain ${{ matrix.target_branch }} configurations
-            - Directory.Build.props has been updated for ${{ matrix.target_branch }} compatibility
-            - Ready for testing on ${{ matrix.target_branch }} environment
+          ### Review Notes:
+          - All .csproj files maintain ${{ matrix.target_branch }} configurations
+          - Directory.Build.props has been updated for ${{ matrix.target_branch }} compatibility
+          - Ready for testing on ${{ matrix.target_branch }} environment
 
-            ---
-            _Created automatically by branch sync workflow_
-          labels: |
-            automated
-            sync
-            ${{ matrix.target_branch }}
-          draft: false
+          ---
+          _Created automatically by branch sync workflow_
+          EOF
+          )
+
+          gh pr create \
+            --base "${{ matrix.target_branch }}" \
+            --head "${{ env.sync_branch }}" \
+            --title "🔄 Sync main branch changes to ${{ matrix.target_branch }}" \
+            --body "$PR_BODY" \
+            --label "automated" \
+            --label "sync" \
+            --label "${{ matrix.target_branch }}" \
+            || echo "PR might already exist or creation failed"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Skip notification
         if: steps.check_merge.outputs.needs_merge == 'false'
