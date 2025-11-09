@@ -121,58 +121,36 @@ jobs:
               fi
             done
 
-            # Reset .csproj files to target branch versions
-            echo "📝 Resetting .csproj files to ${{ matrix.target_branch }} versions..."
+            # Reset .csproj files and Directory.Build.props to target branch versions
+            echo "📝 Resetting .csproj files and Directory.Build.props to ${{ matrix.target_branch }} versions..."
             find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
-
-            # Update version and target framework in Directory.Build.props
-            dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
-            echo "dotnet_version=$dotnet_version" >> $GITHUB_ENV
+            
+            # Also reset Directory.Build.props to keep the net8 version
             if [ -f "src/Directory.Build.props" ]; then
-              echo "🔄 Updating version and target framework to .NET $dotnet_version..."
+              echo "📝 Resetting Directory.Build.props to ${{ matrix.target_branch }} version..."
+              git checkout ${{ matrix.target_branch }} -- src/Directory.Build.props
               
-              # Get current version from main
-              current_version=$(grep -oP '<Version>\K[^<]+' src/Directory.Build.props)
-              echo "Current version from main: $current_version"
-              
-              # Replace the major version (9 → 8) while keeping the rest
-              new_version=$(echo "$current_version" | sed "s/^9\./$dotnet_version./")
-              echo "New version for ${{ matrix.target_branch }}: $new_version"
-              
-              # Update version number
-              sed -i "s|<Version>$current_version</Version>|<Version>$new_version</Version>|g" src/Directory.Build.props
-              
-              # Update target framework (net9.0 → net8.0)
-              sed -i "s|<TargetFramework>net9\.0</TargetFramework>|<TargetFramework>net$dotnet_version.0</TargetFramework>|g" src/Directory.Build.props
-              
-              # Show the changes
-              echo "Updated Directory.Build.props:"
+              echo "Directory.Build.props from ${{ matrix.target_branch }}:"
               grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
             fi
 
-            # Verify Directory.Build.props was updated correctly
-            if [ -f "src/Directory.Build.props" ]; then
-              if grep -q "<TargetFramework>net9" src/Directory.Build.props; then
-                echo "❌ ERROR: TargetFramework still shows net9.0, update failed!"
-                echo "Content of Directory.Build.props:"
-                cat src/Directory.Build.props
-                exit 1
-              fi
-              if grep -q "<Version>9\." src/Directory.Build.props; then
-                echo "❌ ERROR: Version still starts with 9., update failed!"
-                echo "Content of Directory.Build.props:"
-                cat src/Directory.Build.props
-                exit 1
-              fi
-              echo "✅ Directory.Build.props updated successfully"
-            fi
             
             # Stage all changes
             git add -A
+            
+            # Show what files have changes
+            echo "📋 Files with changes after cherry-pick and reset:"
+            git diff --cached --name-status
+            
+            # Show actual changes
+            echo "📝 Actual changes to be committed:"
+            git diff --cached --stat
 
             # Check if there are changes to commit
             if git diff --cached --quiet; then
               echo "ℹ️  No changes to commit after processing"
+              echo "This means all changes from main are already in ${{ matrix.target_branch }}"
+              echo "or only affected .csproj/Directory.Build.props files which we reset."
               git checkout main
               git branch -D "$sync_branch"
               exit 0
