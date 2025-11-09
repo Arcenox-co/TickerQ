@@ -21,6 +21,9 @@ jobs:
   sync-branches:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write  # Required to push commits to the repository
+
     strategy:
       matrix:
         target_branch: ${{ fromJSON(vars.TARGET_BRANCHES || '["net8"]') }}
