@@ -129,12 +129,13 @@ jobs:
             fi
 
             # Commit the changes
-            git commit -m "Sync changes from main to ${{ matrix.target_branch }}
+            COMMIT_MSG="Sync changes from main to ${{ matrix.target_branch }}
 
 - Applied recent commits from main
 - Updated version numbers (9.0.x → $dotnet_version.0.x)
 - Updated target framework (net9.0 → net$dotnet_version.0)
 - Preserved .csproj files from ${{ matrix.target_branch }} branch"
+            git commit -m "$COMMIT_MSG"
 
             echo "📤 Pushing sync branch: $sync_branch"
             git push origin "$sync_branch"
