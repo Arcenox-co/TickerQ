@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using TickerQ.Dashboard.Authentication;
 using TickerQ.Dashboard.Endpoints;
+using TickerQ.Dashboard.Infrastructure;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using TickerQ.Utilities.Entities;
@@ -21,6 +22,24 @@ namespace TickerQ.Dashboard.DependencyInjection
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
+            // Configure default Dashboard JSON options if not already configured
+            if (config.DashboardJsonOptions == null)
+            {
+                config.DashboardJsonOptions = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    Converters = { new StringToByteArrayConverter() }
+                };
+            }
+            else
+            {
+                // Ensure StringToByteArrayConverter is always present
+                if (!config.DashboardJsonOptions.Converters.Any(c => c is StringToByteArrayConverter))
+                {
+                    config.DashboardJsonOptions.Converters.Add(new StringToByteArrayConverter());
+                }
+            }
+            
             // Register the dashboard configuration for DI
             services.AddSingleton(config);
             services.AddSingleton(config.Auth);

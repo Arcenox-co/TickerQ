@@ -9,6 +9,12 @@ namespace TickerQ.Utilities
     public static class TickerHelper
     {
         private static readonly byte[] GZipSignature = [0x1f, 0x8b, 0x08, 0x00];
+        
+        /// <summary>
+        /// JsonSerializerOptions specifically for ticker request serialization/deserialization.
+        /// Can be configured during application startup via TickerOptionsBuilder.
+        /// </summary>
+        public static JsonSerializerOptions RequestJsonSerializerOptions { get; set; } = new JsonSerializerOptions();
 
         public static byte[] CreateTickerRequest<T>(T data)
         {
@@ -22,7 +28,7 @@ namespace TickerQ.Utilities
             Span<byte> compressedBytes;
             var serialized = data is byte[] bytes
                 ? bytes
-                : JsonSerializer.SerializeToUtf8Bytes(data);
+                : JsonSerializer.SerializeToUtf8Bytes(data, RequestJsonSerializerOptions);
             
             using (var memoryStream = new MemoryStream())
             {
@@ -46,7 +52,7 @@ namespace TickerQ.Utilities
         {
             var serializedObject = ReadTickerRequestAsString(gzipBytes);
             
-            return JsonSerializer.Deserialize<T>(serializedObject);
+            return JsonSerializer.Deserialize<T>(serializedObject, RequestJsonSerializerOptions);
         }
         
         public static string ReadTickerRequestAsString(byte[] gzipBytes)
