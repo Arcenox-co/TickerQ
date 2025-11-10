@@ -294,6 +294,7 @@ public static class DashboardEndpoints
     private static async Task<IResult> CreateChainJobs<TTimeTicker, TCronTicker>(
         HttpContext context,
         ITimeTickerManager<TTimeTicker> timeTickerManager,
+        DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
@@ -302,15 +303,8 @@ public static class DashboardEndpoints
         using var reader = new StreamReader(context.Request.Body);
         var jsonString = await reader.ReadToEndAsync(cancellationToken);
         
-        // Create JsonSerializerOptions with our custom converter for this endpoint only
-        var jsonOptions = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true,
-            Converters = { new StringToByteArrayConverter() }
-        };
-        
-        // Deserialize with custom converter
-        var chainRoot = JsonSerializer.Deserialize<TTimeTicker>(jsonString, jsonOptions);
+        // Use Dashboard-specific JSON options
+        var chainRoot = JsonSerializer.Deserialize<TTimeTicker>(jsonString, dashboardOptions.DashboardJsonOptions);
         
         var result = await timeTickerManager.AddAsync(chainRoot, cancellationToken);
         

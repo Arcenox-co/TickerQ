@@ -120,7 +120,7 @@ public class CleanupJobs(ICleanUpService cleanUpService)
 {
     private readonly ICleanUpService _cleanUpService = cleanUpService;
 
-    [TickerFunction(functionName: "CleanupLogs", cronExpression: "0 0 * * *" )]
+    [TickerFunction(functionName: "CleanupLogs", cronExpression: "0 0 0 * * *" )]
     public asynt Task CleanupLogs(TickerFunctionContext<string> tickerContext, CancellationToken cancellationToken)
     {
         var logFileName = tickerContext.Request; // output cleanup_example_file.txt
@@ -131,27 +131,20 @@ public class CleanupJobs(ICleanUpService cleanUpService)
 
 > This uses a cron expression to run daily at midnight.
 
-#### 📅 Cron Expression Formats
+#### 📅 Cron Expression Format
 
-TickerQ supports both **5-part** and **6-part** cron expressions:
+TickerQ uses **6-part** cron expressions with seconds precision:
 
-**5-part format (standard):**
-```
-minute hour day month day-of-week
-```
-Examples:
-- `"0 0 * * *"` - Daily at midnight
-- `"0 */6 * * *"` - Every 6 hours
-- `"30 14 * * 1"` - Every Monday at 2:30 PM
-
-**6-part format (with seconds):**
 ```
 second minute hour day month day-of-week
 ```
+
 Examples:
 - `"0 0 0 * * *"` - Daily at midnight (00:00:00)
 - `"30 0 0 * * *"` - Daily at 00:00:30 (30 seconds past midnight)
 - `"0 0 */2 * * *"` - Every 2 hours on the hour
+- `"0 0 */6 * * *"` - Every 6 hours
+- `"0 30 14 * * 1"` - Every Monday at 2:30 PM
 - `"*/10 * * * * *"` - Every 10 seconds
 
 ---
@@ -180,10 +173,10 @@ Schedule Cron Ticker:
 await _cronTickerManager.AddAsync(new CronTicker
 {
     Function = "CleanupLogs",
-    Expression = "0 */6 * * *", // Every 6 hours (5-part format)
-    // Or use 6-part format with seconds:
-    // Expression = "0 0 */6 * * *", // Every 6 hours at :00:00
+    Expression = "0 0 */6 * * *", // Every 6 hours at :00:00
+    // Other examples:
     // Expression = "*/30 * * * * *", // Every 30 seconds
+    // Expression = "0 0 0 * * *", // Daily at midnight
     Request = TickerHelper.CreateTickerRequest<string>("cleanup_example_file.txt"),
     Retries = 2,
     RetryIntervals = new[] { 60, 300 }

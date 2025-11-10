@@ -25,11 +25,15 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         private readonly TickerExecutionContext _executionContext;
         private readonly ITimeTickerManager<TTimeTicker>  _timeTickerManager;
         private readonly ITickerClock _clock;
+        private readonly DashboardOptionsBuilder _dashboardOptions;
         public TickerDashboardRepository(
             TickerExecutionContext executionContext,
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerQHostScheduler tickerQHostScheduler, 
-            ITickerQNotificationHubSender notificationHubSender, ITimeTickerManager<TTimeTicker> timeTickerManager, ITickerClock clock)
+            ITickerQNotificationHubSender notificationHubSender, 
+            ITimeTickerManager<TTimeTicker> timeTickerManager, 
+            ITickerClock clock,
+            DashboardOptionsBuilder dashboardOptions)
         {
             _persistenceProvider = persistenceProvider ?? throw new ArgumentNullException(nameof(persistenceProvider));
             _tickerQHostScheduler = tickerQHostScheduler ?? throw new ArgumentNullException(nameof(tickerQHostScheduler));
@@ -37,6 +41,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             _timeTickerManager = timeTickerManager;
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _executionContext = executionContext ??  throw new ArgumentNullException(nameof(executionContext));
+            _dashboardOptions = dashboardOptions ?? throw new ArgumentNullException(nameof(dashboardOptions));
         }
 
         public async Task<TTimeTicker[]> GetTimeTickersAsync(CancellationToken cancellationToken)
@@ -669,7 +674,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     out var functionTypeContext)) return (jsonRequest, 2);
             try
             {
-                JsonSerializer.Deserialize(jsonRequest, functionTypeContext.Item2);
+                JsonSerializer.Deserialize(jsonRequest, functionTypeContext.Item2, _dashboardOptions.DashboardJsonOptions);
                 return (jsonRequest, 1);
             }
             catch
@@ -760,7 +765,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             // Process the request using the function
             if (!string.IsNullOrWhiteSpace(request.Request))
             {
-                var serializedRequest = JsonSerializer.Deserialize<object>(request.Request);
+                var serializedRequest = JsonSerializer.Deserialize<object>(request.Request, _dashboardOptions.DashboardJsonOptions);
                 cronTicker.Request = TickerHelper.CreateTickerRequest(serializedRequest);
             }
             
