@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -104,7 +105,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             {
                 await _internalTickerManager.SetTickersInProgress(_executionContext.Functions, cancellationToken);
 
-                foreach (var function in _executionContext.Functions)
+                foreach (var function in _executionContext.Functions.OrderBy(x => x.CachedPriority))
                     await _taskScheduler.QueueAsync(async ct => await _taskHandler.ExecuteTaskAsync(function,false, ct), function.CachedPriority, stoppingToken);
             }
             
