@@ -38,7 +38,7 @@ internal sealed class TickerQSynchronizationContext : SynchronizationContext
         else
         {
             // We're not on a TickerQ worker - safe to queue the continuation
-            _scheduler.QueueContinuation(() => d(state));
+            _scheduler.PostContinuation(d, state);
         }
     }
 
