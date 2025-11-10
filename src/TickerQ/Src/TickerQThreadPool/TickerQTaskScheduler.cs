@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Enums;
@@ -8,714 +7,492 @@ using TickerQ.Utilities.Enums;
 namespace TickerQ.TickerQThreadPool;
 
 /// <summary>
-/// Process-lifetime singleton task scheduler with optimized memory usage and elastic workers.
-/// Fire-and-forget execution with strict priority ordering and work stealing.
+/// Simplified elastic work-stealing task scheduler.
+/// No priority support - focuses on throughput and efficient CPU utilization.
 /// </summary>
 public sealed class TickerQTaskScheduler : IAsyncDisposable
 {
     private readonly int _maxConcurrency;
     private readonly TimeSpan _idleWorkerTimeout;
-    private readonly int _maxTotalCapacity;
     private readonly int _maxCapacityPerWorker;
     
-    // Single priority queue per worker (lazy initialized)
-    private readonly ConcurrentQueue<PriorityTask>[] _workerQueues;
-    private ulong _workerInitialized; // Bitfield for up to 64 workers (use Interlocked for thread safety)
+    // Worker queues for work stealing
+    private readonly ConcurrentQueue<WorkItem>[] _workerQueues;
     
-    // Global capacity tracking
+    // Global state
     private volatile int _totalQueuedTasks;
-    
-    // Worker assignment
-    private volatile int _nextWorkerId;
-    private volatile int _randomSeed;
-    
-    private readonly CancellationTokenSource _shutdownCts = new();
     private volatile int _activeWorkers;
     private volatile bool _disposed;
     private volatile bool _isFrozen;
+    private volatile int _nextQueueIndex;
+    
+    private readonly CancellationTokenSource _shutdownCts = new();
     private readonly SoftSchedulerNotifyDebounce _notifyDebounce;
-    // Thread-local temp array for priority dequeuing (avoids allocations)
-    [ThreadStatic] private static PriorityTask[] _tempTasks;
     
     // Thread-local flag to detect if we're on a TickerQ worker thread
     [ThreadStatic] public static bool IsTickerQWorkerThread;
+    [ThreadStatic] private static int _threadWorkerIndex = -1;
     
-
-    public TickerQTaskScheduler(int maxConcurrency, TimeSpan? idleWorkerTimeout = null, SoftSchedulerNotifyDebounce notifyDebounce = null)
+    public TickerQTaskScheduler(
+        int maxConcurrency, 
+        TimeSpan? idleWorkerTimeout = null,
+        SoftSchedulerNotifyDebounce notifyDebounce = null)
     {
         if (maxConcurrency <= 0)
-            throw new ArgumentOutOfRangeException(nameof(maxConcurrency), maxConcurrency, "Must be greater than zero");
-        if (maxConcurrency > 64)
-            throw new ArgumentOutOfRangeException(nameof(maxConcurrency), maxConcurrency, "Maximum 64 workers supported due to bitfield limitations");
-
-        // Validate idle worker timeout
-        var timeout = idleWorkerTimeout ?? TimeSpan.FromSeconds(60);
-        if (timeout < TimeSpan.FromSeconds(1))
-            throw new ArgumentOutOfRangeException(nameof(idleWorkerTimeout), timeout, "Idle timeout must be at least 1 second");
-        if (timeout > TimeSpan.FromHours(24))
-            throw new ArgumentOutOfRangeException(nameof(idleWorkerTimeout), timeout, "Idle timeout cannot exceed 24 hours");
-
-        _maxConcurrency = maxConcurrency;
-        _idleWorkerTimeout = timeout;
-        _maxCapacityPerWorker = 1024; // Fixed optimal capacity per worker
-        _maxTotalCapacity = maxConcurrency * 1024; // Auto-calculated: queues × 1024
-        _notifyDebounce = notifyDebounce ?? new SoftSchedulerNotifyDebounce(_ => { }); // Default no-op notifier
+            throw new ArgumentOutOfRangeException(nameof(maxConcurrency), "Must be greater than zero");
         
-        // Lazy initialization - only create queues when needed
-        _workerQueues = new ConcurrentQueue<PriorityTask>[maxConcurrency];
-        _workerInitialized = 0; // Bitfield initialized to 0
+        _maxConcurrency = maxConcurrency;
+        _idleWorkerTimeout = idleWorkerTimeout ?? TimeSpan.FromSeconds(60);
+        _maxCapacityPerWorker = 1024; // Fixed optimal capacity
+        _notifyDebounce = notifyDebounce ?? new SoftSchedulerNotifyDebounce(_ => { });
+        
+        // Initialize all worker queues upfront for simplicity
+        _workerQueues = new ConcurrentQueue<WorkItem>[maxConcurrency];
+        for (int i = 0; i < maxConcurrency; i++)
+        {
+            _workerQueues[i] = new ConcurrentQueue<WorkItem>();
+        }
+        
+        // Start at least one worker immediately to handle incoming tasks
+        TryStartWorker();
     }
-
-
-    public async ValueTask QueueAsync(Func<CancellationToken, Task> work, TickerTaskPriority priority, CancellationToken userCancellationToken = default)
+    
+    /// <summary>
+    /// Queues work to be executed by the scheduler.
+    /// The priority parameter is ignored in this simplified version.
+    /// </summary>
+    public async ValueTask QueueAsync(
+        Func<CancellationToken, Task> work,
+        TickerTaskPriority priority, // Kept for backward compatibility but ignored
+        CancellationToken cancellationToken = default)
     {
         if (work == null)
             throw new ArgumentNullException(nameof(work));
             
         if (_disposed)
             throw new ObjectDisposedException(nameof(TickerQTaskScheduler));
-        
+            
         if (_isFrozen)
-            throw new InvalidOperationException("Scheduler is frozen - no new tasks can be queued");
-
+            throw new InvalidOperationException("Scheduler is frozen");
+        
+        // Handle long-running tasks specially
         if (priority == TickerTaskPriority.LongRunning)
         {
-            // Bypass pool on default scheduler with LongRunning; use user token for task cancellation.
+            // Bypass pool for long-running tasks
             _ = Task.Factory.StartNew(
-                async () => { try { await work(userCancellationToken); } catch { /* swallow */ } },
+                async () => 
+                {
+                    try 
+                    { 
+                        await work(cancellationToken); 
+                    } 
+                    catch 
+                    { 
+                        /* swallow */ 
+                    }
+                },
                 CancellationToken.None,
                 TaskCreationOptions.LongRunning,
                 TaskScheduler.Default).Unwrap();
             return;
         }
-
-        // Get worker using thread-safe round-robin
-        var workerId = GetNextWorkerId();
-        var workerQueue = GetOrCreateWorkerQueue(workerId);
-
-        // Wait for capacity (both global and per-worker limits)
-        await WaitForCapacity(workerQueue, userCancellationToken);
-
-        // Create optimized priority task (no wrapper needed)
-        var priorityTask = new PriorityTask(priority, work, userCancellationToken, shouldDecrementTotal: true);
-
-        Interlocked.Increment(ref _totalQueuedTasks);
-        workerQueue.Enqueue(priorityTask);
-        TryStartWorker();
-    }
-
-    private async ValueTask WaitForCapacity(ConcurrentQueue<PriorityTask> targetQueue, CancellationToken cancellationToken)
-    {
-        var queueCount = targetQueue.Count;
-        var waitCount = 0;
-
-        while (queueCount >= _maxCapacityPerWorker || _totalQueuedTasks >= _maxTotalCapacity)
+        
+        // Round-robin distribution across worker queues
+        var queueIndex = GetNextQueueIndex();
+        var targetQueue = _workerQueues[queueIndex];
+        
+        // Wait for capacity if needed
+        await WaitForCapacityAsync(targetQueue, cancellationToken);
+        
+        // Enqueue work
+        var workItem = new WorkItem(work, cancellationToken);
+        targetQueue.Enqueue(workItem);
+        var newTotal = Interlocked.Increment(ref _totalQueuedTasks);
+        
+        // Ensure we have workers to process the work
+        // Check both queue count and total to avoid race conditions
+        if (newTotal > 0 || targetQueue.Count > 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // Adaptive backpressure mechanism
-            // Start with small delays and increase as we wait longer
-            int delayMs;
-            if (waitCount < 5)
+            EnsureWorkerAvailable();
+        }
+    }
+    
+    private int GetNextQueueIndex()
+    {
+        // Simple round-robin without complex CAS loop
+        var index = Interlocked.Increment(ref _nextQueueIndex);
+        return Math.Abs(index) % _maxConcurrency;
+    }
+    
+    private async ValueTask WaitForCapacityAsync(
+        ConcurrentQueue<WorkItem> queue,
+        CancellationToken cancellationToken)
+    {
+        var waitCount = 0;
+        while (queue.Count >= _maxCapacityPerWorker && !cancellationToken.IsCancellationRequested)
+        {
+            if (++waitCount > 100) // After 1 second, check if we're stuck
             {
-                delayMs = 1; // First 5 attempts: 1ms
+                // Force start a worker if we're waiting too long
+                EnsureWorkerAvailable();
+                waitCount = 0;
             }
-            else if (waitCount < 20)
-            {
-                delayMs = 5; // Next 15 attempts: 5ms
-            }
-            else if (waitCount < 100)
-            {
-                delayMs = 10; // Next 80 attempts: 10ms
-            }
-            else
-            {
-                delayMs = 25; // After 100 attempts: 25ms (significant backpressure)
-            }
-
-            await Task.Delay(delayMs, cancellationToken);
-            waitCount++;
-
-            // Re-check queue count after delay
-            queueCount = targetQueue.Count;
-            
-            // If we've been waiting too long, try to spawn another worker
-            // This helps prevent deadlocks when all workers are busy
-            if (waitCount == 50 && _activeWorkers < _maxConcurrency)
+            await Task.Delay(10, cancellationToken);
+        }
+    }
+    
+    private void EnsureWorkerAvailable()
+    {
+        // Always try to maintain at least one worker
+        if (_activeWorkers == 0)
+        {
+            TryStartWorker();
+            return;
+        }
+        
+        // Start more workers if we have queued tasks
+        var totalQueued = _totalQueuedTasks;
+        var activeWorkers = _activeWorkers;
+        
+        // If we have tasks but not enough workers, start more
+        if (totalQueued > 0 && activeWorkers < _maxConcurrency)
+        {
+            // Start workers proportional to load
+            var desiredWorkers = Math.Min(totalQueued, _maxConcurrency);
+            if (desiredWorkers > activeWorkers)
             {
                 TryStartWorker();
             }
         }
     }
-
-    private ConcurrentQueue<PriorityTask> GetOrCreateWorkerQueue(int workerId)
+    
+    private void TryStartWorker()
     {
-        if (workerId < 0 || workerId >= 64)
-            throw new ArgumentOutOfRangeException(nameof(workerId), workerId, "Worker ID must be between 0 and 63");
-            
-        ulong workerBit = 1UL << workerId;
+        if (_shutdownCts.IsCancellationRequested || _disposed)
+            return;
         
-        // Fast path: Check if already initialized using atomic read
-        var initialized = Interlocked.Read(ref _workerInitialized);
-        if ((initialized & workerBit) != 0)
-        {
-            // Queue already initialized - return it
-            // This is safe because queues are never removed once created
-            return _workerQueues[workerId];
-        }
+        // Try to increment active workers
+        var currentWorkers = _activeWorkers;
+        if (currentWorkers >= _maxConcurrency)
+            return;
         
-        // Slow path: Need to initialize the queue
-        lock (_workerQueues)
+        if (Interlocked.CompareExchange(ref _activeWorkers, currentWorkers + 1, currentWorkers) == currentWorkers)
         {
-            // Double-check pattern: Re-read inside lock to handle race conditions
-            initialized = Interlocked.Read(ref _workerInitialized);
-            if ((initialized & workerBit) == 0)
+            // Successfully reserved a worker slot
+            var workerId = currentWorkers; // Use the slot we just reserved
+            var thread = new Thread(() => WorkerLoop(workerId))
             {
-                // Create the queue
-                _workerQueues[workerId] = new ConcurrentQueue<PriorityTask>();
-                
-                // Atomically set the bit to indicate this worker queue is initialized
-                // Use CAS loop to ensure thread-safe bitfield update
-                ulong currentValue, newValue;
-                do
-                {
-                    currentValue = Interlocked.Read(ref _workerInitialized);
-                    newValue = currentValue | workerBit;
-                } while (Interlocked.CompareExchange(ref _workerInitialized, newValue, currentValue) != currentValue);
-            }
-        }
-        
-        return _workerQueues[workerId];
-    }
-
-    /// <summary>
-    /// Thread-safe method to get the next worker ID using round-robin with proper overflow handling.
-    /// </summary>
-    private int GetNextWorkerId()
-    {
-        uint nextId;
-        uint currentId;
-        
-        // Use unsigned arithmetic to handle overflow gracefully
-        do
-        {
-            currentId = (uint)_nextWorkerId;
-            nextId = currentId + 1;
-            
-            // Reset to 0 if we've exceeded a reasonable limit (prevent int overflow issues)
-            if (nextId > 1_000_000_000)
-                nextId = 0;
-                
-        } while (Interlocked.CompareExchange(ref _nextWorkerId, (int)nextId, (int)currentId) != (int)currentId);
-        
-        return (int)(nextId % (uint)_maxConcurrency);
-    }
-
-    private void TryStartWorker(bool allowOversubscriptionForContinuations = false)
-    {
-        if (_shutdownCts.IsCancellationRequested || _disposed) return;
-
-        // CAS loop to avoid oversubscription under bursts
-        int newWorkerCount;
-        while (true)
-        {
-            var current = _activeWorkers;
-            
-            // For continuations, allow temporary oversubscription to prevent deadlocks
-            // when all workers are busy with tasks that have continuations
-            var maxAllowed = allowOversubscriptionForContinuations 
-                ? _maxConcurrency + (_maxConcurrency / 2) // Allow 50% oversubscription for continuations
-                : _maxConcurrency;
-            
-            if (current >= maxAllowed) return;
-            
-            newWorkerCount = current + 1;
-            if (Interlocked.CompareExchange(ref _activeWorkers, newWorkerCount, current) == current)
-                break;
+                IsBackground = true,
+                Name = $"TickerQ.Worker-{workerId}"
+            };
+            thread.Start();
             
             _notifyDebounce.NotifySafely(_activeWorkers);
         }
-
-        var workerId = (newWorkerCount - 1) % _maxConcurrency;
-        
-        var threadName = $"TickerQ.Worker-{workerId}";
-            
-        var thread = new Thread(() => WorkerLoop(workerId)) { IsBackground = true, Name = threadName };
-        thread.Start();
     }
-
+    
     private void WorkerLoop(int workerId)
     {
-        try
-        {
-            WorkerLoopAsync(workerId).GetAwaiter().GetResult();
-        }
-        catch
-        {
-            // Worker thread will exit, exception is logged by instrumentation if available
-            // Silently exit to prevent console spam in production
-        }
-    }
-
-    private async Task WorkerLoopAsync(int workerId)
-    {
-        // Mark this thread as a TickerQ worker thread
+        // Set thread-local state
+        _threadWorkerIndex = workerId;
         IsTickerQWorkerThread = true;
-
-        // Set custom SynchronizationContext to keep all async continuations on TickerQ threads
-        // Continuations can now run on any available TickerQ worker for better performance
+        
+        // Set a simple synchronization context if needed for continuations
         var originalContext = SynchronizationContext.Current;
         var tickerQContext = new TickerQSynchronizationContext(this);
         SynchronizationContext.SetSynchronizationContext(tickerQContext);
-
+        
         try
         {
-            var lastWorkTime = DateTime.UtcNow;
-            var consecutiveNoWorkCount = 0;
-
-            while (true)
-            {
-                var work = TryGetWork(workerId);
-
-                if (work != null)
-                {
-                    // Update work time when we actually execute work
-                    lastWorkTime = DateTime.UtcNow;
-                    consecutiveNoWorkCount = 0;
-
-                    try
-                    {
-                        // Check for cancellation before executing task
-                        _shutdownCts.Token.ThrowIfCancellationRequested();
-
-                        await work(); // No ConfigureAwait(false) - stay on TickerQ thread
-
-                        // Check for disposal after task execution
-                        if (_disposed)
-                            break;
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        // Task was cancelled, exit worker
-                        break;
-                    }
-                    catch
-                    {
-                        // swallow other exceptions by design
-                    }
-                }
-                else
-                {
-                    // No work available - check if should exit due to idle timeout
-                    // This allows elastic scaling: workers exit when idle to free resources
-                    var idleTime = DateTime.UtcNow - lastWorkTime;
-                    if (idleTime > _idleWorkerTimeout)
-                    {
-                        break; // Exit worker due to idle timeout - elastic scaling
-                    }
-
-                    // Adaptive delay strategy to balance responsiveness vs CPU usage
-                    consecutiveNoWorkCount++;
-                    
-                    if (consecutiveNoWorkCount < 10)
-                    {
-                        // First 10 cycles: yield to scheduler only
-                        Thread.Yield(); // Yield CPU to other threads without blocking
-                    }
-                    else if (consecutiveNoWorkCount < 100)
-                    {
-                        // Next 90 cycles: minimal sleep
-                        Thread.Sleep(0); // Sleep(0) yields to equal/higher priority threads
-                    }
-                    else if (consecutiveNoWorkCount < 1000)
-                    {
-                        // Next 900 cycles: 1ms delay
-                        Thread.Sleep(1); // 1ms delay
-                    }
-                    else if (consecutiveNoWorkCount < 10000)
-                    {
-                        // Next 9000 cycles: 10ms delay
-                        Thread.Sleep(10); // 10ms delay
-                    }
-                    else
-                    {
-                        // After 10000 cycles: longer delay to reduce CPU significantly
-                        Thread.Sleep(50); // 50ms delay - worker will likely exit soon anyway
-                    }
-                }
-
-                // Exit if frozen, shutdown, or disposed
-                if (_isFrozen || _shutdownCts.IsCancellationRequested || _disposed)
-                    break;
-            }
+            // Run the async worker loop
+            Task.Run(async () => await WorkerLoopCoreAsync(workerId)).GetAwaiter().GetResult();
         }
         finally
         {
-            // Restore original SynchronizationContext
             SynchronizationContext.SetSynchronizationContext(originalContext);
-            
-            // Clean up thread-local storage to prevent memory leaks in long-running apps
-            _tempTasks = null;
-            IsTickerQWorkerThread = false;
-            _cachedNow = default;
-            _lastCacheUpdateTicks = 0;
-            
             Interlocked.Decrement(ref _activeWorkers);
             _notifyDebounce.NotifySafely(_activeWorkers);
         }
     }
-
-    private Func<Task> TryGetWork(int workerId)
+    
+    private async Task WorkerLoopCoreAsync(int workerId)
     {
-        // Try own queue first (local work) - get the highest priority available
-        var ownQueue = _workerQueues[workerId];
-        if (ownQueue != null && TryDequeueByPriority(ownQueue, out var work))
-            return work;
-
-        // No local work - try stealing from other workers
-        // Use two-phase approach: first look for overloaded queues, then do random stealing
+        var lastWorkTime = DateTime.UtcNow;
+        var localQueue = _workerQueues[workerId];
+        var consecutiveStealFailures = 0;
         
-        // Phase 1: Look for heavily loaded queues (more than 2x average load)
-        var averageLoad = Math.Max(1, _totalQueuedTasks / _maxConcurrency);
-        var overloadThreshold = averageLoad * 2;
-        
-        for (int i = 0; i < _maxConcurrency; i++)
+        while (!_shutdownCts.Token.IsCancellationRequested && !_disposed)
         {
-            if (i == workerId || _workerQueues[i] == null) continue;
+            WorkItem workItem = default;
+            bool foundWork = false;
             
-            // Check if this queue is overloaded
-            if (_workerQueues[i].Count > overloadThreshold)
+            // 1. Try local queue first (fastest path)
+            if (localQueue.TryDequeue(out workItem))
             {
-                if (TryDequeueByPriority(_workerQueues[i], out work))
-                    return work;
+                foundWork = true;
+                consecutiveStealFailures = 0;
             }
-        }
-        
-        // Phase 2: Random stealing for better load distribution
-        var startWorker = (uint)Interlocked.Increment(ref _randomSeed) % (uint)_maxConcurrency;
-        for (uint offset = 1; offset < _maxConcurrency; offset++)
-        {
-            var i = (int)((startWorker + offset) % (uint)_maxConcurrency);
-            if (i == workerId || _workerQueues[i] == null) continue;
-            
-            if (TryDequeueByPriority(_workerQueues[i], out work))
-                return work;
-        }
-
-        return null; // No work available anywhere
-    }
-
-    private bool TryDequeueByPriority(ConcurrentQueue<PriorityTask> queue, out Func<Task> work)
-    {
-        work = null;
-        
-        // Initialize thread-local temp array if needed (increased size for better coverage)
-        const int maxExamineCount = 128; // Examine more tasks for better priority handling
-        
-        // IMPORTANT: Check if we need to resize or recreate the array
-        // This prevents unbounded growth if someone changes maxExamineCount
-        if (_tempTasks == null || _tempTasks.Length != maxExamineCount)
-        {
-            _tempTasks = new PriorityTask[maxExamineCount];
-        }
-        
-        // Look for highest priority task in queue
-        PriorityTask? bestTask = null;
-        int tempCount = 0;
-        int examinedCount = 0;
-        
-        // First pass: find if there are any high priority tasks
-        // This prevents examining too many tasks if we have urgent work
-        var queueSnapshot = queue.Count;
-        var maxToExamine = Math.Min(queueSnapshot, maxExamineCount);
-        
-        // Use a List to handle overflow cases without losing tasks
-        List<PriorityTask> overflowTasks = null;
-        
-        // Dequeue tasks to find the highest priority (considering age)
-        while (queue.TryDequeue(out var task) && examinedCount < maxToExamine)
-        {
-            examinedCount++;
-            var effectivePriority = GetEffectivePriority(task);
-            
-            // Early exit optimization: If we find a High priority task, use it immediately
-            if (effectivePriority == TickerTaskPriority.High)
+            // 2. Try work stealing if local queue is empty
+            else if (TryStealWork(workerId, out workItem))
             {
-                // Re-enqueue any tasks we've already dequeued
-                if (tempCount > 0)
-                {
-                    var earlyExitTasks = _tempTasks.AsSpan(0, tempCount);
-                    foreach (var tempTask in earlyExitTasks)
-                    {
-                        queue.Enqueue(tempTask);
-                    }
-                }
-                if (bestTask.HasValue)
-                {
-                    queue.Enqueue(bestTask.Value);
-                }
-                // Re-enqueue overflow tasks if any
-                if (overflowTasks != null)
-                {
-                    foreach (var overflowTask in overflowTasks)
-                    {
-                        queue.Enqueue(overflowTask);
-                    }
-                }
-                
-                bestTask = task;
-                break;
-            }
-            
-            // Compare priorities and keep the best one
-            if (!bestTask.HasValue)
-            {
-                bestTask = task;
+                foundWork = true;
+                consecutiveStealFailures = 0;
             }
             else
             {
-                var bestEffectivePriority = GetEffectivePriority(bestTask.Value);
-                
-                if (effectivePriority < bestEffectivePriority || 
-                    (effectivePriority == bestEffectivePriority && task.QueueTime < bestTask.Value.QueueTime))
+                consecutiveStealFailures++;
+            }
+            
+            if (foundWork)
+            {
+                lastWorkTime = DateTime.UtcNow;
+                await ExecuteWorkAsync(workItem);
+            }
+            else
+            {
+                // No work found - check if we should exit
+                if (DateTime.UtcNow - lastWorkTime > _idleWorkerTimeout)
                 {
-                    // New task is better - store old best task
-                    if (tempCount < maxExamineCount)
+                    // Check ALL queues for any remaining work before exiting
+                    bool anyWorkRemaining = false;
+                    for (int i = 0; i < _maxConcurrency; i++)
                     {
-                        _tempTasks[tempCount++] = bestTask.Value;
+                        if (_workerQueues[i].Count > 0)
+                        {
+                            anyWorkRemaining = true;
+                            break;
+                        }
                     }
-                    else
+                    
+                    // Only exit if there's really no work and we have minimum workers
+                    if (!anyWorkRemaining && _totalQueuedTasks == 0 && _activeWorkers > 1)
                     {
-                        // Buffer full - store in overflow list instead of immediate re-queue
-                        overflowTasks ??= new List<PriorityTask>();
-                        overflowTasks.Add(bestTask.Value);
+                        break; // Exit this worker
                     }
-                    bestTask = task;
+                    
+                    // Reset timer if we need to stay
+                    lastWorkTime = DateTime.UtcNow;
+                }
+                
+                // Brief sleep to avoid spinning
+                if (consecutiveStealFailures > 3)
+                {
+                    await Task.Delay(Math.Min(consecutiveStealFailures * 2, 50));
                 }
                 else
                 {
-                    // Current best is still better
-                    if (tempCount < maxExamineCount)
-                    {
-                        _tempTasks[tempCount++] = task;
-                    }
-                    else
-                    {
-                        // Buffer full - store in overflow list instead of immediate re-queue
-                        overflowTasks ??= new List<PriorityTask>();
-                        overflowTasks.Add(task);
-                    }
+                    await Task.Yield();
                 }
             }
         }
+    }
+    
+    private bool TryStealWork(int thiefWorkerId, out WorkItem workItem)
+    {
+        workItem = default;
         
-        // Re-enqueue ALL tasks we didn't take (including overflow)
-        if (tempCount > 0)
+        // Try to steal from other workers
+        // Start from a different position each time to avoid patterns
+        var startIndex = (thiefWorkerId + 1) % _maxConcurrency;
+        
+        // First pass: steal from queues with multiple items
+        for (int i = 0; i < _maxConcurrency - 1; i++)
         {
-            var tasksToRequeue = _tempTasks.AsSpan(0, tempCount);
-            foreach (var task in tasksToRequeue)
+            var victimIndex = (startIndex + i) % _maxConcurrency;
+            if (victimIndex == thiefWorkerId)
+                continue; // Don't steal from ourselves
+            
+            var victimQueue = _workerQueues[victimIndex];
+            
+            // Only steal if victim has multiple items (leave at least one)
+            if (victimQueue.Count > 1 && victimQueue.TryDequeue(out workItem))
             {
-                queue.Enqueue(task);
+                return true;
             }
         }
         
-        // Re-enqueue overflow tasks
-        if (overflowTasks != null)
+        // Second pass: steal even single items if we're desperate
+        for (int i = 0; i < _maxConcurrency - 1; i++)
         {
-            foreach (var task in overflowTasks)
+            var victimIndex = (startIndex + i) % _maxConcurrency;
+            if (victimIndex == thiefWorkerId)
+                continue;
+            
+            if (_workerQueues[victimIndex].TryDequeue(out workItem))
             {
-                queue.Enqueue(task);
+                return true;
             }
-        }
-        
-        if (bestTask.HasValue)
-        {
-            work = async () =>
-            {
-                try
-                {
-                    await bestTask.Value.Work(bestTask.Value.UserToken); // No ConfigureAwait(false) - stay on TickerQ thread
-                }
-                catch
-                {
-                    /* swallow */
-                }
-                finally
-                {
-                    if (bestTask.Value.ShouldDecrementTotal)
-                    {
-                        Interlocked.Decrement(ref _totalQueuedTasks);
-                    }
-                }
-            };
-            return true;
         }
         
         return false;
     }
-
-    // Thread-local cached time to avoid repeated DateTime.UtcNow calls
-    [ThreadStatic] private static DateTime _cachedNow;
-    [ThreadStatic] private static long _lastCacheUpdateTicks;
     
-    private TickerTaskPriority GetEffectivePriority(PriorityTask task)
+    private async Task ExecuteWorkAsync(WorkItem workItem)
     {
-        // Cache DateTime.UtcNow per batch to avoid repeated system calls
-        // Use Environment.TickCount64 which is monotonic and doesn't wrap in practice
-        var currentTicks = Environment.TickCount64;
+        // Decrement immediately after dequeue to keep counter in sync
+        Interlocked.Decrement(ref _totalQueuedTasks);
         
-        // Refresh cache every 10ms or if we detect time going backwards (shouldn't happen with TickCount64)
-        var ticksDiff = currentTicks - _lastCacheUpdateTicks;
-        if (ticksDiff > 10 || ticksDiff < 0)
+        try
         {
-            _cachedNow = DateTime.UtcNow;
-            _lastCacheUpdateTicks = currentTicks;
+            // Check cancellation before executing
+            if (!workItem.UserToken.IsCancellationRequested && !_shutdownCts.Token.IsCancellationRequested)
+            {
+                // Execute the work asynchronously - this won't block the worker
+                await workItem.Work(workItem.UserToken).ConfigureAwait(false);
+            }
         }
-        
-        var age = _cachedNow - task.QueueTime;
-        var priority = task.Priority;
-        
-        // Age-based priority promotion with starvation prevention
-        // Tasks get promoted based on how long they've been waiting
-        if (priority == TickerTaskPriority.Low)
+        catch (OperationCanceledException)
         {
-            if (age.TotalMinutes > 5)
-                return TickerTaskPriority.High; // Very old low priority tasks become high
-            if (age.TotalMinutes > 2)
-                return TickerTaskPriority.Normal; // Old low priority tasks become normal
+            // Expected - task was cancelled
         }
-        else if (priority == TickerTaskPriority.Normal)
+        catch (Exception)
         {
-            if (age.TotalMinutes > 10)
-                return TickerTaskPriority.High; // Very old normal tasks become high
+            // Log error if needed, but don't crash the worker
+            // Errors are swallowed to prevent worker thread crashes
         }
-        
-        return priority;
     }
-
+    
     /// <summary>
-    /// Queues an async continuation to any available TickerQ worker thread.
-    /// Uses round-robin distribution for optimal load balancing and performance.
+    /// Posts a continuation work item to the scheduler.
+    /// Used by TickerQSynchronizationContext.
     /// </summary>
-    internal void QueueContinuation(Action continuation)
+    internal void PostContinuation(SendOrPostCallback callback, object state)
     {
-        if (_disposed || _isFrozen) return;
+        if (_disposed || _shutdownCts.Token.IsCancellationRequested)
+            return;
         
-        // Create a high-priority task for the continuation
-        var continuationTask = new PriorityTask(
-            TickerTaskPriority.High, // Continuations get highest priority to maintain execution flow
-            ct =>
+        // Continuations get queued to the current worker's queue if possible
+        var queueIndex = _threadWorkerIndex >= 0 ? _threadWorkerIndex : GetNextQueueIndex();
+        var targetQueue = _workerQueues[queueIndex];
+        
+        var workItem = new WorkItem(
+            ct => 
             {
                 try
                 {
-                    continuation();
+                    callback(state);
                 }
                 catch
                 {
-                    /* swallow continuation exceptions */
+                    // Swallow exceptions in continuations
                 }
-                return Task.CompletedTask; // Direct return - no async overhead
+                return Task.CompletedTask;
             },
-            CancellationToken.None, // Continuations don't need user cancellation
-            shouldDecrementTotal: false // Continuations should not decrement the total count
-        );
-
-        // Use round-robin to distribute continuations across all workers for better performance
-        var workerId = GetNextWorkerId();
-        var workerQueue = GetOrCreateWorkerQueue(workerId);
-        workerQueue.Enqueue(continuationTask);
+            CancellationToken.None);
         
-        // CRITICAL: For continuations, we may need to temporarily exceed maxConcurrency
-        // to prevent deadlocks when all workers are busy with tasks that have continuations
-        TryStartWorker(allowOversubscriptionForContinuations: true);
+        targetQueue.Enqueue(workItem);
+        // Count continuations to keep counter accurate
+        Interlocked.Increment(ref _totalQueuedTasks);
         
-        // Don't increment _totalQueuedTasks for continuations as they're internal overhead
-        // and shouldn't count against user's capacity limits
+        // Ensure worker is available
+        EnsureWorkerAvailable();
     }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_disposed) return;
-        _disposed = true;
-
-        // Cancel the shutdown token first to signal workers to exit
-        await _shutdownCts.CancelAsync();
-
-        // Wait for workers to finish (they should exit quickly due to _disposed check)
-        var startTime = DateTime.UtcNow;
-        while (_activeWorkers > 0)
-        {
-            await Task.Delay(10);
-
-            // Safety timeout - if workers don't exit after 5 seconds, force continue
-            if ((DateTime.UtcNow - startTime).TotalSeconds > 5)
-            {
-                break;
-            }
-        }
-
-        // Clean up resources
-        _notifyDebounce.Dispose();
-        _shutdownCts.Dispose();
-    }
-
+    
     /// <summary>
     /// Freezes the scheduler - prevents new tasks from being queued.
-    /// Currently running tasks will continue to completion.
-    /// Workers will exit after completing current tasks.
     /// </summary>
-    public void Freeze()
-    {
-        _isFrozen = true;
-    }
-
+    public void Freeze() => _isFrozen = true;
+    
     /// <summary>
     /// Resumes the scheduler - allows new tasks to be queued again.
-    /// Workers will be spawned as needed when new tasks arrive.
     /// </summary>
-    public void Resume()
-    {
-        _isFrozen = false;
-    }
-
+    public void Resume() => _isFrozen = false;
+    
     /// <summary>
     /// Gets whether the scheduler is currently frozen.
     /// </summary>
     public bool IsFrozen => _isFrozen;
-
+    
     /// <summary>
     /// Gets the current number of active worker threads.
     /// </summary>
     public int ActiveWorkers => _activeWorkers;
-
+    
     /// <summary>
-    /// Gets the current total number of queued tasks (excluding continuations).
+    /// Gets the current total number of queued tasks.
     /// </summary>
     public int TotalQueuedTasks => _totalQueuedTasks;
-
+    
     /// <summary>
     /// Gets whether the scheduler has been disposed.
     /// </summary>
     public bool IsDisposed => _disposed;
-
+    
+    /// <summary>
+    /// Gets diagnostic information about the scheduler state.
+    /// </summary>
+    public string GetDiagnostics()
+    {
+        var text = $"=== TickerQ Work-Stealing Scheduler ===\n";
+        text += $"Status: {(_isFrozen ? "FROZEN" : (_disposed ? "DISPOSED" : "ACTIVE"))}\n";
+        text += $"Workers: {_activeWorkers}/{_maxConcurrency}\n";
+        text += $"Total Queued (counter): {_totalQueuedTasks}\n\n";
+        text += "Queue Distribution:\n";
+        
+        int totalInQueues = 0;
+        for (int i = 0; i < _maxConcurrency; i++)
+        {
+            var count = _workerQueues[i].Count;
+            totalInQueues += count;
+            if (count > 0)
+            {
+                text += $"  Queue[{i}]: {count} tasks\n";
+            }
+        }
+        
+        if (totalInQueues == 0)
+        {
+            text += "  All queues empty\n";
+        }
+        else
+        {
+            text += $"  Total in queues: {totalInQueues}\n";
+        }
+        
+        // Discrepancy check
+        if (totalInQueues != _totalQueuedTasks)
+        {
+            text += $"\n⚠️ DISCREPANCY: Counter shows {_totalQueuedTasks} but queues have {totalInQueues} tasks!\n";
+        }
+        
+        return text;
+    }
+    
     /// <summary>
     /// Waits for all currently running tasks to complete.
-    /// Does not prevent new tasks from being queued unless scheduler is frozen.
     /// </summary>
-    /// <param name="timeout">Maximum time to wait for tasks to complete</param>
-    /// <returns>True if all tasks completed within timeout, false if timeout occurred</returns>
     public async Task<bool> WaitForRunningTasksAsync(TimeSpan? timeout = null)
     {
         var deadline = timeout.HasValue ? DateTime.UtcNow.Add(timeout.Value) : DateTime.MaxValue;
         
-        while (_activeWorkers > 0)
+        while (_totalQueuedTasks > 0 || _activeWorkers > 0)
         {
             if (DateTime.UtcNow > deadline)
                 return false; // Timeout
-
+            
             await Task.Delay(10);
         }
-
-        return true; // All tasks completed
+        
+        return true;
+    }
+    
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+        
+        _disposed = true;
+        _isFrozen = true; // Prevent new tasks
+        _shutdownCts.Cancel();
+        
+        // Wait for workers to exit gracefully
+        var timeout = DateTime.UtcNow.AddSeconds(5);
+        while (_activeWorkers > 0 && DateTime.UtcNow < timeout)
+        {
+            await Task.Delay(100);
+        }
+        
+        _notifyDebounce?.Dispose();
+        _shutdownCts?.Dispose();
     }
 }

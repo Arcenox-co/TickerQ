@@ -136,25 +136,38 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     {
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var now = _clock.UtcNow;
-        var mainSchedulerThreshold = now.AddMilliseconds(-now.Millisecond);
-
+    
+        // Define the window: ignore anything older than 1 second ago
+        var oneSecondAgo = now.AddSeconds(-1);
+    
         var baseQuery = dbContext.Set<TTimeTicker>()
             .AsNoTracking()
             .Where(x => x.ExecutionTime != null)
+            .Where(x => x.ExecutionTime >= oneSecondAgo)  // Ignore old tickers (fallback handles them)
             .WhereCanAcquire(_lockHolder);
-        
+    
+        // Find the earliest ticker within our window
         var minExecutionTime = await baseQuery
-            .Where(x => x.ExecutionTime >= mainSchedulerThreshold)
             .OrderBy(x => x.ExecutionTime)
             .Select(x => x.ExecutionTime)
             .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
 
         if (minExecutionTime == null)
             return [];
-        
+    
+        // Round the minimum execution time down to its second
+        var minSecond = new DateTime(minExecutionTime.Value.Year, minExecutionTime.Value.Month,
+            minExecutionTime.Value.Day, minExecutionTime.Value.Hour,
+            minExecutionTime.Value.Minute, minExecutionTime.Value.Second,
+            DateTimeKind.Utc);
+    
+        // Fetch all tickers within that complete second (this ensures we get all tickers in the same second)
+        var maxExecutionTime = minSecond.AddSeconds(1);
+    
         return await baseQuery
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
-            .Where(x => x.ExecutionTime.Value >= minExecutionTime && x.ExecutionTime <= now.AddSeconds(1).AddMilliseconds(-now.Millisecond))
+            .Where(x => x.ExecutionTime >= minSecond && x.ExecutionTime < maxExecutionTime)
+            .OrderBy(x => x.ExecutionTime)
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
     }
