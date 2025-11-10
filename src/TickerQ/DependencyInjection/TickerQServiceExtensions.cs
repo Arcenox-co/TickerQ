@@ -32,6 +32,12 @@ namespace TickerQ.DependencyInjection
             var optionInstance = new TickerOptionsBuilder<TTimeTicker,TCronTicker>(tickerExecutionContext, schedulerOptionsBuilder);
             optionsBuilder?.Invoke(optionInstance);
             CronScheduleCache.TimeZoneInfo = schedulerOptionsBuilder.SchedulerTimeZone;
+            
+            // Apply JSON serializer options for ticker requests if configured during service registration
+            if (optionInstance.RequestJsonSerializerOptions != null)
+            {
+                TickerHelper.RequestJsonSerializerOptions = optionInstance.RequestJsonSerializerOptions;
+            }
             services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();

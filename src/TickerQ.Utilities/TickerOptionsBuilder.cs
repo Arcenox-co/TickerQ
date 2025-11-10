@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities.Entities;
@@ -26,6 +27,25 @@ namespace TickerQ.Utilities
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureScheduler(Action<SchedulerOptionsBuilder> schedulerOptionsBuilder)
         {
             schedulerOptionsBuilder?.Invoke(_schedulerOptions);
+            return this;
+        }
+
+              
+        /// <summary>
+        /// JsonSerializerOptions specifically for serializing/deserializing ticker requests.
+        /// If not set, default JsonSerializerOptions will be used.
+        /// </summary>
+        internal JsonSerializerOptions RequestJsonSerializerOptions { get; set; }
+        
+        /// <summary>
+        /// Configures the JSON serialization options specifically for ticker request serialization/deserialization.
+        /// </summary>
+        /// <param name="configure">Action to configure JsonSerializerOptions for ticker requests</param>
+        /// <returns>The TickerOptionsBuilder for method chaining</returns>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureRequestJsonOptions(Action<JsonSerializerOptions> configure)
+        {
+            RequestJsonSerializerOptions ??= new JsonSerializerOptions();
+            configure?.Invoke(RequestJsonSerializerOptions);
             return this;
         }
         
