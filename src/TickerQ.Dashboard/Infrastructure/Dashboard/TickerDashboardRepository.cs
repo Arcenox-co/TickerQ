@@ -4,13 +4,11 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using NCrontab;
 using TickerQ.Utilities;
 using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
-using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Dashboard.Infrastructure.Dashboard
@@ -23,23 +21,17 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         private readonly ITickerQHostScheduler _tickerQHostScheduler;
         private readonly ITickerQNotificationHubSender _notificationHubSender;
         private readonly TickerExecutionContext _executionContext;
-        private readonly ITimeTickerManager<TTimeTicker>  _timeTickerManager;
-        private readonly ITickerClock _clock;
         private readonly DashboardOptionsBuilder _dashboardOptions;
         public TickerDashboardRepository(
             TickerExecutionContext executionContext,
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerQHostScheduler tickerQHostScheduler, 
             ITickerQNotificationHubSender notificationHubSender, 
-            ITimeTickerManager<TTimeTicker> timeTickerManager, 
-            ITickerClock clock,
             DashboardOptionsBuilder dashboardOptions)
         {
             _persistenceProvider = persistenceProvider ?? throw new ArgumentNullException(nameof(persistenceProvider));
             _tickerQHostScheduler = tickerQHostScheduler ?? throw new ArgumentNullException(nameof(tickerQHostScheduler));
             _notificationHubSender = notificationHubSender ?? throw new ArgumentNullException(nameof(notificationHubSender));
-            _timeTickerManager = timeTickerManager;
-            _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _executionContext = executionContext ??  throw new ArgumentNullException(nameof(executionContext));
             _dashboardOptions = dashboardOptions ?? throw new ArgumentNullException(nameof(dashboardOptions));
         }
@@ -49,69 +41,6 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         
         public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginatedAsync(int pageNumber, int pageSize, CancellationToken cancellationToken)
             => await _persistenceProvider.GetTimeTickersPaginated(null, pageNumber, pageSize, cancellationToken);
-
-        public async Task SetTimeTickerBatchParent(Guid targetId, Guid parentId, RunCondition? batchRunCondition = null)
-        {
-            // var tt = await _persistenceProvider.GetTimeTickerById(targetId);
-            //
-            // var requestType = GetRequestType(tt.Function);
-            //
-            //
-            // tt.BatchParent = parentId;
-            // tt.RunCondition = batchRunCondition;
-            //
-            // if (tt.Status == TickerStatus.Idle)
-            // {
-            //     tt.Status = TickerStatus.Batched;
-            // }
-            // _tickerHost.RestartIfNeeded(tt.ExecutionTime);
-            //
-            // await _persistenceProvider.UpdateTimeTickers(new[]
-            // {
-            //     tt
-            // });
-            //
-            // var parentTicker = await _persistenceProvider.GetTimeTickerById(parentId);
-            // await _internalTickerManager.CascadeBatchUpdate(parentId, parentTicker.Status);
-            //
-            // await NotifyOrUpdateUpdate(tt, requestType, false);
-        }
-        
-        public async Task UnbatchTimeTickerAsync(Guid tickerId)
-        {
-            // var tt = await _persistenceProvider.GetTimeTickerById(tickerId);
-            //
-            // var requestType = GetRequestType(tt.Function);
-            //
-            // // Store the original parent ID for cascade updates
-            // var originalParentId = tt.BatchParent;
-            //
-            // // Clear the batch relationship
-            // tt.BatchParent = null;
-            // tt.RunCondition = null;
-            //
-            // // If the ticker was batched, change it to idle
-            // if (tt.Status == TickerStatus.Batched)
-            // {
-            //     tt.Status = TickerStatus.Idle;
-            // }
-            //
-            // _tickerHost.RestartIfNeeded(tt.ExecutionTime);
-            //
-            // await _persistenceProvider.UpdateTimeTickers(new[]
-            // {
-            //     tt
-            // });
-            //
-            // // If there was a parent, update the parent's batch cascade
-            // if (originalParentId.HasValue)
-            // {
-            //     var parentTicker = await _persistenceProvider.GetTimeTickerById(originalParentId.Value);
-            //     await _internalTickerManager.CascadeBatchUpdate(originalParentId.Value, parentTicker.Status);
-            // }
-            //
-            // await NotifyOrUpdateUpdate(tt, requestType, false);
-        }
 
         public async Task<IList<Tuple<TickerStatus, int>>> GetTimeTickerFullDataAsync(CancellationToken cancellationToken)
         {
@@ -609,28 +538,6 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         public bool CancelTickerById(Guid tickerId)
             => TickerCancellationTokenManager.RequestTickerCancellationById(tickerId);
 
-        public async Task DeleteCronTickerByIdAsync(Guid id, CancellationToken cancellationToken)
-        {
-            await _persistenceProvider.RemoveCronTickers([id], cancellationToken);
-
-            if (_executionContext.Functions.Any(x => x.TickerId == id))
-                _tickerQHostScheduler.Restart();
-
-            if (_notificationHubSender != null)
-                await _notificationHubSender.RemoveCronTickerNotifyAsync(id);
-        }
-
-        public async Task DeleteTimeTickerByIdAsync(Guid id, CancellationToken cancellationToken)
-        {
-            await _persistenceProvider.RemoveTimeTickers([id], cancellationToken);
-            
-            if (_executionContext.Functions.Any(x => x.TickerId == id))
-                _tickerQHostScheduler.Restart();
-
-            if (_notificationHubSender != null)
-                await _notificationHubSender.RemoveTimeTickerNotifyAsync(id);
-        }
-
         public async Task DeleteCronTickerOccurrenceByIdAsync(Guid id, CancellationToken cancellationToken)
         {
             await _persistenceProvider.RemoveCronTickerOccurrences([id], cancellationToken);
@@ -696,115 +603,6 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 else
                 {
                     yield return (tickerFunction.Key, (string.Empty, null, tickerFunction.Priority));
-                }
-            }
-        }
-
-        // New method that accepts request models
-        public async Task UpdateTimeTickerAsync(Guid id, TTimeTicker request, CancellationToken cancellationToken)
-        {
-            request.Id = id;
-            
-            if(request.ExecutionTime == default)
-                request.ExecutionTime = _clock.UtcNow.AddSeconds(1);
-            
-            await _timeTickerManager.UpdateAsync(request, cancellationToken);
-        }
-
-        
-        public async Task AddTimeTickerAsync(TTimeTicker request, CancellationToken cancellationToken)
-        {
-            if(request.ExecutionTime == default)
-                request.ExecutionTime = _clock.UtcNow.AddSeconds(1);
-            
-            await _timeTickerManager.AddAsync(request, cancellationToken);
-        }
-
-        // New method that accepts request models
-        public async Task AddCronTickerAsync(TCronTicker request, CancellationToken cancellationToken)
-        {
-            if(request.Id == default)
-                request.Id = Guid.NewGuid();
-            
-            if(request.CreatedAt == default)
-                request.CreatedAt = _clock.UtcNow;
-            
-            request.UpdatedAt = request.CreatedAt;
-            
-            // Insert the cron ticker using persistence provider
-            await _persistenceProvider.InsertCronTickers(new[] { request }, cancellationToken);
-            
-            // Parse the cron expression to get next occurrence
-            var nextOccurrence = CrontabSchedule.TryParse(request.Expression)?.GetNextOccurrence(_clock.UtcNow);
-            
-            if (nextOccurrence != null)
-                _tickerQHostScheduler.RestartIfNeeded(nextOccurrence.Value);
-            
-            // Notify about the new cron ticker
-            var requestType = GetRequestType(request.Function);
-            await NotifyOrUpdateUpdate(request, requestType, true);
-        }
-
-        // New method that accepts request models
-        public async Task UpdateCronTickerAsync(Guid id, UpdateCronTickerRequest request, CancellationToken cancellationToken)
-        {
-            var cronTicker = await _persistenceProvider.GetCronTickerById(id, cancellationToken);
-
-            if (cronTicker == null)
-                throw new KeyNotFoundException($"CronTicker with ID {id} not found.");
-
-            cronTicker.UpdatedAt = DateTime.UtcNow;
-            var requestType = GetRequestType(request.Function);
-
-            cronTicker.Function = request.Function;
-            cronTicker.Expression = request.Expression;
-            cronTicker.Description = request.Description ?? string.Empty;
-            cronTicker.Retries = request.Retries ?? 0;
-            cronTicker.RetryIntervals = request.Intervals ?? [30];
-
-            // Process the request using the function
-            if (!string.IsNullOrWhiteSpace(request.Request))
-            {
-                var serializedRequest = JsonSerializer.Deserialize<object>(request.Request, _dashboardOptions.DashboardJsonOptions);
-                cronTicker.Request = TickerHelper.CreateTickerRequest(serializedRequest);
-            }
-            
-            await _persistenceProvider.UpdateCronTickers([cronTicker], cancellationToken);
-
-            var nextOccurrence = CrontabSchedule.TryParse(cronTicker.Expression)?.GetNextOccurrence(DateTime.UtcNow);
-
-            if (nextOccurrence != null)
-                _tickerQHostScheduler.RestartIfNeeded(nextOccurrence.Value);
-
-            await NotifyOrUpdateUpdate(cronTicker, requestType, false);
-        }
-
-        private static string GetRequestType(string function)
-        {
-            return TickerFunctionProvider.TickerFunctionRequestTypes.TryGetValue(function,
-                out var functionTypeContext)
-                ? functionTypeContext.Item1
-                : string.Empty;
-        }
-
-        private async Task NotifyOrUpdateUpdate<T>(T ticker, string requestType, bool isNew) where T : class
-        {
-            if (_notificationHubSender != null)
-            {
-                switch (ticker)
-                {
-                    case TTimeTicker timeTicker when isNew:
-                        await _notificationHubSender.AddTimeTickerNotifyAsync(timeTicker);
-                        break;
-                    case TTimeTicker timeTicker:
-                        await _notificationHubSender.UpdateTimeTickerNotifyAsync(timeTicker);
-                        break;
-                    case TCronTicker cronTicker when isNew:
-                        await _notificationHubSender.AddCronTickerNotifyAsync(cronTicker);
-                        break;  
-                    case TCronTicker cronTicker:
-                        await _notificationHubSender.UpdateCronTickerNotifyAsync(cronTicker);
-                        break;
                 }
             }
         }

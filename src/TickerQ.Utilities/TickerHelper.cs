@@ -14,7 +14,7 @@ namespace TickerQ.Utilities
         /// JsonSerializerOptions specifically for ticker request serialization/deserialization.
         /// Can be configured during application startup via TickerOptionsBuilder.
         /// </summary>
-        public static JsonSerializerOptions RequestJsonSerializerOptions { get; set; } = new JsonSerializerOptions();
+        public static JsonSerializerOptions RequestJsonSerializerOptions { get; set; } = new();
 
         public static byte[] CreateTickerRequest<T>(T data)
         {
