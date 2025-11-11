@@ -292,26 +292,30 @@ jobs:
               echo "📝 Creating manual merge file for failed commits..."
               MANUAL_MERGE_FILE="MANUAL_MERGE_COMMITS.md"
               
-              cat > "$MANUAL_MERGE_FILE" << EOF
+              cat > "$MANUAL_MERGE_FILE" << 'HEREDOC_EOF'
 # Commits Requiring Manual Merge
 
-This file lists commits from \`main\` that could not be automatically applied to \`${{ matrix.target_branch }}\` and need manual merging.
+This file lists commits from `main` that could not be automatically applied and need manual merging.
 
 ## Summary
-- **Total commits requiring manual merge:** ${#failed_commits[@]}
-- **Target branch:** ${{ matrix.target_branch }}
-- **Source branch:** main
-
+HEREDOC_EOF
+              
+              echo "- **Total commits requiring manual merge:** ${#failed_commits[@]}" >> "$MANUAL_MERGE_FILE"
+              echo "- **Target branch:** ${{ matrix.target_branch }}" >> "$MANUAL_MERGE_FILE"
+              echo "- **Source branch:** main" >> "$MANUAL_MERGE_FILE"
+              echo "" >> "$MANUAL_MERGE_FILE"
+              
+              cat >> "$MANUAL_MERGE_FILE" << 'HEREDOC_EOF'
 ## Instructions
 1. Review each commit below
 2. Manually apply the changes from each commit
-3. Ensure .csproj files are preserved from ${{ matrix.target_branch }} branch
+3. Ensure .csproj files are preserved from target branch
 4. Test the changes
 5. Remove this file once all commits have been merged
 
 ## Commits to Merge
 
-EOF
+HEREDOC_EOF
               
               # Add details for each failed commit
               for failed_commit_info in "${failed_commits[@]}"; do
@@ -331,7 +335,7 @@ EOF
                   # Get list of files changed
                   commit_files=$(git show "$commit_sha" --name-only --format=format: --no-patch 2>/dev/null | grep -v '^$' || echo "N/A")
                   
-                  cat >> "$MANUAL_MERGE_FILE" << EOF
+                  cat >> "$MANUAL_MERGE_FILE" << HEREDOC_EOF
 ### Commit: \`$commit_sha\`
 
 - **Full SHA:** \`$commit_full_sha\`
@@ -370,10 +374,10 @@ git show $commit_full_sha -- <file-path>
 
 ---
 
-EOF
+HEREDOC_EOF
                 else
                   # Fallback if we can't get commit details
-                  cat >> "$MANUAL_MERGE_FILE" << EOF
+                  cat >> "$MANUAL_MERGE_FILE" << HEREDOC_EOF
 ### Commit: \`$commit_sha\`
 
 - **Reason:** $failed_commit_info
@@ -382,21 +386,19 @@ EOF
 
 ---
 
-EOF
+HEREDOC_EOF
                 fi
                 rm -f /tmp/commit_info
               done
               
               # Add footer
-              cat >> "$MANUAL_MERGE_FILE" << EOF
-## Notes
-- Remember to preserve .csproj files from ${{ matrix.target_branch }} branch
-- Test all changes before removing this file
-- Once all commits are merged, delete this file and commit the removal
-
----
-_Generated automatically by branch sync workflow_
-EOF
+              echo "## Notes" >> "$MANUAL_MERGE_FILE"
+              echo "- Remember to preserve .csproj files from ${{ matrix.target_branch }} branch" >> "$MANUAL_MERGE_FILE"
+              echo "- Test all changes before removing this file" >> "$MANUAL_MERGE_FILE"
+              echo "- Once all commits are merged, delete this file and commit the removal" >> "$MANUAL_MERGE_FILE"
+              echo "" >> "$MANUAL_MERGE_FILE"
+              echo "---" >> "$MANUAL_MERGE_FILE"
+              echo "_Generated automatically by branch sync workflow_" >> "$MANUAL_MERGE_FILE"
               
               # Add the file to git
               git add "$MANUAL_MERGE_FILE"
