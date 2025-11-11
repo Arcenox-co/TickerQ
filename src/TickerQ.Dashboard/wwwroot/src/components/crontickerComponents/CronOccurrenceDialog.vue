@@ -9,6 +9,8 @@ import { methodName, type TickerNotificationHubType } from '@/hub/tickerNotifica
 import type { GetCronTickerOccurrenceResponse } from '@/http/services/types/cronTickerOccurrenceService.types'
 import { ConfirmDialogProps } from '@/components/common/ConfirmDialog.vue'
 import PaginationFooter from '@/components/PaginationFooter.vue'
+import { formatTime } from '@/utilities/dateTimeParser'
+import { format } from 'timeago.js'
 
 const confirmDialog = useDialog<{ data: string }>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
@@ -87,8 +89,31 @@ const handlePageSizeChange = async (size: number) => {
 
 const addHubListeners = async () => {
   props.tickerNotificationHub.onReceiveUpdateCronTickerOccurrence((val:GetCronTickerOccurrenceResponse) => {
-    // Reload current page when item is updated
-    loadPageData();
+    // Update in-memory items array while preserving lockedAt and lockHolder
+    const response = getByCronTickerIdPaginated.response.value;
+    if (response && response.items) {
+      const itemIndex = response.items.findIndex((item: GetCronTickerOccurrenceResponse) => item.id === val.id);
+      if (itemIndex !== -1) {
+        const currentItem = response.items[itemIndex];
+        // Merge update while preserving lockedAt and lockHolder
+        response.items[itemIndex] = {
+          ...currentItem,
+          ...val,
+          status: Status[val.status as any],
+          executedAt: `${format(val.executedAt)} (took ${formatTime(val.elapsedTime as number, true)})`,
+          retryIntervals: currentItem.retryIntervals,
+          lockedAt: currentItem.lockedAt, // Preserve existing lockedAt
+          lockHolder: currentItem.lockHolder,
+          executionTime: currentItem.executionTime // Preserve existing lockHolder
+        };
+      } else {
+        // Item not found in current page, reload
+        loadPageData();
+      }
+    } else {
+      // No data loaded yet, reload
+      loadPageData();
+    }
   });
 
   props.tickerNotificationHub.onReceiveAddCronTickerOccurrence((val:GetCronTickerOccurrenceResponse) => {
@@ -211,9 +236,11 @@ const formatRetryIntervals = (item: any) => {
 }
 
 const setRowProp = (propContext: any) => {
+  const status = propContext.item.status;
+  const statusStr = typeof status === 'string' ? status : (status !== null && status !== undefined ? String(status) : 'Unknown');
   return { 
-    class: `status-row status-${propContext.item.status.toLowerCase()}`,
-    style: `border-left: 4px solid ${getStatusColor(propContext.item.status)}`
+    class: `status-row status-${statusStr.toLowerCase()}`,
+    style: `border-left: 4px solid ${getStatusColor(status)}`
   }
 }
 </script>
