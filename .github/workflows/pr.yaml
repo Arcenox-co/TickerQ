@@ -3,7 +3,6 @@ name: Run Build and Tests on Pull Request
 on:
   pull_request:
     branches:
-      - main
       - net8
 
 jobs:
