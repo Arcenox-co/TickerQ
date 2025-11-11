@@ -317,14 +317,14 @@ namespace TickerQ.SourceGenerator
                     continue;
                     
                 var simpleName = fullTypeName.Contains('.') ? 
-                    fullTypeName[(fullTypeName.LastIndexOf('.') + 1)..] : 
+                    fullTypeName.Substring(fullTypeName.LastIndexOf('.') + 1) : 
                     fullTypeName;
                     
                 simpleNameCounts[simpleName] = simpleNameCounts.TryGetValue(simpleName, out var count) ? count + 1 : 1;
             }
             
             // Return simple names that have conflicts (count > 1)
-            return [..simpleNameCounts.Where(kv => kv.Value > 1).Select(kv => kv.Key)];
+            return new HashSet<string>(simpleNameCounts.Where(kv => kv.Value > 1).Select(kv => kv.Key));
         }
 
 
@@ -712,10 +712,10 @@ namespace TickerQ.SourceGenerator
                 {
                     var name = attr.AttributeClass?.Name;
                     var fullName = attr.AttributeClass?.ToDisplayString();
-                    return name == "FromKeyedServicesAttribute" || 
+                    return name == SourceGeneratorConstants.FromKeyedServicesAttributeName || 
                            name == "FromKeyedServices" ||
                            fullName == "Microsoft.Extensions.DependencyInjection.FromKeyedServicesAttribute" ||
-                           fullName?.EndsWith("FromKeyedServicesAttribute") == true;
+                           fullName?.EndsWith(SourceGeneratorConstants.FromKeyedServicesAttributeName) == true;
                 });
 
             if (keyedServiceAttribute != null)
