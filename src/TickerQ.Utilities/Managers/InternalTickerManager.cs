@@ -82,36 +82,47 @@ namespace TickerQ.Utilities.Managers
             if (time is null)
             {
                 sources = [TickerType.CronTickerOccurrence];
-                return cron.Value - now;
+                var cronRemaining = cron.Value - now;
+                // Ensure we don't return negative values - schedule for immediate execution
+                return cronRemaining < TimeSpan.Zero ? TimeSpan.Zero : cronRemaining;
             }
 
             // only time
             if (cron is null)
             {
                 sources = [TickerType.TimeTicker];
-                return time.Value - now;
+                var timeRemaining = time.Value - now;
+                // Ensure we don't return negative values - schedule for immediate execution
+                return timeRemaining < TimeSpan.Zero ? TimeSpan.Zero : timeRemaining;
             }
 
-            // both present - check if they're close enough to batch together
-            var timeDiff = Math.Abs((cron.Value - time.Value).TotalMilliseconds);
+            // both present - check if they're in the exact same second (ignoring milliseconds)
+            var cronSecond = new DateTime(cron.Value.Year, cron.Value.Month, cron.Value.Day, 
+                                          cron.Value.Hour, cron.Value.Minute, cron.Value.Second);
+            var timeSecond = new DateTime(time.Value.Year, time.Value.Month, time.Value.Day,
+                                          time.Value.Hour, time.Value.Minute, time.Value.Second);
             
-            // Only batch if within 50ms of each other for efficiency
-            if (timeDiff <= 250)
+            // Only batch if they're in the exact same second
+            if (cronSecond == timeSecond)
             {
                 sources = [TickerType.CronTickerOccurrence, TickerType.TimeTicker];
                 var earliest = cron < time ? cron.Value : time.Value;
-                return earliest - now;
+                var earliestRemaining = earliest - now;
+                // Ensure we don't return negative values
+                return earliestRemaining < TimeSpan.Zero ? TimeSpan.Zero : earliestRemaining;
             }
 
-            // Different times - only process the earliest one
+            // Different seconds - only process the earliest one
             if (cron < time)
             {
                 sources = [TickerType.CronTickerOccurrence];
-                return cron.Value - now;
+                var cronRemaining = cron.Value - now;
+                return cronRemaining < TimeSpan.Zero ? TimeSpan.Zero : cronRemaining;
             }
 
             sources = [TickerType.TimeTicker];
-            return time.Value - now;
+            var finalTimeRemaining = time.Value - now;
+            return finalTimeRemaining < TimeSpan.Zero ? TimeSpan.Zero : finalTimeRemaining;
         }
 
         private async Task<InternalFunctionContext[]>RetrieveEligibleTickersAsync(

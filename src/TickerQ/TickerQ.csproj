@@ -21,7 +21,7 @@
     </Target>
 
     <ItemGroup>
-        <None Include="..\TickerQ.SourceGenerator\bin\$(Configuration)\net8.0\TickerQ.SourceGenerator.dll"
+        <None Include="..\TickerQ.SourceGenerator\bin\$(Configuration)\netstandard2.0\TickerQ.SourceGenerator.dll"
               Pack="true"
               PackagePath="analyzers/dotnet/cs" />
     </ItemGroup>

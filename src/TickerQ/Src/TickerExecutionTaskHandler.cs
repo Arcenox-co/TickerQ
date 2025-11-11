@@ -217,14 +217,23 @@ internal class TickerExecutionTaskHandler
             }
             catch (TerminateExecutionException ex)
             {
-                context.SetProperty(x => x.Status, TickerStatus.Skipped)
+                context.SetProperty(x => x.Status, ex.Status)
                     .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
-                    .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
-                    .SetProperty(x => x.ExceptionDetails, ex.Message);
+                    .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds);
+
+                if (ex.InnerException != null)
+                {
+                    context.SetProperty(x => x.ExceptionDetails, ex.InnerException.Message);
+                    jobActivity?.SetTag("tickerq.job.skip_reason", ex.InnerException.Message);
+                }
+                else
+                {
+                    context.SetProperty(x => x.ExceptionDetails, ex.Message);
+                    jobActivity?.SetTag("tickerq.job.skip_reason", ex.Message);
+                }
                 
                 // Add skip tags to activity
                 jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
-                jobActivity?.SetTag("tickerq.job.skip_reason", ex.Message);
                 
                 // Log job skipped
                 _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
