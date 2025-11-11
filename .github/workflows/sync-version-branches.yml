@@ -97,127 +97,109 @@ jobs:
       - name: Create sync branch and apply changes
         if: steps.check_merge.outputs.needs_merge == 'true'
         run: |
-          echo "🔄 Creating sync branch from ${{ matrix.target_branch }}"
+          echo "🔄 Creating sync branch from main (always taking latest changes from main)"
 
-          # Create a new branch for the PR
+          # Ensure we're on main and have latest
+          git checkout main
+          git pull origin main
+
+          # Create a new branch for the PR starting from main
           sync_branch="sync-main-to-${{ matrix.target_branch }}-$(date +%Y%m%d-%H%M%S)"
-          git checkout -b "$sync_branch" ${{ matrix.target_branch }}
+          git checkout -b "$sync_branch" main
 
-          # Get the commits that need to be applied
-          commits_to_apply=$(git log "${{ matrix.target_branch }}..main" --oneline --no-merges | cut -d' ' -f1 | tac)
+          echo "✅ Created sync branch from latest main - all latest changes included"
 
-          if [ -n "$commits_to_apply" ]; then
-            echo "📋 Applying commits: $commits_to_apply"
-
-            # Cherry-pick each commit individually to avoid merge conflicts
-            for commit in $commits_to_apply; do
-              echo "🍒 Cherry-picking $commit..."
-              if git cherry-pick --no-commit "$commit"; then
-                echo "✅ Cherry-pick successful for $commit"
-              else
-                echo "⚠️  Cherry-pick failed for $commit, skipping..."
-                git cherry-pick --abort || true
-                git reset --hard HEAD
-              fi
-            done
-
-            # Reset files that should stay as they are in the target branch
-            echo "📝 Processing configuration files..."
+          # Apply transformations needed for target branch
+          echo "📝 Processing configuration files for ${{ matrix.target_branch }}..."
+          
+          # Get all .csproj files from target branch (preserve target branch configurations)
+          echo "📋 Getting .csproj files from ${{ matrix.target_branch }} branch..."
+          find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \; 2>/dev/null || true
+          
+          # Get Directory.Build.props from main and update it for target branch
+          if [ -f "src/Directory.Build.props" ]; then
+            echo "📝 Getting Directory.Build.props from main and updating for ${{ matrix.target_branch }}..."
             
-            # Reset all .csproj files
-            find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
+            # Ensure we have the latest from main
+            git checkout main -- src/Directory.Build.props
             
-            # Get Directory.Build.props from main and update it for net8
-            if [ -f "src/Directory.Build.props" ]; then
-              echo "📝 Getting Directory.Build.props from main and updating for ${{ matrix.target_branch }}..."
-              
-              # Explicitly get the file from main branch
-              git checkout main -- src/Directory.Build.props
-              
-              # Get the target .NET version
-              dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
-              
-              # Show current state from main
-              echo "Directory.Build.props from main (before update):"
-              grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
-              
-              # Update version (9.x.x → 8.x.x) keeping the same minor/patch/suffix
-              current_version=$(grep -oP '<Version>\K[^<]+' src/Directory.Build.props)
-              new_version=$(echo "$current_version" | sed "s/^9\./$dotnet_version./")
-              sed -i "s|<Version>$current_version</Version>|<Version>$new_version</Version>|g" src/Directory.Build.props
-              
-              # Update target framework (net9.0 → net8.0)
-              sed -i "s|<TargetFramework>net9\.0</TargetFramework>|<TargetFramework>net$dotnet_version.0</TargetFramework>|g" src/Directory.Build.props
-              
-              echo "Directory.Build.props after update:"
-              grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
-            fi
+            # Get the target .NET version
+            dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
             
-            # Reset workflow files to avoid including workflow changes in the PR
-            echo "📝 Resetting workflow files to ${{ matrix.target_branch }} version..."
-            if [ -d ".github/workflows" ]; then
-              git checkout ${{ matrix.target_branch }} -- .github/workflows/ || true
-            fi
+            # Show current state from main
+            echo "Directory.Build.props from main (before update):"
+            grep -E "<Version>|<TargetFramework>" src/Directory.Build.props || true
+            
+            # Update version (9.x.x → 8.x.x) keeping the same minor/patch/suffix
+            current_version=$(grep -oP '<Version>\K[^<]+' src/Directory.Build.props)
+            new_version=$(echo "$current_version" | sed "s/^9\./$dotnet_version./")
+            sed -i "s|<Version>$current_version</Version>|<Version>$new_version</Version>|g" src/Directory.Build.props
+            
+            # Update target framework (net9.0 → net8.0)
+            sed -i "s|<TargetFramework>net9\.0</TargetFramework>|<TargetFramework>net$dotnet_version.0</TargetFramework>|g" src/Directory.Build.props
+            
+            echo "Directory.Build.props after update:"
+            grep -E "<Version>|<TargetFramework>" src/Directory.Build.props || true
+          fi
+          
+          # Reset workflow files to avoid including workflow changes in the PR
+          echo "📝 Resetting workflow files to ${{ matrix.target_branch }} version..."
+          if [ -d ".github/workflows" ]; then
+            git checkout ${{ matrix.target_branch }} -- .github/workflows/ || true
+          fi
 
-            
-            # Stage all changes
-            git add -A
-            
-            # Show what files have changes
-            echo "📋 Files with changes after cherry-pick and reset:"
-            git diff --cached --name-status
-            
-            # Show actual changes
-            echo "📝 Actual changes to be committed:"
-            git diff --cached --stat
+          # Stage all changes
+          git add -A
+          
+          # Show what files have changes
+          echo "📋 Files with changes:"
+          git diff --cached --name-status || true
+          
+          # Show actual changes
+          echo "📝 Actual changes to be committed:"
+          git diff --cached --stat || true
 
-            # Check if there are changes to commit
-            if git diff --cached --quiet; then
-              echo "ℹ️  No changes to commit after processing"
-              echo "This means all changes from main are already in ${{ matrix.target_branch }}"
-              echo "or only affected .csproj/Directory.Build.props files which we reset."
-              git checkout main
-              git branch -D "$sync_branch"
-              exit 0
-            fi
-
-            # Commit the changes
-            git commit -m "Sync changes from main to ${{ matrix.target_branch }} - Applied recent commits, updated versions & framework, preserved .csproj files"
-
-            echo "📤 Attempting to push sync branch: $sync_branch"
-            
-            # Try to push to origin, if it fails try to push to a fork
-            if git push origin "$sync_branch" 2>/dev/null; then
-              echo "✅ Pushed to origin successfully"
-              PUSH_REPO="${{ github.repository }}"
-            else
-              echo "⚠️ Cannot push to origin, trying fork approach..."
-              
-              # Check if we have a fork configured
-              FORK_OWNER="${{ vars.FORK_OWNER || 'arcenox' }}"
-              FORK_URL="https://${{ secrets.PAT_TOKEN }}@github.com/${FORK_OWNER}/TickerQ.git"
-              
-              # Add fork as remote if not exists
-              git remote add fork "$FORK_URL" 2>/dev/null || git remote set-url fork "$FORK_URL"
-              
-              # Push to fork
-              if git push fork "$sync_branch"; then
-                echo "✅ Pushed to fork: ${FORK_OWNER}/TickerQ"
-                PUSH_REPO="${FORK_OWNER}/TickerQ"
-              else
-                echo "❌ Failed to push to both origin and fork"
-                exit 1
-              fi
-            fi
-
-            # Store branch name and repo for PR creation
-            echo "sync_branch=$sync_branch" >> $GITHUB_ENV
-            echo "push_repo=$PUSH_REPO" >> $GITHUB_ENV
-          else
-            echo "ℹ️  No commits to apply"
+          # Check if there are changes to commit
+          if git diff --cached --quiet; then
+            echo "ℹ️  No changes to commit after processing"
+            echo "This means main and ${{ matrix.target_branch }} are already in sync"
             git checkout main
+            git branch -D "$sync_branch"
             exit 0
           fi
+
+          # Commit the changes
+          git commit -m "Sync latest changes from main to ${{ matrix.target_branch }} - Updated versions & framework, preserved .csproj files"
+
+          echo "📤 Attempting to push sync branch: $sync_branch"
+          
+          # Try to push to origin, if it fails try to push to a fork
+          if git push origin "$sync_branch" 2>/dev/null; then
+            echo "✅ Pushed to origin successfully"
+            PUSH_REPO="${{ github.repository }}"
+          else
+            echo "⚠️ Cannot push to origin, trying fork approach..."
+            
+            # Check if we have a fork configured
+            FORK_OWNER="${{ vars.FORK_OWNER || 'arcenox' }}"
+            FORK_URL="https://${{ secrets.PAT_TOKEN }}@github.com/${FORK_OWNER}/TickerQ.git"
+            
+            # Add fork as remote if not exists
+            git remote add fork "$FORK_URL" 2>/dev/null || git remote set-url fork "$FORK_URL"
+            
+            # Push to fork
+            if git push fork "$sync_branch"; then
+              echo "✅ Pushed to fork: ${FORK_OWNER}/TickerQ"
+              PUSH_REPO="${FORK_OWNER}/TickerQ"
+            else
+              echo "❌ Failed to push to both origin and fork"
+              exit 1
+            fi
+          fi
+
+          # Store branch name and repo for PR creation
+          echo "sync_branch=$sync_branch" >> $GITHUB_ENV
+          echo "push_repo=$PUSH_REPO" >> $GITHUB_ENV
 
       - name: Ensure labels exist
         if: steps.check_merge.outputs.needs_merge == 'true'
@@ -236,10 +218,10 @@ jobs:
           PR_BODY=$(cat << 'EOF'
           ## 🤖 Automated Branch Sync
 
-          This PR syncs recent changes from `main` branch to `${{ matrix.target_branch }}`.
+          This PR syncs **all latest changes** from `main` branch to `${{ matrix.target_branch }}`.
 
           ### Changes Applied:
-          - ✅ Applied recent commits from main
+          - ✅ **Always takes the latest state from main** (not cherry-picking, ensures all changes are included)
           - ✅ Updated version numbers (9.0.x → 8.0.x for net8 branch)
           - ✅ Updated target framework (net9.0 → net8.0 for net8 branch)
           - ✅ Preserved .csproj files from ${{ matrix.target_branch }} branch
@@ -247,6 +229,7 @@ jobs:
           ### Review Notes:
           - All .csproj files maintain ${{ matrix.target_branch }} configurations
           - Directory.Build.props has been updated for ${{ matrix.target_branch }} compatibility
+          - This PR includes **all** latest changes from main, not just new commits
           - Ready for testing on ${{ matrix.target_branch }} environment
 
           ---
