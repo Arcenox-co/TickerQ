@@ -10,7 +10,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using TickerQ.Dashboard.Authentication;
 using TickerQ.Dashboard.Hubs;
-using TickerQ.Dashboard.Infrastructure;
 using TickerQ.Utilities;
 using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Entities;
@@ -317,25 +316,44 @@ public static class DashboardEndpoints
 
     private static async Task<IResult> UpdateTimeTicker<TTimeTicker, TCronTicker>(
         Guid id,
-        TTimeTicker request,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        HttpContext context,
+        ITimeTickerManager<TTimeTicker> timeTickerManager,
+        DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        await repository.UpdateTimeTickerAsync(id, request, cancellationToken);
-        return Results.Ok();
+        // Read the raw JSON from request body
+        using var reader = new StreamReader(context.Request.Body);
+        var jsonString = await reader.ReadToEndAsync(cancellationToken);
+        
+        // Use Dashboard-specific JSON options
+        var timeTicker = JsonSerializer.Deserialize<TTimeTicker>(jsonString, dashboardOptions.DashboardJsonOptions);
+        
+        // Ensure the ID matches
+        timeTicker.Id = id;
+        
+        var result = await timeTickerManager.UpdateAsync(timeTicker, cancellationToken);
+        
+        return Results.Ok(new { 
+            success = result.IsSucceeded, 
+            message = result.IsSucceeded ? "Time ticker updated successfully" : "Failed to update time ticker"
+        });
     }
 
     private static async Task<IResult> DeleteTimeTicker<TTimeTicker, TCronTicker>(
         Guid id,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITimeTickerManager<TTimeTicker> timeTickerManager,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        await repository.DeleteTimeTickerByIdAsync(id, cancellationToken);
-        return Results.Ok();
+        var result = await timeTickerManager.DeleteAsync(id, cancellationToken);
+        
+        return Results.Ok(new { 
+            success = result.IsSucceeded, 
+            message = result.IsSucceeded ? "Time ticker deleted successfully" : "Failed to delete time ticker"
+        });
     }
 
     private static async Task<IResult> GetCronTickers<TTimeTicker, TCronTicker>(
@@ -431,26 +449,54 @@ public static class DashboardEndpoints
     }
 
     private static async Task<IResult> AddCronTicker<TTimeTicker, TCronTicker>(
-        TCronTicker request,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        HttpContext context,
+        ICronTickerManager<TCronTicker> cronTickerManager,
+        DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        await repository.AddCronTickerAsync(request, cancellationToken);
-        return Results.Ok();
+        // Read the raw JSON from request body
+        using var reader = new StreamReader(context.Request.Body);
+        var jsonString = await reader.ReadToEndAsync(cancellationToken);
+        
+        // Use Dashboard-specific JSON options
+        var cronTicker = JsonSerializer.Deserialize<TCronTicker>(jsonString, dashboardOptions.DashboardJsonOptions);
+        
+        var result = await cronTickerManager.AddAsync(cronTicker, cancellationToken);
+        
+        return Results.Ok(new { 
+            success = result.IsSucceeded, 
+            message = result.IsSucceeded ? "Cron ticker added successfully" : "Failed to add cron ticker",
+            tickerId = result.Result?.Id
+        });
     }
 
     private static async Task<IResult> UpdateCronTicker<TTimeTicker, TCronTicker>(
         Guid id,
-        UpdateCronTickerRequest request,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        HttpContext context,
+        ICronTickerManager<TCronTicker> cronTickerManager,
+        DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        await repository.UpdateCronTickerAsync(id, request, cancellationToken);
-        return Results.Ok();
+        // Read the raw JSON from request body
+        using var reader = new StreamReader(context.Request.Body);
+        var jsonString = await reader.ReadToEndAsync(cancellationToken);
+        
+        // Use Dashboard-specific JSON options
+        var cronTicker = JsonSerializer.Deserialize<TCronTicker>(jsonString, dashboardOptions.DashboardJsonOptions);
+        
+        // Ensure the ID matches
+        cronTicker.Id = id;
+        
+        var result = await cronTickerManager.UpdateAsync(cronTicker, cancellationToken);
+        
+        return Results.Ok(new { 
+            success = result.IsSucceeded, 
+            message = result.IsSucceeded ? "Cron ticker updated successfully" : "Failed to update cron ticker"
+        });
     }
 
     private static async Task<IResult> RunCronTickerOnDemand<TTimeTicker, TCronTicker>(
@@ -466,13 +512,17 @@ public static class DashboardEndpoints
 
     private static async Task<IResult> DeleteCronTicker<TTimeTicker, TCronTicker>(
         Guid id,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ICronTickerManager<TCronTicker> cronTickerManager,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        await repository.DeleteCronTickerByIdAsync(id, cancellationToken);
-        return Results.Ok();
+        var result = await cronTickerManager.DeleteAsync(id, cancellationToken);
+        
+        return Results.Ok(new { 
+            success = result.IsSucceeded, 
+            message = result.IsSucceeded ? "Cron ticker deleted successfully" : "Failed to delete cron ticker"
+        });
     }
 
     private static async Task<IResult> DeleteCronTickerOccurrence<TTimeTicker, TCronTicker>(

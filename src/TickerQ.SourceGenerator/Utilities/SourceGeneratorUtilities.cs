@@ -103,18 +103,27 @@ namespace TickerQ.SourceGenerator.Utilities
         /// </summary>
         private static string FormatServiceKeyValue(object value, ITypeSymbol type)
         {
-            return value switch
+            switch (value)
             {
-                double d => d.ToString("G", System.Globalization.CultureInfo.InvariantCulture) + "D",
-                float f => f.ToString("G", System.Globalization.CultureInfo.InvariantCulture) + "F",
-                decimal m => m.ToString("G", System.Globalization.CultureInfo.InvariantCulture) + "M",
-                long l => l.ToString(System.Globalization.CultureInfo.InvariantCulture) + "L",
-                uint ui => ui.ToString(System.Globalization.CultureInfo.InvariantCulture) + "U",
-                ulong ul => ul.ToString(System.Globalization.CultureInfo.InvariantCulture) + "UL",
-                char c => $"'{c}'",
-                bool b => b ? "true" : "false",
-                _ => value.ToString(),
-            };
+                case double d:
+                    return d.ToString("G", System.Globalization.CultureInfo.InvariantCulture) + "D";
+                case float f:
+                    return f.ToString("G", System.Globalization.CultureInfo.InvariantCulture) + "F";
+                case decimal m:
+                    return m.ToString("G", System.Globalization.CultureInfo.InvariantCulture) + "M";
+                case long l:
+                    return l.ToString(System.Globalization.CultureInfo.InvariantCulture) + "L";
+                case uint ui:
+                    return ui.ToString(System.Globalization.CultureInfo.InvariantCulture) + "U";
+                case ulong ul:
+                    return ul.ToString(System.Globalization.CultureInfo.InvariantCulture) + "UL";
+                case char c:
+                    return $"'{c}'";
+                case bool b:
+                    return b ? "true" : "false";
+                default:
+                    return value.ToString();
+            }
         }
 
         /// <summary>
@@ -158,7 +167,7 @@ namespace TickerQ.SourceGenerator.Utilities
         {
             // Extract the simple type name from the end
             var parts = fullTypeName.Split('.');
-            var simpleName = parts[^1]; // Last part
+            var simpleName = parts[parts.Length - 1]; // Last part
 
             // If the simple name is unique, use it
             if (!usedAliases.Contains(simpleName))
@@ -169,7 +178,7 @@ namespace TickerQ.SourceGenerator.Utilities
             // If not unique, try using just the parent namespace first (cleaner)
             if (parts.Length > 1)
             {
-                var parentName = parts[^2];
+                var parentName = parts[parts.Length - 2];
                 var parentAlias = $"{parentName}Alias";
                 if (!usedAliases.Contains(parentAlias))
                 {

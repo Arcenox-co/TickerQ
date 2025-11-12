@@ -438,7 +438,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     public async Task<CronTickerOccurrenceEntity<TCronTicker>> GetEarliestAvailableCronOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
     {
         var now = _clock.UtcNow;
-        var mainSchedulerThreshold = now.AddMilliseconds(-100);  // Main scheduler handles tasks up to 100ms overdue
+        var mainSchedulerThreshold = now.AddMilliseconds(-now.Millisecond);
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .AsNoTracking()

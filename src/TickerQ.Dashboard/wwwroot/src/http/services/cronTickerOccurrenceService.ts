@@ -71,9 +71,12 @@ const getByCronTickerIdPaginated = () => {
                 response.items = response.items.map((item: GetCronTickerOccurrenceResponse) => {
                     if (!item) return item;
                     
-                    // Safely set status with null check
+                    // Safely set status with null check and ensure it's always a string
                     if (item.status !== undefined && item.status !== null) {
-                        item.status = Status[item.status as any];
+                        const statusValue = Status[item.status as any];
+                        item.status = statusValue !== undefined ? statusValue : String(item.status);
+                    } else {
+                        item.status = 'Unknown';
                     }
                     
                     if (item.executedAt != null || item.executedAt != undefined) {

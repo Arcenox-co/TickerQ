@@ -3,6 +3,7 @@ name: Build NuGet Packages
 on:
   push:
     branches:
+      - main
       - net8
 
 jobs:
