@@ -187,7 +187,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var now = _clock.UtcNow;
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         
-        await dbContext.Set<TimeTickerEntity>()
+        await dbContext.Set<TTimeTicker>()
             .WhereCanAcquire(instanceIdentifier)
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LockHolder, _ => null)
@@ -196,7 +196,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
         
-        await dbContext.Set<TimeTickerEntity>()
+        await dbContext.Set<TTimeTicker>()
             .Where(x => x.LockHolder == instanceIdentifier && x.Status == TickerStatus.InProgress)
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.Status, TickerStatus.Skipped)
