@@ -148,12 +148,16 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         if (!dateTime.HasValue)
             return;
         
+        var now = DateTime.UtcNow;
         var nextPlannedOccurrence = _executionContext.GetNextPlannedOccurrence();
         
         // Restart if:
         // 1. No tasks are currently planned, OR
-        // 2. The new task should execute BEFORE the currently planned task
-        if (nextPlannedOccurrence == null || dateTime.Value < nextPlannedOccurrence.Value)
+        // 2. The new task should execute BEFORE or at the same time as the currently planned task, OR
+        // 3. The new task is already due/overdue (ExecutionTime <= now)
+        if (nextPlannedOccurrence == null ||
+            dateTime.Value <= nextPlannedOccurrence.Value ||
+            dateTime.Value <= now)
             _restartThrottle.RequestRestart();
     }
 
