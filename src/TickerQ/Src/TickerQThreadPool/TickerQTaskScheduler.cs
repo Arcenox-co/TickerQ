@@ -53,11 +53,8 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
             _workerQueues[i] = new ConcurrentQueue<WorkItem>();
         }
         
-        // Start all workers upfront to honor maxConcurrency
-        for (int i = 0; i < _maxConcurrency; i++)
-        {
-            TryStartWorker();
-        }
+        // Start at least one worker immediately to handle incoming tasks
+        TryStartWorker();
     }
     
     /// <summary>
@@ -250,7 +247,24 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
                 // No work found - check if we should exit
                 if (DateTime.UtcNow - lastWorkTime > _idleWorkerTimeout)
                 {
-                    // Keep workers alive to maintain maxConcurrency; just reset timer
+                    // Check ALL queues for any remaining work before exiting
+                    bool anyWorkRemaining = false;
+                    for (int i = 0; i < _maxConcurrency; i++)
+                    {
+                        if (_workerQueues[i].Count > 0)
+                        {
+                            anyWorkRemaining = true;
+                            break;
+                        }
+                    }
+                    
+                    // Only exit if there's really no work and we have minimum workers
+                    if (!anyWorkRemaining && _totalQueuedTasks == 0 && _activeWorkers > 1)
+                    {
+                        break; // Exit this worker
+                    }
+                    
+                    // Reset timer if we need to stay
                     lastWorkTime = DateTime.UtcNow;
                 }
                 
