@@ -106,7 +106,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 await _internalTickerManager.SetTickersInProgress(_executionContext.Functions, cancellationToken);
 
                 foreach (var function in _executionContext.Functions.OrderBy(x => x.CachedPriority))
-                    await _taskScheduler.QueueAsync(async ct => await _taskHandler.ExecuteTaskAsync(function,false, ct), function.CachedPriority, stoppingToken);
+                    _ = _taskScheduler.QueueAsync(async ct => await _taskHandler.ExecuteTaskAsync(function,false, ct), function.CachedPriority, stoppingToken);
             }
             
             var (timeRemaining, functions) =

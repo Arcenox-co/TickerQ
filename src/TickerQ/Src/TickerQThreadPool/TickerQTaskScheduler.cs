@@ -53,8 +53,11 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
             _workerQueues[i] = new ConcurrentQueue<WorkItem>();
         }
         
-        // Start at least one worker immediately to handle incoming tasks
-        TryStartWorker();
+        // Start all workers upfront to honor maxConcurrency
+        for (int i = 0; i < _maxConcurrency; i++)
+        {
+            TryStartWorker();
+        }
     }
     
     /// <summary>
@@ -149,20 +152,14 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
             TryStartWorker();
             return;
         }
-        
-        // Start more workers if we have queued tasks
+
+        // If there is queued work and we still have capacity, start another worker
         var totalQueued = _totalQueuedTasks;
         var activeWorkers = _activeWorkers;
-        
-        // If we have tasks but not enough workers, start more
+
         if (totalQueued > 0 && activeWorkers < _maxConcurrency)
         {
-            // Start workers proportional to load
-            var desiredWorkers = Math.Min(totalQueued, _maxConcurrency);
-            if (desiredWorkers > activeWorkers)
-            {
-                TryStartWorker();
-            }
+            TryStartWorker();
         }
     }
     
@@ -253,24 +250,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
                 // No work found - check if we should exit
                 if (DateTime.UtcNow - lastWorkTime > _idleWorkerTimeout)
                 {
-                    // Check ALL queues for any remaining work before exiting
-                    bool anyWorkRemaining = false;
-                    for (int i = 0; i < _maxConcurrency; i++)
-                    {
-                        if (_workerQueues[i].Count > 0)
-                        {
-                            anyWorkRemaining = true;
-                            break;
-                        }
-                    }
-                    
-                    // Only exit if there's really no work and we have minimum workers
-                    if (!anyWorkRemaining && _totalQueuedTasks == 0 && _activeWorkers > 1)
-                    {
-                        break; // Exit this worker
-                    }
-                    
-                    // Reset timer if we need to stay
+                    // Keep workers alive to maintain maxConcurrency; just reset timer
                     lastWorkTime = DateTime.UtcNow;
                 }
                 
@@ -337,8 +317,43 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
             // Check cancellation before executing
             if (!workItem.UserToken.IsCancellationRequested && !_shutdownCts.Token.IsCancellationRequested)
             {
-                // Execute the work asynchronously - this won't block the worker
-                await workItem.Work(workItem.UserToken).ConfigureAwait(false);
+                // Start the work without awaiting it so this worker
+                // can continue processing other items while the task awaits.
+                var task = workItem.Work(workItem.UserToken);
+                
+                if (task == null)
+                    return;
+
+                if (!task.IsCompleted)
+                {
+                    // Observe completion and exceptions without blocking the worker loop
+                    _ = task.ContinueWith(t =>
+                    {
+                        try
+                        {
+                            if (t.IsFaulted)
+                            {
+                                _ = t.Exception;
+                            }
+                        }
+                        catch
+                        {
+                            // Swallow continuation exceptions
+                        }
+                    }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                }
+                else
+                {
+                    // Task already completed synchronously – observe any exception
+                    try
+                    {
+                        await task.ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Swallow exceptions to keep worker alive
+                    }
+                }
             }
         }
         catch (OperationCanceledException)
