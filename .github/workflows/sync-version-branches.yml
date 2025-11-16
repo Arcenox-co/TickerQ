@@ -132,47 +132,83 @@ jobs:
             
             successful_count=0
             failed_count=0
-            ignored_count=0
             already_applied_count=0
-            # Track ignored commits in array (no file needed)
-            declare -a ignored_commits_array=()
+            
+            # Use git cherry to find commits that are already in target branch (compares patches, not just hashes)
+            # This detects commits even if they were cherry-picked with different hashes
+            # git cherry upstream head: compares 'head' against 'upstream'
+            # - means commit in 'head' is equivalent to one in 'upstream' (already applied)
+            # + means commit in 'head' is not in 'upstream' (needs to be applied)
+            echo "🔍 Checking which commits are already applied (using patch comparison)..."
+            
+            # Ensure we have the latest state of both branches
+            git fetch origin ${{ matrix.target_branch }}:refs/remotes/origin/${{ matrix.target_branch }} 2>/dev/null || true
+            git fetch origin main:refs/remotes/origin/main 2>/dev/null || true
+            
+            # Get cherry output - this shows commits in 'main' compared to 'target_branch'
+            # Lines starting with '-' mean the commit in main is equivalent to one already in target_branch
+            cherry_output=$(git cherry ${{ matrix.target_branch }} main 2>/dev/null || echo "")
+            
+            # Create a set of commits that are already in target branch (lines starting with '-')
+            declare -A already_applied_commits=()
+            if [ -n "$cherry_output" ]; then
+              echo "📊 Git cherry found $(echo "$cherry_output" | wc -l) commits to check"
+              while IFS= read -r line; do
+                if [[ $line =~ ^- ]]; then
+                  # Extract commit hash (second field after the '-' and space)
+                  commit_hash=$(echo "$line" | awk '{print $2}')
+                  if [ -n "$commit_hash" ]; then
+                    already_applied_commits["$commit_hash"]=1
+                    echo "  ✓ Commit $commit_hash already applied (patch equivalent)"
+                  fi
+                fi
+              done <<< "$cherry_output"
+              echo "📊 Found ${#already_applied_commits[@]} commits already applied via patch comparison"
+            fi
             
             # Cherry-pick each commit individually, but first check if it's already in target branch
+            # Only use git-based detection, no commit message checks
             while read commit; do
-              commit_msg=$(git log -1 --format="%s" "$commit")
-              commit_full_msg=$(git log -1 --format="%B" "$commit")
+              commit_msg=$(git log -1 --format="%s" "$commit" 2>/dev/null || echo "unknown")
               
-              # Check if commit is already in target branch
+              # Check if commit is already in target branch (by exact hash)
               if git branch --contains "$commit" | grep -q "${{ matrix.target_branch }}"; then
-                echo "⏭️  Commit $commit already in ${{ matrix.target_branch }}, skipping: $commit_msg"
+                echo "⏭️  Commit $commit already in ${{ matrix.target_branch }} (exact match), skipping"
                 already_applied_count=$((already_applied_count + 1))
                 continue
               fi
               
-              # Check if commit should be ignored (check for ignore patterns in commit message)
-              # Patterns: [skip-sync], [no-sync], [ignore-sync], [skip-branch-sync]
-              if echo "$commit_msg" | grep -qiE '\[(skip-sync|no-sync|ignore-sync|skip-branch-sync)\]' || \
-                 echo "$commit_full_msg" | grep -qiE '\[(skip-sync|no-sync|ignore-sync|skip-branch-sync)\]'; then
-                echo "⏭️  Skipping ignored commit $commit: $commit_msg"
-                ignored_commits_array+=("$commit")
-                ignored_count=$((ignored_count + 1))
+              # Check if commit is already applied (by patch comparison using git cherry)
+              # This detects commits even if they were cherry-picked with different hashes
+              if [[ -n "${already_applied_commits[$commit]}" ]]; then
+                echo "⏭️  Commit $commit already in ${{ matrix.target_branch }} (patch match), skipping"
+                already_applied_count=$((already_applied_count + 1))
                 continue
               fi
               
+              # Commit is new and not already applied, add to filtered list
               echo "$commit" >> "$filtered_commits_file"
             done < /tmp/commits_to_apply.txt
             
             # Now cherry-pick only the filtered commits
             if [ -s "$filtered_commits_file" ]; then
-              echo "🍒 Processing commits (skipped ${already_applied_count} already in branch, ${ignored_count} ignored)..."
+              echo "🍒 Processing commits (skipped ${already_applied_count} already in branch)..."
               while read commit; do
                 commit_msg=$(git log -1 --format="%s" "$commit")
                 echo "🍒 Cherry-picking $commit: $commit_msg"
                 
                 # Try cherry-pick with conflict resolution
                 if git cherry-pick --no-commit "$commit" 2>&1; then
-                  echo "✅ Cherry-pick successful for $commit"
-                  successful_count=$((successful_count + 1))
+                  # Check if cherry-pick resulted in actual changes
+                  if git diff --cached --quiet && git diff --quiet; then
+                    # Empty commit, already applied
+                    echo "ℹ️  Commit $commit already applied (no changes), skipping..."
+                    git cherry-pick --abort || true
+                    already_applied_count=$((already_applied_count + 1))
+                  else
+                    echo "✅ Cherry-pick successful for $commit"
+                    successful_count=$((successful_count + 1))
+                  fi
                 else
                   # Check if it's already applied (empty commit)
                   if git diff --cached --quiet && git diff --quiet; then
@@ -189,19 +225,10 @@ jobs:
                 fi
               done < "$filtered_commits_file"
             else
-              echo "ℹ️  No new commits to cherry-pick (all commits already in branch or ignored)"
+              echo "ℹ️  No new commits to cherry-pick (all commits already in branch)"
             fi
             
-            echo "📊 Summary: $successful_count successful cherry-picks, $failed_count failed, $already_applied_count already in branch, $ignored_count ignored"
-            
-            # Show ignored commits if any
-            if [ ${#ignored_commits_array[@]} -gt 0 ]; then
-              echo "⏭️  Ignored commits (marked with [skip-sync], [no-sync], [ignore-sync], or [skip-branch-sync]):"
-              for commit in "${ignored_commits_array[@]}"; do
-                commit_msg=$(git log -1 --format="%s" "$commit" 2>/dev/null || echo "unknown")
-                echo "  - $commit: $commit_msg"
-              done
-            fi
+            echo "📊 Summary: $successful_count successful cherry-picks, $failed_count failed, $already_applied_count already in branch"
           else
             # No commits found to apply
             echo "ℹ️  No commits found to apply - branches may already be in sync"
@@ -333,7 +360,7 @@ jobs:
           - ✅ Updated version numbers (10.x.x → ${dotnet_version}.x.x)
           - ✅ Updated target framework (net10.0 → net${dotnet_version}.0)
           - ✅ Preserved .csproj files from ${{ matrix.target_branch }} branch
-          - ⏭️ Commits marked with \`[skip-sync]\`, \`[no-sync]\`, \`[ignore-sync]\`, or \`[skip-branch-sync]\` were excluded
+          - ⏭️ Commits already in target branch were automatically excluded
 
           ### Review Notes:
           - All .csproj files maintain ${{ matrix.target_branch }} configurations
