@@ -5,12 +5,13 @@ on:
     branches:
       - main
       - net8  # Allows manual pushes to net8 to be visible, but sync logic only runs from main
+      - net9  # Allows manual pushes to net9 to be visible, but sync logic only runs from main
   workflow_dispatch:
     inputs:
       target_branches:
-        description: 'Comma-separated list of target branches (default: net8)'
+        description: 'Comma-separated list of target branches (default: net8,net9)'
         required: false
-        default: 'net8'
+        default: 'net8,net9'
         type: string
       dry_run:
         description: 'Run without making changes'
@@ -32,7 +33,7 @@ jobs:
 
     strategy:
       matrix:
-        target_branch: ${{ fromJSON(vars.TARGET_BRANCHES || '["net8"]') }}
+        target_branch: ${{ fromJSON(vars.TARGET_BRANCHES || '["net8","net9"]') }}
       fail-fast: false
 
     steps:
@@ -216,7 +217,8 @@ jobs:
           # Reset all .csproj files
           find . -name "*.csproj" -type f -exec git checkout ${{ matrix.target_branch }} -- {} \;
           
-          # Get Directory.Build.props from main and update it for net8
+          # Get Directory.Build.props from main and update it for target branch
+          # Main is now net10, so we convert 10.x.x → target version
           if [ -f "src/Directory.Build.props" ]; then
             echo "📝 Getting Directory.Build.props from main and updating for ${{ matrix.target_branch }}..."
             
@@ -230,13 +232,14 @@ jobs:
             echo "Directory.Build.props from main (before update):"
             grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
             
-            # Update version (9.x.x → 8.x.x) keeping the same minor/patch/suffix
+            # Update version (10.x.x → target.x.x) keeping the same minor/patch/suffix
+            # Main is net10, so we convert from 10.x.x to the target version
             current_version=$(grep -oP '<Version>\K[^<]+' src/Directory.Build.props)
-            new_version=$(echo "$current_version" | sed "s/^9\./$dotnet_version./")
+            new_version=$(echo "$current_version" | sed "s/^10\./$dotnet_version./")
             sed -i "s|<Version>$current_version</Version>|<Version>$new_version</Version>|g" src/Directory.Build.props
             
-            # Update target framework (net9.0 → net8.0)
-            sed -i "s|<TargetFramework>net9\.0</TargetFramework>|<TargetFramework>net$dotnet_version.0</TargetFramework>|g" src/Directory.Build.props
+            # Update target framework (net10.0 → net{target}.0)
+            sed -i "s|<TargetFramework>net10\.0</TargetFramework>|<TargetFramework>net$dotnet_version.0</TargetFramework>|g" src/Directory.Build.props
             
             echo "Directory.Build.props after update:"
             grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
@@ -316,16 +319,19 @@ jobs:
       - name: Create Pull Request
         if: steps.check_merge.outputs.needs_merge == 'true' && env.sync_branch != ''
         run: |
+          # Get the target .NET version number for display
+          dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
+          
           # Create PR using GitHub CLI (gh)
-          PR_BODY=$(cat << 'EOF'
+          PR_BODY=$(cat << EOF
           ## 🤖 Automated Branch Sync
 
-          This PR syncs recent changes from `main` branch to `${{ matrix.target_branch }}`.
+          This PR syncs recent changes from \`main\` branch to \`${{ matrix.target_branch }}\`.
 
           ### Changes Applied:
           - ✅ Applied recent commits from main
-          - ✅ Updated version numbers (9.0.x → 8.0.x for net8 branch)
-          - ✅ Updated target framework (net9.0 → net8.0 for net8 branch)
+          - ✅ Updated version numbers (10.x.x → ${dotnet_version}.x.x)
+          - ✅ Updated target framework (net10.0 → net${dotnet_version}.0)
           - ✅ Preserved .csproj files from ${{ matrix.target_branch }} branch
 
           ### Review Notes:
@@ -394,9 +400,26 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### What happened:" >> $GITHUB_STEP_SUMMARY
           echo "- Changes from main were merged into net8" >> $GITHUB_STEP_SUMMARY
-          echo "- Version numbers updated (9.0.x → 8.0.x)" >> $GITHUB_STEP_SUMMARY
-          echo "- TargetFramework updated (net9.0 → net8.0)" >> $GITHUB_STEP_SUMMARY
+          echo "- Version numbers updated (10.x.x → 8.x.x)" >> $GITHUB_STEP_SUMMARY
+          echo "- TargetFramework updated (net10.0 → net8.0)" >> $GITHUB_STEP_SUMMARY
           echo "- .csproj files preserved from net8 branch" >> $GITHUB_STEP_SUMMARY
+
+  net9-push-notification:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/net9' && github.actor == 'github-actions[bot]'
+
+    steps:
+      - name: Notify about bot push to net9
+        run: |
+          echo "## 🤖 Bot Push to net9 Detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This push to net9 branch was made by github-actions[bot] as part of the automated sync from main." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### What happened:" >> $GITHUB_STEP_SUMMARY
+          echo "- Changes from main were merged into net9" >> $GITHUB_STEP_SUMMARY
+          echo "- Version numbers updated (10.x.x → 9.x.x)" >> $GITHUB_STEP_SUMMARY
+          echo "- TargetFramework updated (net10.0 → net9.0)" >> $GITHUB_STEP_SUMMARY
+          echo "- .csproj files preserved from net9 branch" >> $GITHUB_STEP_SUMMARY
 
   summary:
     needs: sync-branches
@@ -419,4 +442,4 @@ jobs:
           echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
           echo "- Review and merge the created PRs" >> $GITHUB_STEP_SUMMARY
           echo "- Test changes on target branches" >> $GITHUB_STEP_SUMMARY
-          echo "- Target branches: net8 (and any others in TARGET_BRANCHES variable)" >> $GITHUB_STEP_SUMMARY
+          echo "- Target branches: net8, net9 (and any others in TARGET_BRANCHES variable)" >> $GITHUB_STEP_SUMMARY
