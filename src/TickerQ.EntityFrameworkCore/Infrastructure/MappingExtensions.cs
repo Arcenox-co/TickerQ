@@ -10,7 +10,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
     internal static class MappingExtensions
     {
-        public static Expression<Func<TCronTicker, CronTickerEntity>> ForCronTickerExpressions<TCronTicker>() where TCronTicker : CronTickerEntity, new()
+        public static Expression<Func<TCronTicker, CronTickerEntity>> ForCronTickerExpressions<TCronTicker>()
+            where TCronTicker : CronTickerEntity, new()
             => e => new CronTickerEntity
             {
                 Id = e.Id,
@@ -19,8 +20,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 RetryIntervals = e.RetryIntervals,
                 Retries = e.Retries
             };
-        
-        internal static Expression<Func<TTimeTicker, TimeTickerEntity>> ForQueueTimeTickers<TTimeTicker>() where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+
+        internal static Expression<Func<TTimeTicker, TimeTickerEntity>> ForQueueTimeTickers<TTimeTicker>()
+            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             => e => new TimeTickerEntity
             {
                 Id = e.Id,
@@ -48,7 +50,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 }).ToArray()
             };
 
-        internal static Expression<Func<TCronTickerOccurrence, CronTickerOccurrenceEntity<TCronTicker>>> ForQueueCronTickerOccurrence<TCronTickerOccurrence, TCronTicker>()
+        internal static Expression<Func<TCronTickerOccurrence, CronTickerOccurrenceEntity<TCronTicker>>>
+            ForQueueCronTickerOccurrence<TCronTickerOccurrence, TCronTicker>()
             where TCronTicker : CronTickerEntity, new()
             where TCronTickerOccurrence : CronTickerOccurrenceEntity<TCronTicker>, new()
             => e => new CronTickerOccurrenceEntity<TCronTicker>
@@ -64,8 +67,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     Retries = e.CronTicker.Retries
                 }
             };
-        
-        internal static Expression<Func<TCronTickerOccurrence, CronTickerOccurrenceEntity<TCronTicker>>> ForLatestQueuedCronTickerOccurrence<TCronTickerOccurrence, TCronTicker>()
+
+        internal static Expression<Func<TCronTickerOccurrence, CronTickerOccurrenceEntity<TCronTicker>>>
+            ForLatestQueuedCronTickerOccurrence<TCronTickerOccurrence, TCronTicker>()
             where TCronTicker : CronTickerEntity, new()
             where TCronTickerOccurrence : CronTickerOccurrenceEntity<TCronTicker>, new()
             => e => new CronTickerOccurrenceEntity<TCronTicker>
@@ -84,87 +88,114 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 }
             };
 
-        internal static Expression<Func<SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>, SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>>> UpdateCronTickerOccurrence<TCronTicker>(InternalFunctionContext functionContext)
+        internal static void UpdateCronTickerOccurrence<TCronTicker>(
+            this UpdateSettersBuilder<CronTickerOccurrenceEntity<TCronTicker>> setters,
+            InternalFunctionContext functionContext)
             where TCronTicker : CronTickerEntity, new()
         {
             var propsToUpdate = functionContext.GetPropsToUpdate();
 
-            Expression<Func<SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>, SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>>> setExpression = 
-                calls => calls;
-            
-            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) && functionContext.Status != TickerStatus.Skipped)
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.Status, functionContext.Status));
+            // STATUS / SKIPPED
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
+                functionContext.Status != TickerStatus.Skipped)
+            {
+                setters.SetProperty(x => x.Status, functionContext.Status);
+            }
             else
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.Status, functionContext.Status)
-                        .SetProperty(x => x.SkippedReason, functionContext.ExceptionDetails));
-            
+            {
+                setters
+                    .SetProperty(x => x.Status, functionContext.Status)
+                    .SetProperty(x => x.SkippedReason, functionContext.ExceptionDetails);
+            }
+
+            // EXECUTED_AT
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.ExecutedAt, functionContext.ExecutedAt));
+            {
+                setters.SetProperty(x => x.ExecutedAt, functionContext.ExecutedAt);
+            }
 
-            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)) && functionContext.Status != TickerStatus.Skipped)
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.ExceptionMessage, functionContext.ExceptionDetails));
+            // EXCEPTION DETAILS
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)) &&
+                functionContext.Status != TickerStatus.Skipped)
+            {
+                setters.SetProperty(x => x.ExceptionMessage, functionContext.ExceptionDetails);
+            }
 
+            // ELAPSED_TIME
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime));
+            {
+                setters.SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime);
+            }
 
+            // RETRY COUNT
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.RetryCount, functionContext.RetryCount));
+            {
+                setters.SetProperty(x => x.RetryCount, functionContext.RetryCount);
+            }
 
+            // RELEASE LOCK
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.LockHolder, (string)null)
-                        .SetProperty(x => x.LockedAt, (DateTime?)null));
-            
-            return setExpression;
+            {
+                setters
+                    .SetProperty(x => x.LockHolder, (string)null)
+                    .SetProperty(x => x.LockedAt, (DateTime?)null);
+            }
         }
-        
-        internal static Expression<Func<SetPropertyCalls<TTimeTicker>, SetPropertyCalls<TTimeTicker>>> UpdateTimeTicker<TTimeTicker>(InternalFunctionContext functionContext, DateTime updatedAt)
+
+        internal static void UpdateTimeTicker<TTimeTicker>(this UpdateSettersBuilder<TTimeTicker> setters,
+            InternalFunctionContext functionContext, DateTime updatedAt)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         {
             var propsToUpdate = functionContext.GetPropsToUpdate();
 
-            Expression<Func<SetPropertyCalls<TTimeTicker>, SetPropertyCalls<TTimeTicker>>> setExpression = 
-                calls => calls;
-            
-            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) && functionContext.Status != TickerStatus.Skipped)
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.Status, functionContext.Status));
+            // STATUS / SKIPPED
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
+                functionContext.Status != TickerStatus.Skipped)
+            {
+                setters.SetProperty(x => x.Status, functionContext.Status);
+            }
             else
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.Status, functionContext.Status)
-                        .SetProperty(x => x.SkippedReason, functionContext.ExceptionDetails));
+            {
+                setters
+                    .SetProperty(x => x.Status, functionContext.Status)
+                    .SetProperty(x => x.SkippedReason, functionContext.ExceptionDetails);
+            }
 
+            // EXECUTED_AT
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.ExecutedAt, functionContext.ExecutedAt));
+            {
+                setters.SetProperty(x => x.ExecutedAt, functionContext.ExecutedAt);
+            }
 
-            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)) && functionContext.Status != TickerStatus.Skipped)
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.ExceptionMessage, functionContext.ExceptionDetails));
+            // EXCEPTION DETAILS
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)) &&
+                functionContext.Status != TickerStatus.Skipped)
+            {
+                setters.SetProperty(x => x.ExceptionMessage, functionContext.ExceptionDetails);
+            }
 
+            // ELAPSED_TIME
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime));
+            {
+                setters.SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime);
+            }
 
+            // RETRY COUNT
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.RetryCount, functionContext.RetryCount));
+            {
+                setters.SetProperty(x => x.RetryCount, functionContext.RetryCount);
+            }
 
+            // RELEASE LOCK
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
-                setExpression = ExpressionHelper.CombineSetters(setExpression,
-                    s => s.SetProperty(x => x.LockHolder, (string)null)
-                        .SetProperty(x => x.LockedAt, (DateTime?)null));
-            
-            setExpression = ExpressionHelper.CombineSetters(setExpression,
-                s => s.SetProperty(x => x.UpdatedAt, updatedAt));
-            
-            return setExpression;
+            {
+                setters
+                    .SetProperty(x => x.LockHolder, (string)null)
+                    .SetProperty(x => x.LockedAt, (DateTime?)null);
+            }
+
+            // UPDATED_AT ALWAYS
+            setters.SetProperty(x => x.UpdatedAt, updatedAt);
         }
     }
 }
