@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - net8
+      - net9
 
 jobs:
   pr:
