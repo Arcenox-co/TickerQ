@@ -104,18 +104,36 @@ jobs:
           sync_branch="sync-main-to-${{ matrix.target_branch }}-$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$sync_branch" ${{ matrix.target_branch }}
 
-          # Get ALL commits that need to be applied (including merge commits)
-          # First, get the merge base to ensure we have the correct starting point
-          merge_base=$(git merge-base ${{ matrix.target_branch }} main)
-          echo "📍 Merge base: $merge_base"
+          # Get only commits from the current push event (not all commits between branches)
+          # Use the push event data to get commits from this specific push
+          echo "📍 Getting commits from current push event..."
           
-          # Get all commits in main that are not in target branch (including merges)
-          # Store commits in a temp file to avoid subshell issues
-          git log "$merge_base..main" --format="%H" --reverse > /tmp/commits_to_apply.txt
+          # Get commits from the push event
+          if [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ -n "${{ github.event.after }}" ]; then
+            # Push event: get commits between before and after
+            echo "📋 Getting commits from push: ${{ github.event.before }}..${{ github.event.after }}"
+            git log "${{ github.event.before }}..${{ github.event.after }}" --format="%H" --reverse > /tmp/commits_to_apply.txt
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.head_commit.id }}" ]; then
+            # Fallback: use head commit if before/after not available
+            echo "📋 Using head commit: ${{ github.event.head_commit.id }}"
+            echo "${{ github.event.head_commit.id }}" > /tmp/commits_to_apply.txt
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual dispatch: get commits since last sync (merge base to main)
+            echo "📋 Workflow dispatch: getting commits since last sync"
+            merge_base=$(git merge-base ${{ matrix.target_branch }} main)
+            git log "$merge_base..main" --format="%H" --reverse > /tmp/commits_to_apply.txt
+          else
+            # Fallback: get commits since merge base
+            echo "📋 Fallback: getting commits since merge base"
+            merge_base=$(git merge-base ${{ matrix.target_branch }} main)
+            git log "$merge_base..main" --format="%H" --reverse > /tmp/commits_to_apply.txt
+          fi
           
-          # Also get commits using the simpler range (as fallback)
+          # If no commits found, try alternative method
           if [ ! -s /tmp/commits_to_apply.txt ]; then
-            git log "${{ matrix.target_branch }}..main" --format="%H" --reverse > /tmp/commits_to_apply.txt
+            echo "⚠️  No commits found with primary method, trying alternative..."
+            merge_base=$(git merge-base ${{ matrix.target_branch }} main)
+            git log "$merge_base..main" --format="%H" --reverse > /tmp/commits_to_apply.txt
           fi
 
           if [ -s /tmp/commits_to_apply.txt ]; then
