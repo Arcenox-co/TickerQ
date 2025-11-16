@@ -125,151 +125,89 @@ jobs:
               echo "  - $commit: $commit_msg"
             done < /tmp/commits_to_apply.txt
             
-            # Track failed commits for reporting
-            failed_commits_file="/tmp/failed_commits.txt"
-            ignored_commits_file="/tmp/ignored_commits.txt"
-            touch "$failed_commits_file"
-            touch "$ignored_commits_file"
+            # Filter out commits that are already in the target branch
+            echo "🔍 Filtering out commits already in ${{ matrix.target_branch }} branch..."
+            filtered_commits_file="/tmp/filtered_commits.txt"
+            touch "$filtered_commits_file"
+            
             successful_count=0
             failed_count=0
             ignored_count=0
+            already_applied_count=0
+            # Track ignored commits in array (no file needed)
+            declare -a ignored_commits_array=()
             
-            # Cherry-pick each commit individually to avoid merge conflicts
+            # Cherry-pick each commit individually, but first check if it's already in target branch
             while read commit; do
               commit_msg=$(git log -1 --format="%s" "$commit")
               commit_full_msg=$(git log -1 --format="%B" "$commit")
+              
+              # Check if commit is already in target branch
+              if git branch --contains "$commit" | grep -q "${{ matrix.target_branch }}"; then
+                echo "⏭️  Commit $commit already in ${{ matrix.target_branch }}, skipping: $commit_msg"
+                already_applied_count=$((already_applied_count + 1))
+                continue
+              fi
               
               # Check if commit should be ignored (check for ignore patterns in commit message)
               # Patterns: [skip-sync], [no-sync], [ignore-sync], [skip-branch-sync]
               if echo "$commit_msg" | grep -qiE '\[(skip-sync|no-sync|ignore-sync|skip-branch-sync)\]' || \
                  echo "$commit_full_msg" | grep -qiE '\[(skip-sync|no-sync|ignore-sync|skip-branch-sync)\]'; then
                 echo "⏭️  Skipping ignored commit $commit: $commit_msg"
-                echo "$commit" >> "$ignored_commits_file"
+                ignored_commits_array+=("$commit")
                 ignored_count=$((ignored_count + 1))
                 continue
               fi
               
-              echo "🍒 Cherry-picking $commit: $commit_msg"
-              
-              # Try cherry-pick with conflict resolution
-              if git cherry-pick --no-commit "$commit" 2>&1; then
-                echo "✅ Cherry-pick successful for $commit"
-                successful_count=$((successful_count + 1))
-              else
-                # Check if it's already applied (empty commit)
-                if git status --porcelain | grep -q "^UU"; then
-                  # Has conflicts
-                  echo "⚠️  Conflicts detected for $commit, will include via merge"
-                  git cherry-pick --abort || true
-                  echo "$commit" >> "$failed_commits_file"
-                  failed_count=$((failed_count + 1))
-                elif git diff --cached --quiet && git diff --quiet; then
-                  # Empty commit, already applied
-                  echo "ℹ️  Commit $commit already applied (empty), skipping..."
-                  git cherry-pick --abort || true
+              echo "$commit" >> "$filtered_commits_file"
+            done < /tmp/commits_to_apply.txt
+            
+            # Now cherry-pick only the filtered commits
+            if [ -s "$filtered_commits_file" ]; then
+              echo "🍒 Processing commits (skipped ${already_applied_count} already in branch, ${ignored_count} ignored)..."
+              while read commit; do
+                commit_msg=$(git log -1 --format="%s" "$commit")
+                echo "🍒 Cherry-picking $commit: $commit_msg"
+                
+                # Try cherry-pick with conflict resolution
+                if git cherry-pick --no-commit "$commit" 2>&1; then
+                  echo "✅ Cherry-pick successful for $commit"
+                  successful_count=$((successful_count + 1))
                 else
-                  # Other error, try to continue
-                  echo "⚠️  Cherry-pick had issues for $commit, attempting to continue..."
-                  git add -A || true
-                  if git cherry-pick --continue 2>&1; then
-                    echo "✅ Resolved and applied $commit"
-                    successful_count=$((successful_count + 1))
-                  else
-                    echo "❌ Could not resolve $commit, will include in merge"
+                  # Check if it's already applied (empty commit)
+                  if git diff --cached --quiet && git diff --quiet; then
+                    # Empty commit, already applied
+                    echo "ℹ️  Commit $commit already applied (empty), skipping..."
                     git cherry-pick --abort || true
-                    echo "$commit" >> "$failed_commits_file"
+                    already_applied_count=$((already_applied_count + 1))
+                  else
+                    # Has conflicts or other issues, skip this commit
+                    echo "⚠️  Conflicts or issues with $commit, skipping..."
+                    git cherry-pick --abort || true
                     failed_count=$((failed_count + 1))
                   fi
                 fi
-              fi
-            done < /tmp/commits_to_apply.txt
-            
-            # If we have failed commits OR want to ensure all changes are included, do a merge
-            # This ensures ALL changes from main are included, even if cherry-pick missed some
-            echo "🔄 Ensuring all changes from main are included (excluding ignored commits)..."
-            
-            # First, check what files differ between our current state and main
-            git add -A
-            current_diff=$(git diff --cached --name-only)
-            
-            # If there are ignored commits, create a cleaned version of main without them
-            merge_source="main"
-            if [ -s "$ignored_commits_file" ] && [ "$ignored_count" -gt 0 ]; then
-              echo "🧹 Creating cleaned branch without ignored commits..."
-              cleaned_branch="main-cleaned-$(date +%s)"
-              git checkout -b "$cleaned_branch" main
-              
-              # Revert ignored commits in reverse order (newest first)
-              # Read commits into array and reverse
-              mapfile -t ignored_commits < "$ignored_commits_file"
-              for ((idx=${#ignored_commits[@]}-1; idx>=0; idx--)); do
-                commit="${ignored_commits[idx]}"
-                echo "  Reverting ignored commit: $commit"
-                git revert --no-commit "$commit" 2>/dev/null || true
-              done
-              
-              # Commit the reverts if there are any changes
-              if ! git diff --cached --quiet || ! git diff --quiet; then
-                git commit -m "Revert ignored commits for branch sync" || true
-              fi
-              
-              # Go back to sync branch
-              git checkout "$sync_branch"
-              merge_source="$cleaned_branch"
-              echo "✅ Using cleaned branch for merge (excludes $ignored_count ignored commits)"
-            fi
-            
-            # Now merge the source (main or cleaned branch) to get ALL changes (this is a safety net)
-            if git merge --no-commit --no-ff "$merge_source" -m "Merge $merge_source to include all missing commits" 2>&1; then
-              echo "✅ Merge successful, all non-ignored commits from main are now included"
+              done < "$filtered_commits_file"
             else
-              # Merge has conflicts, resolve by keeping target branch files where specified
-              echo "⚠️  Merge has conflicts, will resolve by keeping target branch files where needed"
-              # Conflicts will be resolved in the file reset section below
+              echo "ℹ️  No new commits to cherry-pick (all commits already in branch or ignored)"
             fi
             
-            # Clean up temporary cleaned branch if it was created
-            if [ "$merge_source" != "main" ]; then
-              git branch -D "$cleaned_branch" 2>/dev/null || true
-            fi
+            echo "📊 Summary: $successful_count successful cherry-picks, $failed_count failed, $already_applied_count already in branch, $ignored_count ignored"
             
-            echo "📊 Summary: $successful_count successful cherry-picks, $failed_count failed (included via merge), $ignored_count ignored"
-            
-            # Show ignored commits if any and store for PR body
-            ignored_commits_info=""
-            if [ -s "$ignored_commits_file" ]; then
+            # Show ignored commits if any
+            if [ ${#ignored_commits_array[@]} -gt 0 ]; then
               echo "⏭️  Ignored commits (marked with [skip-sync], [no-sync], [ignore-sync], or [skip-branch-sync]):"
-              while read commit; do
+              for commit in "${ignored_commits_array[@]}"; do
                 commit_msg=$(git log -1 --format="%s" "$commit" 2>/dev/null || echo "unknown")
                 echo "  - $commit: $commit_msg"
-                ignored_commits_info="${ignored_commits_info}- \`$commit\`: $commit_msg"$'\n'
-              done < "$ignored_commits_file"
-              # Store ignored commits info for PR body
-              echo "$ignored_commits_info" > ./ignored_commits_info.txt
-            else
-              echo "" > ./ignored_commits_info.txt
+              done
             fi
           else
-            # Even if no commits found via log, check if there are file differences
-            echo "ℹ️  No commits found via log, checking for file differences..."
-            
-            # Check if there are any differences between branches
-            if git diff --quiet ${{ matrix.target_branch }} main; then
-              echo "✅ No differences found, branches are in sync"
-              git checkout main
-              git branch -D "$sync_branch" 2>/dev/null || true
-              exit 0
-            else
-              echo "⚠️  Found file differences despite no commits in log"
-              echo "This might indicate missing changes. Attempting merge to include them..."
-              
-              # Try a merge to catch any missing changes
-              if git merge --no-commit --no-ff main -m "Merge main to include missing changes" 2>&1; then
-                echo "✅ Merge successful, missing changes included"
-              else
-                echo "⚠️  Merge has conflicts, will resolve"
-              fi
-            fi
+            # No commits found to apply
+            echo "ℹ️  No commits found to apply - branches may already be in sync"
+            git checkout main
+            git branch -D "$sync_branch" 2>/dev/null || true
+            exit 0
           fi
           
           # Reset files that should stay as they are in the target branch
@@ -384,19 +322,6 @@ jobs:
           # Get the target .NET version number for display
           dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
           
-          # Read ignored commits info if it exists
-          ignored_section=""
-          if [ -f "./ignored_commits_info.txt" ] && [ -s "./ignored_commits_info.txt" ]; then
-            ignored_commits_list=$(cat ./ignored_commits_info.txt)
-            ignored_section=$(cat << EOF
-
-          ### ⏭️ Ignored Commits:
-          The following commits were skipped (marked with \`[skip-sync]\`, \`[no-sync]\`, \`[ignore-sync]\`, or \`[skip-branch-sync]\`):
-          ${ignored_commits_list}
-          EOF
-            )
-          fi
-          
           # Create PR using GitHub CLI (gh)
           PR_BODY=$(cat << EOF
           ## 🤖 Automated Branch Sync
@@ -408,13 +333,12 @@ jobs:
           - ✅ Updated version numbers (10.x.x → ${dotnet_version}.x.x)
           - ✅ Updated target framework (net10.0 → net${dotnet_version}.0)
           - ✅ Preserved .csproj files from ${{ matrix.target_branch }} branch
-          ${ignored_section}
+          - ⏭️ Commits marked with \`[skip-sync]\`, \`[no-sync]\`, \`[ignore-sync]\`, or \`[skip-branch-sync]\` were excluded
 
           ### Review Notes:
           - All .csproj files maintain ${{ matrix.target_branch }} configurations
           - Directory.Build.props has been updated for ${{ matrix.target_branch }} compatibility
           - Ready for testing on ${{ matrix.target_branch }} environment
-          - Commits marked with ignore tags were excluded from this sync
 
           ---
           _Created automatically by branch sync workflow_
