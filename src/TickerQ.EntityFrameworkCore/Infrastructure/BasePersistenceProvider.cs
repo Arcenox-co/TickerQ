@@ -121,7 +121,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         return await dbContext.Set<TTimeTicker>()
             .Where(x => x.Id == functionContexts.TickerId)
-            .ExecuteUpdateAsync(MappingExtensions.UpdateTimeTicker<TTimeTicker>(functionContexts, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
+            .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(functionContexts, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
     }
         
     public async Task UpdateTimeTickersWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
@@ -129,7 +129,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         await dbContext.Set<TTimeTicker>()
             .Where(x => timeTickerIds.Contains(x.Id))
-            .ExecuteUpdateAsync(MappingExtensions.UpdateTimeTicker<TTimeTicker>(functionContext, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
+            .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(functionContext, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
     }
         
     public async Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken)
@@ -266,7 +266,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .Where(x => x.Id == functionContext.TickerId)
-            .ExecuteUpdateAsync(MappingExtensions.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
+            .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
             .ConfigureAwait(false);
     }
     
@@ -470,7 +470,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .Where(x => timeTickerIds.Contains(x.CronTickerId))
-            .ExecuteUpdateAsync(MappingExtensions.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
+            .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
             .ConfigureAwait(false);
     }
     
