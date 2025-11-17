@@ -456,9 +456,9 @@ namespace TickerQ.Utilities.Managers
         public async Task DeleteTicker(Guid tickerId, TickerType type, CancellationToken cancellationToken = default)
         {
             if (type == TickerType.CronTickerOccurrence)
-               await _persistenceProvider.RemoveTimeTickers([tickerId], cancellationToken).ConfigureAwait(false);
-            else
                 await _persistenceProvider.RemoveCronTickers([tickerId], cancellationToken).ConfigureAwait(false);
+            else
+                await _persistenceProvider.RemoveTimeTickers([tickerId], cancellationToken).ConfigureAwait(false);
         }
 
         public async Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default)
