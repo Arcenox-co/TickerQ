@@ -470,7 +470,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .Where(x => cronOccurrenceIds.Contains(x.Id))
-            .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
+            .ExecuteUpdateAsync(MappingExtensions.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
             .ConfigureAwait(false);
     }
     
