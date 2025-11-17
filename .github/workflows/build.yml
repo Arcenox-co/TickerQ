@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - net8
-
+      - net9
 jobs:
   check-nuget:
     runs-on: ubuntu-latest
