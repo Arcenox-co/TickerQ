@@ -99,13 +99,9 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 await _internalTickerManager.SetTickersInProgress(_executionContext.Functions, cancellationToken);
 
                 foreach (var function in _executionContext.Functions.OrderBy(x => x.CachedPriority))
-<<<<<<< HEAD
-                    await _taskScheduler.QueueAsync(async ct => await _taskHandler.ExecuteTaskAsync(function,false, ct), function.CachedPriority, stoppingToken);
-=======
                     _ = _taskScheduler.QueueAsync(async ct => await _taskHandler.ExecuteTaskAsync(function,false, ct), function.CachedPriority, stoppingToken);
                 
                 _executionContext.SetFunctions(null);
->>>>>>> f7b961a (Fix/schedulerbackground (#376))
             }
             
             var (timeRemaining, functions) =
@@ -150,10 +146,6 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         
         // Restart if:
         // 1. No tasks are currently planned, OR
-<<<<<<< HEAD
-        // 2. The new task should execute BEFORE the currently planned task
-        if (nextPlannedOccurrence == null || dateTime.Value < nextPlannedOccurrence.Value)
-=======
         // 2. The new task should execute at least 500ms earlier than the currently planned task, OR
         // 3. The new task is already due/overdue (ExecutionTime <= now)
         if (nextPlannedOccurrence == null)
@@ -162,12 +154,12 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             return;
         }
 
+        var now = DateTime.UtcNow;
         var newTime = dateTime.Value;
         var threshold = TimeSpan.FromMilliseconds(500);
         var diff = nextPlannedOccurrence.Value - newTime;
 
         if (newTime <= now || diff > threshold)
->>>>>>> f7b961a (Fix/schedulerbackground (#376))
             _restartThrottle.RequestRestart();
     }
 
