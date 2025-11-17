@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using TickerQ.Utilities.Enums;
@@ -31,7 +30,6 @@ namespace TickerQ.Utilities.Models
         public bool ReleaseLock { get; set; }
         public DateTime ExecutionTime { get; set; }
         public RunCondition RunCondition { get; set; }
-        public bool IsFired { get; set; }
         public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 
         [DynamicDependency(DynamicallyAccessedMemberTypes.PublicProperties, typeof(InternalFunctionContext))]
