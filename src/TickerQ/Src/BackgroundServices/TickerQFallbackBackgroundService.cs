@@ -11,7 +11,6 @@ namespace TickerQ.BackgroundServices;
 internal class TickerQFallbackBackgroundService :  BackgroundService
 {
     private int _started;
-    private PeriodicTimer _tickerFallbackJobPeriodicTimer;
     private readonly IInternalTickerManager _internalTickerManager;
     private readonly TickerExecutionTaskHandler _tickerExecutionTaskHandler;
     private readonly TickerQTaskScheduler _tickerQTaskScheduler;
@@ -33,16 +32,8 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _tickerFallbackJobPeriodicTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(10));
-        await RunTickerQFallbackAsync(stoppingToken);
-    }
-    
-    private async Task RunTickerQFallbackAsync(CancellationToken stoppingToken)
-    {
-        while (await _tickerFallbackJobPeriodicTimer.WaitForNextTickAsync(stoppingToken))
+        while (!stoppingToken.IsCancellationRequested)
         {
-            var oldPeriod = _tickerFallbackJobPeriodicTimer.Period;
-            
             var functions = await _internalTickerManager.RunTimedOutTickers(stoppingToken);
 
             if (functions.Length != 0)
@@ -76,13 +67,12 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
                     await _tickerQTaskScheduler.QueueAsync(ct => _tickerExecutionTaskHandler.ExecuteTaskAsync(function, true, ct), function.CachedPriority, stoppingToken);
                 }
 
-                _tickerFallbackJobPeriodicTimer.Period = TimeSpan.FromMilliseconds(10);
+                await Task.Delay(TimeSpan.FromMilliseconds(10), stoppingToken);
             }
             else
-                _tickerFallbackJobPeriodicTimer.Period = _fallbackJobPeriod;
-            
-            if(oldPeriod != _fallbackJobPeriod)
-                await _tickerFallbackJobPeriodicTimer.WaitForNextTickAsync(stoppingToken);
+            {
+                await Task.Delay(_fallbackJobPeriod, stoppingToken);
+            }
         }
     }
     

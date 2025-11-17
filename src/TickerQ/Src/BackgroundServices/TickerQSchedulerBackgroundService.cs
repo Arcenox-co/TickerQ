@@ -13,7 +13,6 @@ namespace TickerQ.BackgroundServices;
 
 internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHostScheduler
 {
-    private PeriodicTimer _tickerJobPeriodicTimer;
     private readonly RestartThrottleManager _restartThrottle;
     private readonly IInternalTickerManager _internalTickerManager;
     private readonly TickerExecutionContext _executionContext;
@@ -60,7 +59,6 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
             try
             {
-                _tickerJobPeriodicTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(1));
                 await RunTickerQSchedulerAsync(stoppingToken, _schedulerLoopCancellationTokenSource.Token);
             }
             catch (OperationCanceledException) when (_schedulerLoopCancellationTokenSource.Token.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
@@ -85,10 +83,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             }
             finally
             {
-                // CRITICAL: Must dispose PeriodicTimer to prevent memory leak
-                _tickerJobPeriodicTimer?.Dispose();
-                _tickerJobPeriodicTimer = null;
-                
+                _executionContext.SetFunctions(null);
                 _schedulerLoopCancellationTokenSource?.Dispose();
                 _schedulerLoopCancellationTokenSource = null;
             }
@@ -97,16 +92,16 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     private async Task RunTickerQSchedulerAsync(CancellationToken stoppingToken, CancellationToken cancellationToken)
     {
-        while (await _tickerJobPeriodicTimer.WaitForNextTickAsync(cancellationToken))
+        while (!stoppingToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            var oldPeriod = _tickerJobPeriodicTimer.Period;
-            
             if (_executionContext.Functions.Length != 0)
             {
                 await _internalTickerManager.SetTickersInProgress(_executionContext.Functions, cancellationToken);
 
                 foreach (var function in _executionContext.Functions.OrderBy(x => x.CachedPriority))
                     _ = _taskScheduler.QueueAsync(async ct => await _taskHandler.ExecuteTaskAsync(function,false, ct), function.CachedPriority, stoppingToken);
+                
+                _executionContext.SetFunctions(null);
             }
             
             var (timeRemaining, functions) =
@@ -114,24 +109,23 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
             _executionContext.SetFunctions(functions);
 
-            var sleepDuration = timeRemaining > TimeSpan.FromDays(1) || timeRemaining == Timeout.InfiniteTimeSpan
-                ? TimeSpan.FromDays(1)
-                : timeRemaining;
-
-            if (sleepDuration <= TimeSpan.Zero)
-                sleepDuration = TimeSpan.FromMilliseconds(1);
-
-            _tickerJobPeriodicTimer.Period = sleepDuration;
-            
-            if (timeRemaining == Timeout.InfiniteTimeSpan)
+            TimeSpan sleepDuration;
+            if (timeRemaining == Timeout.InfiniteTimeSpan || timeRemaining > TimeSpan.FromDays(1))
+            {
+                sleepDuration = TimeSpan.FromDays(1);
                 _executionContext.SetNextPlannedOccurrence(null);
+            }
             else
+            {
+                sleepDuration = timeRemaining <= TimeSpan.Zero
+                    ? TimeSpan.FromMilliseconds(1)
+                    : timeRemaining;
                 _executionContext.SetNextPlannedOccurrence(DateTime.UtcNow.Add(sleepDuration));
+            }
             
             _executionContext.NotifyCoreAction(_executionContext.GetNextPlannedOccurrence(), CoreNotifyActionType.NotifyNextOccurence);
-            
-            if(oldPeriod != _tickerJobPeriodicTimer.Period)
-                await _tickerJobPeriodicTimer.WaitForNextTickAsync(cancellationToken);
+
+            await Task.Delay(sleepDuration, cancellationToken);
         }
     }
 
@@ -153,11 +147,19 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         
         // Restart if:
         // 1. No tasks are currently planned, OR
-        // 2. The new task should execute BEFORE or at the same time as the currently planned task, OR
+        // 2. The new task should execute at least 500ms earlier than the currently planned task, OR
         // 3. The new task is already due/overdue (ExecutionTime <= now)
-        if (nextPlannedOccurrence == null ||
-            dateTime.Value <= nextPlannedOccurrence.Value ||
-            dateTime.Value <= now)
+        if (nextPlannedOccurrence == null)
+        {
+            _restartThrottle.RequestRestart();
+            return;
+        }
+
+        var newTime = dateTime.Value;
+        var threshold = TimeSpan.FromMilliseconds(500);
+        var diff = nextPlannedOccurrence.Value - newTime;
+
+        if (newTime <= now || diff > threshold)
             _restartThrottle.RequestRestart();
     }
 
