@@ -339,7 +339,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             ? dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>() 
             : dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>().Where(x => occurrenceIds.Contains(x.Id));
            
-        await baseQuery.Where(x => occurrenceIds.Contains(x.Id))
+        await baseQuery
             .WhereCanAcquire(_lockHolder)
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LockHolder, _ => null)
@@ -415,7 +415,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 {
                     Id = item.NextCronOccurrence.Id,
                     CronTickerId = item.Id,
-                    ExecutionTime = now,
+                    ExecutionTime = executionTime,
                     Status = TickerStatus.Queued,
                     LockHolder = _lockHolder,
                     LockedAt = now,
@@ -464,13 +464,18 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ConfigureAwait(false);
     }
     
-    public async Task UpdateCronTickerOccurrencesWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext,
+    public async Task UpdateCronTickerOccurrencesWithUnifiedContext(Guid[] cronOccurrenceIds, InternalFunctionContext functionContext,
         CancellationToken cancellationToken = default)
     {
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+<<<<<<< HEAD
             .Where(x => timeTickerIds.Contains(x.CronTickerId))
             .ExecuteUpdateAsync(MappingExtensions.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
+=======
+            .Where(x => cronOccurrenceIds.Contains(x.Id))
+            .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
+>>>>>>> f7b961a (Fix/schedulerbackground (#376))
             .ConfigureAwait(false);
     }
     
