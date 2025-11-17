@@ -31,6 +31,7 @@ namespace TickerQ.Utilities.Models
         public bool ReleaseLock { get; set; }
         public DateTime ExecutionTime { get; set; }
         public RunCondition RunCondition { get; set; }
+        public bool IsFired { get; set; }
         public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 
         [DynamicDependency(DynamicallyAccessedMemberTypes.PublicProperties, typeof(InternalFunctionContext))]

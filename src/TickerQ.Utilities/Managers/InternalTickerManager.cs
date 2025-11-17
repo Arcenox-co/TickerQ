@@ -28,132 +28,99 @@ namespace TickerQ.Utilities.Managers
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _notificationHubSender = notificationHubSender;
         }
-
+        
         public async Task<(TimeSpan TimeRemaining, InternalFunctionContext[] Functions)> GetNextTickers(CancellationToken cancellationToken = default)
-        {
-            while (true)
-            {
-                var minCronGroupTask =  GetEarliestCronTickerGroupAsync(cancellationToken);
-                var minTimeTickersTask =  _persistenceProvider.GetEarliestTimeTickers(cancellationToken);
-                
-                await Task.WhenAll(minCronGroupTask, minTimeTickersTask).ConfigureAwait(false);
-                
-                var (minCronGroup, minTimeTickers) = (await minCronGroupTask, await minTimeTickersTask);
-                
-                var minTimeTickerTime = minTimeTickers.Length != 0
-                    ? minTimeTickers[0].ExecutionTime ?? default
-                    : default;
-
-                var minTimeRemaining = CalculateMinTimeRemaining(minCronGroup, minTimeTickerTime, out var typesToQueue);
-
-                if (minTimeRemaining == Timeout.InfiniteTimeSpan) 
-                    return (Timeout.InfiniteTimeSpan, []);
-
-                var nextTickers = await RetrieveEligibleTickersAsync(minCronGroup, minTimeTickers, typesToQueue, cancellationToken).ConfigureAwait(false);
-
-                if (nextTickers.Length != 0) 
-                    return (minTimeRemaining, nextTickers);
-                
-                if(typesToQueue.All(x => x == TickerType.CronTickerOccurrence))
-                    return (minTimeRemaining, nextTickers);
-                
-                await Task.Delay(TimeSpan.FromMilliseconds(10), cancellationToken).ConfigureAwait(false);  // Faster retry for time-sensitive tasks
-            }
-        }
-
-        private TimeSpan CalculateMinTimeRemaining(
-            (DateTime Key, InternalManagerContext[] Items)? minCronTicker,
-            DateTime minTimeTicker,
-            out TickerType[] sources)
         {
             var now = _clock.UtcNow;
 
-            DateTime? cron = minCronTicker?.Key;
-            DateTime? time = minTimeTicker == default ? null : minTimeTicker;
+            var minCronGroupTask = GetEarliestCronTickerGroupAsync(cancellationToken);
+            var minTimeTickersTask = _persistenceProvider.GetEarliestTimeTickers(cancellationToken);
 
-            // no values
-            if (cron is null && time is null)
+            await Task.WhenAll(minCronGroupTask, minTimeTickersTask).ConfigureAwait(false);
+
+            var minCronGroup = await minCronGroupTask.ConfigureAwait(false);
+            var minTimeTickers = await minTimeTickersTask.ConfigureAwait(false);
+
+            var cronTime = minCronGroup?.Key;
+            var timeTickerTime = minTimeTickers.Length > 0
+                ? minTimeTickers[0].ExecutionTime
+                : null;
+
+            if (cronTime is null && timeTickerTime is null)
+                return (Timeout.InfiniteTimeSpan, []);
+
+            TimeSpan timeRemaining;
+            bool includeCron = false;
+            bool includeTimeTickers = false;
+
+            if (cronTime is null)
             {
-                sources = [];
-                return Timeout.InfiniteTimeSpan;
+                includeTimeTickers = true;
+                timeRemaining = SafeRemaining(timeTickerTime!.Value, now);
+            }
+            else if (timeTickerTime is null)
+            {
+                includeCron = true;
+                timeRemaining = SafeRemaining(cronTime.Value, now);
+            }
+            else
+            {
+                var cronSecond = new DateTime(cronTime.Value.Year, cronTime.Value.Month, cronTime.Value.Day,
+                    cronTime.Value.Hour, cronTime.Value.Minute, cronTime.Value.Second);
+                var timeSecond = new DateTime(timeTickerTime.Value.Year, timeTickerTime.Value.Month, timeTickerTime.Value.Day,
+                    timeTickerTime.Value.Hour, timeTickerTime.Value.Minute, timeTickerTime.Value.Second);
+
+                if (cronSecond == timeSecond)
+                {
+                    includeCron = true;
+                    includeTimeTickers = true;
+                    var earliest = cronTime < timeTickerTime ? cronTime.Value : timeTickerTime.Value;
+                    timeRemaining = SafeRemaining(earliest, now);
+                }
+                else if (cronTime < timeTickerTime)
+                {
+                    includeCron = true;
+                    timeRemaining = SafeRemaining(cronTime.Value, now);
+                }
+                else
+                {
+                    includeTimeTickers = true;
+                    timeRemaining = SafeRemaining(timeTickerTime.Value, now);
+                }
             }
 
-            // only cron
-            if (time is null)
-            {
-                sources = [TickerType.CronTickerOccurrence];
-                var cronRemaining = cron.Value - now;
-                // Ensure we don't return negative values - schedule for immediate execution
-                return cronRemaining < TimeSpan.Zero ? TimeSpan.Zero : cronRemaining;
-            }
+            if (!includeCron && !includeTimeTickers)
+                return (Timeout.InfiniteTimeSpan, []);
 
-            // only time
-            if (cron is null)
-            {
-                sources = [TickerType.TimeTicker];
-                var timeRemaining = time.Value - now;
-                // Ensure we don't return negative values - schedule for immediate execution
-                return timeRemaining < TimeSpan.Zero ? TimeSpan.Zero : timeRemaining;
-            }
+            InternalFunctionContext[] cronFunctions = [];
+            InternalFunctionContext[] timeFunctions = [];
 
-            // both present - check if they're in the exact same second (ignoring milliseconds)
-            var cronSecond = new DateTime(cron.Value.Year, cron.Value.Month, cron.Value.Day, 
-                                          cron.Value.Hour, cron.Value.Minute, cron.Value.Second);
-            var timeSecond = new DateTime(time.Value.Year, time.Value.Month, time.Value.Day,
-                                          time.Value.Hour, time.Value.Minute, time.Value.Second);
-            
-            // Only batch if they're in the exact same second
-            if (cronSecond == timeSecond)
-            {
-                sources = [TickerType.CronTickerOccurrence, TickerType.TimeTicker];
-                var earliest = cron < time ? cron.Value : time.Value;
-                var earliestRemaining = earliest - now;
-                // Ensure we don't return negative values
-                return earliestRemaining < TimeSpan.Zero ? TimeSpan.Zero : earliestRemaining;
-            }
+            if (includeCron && minCronGroup is not null)
+                cronFunctions = await QueueNextCronTickersAsync(minCronGroup.Value, cancellationToken).ConfigureAwait(false);
 
-            // Different seconds - only process the earliest one
-            if (cron < time)
-            {
-                sources = [TickerType.CronTickerOccurrence];
-                var cronRemaining = cron.Value - now;
-                return cronRemaining < TimeSpan.Zero ? TimeSpan.Zero : cronRemaining;
-            }
+            if (includeTimeTickers && minTimeTickers.Length > 0)
+                timeFunctions = await QueueNextTimeTickersAsync(minTimeTickers, cancellationToken).ConfigureAwait(false);
 
-            sources = [TickerType.TimeTicker];
-            var finalTimeRemaining = time.Value - now;
-            return finalTimeRemaining < TimeSpan.Zero ? TimeSpan.Zero : finalTimeRemaining;
+            if (cronFunctions.Length == 0 && timeFunctions.Length == 0)
+                return (timeRemaining, []);
+
+            if (cronFunctions.Length == 0)
+                return (timeRemaining, timeFunctions);
+
+            if (timeFunctions.Length == 0)
+                return (timeRemaining, cronFunctions);
+
+            var merged = new InternalFunctionContext[cronFunctions.Length + timeFunctions.Length];
+            cronFunctions.AsSpan().CopyTo(merged.AsSpan(0, cronFunctions.Length));
+            timeFunctions.AsSpan().CopyTo(merged.AsSpan(cronFunctions.Length, timeFunctions.Length));
+
+            return (timeRemaining, merged);
         }
 
-        private async Task<InternalFunctionContext[]>RetrieveEligibleTickersAsync(
-            (DateTime Key, InternalManagerContext[] Items)? minCronTicker,
-            TimeTickerEntity[] minTimeTicker,
-            TickerType[] typesToQueue,
-            CancellationToken cancellationToken = default)
+        private static TimeSpan SafeRemaining(DateTime target, DateTime now)
         {
-            
-            if (typesToQueue.Contains(TickerType.CronTickerOccurrence) && typesToQueue.Contains(TickerType.TimeTicker))
-            {
-                var nextCronTickersTask = QueueNextCronTickersAsync(minCronTicker!.Value, cancellationToken);
-                var nextTimeTickersTask = QueueNextTimeTickersAsync(minTimeTicker, cancellationToken);
-
-                await Task.WhenAll(nextCronTickersTask, nextTimeTickersTask).ConfigureAwait(false);
-                
-                var (nextCronTickers, nextTimeTickers) = (await nextCronTickersTask, await nextTimeTickersTask);
-                
-                // Safety check for extremely large datasets
-                var totalLength = nextCronTickers.Length + nextTimeTickers.Length;
-                
-                var merged = new InternalFunctionContext[totalLength];
-                nextCronTickers.AsSpan().CopyTo(merged.AsSpan(0, nextCronTickers.Length));
-                nextTimeTickers.AsSpan().CopyTo(merged.AsSpan(nextCronTickers.Length, nextTimeTickers.Length));
-                return merged;
-            }
-
-            if (typesToQueue.Contains(TickerType.TimeTicker))
-                return await QueueNextTimeTickersAsync(minTimeTicker, cancellationToken).ConfigureAwait(false);
-            else
-                return await QueueNextCronTickersAsync(minCronTicker!.Value, cancellationToken).ConfigureAwait(false);
+            var remaining = target - now;
+            return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
         }
 
         private async Task<InternalFunctionContext[]> QueueNextTimeTickersAsync(TimeTickerEntity[] minTimeTickers, CancellationToken cancellationToken = default)
