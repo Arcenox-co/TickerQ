@@ -18,3 +18,4 @@ public readonly struct WorkItem
         UserToken = userToken;
     }
 }
+
