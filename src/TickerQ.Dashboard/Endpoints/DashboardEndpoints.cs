@@ -199,7 +199,7 @@ public static class DashboardEndpoints
 
     #region Endpoint Handlers
     
-    private static IResult GetAuthInfo(IAuthService authService)
+    private static IResult GetAuthInfo(IAuthService authService, DashboardOptionsBuilder dashboardOptions)
     {
         var authInfo = authService.GetAuthInfo();
         
@@ -211,21 +211,21 @@ public static class DashboardEndpoints
             sessionTimeout = authInfo.SessionTimeoutMinutes
         };
         
-        return Results.Ok(response);
+        return Results.Json(response, dashboardOptions.DashboardJsonOptions);
     }
 
-    private static async Task<IResult> ValidateAuth(HttpContext context, IAuthService authService)
+    private static async Task<IResult> ValidateAuth(HttpContext context, IAuthService authService, DashboardOptionsBuilder dashboardOptions)
     {
         var authResult = await authService.AuthenticateAsync(context);
         
         if (authResult.IsAuthenticated)
         {
-            return Results.Ok(new
+            return Results.Json(new
             {
                 authenticated = true,
                 username = authResult.Username,
                 message = "Authentication successful"
-            });
+            }, dashboardOptions.DashboardJsonOptions);
         }
 
         return Results.Unauthorized();
@@ -233,31 +233,31 @@ public static class DashboardEndpoints
     
 
     private static IResult GetOptions<TTimeTicker, TCronTicker>(
-        TickerExecutionContext executionContext, SchedulerOptionsBuilder schedulerOptions)
+        TickerExecutionContext executionContext, SchedulerOptionsBuilder schedulerOptions, DashboardOptionsBuilder dashboardOptions)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        return Results.Ok(new
+        return Results.Json(new
         {
             maxConcurrency = schedulerOptions.MaxConcurrency,
             schedulerOptions.IdleWorkerTimeOut,
             currentMachine = schedulerOptions.NodeIdentifier,
             executionContext.LastHostExceptionMessage
-        });
+        }, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetTimeTickers<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetTimeTickersAsync(cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
     
     private static async Task<IResult> GetTimeTickersPaginated<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         int pageNumber = 1,
         int pageSize = 20,
         CancellationToken cancellationToken = default)
@@ -265,11 +265,11 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetTimeTickersPaginatedAsync(pageNumber, pageSize, cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetTimeTickersGraphDataRange<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         int pastDays = 3,
         int futureDays = 3,
         CancellationToken cancellationToken = default)
@@ -277,17 +277,17 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetTimeTickersGraphSpecificDataAsync(pastDays, futureDays, cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetTimeTickersGraphData<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetTimeTickerFullDataAsync(cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> CreateChainJobs<TTimeTicker, TCronTicker>(
@@ -307,11 +307,11 @@ public static class DashboardEndpoints
         
         var result = await timeTickerManager.AddAsync(chainRoot, cancellationToken);
         
-        return Results.Ok(new { 
+        return Results.Json(new { 
             success = result.IsSucceeded, 
             message = result.IsSucceeded ? "Chain jobs created successfully" : "Failed to create chain jobs",
             tickerId = result.Result?.Id
-        });
+        }, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> UpdateTimeTicker<TTimeTicker, TCronTicker>(
@@ -335,39 +335,40 @@ public static class DashboardEndpoints
         
         var result = await timeTickerManager.UpdateAsync(timeTicker, cancellationToken);
         
-        return Results.Ok(new { 
+        return Results.Json(new { 
             success = result.IsSucceeded, 
             message = result.IsSucceeded ? "Time ticker updated successfully" : "Failed to update time ticker"
-        });
+        }, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> DeleteTimeTicker<TTimeTicker, TCronTicker>(
         Guid id,
         ITimeTickerManager<TTimeTicker> timeTickerManager,
+        DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await timeTickerManager.DeleteAsync(id, cancellationToken);
         
-        return Results.Ok(new { 
+        return Results.Json(new { 
             success = result.IsSucceeded, 
             message = result.IsSucceeded ? "Time ticker deleted successfully" : "Failed to delete time ticker"
-        });
+        }, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetCronTickers<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetCronTickersAsync(cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
     
     private static async Task<IResult> GetCronTickersPaginated<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         int pageNumber = 1,
         int pageSize = 20,
         CancellationToken cancellationToken = default)
@@ -375,11 +376,11 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetCronTickersPaginatedAsync(pageNumber, pageSize, cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetCronTickersGraphDataRange<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         int pastDays = 3,
         int futureDays = 3,
         CancellationToken cancellationToken = default)
@@ -387,12 +388,12 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetCronTickersGraphSpecificDataAsync(pastDays, futureDays, cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetCronTickersByIdGraphDataRange<TTimeTicker, TCronTicker>(
         Guid id,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         int pastDays = 3,
         int futureDays = 3,
         CancellationToken cancellationToken = default)
@@ -400,33 +401,33 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetCronTickersGraphSpecificDataByIdAsync(id, pastDays, futureDays, cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetCronTickersGraphData<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetCronTickerFullDataAsync(cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetCronTickerOccurrences<TTimeTicker, TCronTicker>(
         Guid cronTickerId,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetCronTickersOccurrencesAsync(cronTickerId, cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
     
     private static async Task<IResult> GetCronTickerOccurrencesPaginated<TTimeTicker, TCronTicker>(
         Guid cronTickerId,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         int pageNumber = 1,
         int pageSize = 20,
         CancellationToken cancellationToken = default)
@@ -434,18 +435,18 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetCronTickersOccurrencesPaginatedAsync(cronTickerId, pageNumber, pageSize, cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetCronTickerOccurrencesGraphData<TTimeTicker, TCronTicker>(
         Guid cronTickerId,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await repository.GetCronTickersOccurrencesGraphDataAsync(cronTickerId, cancellationToken);
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> AddCronTicker<TTimeTicker, TCronTicker>(
@@ -465,11 +466,11 @@ public static class DashboardEndpoints
         
         var result = await cronTickerManager.AddAsync(cronTicker, cancellationToken);
         
-        return Results.Ok(new { 
+        return Results.Json(new { 
             success = result.IsSucceeded, 
             message = result.IsSucceeded ? "Cron ticker added successfully" : "Failed to add cron ticker",
             tickerId = result.Result?.Id
-        });
+        }, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> UpdateCronTicker<TTimeTicker, TCronTicker>(
@@ -493,10 +494,10 @@ public static class DashboardEndpoints
         
         var result = await cronTickerManager.UpdateAsync(cronTicker, cancellationToken);
         
-        return Results.Ok(new { 
+        return Results.Json(new { 
             success = result.IsSucceeded, 
             message = result.IsSucceeded ? "Cron ticker updated successfully" : "Failed to update cron ticker"
-        });
+        }, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> RunCronTickerOnDemand<TTimeTicker, TCronTicker>(
@@ -513,21 +514,22 @@ public static class DashboardEndpoints
     private static async Task<IResult> DeleteCronTicker<TTimeTicker, TCronTicker>(
         Guid id,
         ICronTickerManager<TCronTicker> cronTickerManager,
+        DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var result = await cronTickerManager.DeleteAsync(id, cancellationToken);
         
-        return Results.Ok(new { 
+        return Results.Json(new { 
             success = result.IsSucceeded, 
             message = result.IsSucceeded ? "Cron ticker deleted successfully" : "Failed to delete cron ticker"
-        });
+        }, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> DeleteCronTickerOccurrence<TTimeTicker, TCronTicker>(
         Guid id,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
@@ -551,7 +553,7 @@ public static class DashboardEndpoints
     private static async Task<IResult> GetTickerRequest<TTimeTicker, TCronTicker>(
         Guid tickerId,
         TickerType tickerType,
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
@@ -563,11 +565,11 @@ public static class DashboardEndpoints
             Result = resultData.Item1,
             MatchType = resultData.Item2,
         };
-        return Results.Ok(response);
+        return Results.Json(response, dashboardOptions.DashboardJsonOptions);
     }
 
     private static IResult GetTickerFunctions<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository)
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
@@ -579,11 +581,11 @@ public static class DashboardEndpoints
             Priority = (int)x.Item2.Item3,
         });
 
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static IResult GetNextTicker<TTimeTicker, TCronTicker>(
-        TickerExecutionContext executionContext)
+        TickerExecutionContext executionContext, DashboardOptionsBuilder dashboardOptions)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
@@ -591,7 +593,7 @@ public static class DashboardEndpoints
         {
             NextOccurrence = executionContext.GetNextPlannedOccurrence()
         };
-        return Results.Ok(result);
+        return Results.Json(result, dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> StopTickerHost<TTimeTicker, TCronTicker>(ITickerQHostScheduler scheduler)
@@ -626,33 +628,33 @@ public static class DashboardEndpoints
     }
 
     private static async Task<IResult> GetLastWeekJobStatus<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var jobStatuses = await repository.GetLastWeekJobStatusesAsync(cancellationToken);
-        return Results.Ok(jobStatuses.Select(x => new { x.Item1, x.Item2 }).ToArray());
+        return Results.Json(jobStatuses.Select(x => new { x.Item1, x.Item2 }).ToArray(), dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetJobStatuses<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var jobStatuses = await repository.GetOverallJobStatusesAsync(cancellationToken);
-        return Results.Ok(jobStatuses.Select(x => new { x.Item1, x.Item2 }).ToArray());
+        return Results.Json(jobStatuses.Select(x => new { x.Item1, x.Item2 }).ToArray(), dashboardOptions.DashboardJsonOptions);
     }
 
     private static async Task<IResult> GetMachineJobs<TTimeTicker, TCronTicker>(
-        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository, DashboardOptionsBuilder dashboardOptions,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var machineJobs = await repository.GetMachineJobsAsync(cancellationToken);
-        return Results.Ok(machineJobs.Select(x => new { item1 = x.Item1, item2 = x.Item2 }).ToArray());
+        return Results.Json(machineJobs.Select(x => new { item1 = x.Item1, item2 = x.Item2 }).ToArray(), dashboardOptions.DashboardJsonOptions);
     }
 
     #endregion

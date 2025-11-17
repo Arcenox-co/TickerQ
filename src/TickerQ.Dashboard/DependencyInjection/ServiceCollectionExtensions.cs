@@ -28,6 +28,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                 config.DashboardJsonOptions = new JsonSerializerOptions
                 {
                     PropertyNameCaseInsensitive = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                     Converters = { new StringToByteArrayConverter() }
                 };
             }
