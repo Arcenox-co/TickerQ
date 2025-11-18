@@ -20,6 +20,12 @@ namespace TickerQ.Utilities
             _schedulerOptions = schedulerOptions;
         }
 
+        /// <summary>
+        /// Internal flag for request GZip compression.
+        /// Defaults to false (plain JSON bytes).
+        /// </summary>
+        internal bool RequestGZipCompressionEnabled { get; set; } = false;
+
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
         internal Type TickerExceptionHandlerType { get; private set; }
@@ -46,6 +52,17 @@ namespace TickerQ.Utilities
         {
             RequestJsonSerializerOptions ??= new JsonSerializerOptions();
             configure?.Invoke(RequestJsonSerializerOptions);
+            return this;
+        }
+
+        /// <summary>
+        /// Enables GZip compression for ticker request payloads.
+        /// When not called, requests are stored as plain UTF-8 JSON bytes.
+        /// </summary>
+        /// <returns>The TickerOptionsBuilder for method chaining</returns>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseGZipCompression()
+        {
+            RequestGZipCompressionEnabled = true;
             return this;
         }
         

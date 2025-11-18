@@ -13,7 +13,7 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
         Type = tickerFunctionContext.Type;
         RetryCount = tickerFunctionContext.RetryCount;
         IsDue = tickerFunctionContext.IsDue;
-        CancelOperationAction = tickerFunctionContext.CancelOperationAction;
+        RequestCancelOperationAction = tickerFunctionContext.RequestCancelOperationAction;
         CronOccurrenceOperations = tickerFunctionContext.CronOccurrenceOperations;
         FunctionName = tickerFunctionContext.FunctionName;
     }
@@ -24,15 +24,15 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
 public class TickerFunctionContext
 {
     internal AsyncServiceScope ServiceScope { get; set; }
-    internal Action CancelOperationAction { get; set; }
+    internal Action RequestCancelOperationAction { get; set; }
     public Guid Id { get; internal set; }
     public TickerType Type { get; internal set; }
     public int RetryCount { get; internal set; }
     public bool IsDue { get; internal set; }
     public string FunctionName { get; internal set; }
     public CronOccurrenceOperations CronOccurrenceOperations { get; internal set; }
-    public void CancelOperation() 
-        => CancelOperationAction();
+    public void RequestCancellation() 
+        => RequestCancelOperationAction();
     internal void SetServiceScope(AsyncServiceScope serviceScope)
         => ServiceScope = serviceScope;
 }

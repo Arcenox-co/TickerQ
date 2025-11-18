@@ -38,6 +38,9 @@ namespace TickerQ.DependencyInjection
             {
                 TickerHelper.RequestJsonSerializerOptions = optionInstance.RequestJsonSerializerOptions;
             }
+            
+            // Configure whether ticker request payloads should use GZip compression
+            TickerHelper.UseGZipCompression = optionInstance.RequestGZipCompressionEnabled;
             services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();
