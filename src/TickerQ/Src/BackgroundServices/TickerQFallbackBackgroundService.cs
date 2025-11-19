@@ -34,6 +34,14 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
+            // If the scheduler is frozen or disposed (e.g., manual start mode or shutdown),
+            // skip queuing fallback work to avoid throwing and stopping the host.
+            if (_tickerQTaskScheduler.IsFrozen || _tickerQTaskScheduler.IsDisposed)
+            {
+                await Task.Delay(_fallbackJobPeriod, stoppingToken);
+                continue;
+            }
+
             var functions = await _internalTickerManager.RunTimedOutTickers(stoppingToken);
 
             if (functions.Length != 0)
@@ -63,8 +71,19 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
                             }
                         }
                     }
-                    
-                    await _tickerQTaskScheduler.QueueAsync(ct => _tickerExecutionTaskHandler.ExecuteTaskAsync(function, true, ct), function.CachedPriority, stoppingToken);
+
+                    try
+                    {
+                        await _tickerQTaskScheduler.QueueAsync(
+                            ct => _tickerExecutionTaskHandler.ExecuteTaskAsync(function, true, ct),
+                            function.CachedPriority,
+                            stoppingToken);
+                    }
+                    catch (InvalidOperationException) when (_tickerQTaskScheduler.IsFrozen || _tickerQTaskScheduler.IsDisposed)
+                    {
+                        // Scheduler is frozen/disposed – ignore and let loop delay
+                        break;
+                    }
                 }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(10), stoppingToken);

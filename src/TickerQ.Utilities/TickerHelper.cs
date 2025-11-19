@@ -2,6 +2,7 @@
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 
 namespace TickerQ.Utilities
@@ -15,21 +16,43 @@ namespace TickerQ.Utilities
         /// Can be configured during application startup via TickerOptionsBuilder.
         /// </summary>
         public static JsonSerializerOptions RequestJsonSerializerOptions { get; set; } = new();
+        
+        /// <summary>
+        /// Controls whether ticker requests are GZip-compressed.
+        /// When false (default), requests are stored as plain UTF-8 JSON bytes without compression.
+        /// </summary>
+        public static bool UseGZipCompression { get; set; } = false;
 
         public static byte[] CreateTickerRequest<T>(T data)
         {
-            // If data is already a compressed byte array with signature, return as-is
-            if (data is byte[] existingBytes && existingBytes.Length >= GZipSignature.Length && 
-                existingBytes.TakeLast(GZipSignature.Length).SequenceEqual(GZipSignature))
+            // If data is already a byte array, short-circuit where possible
+            if (data is byte[] existingBytes)
             {
-                return existingBytes;
+                // If compression is enabled and data already has the GZip signature, assume it is in the final format
+                if (UseGZipCompression &&
+                    existingBytes.Length >= GZipSignature.Length &&
+                    existingBytes.TakeLast(GZipSignature.Length).SequenceEqual(GZipSignature))
+                {
+                    return existingBytes;
+                }
+
+                // If compression is disabled, treat the provided bytes as the final representation
+                if (!UseGZipCompression)
+                {
+                    return existingBytes;
+                }
             }
-            
-            Span<byte> compressedBytes;
+
             var serialized = data is byte[] bytes
                 ? bytes
                 : JsonSerializer.SerializeToUtf8Bytes(data, RequestJsonSerializerOptions);
-            
+
+            if (!UseGZipCompression)
+            {
+                return serialized;
+            }
+
+            Span<byte> compressedBytes;
             using (var memoryStream = new MemoryStream())
             {
                 using (var stream = new GZipStream(memoryStream, CompressionMode.Compress, true))
@@ -57,6 +80,12 @@ namespace TickerQ.Utilities
         
         public static string ReadTickerRequestAsString(byte[] gzipBytes)
         {
+            if (!UseGZipCompression)
+            {
+                // When compression is disabled, treat the bytes as plain UTF-8 JSON
+                return Encoding.UTF8.GetString(gzipBytes);
+            }
+
             if (!gzipBytes.TakeLast(GZipSignature.Length).SequenceEqual(GZipSignature))
             {
                 throw new Exception("The bytes are not GZip compressed.");

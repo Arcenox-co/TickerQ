@@ -13,36 +13,9 @@ namespace TickerQ.EntityFrameworkCore
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        internal bool SeedDefinedCronTickers { get; private set; } = true;
-        internal Func<ITimeTickerManager<TTimeTicker>, Task> TimeSeeder { get; private set; }
-        internal Func<ICronTickerManager<TCronTicker>, Task> CronSeeder  { get; private set; }
         internal Action<IServiceCollection> ConfigureServices { get; set; }
         internal int PoolSize { get; set; } = 1024;
         internal string Schema { get; set; } = "ticker";
-        public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> IgnoreSeedDefinedCronTickers()
-        {
-            SeedDefinedCronTickers = false;
-            return this;
-        }
-
-        public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(Func<ITimeTickerManager<TTimeTicker>, Task> timeTickerAsync)
-        {
-            TimeSeeder = async t => await timeTickerAsync(t);
-            return this;
-        }
-
-        public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(Func<ICronTickerManager<TCronTicker>, Task> cronTickerAsync)
-        {
-            CronSeeder = async c => await cronTickerAsync(c);
-            return this;
-        }
-
-        public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(Func<ITimeTickerManager<TTimeTicker>, Task> timeTickerAsync, Func<ICronTickerManager<TCronTicker>, Task> cronTickerAsync)
-        {
-            TimeSeeder = async t => await timeTickerAsync(t);
-            CronSeeder = async c => await cronTickerAsync(c);
-            return this;
-        }
 
         public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseApplicationDbContext<TDbContext>(ConfigurationType configurationType) where TDbContext : DbContext
         {
