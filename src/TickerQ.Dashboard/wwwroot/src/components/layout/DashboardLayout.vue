@@ -6,6 +6,7 @@ import { useDialog } from '../../composables/useDialog'
 import { ConfirmDialogProps } from '../common/ConfirmDialog.vue'
 import { useDashboardStore } from '../../stores/dashboardStore'
 import { useConnectionStore } from '../../stores/connectionStore'
+import { useTimeZoneStore } from '@/stores/timeZoneStore'
 import AuthHeader from '../common/AuthHeader.vue'
 
 const navigationLinks = [
@@ -28,6 +29,12 @@ const dashboardStore = useDashboardStore()
 
 // Connection store
 const connectionStore = useConnectionStore()
+
+// Time zone store
+const timeZoneStore = useTimeZoneStore()
+
+// Time zone menu state
+const isTimeZoneMenuOpen = ref(false)
 
 // Router
 const router = useRouter()
@@ -105,8 +112,14 @@ const loadInitialData = async () => {
     
     // Check if response is available before accessing it
     if (getOptions.response?.value) {
-      currentMachine.value = getOptions.response.value.currentMachine || 'Unknown'
-      lastHostExceptionMessage.value = getOptions.response.value.lastHostExceptionMessage || ''
+      const options = getOptions.response.value
+      currentMachine.value = options.currentMachine || 'Unknown'
+      lastHostExceptionMessage.value = options.lastHostExceptionMessage || ''
+
+      // Initialize scheduler time zone from server options
+      if (options.schedulerTimeZone) {
+        timeZoneStore.setSchedulerTimeZone(options.schedulerTimeZone)
+      }
     } else {
       currentMachine.value = 'Loading...'
       lastHostExceptionMessage.value = ''
@@ -282,6 +295,59 @@ const handleForceUIUpdate = () => {
               <h1 class="app-title">
                 <strong>TickerQ</strong>
               </h1>
+            </div>
+
+            <!-- Time Zone Menu -->
+            <div class="timezone-menu">
+              <v-menu
+                v-model="isTimeZoneMenuOpen"
+                location="bottom"
+                :close-on-content-click="false"
+              >
+                <template #activator="{ props }">
+                  <v-btn
+                    v-bind="props"
+                    size="small"
+                    variant="text"
+                    density="comfortable"
+                    class="timezone-button"
+                    prepend-icon="mdi-earth"
+                  >
+                    <span class="d-none d-sm-inline">
+                      {{ timeZoneStore.effectiveTimeZone }}
+                    </span>
+                  </v-btn>
+                </template>
+
+                <v-card elevation="4" class="timezone-card">
+                  <v-card-title class="text-subtitle-2">
+                    Display Time Zone
+                  </v-card-title>
+                  <v-card-text class="pt-2">
+                    <v-select
+                      density="compact"
+                      variant="outlined"
+                      hide-details="auto"
+                      :items="[
+                        { label: `Scheduler (${timeZoneStore.schedulerTimeZone || 'UTC'})`, value: null },
+                        ...timeZoneStore.availableTimeZones.map(tz => ({ label: tz, value: tz }))
+                      ]"
+                      item-title="label"
+                      item-value="value"
+                      v-model="timeZoneStore.selectedTimeZone"
+                    />
+                    <v-btn
+                      class="mt-3"
+                      size="small"
+                      variant="text"
+                      prepend-icon="mdi-restore"
+                      @click="timeZoneStore.setSelectedTimeZone(null)"
+                    >
+                      Reset to server timezone
+                    </v-btn>
+                  </v-card-text>
+                </v-card>
+              </v-menu>
             </div>
           </div>
           

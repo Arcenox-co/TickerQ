@@ -38,6 +38,9 @@ namespace TickerQ.DependencyInjection
             {
                 TickerHelper.RequestJsonSerializerOptions = optionInstance.RequestJsonSerializerOptions;
             }
+            
+            // Configure whether ticker request payloads should use GZip compression
+            TickerHelper.UseGZipCompression = optionInstance.RequestGZipCompressionEnabled;
             services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();
@@ -99,14 +102,31 @@ namespace TickerQ.DependencyInjection
                 else if (type == CoreNotifyActionType.NotifyThreadCount)
                     notificationHubSender.UpdateActiveThreads(value);
             };
+            
+            // Run core seeding pipeline based on main options (works for both in-memory and EF providers).
+            var options = tickerExecutionContext.OptionsSeeding;
 
+            if (options == null || options.SeedDefinedCronTickers)
+            {
+                SeedDefinedCronTickers(serviceProvider).GetAwaiter().GetResult();
+            }
+
+            if (options?.TimeSeederAction != null)
+            {
+                options.TimeSeederAction(serviceProvider).GetAwaiter().GetResult();
+            }
+
+            if (options?.CronSeederAction != null)
+            {
+                options.CronSeederAction(serviceProvider).GetAwaiter().GetResult();
+            }
+
+            // Let external providers (e.g., EF Core) perform their own startup logic (dead-node cleanup, etc.).
             if (tickerExecutionContext.ExternalProviderApplicationAction != null)
             {
                 tickerExecutionContext.ExternalProviderApplicationAction(serviceProvider);
                 tickerExecutionContext.ExternalProviderApplicationAction = null;
             }
-            else
-                SeedDefinedCronTickers(serviceProvider).GetAwaiter().GetResult();
             
             if (tickerExecutionContext?.DashboardApplicationAction != null)
             {
