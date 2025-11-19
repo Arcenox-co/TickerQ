@@ -2,10 +2,18 @@ using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities;
+
+internal interface ITickerOptionsSeeding
+{
+    bool SeedDefinedCronTickers { get; }
+    Func<IServiceProvider, System.Threading.Tasks.Task> TimeSeederAction { get; }
+    Func<IServiceProvider, System.Threading.Tasks.Task> CronSeederAction { get; }
+}
 
 internal class TickerExecutionContext
 {
@@ -14,6 +22,7 @@ internal class TickerExecutionContext
    internal Action<IApplicationBuilder> DashboardApplicationAction { get; set; }
    public Action<object, CoreNotifyActionType> NotifyCoreAction { get; set; }
    public string LastHostExceptionMessage { get; set; }
+   internal ITickerOptionsSeeding OptionsSeeding { get; set; }
    
    internal volatile InternalFunctionContext[] Functions = [];
    

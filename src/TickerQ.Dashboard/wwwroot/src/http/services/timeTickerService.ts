@@ -13,6 +13,7 @@ import {
 import { nameof } from '@/utilities/nameof';
 import { format} from 'timeago.js';
 import { useFunctionNameStore } from '@/stores/functionNames';
+import { useTimeZoneStore } from '@/stores/timeZoneStore';
 
 interface PaginatedTimeTickerResponse {
     items: GetTimeTickerResponse[]
@@ -23,6 +24,7 @@ interface PaginatedTimeTickerResponse {
 
 const getTimeTickers = () => {
     const functionNamesStore = useFunctionNameStore();
+    const timeZoneStore = useTimeZoneStore();
 
     const baseHttp = useBaseHttpService<object, GetTimeTickerResponse>('array')
         .FixToResponseModel(GetTimeTickerResponse, response => {
@@ -41,7 +43,7 @@ const getTimeTickers = () => {
                 if (item.executedAt != null || item.executedAt != undefined)
                     item.executedAt = `${format(item.executedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
 
-                item.executionTimeFormatted = formatDate(item.executionTime);
+                item.executionTimeFormatted = formatDate(item.executionTime, true, timeZoneStore.effectiveTimeZone);
                 item.requestType = functionNamesStore.getNamespaceOrNull(item.function) ?? '';
 
                 if (item.retryIntervals == null || item.retryIntervals.length == 0 && item.retries != null && (item.retries as number) > 0)
@@ -97,6 +99,7 @@ const getTimeTickers = () => {
 
 const getTimeTickersPaginated = () => {
     const functionNamesStore = useFunctionNameStore();
+    const timeZoneStore = useTimeZoneStore();
     
     const baseHttp = useBaseHttpService<object, PaginatedTimeTickerResponse>('single');
     
@@ -112,7 +115,7 @@ const getTimeTickersPaginated = () => {
                         if (item.executedAt != null || item.executedAt != undefined)
                             item.executedAt = `${format(item.executedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
                         
-                        item.executionTimeFormatted = formatDate(item.executionTime);
+                        item.executionTimeFormatted = formatDate(item.executionTime, true, timeZoneStore.effectiveTimeZone);
                         item.requestType = functionNamesStore.getNamespaceOrNull(item.function) ?? '';
                         
                         if (item.retryIntervals == null || item.retryIntervals.length == 0 && item.retries != null && (item.retries as number) > 0)
@@ -197,7 +200,13 @@ const deleteTimeTicker = () => {
 const addTimeTicker = () => {
     const baseHttp = useBaseHttpService<AddTimeTickerRequest, object>('single');
 
-    const requestAsync = async (data: AddTimeTickerRequest) => (await baseHttp.sendAsync("POST", "time-ticker/add", { bodyData: data }));
+    const requestAsync = async (data: AddTimeTickerRequest, timeZoneId?: string | null) => {
+        const paramData: Record<string, any> = {};
+        if (timeZoneId) {
+            paramData.timeZoneId = timeZoneId;
+        }
+        return await baseHttp.sendAsync("POST", "time-ticker/add", { bodyData: data, paramData });
+    };
 
     return {
         ...baseHttp,
@@ -208,7 +217,13 @@ const addTimeTicker = () => {
 const updateTimeTicker = () => {
     const baseHttp = useBaseHttpService<UpdateTimeTickerRequest, object>('single');
 
-    const requestAsync = async (id: string, data: UpdateTimeTickerRequest) => (await baseHttp.sendAsync("PUT", "time-ticker/update", { bodyData: data, paramData: { id: id } }));
+    const requestAsync = async (id: string, data: UpdateTimeTickerRequest, timeZoneId?: string | null) => {
+        const paramData: Record<string, any> = { id };
+        if (timeZoneId) {
+            paramData.timeZoneId = timeZoneId;
+        }
+        return await baseHttp.sendAsync("PUT", "time-ticker/update", { bodyData: data, paramData });
+    };
 
     return {
         ...baseHttp,

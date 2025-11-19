@@ -40,6 +40,7 @@ export class GetOptions{
     maxConcurrency!:number;
     currentMachine!:string;
     lastHostExceptionMessage!:string;
+    schedulerTimeZone?:string;
 }
 
 export class GetMachineJobs{

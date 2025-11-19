@@ -15,6 +15,7 @@ import {
 } from '@/http/services/types/cronTickerService.types'
 import TickerNotificationHub, { methodName } from '@/hub/tickerNotificationHub'
 import { useConnectionStore } from '@/stores/connectionStore'
+import { useTimeZoneStore } from '@/stores/timeZoneStore'
 import {
   TitleComponent,
   TooltipComponent,
@@ -90,6 +91,8 @@ const crudCronTickerDialogRef = ref(null)
 const selectedCronTickerGraphData: Ref<string | undefined> = ref(undefined)
 const chartLoading = ref(false)
 const isMounted = ref(false)
+
+const timeZoneStore = useTimeZoneStore()
 
 const onSubmitConfirmDialog = async () => {
   try {
@@ -520,6 +523,36 @@ onMounted(async () => {
   } catch (error: any) {
   }
 })
+
+// Reload data when display timezone changes
+watch(
+  () => timeZoneStore.effectiveTimeZone,
+  async () => {
+    try {
+      if (!isMounted.value) return
+
+      await loadPageData()
+
+      // Reload main range chart and pie distribution
+      const range = await getCronTickerRangeGraphData.requestAsync(-3, 3)
+      GetCronTickerRangeGraphData(range)
+      await getTimeTickersGraphDataAndParseToGraph()
+
+      // If a specific ticker is selected, update its view
+      if (selectedCronTickerGraphData.value) {
+        const res = await getCronTickerRangeGraphDataById.requestAsync(
+          selectedCronTickerGraphData.value,
+          -3,
+          3
+        )
+        GetCronTickerRangeGraphData(res)
+        await updatePieChartForSelectedTicker(selectedCronTickerGraphData.value, -3, 3)
+      }
+    } catch {
+      // ignore errors on timezone-driven refresh
+    }
+  }
+)
 
 onUnmounted(() => {
   isMounted.value = false

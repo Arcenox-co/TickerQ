@@ -213,26 +213,78 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var now = _clock.UtcNow;
 
-        var entitiesToUpsert = cronTickers.Select(x =>
-        {
-            var id = Guid.NewGuid();
-            return new TCronTicker
-            {
-                Id = id,
-                Function = x.Function,
-                Expression = x.Expression,
-                InitIdentifier = $"MemoryTicker_Seeded_{id}",
-                CreatedAt = now,
-                UpdatedAt = now,
-                Request = []
-            };
-        }).ToList();
+        var functions = cronTickers.Select(x => x.Function).ToArray();
+        var cronSet = dbContext.Set<TCronTicker>();
 
-        await dbContext.Set<TCronTicker>()
-            .UpsertRange(entitiesToUpsert)
-            .On(v => new { v.Function, v.Expression, v.Request })
-            .NoUpdate()
-            .RunAsync(cancellationToken).ConfigureAwait(false);
+        // Identify seeded cron tickers (created from in-memory definitions)
+        const string seedPrefix = "MemoryTicker_Seeded_";
+
+        var seededCron = await cronSet
+            .Where(c => c.InitIdentifier != null && c.InitIdentifier.StartsWith(seedPrefix))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        var newFunctionSet = functions.ToHashSet(StringComparer.Ordinal);
+
+        // Delete seeded cron tickers whose function no longer exists in the code definitions
+        var seededToDelete = seededCron
+            .Where(c => !newFunctionSet.Contains(c.Function))
+            .Select(c => c.Id)
+            .ToArray();
+
+        if (seededToDelete.Length > 0)
+        {
+            // Delete related occurrences first (if any), then the cron tickers
+            await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                .Where(o => seededToDelete.Contains(o.CronTickerId))
+                .ExecuteDeleteAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            await cronSet
+                .Where(c => seededToDelete.Contains(c.Id))
+                .ExecuteDeleteAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        // Load existing (remaining) cron tickers for the current function set
+        var existing = await cronSet
+            .Where(c => functions.Contains(c.Function))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        var existingByFunction = existing
+            .GroupBy(c => c.Function)
+            .ToDictionary(g => g.Key, g => g.First());
+
+        foreach (var (function, expression) in cronTickers)
+        {
+            if (existingByFunction.TryGetValue(function, out var cron))
+            {
+                // Update expression if it changed
+                if (!string.Equals(cron.Expression, expression, StringComparison.Ordinal))
+                {
+                    cron.Expression = expression;
+                    cron.UpdatedAt = now;
+                }
+            }
+            else
+            {
+                // Insert new seeded cron ticker
+                var entity = new TCronTicker
+                {
+                    Id = Guid.NewGuid(),
+                    Function = function,
+                    Expression = expression,
+                    InitIdentifier = $"MemoryTicker_Seeded_{function}",
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                    Request = Array.Empty<byte>()
+                };
+                await cronSet.AddAsync(entity, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
         
     public async Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken = default)
