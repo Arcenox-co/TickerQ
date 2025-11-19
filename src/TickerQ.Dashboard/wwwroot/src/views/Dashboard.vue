@@ -5,6 +5,7 @@ import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import TickerNotificationHub, { methodName } from '@/hub/tickerNotificationHub'
 import { useFunctionNameStore } from '@/stores/functionNames'
 import { useDashboardStore } from '@/stores/dashboardStore'
+import { useTimeZoneStore } from '@/stores/timeZoneStore'
 import { Status } from '@/http/services/types/base/baseHttpResponse.types'
 
 const getNextPlannedTicker = tickerService.getNextPlannedTicker()
@@ -14,6 +15,7 @@ const getJobStatusesPastWeek = tickerService.getJobStatusesPastWeek()
 const getJobStatusesOverall = tickerService.getJobStatusesOverall()
 const functionNamesStore = useFunctionNameStore()
 const dashboardStore = useDashboardStore()
+const timeZoneStore = useTimeZoneStore()
 
 const activeThreads = ref(0)
 
@@ -24,6 +26,10 @@ onMounted(async () => {
     dashboardStore.setNextOccurrence(getNextPlannedTicker.response.value.nextOccurrence)
   }
   await getOptions.requestAsync()
+
+  if (getOptions.response.value?.schedulerTimeZone) {
+    timeZoneStore.setSchedulerTimeZone(getOptions.response.value.schedulerTimeZone)
+  }
   await getJobStatusesOverall.requestAsync().then((res) => {
     const total = res.reduce((sum, item) => sum + item.item2, 0)
 
@@ -247,7 +253,7 @@ const getVisiblePageNumbers = () => {
                 dashboardStore.displayNextOccurrence === 'Not Scheduled' ||
                 dashboardStore.displayNextOccurrence == undefined
                   ? 'Not Scheduled'
-                  : formatDate(dashboardStore.displayNextOccurrence)
+                  : formatDate(dashboardStore.displayNextOccurrence, true, timeZoneStore.effectiveTimeZone)
               }}
             </p>
             <div v-else class="skeleton-text metric-value-skeleton"></div>

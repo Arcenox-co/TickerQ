@@ -109,7 +109,25 @@ namespace TickerQ.DependencyInjection
                 tickerExecutionContext.ExternalProviderApplicationAction = null;
             }
             else
-                SeedDefinedCronTickers(serviceProvider).GetAwaiter().GetResult();
+            {
+                // Use core seeding options when no external provider (e.g., EF) has configured its own pipeline.
+                var options = serviceProvider.GetService<TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>>();
+
+                if (options == null || options.SeedDefinedCronTickers)
+                {
+                    SeedDefinedCronTickers(serviceProvider).GetAwaiter().GetResult();
+                }
+
+                if (options?.TimeSeederAction != null)
+                {
+                    options.TimeSeederAction(serviceProvider).GetAwaiter().GetResult();
+                }
+
+                if (options?.CronSeederAction != null)
+                {
+                    options.CronSeederAction(serviceProvider).GetAwaiter().GetResult();
+                }
+            }
             
             if (tickerExecutionContext?.DashboardApplicationAction != null)
             {

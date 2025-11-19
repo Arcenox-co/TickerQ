@@ -242,7 +242,8 @@ public static class DashboardEndpoints
             maxConcurrency = schedulerOptions.MaxConcurrency,
             schedulerOptions.IdleWorkerTimeOut,
             currentMachine = schedulerOptions.NodeIdentifier,
-            executionContext.LastHostExceptionMessage
+            executionContext.LastHostExceptionMessage,
+            schedulerTimeZone = schedulerOptions.SchedulerTimeZone?.Id
         }, dashboardOptions.DashboardJsonOptions);
     }
 
@@ -294,6 +295,7 @@ public static class DashboardEndpoints
         HttpContext context,
         ITimeTickerManager<TTimeTicker> timeTickerManager,
         DashboardOptionsBuilder dashboardOptions,
+        string timeZoneId,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
@@ -304,6 +306,14 @@ public static class DashboardEndpoints
         
         // Use Dashboard-specific JSON options
         var chainRoot = JsonSerializer.Deserialize<TTimeTicker>(jsonString, dashboardOptions.DashboardJsonOptions);
+
+        if (chainRoot?.ExecutionTime is DateTime executionTime && !string.IsNullOrEmpty(timeZoneId))
+        {
+            var tz = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+            var unspecified = DateTime.SpecifyKind(executionTime, DateTimeKind.Unspecified);
+            var utc = TimeZoneInfo.ConvertTimeToUtc(unspecified, tz);
+            chainRoot.ExecutionTime = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+        }
         
         var result = await timeTickerManager.AddAsync(chainRoot, cancellationToken);
         
@@ -319,6 +329,7 @@ public static class DashboardEndpoints
         HttpContext context,
         ITimeTickerManager<TTimeTicker> timeTickerManager,
         DashboardOptionsBuilder dashboardOptions,
+        string timeZoneId,
         CancellationToken cancellationToken)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
@@ -332,6 +343,14 @@ public static class DashboardEndpoints
         
         // Ensure the ID matches
         timeTicker.Id = id;
+
+        if (timeTicker.ExecutionTime is DateTime executionTime && !string.IsNullOrEmpty(timeZoneId))
+        {
+            var tz = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+            var unspecified = DateTime.SpecifyKind(executionTime, DateTimeKind.Unspecified);
+            var utc = TimeZoneInfo.ConvertTimeToUtc(unspecified, tz);
+            timeTicker.ExecutionTime = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+        }
         
         var result = await timeTickerManager.UpdateAsync(timeTicker, cancellationToken);
         

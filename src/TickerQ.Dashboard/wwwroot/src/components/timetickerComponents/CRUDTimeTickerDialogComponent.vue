@@ -5,9 +5,11 @@ import { useFunctionNameStore } from '@/stores/functionNames'
 import { useForm } from '@/composables/useCustomForm'
 import { tickerService } from '@/http/services/tickerService'
 import { timeTickerService } from '@/http/services/timeTickerService'
-import { formatFromUtcToLocal, formatTime } from '@/utilities/dateTimeParser'
+import { formatTime } from '@/utilities/dateTimeParser'
+import { useTimeZoneStore } from '@/stores/timeZoneStore'
 
 const functionNamesStore = useFunctionNameStore()
+const timeZoneStore = useTimeZoneStore()
 const getTickerRequestData = tickerService.getRequestData()
 const addTimeTicker = timeTickerService.addTimeTicker()
 const updateTimeTicker = timeTickerService.updateTimeTicker()
@@ -56,10 +58,62 @@ const formatJsonForDisplay = (json: string, isHtml: boolean = false) => {
   }
 }
 
-const formatDate = (date: string) => {
-  const datePart = date.split('T')[0]
-  const timePart = date.split('T')[1].split('.')[0]
-  return { datePart, timePart }
+const parseUtcToDisplayDateTime = (utcString: string) => {
+  if (!utcString) {
+    return { date: null as Date | null, time: '' }
+  }
+
+  let iso = utcString.trim()
+  if (!iso.endsWith('Z')) {
+    iso = iso.replace(' ', 'T') + 'Z'
+  }
+
+  const utcDate = new Date(iso)
+  // Use the dashboard's effective display timezone for UI
+  const tz = timeZoneStore.effectiveTimeZone || 'UTC'
+
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    })
+
+    const parts = fmt.formatToParts(utcDate)
+    const get = (type: string) => parts.find(p => p.type === type)?.value ?? '00'
+
+    const year = Number(get('year'))
+    const month = Number(get('month')) - 1
+    const day = Number(get('day'))
+    const hour = get('hour')
+    const minute = get('minute')
+    const second = get('second')
+
+    const dateObj = new Date(year, month, day)
+    const timeStr = `${hour}:${minute}:${second}`
+
+    return { date: dateObj, time: timeStr }
+  } catch {
+    // If timeZone is invalid in this environment, fall back to UTC date-only
+    return { date: new Date(utcDate.getFullYear(), utcDate.getMonth(), utcDate.getDate()), time: '' }
+  }
+}
+
+const formatLocalDateTimeWithoutZ = (date: Date): string => {
+  const yyyy = date.getFullYear()
+  const MM = String(date.getMonth() + 1).padStart(2, '0')
+  const dd = String(date.getDate()).padStart(2, '0')
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+  const ss = String(date.getSeconds()).padStart(2, '0')
+
+  // Return ISO-like string without timezone suffix so the server treats it as "unspecified"
+  return `${yyyy}-${MM}-${dd}T${hh}:${mm}:${ss}`
 }
 
 const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values } = useForm({
@@ -179,8 +233,13 @@ const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values
       });
       setFieldValue('retries', props.dialogProps.retries as number);
       setFieldValue('description', props.dialogProps.description);
-      setFieldValue('executionDate', new Date(props.dialogProps.executionTime))
-      setFieldValue('executionTime', formatDate(props.dialogProps.executionTime).timePart)
+      const parsed = parseUtcToDisplayDateTime(props.dialogProps.executionTime)
+      if (parsed.date) {
+        setFieldValue('executionDate', parsed.date)
+      }
+      if (parsed.time) {
+        setFieldValue('executionTime', parsed.time)
+      }
       setFieldValue('ignoreDateTime', false);
     }
     else{
@@ -191,16 +250,16 @@ const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values
     if (!errors) {
       const [hours, minutes, seconds] = values.executionTime.split(':').map(Number)
 
-      const parsedExecutionDate = new Date(values.executionDate!).setHours(
-        hours,
-        minutes,
-        seconds,
-        0,
-      )
+      const localDate = new Date(values.executionDate!)
+      localDate.setHours(hours, minutes, seconds, 0)
 
       const executionDateTime = !values.ignoreDateTime
-        ? new Date(parsedExecutionDate).toISOString()
+        ? formatLocalDateTimeWithoutZ(localDate)
         : undefined
+
+      // Use the scheduler timezone for scheduling semantics (fallback to effective/display timezone)
+      const schedulingTimeZone =
+        timeZoneStore.schedulerTimeZone || timeZoneStore.effectiveTimeZone
 
       if (props.dialogProps.isFromDuplicate) {
         addTimeTicker
@@ -211,7 +270,7 @@ const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values
             retries: parseInt(`${values.retries}`),
             description: values.description,
             intervals: comboBoxModel.value.map((item) => item.value),
-          })
+          }, schedulingTimeZone)
           .then(() => {
             emit('confirm')
           })
@@ -224,7 +283,7 @@ const { resetForm, handleSubmit, bindField, setFieldValue, getFieldValue, values
             retries: parseInt(`${values.retries}`),
             description: values.description,
             intervals: comboBoxModel.value.map((item) => item.value),
-          })
+          }, schedulingTimeZone)
           .then(() => {
             emit('confirm')
           })

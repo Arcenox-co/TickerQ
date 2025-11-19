@@ -9,7 +9,7 @@ namespace TickerQ.Dashboard;
 
 public class DashboardOptionsBuilder
 {
-    internal string BasePath { get; set; } = "/";
+    internal string BasePath { get; set; } = "/tickerq/dashboard";
     internal Action<CorsPolicyBuilder> CorsPolicyBuilder { get; set; }
     internal string BackendDomain { get; set; }
     

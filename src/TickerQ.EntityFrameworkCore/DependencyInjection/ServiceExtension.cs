@@ -8,6 +8,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Managers;
+using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.EntityFrameworkCore.DependencyInjection;
 
@@ -24,6 +25,17 @@ public static class ServiceExtension
             
         if (efCoreOptionBuilder.PoolSize <= 0) 
             throw new ArgumentOutOfRangeException(nameof(efCoreOptionBuilder.PoolSize), "Pool size must be greater than 0");
+
+        // Propagate seeding options to the core TickerOptionsBuilder so they are available
+        // even when using non-EF providers (e.g., in-memory).
+        if (!efCoreOptionBuilder.SeedDefinedCronTickers)
+            tickerConfiguration.IgnoreSeedDefinedCronTickers();
+
+        if (efCoreOptionBuilder.TimeSeeder != null)
+            tickerConfiguration.UseTickerSeeder(efCoreOptionBuilder.TimeSeeder);
+
+        if (efCoreOptionBuilder.CronSeeder != null)
+            tickerConfiguration.UseTickerSeeder(efCoreOptionBuilder.CronSeeder);
             
         tickerConfiguration.ExternalProviderConfigServiceAction += (services) 
             => services.AddSingleton(_ => efCoreOptionBuilder);
@@ -47,6 +59,7 @@ public static class ServiceExtension
             var cronTickerManager = serviceProvider.GetService<ICronTickerManager<TCronTicker>>();
             var hostLifetime = serviceProvider.GetService<IHostApplicationLifetime>();
             var schedulerOptions = serviceProvider.GetService<SchedulerOptionsBuilder>();
+            var hostScheduler = serviceProvider.GetService<ITickerQHostScheduler>();
 
             hostLifetime.ApplicationStarted.Register(() =>
             {
@@ -77,6 +90,13 @@ public static class ServiceExtension
                         loggerInstrumentation.LogSeedingDataStarted(typeof(TCronTicker).Name);
                         await options.CronSeeder(cronTickerManager);
                         loggerInstrumentation.LogSeedingDataCompleted(typeof(TCronTicker).Name);
+                    }
+
+                    // After all seeding is complete, restart the host scheduler so it
+                    // immediately picks up newly migrated/seeded cron tickers.
+                    if (hostScheduler != null && hostScheduler.IsRunning)
+                    {
+                        hostScheduler.Restart();
                     }
                 });
             });

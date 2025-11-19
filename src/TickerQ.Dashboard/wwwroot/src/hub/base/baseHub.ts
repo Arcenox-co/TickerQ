@@ -52,7 +52,10 @@ class BaseHub {
         if (backendUrl) {
             hubUrl = `${backendUrl}/ticker-notification-hub`;
         } else {
-            hubUrl = `${basePath}/ticker-notification-hub`;
+            // Avoid leading '//' when basePath is '/'
+            hubUrl = basePath === '/' 
+                ? '/ticker-notification-hub' 
+                : `${basePath}/ticker-notification-hub`;
         }
 
         const authInfo = getAuthInfo();

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Interfaces.Managers;
 
 namespace TickerQ.Utilities
 {
@@ -25,6 +26,22 @@ namespace TickerQ.Utilities
         /// Defaults to false (plain JSON bytes).
         /// </summary>
         internal bool RequestGZipCompressionEnabled { get; set; } = false;
+
+        /// <summary>
+        /// Controls whether code-defined cron tickers are seeded on startup.
+        /// Defaults to true.
+        /// </summary>
+        internal bool SeedDefinedCronTickers { get; set; } = true;
+
+        /// <summary>
+        /// Seeding delegate for time tickers, executed with the application's service provider.
+        /// </summary>
+        internal Func<IServiceProvider, System.Threading.Tasks.Task> TimeSeederAction { get; set; }
+
+        /// <summary>
+        /// Seeding delegate for cron tickers, executed with the application's service provider.
+        /// </summary>
+        internal Func<IServiceProvider, System.Threading.Tasks.Task> CronSeederAction { get; set; }
 
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
@@ -63,6 +80,61 @@ namespace TickerQ.Utilities
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseGZipCompression()
         {
             RequestGZipCompressionEnabled = true;
+            return this;
+        }
+
+        /// <summary>
+        /// Disable automatic seeding of code-defined cron tickers on startup.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> IgnoreSeedDefinedCronTickers()
+        {
+            SeedDefinedCronTickers = false;
+            return this;
+        }
+
+        /// <summary>
+        /// Configure a custom seeder for time tickers, executed on application startup.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
+            Func<ITimeTickerManager<TTimeTicker>, System.Threading.Tasks.Task> timeSeeder)
+        {
+            if (timeSeeder == null) return this;
+
+            TimeSeederAction = async sp =>
+            {
+                var manager = sp.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+                await timeSeeder(manager).ConfigureAwait(false);
+            };
+
+            return this;
+        }
+
+        /// <summary>
+        /// Configure a custom seeder for cron tickers, executed on application startup.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
+            Func<ICronTickerManager<TCronTicker>, System.Threading.Tasks.Task> cronSeeder)
+        {
+            if (cronSeeder == null) return this;
+
+            CronSeederAction = async sp =>
+            {
+                var manager = sp.GetRequiredService<ICronTickerManager<TCronTicker>>();
+                await cronSeeder(manager).ConfigureAwait(false);
+            };
+
+            return this;
+        }
+
+        /// <summary>
+        /// Configure custom seeders for both time and cron tickers, executed on application startup.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
+            Func<ITimeTickerManager<TTimeTicker>, System.Threading.Tasks.Task> timeSeeder,
+            Func<ICronTickerManager<TCronTicker>, System.Threading.Tasks.Task> cronSeeder)
+        {
+            UseTickerSeeder(timeSeeder);
+            UseTickerSeeder(cronSeeder);
             return this;
         }
         

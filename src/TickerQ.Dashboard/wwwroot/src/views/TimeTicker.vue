@@ -8,8 +8,9 @@ import { useDialog } from '@/composables/useDialog'
 import { ConfirmDialogProps } from '@/components/common/ConfirmDialog.vue'
 import ChainJobsModal from '@/components/ChainJobsModal.vue'
 import TickerNotificationHub, { methodName } from '@/hub/tickerNotificationHub'
-import { formatDate, formatFromUtcToLocal } from '@/utilities/dateTimeParser'
+import { formatDate } from '@/utilities/dateTimeParser'
 import { useConnectionStore } from '@/stores/connectionStore'
+import { useTimeZoneStore } from '@/stores/timeZoneStore'
 import PaginationFooter from '@/components/PaginationFooter.vue'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -96,6 +97,8 @@ const pieChartKey = ref(0)
 // Provide theme for charts
 provide(THEME_KEY, 'dark')
 
+const timeZoneStore = useTimeZoneStore()
+
 onMounted(async () => {
   // Initialize WebSocket connection
   try {
@@ -127,6 +130,20 @@ onMounted(async () => {
     // Failed to add hub listeners
   }
 })
+
+// Reload data when display timezone changes
+watch(
+  () => timeZoneStore.effectiveTimeZone,
+  async () => {
+    try {
+      await loadPageData()
+      await loadTimeSeriesChartData(-3, 3)
+      await loadPieChartData()
+    } catch {
+      // ignore errors on timezone-driven refresh
+    }
+  }
+)
 
 onUnmounted(() => {
   TickerNotificationHub.stopReceiver(methodName.onReceiveAddTimeTicker)
@@ -332,7 +349,7 @@ const addHubListeners = async () => {
       crudTimeTickerDialog.setPropData({
         ...currentData,  // Keep existing data (including lockHolder, function, etc.)
         ...response,      // Apply updates (status, executedAt, etc.)
-        executionTime: response.executionTime ? formatFromUtcToLocal(response.executionTime) : currentData.executionTime,
+        executionTime: response.executionTime ?? currentData.executionTime,
         isFromDuplicate: false,
         // Preserve fields that WebSocket updates don't include
         lockHolder: response.lockHolder || currentData.lockHolder,
@@ -1262,7 +1279,7 @@ const canBeForceDeleted = ref<string[]>([])
                         @click="
                           crudTimeTickerDialog.open({
                             ...item,
-                            executionTime: formatFromUtcToLocal(item.executionTime),
+                            executionTime: item.executionTime,
                             isFromDuplicate: false,
                           })
                         "
@@ -1276,7 +1293,7 @@ const canBeForceDeleted = ref<string[]>([])
                         @click="
                           crudTimeTickerDialog.open({
                             ...item,
-                            executionTime: formatFromUtcToLocal(item.executionTime),
+                            executionTime: item.executionTime,
                             isFromDuplicate: true,
                           })
                         "
