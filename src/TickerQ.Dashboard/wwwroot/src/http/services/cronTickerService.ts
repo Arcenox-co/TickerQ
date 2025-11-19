@@ -4,6 +4,7 @@ import { useBaseHttpService } from '../base/baseHttpService';
 import { AddCronTickerRequest, GetCronTickerGraphDataRangeResponse, GetCronTickerGraphDataResponse, GetCronTickerRequest, GetCronTickerResponse, UpdateCronTickerRequest } from './types/cronTickerService.types';
 import { nameof } from '@/utilities/nameof';
 import { useFunctionNameStore } from '@/stores/functionNames';
+import { useTimeZoneStore } from '@/stores/timeZoneStore';
 
 interface PaginatedCronTickerResponse {
     items: GetCronTickerResponse[]
@@ -14,12 +15,13 @@ interface PaginatedCronTickerResponse {
 
 const getCronTickers = () => {
     const functionNamesStore = useFunctionNameStore();
+    const timeZoneStore = useTimeZoneStore();
 
     const baseHttp = useBaseHttpService<GetCronTickerRequest, GetCronTickerResponse>('array')
         .FixToResponseModel(GetCronTickerResponse, response => {
             response.requestType = functionNamesStore.getNamespaceOrNull(response.function) ?? 'N/A';
-            response.createdAt = formatDate(response.createdAt);
-            response.updatedAt = formatDate(response.updatedAt);
+            response.createdAt = formatDate(response.createdAt, true, timeZoneStore.effectiveTimeZone);
+            response.updatedAt = formatDate(response.updatedAt, true, timeZoneStore.effectiveTimeZone);
             response.initIdentifier = response.initIdentifier?.split("_").slice(0, 2).join("_");
             if ((response.retryIntervals == null || response.retryIntervals.length == 0) && (response.retries == null || (response.retries as number) == 0))
                 response.retryIntervals = [];
@@ -50,6 +52,7 @@ const getCronTickers = () => {
 
 const getCronTickersPaginated = () => {
     const functionNamesStore = useFunctionNameStore();
+    const timeZoneStore = useTimeZoneStore();
     
     const baseHttp = useBaseHttpService<object, PaginatedCronTickerResponse>('single');
     
@@ -58,8 +61,8 @@ const getCronTickersPaginated = () => {
             if (response && response.items && Array.isArray(response.items)) {
                 response.items = response.items.map((item: GetCronTickerResponse) => {
                     item.requestType = functionNamesStore.getNamespaceOrNull(item.function) ?? 'N/A';
-                    item.createdAt = formatDate(item.createdAt);
-                    item.updatedAt = formatDate(item.updatedAt);
+                    item.createdAt = formatDate(item.createdAt, true, timeZoneStore.effectiveTimeZone);
+                    item.updatedAt = formatDate(item.updatedAt, true, timeZoneStore.effectiveTimeZone);
                     item.initIdentifier = item.initIdentifier?.split("_").slice(0, 2).join("_");
                     if ((item.retryIntervals == null || item.retryIntervals.length == 0) && (item.retries == null || (item.retries as number) == 0))
                         item.retryIntervals = [];
@@ -184,4 +187,3 @@ export const cronTickerService = {
     getTimeTickersGraphDataRangeById,
     getTimeTickersGraphData
 };
-

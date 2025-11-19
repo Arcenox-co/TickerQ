@@ -1,7 +1,8 @@
 
 export function formatDate(
     utcDateString: string,
-    includeTime = true
+    includeTime = true,
+    timeZone?: string
 ): string {
     if (!utcDateString) {
         // nothing to format, return empty (or some placeholder)
@@ -14,7 +15,7 @@ export function formatDate(
     }
 
     // 2) Now JS knows “that’s UTC” and will shift to local when you read getHours()
-    const dateObj = new Date(iso);
+    const dateObj = toTimeZoneDate(iso, timeZone);
 
     // 3) Extract with local getters
     const dd = String(dateObj.getDate()).padStart(2, '0');
@@ -30,6 +31,43 @@ export function formatDate(
     const ss = String(dateObj.getSeconds()).padStart(2, '0');
 
     return `${dd}.${MM}.${yyyy} ${hh}:${mm}:${ss}`;
+}
+
+function toTimeZoneDate(utcIsoString: string, timeZone?: string): Date {
+  const utcDate = new Date(utcIsoString);
+
+  if (!timeZone) {
+    return utcDate;
+  }
+
+  try {
+    // Use Intl API to get local parts in the target time zone
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    });
+
+    const parts = fmt.formatToParts(utcDate);
+    const get = (type: string) => parts.find(p => p.type === type)?.value ?? '00';
+
+    const year = Number(get('year'));
+    const month = Number(get('month')) - 1;
+    const day = Number(get('day'));
+    const hour = Number(get('hour'));
+    const minute = Number(get('minute'));
+    const second = Number(get('second'));
+
+    return new Date(year, month, day, hour, minute, second);
+  } catch {
+    // Fallback: return original UTC date if timeZone is invalid
+    return utcDate;
+  }
 }
 
 export function formatTime(time: number, inputInMilliseconds = false): string {

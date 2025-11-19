@@ -60,16 +60,20 @@ dotnet add package TickerQ.Dashboard
 ```csharp
 builder.Services.AddTickerQ(options =>
 {
-    opt.SetMaxConcurrency(10);
+    options.ConfigureScheduler(scheduler =>
+    {
+        scheduler.MaxConcurrency = 10;
+    });
+
     options.AddOperationalStore<MyDbContext>(efOpt => 
     {
         efOpt.SetExceptionHandler<MyExceptionHandlerClass>();
         efOpt.UseModelCustomizerForMigrations();
     });
-    options.AddDashboard(uiopt =>                                                
+    options.AddDashboard(dashboardOptions =>                                                
     {
-        uiopt.BasePath = "/tickerq-dashboard"; 
-        uiopt.AddDashboardBasicAuth();
+        dashboardOptions.SetBasePath("/tickerq/dashboard"); 
+        dashboardOptions.WithBasicAuth("admin", "secure-password");
     }
 });
 
