@@ -8,6 +8,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Managers;
+using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.EntityFrameworkCore.DependencyInjection;
 
@@ -41,42 +42,23 @@ public static class ServiceExtension
     {
         tickerConfiguration.UseExternalProviderApplication((serviceProvider) =>
         {
-            var loggerInstrumentation = serviceProvider.GetService<ITickerQInstrumentation>();
             var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
-            var timeTickerManager = serviceProvider.GetService<ITimeTickerManager<TTimeTicker>>();
-            var cronTickerManager = serviceProvider.GetService<ICronTickerManager<TCronTicker>>();
             var hostLifetime = serviceProvider.GetService<IHostApplicationLifetime>();
             var schedulerOptions = serviceProvider.GetService<SchedulerOptionsBuilder>();
+            var hostScheduler = serviceProvider.GetService<ITickerQHostScheduler>();
 
             hostLifetime.ApplicationStarted.Register(() =>
             {
                 Task.Run(async () =>
                 {
+                    // Release resources held by dead nodes before the scheduler starts processing.
                     await internalTickerManager.ReleaseDeadNodeResources(schedulerOptions.NodeIdentifier);
-                    
-                    var functionsToSeed = TickerFunctionProvider.TickerFunctions
-                        .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
-                        .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
-
-                    if (options.SeedDefinedCronTickers)
+                                        
+                    // After cleanup, restart the host scheduler so it immediately
+                    // picks up newly seeded cron tickers and jobs configured via the core pipeline.
+                    if (hostScheduler != null && hostScheduler.IsRunning)
                     {
-                        loggerInstrumentation.LogSeedingDataStarted($"SeedDefinedCronTickers({typeof(TCronTicker).Name})");
-                        await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed);
-                        loggerInstrumentation.LogSeedingDataCompleted($"SeedDefinedCronTickers({typeof(TCronTicker).Name})");
-                    }
-
-                    if (options.TimeSeeder != null)
-                    {
-                        loggerInstrumentation.LogSeedingDataStarted(typeof(TCronTicker).Name);
-                        await options.TimeSeeder(timeTickerManager);
-                        loggerInstrumentation.LogSeedingDataCompleted(typeof(TCronTicker).Name);
-                    }
-
-                    if (options.CronSeeder != null)
-                    {
-                        loggerInstrumentation.LogSeedingDataStarted(typeof(TCronTicker).Name);
-                        await options.CronSeeder(cronTickerManager);
-                        loggerInstrumentation.LogSeedingDataCompleted(typeof(TCronTicker).Name);
+                        hostScheduler.Restart();
                     }
                 });
             });

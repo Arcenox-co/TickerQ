@@ -43,8 +43,6 @@ namespace TickerQ.Dashboard.DependencyInjection
             
             // Register the dashboard configuration for DI
             services.AddSingleton(config);
-            services.AddSingleton(config.Auth);
-            services.AddScoped<IAuthService, AuthService>();
             
             services.AddRouting();
             services.AddSignalR();

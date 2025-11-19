@@ -5,6 +5,7 @@ import { Status } from './types/base/baseHttpResponse.types';
 import { GetCronTickerOccurrenceGraphDataRequest, GetCronTickerOccurrenceGraphDataResponse, GetCronTickerOccurrenceRequest, GetCronTickerOccurrenceResponse } from './types/cronTickerOccurrenceService.types';
 import { format} from 'timeago.js';
 import { nameof } from '@/utilities/nameof';
+import { useTimeZoneStore } from '@/stores/timeZoneStore';
 
 interface PaginatedCronTickerOccurrenceResponse {
     items: GetCronTickerOccurrenceResponse[]
@@ -14,6 +15,7 @@ interface PaginatedCronTickerOccurrenceResponse {
 }
 
 const getByCronTickerId = () => {
+    const timeZoneStore = useTimeZoneStore();
     const baseHttp = useBaseHttpService<GetCronTickerOccurrenceRequest, GetCronTickerOccurrenceResponse>('array')
         .FixToResponseModel(GetCronTickerOccurrenceResponse, response => {
             if (!response) {
@@ -32,8 +34,8 @@ const getByCronTickerId = () => {
             }
 
             const utcExecutionTime = response.executionTime.endsWith('Z') ? response.executionTime : response.executionTime + 'Z';
-            response.executionTimeFormatted = formatDate(utcExecutionTime);
-            response.lockedAt = formatDate(response.lockedAt)
+            response.executionTimeFormatted = formatDate(utcExecutionTime, true, timeZoneStore.effectiveTimeZone);
+            response.lockedAt = formatDate(response.lockedAt, true, timeZoneStore.effectiveTimeZone)
             return response;
         })
         .FixToHeaders((header) => {
@@ -63,6 +65,7 @@ const getByCronTickerId = () => {
 }
 
 const getByCronTickerIdPaginated = () => {
+    const timeZoneStore = useTimeZoneStore();
     const baseHttp = useBaseHttpService<object, PaginatedCronTickerOccurrenceResponse>('single');
     
     const processResponse = (response: PaginatedCronTickerOccurrenceResponse): PaginatedCronTickerOccurrenceResponse => {
@@ -86,8 +89,8 @@ const getByCronTickerIdPaginated = () => {
                     }
                     
                     const utcExecutionTime = item.executionTime.endsWith('Z') ? item.executionTime : item.executionTime + 'Z';
-                    item.executionTimeFormatted = formatDate(utcExecutionTime);
-                    item.lockedAt = formatDate(item.lockedAt);
+                    item.executionTimeFormatted = formatDate(utcExecutionTime, true, timeZoneStore.effectiveTimeZone);
+                    item.lockedAt = formatDate(item.lockedAt, true, timeZoneStore.effectiveTimeZone);
                     
                     return item;
                 });
@@ -126,11 +129,12 @@ const deleteCronTickerOccurrence = () => {
 }
 
 const getCronTickerOccurrenceGraphData = () => {
+    const timeZoneStore = useTimeZoneStore();
     const baseHttp = useBaseHttpService<GetCronTickerOccurrenceGraphDataRequest, GetCronTickerOccurrenceGraphDataResponse>('array')
         .FixToResponseModel(GetCronTickerOccurrenceGraphDataResponse, (item) => {
             return {
                 ...item,
-                date: formatDate(item.date),
+                date: formatDate(item.date, false, timeZoneStore.effectiveTimeZone),
                 type: "line",
                 statuses: item.results.map(x => Status[x.item1])
             }

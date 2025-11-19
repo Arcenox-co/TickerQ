@@ -26,13 +26,13 @@ services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 });
 ```
 
-### Bearer Token Authentication
+### API Key Authentication
 ```csharp
 services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 {
     config.AddDashboard(dashboard =>
     {
-        dashboard.WithBearerToken("my-secret-api-key-12345");
+        dashboard.WithApiKey("my-secret-api-key-12345");
     });
 });
 ```
@@ -43,9 +43,7 @@ services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 {
     config.AddDashboard(dashboard =>
     {
-        dashboard.WithHostAuthentication(
-            requiredRoles: new[] { "Admin", "TickerQUser" }
-        );
+        dashboard.WithHostAuthentication();
     });
 });
 ```
@@ -53,8 +51,8 @@ services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 ## 🔧 Fluent API Methods
 
 - `WithBasicAuth(username, password)` - Enable username/password authentication
-- `WithBearerToken(apiKey)` - Enable API key authentication  
-- `WithHostAuthentication(roles?, policies?)` - Use your app's existing auth
+- `WithApiKey(apiKey)` - Enable API key authentication  
+- `WithHostAuthentication()` - Use your app's existing auth
 - `SetBasePath(path)` - Set dashboard URL path
 - `SetBackendDomain(domain)` - Set backend API domain
 - `SetCorsPolicy(policy)` - Configure CORS
