@@ -1,4 +1,9 @@
-# TickerQ
+
+<h1 align="center">TickerQ</h1>
+
+<p align="center">
+  <img src="https://tickerq.net/tickerq-logo.png" alt="TickerQ Logo" width="200" />
+</p>
 
 
 [![Discord Community](https://img.shields.io/badge/Discord-TickerQ-5865F2?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/ZJemWvp9MK)
