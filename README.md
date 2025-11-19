@@ -14,7 +14,7 @@
 **Robust. Adaptive. Precise.**  
 TickerQ is a fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
 
-### 📚 Full Docs: [https://tickerq.arcenox.com](https://tickerq.arcenox.com)
+### 📚 Full Docs: [https://tickerq.net](https://tickerq.net)
 > **Repo:** https://github.com/Arcenox-co/TickerQ-UI (docs are open-source and anyone can help us improving.)
 
 > **Note:**
@@ -24,178 +24,112 @@ As of v2.2.0, all TickerQ packages are versioned together — even if a package 
 
 ## ✨ Features
 
-- **Time and Cron Scheduling**
-- **Stateless Core** with source generator
-- **EF Core Persistence**
-- **Live Dashboard UI**
-- **Live Dashboard UI** - [View Screenshots](https://tickerq.arcenox.com/intro/dashboard-overview.html)
-- **Retry Policies & Throttling**
-- **Dependency Injection support**
-- **Multi-node distributed coordination**
+- Time and cron scheduling for one-off and recurring jobs
+- Reflection-free core with source-generated job handlers
+- EF Core persistence for jobs, state, and history
+- Live Dashboard UI - [View Screenshots](https://tickerq.net/features/dashboard.html#dashboard-screenshots)
+- Retry policies & throttling for robust execution
+- First-class dependency injection support
+- Multi-node distributed coordination (via Redis heartbeats and dead-node cleanup)
 ---
 
-## 📦 Installation
+# Quick Start
 
-### Core (required)
+Get up and running with TickerQ in under 5 minutes.
+
+## Prerequisites
+
+- .NET 8.0 or later
+- A .NET project (Console, Web API, or ASP.NET Core)
+
+## Step 1: Install TickerQ
+
 ```bash
 dotnet add package TickerQ
 ```
 
-### Entity Framework Integration (optional)
-```bash
-dotnet add package TickerQ.EntityFrameworkCore
-```
+## Step 2: Register Services
 
-### Dashboard UI (optional)
-```bash
-dotnet add package TickerQ.Dashboard
-```
-
----
-
-## ⚙️ Basic Setup
-
-### In `Program.cs` or `Startup.cs`
+Add TickerQ to your `Program.cs`:
 
 ```csharp
-builder.Services.AddTickerQ(options =>
-{
-    options.ConfigureScheduler(scheduler =>
-    {
-        scheduler.MaxConcurrency = 10;
-    });
+using TickerQ.DependencyInjection;
 
-    options.AddOperationalStore<MyDbContext>(efOpt => 
-    {
-        efOpt.SetExceptionHandler<MyExceptionHandlerClass>();
-        efOpt.UseModelCustomizerForMigrations();
-    });
-    options.AddDashboard(dashboardOptions =>                                                
-    {
-        dashboardOptions.SetBasePath("/tickerq/dashboard"); 
-        dashboardOptions.WithBasicAuth("admin", "secure-password");
-    }
-});
+var builder = WebApplication.CreateBuilder(args);
 
-app.UseTickerQ(); // Activates job processor
+builder.Services.AddTickerQ();
+
+var app = builder.Build();
+app.UseTickerQ(); // Activate job processor
+app.Run();
 ```
-> 💡 **Recommendation:**  
-Use `UseModelCustomizerForMigrations()` to cleanly separate infrastructure concerns from your core domain model, especially during design-time operations like migrations.  
-**Note:** If you're using third-party libraries (e.g., OpenIddict) that also override `IModelCustomizer`, you must either merge customizations or fall back to manual configuration inside `OnModelCreating()` to avoid conflicts.
 
+## Step 3: Create a Job Function
 
-❗️If Not Using `UseModelCustomizerForMigrations()` You must apply TickerQ configurations manually in your `DbContext`:
+Create a job function with the `[TickerFunction]` attribute:
 
 ```csharp
-public class MyDbContext : DbContext
+using TickerQ.Utilities.Base;
+
+public class MyJobs
 {
-    public MyDbContext(DbContextOptions<MyDbContext> options)
-        : base(options) { }
-
-    protected override void OnModelCreating(ModelBuilder builder)
+    [TickerFunction("HelloWorld")]
+    public async Task HelloWorld(
+        TickerFunctionContext context,
+        CancellationToken cancellationToken)
     {
-        base.OnModelCreating(builder);
-
-        // Apply TickerQ entity configurations explicitly
-        builder.ApplyConfiguration(new TimeTickerConfigurations());
-        builder.ApplyConfiguration(new CronTickerConfigurations());
-        builder.ApplyConfiguration(new CronTickerOccurrenceConfigurations());
-
-        // Alternatively, apply all configurations from assembly:
-        // builder.ApplyConfigurationsFromAssembly(typeof(TimeTickerConfigurations).Assembly);
+        Console.WriteLine($"Hello from TickerQ! Job ID: {context.Id}");
+        Console.WriteLine($"Scheduled at: {DateTime.UtcNow:HH:mm:ss}");
     }
 }
 ```
 
-## Add Migrations
+## Step 4: Schedule the Job
 
-Migrations would be created for `Context` that is declared at `AddOperationalStore`.
-
-```PM
-PM> add-migration "TickerQInitialCreate" -c MyDbContext
-```
-
-##  Job Definition
-
-### 1. **Cron Job (Recurring)**
+Inject the manager and schedule your job:
 
 ```csharp
-public class CleanupJobs(ICleanUpService cleanUpService)
-{
-    private readonly ICleanUpService _cleanUpService = cleanUpService;
+using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Interfaces.Managers;
 
-    [TickerFunction(functionName: "CleanupLogs", cronExpression: "0 0 0 * * *" )]
-    public asynt Task CleanupLogs(TickerFunctionContext<string> tickerContext, CancellationToken cancellationToken)
+public class MyService
+{
+    private readonly ITimeTickerManager<TimeTickerEntity> _timeTickerManager;
+    
+    public MyService(ITimeTickerManager<TimeTickerEntity> timeTickerManager)
     {
-        var logFileName = tickerContext.Request; // output cleanup_example_file.txt
-        await _cleanUpService.CleanOldLogsAsync(logFileName, cancellationToken);
+        _timeTickerManager = timeTickerManager;
+    }
+    
+    public async Task ScheduleJob()
+    {
+        var result = await _timeTickerManager.AddAsync(new TimeTickerEntity
+        {
+            Function = "HelloWorld",
+            ExecutionTime = DateTime.UtcNow.AddSeconds(10) // Run in 10 seconds
+        });
+        
+        if (result.IsSucceeded)
+        {
+            Console.WriteLine($"Job scheduled! ID: {result.Result.Id}");
+        }
     }
 }
 ```
 
-> This uses a cron expression to run daily at midnight.
+## Step 5: Run Your Application
 
-#### 📅 Cron Expression Format
-
-TickerQ uses **6-part** cron expressions with seconds precision:
-
-```
-second minute hour day month day-of-week
+```bash
+dotnet run
 ```
 
-Examples:
-- `"0 0 0 * * *"` - Daily at midnight (00:00:00)
-- `"30 0 0 * * *"` - Daily at 00:00:30 (30 seconds past midnight)
-- `"0 0 */2 * * *"` - Every 2 hours on the hour
-- `"0 0 */6 * * *"` - Every 6 hours
-- `"0 30 14 * * 1"` - Every Monday at 2:30 PM
-- `"*/10 * * * * *"` - Every 10 seconds
-
----
-
-Schedule Time Ticker:
-
-```csharp
-//Schedule on-time job using ITimeTickerManager<TimeTicker>.
-await _timeTickerManager.AddAsync(new TimeTicker
-{
-    Function = "CleanupLogs",
-    ExecutionTime = DateTime.UtcNow.AddMinutes(1),
-    Request = TickerHelper.CreateTickerRequest<string>("cleanup_example_file.txt"),
-    Retries = 3,
-    RetryIntervals = new[] { 30, 60, 120 }, // Retry after 30s, 60s, then 2min
-
-    // Optional batching
-    BatchParent = Guid.Parse("...."),
-    BatchRunCondition = BatchRunCondition.OnSuccess
-});
+Wait 10 seconds and you should see:
 ```
-Schedule Cron Ticker:
-
-```csharp
-//Schedule cron job using ICronTickerManager<CronTicker>.
-await _cronTickerManager.AddAsync(new CronTicker
-{
-    Function = "CleanupLogs",
-    Expression = "0 0 */6 * * *", // Every 6 hours at :00:00
-    // Other examples:
-    // Expression = "*/30 * * * * *", // Every 30 seconds
-    // Expression = "0 0 0 * * *", // Daily at midnight
-    Request = TickerHelper.CreateTickerRequest<string>("cleanup_example_file.txt"),
-    Retries = 2,
-    RetryIntervals = new[] { 60, 300 }
-});
+Job scheduled! ID: {guid}
+Hello from TickerQ! Job ID: {guid}
+Scheduled at: {time}
 ```
 
----
-
-## 🛠️ Developer Tips
-
-- Use `[TickerFunction]` to register jobs
-- Use `FunctionName` consistently across schedule and handler
-- Use `CancellationToken` for graceful cancellation
-- Use `Request` to pass dynamic data to jobs
-- If you are getting random 403 responses, make sure that you don't have any filter in some endpoint that might be triggering it, thus causing issues with TickerQ's dashboard. Check this [issue](https://github.com/Arcenox-co/TickerQ/issues/155#issuecomment-3175214745) for more details.
 ---
 
 ## 💖 Sponsors & Backers
