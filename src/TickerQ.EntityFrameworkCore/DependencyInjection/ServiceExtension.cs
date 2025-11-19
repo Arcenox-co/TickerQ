@@ -25,17 +25,6 @@ public static class ServiceExtension
             
         if (efCoreOptionBuilder.PoolSize <= 0) 
             throw new ArgumentOutOfRangeException(nameof(efCoreOptionBuilder.PoolSize), "Pool size must be greater than 0");
-
-        // Propagate seeding options to the core TickerOptionsBuilder so they are available
-        // even when using non-EF providers (e.g., in-memory).
-        if (!efCoreOptionBuilder.SeedDefinedCronTickers)
-            tickerConfiguration.IgnoreSeedDefinedCronTickers();
-
-        if (efCoreOptionBuilder.TimeSeeder != null)
-            tickerConfiguration.UseTickerSeeder(efCoreOptionBuilder.TimeSeeder);
-
-        if (efCoreOptionBuilder.CronSeeder != null)
-            tickerConfiguration.UseTickerSeeder(efCoreOptionBuilder.CronSeeder);
             
         tickerConfiguration.ExternalProviderConfigServiceAction += (services) 
             => services.AddSingleton(_ => efCoreOptionBuilder);
@@ -53,10 +42,7 @@ public static class ServiceExtension
     {
         tickerConfiguration.UseExternalProviderApplication((serviceProvider) =>
         {
-            var loggerInstrumentation = serviceProvider.GetService<ITickerQInstrumentation>();
             var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
-            var timeTickerManager = serviceProvider.GetService<ITimeTickerManager<TTimeTicker>>();
-            var cronTickerManager = serviceProvider.GetService<ICronTickerManager<TCronTicker>>();
             var hostLifetime = serviceProvider.GetService<IHostApplicationLifetime>();
             var schedulerOptions = serviceProvider.GetService<SchedulerOptionsBuilder>();
             var hostScheduler = serviceProvider.GetService<ITickerQHostScheduler>();
@@ -65,35 +51,11 @@ public static class ServiceExtension
             {
                 Task.Run(async () =>
                 {
+                    // Release resources held by dead nodes before the scheduler starts processing.
                     await internalTickerManager.ReleaseDeadNodeResources(schedulerOptions.NodeIdentifier);
-                    
-                    var functionsToSeed = TickerFunctionProvider.TickerFunctions
-                        .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
-                        .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
-
-                    if (options.SeedDefinedCronTickers)
-                    {
-                        loggerInstrumentation.LogSeedingDataStarted($"SeedDefinedCronTickers({typeof(TCronTicker).Name})");
-                        await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed);
-                        loggerInstrumentation.LogSeedingDataCompleted($"SeedDefinedCronTickers({typeof(TCronTicker).Name})");
-                    }
-
-                    if (options.TimeSeeder != null)
-                    {
-                        loggerInstrumentation.LogSeedingDataStarted(typeof(TCronTicker).Name);
-                        await options.TimeSeeder(timeTickerManager);
-                        loggerInstrumentation.LogSeedingDataCompleted(typeof(TCronTicker).Name);
-                    }
-
-                    if (options.CronSeeder != null)
-                    {
-                        loggerInstrumentation.LogSeedingDataStarted(typeof(TCronTicker).Name);
-                        await options.CronSeeder(cronTickerManager);
-                        loggerInstrumentation.LogSeedingDataCompleted(typeof(TCronTicker).Name);
-                    }
-
-                    // After all seeding is complete, restart the host scheduler so it
-                    // immediately picks up newly migrated/seeded cron tickers.
+                                        
+                    // After cleanup, restart the host scheduler so it immediately
+                    // picks up newly seeded cron tickers and jobs configured via the core pipeline.
                     if (hostScheduler != null && hostScheduler.IsRunning)
                     {
                         hostScheduler.Restart();

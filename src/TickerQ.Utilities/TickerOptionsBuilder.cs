@@ -8,7 +8,7 @@ using TickerQ.Utilities.Interfaces.Managers;
 
 namespace TickerQ.Utilities
 {
-    public class TickerOptionsBuilder<TTimeTicker, TCronTicker>
+    public class TickerOptionsBuilder<TTimeTicker, TCronTicker> : ITickerOptionsSeeding
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
@@ -19,6 +19,8 @@ namespace TickerQ.Utilities
         {
             _tickerExecutionContext = tickerExecutionContext;
             _schedulerOptions = schedulerOptions;
+            // Store this instance in the execution context for later retrieval
+            tickerExecutionContext.OptionsSeeding = this;
         }
 
         /// <summary>
@@ -42,6 +44,11 @@ namespace TickerQ.Utilities
         /// Seeding delegate for cron tickers, executed with the application's service provider.
         /// </summary>
         internal Func<IServiceProvider, System.Threading.Tasks.Task> CronSeederAction { get; set; }
+
+        // Explicit interface implementation for ITickerOptionsSeeding
+        bool ITickerOptionsSeeding.SeedDefinedCronTickers => SeedDefinedCronTickers;
+        Func<IServiceProvider, System.Threading.Tasks.Task> ITickerOptionsSeeding.TimeSeederAction => TimeSeederAction;
+        Func<IServiceProvider, System.Threading.Tasks.Task> ITickerOptionsSeeding.CronSeederAction => CronSeederAction;
 
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
