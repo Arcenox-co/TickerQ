@@ -41,6 +41,7 @@ use([
 // Use paginated service instead of regular one
 const getTimeTickersPaginated = timeTickerService.getTimeTickersPaginated()
 const deleteTimeTicker = timeTickerService.deleteTimeTicker()
+const deleteTimeTickersBatch = timeTickerService.deleteTimeTickersBatch()
 const requestCancelTicker = tickerService.requestCancel()
 const getTimeTickersGraphDataRange = timeTickerService.getTimeTickersGraphDataRange()
 const getTimeTickersGraphData = timeTickerService.getTimeTickersGraphData()
@@ -623,6 +624,28 @@ const clearSelection = () => {
   selectedItems.value.clear()
 }
 
+const selectAllVisible = () => {
+  const ids = processedTableData.value
+    .filter((item) => !item.isChild)
+    .map((item) => item.id as string)
+
+  selectedItems.value = new Set(ids)
+}
+
+const deleteSelected = async () => {
+  if (selectedItems.value.size === 0) return
+
+  const ids = Array.from(selectedItems.value)
+  try {
+    await deleteTimeTickersBatch.requestAsync(ids)
+    clearSelection()
+    await loadPageData()
+    await loadPieChartData()
+  } catch (error) {
+    console.error('Failed to delete selected time tickers:', error)
+  }
+}
+
 // Chain Jobs Modal Methods
 const openChainJobsModal = () => {
   chainJobsModal.value.isOpen = true
@@ -1017,6 +1040,18 @@ const canBeForceDeleted = ref<string[]>([])
             <!-- Utility Actions Group -->
             <div class="utility-actions">
               <v-btn
+                v-if="processedTableData.length > 0"
+                size="small"
+                color="grey"
+                variant="text"
+                prepend-icon="mdi-select-all"
+                class="utility-btn"
+                @click="selectAllVisible"
+              >
+                Select All
+              </v-btn>
+
+              <v-btn
                 icon
                 size="small"
                 variant="text"
@@ -1025,6 +1060,18 @@ const canBeForceDeleted = ref<string[]>([])
                 class="refresh-btn utility-btn"
               >
                 <v-icon>mdi-refresh</v-icon>
+              </v-btn>
+
+              <v-btn
+                v-if="selectedItems.size > 0"
+                size="small"
+                color="error"
+                variant="text"
+                prepend-icon="mdi-trash-can"
+                class="utility-btn"
+                @click="deleteSelected"
+              >
+                Delete Selected ({{ selectedItems.size }})
               </v-btn>
 
               <v-btn

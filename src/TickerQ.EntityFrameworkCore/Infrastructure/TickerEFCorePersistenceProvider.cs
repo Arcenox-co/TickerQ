@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 
@@ -248,6 +249,33 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                 .Where(x => cronTickerOccurrences.Contains(x.Id))
                 .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
+        {
+            if (occurrenceIds == null || occurrenceIds.Length == 0)
+                return Array.Empty<CronTickerOccurrenceEntity<TCronTicker>>();
+
+            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            var now = _clock.UtcNow;
+
+            // Lock and mark InProgress
+            await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                .Where(x => occurrenceIds.Contains(x.Id))
+                .ExecuteUpdateAsync(setter => setter
+                    .SetProperty(x => x.LockHolder, _lockHolder)
+                    .SetProperty(x => x.LockedAt, now)
+                    .SetProperty(x => x.Status, TickerStatus.InProgress)
+                    .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                .ConfigureAwait(false);
+
+            // Return acquired occurrences with CronTicker populated
+            return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                .AsNoTracking()
+                .Where(x => occurrenceIds.Contains(x.Id))
+                .Include(x => x.CronTicker)
+                .ToArrayAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
 
         #endregion

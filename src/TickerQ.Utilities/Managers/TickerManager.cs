@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
@@ -23,13 +24,15 @@ namespace TickerQ.Utilities.Managers
         private readonly ITickerQHostScheduler _tickerQHostScheduler;
         private readonly ITickerClock _clock;
         private readonly ITickerQNotificationHubSender _notificationHubSender;
+        private readonly ITickerQDispatcher _dispatcher;
         private readonly TickerExecutionContext _executionContext;
         public TickerManager(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerQHostScheduler tickerQHostScheduler,
             ITickerClock clock,
             ITickerQNotificationHubSender notificationHubSender,
-            TickerExecutionContext executionContext
+            TickerExecutionContext executionContext,
+            ITickerQDispatcher dispatcher
             )
         {
             _persistenceProvider = persistenceProvider;
@@ -37,6 +40,7 @@ namespace TickerQ.Utilities.Managers
             _clock = clock;
             _notificationHubSender = notificationHubSender;
             _executionContext = executionContext ?? throw new ArgumentNullException(nameof(executionContext));
+            _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         }
 
         Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.AddAsync(TCronTicker entity, CancellationToken cancellationToken)
@@ -85,7 +89,7 @@ namespace TickerQ.Utilities.Managers
                     new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
             
             entity.ExecutionTime = entity.ExecutionTime == null 
-                ? _clock.UtcNow.AddSeconds(1) 
+                ? _clock.UtcNow
                 : ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
             
             entity.CreatedAt = _clock.UtcNow;
@@ -93,11 +97,33 @@ namespace TickerQ.Utilities.Managers
             
             try
             {
+                var now = _clock.UtcNow;
+                var executionTime = entity.ExecutionTime!.Value;
+
+                // Persist first
                 await _persistenceProvider.AddTimeTickers([entity], cancellationToken: cancellationToken);
 
-                _tickerQHostScheduler.RestartIfNeeded(entity.ExecutionTime.Value);
+                if (executionTime <= now.AddSeconds(1))
+                {
+                    // Acquire and mark InProgress in one provider call
+                    var acquired = await _persistenceProvider
+                        .AcquireImmediateTimeTickersAsync([entity.Id], cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (acquired.Length > 0)
+                    {
+                        var contexts = BuildImmediateContextsFromNonGeneric(acquired);
+                        CacheFunctionReferences(contexts.AsSpan());
+                        await _dispatcher.DispatchAsync(contexts, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    _tickerQHostScheduler.RestartIfNeeded(executionTime);
+                }
 
                 await _notificationHubSender.AddTimeTickerNotifyAsync(entity).ConfigureAwait(false);
+
 
                 return new TickerResult<TTimeTicker>(entity);
             }
@@ -244,6 +270,46 @@ namespace TickerQ.Utilities.Managers
         }
 
         // Batch operations implementation
+        private static void CacheFunctionReferences(Span<InternalFunctionContext> functions)
+        {
+            for (var i = 0; i < functions.Length; i++)
+            {
+                ref var context = ref functions[i];
+                if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
+                {
+                    context.CachedDelegate = tickerItem.Delegate;
+                    context.CachedPriority = tickerItem.Priority;
+                }
+
+                if (context.TimeTickerChildren is { Count: > 0 })
+                {
+                    var childrenSpan = CollectionsMarshal.AsSpan(context.TimeTickerChildren);
+                    CacheFunctionReferences(childrenSpan);
+                }
+            }
+        }
+
+        private static InternalFunctionContext[] BuildImmediateContextsFromNonGeneric(IEnumerable<TimeTickerEntity> tickers)
+        {
+            return tickers.Select(BuildContextFromNonGeneric).ToArray();
+        }
+
+        private static InternalFunctionContext BuildContextFromNonGeneric(TimeTickerEntity ticker)
+        {
+            return new InternalFunctionContext
+            {
+                FunctionName = ticker.Function,
+                TickerId = ticker.Id,
+                Type = Enums.TickerType.TimeTicker,
+                Retries = ticker.Retries,
+                RetryIntervals = ticker.RetryIntervals,
+                ParentId = ticker.ParentId,
+                ExecutionTime = ticker.ExecutionTime ?? DateTime.UtcNow,
+                RunCondition = ticker.RunCondition ?? Enums.RunCondition.OnAnyCompletedStatus,
+                TimeTickerChildren = ticker.Children.Select(BuildContextFromNonGeneric).ToList()
+            };
+        }
+
         private async Task<TickerResult<List<TTimeTicker>>> AddTimeTickersBatchAsync(List<TTimeTicker> entities, CancellationToken cancellationToken = default)
         {
             var validEntities = new List<TTimeTicker>();
@@ -280,16 +346,42 @@ namespace TickerQ.Utilities.Managers
             {
                 await _persistenceProvider.AddTimeTickers(validEntities.ToArray(), cancellationToken: cancellationToken);
 
-                // Restart scheduler for earliest execution time
+                // Send notifications for all
+                foreach (var entity in validEntities)
+                {
+                    await _notificationHubSender.AddTimeTickerNotifyAsync(entity).ConfigureAwait(false);
+                }
+
                 if (validEntities.Any())
                 {
-                    var earliestExecution = validEntities.Min(e => e.ExecutionTime.Value);
-                    _tickerQHostScheduler.RestartIfNeeded(earliestExecution);
+                    var now = _clock.UtcNow;
+                    var immediateIds = validEntities
+                        .Where(e => e.ExecutionTime.HasValue && e.ExecutionTime.Value <= now.AddSeconds(1))
+                        .Select(e => e.Id)
+                        .ToArray();
 
-                    // Send notifications for all
-                    foreach (var entity in validEntities)
+                    if (immediateIds.Length > 0)
                     {
-                        await _notificationHubSender.AddTimeTickerNotifyAsync(entity).ConfigureAwait(false);
+                        var acquired = await _persistenceProvider
+                            .AcquireImmediateTimeTickersAsync(immediateIds, cancellationToken)
+                            .ConfigureAwait(false);
+
+                        if (acquired.Length > 0)
+                        {
+                            var contexts = BuildImmediateContextsFromNonGeneric(acquired);
+                            CacheFunctionReferences(contexts.AsSpan());
+                            await _dispatcher.DispatchAsync(contexts, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
+
+                    var laterTickers = validEntities
+                        .Where(e => e.ExecutionTime.HasValue && e.ExecutionTime.Value > now.AddSeconds(1))
+                        .ToList();
+
+                    if (laterTickers.Any())
+                    {
+                        var earliestExecution = laterTickers.Min(e => e.ExecutionTime!.Value);
+                        _tickerQHostScheduler.RestartIfNeeded(earliestExecution);
                     }
                 }
 

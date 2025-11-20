@@ -230,6 +230,39 @@ namespace TickerQ.Provider
             return Task.CompletedTask;
         }
 
+        public Task<TimeTickerEntity[]> AcquireImmediateTimeTickersAsync(Guid[] ids, CancellationToken cancellationToken = default)
+        {
+            if (ids == null || ids.Length == 0)
+                return Task.FromResult(Array.Empty<TimeTickerEntity>());
+
+            var now = _clock.UtcNow;
+            var acquired = new List<TimeTickerEntity>();
+
+            foreach (var id in ids)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!TimeTickers.TryGetValue(id, out var ticker))
+                    continue;
+
+                if (!CanAcquire(ticker))
+                    continue;
+
+                var updatedTicker = CloneTicker(ticker);
+                updatedTicker.LockHolder = _lockHolder;
+                updatedTicker.LockedAt = now;
+                updatedTicker.Status = TickerStatus.InProgress;
+                updatedTicker.UpdatedAt = now;
+
+                if (TimeTickers.TryUpdate(id, updatedTicker, ticker))
+                {
+                    acquired.Add(ForQueueTimeTickers(updatedTicker));
+                }
+            }
+
+            return Task.FromResult(acquired.ToArray());
+        }
+
         public Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default)
         {
             if (TimeTickers.TryGetValue(id, out var ticker))
@@ -871,6 +904,39 @@ namespace TickerQ.Provider
             }
             
             return Task.FromResult(count);
+        }
+
+        public Task<CronTickerOccurrenceEntity<TCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
+        {
+            if (occurrenceIds == null || occurrenceIds.Length == 0)
+                return Task.FromResult(Array.Empty<CronTickerOccurrenceEntity<TCronTicker>>());
+
+            var now = _clock.UtcNow;
+            var acquired = new List<CronTickerOccurrenceEntity<TCronTicker>>();
+
+            foreach (var id in occurrenceIds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!CronOccurrences.TryGetValue(id, out var occurrence))
+                    continue;
+
+                if (!CanAcquireCronOccurrence(occurrence))
+                    continue;
+
+                var updated = CloneCronOccurrence(occurrence);
+                updated.LockHolder = _lockHolder;
+                updated.LockedAt = now;
+                updated.Status = TickerStatus.InProgress;
+                updated.UpdatedAt = now;
+
+                if (CronOccurrences.TryUpdate(id, updated, occurrence))
+                {
+                    acquired.Add(updated);
+                }
+            }
+
+            return Task.FromResult(acquired.ToArray());
         }
 
         #endregion
