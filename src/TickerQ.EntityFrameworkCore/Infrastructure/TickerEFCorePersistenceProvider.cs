@@ -259,9 +259,13 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var now = _clock.UtcNow;
 
-            // Lock and mark InProgress
-            await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+            // Only acquire occurrences that are acquirable (Idle/Queued and not locked by another node),
+            var query = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                 .Where(x => occurrenceIds.Contains(x.Id))
+                .WhereCanAcquire(_lockHolder);
+
+            // Lock and mark InProgress
+            await query
                 .ExecuteUpdateAsync(setter => setter
                     .SetProperty(x => x.LockHolder, _lockHolder)
                     .SetProperty(x => x.LockedAt, now)
@@ -270,9 +274,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .ConfigureAwait(false);
 
             // Return acquired occurrences with CronTicker populated
-            return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+            return await query
                 .AsNoTracking()
-                .Where(x => occurrenceIds.Contains(x.Id))
                 .Include(x => x.CronTicker)
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
