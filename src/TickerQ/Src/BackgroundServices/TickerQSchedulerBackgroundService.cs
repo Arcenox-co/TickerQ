@@ -131,7 +131,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     private async Task ReleaseAllResourcesAsync(Exception ex)
     {
-        if (ex != null)
+        if (ex != null && _executionContext.NotifyCoreAction != null)
             _executionContext.NotifyCoreAction(ex.ToString(), CoreNotifyActionType.NotifyHostExceptionMessage);
 
         await _internalTickerManager.ReleaseAcquiredResources([], CancellationToken.None);
