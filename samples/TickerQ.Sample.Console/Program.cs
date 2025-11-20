@@ -1,6 +1,9 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using TickerQ.DependencyInjection;
+using TickerQ.EntityFrameworkCore.DbContextFactory;
+using TickerQ.EntityFrameworkCore.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Entities;
@@ -9,12 +12,30 @@ using TickerQ.Utilities.Interfaces.Managers;
 var host = Host.CreateDefaultBuilder(args)
     .ConfigureServices((context, services) =>
     {
-        // Use default in-memory persistence provider
-        services.AddTickerQ();
+        // Configure TickerQ with SQLite operational store (file-based)
+        services.AddTickerQ(options =>
+        {
+            options.AddOperationalStore(efOptions =>
+            {
+                efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>
+                {
+                    dbOptions.UseSqlite(
+                        "Data Source=tickerq-console.db",
+                        b => b.MigrationsAssembly("TickerQ.Sample.Console"));
+                });
+            });
+        });
 
         services.AddHostedService<SampleScheduler>();
     })
     .Build();
+
+// Ensure TickerQ operational store schema is applied
+using (var scope = host.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<TickerQDbContext>();
+    db.Database.Migrate();
+}
 
 // Build function metadata so TickerFunctionProvider.TickerFunctions is initialized
 TickerFunctionProvider.Build();

@@ -122,8 +122,12 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                     : timeRemaining;
                 _executionContext.SetNextPlannedOccurrence(DateTime.UtcNow.Add(sleepDuration));
             }
-            
-            _executionContext.NotifyCoreAction(_executionContext.GetNextPlannedOccurrence(), CoreNotifyActionType.NotifyNextOccurence);
+
+            var notify = _executionContext.NotifyCoreAction;
+            if (notify != null)
+            {
+                notify(_executionContext.GetNextPlannedOccurrence(), CoreNotifyActionType.NotifyNextOccurence);
+            }
 
             await Task.Delay(sleepDuration, cancellationToken);
         }

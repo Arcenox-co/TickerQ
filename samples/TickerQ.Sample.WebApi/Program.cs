@@ -1,50 +1,39 @@
-using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using TickerQ.DependencyInjection;
-using TickerQ.EntityFrameworkCore;
+using TickerQ.EntityFrameworkCore.DbContextFactory;
+using TickerQ.EntityFrameworkCore.DependencyInjection;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces.Managers;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure EF Core persistence for TickerQ (in-memory DB for sample)
-builder.Services.AddDbContext<TickerQDbContext>(options =>
-    options.UseInMemoryDatabase("TickerQ_Sample"));
-
+// TickerQ setup with SQLite operational store (file-based)
 builder.Services.AddTickerQ(options =>
 {
-    options.UseTickerQ(ef =>
+    options.AddOperationalStore(efOptions =>
     {
-        ef.UseDbContext<TickerQDbContext>();
+        efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>
+        {
+            dbOptions.UseSqlite(
+                "Data Source=tickerq-webapi.db",
+                b => b.MigrationsAssembly("TickerQ.Sample.WebApi"));
+        });
     });
 });
 
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
-
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
+// Ensure TickerQ operational store schema is applied
+using (var scope = app.Services.CreateScope())
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    var db = scope.ServiceProvider.GetRequiredService<TickerQDbContext>();
+    db.Database.Migrate();
 }
 
-app.UseTickerQDashboard(); // Host the dashboard under /tickerq
-
-// Simple sample job
-public class SampleJobs
-{
-    [TickerFunction("WebApiSample_HelloWorld")]
-    public Task HelloWorldAsync(TickerFunctionContext context, CancellationToken cancellationToken)
-    {
-        Console.WriteLine($"[WebApi] Hello from TickerQ! Id={context.Id}, ScheduledFor={context.ScheduledFor:O}");
-        return Task.CompletedTask;
-    }
-}
+// Activate TickerQ job processor (mirrors docs' minimal setup)
+app.UseTickerQ();
 
 // Minimal endpoint to schedule the sample job
 app.MapPost("/schedule-sample", async (ITimeTickerManager<TimeTickerEntity> manager) =>
@@ -60,3 +49,13 @@ app.MapPost("/schedule-sample", async (ITimeTickerManager<TimeTickerEntity> mana
 
 app.Run();
 
+// Simple sample job
+public class SampleJobs
+{
+    [TickerFunction("WebApiSample_HelloWorld")]
+    public Task HelloWorldAsync(TickerFunctionContext context, CancellationToken cancellationToken)
+    {
+        Console.WriteLine($"[WebApi] Hello from TickerQ! Id={context.Id}, ScheduledFor={context.ScheduledFor:O}");
+        return Task.CompletedTask;
+    }
+}
