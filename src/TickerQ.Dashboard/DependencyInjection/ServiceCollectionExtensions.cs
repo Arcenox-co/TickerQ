@@ -127,7 +127,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                             var htmlContent = await reader.ReadToEndAsync();
 
                             // Inject the base tag and other replacements into the HTML
-                            htmlContent = ReplaceBasePath(htmlContent, basePath, config);
+                            htmlContent = ReplaceBasePath(htmlContent, context, basePath, config);
 
                             context.Response.ContentType = "text/html";
                             context.Response.StatusCode = 200;
@@ -149,10 +149,18 @@ namespace TickerQ.Dashboard.DependencyInjection
             return basePath.TrimEnd('/');
         }
 
-        private static string ReplaceBasePath(string htmlContent, string basePath, DashboardOptionsBuilder config)
+        private static string ReplaceBasePath(string htmlContent, HttpContext httpContext, string basePath, DashboardOptionsBuilder config)
         {
             if (string.IsNullOrEmpty(htmlContent))
                 return htmlContent ?? string.Empty;
+
+            // Compute the frontend base path as PathBase + backend basePath.
+            // This ensures correct URLs when the host app uses UsePathBase.
+            var pathBase = httpContext.Request.PathBase.HasValue
+                ? httpContext.Request.PathBase.Value
+                : string.Empty;
+
+            var frontendBasePath = CombinePathBase(pathBase, basePath);
 
             // Build the config object
             var authInfo = new
@@ -164,7 +172,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             
             var envConfig = new
             {
-                basePath,
+                basePath = frontendBasePath,
                 backendDomain = config.BackendDomain,
                 auth = authInfo
             };
@@ -181,7 +189,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             json = SanitizeForInlineScript(json);
 
             // Add base tag for proper asset loading
-            var baseTag = $@"<base href=""{basePath}/"" />";
+            var baseTag = $@"<base href=""{frontendBasePath}/"" />";
 
             // Inline bootstrap: set TickerQConfig and derive __dynamic_base__ (vite-plugin-dynamic-base)
             var script = $@"<script>
@@ -213,6 +221,33 @@ namespace TickerQ.Dashboard.DependencyInjection
 
             // Last resort: prepend (ensures script runs early)
             return fullInjection + htmlContent;
+        }
+
+        private static string CombinePathBase(string pathBase, string basePath)
+        {
+            pathBase ??= string.Empty;
+            basePath ??= "/";
+
+            if (string.IsNullOrEmpty(basePath) || basePath == "/")
+            {
+                return string.IsNullOrEmpty(pathBase) ? "/" : pathBase;
+            }
+
+            if (string.IsNullOrEmpty(pathBase))
+                return basePath;
+
+            // If basePath already includes the pathBase prefix, treat it as the full frontend path
+            // This prevents /cool-app/cool-app/... and similar double-prefix issues when users
+            // configure BasePath with the full URL segment.
+            if (basePath.StartsWith(pathBase, StringComparison.OrdinalIgnoreCase))
+                return basePath;
+
+            // Normalize to avoid double slashes
+            if (pathBase.EndsWith("/"))
+                pathBase = pathBase.TrimEnd('/');
+
+            // basePath is already normalized to start with '/'
+            return pathBase + basePath;
         }
 
         /// <summary>

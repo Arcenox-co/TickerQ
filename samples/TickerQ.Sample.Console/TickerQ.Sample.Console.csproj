@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="[10.0.0,11.0.0)" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="[10.0.0,11.0.0)" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TickerQ.SourceGenerator\TickerQ.SourceGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\TickerQ\TickerQ.csproj" />
+    <ProjectReference Include="..\..\src\TickerQ.EntityFrameworkCore\TickerQ.EntityFrameworkCore.csproj" />
+  </ItemGroup>
+
+</Project>
