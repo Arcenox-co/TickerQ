@@ -8,7 +8,7 @@
         <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <Version>8.0.0-beta.18</Version>
+        <Version>8.0.0-beta.19</Version>
         <LangVersion>latest</LangVersion>
     </PropertyGroup>
 
