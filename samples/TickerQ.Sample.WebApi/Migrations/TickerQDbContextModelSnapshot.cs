@@ -54,9 +54,8 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.HasIndex("Expression")
                         .HasDatabaseName("IX_CronTickers_Expression");
 
-                    b.HasIndex("Function", "Expression", "Request")
-                        .IsUnique()
-                        .HasDatabaseName("IX_Function_Expression_Request");
+                    b.HasIndex("Function", "Expression")
+                        .HasDatabaseName("IX_Function_Expression");
 
                     b.ToTable("CronTickers", "ticker");
                 });
@@ -190,8 +189,7 @@ namespace TickerQ.Sample.WebApi.Migrations
 
                     b.HasIndex("ParentId");
 
-                    b.HasIndex("Status", "ExecutionTime", "Request")
-                        .IsUnique()
+                    b.HasIndex("Status", "ExecutionTime")
                         .HasDatabaseName("IX_TimeTicker_Status_ExecutionTime");
 
                     b.ToTable("TimeTickers", "ticker");
