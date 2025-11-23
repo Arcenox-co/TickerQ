@@ -114,6 +114,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             {
                 sleepDuration = TimeSpan.FromDays(1);
                 _executionContext.SetNextPlannedOccurrence(null);
+                _executionContext.SetFunctions(null);
             }
             else
             {
@@ -122,8 +123,12 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                     : timeRemaining;
                 _executionContext.SetNextPlannedOccurrence(DateTime.UtcNow.Add(sleepDuration));
             }
-            
-            _executionContext.NotifyCoreAction(_executionContext.GetNextPlannedOccurrence(), CoreNotifyActionType.NotifyNextOccurence);
+
+            var notify = _executionContext.NotifyCoreAction;
+            if (notify != null)
+            {
+                notify(_executionContext.GetNextPlannedOccurrence(), CoreNotifyActionType.NotifyNextOccurence);
+            }
 
             await Task.Delay(sleepDuration, cancellationToken);
         }
@@ -131,7 +136,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     private async Task ReleaseAllResourcesAsync(Exception ex)
     {
-        if (ex != null)
+        if (ex != null && _executionContext.NotifyCoreAction != null)
             _executionContext.NotifyCoreAction(ex.ToString(), CoreNotifyActionType.NotifyHostExceptionMessage);
 
         await _internalTickerManager.ReleaseAcquiredResources([], CancellationToken.None);

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
@@ -23,7 +24,12 @@ namespace TickerQ.Utilities.Temps
             return Task.CompletedTask;
         }
 
-        public Task AddTimeTickerNotifyAsync(object timeTicker)
+        public Task AddTimeTickerNotifyAsync(Guid id)
+        {
+            return Task.CompletedTask;
+        }
+        
+        public Task AddTimeTickersBatchNotifyAsync()
         {
             return Task.CompletedTask;
         }

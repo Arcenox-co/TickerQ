@@ -48,12 +48,14 @@ onMounted(async () => {
   await getJobStatusesPastWeek.requestAsync()
 
   await getMachineJobs.requestAsync().then((res) => {
+    machineItems.value = []
     res.forEach((item) => {
       machineItems.value.push({
         machine: item.item1,
         locked: `${item.item2} Jobs`,
       })
     })
+    currentMachinesPage.value = 1
   })
   await functionNamesStore.loadData().then((res) => {
     functionItems.value = [] // Clear existing items
@@ -161,6 +163,25 @@ const seriesColors: { [key: string]: string } = {
 }
 
 const machineItems: Ref<Array<{ machine: string; locked: string }>> = ref([])
+
+// Machines pagination
+const machinesPerPage = ref(10)
+const currentMachinesPage = ref(1)
+
+const totalMachinePages = computed(() =>
+  Math.max(1, Math.ceil(machineItems.value.length / machinesPerPage.value)),
+)
+
+const pagedMachineItems = computed(() => {
+  const start = (currentMachinesPage.value - 1) * machinesPerPage.value
+  const end = start + machinesPerPage.value
+  return machineItems.value.slice(start, end)
+})
+
+const currentMachineName = computed(() => getOptions.response.value?.currentMachine ?? '')
+
+const isCurrentMachine = (name: string) =>
+  !!name && !!currentMachineName.value && name === currentMachineName.value
 
 const tickerTaskPriority: { [key: number]: string } = {
   0: 'LongRunning',
@@ -491,11 +512,44 @@ const getVisiblePageNumbers = () => {
 
           <div class="machines-list">
             <template v-if="machineItems.length > 0">
-              <div v-for="machine in machineItems" :key="machine.machine" class="machine-item">
+              <div
+                v-for="machine in pagedMachineItems"
+                :key="machine.machine"
+                class="machine-item"
+                :class="{ 'machine-item-current': isCurrentMachine(machine.machine) }"
+              >
                 <div class="machine-info">
-                  <span class="machine-name">{{ machine.machine }}</span>
+                  <span class="machine-name">
+                    {{ machine.machine }}
+                    <span
+                      v-if="isCurrentMachine(machine.machine)"
+                      class="machine-current-pill"
+                    >
+                      Current
+                    </span>
+                  </span>
                   <span class="machine-jobs">{{ machine.locked }}</span>
                 </div>
+              </div>
+
+              <div class="machines-pagination" v-if="totalMachinePages > 1">
+                <v-btn
+                  size="x-small"
+                  variant="text"
+                  icon="mdi-chevron-left"
+                  :disabled="currentMachinesPage <= 1"
+                  @click="currentMachinesPage = Math.max(1, currentMachinesPage - 1)"
+                />
+                <span class="machines-page-label">
+                  Page {{ currentMachinesPage }} / {{ totalMachinePages }}
+                </span>
+                <v-btn
+                  size="x-small"
+                  variant="text"
+                  icon="mdi-chevron-right"
+                  :disabled="currentMachinesPage >= totalMachinePages"
+                  @click="currentMachinesPage = Math.min(totalMachinePages, currentMachinesPage + 1)"
+                />
               </div>
             </template>
             <template v-else>

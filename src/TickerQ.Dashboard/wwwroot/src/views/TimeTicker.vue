@@ -41,6 +41,7 @@ use([
 // Use paginated service instead of regular one
 const getTimeTickersPaginated = timeTickerService.getTimeTickersPaginated()
 const deleteTimeTicker = timeTickerService.deleteTimeTicker()
+const deleteTimeTickersBatch = timeTickerService.deleteTimeTickersBatch()
 const requestCancelTicker = tickerService.requestCancel()
 const getTimeTickersGraphDataRange = timeTickerService.getTimeTickersGraphDataRange()
 const getTimeTickersGraphData = timeTickerService.getTimeTickersGraphData()
@@ -149,6 +150,7 @@ onUnmounted(() => {
   TickerNotificationHub.stopReceiver(methodName.onReceiveAddTimeTicker)
   TickerNotificationHub.stopReceiver(methodName.onReceiveUpdateTimeTicker)
   TickerNotificationHub.stopReceiver(methodName.onReceiveDeleteTimeTicker)
+  TickerNotificationHub.stopReceiver(methodName.onReceiveAddTimeTickersBatch)
 })
 
 // Load page data with pagination
@@ -327,44 +329,39 @@ const processPieChartData = (data: any[]) => {
 }
 
 const addHubListeners = async () => {
-  TickerNotificationHub.onReceiveAddTimeTicker<GetTimeTickerResponse>((response) => {
-    console.log('Add Time Ticker', response)
-    // Reload current page when new item is added
+  // Debounce utility for view refreshes
+  function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
+    let timeout: ReturnType<typeof setTimeout>
+    return ((...args: any[]) => {
+      clearTimeout(timeout)
+      timeout = setTimeout(() => fn(...args), delay)
+    }) as T
+  }
+
+  const debouncedRefresh = debounce(() => {
     loadPageData()
-    // Update charts
     loadPieChartData()
+  }, 200)
+
+  TickerNotificationHub.onReceiveAddTimeTicker<GetTimeTickerResponse>(() => {
+    debouncedRefresh()
   })
 
-  TickerNotificationHub.onReceiveUpdateTimeTicker<GetTimeTickerResponse>((response) => {
-    // For paginated data, we need to refresh the current page
-    // instead of updating in-memory array
-    loadPageData()
-    // Update charts
-    loadPieChartData()
-
-
-    if (crudTimeTickerDialog.isOpen && crudTimeTickerDialog.propData?.id == response.id) {
-      // Merge the update with existing data, preserving fields that aren't updated
-      const currentData = crudTimeTickerDialog.propData
-      crudTimeTickerDialog.setPropData({
-        ...currentData,  // Keep existing data (including lockHolder, function, etc.)
-        ...response,      // Apply updates (status, executedAt, etc.)
-        executionTime: response.executionTime ?? currentData.executionTime,
-        isFromDuplicate: false,
-        // Preserve fields that WebSocket updates don't include
-        lockHolder: response.lockHolder || currentData.lockHolder,
-        function: response.function || currentData.function,
-      })
-      nextTick(() => {
-        ;(crudTimeTickerDialogRef.value as any)?.resetForm()
-      })
-    }
+  TickerNotificationHub.onReceiveUpdateTimeTicker<void>(() => {
+    debouncedRefresh()
   })
 
   TickerNotificationHub.onReceiveDeleteTimeTicker<string>((id) => {
     // Reload current page when item is deleted
     loadPageData()
     // Update charts
+    loadPieChartData()
+  })
+
+  // Batch insert notification: just refresh current view and charts once
+  TickerNotificationHub.onReceiveAddTimeTickersBatch(() => {
+    loadPageData()
+    loadTimeSeriesChartData(-3, 3)
     loadPieChartData()
   })
 }
@@ -621,6 +618,28 @@ const toggleItemSelection = (itemId: string) => {
 
 const clearSelection = () => {
   selectedItems.value.clear()
+}
+
+const selectAllVisible = () => {
+  const ids = processedTableData.value
+    .filter((item) => !item.isChild)
+    .map((item) => item.id as string)
+
+  selectedItems.value = new Set(ids)
+}
+
+const deleteSelected = async () => {
+  if (selectedItems.value.size === 0) return
+
+  const ids = Array.from(selectedItems.value)
+  try {
+    await deleteTimeTickersBatch.requestAsync(ids)
+    clearSelection()
+    await loadPageData()
+    await loadPieChartData()
+  } catch (error) {
+    console.error('Failed to delete selected time tickers:', error)
+  }
 }
 
 // Chain Jobs Modal Methods
@@ -1017,6 +1036,18 @@ const canBeForceDeleted = ref<string[]>([])
             <!-- Utility Actions Group -->
             <div class="utility-actions">
               <v-btn
+                v-if="processedTableData.length > 0"
+                size="small"
+                color="grey"
+                variant="text"
+                prepend-icon="mdi-select-all"
+                class="utility-btn"
+                @click="selectAllVisible"
+              >
+                Select All
+              </v-btn>
+
+              <v-btn
                 icon
                 size="small"
                 variant="text"
@@ -1025,6 +1056,18 @@ const canBeForceDeleted = ref<string[]>([])
                 class="refresh-btn utility-btn"
               >
                 <v-icon>mdi-refresh</v-icon>
+              </v-btn>
+
+              <v-btn
+                v-if="selectedItems.size > 0"
+                size="small"
+                color="error"
+                variant="text"
+                prepend-icon="mdi-trash-can"
+                class="utility-btn"
+                @click="deleteSelected"
+              >
+                Delete Selected ({{ selectedItems.size }})
               </v-btn>
 
               <v-btn

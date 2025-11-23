@@ -24,6 +24,10 @@ namespace TickerQ.Provider
         private static readonly ConcurrentDictionary<Guid, TTimeTicker> TimeTickers =
             new(new Dictionary<Guid, TTimeTicker>());
 
+        // Index of parent -> child ids for fast hierarchy lookup in memory
+        private static readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, byte>> ChildrenIndex =
+            new(new Dictionary<Guid, ConcurrentDictionary<Guid, byte>>());
+
         private static readonly ConcurrentDictionary<Guid, TCronTicker> CronTickers =
             new(new Dictionary<Guid, TCronTicker>());
 
@@ -61,7 +65,7 @@ namespace TickerQ.Provider
                         updatedTicker.LockedAt = now;
                         updatedTicker.UpdatedAt = now;
                         updatedTicker.Status = TickerStatus.Queued;
-
+                        
                         if (TimeTickers.TryUpdate(timeTicker.Id, updatedTicker, existingTicker))
                         {
                             timeTicker.UpdatedAt = now;
@@ -84,22 +88,23 @@ namespace TickerQ.Provider
             var fallbackThreshold = now.AddMilliseconds(-100);  // Fallback picks up tasks overdue by > 100ms
 
             // First, get the time tickers that need to be updated (matching EF query)
+            // NOTE: we project to the raw ticker here and only build the full
+            //       TimeTickerEntity graph after we successfully acquire the lock.
             var timeTickersToUpdate = TimeTickers.Values
                 .Where(x => x.ExecutionTime != null)
                 .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
-                .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks overdue by more than 100ms
-                .Select(x => ForQueueTimeTickers(x))  // Map to TimeTickerEntity with children, matching EF's Select
+                .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks older than 1 second
                 .ToArray();
 
-            foreach (var timeTicker in timeTickersToUpdate)
+            foreach (var ticker in timeTickersToUpdate)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
                 // Now update the actual ticker in storage
-                if (TimeTickers.TryGetValue(timeTicker.Id, out var existingTicker))
+                if (TimeTickers.TryGetValue(ticker.Id, out var existingTicker))
                 {
                     // Check if we can update (matching EF's Where condition)
-                    if (existingTicker.UpdatedAt <= timeTicker.UpdatedAt)
+                    if (existingTicker.UpdatedAt <= ticker.UpdatedAt)
                     {
                         var updatedTicker = CloneTicker(existingTicker);
                         updatedTicker.LockHolder = _lockHolder;
@@ -107,9 +112,10 @@ namespace TickerQ.Provider
                         updatedTicker.UpdatedAt = now;
                         updatedTicker.Status = TickerStatus.InProgress;
 
-                        if (TimeTickers.TryUpdate(timeTicker.Id, updatedTicker, existingTicker))
+                        if (TimeTickers.TryUpdate(ticker.Id, updatedTicker, existingTicker))
                         {
-                            yield return timeTicker;  // Yield the already-mapped TimeTickerEntity
+                            // Only build the full hierarchy for successfully acquired tickers
+                            yield return ForQueueTimeTickers(ticker);
                         }
                     }
                 }
@@ -149,30 +155,41 @@ namespace TickerQ.Provider
         public Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
-            var mainSchedulerThreshold = now.AddMilliseconds(-100);  // Main scheduler handles tasks up to 100ms overdue
+            var oneSecondAgo = now.AddSeconds(-1);
 
-            // Build base query matching EF Core's approach
+            // Base query: same filter as EF provider, but over the snapshot
             var baseQuery = TimeTickers.Values
                 .Where(x => x.ExecutionTime != null)
                 .Where(CanAcquire)
-                .Where(x => x.ExecutionTime >= mainSchedulerThreshold);  // Only recent/upcoming tasks (not heavily overdue)
+                .Where(x => x.ExecutionTime >= oneSecondAgo)
+                .ToArray();
 
-            // Get minimum execution time (matching EF's approach)
+            // Get minimum execution time
             var minExecutionTime = baseQuery
                 .OrderBy(x => x.ExecutionTime)
                 .Select(x => x.ExecutionTime)
                 .FirstOrDefault();
-            
+
             if (minExecutionTime == null)
                 return Task.FromResult(Array.Empty<TimeTickerEntity>());
 
-            // Get tasks within 50ms window of the earliest task for batching efficiency
-            var batchWindow = minExecutionTime.Value.AddMilliseconds(50);
+            // Round the minimum execution time down to its second
+            var minSecond = new DateTime(
+                minExecutionTime.Value.Year,
+                minExecutionTime.Value.Month,
+                minExecutionTime.Value.Day,
+                minExecutionTime.Value.Hour,
+                minExecutionTime.Value.Minute,
+                minExecutionTime.Value.Second,
+                DateTimeKind.Utc);
 
-            // Final query with mapping (matching EF's approach)
+            var maxExecutionTime = minSecond.AddSeconds(1);
+
+            // Fetch all tickers within that complete second and map using the children lookup
             var result = baseQuery
-                .Where(x => x.ExecutionTime.Value <= batchWindow)
-                .Select(ForQueueTimeTickers)  // Use same mapping as EF Core
+                .Where(x => x.ExecutionTime >= minSecond && x.ExecutionTime < maxExecutionTime)
+                .OrderBy(x => x.ExecutionTime)
+                .Select(ForQueueTimeTickers)
                 .ToArray();
 
             return Task.FromResult(result);
@@ -218,17 +235,44 @@ namespace TickerQ.Provider
             return Task.CompletedTask;
         }
 
+        public Task<TimeTickerEntity[]> AcquireImmediateTimeTickersAsync(Guid[] ids, CancellationToken cancellationToken = default)
+        {
+            if (ids == null || ids.Length == 0)
+                return Task.FromResult(Array.Empty<TimeTickerEntity>());
+
+            var now = _clock.UtcNow;
+            var acquired = new List<TimeTickerEntity>();
+
+            foreach (var id in ids)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!TimeTickers.TryGetValue(id, out var ticker))
+                    continue;
+
+                if (!CanAcquire(ticker))
+                    continue;
+
+                var updatedTicker = CloneTicker(ticker);
+                updatedTicker.LockHolder = _lockHolder;
+                updatedTicker.LockedAt = now;
+                updatedTicker.Status = TickerStatus.InProgress;
+                updatedTicker.UpdatedAt = now;
+
+                if (TimeTickers.TryUpdate(id, updatedTicker, ticker))
+                {
+                    acquired.Add(ForQueueTimeTickers(updatedTicker));
+                }
+            }
+
+            return Task.FromResult(acquired.ToArray());
+        }
+
         public Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default)
         {
             if (TimeTickers.TryGetValue(id, out var ticker))
             {
-                var result = CloneTicker(ticker);
-                // Include children
-                result.Children = TimeTickers.Values
-                    .Where(x => x.ParentId == id)
-                    .Select(x => CloneTicker(x))
-                    .ToList();
-                    
+                var result = BuildTickerHierarchy(ticker);
                 return Task.FromResult(result);
             }
             
@@ -247,25 +291,7 @@ namespace TickerQ.Provider
             var results = query
                 .Where(x => x.ParentId == null)  // Only root items, matching EF Core
                 .OrderByDescending(x => x.ExecutionTime)  // Match EF Core's OrderByDescending(x => x.ExecutionTime)
-                .Select(x =>
-                {
-                    var ticker = CloneTicker(x);
-                    // Include children with their children (matching EF's Include + ThenInclude)
-                    ticker.Children = TimeTickers.Values
-                        .Where(c => c.ParentId == x.Id)
-                        .Select(child =>
-                        {
-                            var clonedChild = CloneTicker(child);
-                            // Include grandchildren
-                            clonedChild.Children = TimeTickers.Values
-                                .Where(gc => gc.ParentId == child.Id)
-                                .Select(CloneTicker)
-                                .ToList();
-                            return clonedChild;
-                        })
-                        .ToList();
-                    return ticker;
-                })
+                .Select(BuildTickerHierarchy)
                 .ToArray();
                 
             return Task.FromResult(results);
@@ -289,25 +315,7 @@ namespace TickerQ.Provider
                 .OrderByDescending(x => x.ExecutionTime)  // Match EF Core's OrderByDescending(x => x.ExecutionTime)
                 .Skip((pageNumber - 1) * pageSize)
                 .Take(pageSize)
-                .Select(x =>
-                {
-                    var ticker = CloneTicker(x);
-                    // Include children with their children (matching EF's Include + ThenInclude)
-                    ticker.Children = TimeTickers.Values
-                        .Where(c => c.ParentId == x.Id)
-                        .Select(child =>
-                        {
-                            var clonedChild = CloneTicker(child);
-                            // Include grandchildren
-                            clonedChild.Children = TimeTickers.Values
-                                .Where(gc => gc.ParentId == child.Id)
-                                .Select(CloneTicker)
-                                .ToList();
-                            return clonedChild;
-                        })
-                        .ToList();
-                    return ticker;
-                })
+                .Select(BuildTickerHierarchy)
                 .ToArray();
                 
             return Task.FromResult(new PaginationResult<TTimeTicker>
@@ -343,6 +351,10 @@ namespace TickerQ.Provider
             // Add the ticker itself
             if (TimeTickers.TryAdd(ticker.Id, ticker))
             {
+                // Maintain children index
+                if (ticker.ParentId.HasValue)
+                    AddChildIndex(ticker.ParentId.Value, ticker.Id);
+
                 count++;
                 
                 // Recursively add all children
@@ -388,6 +400,15 @@ namespace TickerQ.Provider
             {
                 if (TimeTickers.TryUpdate(ticker.Id, ticker, existing))
                 {
+                    // Maintain children index for parent changes
+                    if (existing.ParentId != ticker.ParentId)
+                    {
+                        if (existing.ParentId.HasValue)
+                            RemoveChildIndex(existing.ParentId.Value, ticker.Id);
+                        if (ticker.ParentId.HasValue)
+                            AddChildIndex(ticker.ParentId.Value, ticker.Id);
+                    }
+
                     count++;
                     
                     // Recursively update all children
@@ -419,20 +440,25 @@ namespace TickerQ.Provider
             foreach (var id in tickerIds)
             {
                 // Remove ticker and all its children (cascade delete)
-                if (TimeTickers.TryRemove(id, out _))
+                if (TimeTickers.TryRemove(id, out var removed))
                 {
                     count++;
                     
+                    // Clean children index
+                    if (removed.ParentId.HasValue)
+                        RemoveChildIndex(removed.ParentId.Value, removed.Id);
+                    
                     // Remove children
-                    var childrenIds = TimeTickers.Values
-                        .Where(x => x.ParentId == id)
-                        .Select(x => x.Id)
-                        .ToArray();
+                    var childrenIds = GetChildrenIds(id);
                         
                     foreach (var childId in childrenIds)
                     {
-                        if (TimeTickers.TryRemove(childId, out _))
+                        if (TimeTickers.TryRemove(childId, out var child))
+                        {
                             count++;
+                            if (child.ParentId.HasValue)
+                                RemoveChildIndex(child.ParentId.Value, child.Id);
+                        }
                     }
                 }
             }
@@ -443,23 +469,47 @@ namespace TickerQ.Provider
         public Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
-            
-            // Take snapshot to avoid enumeration issues during concurrent modifications
-            var tickersToRelease = TimeTickers.Values.Where(x => x.LockHolder == instanceIdentifier).ToArray();
-            foreach (var ticker in tickersToRelease)
+
+            // Phase 1: release acquirable tickers for the dead node (match EF WhereCanAcquire(instanceIdentifier))
+            var releasable = TimeTickers.Values
+                .Where(x =>
+                    (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
+                    (x.LockHolder == instanceIdentifier || x.LockedAt == null))
+                .ToArray();
+
+            foreach (var ticker in releasable)
             {
-                if (TimeTickers.TryGetValue(ticker.Id, out var currentTicker))
-                {
-                    var updatedTicker = CloneTicker(currentTicker);
-                    updatedTicker.LockHolder = null;
-                    updatedTicker.LockedAt = null;
-                    updatedTicker.Status = TickerStatus.Idle;
-                    updatedTicker.UpdatedAt = now;
-                    
-                    TimeTickers.TryUpdate(ticker.Id, updatedTicker, currentTicker);
-                }
+                if (!TimeTickers.TryGetValue(ticker.Id, out var currentTicker))
+                    continue;
+
+                var updatedTicker = CloneTicker(currentTicker);
+                updatedTicker.LockHolder = null;
+                updatedTicker.LockedAt = null;
+                updatedTicker.Status = TickerStatus.Idle;
+                updatedTicker.UpdatedAt = now;
+
+                TimeTickers.TryUpdate(ticker.Id, updatedTicker, currentTicker);
             }
-            
+
+            // Phase 2: mark in-progress tickers for that node as skipped
+            var inProgress = TimeTickers.Values
+                .Where(x => x.LockHolder == instanceIdentifier && x.Status == TickerStatus.InProgress)
+                .ToArray();
+
+            foreach (var ticker in inProgress)
+            {
+                if (!TimeTickers.TryGetValue(ticker.Id, out var currentTicker))
+                    continue;
+
+                var updatedTicker = CloneTicker(currentTicker);
+                updatedTicker.Status = TickerStatus.Skipped;
+                updatedTicker.SkippedReason = "Node is not alive!";
+                updatedTicker.ExecutedAt = now;
+                updatedTicker.UpdatedAt = now;
+
+                TimeTickers.TryUpdate(ticker.Id, updatedTicker, currentTicker);
+            }
+
             return Task.CompletedTask;
         }
 
@@ -603,7 +653,7 @@ namespace TickerQ.Provider
             var query = CronOccurrences.Values.AsEnumerable();
             
             if (ids != null && ids.Length > 0)
-                query = query.Where(x => ids.Contains(x.CronTicker.Id));
+                query = query.Where(x => ids.Contains(x.CronTickerId));
                 
             var occurrence = query
                 .Where(x => CanAcquireCronOccurrence(x))
@@ -776,23 +826,47 @@ namespace TickerQ.Provider
         public Task ReleaseDeadNodeOccurrenceResources(string instanceIdentifier, CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
-            
-            // Take snapshot to avoid enumeration issues during concurrent modifications
-            var occurrencesToRelease = CronOccurrences.Values.Where(x => x.LockHolder == instanceIdentifier).ToArray();
-            foreach (var occurrence in occurrencesToRelease)
+
+            // Phase 1: release acquirable occurrences for the dead node (match EF WhereCanAcquire(instanceIdentifier))
+            var releasable = CronOccurrences.Values
+                .Where(x =>
+                    (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
+                    (x.LockHolder == instanceIdentifier || x.LockedAt == null))
+                .ToArray();
+
+            foreach (var occurrence in releasable)
             {
-                if (CronOccurrences.TryGetValue(occurrence.Id, out var currentOccurrence))
-                {
-                    var updatedOccurrence = CloneCronOccurrence(currentOccurrence);
-                    updatedOccurrence.LockHolder = null;
-                    updatedOccurrence.LockedAt = null;
-                    updatedOccurrence.Status = TickerStatus.Idle;
-                    updatedOccurrence.UpdatedAt = now;
-                    
-                    CronOccurrences.TryUpdate(occurrence.Id, updatedOccurrence, currentOccurrence);
-                }
+                if (!CronOccurrences.TryGetValue(occurrence.Id, out var currentOccurrence))
+                    continue;
+
+                var updatedOccurrence = CloneCronOccurrence(currentOccurrence);
+                updatedOccurrence.LockHolder = null;
+                updatedOccurrence.LockedAt = null;
+                updatedOccurrence.Status = TickerStatus.Idle;
+                updatedOccurrence.UpdatedAt = now;
+
+                CronOccurrences.TryUpdate(occurrence.Id, updatedOccurrence, currentOccurrence);
             }
-            
+
+            // Phase 2: mark in-progress occurrences for that node as skipped
+            var inProgress = CronOccurrences.Values
+                .Where(x => x.LockHolder == instanceIdentifier && x.Status == TickerStatus.InProgress)
+                .ToArray();
+
+            foreach (var occurrence in inProgress)
+            {
+                if (!CronOccurrences.TryGetValue(occurrence.Id, out var currentOccurrence))
+                    continue;
+
+                var updatedOccurrence = CloneCronOccurrence(currentOccurrence);
+                updatedOccurrence.Status = TickerStatus.Skipped;
+                updatedOccurrence.SkippedReason = "Node is not alive!";
+                updatedOccurrence.ExecutedAt = now;
+                updatedOccurrence.UpdatedAt = now;
+
+                CronOccurrences.TryUpdate(occurrence.Id, updatedOccurrence, currentOccurrence);
+            }
+
             return Task.CompletedTask;
         }
 
@@ -842,6 +916,12 @@ namespace TickerQ.Provider
             var count = 0;
             foreach (var occurrence in cronTickerOccurrences)
             {
+                // Ensure navigation is populated for in-memory usage
+                if (occurrence.CronTicker == null && CronTickers.TryGetValue(occurrence.CronTickerId, out var cronTicker))
+                {
+                    occurrence.CronTicker = cronTicker;
+                }
+
                 if (CronOccurrences.TryAdd(occurrence.Id, occurrence))
                     count++;
             }
@@ -861,14 +941,74 @@ namespace TickerQ.Provider
             return Task.FromResult(count);
         }
 
+        public Task<CronTickerOccurrenceEntity<TCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
+        {
+            if (occurrenceIds == null || occurrenceIds.Length == 0)
+                return Task.FromResult(Array.Empty<CronTickerOccurrenceEntity<TCronTicker>>());
+
+            var now = _clock.UtcNow;
+            var acquired = new List<CronTickerOccurrenceEntity<TCronTicker>>();
+
+            foreach (var id in occurrenceIds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!CronOccurrences.TryGetValue(id, out var occurrence))
+                    continue;
+
+                if (!CanAcquireCronOccurrence(occurrence))
+                    continue;
+
+                var updated = CloneCronOccurrence(occurrence);
+                updated.LockHolder = _lockHolder;
+                updated.LockedAt = now;
+                updated.Status = TickerStatus.InProgress;
+                updated.UpdatedAt = now;
+
+                if (CronOccurrences.TryUpdate(id, updated, occurrence))
+                {
+                    acquired.Add(updated);
+                }
+            }
+
+            return Task.FromResult(acquired.ToArray());
+        }
+
         #endregion
 
         #region Helper Methods
 
-        // Matches EF Core's MappingExtensions.ForQueueTimeTickers
-        private TimeTickerEntity ForQueueTimeTickers(TTimeTicker ticker)
+        private TTimeTicker BuildTickerHierarchy(TTimeTicker ticker)
         {
-            return new TimeTickerEntity
+            var root = CloneTicker(ticker);
+            root.Children = BuildChildrenHierarchy(ticker.Id);
+            return root;
+        }
+
+        private List<TTimeTicker> BuildChildrenHierarchy(Guid parentId)
+        {
+            if (!ChildrenIndex.TryGetValue(parentId, out var children) || children.IsEmpty)
+                return new List<TTimeTicker>();
+
+            var results = new List<TTimeTicker>(children.Count);
+
+            foreach (var childId in children.Keys)
+            {
+                if (!TimeTickers.TryGetValue(childId, out var child))
+                    continue;
+
+                var clonedChild = CloneTicker(child);
+                clonedChild.Children = BuildChildrenHierarchy(child.Id);
+                results.Add(clonedChild);
+            }
+
+            return results;
+        }
+
+        // Matches EF Core's MappingExtensions.ForQueueTimeTickers but uses an in-memory children index
+        private static TimeTickerEntity ForQueueTimeTickers(TTimeTicker ticker)
+        {
+            var root = new TimeTickerEntity
             {
                 Id = ticker.Id,
                 Function = ticker.Function,
@@ -877,29 +1017,91 @@ namespace TickerQ.Provider
                 UpdatedAt = ticker.UpdatedAt,
                 ParentId = ticker.ParentId,
                 ExecutionTime = ticker.ExecutionTime,
-                Children = TimeTickers.Values
-                    .Where(x => x.ParentId == ticker.Id && x.ExecutionTime == null)
-                    .Select(ch => new TimeTickerEntity
+                Children = new List<TimeTickerEntity>()
+            };
+
+            if (ChildrenIndex.TryGetValue(ticker.Id, out var directChildren) && !directChildren.IsEmpty)
+            {
+                // Pre-size children collection to avoid repeated growth
+                var children = new List<TimeTickerEntity>(directChildren.Count);
+
+                foreach (var childId in directChildren.Keys)
+                {
+                    if (!TimeTickers.TryGetValue(childId, out var ch))
+                        continue;
+
+                    // Only children with null ExecutionTime, matching EF mapping
+                    if (ch.ExecutionTime != null)
+                        continue;
+
+                    var childEntity = new TimeTickerEntity
                     {
                         Id = ch.Id,
                         Function = ch.Function,
                         Retries = ch.Retries,
                         RetryIntervals = ch.RetryIntervals,
                         RunCondition = ch.RunCondition,
-                        Children = TimeTickers.Values
-                            .Where(gch => gch.ParentId == ch.Id)
-                            .Select(gch => new TimeTickerEntity
+                        Children = new List<TimeTickerEntity>()
+                    };
+
+                    if (ChildrenIndex.TryGetValue(ch.Id, out var grandChildren) && !grandChildren.IsEmpty)
+                    {
+                        // Pre-size grandchildren collection
+                        var grandChildList = new List<TimeTickerEntity>(grandChildren.Count);
+
+                        foreach (var grandChildId in grandChildren.Keys)
+                        {
+                            if (!TimeTickers.TryGetValue(grandChildId, out var gch))
+                                continue;
+
+                            grandChildList.Add(new TimeTickerEntity
                             {
+                                Id = gch.Id,
                                 Function = gch.Function,
                                 Retries = gch.Retries,
                                 RetryIntervals = gch.RetryIntervals,
-                                Id = gch.Id,
                                 RunCondition = gch.RunCondition
-                            })
-                            .ToList()
-                    })
-                    .ToList()
-            };
+                            });
+                        }
+
+                        childEntity.Children = grandChildList;
+                    }
+
+                    children.Add(childEntity);
+                }
+
+                root.Children = children;
+            }
+
+            return root;
+        }
+
+        private static void AddChildIndex(Guid parentId, Guid childId)
+        {
+            var children = ChildrenIndex.GetOrAdd(parentId, _ => new ConcurrentDictionary<Guid, byte>());
+            children.TryAdd(childId, 0);
+        }
+
+        private static void RemoveChildIndex(Guid parentId, Guid childId)
+        {
+            if (!ChildrenIndex.TryGetValue(parentId, out var children))
+                return;
+
+            children.TryRemove(childId, out _);
+
+            // Optional: cleanup empty buckets
+            if (children.IsEmpty)
+            {
+                ChildrenIndex.TryRemove(parentId, out _);
+            }
+        }
+
+        private static Guid[] GetChildrenIds(Guid parentId)
+        {
+            if (!ChildrenIndex.TryGetValue(parentId, out var children))
+                return Array.Empty<Guid>();
+
+            return children.Keys.ToArray();
         }
 
         private bool CanAcquire(TTimeTicker ticker)
@@ -972,34 +1174,106 @@ namespace TickerQ.Provider
 
         private void ApplyFunctionContextToTicker(TTimeTicker ticker, InternalFunctionContext context)
         {
-            ticker.UpdatedAt = _clock.UtcNow;
-            ticker.Status = context.Status;
-            ticker.RetryCount = context.RetryCount;
-            ticker.ElapsedTime = context.ElapsedTime;
-            ticker.ExceptionMessage = context.ExceptionDetails;
-            ticker.ExecutedAt = context.ExecutedAt;
-            
-            if (context.Status == TickerStatus.Done || context.Status == TickerStatus.DueDone)
+            var propsToUpdate = context.GetPropsToUpdate();
+
+            // STATUS / SKIPPED
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
+                context.Status != TickerStatus.Skipped)
+            {
+                ticker.Status = context.Status;
+            }
+            else if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)))
+            {
+                ticker.Status = context.Status;
+                ticker.SkippedReason = context.ExceptionDetails;
+            }
+
+            // EXECUTED_AT
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
+            {
+                ticker.ExecutedAt = context.ExecutedAt;
+            }
+
+            // EXCEPTION DETAILS
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)) &&
+                context.Status != TickerStatus.Skipped)
+            {
+                ticker.ExceptionMessage = context.ExceptionDetails;
+            }
+
+            // ELAPSED_TIME
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
+            {
+                ticker.ElapsedTime = context.ElapsedTime;
+            }
+
+            // RETRY COUNT
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
+            {
+                ticker.RetryCount = context.RetryCount;
+            }
+
+            // RELEASE LOCK
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
             {
                 ticker.LockHolder = null;
                 ticker.LockedAt = null;
             }
+
+            // UPDATED_AT ALWAYS
+            ticker.UpdatedAt = _clock.UtcNow;
         }
         
         private void ApplyFunctionContextToCronOccurrence(CronTickerOccurrenceEntity<TCronTicker> occurrence, InternalFunctionContext context)
         {
-            occurrence.UpdatedAt = _clock.UtcNow;
-            occurrence.Status = context.Status;
-            occurrence.RetryCount = context.RetryCount;
-            occurrence.ElapsedTime = context.ElapsedTime;
-            occurrence.ExceptionMessage = context.ExceptionDetails;
-            occurrence.ExecutedAt = context.ExecutedAt;
-            
-            if (context.Status == TickerStatus.Done || context.Status == TickerStatus.DueDone)
+            var propsToUpdate = context.GetPropsToUpdate();
+
+            // STATUS / SKIPPED
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
+                context.Status != TickerStatus.Skipped)
+            {
+                occurrence.Status = context.Status;
+            }
+            else if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)))
+            {
+                occurrence.Status = context.Status;
+                occurrence.SkippedReason = context.ExceptionDetails;
+            }
+
+            // EXECUTED_AT
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
+            {
+                occurrence.ExecutedAt = context.ExecutedAt;
+            }
+
+            // EXCEPTION DETAILS
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)) &&
+                context.Status != TickerStatus.Skipped)
+            {
+                occurrence.ExceptionMessage = context.ExceptionDetails;
+            }
+
+            // ELAPSED_TIME
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
+            {
+                occurrence.ElapsedTime = context.ElapsedTime;
+            }
+
+            // RETRY COUNT
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
+            {
+                occurrence.RetryCount = context.RetryCount;
+            }
+
+            // RELEASE LOCK
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
             {
                 occurrence.LockHolder = null;
                 occurrence.LockedAt = null;
             }
+
+            // UPDATED_AT ALWAYS
+            occurrence.UpdatedAt = _clock.UtcNow;
         }
 
         #endregion
