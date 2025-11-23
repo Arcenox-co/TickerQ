@@ -147,6 +147,7 @@ internal class TickerExecutionTaskHandler
             Id = context.TickerId,
             Type = context.Type,
             IsDue = isDue,
+            ScheduledFor = context.ExecutionTime,
             RequestCancelOperationAction = () => cancellationTokenSource.Cancel(),
             CronOccurrenceOperations = new CronOccurrenceOperations
             {

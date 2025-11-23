@@ -1,17 +1,17 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Microsoft.AspNetCore.Authorization;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Mvc;
 using TickerQ.Dashboard.Authentication;
 using TickerQ.Dashboard.Hubs;
 using TickerQ.Utilities;
-using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
@@ -84,6 +84,10 @@ public static class DashboardEndpoints
         apiGroup.MapDelete("/time-ticker/delete", DeleteTimeTicker<TTimeTicker, TCronTicker>)
             .WithName("DeleteTimeTicker")
             .WithSummary("Delete time ticker");
+
+        apiGroup.MapDelete("/time-ticker/delete-batch", DeleteTimeTickersBatch<TTimeTicker, TCronTicker>)
+            .WithName("DeleteTimeTickersBatch")
+            .WithSummary("Delete multiple time tickers");
 
         // Cron Tickers endpoints
         apiGroup.MapGet("/cron-tickers", GetCronTickers<TTimeTicker, TCronTicker>)
@@ -190,13 +194,6 @@ public static class DashboardEndpoints
             .AllowAnonymous();
 
     }
-
-    // Authorization policy helper for host authentication
-    private static Action<AuthorizationPolicyBuilder> GetHostAuthorizationPolicy()
-    {
-        return policy => policy.RequireAuthenticatedUser();
-    }
-
     #region Endpoint Handlers
     
     private static IResult GetAuthInfo(IAuthService authService, DashboardOptionsBuilder dashboardOptions)
@@ -373,6 +370,23 @@ public static class DashboardEndpoints
         return Results.Json(new { 
             success = result.IsSucceeded, 
             message = result.IsSucceeded ? "Time ticker deleted successfully" : "Failed to delete time ticker"
+        }, dashboardOptions.DashboardJsonOptions);
+    }
+
+    private static async Task<IResult> DeleteTimeTickersBatch<TTimeTicker, TCronTicker>(
+        [FromBody] Guid[] ids,
+        ITimeTickerManager<TTimeTicker> timeTickerManager,
+        DashboardOptionsBuilder dashboardOptions,
+        CancellationToken cancellationToken)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var idList = ids is { Length: > 0 } ? new List<Guid>(ids) : new List<Guid>();
+        var result = await timeTickerManager.DeleteBatchAsync(idList, cancellationToken);
+        
+        return Results.Json(new { 
+            success = result.IsSucceeded, 
+            message = result.IsSucceeded ? "Time tickers deleted successfully" : "Failed to delete time tickers"
         }, dashboardOptions.DashboardJsonOptions);
     }
 
