@@ -7,8 +7,7 @@ using TickerQ.Utilities.Enums;
 namespace TickerQ.TickerQThreadPool;
 
 /// <summary>
-/// Simplified elastic work-stealing task scheduler.
-/// No priority support - focuses on throughput and efficient CPU utilization.
+/// Elastic work-stealing task scheduler.
 /// </summary>
 public sealed class TickerQTaskScheduler : IAsyncDisposable
 {
@@ -337,8 +336,48 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
             // Check cancellation before executing
             if (!workItem.UserToken.IsCancellationRequested && !_shutdownCts.Token.IsCancellationRequested)
             {
+<<<<<<< HEAD
                 // Execute the work asynchronously - this won't block the worker
                 await workItem.Work(workItem.UserToken).ConfigureAwait(false);
+=======
+                // Start the work without awaiting it so this worker
+                // can continue processing other items while the task awaits.
+                var task = workItem.Work(workItem.UserToken);
+                
+                if (task == null)
+                    return;
+
+                if (!task.IsCompleted)
+                {
+                    // Observe completion and exceptions without blocking the worker loop
+                    _ = task.ContinueWith(t =>
+                    {
+                        try
+                        {
+                            if (t.IsFaulted)
+                            {
+                                _ = t.Exception;
+                            }
+                        }
+                        catch
+                        {
+                            // Swallow continuation exceptions
+                        }
+                    }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                }
+                else
+                {
+                    // Task already completed synchronously – observe any exception
+                    try
+                    {
+                        await task;
+                    }
+                    catch
+                    {
+                        // Swallow exceptions to keep worker alive
+                    }
+                }
+>>>>>>> 2ea014a (Feature/new improvements (#397))
             }
         }
         catch (OperationCanceledException)

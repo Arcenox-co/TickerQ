@@ -137,6 +137,7 @@ namespace TickerQ.Utilities.Managers
                     Retries = updatedTimeTicker.Retries,
                     RetryIntervals = updatedTimeTicker.RetryIntervals,
                     ParentId = updatedTimeTicker.ParentId,
+                    ExecutionTime = updatedTimeTicker.ExecutionTime ?? _clock.UtcNow,
                     TimeTickerChildren = updatedTimeTicker.Children.Select(ch => new InternalFunctionContext
                     {
                         FunctionName = ch.Function,
@@ -178,7 +179,8 @@ namespace TickerQ.Utilities.Managers
                     TickerId = occurrence.Id,
                     Type = TickerType.CronTickerOccurrence,
                     Retries = occurrence.CronTicker.Retries,
-                    RetryIntervals = occurrence.CronTicker.RetryIntervals
+                    RetryIntervals = occurrence.CronTicker.RetryIntervals,
+                    ExecutionTime = occurrence.ExecutionTime
                 });
                 
                 if (occurrence.CreatedAt == occurrence.UpdatedAt && _notificationHubSender != null)
@@ -406,6 +408,7 @@ namespace TickerQ.Utilities.Managers
                     Retries = timedOutTimeTicker.Retries,
                     RetryIntervals = timedOutTimeTicker.RetryIntervals,
                     ParentId = timedOutTimeTicker.ParentId,
+                    ExecutionTime = timedOutTimeTicker.ExecutionTime ?? _clock.UtcNow,
                     TimeTickerChildren = timedOutTimeTicker.Children.Select(ch => new InternalFunctionContext
                     {
                         FunctionName = ch.Function,
@@ -440,7 +443,8 @@ namespace TickerQ.Utilities.Managers
                     Type = TickerType.CronTickerOccurrence,
                     Retries = timedOutCronTicker.CronTicker.Retries,
                     RetryIntervals = timedOutCronTicker.CronTicker.RetryIntervals,
-                    ParentId = timedOutCronTicker.CronTickerId
+                    ParentId = timedOutCronTicker.CronTickerId,
+                    ExecutionTime = timedOutCronTicker.ExecutionTime
                 };
                 
                 results.Add(functionContext);

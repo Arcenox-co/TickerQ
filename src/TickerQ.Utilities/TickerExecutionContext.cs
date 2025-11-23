@@ -2,7 +2,6 @@ using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
 

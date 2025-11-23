@@ -7,6 +7,7 @@ export const methodName = {
   onReceiveUpdateCronTickerOccurrence: "UpdateCronOccurrenceNotification",
   onReceiveAddCronTickerOccurrence: "AddCronOccurrenceNotification",
   onReceiveAddTimeTicker: "AddTimeTickerNotification",
+  onReceiveAddTimeTickersBatch: "AddTimeTickersBatchNotification",
   onReceiveUpdateTimeTicker: "UpdateTimeTickerNotification",
   onReceiveCancelledTicker: "CanceledTickerNotification",
   onReceiveDeleteTimeTicker: "RemoveTimeTickerNotification",
@@ -57,6 +58,13 @@ class TickerNotificationHub extends BaseHub {
   onReceiveAddCronTickerOccurrence<T>(callback: (response: T) => void): void {
     this.onReceiveMessageAsSingle<T>(methodName.onReceiveAddCronTickerOccurrence, (responseFromHub: any) => {
       callback(responseFromHub);
+    });
+  }
+
+  // Batch add time tickers (used as a lightweight signal to refresh data)
+  onReceiveAddTimeTickersBatch(callback: () => void): void {
+    this.connection.on(methodName.onReceiveAddTimeTickersBatch, () => {
+      callback();
     });
   }
 

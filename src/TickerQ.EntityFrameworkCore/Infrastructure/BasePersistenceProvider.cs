@@ -27,8 +27,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     }
     
     protected readonly IDbContextFactory<TDbContext>  DbContextFactory;
-    private readonly string _lockHolder;
-    private readonly ITickerClock _clock;
+    protected readonly string _lockHolder;
+    protected readonly ITickerClock _clock;
     protected readonly ITickerQRedisContext RedisContext;
     
     #region Core_Time_Ticker_Methods
@@ -202,10 +202,42 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .SetProperty(x => x.Status, TickerStatus.Skipped)
                 .SetProperty(x => x.SkippedReason, "Node is not alive!")
                 .SetProperty(x => x.ExecutedAt, now)
-                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+            .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
     }
     #endregion
+
+    public async Task<TimeTickerEntity[]> AcquireImmediateTimeTickersAsync(Guid[] ids, CancellationToken cancellationToken = default)
+    {
+        if (ids == null || ids.Length == 0)
+            return [];
+
+        await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var now = _clock.UtcNow;
+
+        // Acquire and mark InProgress in a single update
+        var affected = await dbContext.Set<TTimeTicker>()
+            .Where(x => ids.Contains(x.Id))
+            .WhereCanAcquire(_lockHolder)
+            .ExecuteUpdateAsync(setter => setter
+                .SetProperty(x => x.LockHolder, _lockHolder)
+                .SetProperty(x => x.LockedAt, now)
+                .SetProperty(x => x.Status, TickerStatus.InProgress)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+            .ConfigureAwait(false);
+
+        if (affected == 0)
+            return [];
+
+        // Return the acquired tickers for immediate execution, with children
+        return await dbContext.Set<TTimeTicker>()
+            .AsNoTracking()
+            .Where(x => ids.Contains(x.Id) && x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
+            .Include(x => x.Children.Where(y => y.ExecutionTime == null))
+            .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
+            .ToArrayAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
         
     #region Core_Cron_Ticker_Methods
     public async Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)

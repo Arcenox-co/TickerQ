@@ -197,6 +197,18 @@ const deleteTimeTicker = () => {
     };
 }
 
+const deleteTimeTickersBatch = () => {
+    const baseHttp = useBaseHttpService<object, object>('single');
+
+    const requestAsync = async (ids: string[]) =>
+        await baseHttp.sendAsync("DELETE", "time-ticker/delete-batch", { bodyData: ids });
+
+    return {
+        ...baseHttp,
+        requestAsync
+    };
+}
+
 const addTimeTicker = () => {
     const baseHttp = useBaseHttpService<AddTimeTickerRequest, object>('single');
 
@@ -248,6 +260,7 @@ export const timeTickerService = {
     getTimeTickers,
     getTimeTickersPaginated,
     deleteTimeTicker,
+    deleteTimeTickersBatch,
     getTimeTickersGraphDataRange,
     getTimeTickersGraphData,
     addTimeTicker,

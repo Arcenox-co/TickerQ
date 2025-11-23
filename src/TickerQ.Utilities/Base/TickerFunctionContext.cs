@@ -13,6 +13,7 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
         Type = tickerFunctionContext.Type;
         RetryCount = tickerFunctionContext.RetryCount;
         IsDue = tickerFunctionContext.IsDue;
+        ScheduledFor = tickerFunctionContext.ScheduledFor;
         RequestCancelOperationAction = tickerFunctionContext.RequestCancelOperationAction;
         CronOccurrenceOperations = tickerFunctionContext.CronOccurrenceOperations;
         FunctionName = tickerFunctionContext.FunctionName;
@@ -29,6 +30,11 @@ public class TickerFunctionContext
     public TickerType Type { get; internal set; }
     public int RetryCount { get; internal set; }
     public bool IsDue { get; internal set; }
+    /// <summary>
+    /// The time this ticker was scheduled to run (UTC).
+    /// For time tickers, this is the ExecutionTime; for cron, the occurrence ExecutionTime.
+    /// </summary>
+    public DateTime ScheduledFor { get; internal set; }
     public string FunctionName { get; internal set; }
     public CronOccurrenceOperations CronOccurrenceOperations { get; internal set; }
     public void RequestCancellation() 
