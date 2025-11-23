@@ -19,12 +19,13 @@
 **Robust. Adaptive. Precise.**  
 TickerQ is a fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
 
-### 📚 Full Docs: [https://tickerq.net](https://tickerq.net)
-> **Repo:** https://github.com/Arcenox-co/TickerQ-UI (docs are open-source and anyone can help us improving.)
+### 📚 [Full Docs: https://tickerq.net](https://tickerq.net)
+(Docs are open-source and anyone can help us improving [Documentation Repository](https://github.com/Arcenox-co/TickerQ-UI)
 
 > **Note:**
-As of v2.2.0, all TickerQ packages are versioned together — even if a package has no changes — to keep the ecosystem in sync. Always update all packages to the same version.
+All TickerQ packages are versioned together — even if a package has no changes — to keep the ecosystem in sync. Always update all packages to the same version.
 
+> **Important:** The entire 2.* package line is deprecated, considered legacy, and is no longer maintained. For all current and future development, use the .NET 8+ versions of TickerQ.
 ---
 
 ## ✨ Features
