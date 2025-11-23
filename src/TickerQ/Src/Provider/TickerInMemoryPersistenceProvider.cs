@@ -653,7 +653,7 @@ namespace TickerQ.Provider
             var query = CronOccurrences.Values.AsEnumerable();
             
             if (ids != null && ids.Length > 0)
-                query = query.Where(x => ids.Contains(x.CronTicker.Id));
+                query = query.Where(x => ids.Contains(x.CronTickerId));
                 
             var occurrence = query
                 .Where(x => CanAcquireCronOccurrence(x))
@@ -916,6 +916,12 @@ namespace TickerQ.Provider
             var count = 0;
             foreach (var occurrence in cronTickerOccurrences)
             {
+                // Ensure navigation is populated for in-memory usage
+                if (occurrence.CronTicker == null && CronTickers.TryGetValue(occurrence.CronTickerId, out var cronTicker))
+                {
+                    occurrence.CronTicker = cronTicker;
+                }
+
                 if (CronOccurrences.TryAdd(occurrence.Id, occurrence))
                     count++;
             }
