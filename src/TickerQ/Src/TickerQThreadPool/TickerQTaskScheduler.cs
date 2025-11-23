@@ -336,10 +336,6 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
             // Check cancellation before executing
             if (!workItem.UserToken.IsCancellationRequested && !_shutdownCts.Token.IsCancellationRequested)
             {
-<<<<<<< HEAD
-                // Execute the work asynchronously - this won't block the worker
-                await workItem.Work(workItem.UserToken).ConfigureAwait(false);
-=======
                 // Start the work without awaiting it so this worker
                 // can continue processing other items while the task awaits.
                 var task = workItem.Work(workItem.UserToken);
@@ -377,7 +373,6 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
                         // Swallow exceptions to keep worker alive
                     }
                 }
->>>>>>> 2ea014a (Feature/new improvements (#397))
             }
         }
         catch (OperationCanceledException)

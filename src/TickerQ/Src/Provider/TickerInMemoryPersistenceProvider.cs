@@ -93,12 +93,7 @@ namespace TickerQ.Provider
             var timeTickersToUpdate = TimeTickers.Values
                 .Where(x => x.ExecutionTime != null)
                 .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
-<<<<<<< HEAD
-                .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks overdue by more than 100ms
-                .Select(x => ForQueueTimeTickers(x))  // Map to TimeTickerEntity with children, matching EF's Select
-=======
                 .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks older than 1 second
->>>>>>> 2ea014a (Feature/new improvements (#397))
                 .ToArray();
 
             foreach (var ticker in timeTickersToUpdate)
@@ -160,22 +155,14 @@ namespace TickerQ.Provider
         public Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
-<<<<<<< HEAD
-            var mainSchedulerThreshold = now.AddMilliseconds(-100);  // Main scheduler handles tasks up to 100ms overdue
-=======
             var oneSecondAgo = now.AddSeconds(-1);
->>>>>>> 2ea014a (Feature/new improvements (#397))
 
             // Base query: same filter as EF provider, but over the snapshot
             var baseQuery = TimeTickers.Values
                 .Where(x => x.ExecutionTime != null)
                 .Where(CanAcquire)
-<<<<<<< HEAD
-                .Where(x => x.ExecutionTime >= mainSchedulerThreshold);  // Only recent/upcoming tasks (not heavily overdue)
-=======
                 .Where(x => x.ExecutionTime >= oneSecondAgo)
                 .ToArray();
->>>>>>> 2ea014a (Feature/new improvements (#397))
 
             // Get minimum execution time
             var minExecutionTime = baseQuery
@@ -186,15 +173,6 @@ namespace TickerQ.Provider
             if (minExecutionTime == null)
                 return Task.FromResult(Array.Empty<TimeTickerEntity>());
 
-<<<<<<< HEAD
-            // Get tasks within 50ms window of the earliest task for batching efficiency
-            var batchWindow = minExecutionTime.Value.AddMilliseconds(50);
-
-            // Final query with mapping (matching EF's approach)
-            var result = baseQuery
-                .Where(x => x.ExecutionTime.Value <= batchWindow)
-                .Select(ForQueueTimeTickers)  // Use same mapping as EF Core
-=======
             // Round the minimum execution time down to its second
             var minSecond = new DateTime(
                 minExecutionTime.Value.Year,
@@ -212,7 +190,6 @@ namespace TickerQ.Provider
                 .Where(x => x.ExecutionTime >= minSecond && x.ExecutionTime < maxExecutionTime)
                 .OrderBy(x => x.ExecutionTime)
                 .Select(ForQueueTimeTickers)
->>>>>>> 2ea014a (Feature/new improvements (#397))
                 .ToArray();
 
             return Task.FromResult(result);
