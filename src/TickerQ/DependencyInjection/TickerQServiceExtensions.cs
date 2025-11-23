@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.BackgroundServices;
+using TickerQ.Dispatcher;
 using TickerQ.Provider;
 using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
@@ -57,6 +58,7 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
             services.AddSingleton<TickerQFallbackBackgroundService>();
             services.AddSingleton<TickerExecutionTaskHandler>();
+            services.AddSingleton<ITickerQDispatcher, TickerQDispatcher>();
             services.AddSingleton(sp =>
             {
                 var notification = sp.GetRequiredService<ITickerQNotificationHubSender>();

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Models;
@@ -10,7 +11,8 @@ namespace TickerQ.Utilities.Interfaces
         Task AddCronTickerNotifyAsync(object cronTicker);
         Task UpdateCronTickerNotifyAsync(object cronTicker);
         Task RemoveCronTickerNotifyAsync(Guid id);
-        Task AddTimeTickerNotifyAsync(object timeTicker);
+        Task AddTimeTickerNotifyAsync(Guid id);
+        Task AddTimeTickersBatchNotifyAsync();
         Task UpdateTimeTickerNotifyAsync(object timeTicker);
         Task RemoveTimeTickerNotifyAsync(Guid id);
         void UpdateActiveThreads(object activeThreads);

@@ -7,8 +7,7 @@ using TickerQ.Utilities.Enums;
 namespace TickerQ.TickerQThreadPool;
 
 /// <summary>
-/// Simplified elastic work-stealing task scheduler.
-/// No priority support - focuses on throughput and efficient CPU utilization.
+/// Elastic work-stealing task scheduler.
 /// </summary>
 public sealed class TickerQTaskScheduler : IAsyncDisposable
 {
@@ -361,7 +360,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
                     // Task already completed synchronously – observe any exception
                     try
                     {
-                        await task.ConfigureAwait(false);
+                        await task;
                     }
                     catch
                     {
