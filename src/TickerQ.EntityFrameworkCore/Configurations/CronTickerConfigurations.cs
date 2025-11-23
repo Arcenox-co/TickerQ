@@ -21,10 +21,10 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
             builder.HasIndex("Expression")
                 .HasDatabaseName("IX_CronTickers_Expression");
-            
-            builder.HasIndex("Function","Expression", "Request")
-                .HasDatabaseName("IX_Function_Expression_Request")
-                .IsUnique();
+
+            // Index for common lookups by function + expression
+            builder.HasIndex("Function", "Expression")
+                .HasDatabaseName("IX_Function_Expression");
 
             builder.ToTable("CronTickers", _schema);
         }

@@ -360,7 +360,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable
                     // Task already completed synchronously – observe any exception
                     try
                     {
-                        await task.ConfigureAwait(false);
+                        await task;
                     }
                     catch
                     {

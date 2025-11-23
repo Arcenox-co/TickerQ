@@ -122,7 +122,7 @@ namespace TickerQ.Utilities.Managers
                     _tickerQHostScheduler.RestartIfNeeded(executionTime);
                 }
 
-                await _notificationHubSender.AddTimeTickerNotifyAsync(entity).ConfigureAwait(false);
+                await _notificationHubSender.AddTimeTickerNotifyAsync(entity.Id).ConfigureAwait(false);
 
 
                 return new TickerResult<TTimeTicker>(entity);
@@ -312,80 +312,60 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<List<TTimeTicker>>> AddTimeTickersBatchAsync(List<TTimeTicker> entities, CancellationToken cancellationToken = default)
         {
-            var validEntities = new List<TTimeTicker>();
-            var errors = new List<Exception>();
-            
+            if (entities == null || entities.Count == 0)
+                return new TickerResult<List<TTimeTicker>>(entities ?? new List<TTimeTicker>());
+
+            var tickerFunctionsHashSet = new HashSet<string>(TickerFunctionProvider.TickerFunctions.Keys);
+            var immediateTickers = new List<Guid>();
+            var now = _clock.UtcNow;
+            DateTime earliestForNonImmediate = default;
             foreach (var entity in entities)
             {
-                // Same validation logic as your single add
                 if (entity.Id == Guid.Empty)
                     entity.Id = Guid.NewGuid();
 
-                if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity?.Function))
-                {
-                    errors.Add(new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
-                    continue;
-                }
-                
+                if (!tickerFunctionsHashSet.Contains(entity.Function))
+                    return new TickerResult<List<TTimeTicker>>(
+                        new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
+
                 if (entity.ExecutionTime == null)
-                {
-                    errors.Add(new TickerValidatorException("Invalid ExecutionTime!"));
-                    continue;
-                }
-                
-                entity.ExecutionTime ??= _clock.UtcNow;
+                    return new TickerResult<List<TTimeTicker>>(new TickerValidatorException("Invalid ExecutionTime!"));
+
+                entity.ExecutionTime ??= now;
                 entity.ExecutionTime = ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
-                
-                validEntities.Add(entity);
+
+                if (entity.ExecutionTime.Value <= now.AddSeconds(1))
+                    immediateTickers.Add(entity.Id);
+                else if (earliestForNonImmediate == default || entity.ExecutionTime <= earliestForNonImmediate)
+                    earliestForNonImmediate = entity.ExecutionTime.Value;
             }
-            
-            if (errors.Any())
-                return new TickerResult<List<TTimeTicker>>(errors.First());
             
             try
             {
-                await _persistenceProvider.AddTimeTickers(validEntities.ToArray(), cancellationToken: cancellationToken);
+                await _persistenceProvider.AddTimeTickers(entities.ToArray(), cancellationToken: cancellationToken);
 
-                // Send notifications for all
-                foreach (var entity in validEntities)
+                await _notificationHubSender.AddTimeTickersBatchNotifyAsync().ConfigureAwait(false);
+
+                if (immediateTickers.Count > 0)
                 {
-                    await _notificationHubSender.AddTimeTickerNotifyAsync(entity).ConfigureAwait(false);
-                }
+                    var acquired = await _persistenceProvider
+                        .AcquireImmediateTimeTickersAsync(immediateTickers.ToArray(), cancellationToken)
+                        .ConfigureAwait(false);
 
-                if (validEntities.Any())
-                {
-                    var now = _clock.UtcNow;
-                    var immediateIds = validEntities
-                        .Where(e => e.ExecutionTime.HasValue && e.ExecutionTime.Value <= now.AddSeconds(1))
-                        .Select(e => e.Id)
-                        .ToArray();
-
-                    if (immediateIds.Length > 0)
+                    if (acquired.Length > 0)
                     {
-                        var acquired = await _persistenceProvider
-                            .AcquireImmediateTimeTickersAsync(immediateIds, cancellationToken)
-                            .ConfigureAwait(false);
-
-                        if (acquired.Length > 0)
-                        {
-                            var contexts = BuildImmediateContextsFromNonGeneric(acquired);
-                            CacheFunctionReferences(contexts.AsSpan());
-                            await _dispatcher.DispatchAsync(contexts, cancellationToken).ConfigureAwait(false);
-                        }
-                    }
-
-                    var laterTickers = validEntities
-                        .Where(e => e.ExecutionTime.HasValue && e.ExecutionTime.Value > now.AddSeconds(1))
-                        .ToList();
-
-                    if (laterTickers.Any())
-                    {
-                        var earliestExecution = laterTickers.Min(e => e.ExecutionTime!.Value);
-                        _tickerQHostScheduler.RestartIfNeeded(earliestExecution);
+                        var contexts = BuildImmediateContextsFromNonGeneric(acquired);
+                        CacheFunctionReferences(contexts.AsSpan());
+                        await _dispatcher.DispatchAsync(contexts, cancellationToken).ConfigureAwait(false);
                     }
                 }
 
-                return new TickerResult<List<TTimeTicker>>(validEntities);
+                if (earliestForNonImmediate != default)
+                {
+                    _tickerQHostScheduler.RestartIfNeeded(earliestForNonImmediate);
+                }
+
+                return new TickerResult<List<TTimeTicker>>(entities);
             }
             catch (Exception e)
             {

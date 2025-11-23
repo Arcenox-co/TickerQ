@@ -114,6 +114,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             {
                 sleepDuration = TimeSpan.FromDays(1);
                 _executionContext.SetNextPlannedOccurrence(null);
+                _executionContext.SetFunctions(null);
             }
             else
             {

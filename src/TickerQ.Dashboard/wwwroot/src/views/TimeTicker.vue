@@ -150,6 +150,7 @@ onUnmounted(() => {
   TickerNotificationHub.stopReceiver(methodName.onReceiveAddTimeTicker)
   TickerNotificationHub.stopReceiver(methodName.onReceiveUpdateTimeTicker)
   TickerNotificationHub.stopReceiver(methodName.onReceiveDeleteTimeTicker)
+  TickerNotificationHub.stopReceiver(methodName.onReceiveAddTimeTickersBatch)
 })
 
 // Load page data with pagination
@@ -328,44 +329,39 @@ const processPieChartData = (data: any[]) => {
 }
 
 const addHubListeners = async () => {
-  TickerNotificationHub.onReceiveAddTimeTicker<GetTimeTickerResponse>((response) => {
-    console.log('Add Time Ticker', response)
-    // Reload current page when new item is added
+  // Debounce utility for view refreshes
+  function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
+    let timeout: ReturnType<typeof setTimeout>
+    return ((...args: any[]) => {
+      clearTimeout(timeout)
+      timeout = setTimeout(() => fn(...args), delay)
+    }) as T
+  }
+
+  const debouncedRefresh = debounce(() => {
     loadPageData()
-    // Update charts
     loadPieChartData()
+  }, 200)
+
+  TickerNotificationHub.onReceiveAddTimeTicker<GetTimeTickerResponse>(() => {
+    debouncedRefresh()
   })
 
-  TickerNotificationHub.onReceiveUpdateTimeTicker<GetTimeTickerResponse>((response) => {
-    // For paginated data, we need to refresh the current page
-    // instead of updating in-memory array
-    loadPageData()
-    // Update charts
-    loadPieChartData()
-
-
-    if (crudTimeTickerDialog.isOpen && crudTimeTickerDialog.propData?.id == response.id) {
-      // Merge the update with existing data, preserving fields that aren't updated
-      const currentData = crudTimeTickerDialog.propData
-      crudTimeTickerDialog.setPropData({
-        ...currentData,  // Keep existing data (including lockHolder, function, etc.)
-        ...response,      // Apply updates (status, executedAt, etc.)
-        executionTime: response.executionTime ?? currentData.executionTime,
-        isFromDuplicate: false,
-        // Preserve fields that WebSocket updates don't include
-        lockHolder: response.lockHolder || currentData.lockHolder,
-        function: response.function || currentData.function,
-      })
-      nextTick(() => {
-        ;(crudTimeTickerDialogRef.value as any)?.resetForm()
-      })
-    }
+  TickerNotificationHub.onReceiveUpdateTimeTicker<void>(() => {
+    debouncedRefresh()
   })
 
   TickerNotificationHub.onReceiveDeleteTimeTicker<string>((id) => {
     // Reload current page when item is deleted
     loadPageData()
     // Update charts
+    loadPieChartData()
+  })
+
+  // Batch insert notification: just refresh current view and charts once
+  TickerNotificationHub.onReceiveAddTimeTickersBatch(() => {
+    loadPageData()
+    loadTimeSeriesChartData(-3, 3)
     loadPieChartData()
   })
 }

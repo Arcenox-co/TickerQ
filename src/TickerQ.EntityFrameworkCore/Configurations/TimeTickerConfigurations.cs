@@ -29,9 +29,9 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.HasIndex("ExecutionTime")
                 .HasDatabaseName("IX_TimeTicker_ExecutionTime");
 
-            builder.HasIndex("Status", "ExecutionTime", "Request")
-                .HasDatabaseName("IX_TimeTicker_Status_ExecutionTime")
-                .IsUnique();
+            // Index for scheduler queries: many tickers can share the same status/time
+            builder.HasIndex("Status", "ExecutionTime")
+                .HasDatabaseName("IX_TimeTicker_Status_ExecutionTime");
 
             builder.ToTable("TimeTickers", _schema);
         }
