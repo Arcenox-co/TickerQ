@@ -328,11 +328,12 @@ namespace TickerQ.Utilities.Managers
                     return new TickerResult<List<TTimeTicker>>(
                         new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
 
-                if (entity.ExecutionTime == null)
-                    return new TickerResult<List<TTimeTicker>>(new TickerValidatorException("Invalid ExecutionTime!"));
-
                 entity.ExecutionTime ??= now;
                 entity.ExecutionTime = ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
+
+                // Align with single AddTimeTickerAsync: initialize timestamps
+                entity.CreatedAt = now;
+                entity.UpdatedAt = now;
 
                 if (entity.ExecutionTime.Value <= now.AddSeconds(1))
                     immediateTickers.Add(entity.Id);
