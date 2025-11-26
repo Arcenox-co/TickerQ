@@ -25,8 +25,7 @@ namespace TickerQ.EntityFrameworkCore
         
         public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseTickerQDbContext<TDbContext>(Action<DbContextOptionsBuilder> optionsAction, string schema = null) where TDbContext : TickerQDbContext<TTimeTicker, TCronTicker>
         {
-            if(!string.IsNullOrEmpty(schema))
-                Schema = schema;
+            Schema = schema ?? Schema;
             
             ServiceBuilder.UseTickerQDbContext<TDbContext, TTimeTicker, TCronTicker>(this, optionsAction);
             return this;
