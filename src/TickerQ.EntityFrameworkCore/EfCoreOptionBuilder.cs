@@ -25,8 +25,8 @@ namespace TickerQ.EntityFrameworkCore
         
         public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseTickerQDbContext<TDbContext>(Action<DbContextOptionsBuilder> optionsAction, string schema = null) where TDbContext : TickerQDbContext<TTimeTicker, TCronTicker>
         {
-            if(string.IsNullOrEmpty(schema))
-                schema = Schema;
+            if(!string.IsNullOrEmpty(schema))
+                Schema = schema;
             
             ServiceBuilder.UseTickerQDbContext<TDbContext, TTimeTicker, TCronTicker>(this, optionsAction);
             return this;
@@ -35,6 +35,12 @@ namespace TickerQ.EntityFrameworkCore
         public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> SetDbContextPoolSize(int poolSize)
         {
             PoolSize = poolSize;
+            return this;
+        }
+
+        public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> SetSchema(string schema)
+        {
+            Schema = schema;
             return this;
         }
     }
