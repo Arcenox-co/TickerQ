@@ -79,20 +79,20 @@ const initializeServices = async () => {
     } catch (error) {
       // Failed to initialize WebSocket connection
     }
-    
+
     const tickerServiceModule = await import('../../http/services/tickerService')
     tickerService = tickerServiceModule.tickerService
-    
+
     // Initialize ticker services
     getOptions = tickerService.getOptions()
     getTickerHostStatus = tickerService.getTickerHostStatus()
     startTicker = tickerService.startTicker()
     restartTicker = tickerService.restartTicker()
     stopTicker = tickerService.stopTicker()
-    
+
     // Load initial data
     await loadInitialData()
-    
+
     // Mark services as ready
     isServicesReady.value = true
   } catch (error) {
@@ -105,11 +105,11 @@ const initializeServices = async () => {
 // Load initial data
 const loadInitialData = async () => {
   if (!getOptions || !getTickerHostStatus) return
-  
+
   try {
     // Wait for options to be loaded
     await getOptions.requestAsync()
-    
+
     // Check if response is available before accessing it
     if (getOptions.response?.value) {
       const options = getOptions.response.value
@@ -124,10 +124,10 @@ const loadInitialData = async () => {
       currentMachine.value = 'Loading...'
       lastHostExceptionMessage.value = ''
     }
-    
+
     // Wait for host status to be loaded
     await getTickerHostStatus.requestAsync()
-    
+
     // Check if response is available before accessing it
     if (getTickerHostStatus.response?.value) {
       tickerHostStatus.value = getTickerHostStatus.response.value.isRunning
@@ -143,7 +143,7 @@ const loadInitialData = async () => {
 onMounted(async () => {
   // Wait for next tick to ensure Pinia stores are fully initialized
   await nextTick()
-  
+
   try {
     // Check if connection store is ready
     if (!connectionStore.isReady) {
@@ -160,7 +160,7 @@ onMounted(async () => {
     }
 
     await connectionStore.initializeConnection()
-    
+
     // After connection is established, initialize services and load data
     await initializeServices()
   } catch (error) {
@@ -186,15 +186,15 @@ async function handleRestart() {
 function getWebSocketStatusText() {
   const isConnecting = connectionStore.isConnecting
   const isConnected = connectionStore.isWebSocketConnected
-  
+
   if (isConnecting) {
     return 'WebSocket Connecting...'
   }
-  
+
   if (isConnected) {
     return 'WebSocket Connected'
   }
-  
+
   return 'WebSocket Disconnected'
 }
 
@@ -202,17 +202,17 @@ function getWebSocketStatusText() {
 async function handleReconnect() {
   try {
     await connectionStore.forceReconnection()
-    
+
     // Wait for connection to stabilize
     await new Promise(resolve => setTimeout(resolve, 3000))
-    
+
     // Perform health check and refresh
     await connectionStore.performManualHealthCheck()
     await connectionStore.refreshConnectionStatus()
-    
+
     // Force UI update
     connectionStore.forceUIUpdate()
-    
+
   } catch (error) {
     // Reconnection failed
   }
@@ -253,7 +253,7 @@ const getConnectionStatus = computed(() => {
 // Connection management methods
 const handleForceReconnection = async () => {
   if (!connectionStore) return
-  
+
   try {
     await connectionStore.forceReconnection()
   } catch (error) {
@@ -283,10 +283,10 @@ const handleForceUIUpdate = () => {
     <v-app-bar class="main-header">
       <div class="header-container">
         <div class="header-content">
-          <div class="header-left">
+            <div class="header-left">
             <div class="logo-container clickable" @click="navigateToDashboard">
               <img
-                src="https://arcenox.com/assets/imgs/main/arcenox-logo.svg"
+                src="@/assets/arcenox-logo.svg"
                 alt="Arcenox"
                 class="logo-image"
               />
@@ -350,11 +350,11 @@ const handleForceUIUpdate = () => {
               </v-menu>
             </div>
           </div>
-          
+
           <div class="header-center">
             <div class="header-divider"></div>
           </div>
-          
+
           <div class="header-right">
             <div class="navigation-links">
               <v-btn
@@ -367,7 +367,7 @@ const handleForceUIUpdate = () => {
                 :prepend-icon="link.icon"
               ></v-btn>
             </div>
-            
+
             <!-- Auth Header Component -->
             <div class="auth-container">
               <AuthHeader
@@ -390,7 +390,7 @@ const handleForceUIUpdate = () => {
         <div class="header-content">
           <div class="status-section">
             <div class="status-indicator">
-              <div 
+              <div
                 class="status-pulse"
                 :class="{ 'pulse-active': tickerHostStatus, 'pulse-inactive': !tickerHostStatus }"
               ></div>
@@ -398,7 +398,7 @@ const handleForceUIUpdate = () => {
                 <div class="system-details">
                   <span class="machine-name">{{ currentMachine }}</span>
                   <span class="status-divider">•</span>
-                  <span 
+                  <span
                     class="status-text"
                     :class="{ 'status-online': tickerHostStatus, 'status-offline': !tickerHostStatus }"
                   >
@@ -407,13 +407,13 @@ const handleForceUIUpdate = () => {
                 </div>
               </div>
             </div>
-            
+
             <!-- WebSocket Connection Status -->
             <div v-if="isServicesReady" class="websocket-status">
-              <div 
+              <div
                 class="websocket-indicator"
-                :class="{ 
-                  'websocket-connected': connectionStore.isWebSocketConnected, 
+                :class="{
+                  'websocket-connected': connectionStore.isWebSocketConnected,
                   'websocket-connecting': connectionStore.isConnecting,
                   'websocket-disconnected': !connectionStore.isWebSocketConnected && !connectionStore.isConnecting
                 }"
@@ -430,16 +430,16 @@ const handleForceUIUpdate = () => {
               >
                 Reconnect
               </v-btn>
-              
+
             </div>
-            
+
             <!-- Loading State for WebSocket -->
             <div v-else class="websocket-status">
               <div class="websocket-indicator websocket-connecting"></div>
               <span class="websocket-text">Initializing...</span>
             </div>
           </div>
-          
+
           <div class="action-section">
             <div class="action-buttons">
                 <v-btn
@@ -462,7 +462,7 @@ const handleForceUIUpdate = () => {
               >
                 Start System
               </v-btn>
-              
+
               <template v-if="tickerHostStatus && isServicesReady">
                 <v-btn
                   color="warning"
@@ -475,7 +475,7 @@ const handleForceUIUpdate = () => {
                   :class="{ 'restart-animating': restartIsAnimating }"
                 >
                   <span class="btn-content">
-                    <v-icon 
+                    <v-icon
                       class="restart-icon"
                       :class="{ 'rotating': restartIsAnimating }"
                     >
@@ -483,13 +483,13 @@ const handleForceUIUpdate = () => {
                     </v-icon>
                     <span class="btn-text">Restart</span>
                   </span>
-                  
+
                   <!-- Ripple Effect -->
                   <div class="ripple-container">
                     <div class="ripple" v-if="restartIsAnimating"></div>
                   </div>
                 </v-btn>
-                
+
                 <v-btn
                   color="error"
                   variant="elevated"
@@ -502,7 +502,7 @@ const handleForceUIUpdate = () => {
                   Stop System
                 </v-btn>
             </template>
-            
+
             <!-- Loading State for Actions -->
             <div v-if="!isServicesReady" class="action-loading">
               <v-progress-circular indeterminate size="20" color="primary"></v-progress-circular>
@@ -512,7 +512,7 @@ const handleForceUIUpdate = () => {
           </div>
         </div>
       </div>
-      
+
       <!-- Main Content Slot -->
       <slot />
     </v-main>
@@ -1067,34 +1067,34 @@ const handleForceUIUpdate = () => {
   .header-container {
     padding: 0 16px;
   }
-  
+
   .header-content {
     height: auto;
     min-height: 64px;
     padding: 12px 0;
   }
-  
+
   .header-left {
     flex-direction: column;
     gap: 12px;
     align-items: center;
   }
-  
+
   .header-center {
     display: none;
   }
-  
+
   .header-right {
     justify-content: center;
     flex-direction: column;
     gap: 12px;
   }
-  
+
   .navigation-links {
     flex-wrap: wrap;
     justify-content: center;
   }
-  
+
   .auth-container {
     margin-left: 0;
     padding-left: 0;
@@ -1110,11 +1110,11 @@ const handleForceUIUpdate = () => {
   .header-container {
     padding: 0 12px;
   }
-  
+
   .app-title {
     font-size: 1.25rem !important;
   }
-  
+
   .logo-image {
     height: 32px;
   }
@@ -1161,9 +1161,9 @@ const handleForceUIUpdate = () => {
   .footer-content {
     padding: 0 16px;
   }
-  
+
   .main-footer {
     padding: 20px 0 !important;
   }
 }
-</style> 
+</style>
