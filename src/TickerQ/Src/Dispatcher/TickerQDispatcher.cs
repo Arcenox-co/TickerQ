@@ -12,6 +12,8 @@ namespace TickerQ.Dispatcher
         private readonly TickerQTaskScheduler _taskScheduler;
         private readonly TickerExecutionTaskHandler _taskHandler;
 
+        public bool IsEnabled => true;
+
         public TickerQDispatcher(TickerQTaskScheduler taskScheduler, TickerExecutionTaskHandler taskHandler)
         {
             _taskScheduler = taskScheduler ?? throw new ArgumentNullException(nameof(taskScheduler));
