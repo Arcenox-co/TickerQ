@@ -151,4 +151,28 @@ public class TickerOptionsBuilderTests
         schedulerOptions.MaxConcurrency.Should().Be(42);
         schedulerOptions.NodeIdentifier.Should().Be("test-node");
     }
+
+    [Fact]
+    public void DisableBackgroundServices_Sets_Flag_To_False()
+    {
+        var executionContext = new TickerExecutionContext();
+        var schedulerOptions = new SchedulerOptionsBuilder();
+
+        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(executionContext, schedulerOptions);
+
+        // Default should be true
+        var defaultFlag = typeof(TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>)
+            .GetProperty("RegisterBackgroundServices", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(builder);
+        defaultFlag.Should().BeOfType<bool>().Which.Should().BeTrue();
+
+        // After calling DisableBackgroundServices, should be false
+        builder.DisableBackgroundServices();
+
+        var flag = typeof(TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>)
+            .GetProperty("RegisterBackgroundServices", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(builder);
+
+        flag.Should().BeOfType<bool>().Which.Should().BeFalse();
+    }
 }

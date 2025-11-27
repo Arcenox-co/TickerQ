@@ -34,6 +34,12 @@ namespace TickerQ.Utilities
         /// Defaults to true.
         /// </summary>
         internal bool SeedDefinedCronTickers { get; set; } = true;
+        
+        /// <summary>
+        /// Controls whether background services (job processors) should be registered.
+        /// Defaults to true. Set to false to only register managers for queuing jobs.
+        /// </summary>
+        internal bool RegisterBackgroundServices { get; set; } = true;
 
         /// <summary>
         /// Seeding delegate for time tickers, executed with the application's service provider.
@@ -96,6 +102,17 @@ namespace TickerQ.Utilities
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> IgnoreSeedDefinedCronTickers()
         {
             SeedDefinedCronTickers = false;
+            return this;
+        }
+        
+        /// <summary>
+        /// Disables background services registration. 
+        /// Use this when you only want to queue jobs without processing them in this application.
+        /// Only the managers (ITimeTickerManager, ICronTickerManager) will be available for queuing jobs.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> DisableBackgroundServices()
+        {
+            RegisterBackgroundServices = false;
             return this;
         }
 

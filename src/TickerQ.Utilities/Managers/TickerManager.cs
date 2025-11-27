@@ -103,7 +103,8 @@ namespace TickerQ.Utilities.Managers
                 // Persist first
                 await _persistenceProvider.AddTimeTickers([entity], cancellationToken: cancellationToken);
 
-                if (executionTime <= now.AddSeconds(1))
+                // Only try to dispatch immediately if dispatcher is enabled (background services running)
+                if (_dispatcher.IsEnabled && executionTime <= now.AddSeconds(1))
                 {
                     // Acquire and mark InProgress in one provider call
                     var acquired = await _persistenceProvider
@@ -347,7 +348,8 @@ namespace TickerQ.Utilities.Managers
 
                 await _notificationHubSender.AddTimeTickersBatchNotifyAsync().ConfigureAwait(false);
 
-                if (immediateTickers.Count > 0)
+                // Only try to dispatch immediately if dispatcher is enabled (background services running)
+                if (_dispatcher.IsEnabled && immediateTickers.Count > 0)
                 {
                     var acquired = await _persistenceProvider
                         .AcquireImmediateTimeTickersAsync(immediateTickers.ToArray(), cancellationToken)
