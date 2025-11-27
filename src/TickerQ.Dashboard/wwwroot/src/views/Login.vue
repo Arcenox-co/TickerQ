@@ -3,7 +3,7 @@
     <div class="login-card">
       <div class="login-header">
         <div class="logo-section">
-          <img src="/arcenox-logo.svg" alt="TickerQ" class="logo" />
+          <img src="@/assets/arcenox-logo.svg" alt="TickerQ" class="logo" />
           <h1 class="app-title">TickerQ Dashboard</h1>
         </div>
         <p class="login-subtitle">Please authenticate to access the dashboard</p>
@@ -70,7 +70,7 @@
           <v-icon start>mdi-login-variant</v-icon>
           {{ authStore.isLoading ? 'Signing In...' : 'Sign In' }}
         </v-btn>
-        
+
         <div class="auth-help-text">
           <v-icon size="small" class="mr-1">mdi-information-outline</v-icon>
           Enter your dashboard credentials to access TickerQ
@@ -111,7 +111,7 @@
           <v-icon start>mdi-shield-key</v-icon>
           {{ authStore.isLoading ? 'Authenticating...' : 'Authenticate' }}
         </v-btn>
-        
+
         <div class="auth-help-text">
           <v-icon size="small" class="mr-1">mdi-information-outline</v-icon>
           Enter your API key or access token to access the dashboard
@@ -125,7 +125,7 @@
           <h3>Host Authentication</h3>
           <p>This dashboard uses your application's existing authentication system.</p>
         </div>
-        
+
         <v-form
           ref="form"
           @submit.prevent="handleLogin"
@@ -217,7 +217,7 @@ const rules = {
 // Form validation
 const isFormValid = computed(() => {
   if (authMode.value === 'basic') {
-    return (authStore.credentials.username?.length || 0) >= 3 && 
+    return (authStore.credentials.username?.length || 0) >= 3 &&
            (authStore.credentials.password?.length || 0) >= 1
   } else if (authMode.value === 'apikey') {
     return (authStore.credentials.apiKey?.length || 0) >= 10
@@ -273,7 +273,7 @@ onMounted(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: 
+  background:
     radial-gradient(circle at 20% 80%, rgba(120, 119, 198, 0.3) 0%, transparent 50%),
     radial-gradient(circle at 80% 20%, rgba(255, 119, 198, 0.15) 0%, transparent 50%),
     radial-gradient(circle at 40% 40%, rgba(120, 219, 255, 0.1) 0%, transparent 50%);
@@ -286,7 +286,7 @@ onMounted(() => {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 20px;
   padding: 48px;
-  box-shadow: 
+  box-shadow:
     0 32px 64px rgba(0, 0, 0, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.1);
   width: 100%;
@@ -438,15 +438,15 @@ onMounted(() => {
   .login-container {
     padding: 16px;
   }
-  
+
   .login-card {
     padding: 32px 24px;
   }
-  
+
   .app-title {
     font-size: 28px;
   }
-  
+
   .logo {
     width: 64px;
     height: 64px;
