@@ -49,22 +49,34 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ITickerQNotificationHubSender, NoOpTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
-            services.AddSingleton<TickerQSchedulerBackgroundService>();
-            services.AddSingleton<ITickerQHostScheduler>(provider => 
-                provider.GetRequiredService<TickerQSchedulerBackgroundService>());
-            services.AddHostedService(provider => 
-                provider.GetRequiredService<TickerQSchedulerBackgroundService>());
-            services.AddHostedService(provider => provider.GetRequiredService<TickerQFallbackBackgroundService>());
-            services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
-            services.AddSingleton<TickerQFallbackBackgroundService>();
-            services.AddSingleton<TickerExecutionTaskHandler>();
-            services.AddSingleton<ITickerQDispatcher, TickerQDispatcher>();
-            services.AddSingleton(sp =>
+            
+            // Only register background services if enabled (default is true)
+            if (optionInstance.RegisterBackgroundServices)
             {
-                var notification = sp.GetRequiredService<ITickerQNotificationHubSender>();
-                var notifyDebounce = new SoftSchedulerNotifyDebounce((value) => notification.UpdateActiveThreads(value));
-                return new TickerQTaskScheduler(schedulerOptionsBuilder.MaxConcurrency, schedulerOptionsBuilder.IdleWorkerTimeOut, notifyDebounce);
-            });
+                services.AddSingleton<TickerQSchedulerBackgroundService>();
+                services.AddSingleton<ITickerQHostScheduler>(provider => 
+                    provider.GetRequiredService<TickerQSchedulerBackgroundService>());
+                services.AddHostedService(provider => 
+                    provider.GetRequiredService<TickerQSchedulerBackgroundService>());
+                services.AddHostedService(provider => provider.GetRequiredService<TickerQFallbackBackgroundService>());
+                services.AddSingleton<TickerQFallbackBackgroundService>();
+                services.AddSingleton<TickerExecutionTaskHandler>();
+                services.AddSingleton<ITickerQDispatcher, TickerQDispatcher>();
+                services.AddSingleton(sp =>
+                {
+                    var notification = sp.GetRequiredService<ITickerQNotificationHubSender>();
+                    var notifyDebounce = new SoftSchedulerNotifyDebounce((value) => notification.UpdateActiveThreads(value));
+                    return new TickerQTaskScheduler(schedulerOptionsBuilder.MaxConcurrency, schedulerOptionsBuilder.IdleWorkerTimeOut, notifyDebounce);
+                });
+            }
+            else
+            {
+                // Register NoOp implementations when background services are disabled
+                services.AddSingleton<ITickerQHostScheduler, NoOpTickerQHostScheduler>();
+                services.AddSingleton<ITickerQDispatcher, NoOpTickerQDispatcher>();
+            }
+            
+            services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
             
             optionInstance.ExternalProviderConfigServiceAction?.Invoke(services);
             optionInstance.DashboardServiceAction?.Invoke(services);
@@ -85,25 +97,32 @@ namespace TickerQ.DependencyInjection
             var configuration = serviceProvider.GetService<IConfiguration>();
             var notificationHubSender = serviceProvider.GetService<ITickerQNotificationHubSender>();
             var backgroundScheduler = serviceProvider.GetService<TickerQSchedulerBackgroundService>();
-            backgroundScheduler.SkipFirstRun = qStartMode == TickerQStartMode.Manual;
+            
+            // If background services are registered, configure them
+            if (backgroundScheduler != null)
+            {
+                backgroundScheduler.SkipFirstRun = qStartMode == TickerQStartMode.Manual;
+                
+                tickerExecutionContext.NotifyCoreAction += (value, type) =>
+                {
+                    if (type == CoreNotifyActionType.NotifyHostExceptionMessage)
+                    {
+                        notificationHubSender.UpdateHostException(value);
+                        tickerExecutionContext.LastHostExceptionMessage = (string)value;
+                    }
+                    else if (type == CoreNotifyActionType.NotifyNextOccurence)
+                        notificationHubSender.UpdateNextOccurrence(value);
+                    else if (type == CoreNotifyActionType.NotifyHostStatus)
+                        notificationHubSender.UpdateHostStatus(value);
+                    else if (type == CoreNotifyActionType.NotifyThreadCount)
+                        notificationHubSender.UpdateActiveThreads(value);
+                };
+            }
+            // If background services are not registered (due to DisableBackgroundServices()),
+            // silently skip background service configuration. This is expected behavior.
             
             TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
             TickerFunctionProvider.Build();
-
-            tickerExecutionContext.NotifyCoreAction += (value, type) =>
-            {
-                if (type == CoreNotifyActionType.NotifyHostExceptionMessage)
-                {
-                    notificationHubSender.UpdateHostException(value);
-                    tickerExecutionContext.LastHostExceptionMessage = (string)value;
-                }
-                else if (type == CoreNotifyActionType.NotifyNextOccurence)
-                    notificationHubSender.UpdateNextOccurrence(value);
-                else if (type == CoreNotifyActionType.NotifyHostStatus)
-                    notificationHubSender.UpdateHostStatus(value);
-                else if (type == CoreNotifyActionType.NotifyThreadCount)
-                    notificationHubSender.UpdateActiveThreads(value);
-            };
             
             // Run core seeding pipeline based on main options (works for both in-memory and EF providers).
             var options = tickerExecutionContext.OptionsSeeding;
