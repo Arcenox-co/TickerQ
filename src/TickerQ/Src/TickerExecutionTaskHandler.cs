@@ -172,7 +172,7 @@ internal class TickerExecutionTaskHandler
 
         for (var attempt = context.RetryCount; attempt <= context.Retries; attempt++)
         {
-            tickerFunctionContext.RetryCount = context.RetryCount;
+            tickerFunctionContext.RetryCount = attempt;
             
             // Update activity with current attempt information
             jobActivity?.SetTag("tickerq.job.current_attempt", attempt + 1);
@@ -304,18 +304,18 @@ internal class TickerExecutionTaskHandler
         if (attempt == 0)
             return false;
 
-        if (attempt >= context.Retries)
+        if (attempt > context.Retries)
             return true;
 
-        context.SetProperty(x => x.RetryCount, attempt + 1);
+        context.SetProperty(x => x.RetryCount, attempt);
 
         await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
 
         context.ResetUpdateProps();
 
         var retryInterval = (context.RetryIntervals?.Length > 0)
-            ? (attempt < context.RetryIntervals.Length
-                ? context.RetryIntervals[attempt]
+            ? (attempt - 1 < context.RetryIntervals.Length
+                ? context.RetryIntervals[attempt - 1]
                 : context.RetryIntervals[^1])
             : 30;
 
