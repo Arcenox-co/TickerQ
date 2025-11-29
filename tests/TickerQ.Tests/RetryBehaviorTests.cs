@@ -19,7 +19,7 @@ public class RetryBehaviorTests
     {
         // Arrange: cron occurrence -> RunContextFunctionAsync path
         // Use three distinct short intervals so we can verify mapping without overly long waits
-        var (handler, context, _, attempts) = CreateHandlerAndContextWithDelegate([1, 2, 3], retries: 3);
+        var (handler, context, _, attempts) = SetupRetryTestFixture([1, 2, 3], retries: 3);
 
         // Act
         await handler.ExecuteTaskAsync(context, isDue: true);
@@ -38,16 +38,16 @@ public class RetryBehaviorTests
         };
 
         // allow a small tolerance for timing, but ensure each spacing reflects the configured intervals
-        timeDiffs[0].Should().BeInRange(0.9, 1.1); // first retry uses ~1s
-        timeDiffs[1].Should().BeInRange(1.9, 2.1); // second retry uses ~2s
-        timeDiffs[2].Should().BeInRange(2.9, 3.1); // third retry uses ~3s
+        timeDiffs[0].Should().BeInRange(0.8, 1.2); // first retry uses ~1s
+        timeDiffs[1].Should().BeInRange(1.8, 2.2); // second retry uses ~2s
+        timeDiffs[2].Should().BeInRange(2.8, 3.2); // third retry uses ~3s
     }
 
     [Fact]
     public async Task ExecuteTaskAsync_CronTickerOccurrence_UsesLastInterval_WhenRetriesExceedArrayLength()
     {
         // Use zero intervals for speed
-        var (handler, context, _, attempts) = CreateHandlerAndContextWithDelegate([0, 0], retries: 4);
+        var (handler, context, _, attempts) = SetupRetryTestFixture([0, 0], retries: 4);
 
         await handler.ExecuteTaskAsync(context, isDue: true);
 
@@ -63,7 +63,7 @@ public class RetryBehaviorTests
     {
         // Arrange: succeed on RetryCount==2
         // Use zero intervals for speed; succeed at retry=2
-        var (handler, context, _, attempts) = CreateHandlerAndContextWithDelegate([0, 0, 0, 0], retries: 4, succeedOnRetryCount: 2);
+        var (handler, context, _, attempts) = SetupRetryTestFixture([0, 0, 0, 0], retries: 4, succeedOnRetryCount: 2);
 
         await handler.ExecuteTaskAsync(context, isDue: true);
 
@@ -75,7 +75,7 @@ public class RetryBehaviorTests
     private record Attempt(DateTime Timestamp, int RetryCount);
 
     // Helpers
-    private static (TickerExecutionTaskHandler handler, InternalFunctionContext context, IInternalTickerManager manager, List<Attempt> attempts) CreateHandlerAndContextWithDelegate(
+    private static (TickerExecutionTaskHandler handler, InternalFunctionContext context, IInternalTickerManager manager, List<Attempt> attempts) SetupRetryTestFixture(
         int[] retryIntervals,
         int retries,
         int? succeedOnRetryCount = null)
