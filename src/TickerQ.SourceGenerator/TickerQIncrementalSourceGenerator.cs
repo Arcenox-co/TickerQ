@@ -415,7 +415,7 @@ namespace TickerQ.SourceGenerator
             var delegateList = delegates.ToList();
             var delegateCount = delegateList.Count;
             
-            sb.AppendLine("        [System.Runtime.CompilerServices.ModuleInitializer]");
+            sb.AppendLine("        [global::System.Runtime.CompilerServices.ModuleInitializer]");
             sb.AppendLine("        public static void Initialize()");
             sb.AppendLine("        {");
             
@@ -440,7 +440,7 @@ namespace TickerQ.SourceGenerator
             var delegateList = delegates.ToList();
             var delegateCount = delegateList.Count;
             
-            sb.AppendLine("[System.Runtime.CompilerServices.ModuleInitializer]");
+            sb.AppendLine("[global::System.Runtime.CompilerServices.ModuleInitializer]");
             sb.AppendLine("    public static void Initialize()");
             sb.AppendLine("    {");
             
