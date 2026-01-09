@@ -54,8 +54,7 @@ services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 {
     config.AddDashboard(dashboard =>
     {
-        dashboard.WithHostAuthentication()
-                 .WithHostAuthorizationPolicy("AdminPolicy");
+        dashboard.WithHostAuthentication("AdminPolicy");
     });
 });
 ```
@@ -64,8 +63,7 @@ services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 
 - `WithBasicAuth(username, password)` - Enable username/password authentication
 - `WithApiKey(apiKey)` - Enable API key authentication  
-- `WithHostAuthentication()` - Use your app's existing auth
-- `WithHostAuthorizationPolicy(policyName)` - Configure authorization policy for host authentication (e.g., "AdminPolicy")
+- `WithHostAuthentication(policy)` - Use your app's existing auth with optional policy (e.g., "AdminPolicy")
 - `SetBasePath(path)` - Set dashboard URL path
 - `SetBackendDomain(domain)` - Set backend API domain
 - `SetCorsPolicy(policy)` - Configure CORS
