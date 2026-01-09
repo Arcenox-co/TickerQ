@@ -66,6 +66,14 @@ public class DashboardOptionsBuilder
         return this;
     }
     
+    /// <summary>Configure the authorization policy name for Host authentication mode</summary>
+    /// <param name="policyName">The authorization policy name to use (e.g., "AdminPolicy"). If null or empty, uses the default policy.</param>
+    public DashboardOptionsBuilder WithHostAuthorizationPolicy(string policyName)
+    {
+        Auth.HostAuthorizationPolicy = policyName;
+        return this;
+    }
+    
     /// <summary>Configure custom authentication with validation function</summary>
     public DashboardOptionsBuilder WithCustomAuth(Func<string, bool> validator)
     {

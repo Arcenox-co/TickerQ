@@ -48,11 +48,24 @@ services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 });
 ```
 
+### Use Host Authentication with Custom Policy
+```csharp
+services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
+{
+    config.AddDashboard(dashboard =>
+    {
+        dashboard.WithHostAuthentication()
+                 .WithHostAuthorizationPolicy("AdminPolicy");
+    });
+});
+```
+
 ## 🔧 Fluent API Methods
 
 - `WithBasicAuth(username, password)` - Enable username/password authentication
 - `WithApiKey(apiKey)` - Enable API key authentication  
 - `WithHostAuthentication()` - Use your app's existing auth
+- `WithHostAuthorizationPolicy(policyName)` - Configure authorization policy for host authentication (e.g., "AdminPolicy")
 - `SetBasePath(path)` - Set dashboard URL path
 - `SetBackendDomain(domain)` - Set backend API domain
 - `SetCorsPolicy(policy)` - Configure CORS
