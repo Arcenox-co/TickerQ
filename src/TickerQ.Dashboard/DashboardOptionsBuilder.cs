@@ -60,9 +60,11 @@ public class DashboardOptionsBuilder
     }
     
     /// <summary>Use the host application's existing authentication system</summary>
-    public DashboardOptionsBuilder WithHostAuthentication()
+    /// <param name="policy">Optional authorization policy name to require (e.g., "AdminPolicy"). If null or empty, uses the default policy.</param>
+    public DashboardOptionsBuilder WithHostAuthentication(string? policy = null)
     {
         Auth.Mode = AuthMode.Host;
+        Auth.HostAuthorizationPolicy = policy;
         return this;
     }
     
