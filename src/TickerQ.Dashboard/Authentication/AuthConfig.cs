@@ -33,6 +33,11 @@ public class AuthConfig
     public int SessionTimeoutMinutes { get; set; } = 60;
     
     /// <summary>
+    /// Authorization policy name for Host mode (default: null uses the default policy)
+    /// </summary>
+    public string? HostAuthorizationPolicy { get; set; }
+    
+    /// <summary>
     /// Whether authentication is enabled
     /// </summary>
     public bool IsEnabled => Mode != AuthMode.None;
