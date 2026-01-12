@@ -32,6 +32,12 @@ public class AuthService : IAuthService
                 return AuthResult.Success("anonymous");
             }
 
+            // Authentication performed by host application
+            if (_config.Mode == AuthMode.Host)
+            {
+                return AuthenticateHostAsync(context);
+            }
+
             // Get authorization header or query parameter
             var authHeader = GetAuthorizationValue(context);
             if (string.IsNullOrEmpty(authHeader))
@@ -45,7 +51,6 @@ public class AuthService : IAuthService
                 AuthMode.Basic => await AuthenticateBasicAsync(authHeader),
                 AuthMode.ApiKey => await AuthenticateApiKeyAsync(authHeader),
                 AuthMode.Custom => await AuthenticateCustomAsync(authHeader),
-                AuthMode.Host => await AuthenticateHostAsync(context),
                 _ => AuthResult.Failure("Invalid authentication mode")
             };
         }
