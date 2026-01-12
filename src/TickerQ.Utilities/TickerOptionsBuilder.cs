@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Text.Json;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -171,7 +171,7 @@ namespace TickerQ.Utilities
         internal void UseExternalProviderApplication(Action<IServiceProvider> action)
             => _tickerExecutionContext.ExternalProviderApplicationAction = action;
         
-        internal void UseDashboardApplication(Action<IApplicationBuilder> action)
+        internal void UseDashboardApplication(Action<object> action)
             => _tickerExecutionContext.DashboardApplicationAction = action;
     }
 
