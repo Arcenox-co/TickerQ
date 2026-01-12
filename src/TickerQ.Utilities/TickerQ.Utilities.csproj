@@ -12,11 +12,12 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<FrameworkReference Include="Microsoft.AspNetCore.App" />
-	</ItemGroup>
-
-	<ItemGroup>
-        <PackageReference Include="NCrontab" Version="[3.3.0,)" />
+		<PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(DotNetVersion)" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="$(DotNetVersion)" />
+		<PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="$(DotNetVersion)" />
+		<PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="$(DotNetVersion)" />
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(DotNetVersion)" />
+		<PackageReference Include="NCrontab" Version="[3.3.0,)" />
 	</ItemGroup>
 
 </Project>
