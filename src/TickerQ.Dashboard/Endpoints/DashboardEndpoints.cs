@@ -45,8 +45,15 @@ public static class DashboardEndpoints
         // Apply authentication if configured
         if (config.Auth.Mode == AuthMode.Host)
         {
-            // For host authentication, use default authorization
-            apiGroup.RequireAuthorization();
+            // For host authentication, use configured policy or default authorization
+            if (!string.IsNullOrEmpty(config.Auth.HostAuthorizationPolicy))
+            {
+                apiGroup.RequireAuthorization(config.Auth.HostAuthorizationPolicy);
+            }
+            else
+            {
+                apiGroup.RequireAuthorization();
+            }
         }
         // For other auth modes (Basic, Bearer, Custom), authentication is handled by AuthMiddleware
         // API endpoints are automatically protected when auth is enabled
