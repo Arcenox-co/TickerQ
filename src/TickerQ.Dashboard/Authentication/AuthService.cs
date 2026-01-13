@@ -32,6 +32,15 @@ public class AuthService : IAuthService
                 return AuthResult.Success("anonymous");
             }
 
+<<<<<<< HEAD
+=======
+            // Authentication performed by host application
+            if (_config.Mode == AuthMode.Host)
+            {
+                return await AuthenticateHostAsync(context);
+            }
+
+>>>>>>> 52039f1 (Fix missing await to AuthenticateHostAsync call (#494))
             // Get authorization header or query parameter
             var authHeader = GetAuthorizationValue(context);
             if (string.IsNullOrEmpty(authHeader))
