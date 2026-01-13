@@ -9,6 +9,7 @@
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
         <Version>9.0.2</Version>
+        <DotNetVersion>[10.0.0,11.0.0)</DotNetVersion>
         <LangVersion>latest</LangVersion>
     </PropertyGroup>
 
