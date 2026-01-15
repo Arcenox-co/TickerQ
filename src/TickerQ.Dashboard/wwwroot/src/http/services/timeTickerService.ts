@@ -1,5 +1,5 @@
 
-import { formatDate, formatTime } from '@/utilities/dateTimeParser';
+import { formatDate, formatTime, formatTimeAgo } from '@/utilities/dateTimeParser';
 import { useBaseHttpService } from '../base/baseHttpService';
 import { Status } from './types/base/baseHttpResponse.types';
 import {
@@ -11,7 +11,6 @@ import {
   UpdateTimeTickerRequest
 } from './types/timeTickerService.types'
 import { nameof } from '@/utilities/nameof';
-import { format} from 'timeago.js';
 import { useFunctionNameStore } from '@/stores/functionNames';
 import { useTimeZoneStore } from '@/stores/timeZoneStore';
 
@@ -36,12 +35,12 @@ const getTimeTickers = () => {
             // Recursive function to process item and its children
             const processItem = (item: GetTimeTickerResponse): GetTimeTickerResponse => {
                 // Safely set status with null check
-                if (item.status !== undefined && item.status !== null) {
+                if (item.status != null) {
                     item.status = Status[item.status as any];
                 }
 
-                if (item.executedAt != null || item.executedAt != undefined)
-                    item.executedAt = `${format(item.executedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
+                if (item.executedAt != null)
+                    item.executedAt = `${formatTimeAgo(item.executedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
 
                 item.executionTimeFormatted = formatDate(item.executionTime, true, timeZoneStore.effectiveTimeZone);
                 item.requestType = functionNamesStore.getNamespaceOrNull(item.function) ?? '';
@@ -108,12 +107,12 @@ const getTimeTickersPaginated = () => {
             if (response && response.items && Array.isArray(response.items)) {
                 response.items = response.items.map((item: GetTimeTickerResponse) => {
                     const processItem = (item: GetTimeTickerResponse): GetTimeTickerResponse => {
-                        if (item.status !== undefined && item.status !== null) {
+                        if (item.status != null) {
                             item.status = Status[item.status as any];
                         }
                         
-                        if (item.executedAt != null || item.executedAt != undefined)
-                            item.executedAt = `${format(item.executedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
+                        if (item.executedAt != null)
+                            item.executedAt = `${formatTimeAgo(item.executedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
                         
                         item.executionTimeFormatted = formatDate(item.executionTime, true, timeZoneStore.effectiveTimeZone);
                         item.requestType = functionNamesStore.getNamespaceOrNull(item.function) ?? '';
