@@ -1,3 +1,4 @@
+import { format as timeago } from 'timeago.js';
 
 export function formatDate(
     utcDateString: string,
@@ -125,4 +126,15 @@ export function formatFromUtcToLocal(utcDateString: string): string {
     const seconds = String(utcDate.getSeconds()).padStart(2, '0')
 
     return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`
+}
+
+export function formatTimeAgo(date: string | Date): string {
+    // Front-end often passes dates as strings straight up from JSON payloads.
+    // All dates on back-end are UTC but dates loaded by EF have DateTimeKind.Unspecified by default,
+    // which is serialized to JSON without any offset suffix. 
+    // We have to specify them as UTC so that they're not parsed as local time by JS.
+    if (typeof date === 'string' && !date.endsWith('Z')) {
+        date = date + 'Z'
+    }
+    return timeago(date)
 }
