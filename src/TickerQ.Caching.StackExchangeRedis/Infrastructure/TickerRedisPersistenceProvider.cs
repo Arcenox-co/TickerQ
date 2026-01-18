@@ -205,7 +205,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in dueIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
 
             var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
             if (ticker == null) continue;
@@ -226,7 +226,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     public async Task ReleaseAcquiredTimeTickers(Guid[] timeTickerIds, CancellationToken cancellationToken = default)
     {
         var ids = timeTickerIds.Length == 0
-            ? (await _db.SetMembersAsync(TimeTickerIdsKey).ConfigureAwait(false)).Select(x => Guid.Parse(x!)).ToArray()
+            ? (await _db.SetMembersAsync(TimeTickerIdsKey).ConfigureAwait(false)).Select(x => Guid.Parse(x.ToString())).ToArray()
             : timeTickerIds;
 
         var now = _clock.UtcNow;
@@ -266,7 +266,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in ids)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
             if (ticker == null) continue;
             if (!CanAcquire(ticker.Status, ticker.LockHolder, _lockHolder)) continue;
@@ -347,7 +347,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in existingIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var cron = await GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
             if (cron != null) existingList.Add(cron);
         }
@@ -399,7 +399,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in ids)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var cron = await GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
             if (cron == null) continue;
             list.Add(new CronTickerEntity
@@ -422,7 +422,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in ids)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
             if (ticker == null) continue;
 
@@ -457,7 +457,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
             if (occurrence == null) continue;
             if (!ids.Contains(occurrence.CronTickerId)) continue;
@@ -542,7 +542,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in dueIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
             if (occurrence == null) continue;
             if (!CanAcquire(occurrence.Status, occurrence.LockHolder, _lockHolder)) continue;
@@ -572,7 +572,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     public async Task ReleaseAcquiredCronTickerOccurrences(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
     {
         var ids = occurrenceIds.Length == 0
-            ? (await _db.SetMembersAsync(CronOccurrenceIdsKey).ConfigureAwait(false)).Select(x => Guid.Parse(x!)).ToArray()
+            ? (await _db.SetMembersAsync(CronOccurrenceIdsKey).ConfigureAwait(false)).Select(x => Guid.Parse(x.ToString())).ToArray()
             : occurrenceIds;
 
         var now = _clock.UtcNow;
@@ -619,7 +619,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in ids)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
             if (occurrence == null) continue;
 
@@ -657,7 +657,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in ids)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
             if (ticker != null) list.Add(ticker);
         }
@@ -730,7 +730,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in ids)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var cron = await GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
             if (cron != null) list.Add(cron);
         }
@@ -799,7 +799,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var redisValue in ids)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue, out var id)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
             if (occurrence != null) list.Add(occurrence);
         }
@@ -952,7 +952,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         var ids = await _db.SetMembersAsync(CronOccurrenceIdsKey).ConfigureAwait(false);
         foreach (var redisValue in ids)
         {
-            if (!Guid.TryParse(redisValue, out var occId)) continue;
+            if (!Guid.TryParse(redisValue.ToString(), out var occId)) continue;
             var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(occId)).ConfigureAwait(false);
             if (occurrence == null || occurrence.CronTickerId != cronId) continue;
             await RemoveCronOccurrenceIndexesAsync(occId).ConfigureAwait(false);

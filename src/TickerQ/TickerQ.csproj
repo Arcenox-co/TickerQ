@@ -13,7 +13,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+<!--        <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />-->
     </ItemGroup>
 
     <Target Name="CopyAnalyzer" AfterTargets="Build">
@@ -24,6 +24,10 @@
         <None Include="..\TickerQ.SourceGenerator\bin\$(Configuration)\netstandard2.0\TickerQ.SourceGenerator.dll"
               Pack="true"
               PackagePath="analyzers/dotnet/cs" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\TickerQ.SDK\TickerQ.SDK.csproj" />
     </ItemGroup>
 
 </Project>
