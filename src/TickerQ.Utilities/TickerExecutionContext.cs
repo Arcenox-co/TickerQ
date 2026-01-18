@@ -1,7 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Threading;
-using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
 
@@ -18,7 +18,7 @@ internal class TickerExecutionContext
 {
    private long _nextOccurrenceTicks;
    internal Action<IServiceProvider> ExternalProviderApplicationAction { get; set; }
-   internal Action<IApplicationBuilder> DashboardApplicationAction { get; set; }
+   internal Action<object> DashboardApplicationAction { get; set; }
    public Action<object, CoreNotifyActionType> NotifyCoreAction { get; set; }
    public string LastHostExceptionMessage { get; set; }
    internal ITickerOptionsSeeding OptionsSeeding { get; set; }
