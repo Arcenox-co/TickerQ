@@ -35,7 +35,7 @@ public class AuthService : IAuthService
             // Authentication performed by host application
             if (_config.Mode == AuthMode.Host)
             {
-                return AuthenticateHostAsync(context);
+                return await AuthenticateHostAsync(context);
             }
 
             // Get authorization header or query parameter
