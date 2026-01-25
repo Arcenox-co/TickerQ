@@ -16,7 +16,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var underlyingType = Nullable.GetUnderlyingType(type);
             if (underlyingType != null)
             {
-                return Generate(underlyingType, visited, depth + 1, maxDepth);
+                return Generate(underlyingType, visited, depth, maxDepth);
             }
 
             // Handle primitive types
