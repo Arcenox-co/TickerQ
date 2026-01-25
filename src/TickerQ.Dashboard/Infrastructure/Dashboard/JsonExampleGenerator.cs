@@ -52,7 +52,9 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 {
                     if (visited.Contains(type) || depth >= maxDepth)
                     {
-                        return GetDefaultValue(type); // for reference types return string.Empty when depth exceeded
+                        // When a reference type has already been visited or the maximum depth is reached,
+                        // return the default value for the type instead of recursing further.
+                        return GetDefaultValue(type);
                     }
                     visited.Add(type);
                 }
