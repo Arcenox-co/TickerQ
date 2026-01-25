@@ -22,6 +22,7 @@
     </ItemGroup>
 
     <ItemGroup>
+      <ProjectReference Include="..\..\src\TickerQ.Dashboard\TickerQ.Dashboard.csproj" />
       <ProjectReference Include="..\..\src\TickerQ.Utilities\TickerQ.Utilities.csproj" />
       <ProjectReference Include="..\..\src\TickerQ\TickerQ.csproj" />
     </ItemGroup>
