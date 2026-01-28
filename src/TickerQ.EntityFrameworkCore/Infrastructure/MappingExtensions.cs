@@ -19,7 +19,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 RetryIntervals = e.RetryIntervals,
                 Retries = e.Retries
             };
-        
+
         internal static Expression<Func<TTimeTicker, TimeTickerEntity>> ForQueueTimeTickers<TTimeTicker>() where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             => e => new TimeTickerEntity
             {
@@ -64,7 +64,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     Retries = e.CronTicker.Retries
                 }
             };
-        
+
         internal static Expression<Func<TCronTickerOccurrence, CronTickerOccurrenceEntity<TCronTicker>>> ForLatestQueuedCronTickerOccurrence<TCronTickerOccurrence, TCronTicker>()
             where TCronTicker : CronTickerEntity, new()
             where TCronTickerOccurrence : CronTickerOccurrenceEntity<TCronTicker>, new()
@@ -89,9 +89,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             var propsToUpdate = functionContext.GetPropsToUpdate();
 
-            Expression<Func<SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>, SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>>> setExpression = 
+            Expression<Func<SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>, SetPropertyCalls<CronTickerOccurrenceEntity<TCronTicker>>>> setExpression =
                 calls => calls;
-            
+
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) && functionContext.Status != TickerStatus.Skipped)
                 setExpression = ExpressionHelper.CombineSetters(setExpression,
                     s => s.SetProperty(x => x.Status, functionContext.Status));
@@ -99,7 +99,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 setExpression = ExpressionHelper.CombineSetters(setExpression,
                     s => s.SetProperty(x => x.Status, functionContext.Status)
                         .SetProperty(x => x.SkippedReason, functionContext.ExceptionDetails));
-            
+
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
                 setExpression = ExpressionHelper.CombineSetters(setExpression,
                     s => s.SetProperty(x => x.ExecutedAt, functionContext.ExecutedAt));
@@ -117,35 +117,25 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     s => s.SetProperty(x => x.RetryCount, functionContext.RetryCount));
 
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
-<<<<<<< HEAD
                 setExpression = ExpressionHelper.CombineSetters(setExpression,
                     s => s.SetProperty(x => x.LockHolder, (string)null)
                         .SetProperty(x => x.LockedAt, (DateTime?)null));
-            
-            return setExpression;
-=======
-            {
-                setters
-                    .SetProperty(x => x.LockHolder, (string)null)
-                    .SetProperty(x => x.LockedAt, (DateTime?)null);
-            }
 
-            // EXECUTION TIME
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutionTime)))
-            {
-                setters.SetProperty(x => x.ExecutionTime, functionContext.ExecutionTime);
-            }
->>>>>>> 298ca68 (fix update ExecutionTime for CronTickerOccurrence (#461))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.ExecutionTime, functionContext.ExecutionTime));
+
+            return setExpression;
         }
-        
+
         internal static Expression<Func<SetPropertyCalls<TTimeTicker>, SetPropertyCalls<TTimeTicker>>> UpdateTimeTicker<TTimeTicker>(InternalFunctionContext functionContext, DateTime updatedAt)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         {
             var propsToUpdate = functionContext.GetPropsToUpdate();
 
-            Expression<Func<SetPropertyCalls<TTimeTicker>, SetPropertyCalls<TTimeTicker>>> setExpression = 
+            Expression<Func<SetPropertyCalls<TTimeTicker>, SetPropertyCalls<TTimeTicker>>> setExpression =
                 calls => calls;
-            
+
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) && functionContext.Status != TickerStatus.Skipped)
                 setExpression = ExpressionHelper.CombineSetters(setExpression,
                     s => s.SetProperty(x => x.Status, functionContext.Status));
@@ -174,10 +164,10 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 setExpression = ExpressionHelper.CombineSetters(setExpression,
                     s => s.SetProperty(x => x.LockHolder, (string)null)
                         .SetProperty(x => x.LockedAt, (DateTime?)null));
-            
+
             setExpression = ExpressionHelper.CombineSetters(setExpression,
                 s => s.SetProperty(x => x.UpdatedAt, updatedAt));
-            
+
             return setExpression;
         }
     }

@@ -113,8 +113,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
             var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
             if (cachedBytes?.Length > 0)
             {
-                ReadOnlySpan<byte> cachedSpan = cachedBytes.AsSpan();
-                var cached = JsonSerializer.Deserialize<TResult[]>(cachedSpan);
+                var cached = JsonSerializer.Deserialize<TResult[]>(cachedBytes);
 
                 if (cached != null)
                     return cached;
