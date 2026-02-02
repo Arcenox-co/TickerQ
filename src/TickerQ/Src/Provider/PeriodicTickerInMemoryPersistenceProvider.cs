@@ -335,10 +335,10 @@ namespace TickerQ.Provider
             var count = 0;
             foreach (var ticker in tickers)
             {
-                if (PeriodicTickers.TryGetValue(ticker.Id, out var existing))
+                if (PeriodicTickers.TryGetValue(ticker.Id, out var existing) &&
+                    PeriodicTickers.TryUpdate(ticker.Id, ticker, existing))
                 {
-                    if (PeriodicTickers.TryUpdate(ticker.Id, ticker, existing))
-                        count++;
+                    count++;
                 }
             }
             return Task.FromResult(count);
