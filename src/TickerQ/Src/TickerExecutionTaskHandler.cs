@@ -33,7 +33,7 @@ internal class TickerExecutionTaskHandler
 
     public async Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
     {
-        if (context.Type == TickerType.CronTickerOccurrence || context.Type == TickerType.PeriodicTickerOccurrence)
+        if (context.Type != TickerType.TimeTickerOccurrence)
         {
             await RunContextFunctionAsync(context, isDue, cancellationToken);
             return;
