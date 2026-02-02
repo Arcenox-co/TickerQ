@@ -418,7 +418,7 @@ namespace TickerQ.Utilities.Managers
                     await _notificationHubSender.UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(resource).ConfigureAwait(false);
                 else if (resource.Type == TickerType.CronTickerOccurrence)
                     await _notificationHubSender.UpdateCronOccurrenceFromInternalFunctionContext<TCronTicker>(resource).ConfigureAwait(false);
-                // Note: PeriodicTicker notifications can be added similarly
+                // TODO: Add PeriodicTickerOccurrence notifications here (e.g., _notificationHubSender.UpdatePeriodicOccurrenceFromInternalFunctionContext) in Phase 3 - Dashboard support.
             }
         }
 
