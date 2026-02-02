@@ -73,7 +73,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             tickerConfiguration.UseDashboardApplication((app) =>
             {
                 // Configure static files and middleware with endpoints
-                app.UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(dashboardConfig);
+                ((IApplicationBuilder)app).UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(dashboardConfig);
             });
         }
     }
