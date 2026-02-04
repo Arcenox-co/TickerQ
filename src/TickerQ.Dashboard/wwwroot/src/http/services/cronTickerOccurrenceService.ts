@@ -1,9 +1,8 @@
 
-import { formatDate, formatTime } from '@/utilities/dateTimeParser';
+import { formatDate, formatTime, formatTimeAgo } from '@/utilities/dateTimeParser';
 import { useBaseHttpService } from '../base/baseHttpService';
 import { Status } from './types/base/baseHttpResponse.types';
 import { GetCronTickerOccurrenceGraphDataRequest, GetCronTickerOccurrenceGraphDataResponse, GetCronTickerOccurrenceRequest, GetCronTickerOccurrenceResponse } from './types/cronTickerOccurrenceService.types';
-import { format} from 'timeago.js';
 import { nameof } from '@/utilities/nameof';
 import { useTimeZoneStore } from '@/stores/timeZoneStore';
 
@@ -23,14 +22,12 @@ const getByCronTickerId = () => {
             }
             
             // Safely set status with null check
-            if (response.status !== undefined && response.status !== null) {
+            if (response.status != null) {
                 response.status = Status[response.status as any];
             }
 
-            if (response.executedAt != null || response.executedAt != undefined) {
-                // Ensure the datetime is treated as UTC by adding 'Z' if missing
-                const utcExecutedAt = response.executedAt.endsWith('Z') ? response.executedAt : response.executedAt + 'Z';
-                response.executedAt = `${format(utcExecutedAt)} (took ${formatTime(response.elapsedTime as number, true)})`;
+            if (response.executedAt != null) {
+                response.executedAt = `${formatTimeAgo(response.executedAt)} (took ${formatTime(response.elapsedTime as number, true)})`;
             }
 
             const utcExecutionTime = response.executionTime.endsWith('Z') ? response.executionTime : response.executionTime + 'Z';
@@ -75,17 +72,15 @@ const getByCronTickerIdPaginated = () => {
                     if (!item) return item;
                     
                     // Safely set status with null check and ensure it's always a string
-                    if (item.status !== undefined && item.status !== null) {
+                    if (item.status != null) {
                         const statusValue = Status[item.status as any];
                         item.status = statusValue !== undefined ? statusValue : String(item.status);
                     } else {
                         item.status = 'Unknown';
                     }
                     
-                    if (item.executedAt != null || item.executedAt != undefined) {
-                        // Ensure the datetime is treated as UTC by adding 'Z' if missing
-                        const utcExecutedAt = item.executedAt.endsWith('Z') ? item.executedAt : item.executedAt + 'Z';
-                        item.executedAt = `${format(utcExecutedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
+                    if (item.executedAt != null) {
+                        item.executedAt = `${formatTimeAgo(item.executedAt)} (took ${formatTime(item.elapsedTime as number, true)})`;
                     }
                     
                     const utcExecutionTime = item.executionTime.endsWith('Z') ? item.executionTime : item.executionTime + 'Z';

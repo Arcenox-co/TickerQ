@@ -140,6 +140,12 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     .SetProperty(x => x.LockHolder, (string)null)
                     .SetProperty(x => x.LockedAt, (DateTime?)null);
             }
+
+            // EXECUTION TIME
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutionTime)))
+            {
+                setters.SetProperty(x => x.ExecutionTime, functionContext.ExecutionTime);
+            }
         }
 
         internal static void UpdateTimeTicker<TTimeTicker>(this UpdateSettersBuilder<TTimeTicker> setters,
