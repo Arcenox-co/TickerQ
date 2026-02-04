@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>TickerQ.RemoteExecutor</PackageId>
+    <Title>TickerQ Remote Executor</Title>
+    <Description>Remote execution integration for TickerQ, enabling hub registration and remote task dispatch.</Description>
+    <PackageTags>$(PackageTags);remote;executor;hub;dispatch;callback</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+  </ItemGroup>
+
+</Project>

@@ -60,9 +60,8 @@ namespace TickerQ.DependencyInjection
                     provider.GetRequiredService<TickerQSchedulerBackgroundService>());
                 services.AddHostedService(provider => provider.GetRequiredService<TickerQFallbackBackgroundService>());
                 services.AddSingleton<TickerQFallbackBackgroundService>();
-                services.AddSingleton<TickerExecutionTaskHandler>();
                 services.AddSingleton<ITickerQDispatcher, TickerQDispatcher>();
-                services.AddSingleton(sp =>
+                services.AddSingleton<ITickerQTaskScheduler>(sp =>
                 {
                     var notification = sp.GetRequiredService<ITickerQNotificationHubSender>();
                     var notifyDebounce = new SoftSchedulerNotifyDebounce((value) => notification.UpdateActiveThreads(value));
@@ -71,11 +70,12 @@ namespace TickerQ.DependencyInjection
             }
             else
             {
+                services.AddSingleton<ITickerQTaskScheduler>(_ => new TickerQTaskScheduler(schedulerOptionsBuilder.MaxConcurrency, schedulerOptionsBuilder.IdleWorkerTimeOut));
                 // Register NoOp implementations when background services are disabled
                 services.AddSingleton<ITickerQHostScheduler, NoOpTickerQHostScheduler>();
                 services.AddSingleton<ITickerQDispatcher, NoOpTickerQDispatcher>();
             }
-            
+            services.AddSingleton<ITickerExecutionTaskHandler, TickerExecutionTaskHandler>();
             services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
             
             optionInstance.ExternalProviderConfigServiceAction?.Invoke(services);

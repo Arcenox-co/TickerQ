@@ -3,13 +3,14 @@ using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.TickerQThreadPool;
 
 /// <summary>
 /// Elastic work-stealing task scheduler.
 /// </summary>
-public sealed class TickerQTaskScheduler : IAsyncDisposable
+public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskScheduler
 {
     private readonly int _maxConcurrency;
     private readonly TimeSpan _idleWorkerTimeout;

@@ -391,7 +391,9 @@ namespace TickerQ.Utilities.Managers
                 ? await _persistenceProvider.GetCronTickerOccurrenceRequest(tickerId, cancellationToken: cancellationToken).ConfigureAwait(false)
                 : await _persistenceProvider.GetTimeTickerRequest(tickerId, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            return request == null ? default : TickerHelper.ReadTickerRequest<T>(request);
+            return request == null || request.Length == 0
+                ? default
+                : TickerHelper.ReadTickerRequest<T>(request);
         }
 
         public async Task<InternalFunctionContext[]> RunTimedOutTickers(CancellationToken cancellationToken = default)
