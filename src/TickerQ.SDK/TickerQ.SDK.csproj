@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>TickerQ.SDK</AssemblyName>
+    <PackageId>TickerQ.SDK</PackageId>
+    <Title>TickerQ SDK</Title>
+    <Description>HTTP client and integration helpers for interacting with TickerQ scheduler and hub endpoints.</Description>
+    <PackageTags>$(PackageTags);sdk;client;http;remote;api</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+  </ItemGroup>
+
+</Project>
