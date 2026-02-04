@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="$(DotNetVersion)" />
   </ItemGroup>
 
 </Project>
