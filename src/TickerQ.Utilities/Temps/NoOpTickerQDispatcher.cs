@@ -18,4 +18,9 @@ internal class NoOpTickerQDispatcher : ITickerQDispatcher
         // No-op: dispatcher not available in queue-only mode
         return Task.CompletedTask;
     }
+
+    public Task DispatchAsync(InternalFunctionContext context, CancellationToken cancellationToken = default)
+    {
+        return Task.CompletedTask;
+    }
 }

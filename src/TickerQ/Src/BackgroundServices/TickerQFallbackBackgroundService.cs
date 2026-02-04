@@ -2,8 +2,8 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
-using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 
 namespace TickerQ.BackgroundServices;
@@ -12,11 +12,11 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
 {
     private int _started;
     private readonly IInternalTickerManager _internalTickerManager;
-    private readonly TickerExecutionTaskHandler _tickerExecutionTaskHandler;
-    private readonly TickerQTaskScheduler _tickerQTaskScheduler;
+    private readonly ITickerExecutionTaskHandler _tickerExecutionTaskHandler;
+    private readonly ITickerQTaskScheduler _tickerQTaskScheduler;
     private readonly TimeSpan _fallbackJobPeriod;
 
-    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, TickerExecutionTaskHandler tickerExecutionTaskHandler, TickerQTaskScheduler tickerQTaskScheduler)
+    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler)
     {
         _internalTickerManager = internalTickerManager;
         _fallbackJobPeriod = schedulerOptions.FallbackIntervalChecker;

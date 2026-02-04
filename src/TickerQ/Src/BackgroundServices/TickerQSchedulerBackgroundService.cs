@@ -17,8 +17,8 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private readonly IInternalTickerManager _internalTickerManager;
     private readonly TickerExecutionContext _executionContext;
     private SafeCancellationTokenSource _schedulerLoopCancellationTokenSource;
-    private readonly TickerQTaskScheduler  _taskScheduler;
-    private readonly TickerExecutionTaskHandler  _taskHandler;
+    private readonly ITickerQTaskScheduler  _taskScheduler;
+    private readonly ITickerExecutionTaskHandler  _taskHandler;
     private int _started;
     public bool SkipFirstRun;
     public bool IsRunning => _started == 1;
@@ -26,8 +26,8 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     
     public TickerQSchedulerBackgroundService(
         TickerExecutionContext executionContext,
-        TickerExecutionTaskHandler taskHandler, 
-        TickerQTaskScheduler taskScheduler, 
+        ITickerExecutionTaskHandler taskHandler, 
+        ITickerQTaskScheduler taskScheduler, 
         IInternalTickerManager  internalTickerManager)
     {
         _executionContext = executionContext;
