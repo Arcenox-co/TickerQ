@@ -14,23 +14,27 @@ public static class RemoteExecutionServiceExtension
         where TCronTicker : CronTickerEntity, new()
     {
         var tickerqRemoteExecutionOptions = new TickerQRemoteExecutionOptions();
-        
+
         optionsAction(tickerqRemoteExecutionOptions);
-        
+        tickerqRemoteExecutionOptions.Validate();
+
         tickerConfiguration.ExternalProviderConfigServiceAction += services =>
         {
-            services.AddHttpClient("tickerq-callback", cfg =>
+            services.AddHttpClient("tickerq-hub", cfg =>
             {
+                cfg.BaseAddress = new Uri(tickerqRemoteExecutionOptions.HubEndpointUrl);
                 cfg.DefaultRequestHeaders.Add("X-Api-Key", tickerqRemoteExecutionOptions.ApiKey);
                 cfg.DefaultRequestHeaders.Add("X-Api-Secret", tickerqRemoteExecutionOptions.ApiSecret);
             });
+            services.AddHttpClient("tickerq-callback");
             services.AddSingleton<ITickerExecutionTaskHandler, TickerRemoteExecutionTaskHandler>();
             
             // Register options as singleton so background service can access it
             services.AddSingleton(tickerqRemoteExecutionOptions);
             
-            // Register background service to sync remote functions
-            services.AddHostedService<RemoteFunctionsSyncService>();
+            // Register background service to sync remote functions (also injectable for webhooks)
+            services.AddSingleton<RemoteFunctionsSyncService>();
+            services.AddHostedService(sp => sp.GetRequiredService<RemoteFunctionsSyncService>());
         };
 
         return tickerConfiguration;

@@ -16,7 +16,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-        <PackageReference Include="NCrontab" Version="[3.3.0,)" />
+        <PackageReference Include="NCrontab" Version="[3.3.0, )" />
 	</ItemGroup>
 
 </Project>

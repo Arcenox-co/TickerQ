@@ -4,8 +4,9 @@ namespace TickerQ.RemoteExecutor.Models;
 
 public sealed class RemoteTickerFunctionDescriptor
 {
-    public string Name { get; set; }
-    public string CronExpression { get; set; }
-    public string Callback { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string CronExpression { get; set; } = string.Empty;
+    public string Callback { get; set; } = string.Empty;
     public TickerTaskPriority Priority { get; set; }
+    public bool IsActive { get; set; } = true;
 }

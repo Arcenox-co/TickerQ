@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.SDK.Client;
@@ -62,7 +63,7 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
     }
 
     public Task<byte[]> GetTimeTickerRequest(Guid id, CancellationToken cancellationToken)
-        => throw new NotImplementedException("GetTimeTickerRequest is handled by the server-side TickerQ host.");
+        => GetRequestBytesAsync($"{TimeTickersPath}/request/{id}", cancellationToken);
 
     public async Task UpdateTimeTickersWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
     {
@@ -139,7 +140,7 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
         => throw new NotImplementedException("ReleaseAcquiredCronTickerOccurrences is handled by the server-side TickerQ host.");
 
     public Task<byte[]> GetCronTickerOccurrenceRequest(Guid tickerId, CancellationToken cancellationToken = default)
-        => throw new NotImplementedException("GetCronTickerOccurrenceRequest is handled by the server-side TickerQ host.");
+        => GetRequestBytesAsync($"cron-ticker-occurrences/request/{tickerId}", cancellationToken);
 
     public Task UpdateCronTickerOccurrencesWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         => throw new NotImplementedException("Execution status updates are handled by the server-side TickerQ host.");
@@ -291,4 +292,16 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
         => throw new NotImplementedException("Immediate cron occurrence acquisition is handled by the server-side TickerQ host.");
 
     #endregion
+
+    private async Task<byte[]?> GetRequestBytesAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _client.GetBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
 }

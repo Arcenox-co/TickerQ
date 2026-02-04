@@ -6,7 +6,7 @@ public sealed class NodeFunction
 {
     public string FunctionName { get; set; }
     public string RequestType { get; set; }
+    public string RequestExampleJson { get; set; } = string.Empty;
     public TickerTaskPriority TaskPriority { get; set; }
-    public string Expression { get; set; }
+    public string CronExpression { get; set; }
 }
-

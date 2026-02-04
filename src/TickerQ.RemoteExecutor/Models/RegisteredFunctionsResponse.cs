@@ -5,6 +5,7 @@ public sealed class RegisteredFunctionsResponse
     public string ApplicationId { get; set; } = string.Empty;
     public string EnvironmentId { get; set; } = string.Empty;
     public string EnvironmentName { get; set; } = string.Empty;
+    public string WebhookSignature { get; set; } = string.Empty;
     public List<Node> Nodes { get; set; } = new();
 }
 
@@ -25,7 +26,7 @@ public sealed class Function
     public string Id { get; set; } = string.Empty;
     public string FunctionName { get; set; } = string.Empty;
     public string RequestType { get; set; } = string.Empty;
-    public string? NodeExpression { get; set; }
+    public string? CronExpression { get; set; }
     public int TaskPriority { get; set; }
     public DateTime? AppliedAt { get; set; }
     public bool IsActive { get; set; }
