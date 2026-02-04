@@ -16,7 +16,7 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ;
 
-internal class TickerExecutionTaskHandler
+internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ITickerClock _clock;
