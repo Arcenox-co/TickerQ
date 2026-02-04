@@ -3,19 +3,19 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Text.Json.Serialization;
 using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.Models
 {
     public class InternalFunctionContext
     {
-        private HashSet<string> ParametersToUpdate { get; set; } = [];
-        
+        public HashSet<string> ParametersToUpdate { get; set; } = [];
         // Cached function delegate and priority for performance optimization
         // Eliminates dictionary lookups during execution
+        [JsonIgnore]
         public TickerFunctionDelegate CachedDelegate { get; set; }
         public TickerTaskPriority CachedPriority { get; set; }
-        
         public string FunctionName { get; set; }
         public Guid TickerId { get; set; }
         public Guid? ParentId { get; set; }
