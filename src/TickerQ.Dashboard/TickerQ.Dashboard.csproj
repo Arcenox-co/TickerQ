@@ -1,5 +1,6 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Web">
     <PropertyGroup>
+        <OutputType>Library</OutputType>
         <PackageId>TickerQ.Dashboard</PackageId>
         <Description>Dashboard UI for visualizing and monitoring TickerQ scheduled jobs, status, and system metrics.</Description>
         <PackageTags>$(PackageTags);dashboard;monitoring;scheduler;status;job;ui</PackageTags>
