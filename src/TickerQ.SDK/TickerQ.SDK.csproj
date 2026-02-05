@@ -12,6 +12,10 @@
   <ItemGroup>
     <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="$(DotNetVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="$(DotNetVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.Http.Results" Version="$(DotNetVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.Routing" Version="$(DotNetVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Abstractions" Version="$(DotNetVersion)" />
   </ItemGroup>
 
 </Project>
