@@ -70,8 +70,9 @@ namespace TickerQ.Dashboard.DependencyInjection
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
-            tickerConfiguration.UseDashboardApplication((app) =>
+            tickerConfiguration.UseDashboardApplication((appObj) =>
             {
+                var app = (IApplicationBuilder)appObj;
                 // Configure static files and middleware with endpoints
                 app.UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(dashboardConfig);
             });
