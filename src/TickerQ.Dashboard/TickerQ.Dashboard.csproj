@@ -21,6 +21,7 @@
 
     <ItemGroup>
         <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
     </ItemGroup>
 
     <ItemGroup>
