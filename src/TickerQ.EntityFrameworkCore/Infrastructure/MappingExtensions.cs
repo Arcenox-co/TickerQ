@@ -116,26 +116,18 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 setExpression = ExpressionHelper.CombineSetters(setExpression,
                     s => s.SetProperty(x => x.RetryCount, functionContext.RetryCount));
 
+            
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
-<<<<<<< HEAD
                 setExpression = ExpressionHelper.CombineSetters(setExpression,
                     s => s.SetProperty(x => x.LockHolder, (string)null)
                         .SetProperty(x => x.LockedAt, (DateTime?)null));
             
-            return setExpression;
-=======
-            {
-                setters
-                    .SetProperty(x => x.LockHolder, (string)null)
-                    .SetProperty(x => x.LockedAt, (DateTime?)null);
-            }
-
             // EXECUTION TIME
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutionTime)))
-            {
-                setters.SetProperty(x => x.ExecutionTime, functionContext.ExecutionTime);
-            }
->>>>>>> 298ca68 (fix update ExecutionTime for CronTickerOccurrence (#461))
+                setExpression = ExpressionHelper.CombineSetters(setExpression,
+                    s => s.SetProperty(x => x.ExecutionTime, functionContext.ExecutionTime));
+            
+            return setExpression;
         }
         
         internal static Expression<Func<SetPropertyCalls<TTimeTicker>, SetPropertyCalls<TTimeTicker>>> UpdateTimeTicker<TTimeTicker>(InternalFunctionContext functionContext, DateTime updatedAt)
