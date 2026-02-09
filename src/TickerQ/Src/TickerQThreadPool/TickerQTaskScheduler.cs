@@ -325,7 +325,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
     {
         // Decrement immediately after dequeue to keep counter in sync
         Interlocked.Decrement(ref _totalQueuedTasks);
-        
+
         try
         {
             // Check cancellation before executing
@@ -334,7 +334,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
                 // Start the work without awaiting it so this worker
                 // can continue processing other items while the task awaits.
                 var task = workItem.Work(workItem.UserToken);
-                
+
                 if (task == null)
                     return;
 
@@ -509,18 +509,27 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
     {
         if (_disposed)
             return;
-        
+
         _disposed = true;
         _isFrozen = true; // Prevent new tasks
         _shutdownCts.Cancel();
-        
+
         // Wait for workers to exit gracefully
         var timeout = DateTime.UtcNow.AddSeconds(5);
         while (_activeWorkers > 0 && DateTime.UtcNow < timeout)
         {
             await Task.Delay(100);
         }
-        
+
+        // Drain remaining queued items to keep the counter accurate
+        for (int i = 0; i < _maxConcurrency; i++)
+        {
+            while (_workerQueues[i].TryDequeue(out _))
+            {
+                Interlocked.Decrement(ref _totalQueuedTasks);
+            }
+        }
+
         _notifyDebounce?.Dispose();
         _shutdownCts?.Dispose();
     }

@@ -139,7 +139,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         if (ex != null && _executionContext.NotifyCoreAction != null)
             _executionContext.NotifyCoreAction(ex.ToString(), CoreNotifyActionType.NotifyHostExceptionMessage);
 
-        await _internalTickerManager.ReleaseAcquiredResources([], CancellationToken.None);
+        await _internalTickerManager.ReleaseAcquiredResources(null, CancellationToken.None);
     }
 
     public void RestartIfNeeded(DateTime? dateTime)
@@ -178,5 +178,11 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         _taskScheduler.Freeze();
         Interlocked.Exchange(ref _started, 0);
         await base.StopAsync(cancellationToken);
+    }
+
+    public override void Dispose()
+    {
+        _restartThrottle.Dispose();
+        base.Dispose();
     }
 }

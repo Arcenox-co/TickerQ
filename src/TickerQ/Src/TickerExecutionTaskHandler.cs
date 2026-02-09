@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +19,10 @@ namespace TickerQ;
 
 internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 {
+    // Cached lowercase TickerType names to avoid per-call ToString + ToLowerInvariant allocations
+    private static readonly Dictionary<TickerType, string> TickerTypeNamesLower =
+        Enum.GetValues<TickerType>().ToDictionary(t => t, t => t.ToString().ToLowerInvariant());
+
     private readonly IServiceProvider _serviceProvider;
     private readonly ITickerClock _clock;
     private readonly ITickerQInstrumentation _tickerQInstrumentation;
@@ -39,8 +44,9 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             return;
         }
 
-        var childrenToRunAfter = new InternalFunctionContext[5];
-        var tasksToRunNow = new Task[6];
+        var childCount = context.TimeTickerChildren.Count;
+        var childrenToRunAfter = new InternalFunctionContext[childCount];
+        var tasksToRunNow = new Task[childCount + 1];
 
         var childrenToRunAfterCount = 0;
         var tasksToRunNowCount = 0;
@@ -119,15 +125,14 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
     private async Task RunContextFunctionAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken, bool isChild = false)
     {
-        // Start OpenTelemetry activity for the entire job execution
-        using var jobActivity = _tickerQInstrumentation.StartJobActivity($"tickerq.job.execute.{context.Type.ToString().ToLowerInvariant()}", context);
-        
-        // Add additional tags to the activity
+        var typeName = TickerTypeNamesLower.GetValueOrDefault(context.Type, context.Type.ToString().ToLowerInvariant());
+
+        using var jobActivity = _tickerQInstrumentation.StartJobActivity($"tickerq.job.execute.{typeName}", context);
+
         jobActivity?.SetTag("tickerq.job.is_due", isDue);
         jobActivity?.SetTag("tickerq.job.is_child", isChild);
-        
-        // Log job enqueued/started (using the available method)
-        _tickerQInstrumentation.LogJobEnqueued(context.Type.ToString(), context.FunctionName, context.TickerId, "ExecutionTaskHandler");
+
+        _tickerQInstrumentation.LogJobEnqueued(typeName, context.FunctionName, context.TickerId, "ExecutionTaskHandler");
         
         context.SetProperty(x => x.Status, TickerStatus.InProgress);
 
@@ -181,7 +186,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             {
                 if (await WaitForRetry(context, cancellationToken, attempt, cancellationTokenSource)) break;
 
-                stopWatch.Start();
+                stopWatch.Restart();
 
                 // Create service scope - will be disposed automatically via await using
                 await using var scope = _serviceProvider.CreateAsyncScope();
@@ -212,7 +217,6 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
                 
                 // Clean up and exit early on cancellation
-                cancellationTokenSource?.Dispose();
                 TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
                 return;
             }
@@ -232,17 +236,16 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     context.SetProperty(x => x.ExceptionDetails, ex.Message);
                     jobActivity?.SetTag("tickerq.job.skip_reason", ex.Message);
                 }
-                
+
                 // Add skip tags to activity
                 jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
-                
+
                 // Log job skipped
                 _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
 
                 await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
-                
+
                 // Clean up and exit early on termination
-                cancellationTokenSource?.Dispose();
                 TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
                 return;
             }
@@ -293,8 +296,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         }
 
 
-        // IMPORTANT: Always dispose CancellationTokenSource to prevent memory leaks
-        cancellationTokenSource?.Dispose();
+        // Clean up: RemoveTickerCancellationToken handles disposal of the CTS
         TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
     }
 
