@@ -1,5 +1,4 @@
 ﻿<Project>
-
     <PropertyGroup>
         <TargetFramework>net9.0</TargetFramework>
         <RepositoryUrl>https://github.com/arcenox-co/TickerQ</RepositoryUrl>

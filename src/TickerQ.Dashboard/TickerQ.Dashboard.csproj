@@ -1,10 +1,19 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Web">
     <PropertyGroup>
+        <OutputType>Library</OutputType>
+        <IsPackable>true</IsPackable>
         <PackageId>TickerQ.Dashboard</PackageId>
         <Description>Dashboard UI for visualizing and monitoring TickerQ scheduled jobs, status, and system metrics.</Description>
         <PackageTags>$(PackageTags);dashboard;monitoring;scheduler;status;job;ui</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
+        <Nullable>enable</Nullable>
     </PropertyGroup>
+
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>TickerQ.Tests</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
 
     <ItemGroup>
         <None Include="README.md" Pack="true" PackagePath="" />
@@ -26,5 +35,4 @@
         <None Remove="wwwroot\*" />
         <None Remove="wwwroot\public\*" />
     </ItemGroup>
-
 </Project>
