@@ -1,11 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using System.Globalization;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.DependencyInjection;
 using TickerQ.RemoteExecutor.Models;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
@@ -108,62 +103,45 @@ public static class RemoteExecutionEndpoints
                     .ToArray();
 
                 var functionDict = TickerFunctionProvider.TickerFunctions.ToDictionary();
+                var requestInfoDict = TickerFunctionProvider.TickerFunctionRequestInfos?.ToDictionary()
+                    ?? new Dictionary<string, (string RequestType, string RequestExampleJson)>();
 
                 foreach (var newFunction in newFunctions)
                 {
                     // Handle inactive functions by removing them
                     if (!newFunction.IsActive)
                     {
-                        functionDict.Remove(newFunction.Name);
+                        if (RemoteFunctionRegistry.IsRemote(newFunction.Name) &&
+                            functionDict.Remove(newFunction.Name))
+                        {
+                            RemoteFunctionRegistry.Remove(newFunction.Name);
+                            requestInfoDict.Remove(newFunction.Name);
+                        }
                         continue;
                     }
 
                     // Capture callback URL to avoid closure issues
                     var callbackUrl = newFunction.Callback.TrimEnd('/');
 
-                    var newFunctionDelegate = new TickerFunctionDelegate(async (ct, serviceProvider, context) =>
+                    var newFunctionDelegate = RemoteExecutionDelegateFactory.Create(
+                        callbackUrl,
+                        sp => sp.GetRequiredService<TickerQRemoteExecutionOptions>().WebHookSignature,
+                        allowEmptySecret: true);
+
+                    if (functionDict.TryAdd(newFunction.Name, (newFunction.CronExpression, newFunction.Priority, newFunctionDelegate)))
                     {
-                        var httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
-                        var remoteOptions = serviceProvider.GetRequiredService<TickerQRemoteExecutionOptions>();
-                        var httpClient = httpClientFactory.CreateClient("tickerq-callback");
-
-                        // Build a minimal payload describing the execution
-                        var payload = new
-                        {
-                            context.Id,
-                            context.FunctionName,
-                            context.Type,
-                            context.RetryCount,
-                            context.ScheduledFor
-                        };
-
-                        // Serialize payload for signature computation
-                        var json = JsonSerializer.Serialize(payload);
-                        var bodyBytes = Encoding.UTF8.GetBytes(json);
-
-                        // Build request with HMAC signature
-                        var uri = new Uri($"{callbackUrl}/execute");
-                        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
-                        var signature = ComputeCallbackSignature(
-                            remoteOptions.WebHookSignature,
-                            HttpMethod.Post.Method,
-                            uri.PathAndQuery,
-                            timestamp,
-                            bodyBytes);
-
-                        using var request = new HttpRequestMessage(HttpMethod.Post, uri);
-                        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
-                        request.Headers.Add("X-TickerQ-Signature", signature);
-                        request.Headers.Add("X-Timestamp", timestamp);
-
-                        using var response = await httpClient.SendAsync(request, ct);
-                        response.EnsureSuccessStatusCode();
-                    });
-
-                    functionDict.TryAdd(newFunction.Name, (newFunction.CronExpression, newFunction.Priority, newFunctionDelegate));
+                        RemoteFunctionRegistry.MarkRemote(newFunction.Name);
+                        requestInfoDict[newFunction.Name] = (newFunction.RequestType, newFunction.RequestExampleJson);
+                    }
                 }
                 
                 TickerFunctionProvider.RegisterFunctions(functionDict);
+
+                var existingRequestTypes = TickerFunctionProvider.TickerFunctionRequestTypes;
+                if (existingRequestTypes != null && existingRequestTypes.Count > 0)
+                    TickerFunctionProvider.RegisterRequestType(existingRequestTypes.ToDictionary());
+
+                TickerFunctionProvider.RegisterRequestInfo(requestInfoDict);
                 TickerFunctionProvider.Build();
                 
                 if (cronPairs.Length > 0)
@@ -471,11 +449,26 @@ public static class RemoteExecutionEndpoints
 
     private static bool RemoveFunctionByName(string functionName)
     {
+        if (!RemoteFunctionRegistry.IsRemote(functionName))
+            return false;
+
         var functionDict = TickerFunctionProvider.TickerFunctions.ToDictionary();
         if (!functionDict.Remove(functionName))
             return false;
 
+        RemoteFunctionRegistry.Remove(functionName);
+        var requestInfoDict = TickerFunctionProvider.TickerFunctionRequestInfos?.ToDictionary()
+            ?? new Dictionary<string, (string RequestType, string RequestExampleJson)>();
+        requestInfoDict.Remove(functionName);
         TickerFunctionProvider.RegisterFunctions(functionDict);
+        var existingRequestTypes = TickerFunctionProvider.TickerFunctionRequestTypes;
+        if (existingRequestTypes != null && existingRequestTypes.Count > 0)
+        {
+            var requestTypesDict = existingRequestTypes.ToDictionary();
+            requestTypesDict.Remove(functionName);
+            TickerFunctionProvider.RegisterRequestType(requestTypesDict);
+        }
+        TickerFunctionProvider.RegisterRequestInfo(requestInfoDict);
         TickerFunctionProvider.Build();
         return true;
     }
@@ -491,24 +484,4 @@ public static class RemoteExecutionEndpoints
         public string FunctionName { get; set; } = string.Empty;
     }
 
-    private static string ComputeCallbackSignature(
-        string secret,
-        string method,
-        string pathAndQuery,
-        string timestamp,
-        byte[] bodyBytes)
-    {
-        if (string.IsNullOrWhiteSpace(secret))
-            return string.Empty;
-
-        var header = $"{method}\n{pathAndQuery}\n{timestamp}\n";
-        var headerBytes = Encoding.UTF8.GetBytes(header);
-        var payload = new byte[headerBytes.Length + bodyBytes.Length];
-        Buffer.BlockCopy(headerBytes, 0, payload, 0, headerBytes.Length);
-        Buffer.BlockCopy(bodyBytes, 0, payload, headerBytes.Length, bodyBytes.Length);
-
-        var secretKey = Encoding.UTF8.GetBytes(secret);
-        var signatureBytes = HMACSHA256.HashData(secretKey, payload);
-        return Convert.ToBase64String(signatureBytes);
-    }
 }

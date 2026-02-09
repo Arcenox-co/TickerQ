@@ -35,9 +35,4 @@
         <None Remove="wwwroot\*" />
         <None Remove="wwwroot\public\*" />
     </ItemGroup>
-
-    <ItemGroup>
-      <ProjectReference Include="..\TickerQ\TickerQ.csproj" />
-    </ItemGroup>
-
 </Project>

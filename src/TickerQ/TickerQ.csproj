@@ -26,5 +26,4 @@
               Pack="true"
               PackagePath="analyzers/dotnet/cs" />
     </ItemGroup>
-
 </Project>
