@@ -113,8 +113,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
             var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
             if (cachedBytes?.Length > 0)
             {
-                ReadOnlySpan<byte> cachedSpan = cachedBytes.AsSpan();
-                var cached = JsonSerializer.Deserialize<TResult[]>(cachedSpan);
+                var cached = JsonSerializer.Deserialize<TResult[]>(cachedBytes);
 
                 if (cached != null)
                     return cached;
@@ -132,13 +131,8 @@ internal class TickerQRedisContext : ITickerQRedisContext
 
         try
         {
-            var bufferWriter = new ArrayBufferWriter<byte>();
-            await using var writer = new Utf8JsonWriter(bufferWriter);
-
-            JsonSerializer.Serialize(writer, result);
-            await writer.FlushAsync(cancellationToken);
-
-            await _cache.SetAsync(cacheKey, bufferWriter.WrittenMemory.ToArray(), cancellationToken);
+            var payload = JsonSerializer.SerializeToUtf8Bytes(result);
+            await _cache.SetAsync(cacheKey, payload, cancellationToken);
         }
         catch (Exception)
         {
