@@ -115,52 +115,71 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         };
     }
 
-    private async Task AddTimeTickerIndexesAsync(TTimeTicker ticker)
+    // Batched index updates — single round-trip per call via IBatch
+    private Task AddTimeTickerIndexesAsync(TTimeTicker ticker)
     {
-        await _db.SetAddAsync(TimeTickerIdsKey, ticker.Id.ToString()).ConfigureAwait(false);
+        var batch = _db.CreateBatch();
+        var idStr = (RedisValue)ticker.Id.ToString();
+
+        var t1 = batch.SetAddAsync(TimeTickerIdsKey, idStr);
+        Task t2;
         if (ticker.ExecutionTime.HasValue && CanAcquire(ticker.Status, ticker.LockHolder, _lockHolder))
-        {
-            await _db.SortedSetAddAsync(TimeTickerPendingKey, ticker.Id.ToString(), ToScore(ticker.ExecutionTime.Value)).ConfigureAwait(false);
-        }
+            t2 = batch.SortedSetAddAsync(TimeTickerPendingKey, idStr, ToScore(ticker.ExecutionTime.Value));
         else
-        {
-            await _db.SortedSetRemoveAsync(TimeTickerPendingKey, ticker.Id.ToString()).ConfigureAwait(false);
-        }
+            t2 = batch.SortedSetRemoveAsync(TimeTickerPendingKey, idStr);
+
+        batch.Execute();
+        return Task.WhenAll(t1, t2);
     }
 
-    private async Task RemoveTimeTickerIndexesAsync(Guid id)
+    private Task RemoveTimeTickerIndexesAsync(Guid id)
     {
-        await _db.SetRemoveAsync(TimeTickerIdsKey, id.ToString()).ConfigureAwait(false);
-        await _db.SortedSetRemoveAsync(TimeTickerPendingKey, id.ToString()).ConfigureAwait(false);
+        var batch = _db.CreateBatch();
+        var idStr = (RedisValue)id.ToString();
+
+        var t1 = batch.SetRemoveAsync(TimeTickerIdsKey, idStr);
+        var t2 = batch.SortedSetRemoveAsync(TimeTickerPendingKey, idStr);
+
+        batch.Execute();
+        return Task.WhenAll(t1, t2);
     }
 
-    private async Task AddCronIndexesAsync(TCronTicker ticker)
+    private Task AddCronIndexesAsync(TCronTicker ticker)
     {
-        await _db.SetAddAsync(CronIdsKey, ticker.Id.ToString()).ConfigureAwait(false);
+        return _db.SetAddAsync(CronIdsKey, ticker.Id.ToString());
     }
 
-    private async Task RemoveCronIndexesAsync(Guid id)
+    private Task RemoveCronIndexesAsync(Guid id)
     {
-        await _db.SetRemoveAsync(CronIdsKey, id.ToString()).ConfigureAwait(false);
+        return _db.SetRemoveAsync(CronIdsKey, id.ToString());
     }
 
-    private async Task AddCronOccurrenceIndexesAsync(CronTickerOccurrenceEntity<TCronTicker> occurrence)
+    private Task AddCronOccurrenceIndexesAsync(CronTickerOccurrenceEntity<TCronTicker> occurrence)
     {
-        await _db.SetAddAsync(CronOccurrenceIdsKey, occurrence.Id.ToString()).ConfigureAwait(false);
+        var batch = _db.CreateBatch();
+        var idStr = (RedisValue)occurrence.Id.ToString();
+
+        var t1 = batch.SetAddAsync(CronOccurrenceIdsKey, idStr);
+        Task t2;
         if (CanAcquire(occurrence.Status, occurrence.LockHolder, _lockHolder))
-        {
-            await _db.SortedSetAddAsync(CronOccurrencePendingKey, occurrence.Id.ToString(), ToScore(occurrence.ExecutionTime)).ConfigureAwait(false);
-        }
+            t2 = batch.SortedSetAddAsync(CronOccurrencePendingKey, idStr, ToScore(occurrence.ExecutionTime));
         else
-        {
-            await _db.SortedSetRemoveAsync(CronOccurrencePendingKey, occurrence.Id.ToString()).ConfigureAwait(false);
-        }
+            t2 = batch.SortedSetRemoveAsync(CronOccurrencePendingKey, idStr);
+
+        batch.Execute();
+        return Task.WhenAll(t1, t2);
     }
 
-    private async Task RemoveCronOccurrenceIndexesAsync(Guid id)
+    private Task RemoveCronOccurrenceIndexesAsync(Guid id)
     {
-        await _db.SetRemoveAsync(CronOccurrenceIdsKey, id.ToString()).ConfigureAwait(false);
-        await _db.SortedSetRemoveAsync(CronOccurrencePendingKey, id.ToString()).ConfigureAwait(false);
+        var batch = _db.CreateBatch();
+        var idStr = (RedisValue)id.ToString();
+
+        var t1 = batch.SetRemoveAsync(CronOccurrenceIdsKey, idStr);
+        var t2 = batch.SortedSetRemoveAsync(CronOccurrencePendingKey, idStr);
+
+        batch.Execute();
+        return Task.WhenAll(t1, t2);
     }
     #endregion
 
@@ -435,15 +454,10 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
             if (ticker == null) continue;
 
-            if (ticker.LockHolder == instanceIdentifier && ticker.Status == TickerStatus.InProgress)
+            if (ticker.LockHolder == instanceIdentifier &&
+                ticker.Status is TickerStatus.InProgress or TickerStatus.Idle or TickerStatus.Queued)
             {
-                ticker.Status = TickerStatus.Skipped;
-                ticker.SkippedReason = "Node is not alive!";
-                ticker.ExecutedAt = now;
-                ticker.UpdatedAt = now;
-            }
-            else if (ticker.LockHolder == instanceIdentifier && (ticker.Status == TickerStatus.Idle || ticker.Status == TickerStatus.Queued))
-            {
+                // Reset to Idle so another node can pick up the work
                 ticker.LockHolder = null;
                 ticker.LockedAt = null;
                 ticker.Status = TickerStatus.Idle;
@@ -632,15 +646,10 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
             if (occurrence == null) continue;
 
-            if (occurrence.LockHolder == instanceIdentifier && occurrence.Status == TickerStatus.InProgress)
+            if (occurrence.LockHolder == instanceIdentifier &&
+                occurrence.Status is TickerStatus.InProgress or TickerStatus.Idle or TickerStatus.Queued)
             {
-                occurrence.Status = TickerStatus.Skipped;
-                occurrence.SkippedReason = "Node is not alive!";
-                occurrence.ExecutedAt = now;
-                occurrence.UpdatedAt = now;
-            }
-            else if (occurrence.LockHolder == instanceIdentifier && (occurrence.Status == TickerStatus.Idle || occurrence.Status == TickerStatus.Queued))
-            {
+                // Reset to Idle so another node can pick up the work
                 occurrence.LockHolder = null;
                 occurrence.LockedAt = null;
                 occurrence.Status = TickerStatus.Idle;

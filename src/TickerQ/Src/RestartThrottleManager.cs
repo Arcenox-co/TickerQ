@@ -3,13 +3,13 @@ using System.Threading;
 
 namespace TickerQ;
 
-public sealed class RestartThrottleManager
+public sealed class RestartThrottleManager : IDisposable
 {
     private readonly Action _onRestartTriggered;
     private readonly object _lock = new();
     private Timer _debounceTimer;
     private volatile bool _restartPending;
-    
+
     private readonly TimeSpan _debounceWindow = TimeSpan.FromMilliseconds(50);
 
     public RestartThrottleManager(Action onRestartTriggered)
@@ -22,11 +22,11 @@ public sealed class RestartThrottleManager
         lock (_lock)
         {
             _restartPending = true;
-            
+
             // Create timer only when first needed
             if (_debounceTimer == null)
             {
-                _debounceTimer = new Timer(OnTimerCallback, null, 
+                _debounceTimer = new Timer(OnTimerCallback, null,
                     _debounceWindow, Timeout.InfiniteTimeSpan);
             }
             else
@@ -36,7 +36,7 @@ public sealed class RestartThrottleManager
             }
         }
     }
-    
+
     private void OnTimerCallback(object state)
     {
         lock (_lock)
@@ -47,6 +47,15 @@ public sealed class RestartThrottleManager
                 _debounceTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
                 _onRestartTriggered();
             }
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            _debounceTimer?.Dispose();
+            _debounceTimer = null;
         }
     }
 }

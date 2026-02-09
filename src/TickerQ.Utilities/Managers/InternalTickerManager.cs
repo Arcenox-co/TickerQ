@@ -155,14 +155,14 @@ namespace TickerQ.Utilities.Managers
                             Retries = gch.Retries,
                             RetryIntervals = gch.RetryIntervals,
                             ParentId = gch.ParentId,
-                            RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus
+                            RunCondition = gch.RunCondition ?? RunCondition.OnAnyCompletedStatus
                         }).ToList()
                     }).ToList()
                 });
-                
+
                 await _notificationHubSender.UpdateTimeTickerNotifyAsync(updatedTimeTicker);
             }
-           
+
             return results.ToArray();
         }
 
@@ -428,11 +428,11 @@ namespace TickerQ.Utilities.Managers
                             Retries = gch.Retries,
                             RetryIntervals = gch.RetryIntervals,
                             ParentId = gch.ParentId,
-                            RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus
+                            RunCondition = gch.RunCondition ?? RunCondition.OnAnyCompletedStatus
                         }).ToList()
                     }).ToList()
                 });
-                
+
                 await _notificationHubSender.UpdateTimeTickerNotifyAsync(timedOutTimeTicker).ConfigureAwait(false);
             }
 
