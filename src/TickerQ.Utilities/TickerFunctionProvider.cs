@@ -22,10 +22,12 @@ namespace TickerQ.Utilities
     {
         // Callback actions to collect registrations
         private static Action<Dictionary<string, (string, Type)>> _requestTypeRegistrations;
+        private static Action<Dictionary<string, (string RequestType, string RequestExampleJson)>> _requestInfoRegistrations;
         private static Action<Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)>> _functionRegistrations;
         
         // Final frozen dictionaries
         public static FrozenDictionary<string, (string, Type)> TickerFunctionRequestTypes;
+        public static FrozenDictionary<string, (string RequestType, string RequestExampleJson)> TickerFunctionRequestInfos;
         public static FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)> TickerFunctions;
 
         /// <summary>
@@ -101,6 +103,28 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
+        /// Registers request type metadata (string type + example JSON) for functions.
+        /// </summary>
+        /// <param name="requestInfos">The request info entries to register. Cannot be null.</param>
+        /// <exception cref="ArgumentNullException">Thrown when requestInfos parameter is null.</exception>
+        public static void RegisterRequestInfo(IDictionary<string, (string RequestType, string RequestExampleJson)> requestInfos)
+        {
+            if (requestInfos == null)
+                throw new ArgumentNullException(nameof(requestInfos));
+
+            if (requestInfos.Count == 0)
+                return;
+
+            _requestInfoRegistrations += dict =>
+            {
+                foreach (var (key, value) in requestInfos)
+                {
+                    dict.TryAdd(key, value);
+                }
+            };
+        }
+
+        /// <summary>
         /// Updates cron expressions for registered functions by adding to the callback chain.
         /// This method should only be called during application startup before Build() is called.
         /// </summary>
@@ -145,8 +169,11 @@ namespace TickerQ.Utilities
             }
             else
             {
-                TickerFunctions = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)>()
-                    .ToFrozenDictionary();
+                if (TickerFunctions == null)
+                {
+                    TickerFunctions = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)>()
+                        .ToFrozenDictionary();
+                }
             }
 
             // Build request types dictionary  
@@ -160,8 +187,28 @@ namespace TickerQ.Utilities
             }
             else
             {
-                TickerFunctionRequestTypes = new Dictionary<string, (string, Type)>()
-                    .ToFrozenDictionary();
+                if (TickerFunctionRequestTypes == null)
+                {
+                    TickerFunctionRequestTypes = new Dictionary<string, (string, Type)>()
+                        .ToFrozenDictionary();
+                }
+            }
+
+            // Build request info dictionary (string type + example JSON)
+            if (_requestInfoRegistrations != null)
+            {
+                var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>();
+                _requestInfoRegistrations(requestInfoDict);
+                TickerFunctionRequestInfos = requestInfoDict.ToFrozenDictionary();
+                _requestInfoRegistrations = null;
+            }
+            else
+            {
+                if (TickerFunctionRequestInfos == null)
+                {
+                    TickerFunctionRequestInfos = new Dictionary<string, (string RequestType, string RequestExampleJson)>()
+                        .ToFrozenDictionary();
+                }
             }
         }
     }

@@ -95,21 +95,13 @@ namespace TickerQ.DependencyInjection
         /// </summary>
         public static IHost UseTickerQ(this IHost host, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
         {
-            InitializeTickerQ(host.Services, qStartMode);
+            InitializeTickerQ(host, qStartMode);
             return host;
         }
         
-        /// <summary>
-        /// Initializes TickerQ with a service provider directly
-        /// </summary>
-        public static IServiceProvider UseTickerQ(this IServiceProvider serviceProvider, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
+        private static void InitializeTickerQ(IHost host, TickerQStartMode qStartMode)
         {
-            InitializeTickerQ(serviceProvider, qStartMode);
-            return serviceProvider;
-        }
-        
-        private static void InitializeTickerQ(IServiceProvider serviceProvider, TickerQStartMode qStartMode)
-        {
+            var serviceProvider = host.Services;
             var tickerExecutionContext = serviceProvider.GetService<TickerExecutionContext>();
             var configuration = serviceProvider.GetService<IConfiguration>();
             var notificationHubSender = serviceProvider.GetService<ITickerQNotificationHubSender>();
@@ -138,6 +130,13 @@ namespace TickerQ.DependencyInjection
             // If background services are not registered (due to DisableBackgroundServices()),
             // silently skip background service configuration. This is expected behavior.
             
+            if (tickerExecutionContext?.DashboardApplicationAction != null)
+            {
+                // Cast object back to IApplicationBuilder for Dashboard middleware
+                tickerExecutionContext.DashboardApplicationAction(host);
+                tickerExecutionContext.DashboardApplicationAction = null;
+            }
+            
             TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
             TickerFunctionProvider.Build();
             
@@ -165,9 +164,6 @@ namespace TickerQ.DependencyInjection
                 tickerExecutionContext.ExternalProviderApplicationAction(serviceProvider);
                 tickerExecutionContext.ExternalProviderApplicationAction = null;
             }
-            
-            // Dashboard integration is handled by TickerQ.Dashboard package via DashboardApplicationAction
-            // It will be invoked when UseTickerQ is called from ASP.NET Core specific extension
         }
         
         private static async Task SeedDefinedCronTickers(IServiceProvider serviceProvider)

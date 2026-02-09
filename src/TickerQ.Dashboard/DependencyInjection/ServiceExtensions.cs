@@ -72,7 +72,14 @@ namespace TickerQ.Dashboard.DependencyInjection
         {
             tickerConfiguration.UseDashboardApplication((appObj) =>
             {
-                var app = (IApplicationBuilder)appObj;
+                if (appObj is not IApplicationBuilder app)
+                    throw new InvalidOperationException(
+                        "TickerQ Dashboard can only be used in ASP.NET Core applications. " +
+                        "The current host does not provide an HTTP application pipeline " +
+                        "(IApplicationBuilder is not available). " +
+                        "If you are running a Worker Service, Console app, or background node, " +
+                        "remove the dashboard configuration or move it to a WebApplication."
+                    );
                 // Configure static files and middleware with endpoints
                 app.UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(dashboardConfig);
             });

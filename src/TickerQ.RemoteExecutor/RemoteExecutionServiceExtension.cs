@@ -27,7 +27,8 @@ public static class RemoteExecutionServiceExtension
                 cfg.DefaultRequestHeaders.Add("X-Api-Secret", tickerqRemoteExecutionOptions.ApiSecret);
             });
             services.AddHttpClient("tickerq-callback");
-            services.AddSingleton<ITickerExecutionTaskHandler, TickerRemoteExecutionTaskHandler>();
+            services.AddSingleton<TickerRemoteExecutionTaskHandler>();
+            services.AddSingleton<ITickerExecutionTaskHandler, TickerExecutionTaskHandlerRouter>();
             
             // Register options as singleton so background service can access it
             services.AddSingleton(tickerqRemoteExecutionOptions);
