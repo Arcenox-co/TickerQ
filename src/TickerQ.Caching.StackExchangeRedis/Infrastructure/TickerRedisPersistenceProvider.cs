@@ -339,9 +339,13 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     {
         var now = _clock.UtcNow;
         const string seedPrefix = "MemoryTicker_Seeded_";
-        var functions = cronTickers.Select(x => x.Function).ToHashSet(StringComparer.Ordinal);
 
-        // Load existing seeded cron tickers
+        // Build the complete set of registered function names to detect orphaned tickers.
+        // This covers functions whose InitIdentifier was cleared by a dashboard edit (#517).
+        var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys
+            .ToHashSet(StringComparer.Ordinal);
+
+        // Load all existing cron tickers
         var existingIds = await _db.SetMembersAsync(CronIdsKey).ConfigureAwait(false);
         var existingList = new List<TCronTicker>();
         foreach (var redisValue in existingIds)
@@ -352,17 +356,22 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             if (cron != null) existingList.Add(cron);
         }
 
-        var seededCron = existingList.Where(c => c.InitIdentifier != null && c.InitIdentifier.StartsWith(seedPrefix)).ToList();
-        var seededToDelete = seededCron.Where(c => !functions.Contains(c.Function)).Select(c => c.Id).ToArray();
+        // Delete all cron tickers whose function no longer exists in the code definitions
+        var orphanedToDelete = existingList
+            .Where(c => !allRegisteredFunctions.Contains(c.Function))
+            .Select(c => c.Id).ToArray();
 
-        foreach (var id in seededToDelete)
+        foreach (var id in orphanedToDelete)
         {
             await RemoveCronIndexesAsync(id).ConfigureAwait(false);
             await RemoveCronOccurrenceIndexesAsyncForCron(id).ConfigureAwait(false);
             await _db.KeyDeleteAsync(CronKey(id)).ConfigureAwait(false);
         }
 
-        var existingByFunction = existingList.ToDictionary(c => c.Function, c => c, StringComparer.Ordinal);
+        var orphanedSet = orphanedToDelete.ToHashSet();
+        var existingByFunction = existingList
+            .Where(c => !orphanedSet.Contains(c.Id))
+            .ToDictionary(c => c.Function, c => c, StringComparer.Ordinal);
         foreach (var (function, expression) in cronTickers)
         {
             if (existingByFunction.TryGetValue(function, out var cron))
