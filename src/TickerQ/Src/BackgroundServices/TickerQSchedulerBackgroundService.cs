@@ -147,6 +147,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         if (!dateTime.HasValue)
             return;
         
+        var now = DateTime.UtcNow;
         var nextPlannedOccurrence = _executionContext.GetNextPlannedOccurrence();
         
         // Restart if:
@@ -159,7 +160,6 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             return;
         }
 
-        var now = DateTime.UtcNow;
         var newTime = dateTime.Value;
         var threshold = TimeSpan.FromMilliseconds(500);
         var diff = nextPlannedOccurrence.Value - newTime;
@@ -179,9 +179,6 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         Interlocked.Exchange(ref _started, 0);
         await base.StopAsync(cancellationToken);
     }
-<<<<<<< HEAD
-}
-=======
 
     public override void Dispose()
     {
@@ -189,4 +186,3 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         base.Dispose();
     }
 }
->>>>>>> fd743f1 (Fix thread-safety bugs, resource leaks, and scheduling issues (#550))
