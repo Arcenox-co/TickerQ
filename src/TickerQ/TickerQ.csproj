@@ -27,8 +27,4 @@
               PackagePath="analyzers/dotnet/cs" />
     </ItemGroup>
 
-    <ItemGroup>
-      <ProjectReference Include="..\TickerQ.SDK\TickerQ.SDK.csproj" />
-    </ItemGroup>
-
 </Project>
