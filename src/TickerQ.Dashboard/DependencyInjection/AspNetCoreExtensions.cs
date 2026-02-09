@@ -13,6 +13,15 @@ namespace TickerQ.Dashboard.DependencyInjection
     public static class AspNetCoreExtensions
     {
         /// <summary>
+        /// Initializes TickerQ for ASP.NET Core minimal hosting (WebApplication) with Dashboard support
+        /// </summary>
+        public static WebApplication UseTickerQ(this WebApplication app, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
+        {
+            UseTickerQ((IApplicationBuilder)app, qStartMode);
+            return app;
+        }
+
+        /// <summary>
         /// Initializes TickerQ for ASP.NET Core applications with Dashboard support
         /// </summary>
         public static IApplicationBuilder UseTickerQ(this IApplicationBuilder app, TickerQStartMode qStartMode = TickerQStartMode.Immediate)
@@ -35,4 +44,3 @@ namespace TickerQ.Dashboard.DependencyInjection
         }
     }
 }
-
