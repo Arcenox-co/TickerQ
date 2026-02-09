@@ -248,35 +248,35 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var functions = cronTickers.Select(x => x.Function).ToArray();
         var cronSet = dbContext.Set<TCronTicker>();
 
-        // Identify seeded cron tickers (created from in-memory definitions)
-        const string seedPrefix = "MemoryTicker_Seeded_";
+        // Build the complete set of registered function names to detect orphaned tickers.
+        // This covers functions whose InitIdentifier was cleared by a dashboard edit (#517).
+        var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys
+            .ToHashSet(StringComparer.Ordinal);
 
-        var seededCron = await cronSet
-            .Where(c => c.InitIdentifier != null && c.InitIdentifier.StartsWith(seedPrefix))
-            .ToListAsync(cancellationToken)
+        // Find all cron tickers whose function no longer exists in the code definitions.
+        // This includes seeded tickers (InitIdentifier = "MemoryTicker_Seeded_*") as well as
+        // previously-seeded tickers whose InitIdentifier was cleared by a dashboard update.
+        var orphanedCron = await cronSet
+            .Where(c => !allRegisteredFunctions.Contains(c.Function))
+            .Select(c => c.Id)
+            .ToArrayAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        var newFunctionSet = functions.ToHashSet(StringComparer.Ordinal);
-
-        // Delete seeded cron tickers whose function no longer exists in the code definitions
-        var seededToDelete = seededCron
-            .Where(c => !newFunctionSet.Contains(c.Function))
-            .Select(c => c.Id)
-            .ToArray();
-
-        if (seededToDelete.Length > 0)
+        if (orphanedCron.Length > 0)
         {
             // Delete related occurrences first (if any), then the cron tickers
             await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-                .Where(o => seededToDelete.Contains(o.CronTickerId))
+                .Where(o => orphanedCron.Contains(o.CronTickerId))
                 .ExecuteDeleteAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             await cronSet
-                .Where(c => seededToDelete.Contains(c.Id))
+                .Where(c => orphanedCron.Contains(c.Id))
                 .ExecuteDeleteAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
+
+        var newFunctionSet = functions.ToHashSet(StringComparer.Ordinal);
 
         // Load existing (remaining) cron tickers for the current function set
         var existing = await cronSet
