@@ -1,7 +1,4 @@
 using System.Text.Json;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using TickerQ.RemoteExecutor.Models;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
@@ -185,7 +182,7 @@ public class RemoteFunctionsSyncService : BackgroundService
                 var priority = (TickerTaskPriority)function.TaskPriority;
                 
                 // Use cronExpression if available
-                var cronExpression = function.CronExpression ?? string.Empty;
+                var cronExpression = function.NodeExpression ?? string.Empty;
                 
                 functionDict[function.FunctionName] = (cronExpression, priority, functionDelegate);
                 RemoteFunctionRegistry.MarkRemote(function.FunctionName);
@@ -193,7 +190,7 @@ public class RemoteFunctionsSyncService : BackgroundService
                     function.RequestType,
                     function.RequestExampleJson ?? string.Empty);
                 
-                if (!string.IsNullOrWhiteSpace(cronExpression))
+                if (node.AutoMigrateExpressions && !string.IsNullOrWhiteSpace(cronExpression))
                 {
                     cronPairs.Add((function.FunctionName, cronExpression));
                 }
