@@ -44,7 +44,7 @@ internal sealed class TickerQFunctionSyncService
                 RequestType = requestType.Item1 ?? string.Empty,
                 RequestExampleJson = exampleJson,
                 TaskPriority = priority,
-                CronExpression = cronExpression
+                Expression = cronExpression
             });
         }
 

@@ -27,7 +27,7 @@ public sealed class Function
     public string FunctionName { get; set; } = string.Empty;
     public string RequestType { get; set; } = string.Empty;
     public string? RequestExampleJson { get; set; }
-    public string? CronExpression { get; set; }
+    public string? NodeExpression { get; set; }
     public int TaskPriority { get; set; }
     public DateTime? AppliedAt { get; set; }
     public bool IsActive { get; set; }
