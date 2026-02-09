@@ -629,10 +629,19 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             foreach (var tickerFunction in TickerFunctionProvider.TickerFunctions.Select(x => new { x.Key, x.Value.Priority }))
             {
                 if (TickerFunctionProvider.TickerFunctionRequestTypes.TryGetValue(tickerFunction.Key,
-                        out var functionTypeContext))
+                        out var functionTypeContext) &&
+                    functionTypeContext.Item2 != null)
                 {
                     JsonExampleGenerator.TryGenerateExampleJson(functionTypeContext.Item2, out var exampleJson);
                     yield return (tickerFunction.Key, (functionTypeContext.Item1, exampleJson, tickerFunction.Priority));
+                }
+                else if (TickerFunctionProvider.TickerFunctionRequestInfos.TryGetValue(tickerFunction.Key,
+                             out var requestInfo))
+                {
+                    var exampleJson = string.IsNullOrWhiteSpace(requestInfo.RequestExampleJson)
+                        ? null
+                        : requestInfo.RequestExampleJson;
+                    yield return (tickerFunction.Key, (requestInfo.RequestType ?? string.Empty, exampleJson, tickerFunction.Priority));
                 }
                 else
                 {

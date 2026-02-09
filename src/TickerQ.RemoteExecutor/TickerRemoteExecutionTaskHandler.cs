@@ -32,7 +32,8 @@ public class TickerRemoteExecutionTaskHandler : ITickerExecutionTaskHandler
                 FunctionName = context.FunctionName,
                 RetryCount = context.RetryCount,
                 IsDue = isDue,
-                ScheduledFor = context.ExecutionTime
+                ScheduledFor = context.ExecutionTime,
+                ServiceScope = scope
             };        
             await function.Delegate(cancellationTokenSource.Token, scope.ServiceProvider, tickerFunctionContext);
         }
