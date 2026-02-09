@@ -10,7 +10,7 @@
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
         <Version>9.1.0-beta</Version>
         <DotNetVersion>[10.0.0,11.0.0)</DotNetVersion>
-        <LangVersion>latest</LangVersion>
+        <LangVersion>default</LangVersion>
     </PropertyGroup>
 
     <ItemGroup>
