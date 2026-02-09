@@ -35,7 +35,8 @@ public class TickerRemoteExecutionTaskHandler : ITickerExecutionTaskHandler
                 FunctionName = context.FunctionName,
                 RetryCount = context.RetryCount,
                 IsDue = isDue,
-                ScheduledFor = context.ExecutionTime
+                ScheduledFor = context.ExecutionTime,
+                ServiceScope = scope
             };        
             var stopwatch = Stopwatch.StartNew();
 

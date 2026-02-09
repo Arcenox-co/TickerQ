@@ -1,8 +1,4 @@
-using System.Net.Http.Json;
-using System.Text;
 using System.Text.Json;
-using System.Globalization;
-using System.Security.Cryptography;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -137,6 +133,7 @@ public class RemoteFunctionsSyncService : BackgroundService
 
         var functionDict = TickerFunctionProvider.TickerFunctions.ToDictionary();
         var cronPairs = new List<(string Name, string CronExpression)>();
+        var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>();
 
         foreach (var node in response.Nodes)
         {
@@ -162,55 +159,27 @@ public class RemoteFunctionsSyncService : BackgroundService
 
                 if (!function.IsActive)
                 {
-                    if (functionDict.Remove(function.FunctionName))
-                        _logger?.LogDebug("Removed inactive function {FunctionName}", function.FunctionName);
+                    if (RemoteFunctionRegistry.IsRemote(function.FunctionName) &&
+                        functionDict.Remove(function.FunctionName))
+                    {
+                        requestInfoDict.Remove(function.FunctionName);
+                        RemoteFunctionRegistry.Remove(function.FunctionName);
+                        _logger?.LogDebug("Removed inactive remote function {FunctionName}", function.FunctionName);
+                    }
                     else
+                    {
                         _logger?.LogDebug("Skipping inactive function {FunctionName}", function.FunctionName);
+                    }
                     continue;
                 }
 
                 // Capture callbackUrl in local variable to avoid closure issues
                 var callbackUrl = node.CallbackUrl.TrimEnd('/');
                 
-                // Create function delegate similar to MapFunctionRegistration
-                var functionDelegate = new TickerFunctionDelegate(async (ct, serviceProvider, context) =>
-                {
-                    var httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
-                    var httpClient = httpClientFactory.CreateClient("tickerq-callback");
-
-                    var payload = new
-                    {
-                        context.Id,
-                        context.FunctionName,
-                        context.Type,
-                        context.RetryCount,
-                        context.ScheduledFor
-                    };
-
-                    // 1. Serialize ONCE
-                    var json = JsonSerializer.Serialize(payload);
-                    var bodyBytes = Encoding.UTF8.GetBytes(json);
-
-                    // 2. Build request + signature
-                    var uri = new Uri($"{callbackUrl}/execute");
-                    var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
-                    var signature = ComputeSignature(
-                        response.WebhookSignature,
-                        HttpMethod.Post.Method,
-                        uri.PathAndQuery,
-                        timestamp,
-                        bodyBytes);
-
-                    // 3. Build request manually
-                    using var request = new HttpRequestMessage(HttpMethod.Post, uri);
-                    request.Content = new StringContent(json, Encoding.UTF8, "application/json");
-
-                    request.Headers.Add("X-TickerQ-Signature", signature);
-                    request.Headers.Add("X-Timestamp", timestamp);
-
-                    using var responseCallback = await httpClient.SendAsync(request, ct);
-                    responseCallback.EnsureSuccessStatusCode();
-                });
+                var functionDelegate = RemoteExecutionDelegateFactory.Create(
+                    callbackUrl,
+                    _ => response.WebhookSignature,
+                    allowEmptySecret: false);
 
                 // Convert int priority to TickerTaskPriority enum
                 var priority = (TickerTaskPriority)function.TaskPriority;
@@ -219,6 +188,10 @@ public class RemoteFunctionsSyncService : BackgroundService
                 var cronExpression = function.CronExpression ?? string.Empty;
                 
                 functionDict[function.FunctionName] = (cronExpression, priority, functionDelegate);
+                RemoteFunctionRegistry.MarkRemote(function.FunctionName);
+                requestInfoDict[function.FunctionName] = (
+                    function.RequestType,
+                    function.RequestExampleJson ?? string.Empty);
                 
                 if (!string.IsNullOrWhiteSpace(cronExpression))
                 {
@@ -233,9 +206,16 @@ public class RemoteFunctionsSyncService : BackgroundService
         if (functionDict.Count > 0)
             TickerFunctionProvider.RegisterFunctions(functionDict);
 
+        var existingRequestTypes = TickerFunctionProvider.TickerFunctionRequestTypes;
+        if (existingRequestTypes != null && existingRequestTypes.Count > 0)
+            TickerFunctionProvider.RegisterRequestType(existingRequestTypes.ToDictionary());
+
+        if (requestInfoDict.Count > 0)
+            TickerFunctionProvider.RegisterRequestInfo(requestInfoDict);
+
         TickerFunctionProvider.Build();
         _logger?.LogInformation("Registered {Count} functions", functionDict.Count);
-
+        
         // Migrate cron tickers if we have cron expressions and the manager is available
         if (cronPairs.Count > 0 && _internalTickerManager != null)
         {
@@ -248,21 +228,4 @@ public class RemoteFunctionsSyncService : BackgroundService
         }
     }
 
-    private static string ComputeSignature(
-        string secret,
-        string method,
-        string pathAndQuery,
-        string timestamp,
-        byte[] bodyBytes)
-    {
-        var header = $"{method}\n{pathAndQuery}\n{timestamp}\n";
-        var headerBytes = Encoding.UTF8.GetBytes(header);
-        var payload = new byte[headerBytes.Length + bodyBytes.Length];
-        Buffer.BlockCopy(headerBytes, 0, payload, 0, headerBytes.Length);
-        Buffer.BlockCopy(bodyBytes, 0, payload, headerBytes.Length, bodyBytes.Length);
-
-        var secretKey = Encoding.UTF8.GetBytes(secret);
-        var signatureBytes = HMACSHA256.HashData(secretKey, payload);
-        return Convert.ToBase64String(signatureBytes);
-    }
 }
