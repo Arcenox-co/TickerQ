@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
@@ -10,6 +11,9 @@ namespace TickerQ.Utilities.Models
 {
     public class InternalFunctionContext
     {
+        // Compiled setter cache to avoid reflection on every SetProperty call
+        private static readonly ConcurrentDictionary<string, (Action<InternalFunctionContext, object> Setter, string Name)> SetterCache = new();
+
         public HashSet<string> ParametersToUpdate { get; set; } = [];
         // Cached function delegate and priority for performance optimization
         // Eliminates dictionary lookups during execution
@@ -36,14 +40,23 @@ namespace TickerQ.Utilities.Models
         public InternalFunctionContext SetProperty<T>(Expression<Func<InternalFunctionContext, T>> property, T value)
         {
             ParametersToUpdate ??= [];
-            
-            if (property.Body is MemberExpression { Member: PropertyInfo prop })
-            {
-                prop.SetValue(this, value);
-                ParametersToUpdate.Add(prop.Name);
-            }
-            else
+
+            if (property.Body is not MemberExpression { Member: PropertyInfo prop })
                 throw new ArgumentException("Expression must point to a property", nameof(property));
+
+            var cached = SetterCache.GetOrAdd(prop.Name, _ =>
+            {
+                var instance = Expression.Parameter(typeof(InternalFunctionContext), "obj");
+                var val = Expression.Parameter(typeof(object), "val");
+                var assign = Expression.Assign(
+                    Expression.Property(instance, prop),
+                    Expression.Convert(val, prop.PropertyType));
+                var lambda = Expression.Lambda<Action<InternalFunctionContext, object>>(assign, instance, val);
+                return (lambda.Compile(), prop.Name);
+            });
+
+            cached.Setter(this, value);
+            ParametersToUpdate.Add(cached.Name);
 
             return this;
         }

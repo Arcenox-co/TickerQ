@@ -31,13 +31,28 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        try
+        while (!stoppingToken.IsCancellationRequested)
         {
-            await RunTickerQFallbackAsync(stoppingToken);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError("Heartbeat background service failed: {Exception}", e);
+            try
+            {
+                await RunTickerQFallbackAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception e)
+            {
+                _logger.LogError("Heartbeat background service failed: {Exception}. Retrying in 5 seconds...", e);
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
         }
     }
     
@@ -65,5 +80,11 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
     {
         Interlocked.Exchange(ref _started, 0);
         await base.StopAsync(cancellationToken);
+    }
+
+    public override void Dispose()
+    {
+        _tickerHeartBeatPeriodicTimer.Dispose();
+        base.Dispose();
     }
 }
