@@ -199,10 +199,10 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await dbContext.Set<TTimeTicker>()
             .Where(x => x.LockHolder == instanceIdentifier && x.Status == TickerStatus.InProgress)
             .ExecuteUpdateAsync(setter => setter
-                .SetProperty(x => x.Status, TickerStatus.Skipped)
-                .SetProperty(x => x.SkippedReason, "Node is not alive!")
-                .SetProperty(x => x.ExecutedAt, now)
-            .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                .SetProperty(x => x.LockHolder, _ => null)
+                .SetProperty(x => x.LockedAt, _ => null)
+                .SetProperty(x => x.Status, TickerStatus.Idle)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
     }
     #endregion
@@ -334,9 +334,11 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             },
             expiration: TimeSpan.FromMinutes(10),
             cancellationToken: cancellationToken);
-        
-        
-        await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
+
+        if (result != null)
+            return result;
+
+        await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         return await dbContext.Set<TCronTicker>()
             .AsNoTracking()
             .Select(MappingExtensions.ForCronTickerExpressions<CronTickerEntity>())
@@ -407,9 +409,9 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .Where(x => x.LockHolder == instanceIdentifier && x.Status == TickerStatus.InProgress)
             .ExecuteUpdateAsync(setter => setter
-                .SetProperty(x => x.Status, TickerStatus.Skipped)
-                .SetProperty(x => x.SkippedReason, "Node is not alive!")
-                .SetProperty(x => x.ExecutedAt, now)
+                .SetProperty(x => x.LockHolder, _ => null)
+                .SetProperty(x => x.LockedAt, _ => null)
+                .SetProperty(x => x.Status, TickerStatus.Idle)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
     }

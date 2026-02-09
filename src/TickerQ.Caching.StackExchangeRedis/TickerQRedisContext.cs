@@ -145,6 +145,6 @@ internal class TickerQRedisContext : ITickerQRedisContext
             // ignored
         }
 
-        return null;
+        return result;
     }
 }
