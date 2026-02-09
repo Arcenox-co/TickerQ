@@ -6,6 +6,7 @@ namespace TickerQ
     public sealed class SafeCancellationTokenSource : IDisposable
     {
         private readonly CancellationTokenSource _innerCts;
+        private int _disposed;
 
         private SafeCancellationTokenSource(CancellationTokenSource cts)
         {
@@ -35,23 +36,73 @@ namespace TickerQ
 
         public bool IsCancellationRequested => _innerCts.IsCancellationRequested;
 
-        public bool IsDisposed { get; private set; }
+        public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
-        public void Cancel(){
-            if(!IsDisposed)
+        public void Cancel()
+        {
+            if (IsDisposed)
+                return;
+
+            try
+            {
                 _innerCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Race between Cancel and Dispose — safe to ignore
+            }
         }
 
-        public void Cancel(bool throwOnFirstException) => _innerCts.Cancel(throwOnFirstException);
+        public void Cancel(bool throwOnFirstException)
+        {
+            if (IsDisposed)
+                return;
 
-        public void CancelAfter(TimeSpan delay) => _innerCts.CancelAfter(delay);
+            try
+            {
+                _innerCts.Cancel(throwOnFirstException);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Race between Cancel and Dispose — safe to ignore
+            }
+        }
 
-        public void CancelAfter(int millisecondsDelay) => _innerCts.CancelAfter(millisecondsDelay);
+        public void CancelAfter(TimeSpan delay)
+        {
+            if (IsDisposed)
+                return;
+
+            try
+            {
+                _innerCts.CancelAfter(delay);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Race between CancelAfter and Dispose — safe to ignore
+            }
+        }
+
+        public void CancelAfter(int millisecondsDelay)
+        {
+            if (IsDisposed)
+                return;
+
+            try
+            {
+                _innerCts.CancelAfter(millisecondsDelay);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Race between CancelAfter and Dispose — safe to ignore
+            }
+        }
 
         public void Dispose()
         {
-            if (IsDisposed) return;
-            IsDisposed = true;
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
             _innerCts.Dispose();
         }
     }

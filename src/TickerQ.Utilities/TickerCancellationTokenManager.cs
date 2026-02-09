@@ -53,22 +53,10 @@ namespace TickerQ.Utilities
                 // Remove from parent index if it exists
                 if (details.ParentId != Guid.Empty)
                 {
-                    if (ParentIdIndex.TryGetValue(details.ParentId, out var set))
-                    {
-                        set.Remove(tickerId);
-                        // Clean up empty sets
-                        if (set.IsEmpty)
-                        {
-                            if (ParentIdIndex.TryRemove(details.ParentId, out var removedSet))
-                            {
-                                // Dispose the ConcurrentHashSet to free ReaderWriterLockSlim
-                                removedSet?.Dispose();
-                            }
-                        }
-                    }
+                    RemoveFromParentIndex(details.ParentId, tickerId);
                 }
             }
-            
+
             return removed;
         }
 
@@ -107,41 +95,61 @@ namespace TickerQ.Utilities
 
         public static bool RequestTickerCancellationById(Guid tickerId)
         {
-            var existTickerCancellationToken = TickerCancellationTokens.TryRemove(tickerId, out var tickerCancellationToken);
-            
-            if(existTickerCancellationToken)
+            // Cancel while the entry is still tracked so IsParentRunning remains accurate
+            if (!TickerCancellationTokens.TryGetValue(tickerId, out var details))
+                return false;
+
+            // Signal cancellation while the entry is still tracked
+            try
+            {
+                details.CancellationSource?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Already disposed by another thread - safe to ignore
+            }
+
+            // Now remove and dispose
+            if (TickerCancellationTokens.TryRemove(tickerId, out var removed))
             {
                 try
                 {
-                    tickerCancellationToken.CancellationSource.Cancel();
+                    removed.CancellationSource?.Dispose();
                 }
-                finally
+                catch
                 {
-                    // CRITICAL: Must dispose CancellationTokenSource to prevent memory leak
-                    tickerCancellationToken.CancellationSource?.Dispose();
+                    // Ignore disposal errors
                 }
-                
-                // Remove from parent index if it exists
-                if (tickerCancellationToken.ParentId != Guid.Empty)
+
+                if (removed.ParentId != Guid.Empty)
                 {
-                    if (ParentIdIndex.TryGetValue(tickerCancellationToken.ParentId, out var set))
-                    {
-                        set.Remove(tickerId);
-                        if (set.IsEmpty)
-                        {
-                            if (ParentIdIndex.TryRemove(tickerCancellationToken.ParentId, out var removedSet))
-                            {
-                                // Dispose the ConcurrentHashSet to free ReaderWriterLockSlim
-                                removedSet?.Dispose();
-                            }
-                        }
-                    }
+                    RemoveFromParentIndex(removed.ParentId, tickerId);
                 }
             }
-            
-            return existTickerCancellationToken;
+
+            return true;
         }
         
+        /// <summary>
+        /// Atomically removes a ticker from the parent index, cleaning up the set if empty.
+        /// Uses TryRemove with value comparison to avoid TOCTOU races.
+        /// </summary>
+        private static void RemoveFromParentIndex(Guid parentId, Guid tickerId)
+        {
+            if (!ParentIdIndex.TryGetValue(parentId, out var set))
+                return;
+
+            set.Remove(tickerId);
+
+            // Only remove the set from the dictionary if it's still empty.
+            // Use the ICollection<KVP> remove overload for atomic check-and-remove.
+            if (set.IsEmpty)
+            {
+                ((ICollection<KeyValuePair<Guid, ConcurrentHashSet<Guid>>>)ParentIdIndex)
+                    .Remove(new KeyValuePair<Guid, ConcurrentHashSet<Guid>>(parentId, set));
+            }
+        }
+
         /// <summary>
         /// Fast O(1) lookup to check if any tickers are running for a given parent ID.
         /// This replaces the expensive LINQ Any() operation with a direct dictionary lookup.
