@@ -183,6 +183,11 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
                 stopWatch.Start();
 
+                if (context.CachedDelegate is null)
+                    throw new InvalidOperationException(
+                        $"Ticker function '{context.FunctionName}' was not found in the registered functions. " +
+                        "Ensure the function is properly decorated with [TickerFunction] attribute and the containing class is registered.");
+
                 // Create service scope - will be disposed automatically via await using
                 await using var scope = _serviceProvider.CreateAsyncScope();
                 tickerFunctionContext.SetServiceScope(scope);

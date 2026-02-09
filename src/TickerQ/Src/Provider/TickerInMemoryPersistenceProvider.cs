@@ -521,6 +521,17 @@ namespace TickerQ.Provider
         {
             var now = _clock.UtcNow;
 
+            // Remove orphaned cron tickers whose function no longer exists in the code definitions (#517).
+            var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys
+                .ToHashSet(StringComparer.Ordinal);
+
+            var snapshot = CronTickers.ToArray();
+            foreach (var (id, ticker) in snapshot)
+            {
+                if (!allRegisteredFunctions.Contains(ticker.Function))
+                    CronTickers.TryRemove(id, out _);
+            }
+
             foreach (var (function, expression) in cronTickers)
             {
                 // Check if already exists (take snapshot for thread safety)
@@ -538,7 +549,7 @@ namespace TickerQ.Provider
                         UpdatedAt = now,
                         Request = Array.Empty<byte>()
                     };
-                    
+
                     CronTickers.TryAdd(id, cronTicker);
                 }
             }
