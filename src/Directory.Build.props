@@ -1,4 +1,5 @@
 ﻿<Project>
+
     <PropertyGroup>
         <TargetFramework>net9.0</TargetFramework>
         <RepositoryUrl>https://github.com/arcenox-co/TickerQ</RepositoryUrl>
@@ -7,8 +8,8 @@
         <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <Version>9.1.0-beta</Version>
-        <DotNetVersion>[9.0.0,10.0.0)</DotNetVersion>
+        <Version>9.1.0</Version>
+        <DotNetVersion>[10.0.0,11.0.0)</DotNetVersion>
         <LangVersion>default</LangVersion>
     </PropertyGroup>
 
@@ -17,5 +18,4 @@
     </ItemGroup>
 
     <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
-
 </Project>
