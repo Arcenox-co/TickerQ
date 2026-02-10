@@ -1,10 +1,11 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+<Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <OutputType>Library</OutputType>
         <IsPackable>true</IsPackable>
+        <DisableStaticWebAssets>true</DisableStaticWebAssets>
         <PackageId>TickerQ.Dashboard</PackageId>
-        <Description>Dashboard UI for visualizing and monitoring TickerQ scheduled jobs, status, and system metrics.</Description>
-        <PackageTags>$(PackageTags);dashboard;monitoring;scheduler;status;job;ui</PackageTags>
+        <Description>Dashboard UI for visualizing and monitoring TickerQ scheduled jobs.</Description>
+        <PackageTags>dashboard;monitoring;scheduler;ui</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <Nullable>enable</Nullable>
     </PropertyGroup>
@@ -18,21 +19,21 @@
     <ItemGroup>
         <None Include="README.md" Pack="true" PackagePath="" />
     </ItemGroup>
-
+    <ItemGroup>
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
     <ItemGroup>
         <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
     </ItemGroup>
 
+    <!-- Prevent static web asset discovery -->
     <ItemGroup>
-        <EmbeddedResource Include="wwwroot\dist\**\*" />
+        <Content Remove="wwwroot\**\*" />
+        <None Remove="wwwroot\**\*" />
     </ItemGroup>
 
+    <!-- Embed the dashboard -->
     <ItemGroup>
-        <None Remove="wwwroot\src\**\*" />
-        <None Remove="wwwroot\node_modules\**\*" />
-        <None Remove="wwwroot\**\.vite\**\*" />
-        <None Remove="wwwroot\**\*.map" />
-        <None Remove="wwwroot\*" />
-        <None Remove="wwwroot\public\*" />
+        <EmbeddedResource Include="wwwroot\dist\**\*" />
     </ItemGroup>
 </Project>
