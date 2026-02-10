@@ -130,13 +130,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         var idList = timeTickerIds.ToList();
         await dbContext.Set<TTimeTicker>()
-<<<<<<< HEAD
-            .Where(x => timeTickerIds.Contains(x.Id))
-            .ExecuteUpdateAsync(MappingExtensions.UpdateTimeTicker<TTimeTicker>(functionContext, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
-=======
             .Where(x => idList.Contains(x.Id))
-            .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(functionContext, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
->>>>>>> 39b9b90 (Fix .NET 9+ EF Core query failures caused by ReadOnlySpan array.Contains() (#574))
+            .ExecuteUpdateAsync(MappingExtensions.UpdateTimeTicker<TTimeTicker>(functionContext, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
     }
         
     public async Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken)
@@ -567,13 +562,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
         var idList = cronOccurrenceIds.ToList();
         await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-<<<<<<< HEAD
-            .Where(x => cronOccurrenceIds.Contains(x.Id))
-            .ExecuteUpdateAsync(MappingExtensions.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
-=======
             .Where(x => idList.Contains(x.Id))
-            .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
->>>>>>> 39b9b90 (Fix .NET 9+ EF Core query failures caused by ReadOnlySpan array.Contains() (#574))
+            .ExecuteUpdateAsync(MappingExtensions.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
             .ConfigureAwait(false);
     }
     
