@@ -1,9 +1,12 @@
 ﻿using Microsoft.EntityFrameworkCore;
+
 using System;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
+
+using TickerQ.EntityFrameworkCore.DbContextFactory;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -19,15 +22,15 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        public TickerEfCorePersistenceProvider(IDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, SchedulerOptionsBuilder optionsBuilder, ITickerQRedisContext  redisContext) 
+        public TickerEfCorePersistenceProvider(ITickerDbContextFactory<TDbContext> dbContextFactory, ITickerClock clock, SchedulerOptionsBuilder optionsBuilder, ITickerQRedisContext  redisContext) 
             :  base(dbContextFactory, clock, optionsBuilder, redisContext) { }
         
         #region Time_Ticker_Implementations
 
         public async Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
-
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
             return await dbContext.Set<TTimeTicker>()
                 .AsNoTracking()
                 .Include(x => x.Children)
@@ -37,7 +40,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<TTimeTicker[]> GetTimeTickers(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
 
             var baseQuery = dbContext.Set<TTimeTicker>()
                 .Include(x => x.Children)
@@ -60,7 +64,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             int pageSize, 
             CancellationToken cancellationToken)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
 
             var baseQuery = dbContext.Set<TTimeTicker>()
                 .Include(x => x.Children)
@@ -79,8 +84,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
-            
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
+
             await dbContext.Set<TTimeTicker>()
                 .AddRangeAsync(tickers, cancellationToken);
             
@@ -89,7 +95,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<int> UpdateTimeTickers(TTimeTicker[] timeTickers, CancellationToken cancellationToken = default)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
 
             dbContext.Set<TTimeTicker>().UpdateRange(timeTickers);
              
@@ -98,8 +105,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<int> RemoveTimeTickers(Guid[] timeTickerIds, CancellationToken cancellationToken)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
-            
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
+
             // Load the entities to be deleted (including children for cascade delete)
             var idList = timeTickerIds.ToList();
             var tickersToDelete = await dbContext.Set<TTimeTicker>()
@@ -120,14 +128,16 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<TCronTicker> GetCronTickerById(Guid id, CancellationToken cancellationToken)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
             return await dbContext.Set<TCronTicker>().AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken).ConfigureAwait(false);;
         }
 
         public async Task<TCronTicker[]> GetCronTickers(Expression<Func<TCronTicker, bool>> predicate,
             CancellationToken cancellationToken)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
 
             var baseQuery = dbContext.Set<TCronTicker>()
                 .AsNoTracking();
@@ -146,7 +156,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             int pageSize, 
             CancellationToken cancellationToken)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
 
             var baseQuery = dbContext.Set<TCronTicker>()
                 .AsNoTracking();
@@ -161,7 +172,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<int> InsertCronTickers(TCronTicker[] tickers, CancellationToken cancellationToken)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
 
             await dbContext.Set<TCronTicker>().AddRangeAsync(tickers, cancellationToken).ConfigureAwait(false);
             
@@ -175,7 +187,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<int> UpdateCronTickers(TCronTicker[] cronTickers, CancellationToken cancellationToken = default)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
 
             dbContext.Set<TCronTicker>().UpdateRange(cronTickers);
 
@@ -189,7 +202,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<int> RemoveCronTickers(Guid[] cronTickerIds, CancellationToken cancellationToken)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
             var idList = cronTickerIds.ToList();
             var result = await dbContext.Set<TCronTicker>().Where(x => idList.Contains(x.Id))
                 .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
@@ -205,7 +219,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         #region Cron_TickerOccurrence_Implementations
         public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetAllCronTickerOccurrences(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, CancellationToken cancellationToken = default)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
             var cronTickerOccurrenceContext = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                 .AsNoTracking();
 
@@ -222,8 +237,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             int pageSize, 
             CancellationToken cancellationToken)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-            
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
+
             var baseQuery = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                 .Include(x => x.CronTicker)
                 .AsNoTracking();
@@ -238,7 +254,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<int> InsertCronTickerOccurrences(CronTickerOccurrenceEntity<TCronTicker>[] cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
 
             await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>().AddRangeAsync(cronTickerOccurrences, cancellationToken).ConfigureAwait(false);
 
@@ -247,7 +264,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<int> RemoveCronTickerOccurrences(Guid[] cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
             var idList = cronTickerOccurrences.ToList();
             return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                 .Where(x => idList.Contains(x.Id))
@@ -259,7 +277,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             if (occurrenceIds == null || occurrenceIds.Length == 0)
                 return Array.Empty<CronTickerOccurrenceEntity<TCronTicker>>();
 
-            await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            using var session = DbContextFactory.CreateSession();
+            var dbContext = session.Context;
             var now = _clock.UtcNow;
             var idList = occurrenceIds.ToList();
 

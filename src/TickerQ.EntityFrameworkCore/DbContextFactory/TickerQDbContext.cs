@@ -1,5 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
+
+using System;
+
 using TickerQ.EntityFrameworkCore.Configurations;
 using TickerQ.Utilities.Entities;
 
@@ -30,5 +34,71 @@ public class TickerQDbContext : TickerQDbContext<TimeTickerEntity, CronTickerEnt
 {
     public TickerQDbContext(DbContextOptions<TickerQDbContext> options) : base(options)
     {
+    }
+}
+
+internal interface ITickerDbContextFactory<TContext>
+    where TContext : DbContext
+{
+    ITickerDbContextSession<TContext> CreateSession();
+}
+
+internal class TickerDbContextFactory<TContext> : ITickerDbContextFactory<TContext>
+    where TContext : DbContext
+{
+    private readonly IServiceProvider _sp;
+
+    public TickerDbContextFactory(IServiceProvider sp)
+    {
+        _sp = sp;
+    }
+
+    public ITickerDbContextSession<TContext> CreateSession()
+        => new TickerDbContextSession<TContext>(_sp);
+}
+
+internal interface ITickerDbContextSession<TContext> : IDisposable
+    where TContext : DbContext
+{
+    TContext Context { get; }
+}
+
+internal class TickerDbContextSession<TContext> : ITickerDbContextSession<TContext>
+    where TContext : DbContext
+{
+    private readonly IServiceScope _scope;
+    private readonly TContext _context;
+
+    public TickerDbContextSession(IServiceProvider sp)
+    {
+        // 1. Try to get the Factory (Highest Priority)
+        var factory = sp.GetService<IDbContextFactory<TContext>>();
+
+        if (factory != null)
+        {
+            _context = factory.CreateDbContext();
+            _scope = null;
+        }
+        else
+        {
+            // 2. Fallback: Create a manual scope (Standard AddDbContext)
+            var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
+            _scope = scopeFactory.CreateScope();
+            _context = _scope.ServiceProvider.GetRequiredService<TContext>();
+        }
+    }
+
+    public TContext Context => _context;
+
+    public void Dispose()
+    {
+        if (_scope != null)
+        {
+            _scope.Dispose();
+        }
+        else
+        {
+            _context.Dispose();
+        }
     }
 }
