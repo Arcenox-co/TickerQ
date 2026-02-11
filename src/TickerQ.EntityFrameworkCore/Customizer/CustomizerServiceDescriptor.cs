@@ -63,7 +63,6 @@ public static class ServiceBuilder
     {
         public void Configure(IServiceProvider serviceProvider, DbContextOptionsBuilder optionsBuilder)
         {
-            // This is where you inject your library's logic safely
             optionsBuilder
                 .ReplaceService<IModelCustomizer, TickerModelCustomizer<TTimeTicker, TCronTicker>>();
         }
