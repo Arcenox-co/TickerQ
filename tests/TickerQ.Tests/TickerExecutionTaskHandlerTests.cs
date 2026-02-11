@@ -75,7 +75,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.ElapsedTime.Should().BeGreaterOrEqualTo(0);
+        context.ElapsedTime.Should().BeGreaterThanOrEqualTo(0);
     }
 
     [Fact]
