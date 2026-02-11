@@ -3,6 +3,8 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 
 using TickerQ.EntityFrameworkCore.Configurations;
 using TickerQ.Utilities.Entities;
@@ -41,6 +43,7 @@ internal interface ITickerDbContextFactory<TContext>
     where TContext : DbContext
 {
     ITickerDbContextSession<TContext> CreateSession();
+    Task<ITickerDbContextSession<TContext>> CreateSessionAsync(CancellationToken cancellationToken = default);
 }
 
 internal class TickerDbContextFactory<TContext> : ITickerDbContextFactory<TContext>
@@ -54,7 +57,10 @@ internal class TickerDbContextFactory<TContext> : ITickerDbContextFactory<TConte
     }
 
     public ITickerDbContextSession<TContext> CreateSession()
-        => new TickerDbContextSession<TContext>(_sp);
+        => TickerDbContextSession<TContext>.Create(_sp);
+
+    public Task<ITickerDbContextSession<TContext>> CreateSessionAsync(CancellationToken cancellationToken = default)
+        => TickerDbContextSession<TContext>.CreateAsync(_sp, cancellationToken);
 }
 
 internal interface ITickerDbContextSession<TContext> : IDisposable
@@ -69,26 +75,49 @@ internal class TickerDbContextSession<TContext> : ITickerDbContextSession<TConte
     private readonly IServiceScope _scope;
     private readonly TContext _context;
 
-    public TickerDbContextSession(IServiceProvider sp)
+    public TContext Context => _context;
+
+    private TickerDbContextSession(IServiceScope scope, TContext context)
+    {
+        _context = context;
+        _scope = scope;
+    }
+
+    internal static async Task<ITickerDbContextSession<TContext>> CreateAsync(IServiceProvider sp, CancellationToken cancellationToken)
     {
         // 1. Try to get the Factory (Highest Priority)
         var factory = sp.GetService<IDbContextFactory<TContext>>();
 
         if (factory != null)
         {
-            _context = factory.CreateDbContext();
-            _scope = null;
+            return new TickerDbContextSession<TContext>(null, await factory.CreateDbContextAsync(cancellationToken));
         }
         else
         {
             // 2. Fallback: Create a manual scope (Standard AddDbContext)
             var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-            _scope = scopeFactory.CreateScope();
-            _context = _scope.ServiceProvider.GetRequiredService<TContext>();
+            var scope = scopeFactory.CreateScope();
+            return new TickerDbContextSession<TContext>(scope, scope.ServiceProvider.GetRequiredService<TContext>());
         }
     }
 
-    public TContext Context => _context;
+    internal static ITickerDbContextSession<TContext> Create(IServiceProvider sp)
+    {
+        // 1. Try to get the Factory (Highest Priority)
+        var factory = sp.GetService<IDbContextFactory<TContext>>();
+
+        if (factory != null)
+        {
+            return new TickerDbContextSession<TContext>(null, factory.CreateDbContext());
+        }
+        else
+        {
+            // 2. Fallback: Create a manual scope (Standard AddDbContext)
+            var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
+            var scope = scopeFactory.CreateScope();
+            return new TickerDbContextSession<TContext>(scope, scope.ServiceProvider.GetRequiredService<TContext>());
+        }
+    }
 
     public void Dispose()
     {
