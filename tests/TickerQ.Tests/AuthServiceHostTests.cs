@@ -116,7 +116,7 @@ public class AuthServiceHostTests
     }
 
     [Fact]
-    public async Task AuthenticateAsync_HostMode_WithMultipleIdentities_SecondaryIdentitySatisfiesPolicy_ReturnsSuccessWithSecondaryName()
+    public async Task AuthenticateAsync_HostMode_WithMultipleIdentities_SecondaryIdentitySatisfiesPolicy_ReturnsSuccess()
     {
         var config = new AuthConfig { Mode = AuthMode.Host, HostAuthorizationPolicy = "MyPolicy" };
         var logger = Substitute.For<ILogger<AuthService>>();
