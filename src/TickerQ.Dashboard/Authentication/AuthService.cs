@@ -163,7 +163,7 @@ public class AuthService : IAuthService
         if (!string.IsNullOrEmpty(_config.HostAuthorizationPolicy))
         {
             var authorizationService = context.RequestServices.GetRequiredService<Microsoft.AspNetCore.Authorization.IAuthorizationService>();
-            var authResult = await authorizationService.AuthorizeAsync(context.User, null, _config.HostAuthorizationPolicy);
+            var authResult = await authorizationService.AuthorizeAsync(context.User, context, _config.HostAuthorizationPolicy);
             if (!authResult.Succeeded)
             {
                 return AuthResult.Failure("Host authorization policy not satisfied");
