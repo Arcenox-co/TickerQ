@@ -99,7 +99,7 @@ public class SoftSchedulerNotifyDebounceTests
         debounce.NotifySafely(0);
         debounce.NotifySafely(0);
 
-        callCount.Should().BeGreaterOrEqualTo(2);
+        callCount.Should().BeGreaterThanOrEqualTo(2);
     }
 
     [Fact]
