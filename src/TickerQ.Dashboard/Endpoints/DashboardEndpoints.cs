@@ -26,21 +26,22 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         // New authentication endpoints
-        endpoints.MapGet("/api/auth/info", GetAuthInfo)
+        WithGroupNameIfSet(endpoints.MapGet("/api/auth/info", GetAuthInfo)
             .WithName("GetAuthInfo")
             .WithSummary("Get authentication configuration")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")
-            .AllowAnonymous();
+            .AllowAnonymous(), config);
             
-        endpoints.MapPost("/api/auth/validate", ValidateAuth)
+        WithGroupNameIfSet(endpoints.MapPost("/api/auth/validate", ValidateAuth)
             .WithName("ValidateAuth")
             .WithSummary("Validate authentication credentials")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")
-            .AllowAnonymous();
+            .AllowAnonymous(), config);
             
         var apiGroup = endpoints.MapGroup("/api").WithTags("TickerQ Dashboard").RequireCors("TickerQ_Dashboard_CORS");
+        WithGroupNameIfSet(apiGroup, config);
 
         // Apply authentication if configured
         if (config.Auth.Mode == AuthMode.Host)
@@ -202,6 +203,16 @@ public static class DashboardEndpoints
 
     }
     #region Endpoint Handlers
+
+    private static IEndpointConventionBuilder WithGroupNameIfSet(IEndpointConventionBuilder builder, DashboardOptionsBuilder config)
+    {
+        if (!string.IsNullOrWhiteSpace(config.GroupName))
+        {
+            builder.WithGroupName(config.GroupName);
+        }
+
+        return builder;
+    }
     
     private static IResult GetAuthInfo(IAuthService authService, DashboardOptionsBuilder dashboardOptions)
     {
