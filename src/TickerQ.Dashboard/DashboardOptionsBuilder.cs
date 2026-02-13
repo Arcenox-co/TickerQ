@@ -12,6 +12,7 @@ public class DashboardOptionsBuilder
     internal string BasePath { get; set; } = "/tickerq/dashboard";
     internal Action<CorsPolicyBuilder> CorsPolicyBuilder { get; set; }
     internal string BackendDomain { get; set; }
+    internal string GroupName { get; set; }
     
     // Clean authentication system
     internal AuthConfig Auth { get; set; } = new();
@@ -35,6 +36,10 @@ public class DashboardOptionsBuilder
     
     public void SetBackendDomain(string backendDomain)
         => BackendDomain = backendDomain;
+
+    /// <summary>Set OpenAPI group name for dashboard endpoints</summary>
+    public void SetGroupName(string groupName)
+        => GroupName = groupName;
     
     /// <summary>Configure no authentication (public dashboard)</summary>
     public DashboardOptionsBuilder WithNoAuth()

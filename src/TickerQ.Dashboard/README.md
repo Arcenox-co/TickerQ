@@ -59,6 +59,17 @@ services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 });
 ```
 
+### Dedicated OpenAPI Group
+```csharp
+services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
+{
+    config.AddDashboard(dashboard =>
+    {
+        dashboard.SetGroupName("tickerq");
+    });
+});
+```
+
 ## 🔧 Fluent API Methods
 
 - `WithBasicAuth(username, password)` - Enable username/password authentication
@@ -67,6 +78,7 @@ services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 - `SetBasePath(path)` - Set dashboard URL path
 - `SetBackendDomain(domain)` - Set backend API domain
 - `SetCorsPolicy(policy)` - Configure CORS
+- `SetGroupName(name)` - Set OpenAPI group name for dashboard endpoints
 
 ## 🔒 How It Works
 
