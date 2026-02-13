@@ -3,6 +3,7 @@
     public enum TickerType
     {
         CronTickerOccurrence,
-        TimeTicker
+        TimeTicker,
+        PeriodicTickerOccurrence
     }
 }
