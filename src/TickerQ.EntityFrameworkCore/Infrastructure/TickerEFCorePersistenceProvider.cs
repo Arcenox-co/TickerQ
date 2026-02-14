@@ -105,10 +105,10 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var tickersToDelete = await dbContext.Set<TTimeTicker>()
                 .Include(x => x.Children)
                 .ThenInclude(x => x.Children) // Include grandchildren if needed
-                .Where(x => idList.Contains(x.Id))
+                .Where(x => EF.Constant(idList).Contains(x.Id))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
-            
+
             // Remove using Entity Framework (respects cascade delete configuration)
             dbContext.Set<TTimeTicker>().RemoveRange(tickersToDelete);
             
@@ -191,7 +191,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var idList = cronTickerIds.ToList();
-            var result = await dbContext.Set<TCronTicker>().Where(x => idList.Contains(x.Id))
+            var result = await dbContext.Set<TCronTicker>().Where(x => EF.Constant(idList).Contains(x.Id))
                 .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
             
             if(RedisContext.HasRedisConnection)
@@ -250,7 +250,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var idList = cronTickerOccurrences.ToList();
             return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-                .Where(x => idList.Contains(x.Id))
+                .Where(x => EF.Constant(idList).Contains(x.Id))
                 .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
         }
 
@@ -265,7 +265,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
             // Only acquire occurrences that are acquirable (Idle/Queued and not locked by another node)
             var query = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-                .Where(x => idList.Contains(x.Id))
+                .Where(x => EF.Constant(idList).Contains(x.Id))
                 .WhereCanAcquire(_lockHolder);
 
             // Lock and mark InProgress
@@ -283,7 +283,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             // Return acquired occurrences with CronTicker populated
             return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                 .AsNoTracking()
-                .Where(x => idList.Contains(x.Id) && x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
+                .Where(x => EF.Constant(idList).Contains(x.Id) && x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
                 .Include(x => x.CronTicker)
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
