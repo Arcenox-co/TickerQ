@@ -250,6 +250,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
         var functions = cronTickers.Select(x => x.Function).ToList();
         var cronSet = dbContext.Set<TCronTicker>();
+        const int pageSize = 500;
 
         // Build the complete set of registered function names to detect orphaned tickers.
         // This covers functions whose InitIdentifier was cleared by a dashboard edit (#517).
@@ -259,34 +260,81 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         // Find all cron tickers whose function no longer exists in the code definitions.
         // This includes seeded tickers (InitIdentifier = "MemoryTicker_Seeded_*") as well as
         // previously-seeded tickers whose InitIdentifier was cleared by a dashboard update.
-        var orphanedCron = await cronSet
-            .Where(c => !allRegisteredFunctions.Contains(c.Function))
-            .Select(c => c.Id)
-            .ToArrayAsync(cancellationToken)
-            .ConfigureAwait(false);
+        // Use paging and in-memory membership checks to avoid provider-specific
+        // parameterized collection translation issues.
+        var orphanedCronList = new List<Guid>();
+        for (var offset = 0; ; offset += pageSize)
+        {
+            var page = await cronSet
+                .AsNoTracking()
+                .OrderBy(c => c.Id)
+                .Skip(offset)
+                .Take(pageSize)
+                .Select(c => new { c.Id, c.Function })
+                .ToArrayAsync(cancellationToken)
+                .ConfigureAwait(false);
 
-        var orphanedCronList = orphanedCron.ToList();
+            if (page.Length == 0)
+                break;
+
+            orphanedCronList.AddRange(page
+                .Where(c => !allRegisteredFunctions.Contains(c.Function))
+                .Select(c => c.Id));
+
+            if (page.Length < pageSize)
+                break;
+        }
+
         if (orphanedCronList.Count > 0)
         {
-            // Delete related occurrences first (if any), then the cron tickers
-            await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-                .Where(o => orphanedCronList.Contains(o.CronTickerId))
-                .ExecuteDeleteAsync(cancellationToken)
-                .ConfigureAwait(false);
+            // Delete related occurrences first (if any), then the cron tickers.
+            // Delete by single-id predicates to avoid collection parameter translation.
+            foreach (var orphanedCronId in orphanedCronList)
+            {
+                await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                    .Where(o => o.CronTickerId == orphanedCronId)
+                    .ExecuteDeleteAsync(cancellationToken)
+                    .ConfigureAwait(false);
 
-            await cronSet
-                .Where(c => orphanedCronList.Contains(c.Id))
-                .ExecuteDeleteAsync(cancellationToken)
-                .ConfigureAwait(false);
+                await cronSet
+                    .Where(c => c.Id == orphanedCronId)
+                    .ExecuteDeleteAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
         }
 
         var newFunctionSet = functions.ToHashSet(StringComparer.Ordinal);
 
-        // Load existing (remaining) cron tickers for the current function set
-        var existing = await cronSet
-            .Where(c => functions.Contains(c.Function))
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        // Load existing (remaining) cron tickers in pages and keep only rows
+        // matching the incoming function set.
+        var existing = new List<TCronTicker>();
+        for (var offset = 0; ; offset += pageSize)
+        {
+            var page = await cronSet
+                .OrderBy(c => c.Id)
+                .Skip(offset)
+                .Take(pageSize)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (page.Count == 0)
+                break;
+
+            foreach (var cron in page)
+            {
+                if (newFunctionSet.Contains(cron.Function))
+                {
+                    existing.Add(cron);
+                }
+                else
+                {
+                    dbContext.Entry(cron).State = EntityState.Detached;
+                }
+            }
+
+            if (page.Count < pageSize)
+                break;
+        }
 
         var existingByFunction = existing
             .GroupBy(c => c.Function)
@@ -528,20 +576,36 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     
     public async Task<CronTickerOccurrenceEntity<TCronTicker>> GetEarliestAvailableCronOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
     {
+        if (ids.Length == 0)
+            return null;
+
         var now = _clock.UtcNow;
         var mainSchedulerThreshold = now.AddSeconds(-1);
-        var idList = ids.ToList();
         await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
-        return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-            .AsNoTracking()
-            .Include(x => x.CronTicker)
-            .Where(x => idList.Contains(x.CronTickerId))
-            .Where(x => x.ExecutionTime >= mainSchedulerThreshold)  // Only items within the 1-second main scheduler window
-            .WhereCanAcquire(_lockHolder)
-            .OrderBy(x => x.ExecutionTime)
-            .Select(MappingExtensions.ForLatestQueuedCronTickerOccurrence<CronTickerOccurrenceEntity<TCronTicker>, TCronTicker>())
-            .FirstOrDefaultAsync(cancellationToken)
-            .ConfigureAwait(false);
+        var context = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>();
+        CronTickerOccurrenceEntity<TCronTicker> earliest = null;
+
+        foreach (var cronTickerId in ids)
+        {
+            var candidate = await context
+                .AsNoTracking()
+                .Include(x => x.CronTicker)
+                .Where(x => x.CronTickerId == cronTickerId)
+                .Where(x => x.ExecutionTime >= mainSchedulerThreshold)  // Only items within the 1-second main scheduler window
+                .WhereCanAcquire(_lockHolder)
+                .OrderBy(x => x.ExecutionTime)
+                .Select(MappingExtensions.ForLatestQueuedCronTickerOccurrence<CronTickerOccurrenceEntity<TCronTicker>, TCronTicker>())
+                .FirstOrDefaultAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (candidate is null)
+                continue;
+
+            if (earliest is null || candidate.ExecutionTime < earliest.ExecutionTime)
+                earliest = candidate;
+        }
+
+        return earliest;
     }
     
     public async Task<byte[]> GetCronTickerOccurrenceRequest(Guid tickerId, CancellationToken cancellationToken = default)
