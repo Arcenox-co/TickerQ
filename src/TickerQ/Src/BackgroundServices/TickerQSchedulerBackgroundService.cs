@@ -16,6 +16,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private readonly RestartThrottleManager _restartThrottle;
     private readonly IInternalTickerManager _internalTickerManager;
     private readonly TickerExecutionContext _executionContext;
+    private readonly TimeSpan _minPollingInterval;
     private SafeCancellationTokenSource _schedulerLoopCancellationTokenSource;
     private readonly ITickerQTaskScheduler  _taskScheduler;
     private readonly ITickerExecutionTaskHandler  _taskHandler;
@@ -28,12 +29,14 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         TickerExecutionContext executionContext,
         ITickerExecutionTaskHandler taskHandler, 
         ITickerQTaskScheduler taskScheduler, 
-        IInternalTickerManager  internalTickerManager)
+        IInternalTickerManager  internalTickerManager,
+        SchedulerOptionsBuilder schedulerOptions)
     {
         _executionContext = executionContext;
         _taskHandler = taskHandler;
         _taskScheduler = taskScheduler;
         _internalTickerManager = internalTickerManager ?? throw new ArgumentNullException(nameof(internalTickerManager));
+        _minPollingInterval = ResolveMinPollingInterval(schedulerOptions);
         _restartThrottle = new RestartThrottleManager(() => _schedulerLoopCancellationTokenSource?.Cancel());
     }
     
@@ -118,8 +121,12 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             }
             else
             {
-                sleepDuration = timeRemaining <= TimeSpan.Zero
-                    ? TimeSpan.FromMilliseconds(1)
+                var minInterval = _minPollingInterval < TimeSpan.Zero
+                    ? TimeSpan.Zero
+                    : _minPollingInterval;
+
+                sleepDuration = timeRemaining <= minInterval
+                    ? minInterval
                     : timeRemaining;
                 _executionContext.SetNextPlannedOccurrence(DateTime.UtcNow.Add(sleepDuration));
             }
@@ -132,6 +139,18 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
             await Task.Delay(sleepDuration, cancellationToken);
         }
+    }
+
+    private static TimeSpan ResolveMinPollingInterval(SchedulerOptionsBuilder schedulerOptions)
+    {
+        if (schedulerOptions == null)
+            return TimeSpan.FromSeconds(1);
+
+        var prop = schedulerOptions.GetType().GetProperty("MinPollingInterval");
+        if (prop?.PropertyType == typeof(TimeSpan))
+            return (TimeSpan)prop.GetValue(schedulerOptions);
+
+        return TimeSpan.FromSeconds(1);
     }
 
     private async Task ReleaseAllResourcesAsync(Exception ex)
