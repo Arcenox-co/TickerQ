@@ -66,6 +66,16 @@ namespace TickerQ.Utilities
             return this;
         }
 
+        /// <summary>
+        /// Gets or sets the minimum interval between database polls.
+        /// Prevents tight loops when tasks are due or when the database is empty.
+        /// </summary>
+        public TimeSpan MinPollingInterval
+        {
+            get => _schedulerOptions.MinPollingInterval;
+            set => _schedulerOptions.MinPollingInterval = value;
+        }
+
               
         /// <summary>
         /// JsonSerializerOptions specifically for serializing/deserializing ticker requests.
@@ -181,6 +191,11 @@ namespace TickerQ.Utilities
         public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
         public TimeSpan IdleWorkerTimeOut { get; set; } = TimeSpan.FromMinutes(1);
         public TimeSpan FallbackIntervalChecker { get; set; } = TimeSpan.FromSeconds(30);
+        /// <summary>
+        /// Gets or sets the minimum interval between database polls.
+        /// Prevents tight loops when tasks are due or when the database is empty.
+        /// </summary>
+        public TimeSpan MinPollingInterval { get; set; } = TimeSpan.FromSeconds(1);
         public TimeZoneInfo SchedulerTimeZone = TimeZoneInfo.Local;
     }
 }
