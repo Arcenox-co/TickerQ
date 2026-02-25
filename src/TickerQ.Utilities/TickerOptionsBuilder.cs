@@ -60,6 +60,21 @@ namespace TickerQ.Utilities
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
         internal Type TickerExceptionHandlerType { get; private set; }
         
+        /// <summary>
+        /// Internal flag indicating periodic ticker support is enabled.
+        /// </summary>
+        internal bool PeriodicEnabled { get; private set; }
+        
+        /// <summary>
+        /// The periodic ticker entity type when periodic support is enabled.
+        /// </summary>
+        internal Type PeriodicTickerType { get; private set; }
+        
+        /// <summary>
+        /// Action to register periodic ticker services.
+        /// </summary>
+        internal Action<IServiceCollection> PeriodicServiceAction { get; private set; }
+        
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureScheduler(Action<SchedulerOptionsBuilder> schedulerOptionsBuilder)
         {
             schedulerOptionsBuilder?.Invoke(_schedulerOptions);
@@ -183,6 +198,28 @@ namespace TickerQ.Utilities
         
         internal void UseDashboardApplication(Action<object> action)
             => _tickerExecutionContext.DashboardApplicationAction = action;
+        
+        /// <summary>
+        /// Enables PeriodicTicker support with the default PeriodicTickerEntity type.
+        /// Periodic tickers execute at fixed intervals (like every 5 minutes).
+        /// </summary>
+        /// <returns>The TickerOptionsBuilder for method chaining</returns>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> EnablePeriodic()
+            => EnablePeriodic<PeriodicTickerEntity>();
+
+        /// <summary>
+        /// Enables PeriodicTicker support with a custom entity type.
+        /// Periodic tickers execute at fixed intervals (like every 5 minutes).
+        /// </summary>
+        /// <typeparam name="TPeriodicTicker">The periodic ticker entity type.</typeparam>
+        /// <returns>The TickerOptionsBuilder for method chaining</returns>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> EnablePeriodic<TPeriodicTicker>()
+            where TPeriodicTicker : PeriodicTickerEntity, new()
+        {
+            PeriodicEnabled = true;
+            PeriodicTickerType = typeof(TPeriodicTicker);
+            return this;
+        }
     }
 
     public class SchedulerOptionsBuilder
