@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using StackExchange.Redis;
+using TickerQ.Caching.StackExchangeRedis.Converter;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -46,7 +47,8 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
-            WriteIndented = false
+            WriteIndented = false,
+            Converters = { new TimeTickerEntityConverter() }
         };
     }
 
@@ -683,7 +685,9 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         var query = list.Where(x => x.ParentId == null).AsQueryable();
         if (predicate != null) query = query.Where(predicate);
 
-        return query.OrderByDescending(x => x.ExecutionTime).ToArray();
+        var res = query.OrderByDescending(x => x.ExecutionTime).ToArray();
+
+        return res;
     }
 
     public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(Expression<Func<TTimeTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
