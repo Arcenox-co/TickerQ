@@ -32,15 +32,6 @@ msbuild.wrn
 .vs/
 .idea/
 
-# Ignore sample Aspire projects and their build artifacts
-TickerQ.Sample.WebApi.Aspire/TickerQ.Sample.WebApi.Aspire.AppHost/
-TickerQ.Sample.WebApi.Aspire/TickerQ.Sample.WebApi.Aspire.ServiceDefaults/
-samples/TickerQ.Sample.WebApi.RedisAspire/
-
-
-
-
-
 
 
 
