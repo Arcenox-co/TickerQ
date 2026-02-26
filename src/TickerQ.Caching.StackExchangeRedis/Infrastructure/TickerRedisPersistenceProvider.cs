@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using StackExchange.Redis;
+using TickerQ.Caching.StackExchangeRedis.Converter;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -46,7 +47,8 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
-            WriteIndented = false
+            WriteIndented = false,
+            Converters = { new TimeTickerEntityConverter() }
         };
     }
 
