@@ -685,9 +685,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         var query = list.Where(x => x.ParentId == null).AsQueryable();
         if (predicate != null) query = query.Where(predicate);
 
-        var res = query.OrderByDescending(x => x.ExecutionTime).ToArray();
-
-        return res;
+        return query.OrderByDescending(x => x.ExecutionTime).ToArray();
     }
 
     public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(Expression<Func<TTimeTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)

@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "TickerQ.Dashboard": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:63628;http://localhost:63630"
+    }
+  }
+}
