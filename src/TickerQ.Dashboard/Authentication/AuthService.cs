@@ -3,6 +3,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace TickerQ.Dashboard.Authentication;
@@ -157,15 +158,27 @@ public class AuthService : IAuthService
         }
     }
 
-    private Task<AuthResult> AuthenticateHostAsync(HttpContext context)
+    private async Task<AuthResult> AuthenticateHostAsync(HttpContext context)
     {
+        if (!string.IsNullOrEmpty(_config.HostAuthorizationPolicy))
+        {
+            var authorizationService = context.RequestServices.GetRequiredService<Microsoft.AspNetCore.Authorization.IAuthorizationService>();
+            var authResult = await authorizationService.AuthorizeAsync(context.User, context, _config.HostAuthorizationPolicy);
+            if (!authResult.Succeeded)
+            {
+                return AuthResult.Failure("Host authorization policy not satisfied");
+            }
+
+            return AuthResult.Success(context.User.Identity?.Name ?? "host-user");
+        }
+
         // Delegate to host application's authentication
         if (context.User?.Identity?.IsAuthenticated == true)
         {
             var username = context.User.Identity.Name ?? "host-user";
-            return Task.FromResult(AuthResult.Success(username));
+            return AuthResult.Success(username);
         }
 
-        return Task.FromResult(AuthResult.Failure("Host authentication required"));
+        return AuthResult.Failure("Host authentication required");
     }
 }
