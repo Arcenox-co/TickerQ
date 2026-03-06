@@ -257,6 +257,15 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             catch (Exception ex)
             {
                 lastException = ex;
+                
+                context.SetProperty(x => x.ExceptionDetails, SerializeException(ex));
+                
+                if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
+                    await handler.HandleExceptionAsync(ex, context.TickerId, context.Type);
+
+                await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+                
+                context.ResetUpdateProps();
             }
         }
 
@@ -291,11 +300,6 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             // Log job failed
             _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, lastException, context.RetryCount);
             _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, stopWatch.ElapsedMilliseconds, false);
-
-            var handler = _serviceProvider.GetService(typeof(ITickerExceptionHandler)) as ITickerExceptionHandler;
-
-            if (handler != null)
-                await handler.HandleExceptionAsync(lastException, context.TickerId, context.Type);
 
             await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
         }

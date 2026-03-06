@@ -75,7 +75,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.ElapsedTime.Should().BeGreaterOrEqualTo(0);
+        context.ElapsedTime.Should().BeGreaterThanOrEqualTo(0);
     }
 
     [Fact]
@@ -134,6 +134,52 @@ public class TickerExecutionTaskHandlerTests
             Arg.Any<Exception>(),
             Arg.Is(context.TickerId),
             Arg.Is(context.Type));
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_CallsExceptionHandler_ForEachFailedAttempt()
+    {
+        var exceptionHandler = Substitute.For<ITickerExceptionHandler>();
+        var services = new ServiceCollection();
+        services.AddSingleton(_internalManager);
+        services.AddSingleton(_instrumentation);
+        services.AddSingleton(exceptionHandler);
+        var sp = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager);
+
+        var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
+        context.Retries = 2;
+        context.RetryIntervals = [0, 0];
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        await exceptionHandler.Received(3).HandleExceptionAsync(
+            Arg.Any<Exception>(),
+            Arg.Is(context.TickerId),
+            Arg.Is(context.Type));
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_UpdatesExceptionDetails_OnFailedAttemptBeforeRetriesComplete()
+    {
+        var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
+        context.Retries = 1;
+        context.RetryIntervals = [0];
+        var observedUpdates = new List<(TickerStatus Status, string ExceptionDetails)>();
+
+        _internalManager
+            .When(x => x.UpdateTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo =>
+            {
+                var ctx = callInfo.Arg<InternalFunctionContext>();
+                observedUpdates.Add((ctx.Status, ctx.ExceptionDetails));
+            });
+
+        await _handler.ExecuteTaskAsync(context, isDue: false);
+
+        observedUpdates.Should().Contain(x =>
+            x.Status == TickerStatus.InProgress &&
+            !string.IsNullOrWhiteSpace(x.ExceptionDetails));
     }
 
     #endregion
