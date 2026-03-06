@@ -81,7 +81,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                         "remove the dashboard configuration or move it to a WebApplication."
                     );
                 // Configure static files and middleware with endpoints
-                app.UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(dashboardConfig);
+                ((IApplicationBuilder)app).UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(dashboardConfig);
             });
         }
     }
