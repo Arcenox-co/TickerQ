@@ -22,6 +22,9 @@ TickerQ is a fast, reflection-free background task scheduler for .NET — built 
 ### 📚 [Full Docs: https://tickerq.net](https://tickerq.net)
 (Docs are open-source and anyone can help us improving [Documentation Repository](https://github.com/Arcenox-co/TickerQ-UI)
 
+### 🚀 [TickerQ Hub: https://hub.tickerq.net](https://hub.tickerq.net)
+TickerQ Hub is the mission control for distributed scheduling. It connects all your applications through SDKs, keeps execution in your own infrastructure, and gives you a single dashboard to manage nodes, environments, credentials, and functions. One Hub, total visibility, zero lock-in.
+
 > **Note:**
 All TickerQ packages are versioned together — even if a package has no changes — to keep the ecosystem in sync. Always update all packages to the same version.
 
