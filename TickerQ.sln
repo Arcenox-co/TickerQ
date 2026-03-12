@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.0.31903.59
+# Visual Studio Version 18
+VisualStudioVersion = 18.3.11505.172 d18.3
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Utilities", "src\TickerQ.Utilities\TickerQ.Utilities.csproj", "{68DBCCE9-C774-4215-8CC1-7284D0D4DB24}"
 EndProject
@@ -49,6 +49,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.SDK", "src\TickerQ.SDK\TickerQ.SDK.csproj", "{458E9E1E-A58D-43B8-9CFF-FFC84C715094}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.RemoteExecutor", "src\TickerQ.RemoteExecutor\TickerQ.RemoteExecutor.csproj", "{F8599439-948C-4856-ACD5-79CCBC13E9AE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Sample.ApplicationDbContext", "samples\TickerQ.Sample.ApplicationDbContext\TickerQ.Sample.ApplicationDbContext.csproj", "{B49F8436-1408-CA3A-C69E-0EED0159C753}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.EntityFrameworkCore.Tests", "tests\TickerQ.EntityFrameworkCore.Tests\TickerQ.EntityFrameworkCore.Tests.csproj", "{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -216,6 +220,30 @@ Global
 		{F8599439-948C-4856-ACD5-79CCBC13E9AE}.Release|x64.Build.0 = Release|Any CPU
 		{F8599439-948C-4856-ACD5-79CCBC13E9AE}.Release|x86.ActiveCfg = Release|Any CPU
 		{F8599439-948C-4856-ACD5-79CCBC13E9AE}.Release|x86.Build.0 = Release|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Debug|x64.Build.0 = Debug|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Debug|x86.Build.0 = Debug|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Release|x64.ActiveCfg = Release|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Release|x64.Build.0 = Release|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Release|x86.ActiveCfg = Release|Any CPU
+		{B49F8436-1408-CA3A-C69E-0EED0159C753}.Release|x86.Build.0 = Release|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Debug|x64.Build.0 = Debug|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Debug|x86.Build.0 = Debug|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Release|x64.ActiveCfg = Release|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Release|x64.Build.0 = Release|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Release|x86.ActiveCfg = Release|Any CPU
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -235,5 +263,10 @@ Global
 		{8FF073D6-F685-4662-B1C4-AC551917ACE0} = {45D577FA-DB7A-4B96-BB3F-97DDA0A929D5}
 		{458E9E1E-A58D-43B8-9CFF-FFC84C715094} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
 		{F8599439-948C-4856-ACD5-79CCBC13E9AE} = {BA086F2D-2778-4F58-A9AA-45F560CE3504}
+		{B49F8436-1408-CA3A-C69E-0EED0159C753} = {45D577FA-DB7A-4B96-BB3F-97DDA0A929D5}
+		{CD2C9C52-E3ED-1E5F-8999-5F885472AFE3} = {61397D4B-87E7-4BE8-A674-EBCEDFBAE441}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {9F920FB4-439A-4F8A-9E49-20E39ADE8B0C}
 	EndGlobalSection
 EndGlobal
