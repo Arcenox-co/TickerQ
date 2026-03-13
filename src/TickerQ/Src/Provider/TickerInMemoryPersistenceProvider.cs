@@ -88,7 +88,7 @@ namespace TickerQ.Provider
         public async IAsyncEnumerable<TimeTickerEntity> QueueTimedOutTimeTickers([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
-            var fallbackThreshold = now.AddMilliseconds(-100);  // Fallback picks up tasks overdue by > 100ms
+            var fallbackThreshold = now.AddSeconds(-1);  // Fallback picks up tasks older than main 1-second window
 
             // First, get the time tickers that need to be updated (matching EF query)
             // NOTE: we project to the raw ticker here and only build the full
@@ -662,7 +662,7 @@ namespace TickerQ.Provider
         public Task<CronTickerOccurrenceEntity<TCronTicker>> GetEarliestAvailableCronOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
-            var mainSchedulerThreshold = now.AddMilliseconds(-100);  // Main scheduler handles tasks up to 100ms overdue
+            var mainSchedulerThreshold = now.AddSeconds(-1);  // Main scheduler handles items within the 1-second window
             
             var query = CronOccurrences.Values.AsEnumerable();
             
@@ -745,11 +745,11 @@ namespace TickerQ.Provider
         public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueTimedOutCronTickerOccurrences([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
-            var fallbackThreshold = now.AddMilliseconds(-100);  // Fallback picks up tasks overdue by > 100ms
+            var fallbackThreshold = now.AddSeconds(-1);  // Fallback picks up tasks older than main 1-second window
 
             var occurrencesToUpdate = CronOccurrences.Values
                 .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
-                .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks overdue by more than 100ms
+                .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks older than 1 second
                 .ToArray();
 
             foreach (var occurrence in occurrencesToUpdate)

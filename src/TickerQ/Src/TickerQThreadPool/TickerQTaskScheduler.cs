@@ -149,20 +149,14 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
             TryStartWorker();
             return;
         }
-        
-        // Start more workers if we have queued tasks
+
+        // If there is queued work and we still have capacity, start another worker
         var totalQueued = _totalQueuedTasks;
         var activeWorkers = _activeWorkers;
-        
-        // If we have tasks but not enough workers, start more
+
         if (totalQueued > 0 && activeWorkers < _maxConcurrency)
         {
-            // Start workers proportional to load
-            var desiredWorkers = Math.Min(totalQueued, _maxConcurrency);
-            if (desiredWorkers > activeWorkers)
-            {
-                TryStartWorker();
-            }
+            TryStartWorker();
         }
     }
     

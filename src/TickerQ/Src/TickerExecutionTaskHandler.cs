@@ -207,7 +207,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 context.SetProperty(x => x.Status, TickerStatus.Cancelled)
                     .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
                     .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
-                    .SetProperty(x => x.ExceptionDetails, SerializeException(lastException));
+                    .SetProperty(x => x.ExceptionDetails, SerializeException(ex));
                 
                 // Add cancellation tags to activity
                 jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
