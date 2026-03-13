@@ -8,5 +8,6 @@
 [assembly: InternalsVisibleTo("TickerQ.RemoteExecutor")]
 [assembly: InternalsVisibleTo("TickerQ.Instrumentation.OpenTelemetry")]
 [assembly: InternalsVisibleTo("TickerQ.Caching.StackExchangeRedis")]
+[assembly: InternalsVisibleTo("TickerQ.EntityFrameworkCore.Tests")]
 // To be testable using NSubsitute
 [assembly: InternalsVisibleTo("DynamicProxyGenAssembly2")]

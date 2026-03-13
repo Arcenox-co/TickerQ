@@ -1,4 +1,3 @@
-using FluentAssertions;
 using NSubstitute;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
@@ -25,9 +24,9 @@ public class RetryBehaviorTests
         await handler.ExecuteTaskAsync(context, isDue: true);
 
         // Assert - initial + 3 retries = 4 attempts
-        attempts.Should().HaveCount(4);
+        Assert.Equal(4, attempts.Count);
         for (int i = 0; i < 4; i++)
-            attempts[i].RetryCount.Should().Be(i);
+            Assert.Equal(i, attempts[i].RetryCount);
 
         // Verify mapped retry intervals produced the expected spacing between attempts
         var timeDiffs = new[]
@@ -38,9 +37,9 @@ public class RetryBehaviorTests
         };
 
         // allow a small tolerance for timing, but ensure each spacing reflects the configured intervals
-        timeDiffs[0].Should().BeInRange(0.8, 1.2); // first retry uses ~1s
-        timeDiffs[1].Should().BeInRange(1.8, 2.2); // second retry uses ~2s
-        timeDiffs[2].Should().BeInRange(2.8, 3.2); // third retry uses ~3s
+        Assert.InRange(timeDiffs[0], 0.8, 1.2); // first retry uses ~1s
+        Assert.InRange(timeDiffs[1], 1.8, 2.2); // second retry uses ~2s
+        Assert.InRange(timeDiffs[2], 2.8, 3.2); // third retry uses ~3s
     }
 
     [Fact]
@@ -52,10 +51,12 @@ public class RetryBehaviorTests
         await handler.ExecuteTaskAsync(context, isDue: true);
 
         // initial + 4 retries = 5 attempts
-        attempts.Should().HaveCount(5);
+        Assert.Equal(5, attempts.Count);
 
         // Ensure we captured attempts and they happened in order. Timing is intentionally tiny.
-        attempts.Select(a => a.Timestamp).Should().BeInAscendingOrder();
+        var timestamps = attempts.Select(a => a.Timestamp).ToList();
+        for (int i = 1; i < timestamps.Count; i++)
+            Assert.True(timestamps[i] >= timestamps[i - 1]);
     }
 
     [Fact]
@@ -68,8 +69,8 @@ public class RetryBehaviorTests
         await handler.ExecuteTaskAsync(context, isDue: true);
 
         // Should stop after success on attempt with RetryCount=2 => initial + retry1 + retry2 = 3 attempts
-        attempts.Should().HaveCount(3);
-        attempts.Last().RetryCount.Should().Be(2);
+        Assert.Equal(3, attempts.Count);
+        Assert.Equal(2, attempts.Last().RetryCount);
     }
 
     private record Attempt(DateTime Timestamp, int RetryCount);

@@ -1,7 +1,6 @@
 using System;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
@@ -19,10 +18,10 @@ public class TickerOptionsBuilderTests
 
     private sealed class FakeExceptionHandler : ITickerExceptionHandler
     {
-        public System.Threading.Tasks.Task HandleExceptionAsync(Exception exception, Guid tickerId, TickerType tickerType) 
+        public System.Threading.Tasks.Task HandleExceptionAsync(Exception exception, Guid tickerId, TickerType tickerType)
             => System.Threading.Tasks.Task.CompletedTask;
 
-        public System.Threading.Tasks.Task HandleCanceledExceptionAsync(Exception exception, Guid tickerId, TickerType tickerType) 
+        public System.Threading.Tasks.Task HandleCanceledExceptionAsync(Exception exception, Guid tickerId, TickerType tickerType)
             => System.Threading.Tasks.Task.CompletedTask;
     }
 
@@ -44,9 +43,9 @@ public class TickerOptionsBuilderTests
             .GetProperty("RequestJsonSerializerOptions", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(builder) as JsonSerializerOptions;
 
-        jsonOptions.Should().NotBeNull();
-        jsonOptions!.PropertyNameCaseInsensitive.Should().BeTrue();
-        jsonOptions.DefaultIgnoreCondition.Should().Be(JsonIgnoreCondition.WhenWritingNull);
+        Assert.NotNull(jsonOptions);
+        Assert.True(jsonOptions!.PropertyNameCaseInsensitive);
+        Assert.Equal(JsonIgnoreCondition.WhenWritingNull, jsonOptions.DefaultIgnoreCondition);
     }
 
     [Fact]
@@ -63,7 +62,8 @@ public class TickerOptionsBuilderTests
             .GetProperty("RequestGZipCompressionEnabled", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(builder);
 
-        flag.Should().BeOfType<bool>().Which.Should().BeTrue();
+        var boolFlag = Assert.IsType<bool>(flag);
+        Assert.True(boolFlag);
     }
 
     [Fact]
@@ -80,7 +80,8 @@ public class TickerOptionsBuilderTests
             .GetProperty("SeedDefinedCronTickers", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(builder);
 
-        flag.Should().BeOfType<bool>().Which.Should().BeFalse();
+        var boolFlag = Assert.IsType<bool>(flag);
+        Assert.False(boolFlag);
     }
 
     [Fact]
@@ -97,7 +98,7 @@ public class TickerOptionsBuilderTests
             .GetProperty("TickerExceptionHandlerType", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(builder) as Type;
 
-        handlerType.Should().Be(typeof(FakeExceptionHandler));
+        Assert.Equal(typeof(FakeExceptionHandler), handlerType);
     }
 
     [Fact]
@@ -114,7 +115,7 @@ public class TickerOptionsBuilderTests
             .GetProperty("TimeSeederAction", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(builder);
 
-        seeder.Should().NotBeNull();
+        Assert.NotNull(seeder);
     }
 
     [Fact]
@@ -131,7 +132,7 @@ public class TickerOptionsBuilderTests
             .GetProperty("CronSeederAction", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(builder);
 
-        seeder.Should().NotBeNull();
+        Assert.NotNull(seeder);
     }
 
     [Fact]
@@ -148,8 +149,8 @@ public class TickerOptionsBuilderTests
             options.NodeIdentifier = "test-node";
         });
 
-        schedulerOptions.MaxConcurrency.Should().Be(42);
-        schedulerOptions.NodeIdentifier.Should().Be("test-node");
+        Assert.Equal(42, schedulerOptions.MaxConcurrency);
+        Assert.Equal("test-node", schedulerOptions.NodeIdentifier);
     }
 
     [Fact]
@@ -164,7 +165,8 @@ public class TickerOptionsBuilderTests
         var defaultFlag = typeof(TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>)
             .GetProperty("RegisterBackgroundServices", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(builder);
-        defaultFlag.Should().BeOfType<bool>().Which.Should().BeTrue();
+        var defaultBoolFlag = Assert.IsType<bool>(defaultFlag);
+        Assert.True(defaultBoolFlag);
 
         // After calling DisableBackgroundServices, should be false
         builder.DisableBackgroundServices();
@@ -173,6 +175,7 @@ public class TickerOptionsBuilderTests
             .GetProperty("RegisterBackgroundServices", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(builder);
 
-        flag.Should().BeOfType<bool>().Which.Should().BeFalse();
+        var boolFlag = Assert.IsType<bool>(flag);
+        Assert.False(boolFlag);
     }
 }
