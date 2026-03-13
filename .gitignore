@@ -31,3 +31,14 @@ msbuild.err
 msbuild.wrn
 .vs/
 .idea/
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+
+# Source generator temp output
+tmpgen/
+
+# ReSharper/Rider user settings
+*.DotSettings.user
