@@ -1,4 +1,3 @@
-using FluentAssertions;
 using NSubstitute;
 using TickerQ.Dispatcher;
 using TickerQ.Utilities.Enums;
@@ -25,8 +24,8 @@ public class TickerQDispatcherTests
     {
         var act = () => new TickerQDispatcher(null!, _taskHandler);
 
-        act.Should().Throw<ArgumentNullException>()
-            .And.ParamName.Should().Be("taskScheduler");
+        var ex = Assert.Throws<ArgumentNullException>(act);
+        Assert.Equal("taskScheduler", ex.ParamName);
     }
 
     [Fact]
@@ -34,14 +33,14 @@ public class TickerQDispatcherTests
     {
         var act = () => new TickerQDispatcher(_taskScheduler, null!);
 
-        act.Should().Throw<ArgumentNullException>()
-            .And.ParamName.Should().Be("taskHandler");
+        var ex = Assert.Throws<ArgumentNullException>(act);
+        Assert.Equal("taskHandler", ex.ParamName);
     }
 
     [Fact]
     public void IsEnabled_ReturnsTrue()
     {
-        _dispatcher.IsEnabled.Should().BeTrue();
+        Assert.True(_dispatcher.IsEnabled);
     }
 
     [Fact]

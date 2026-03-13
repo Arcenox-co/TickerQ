@@ -1,5 +1,3 @@
-using FluentAssertions;
-
 namespace TickerQ.Tests;
 
 public class SoftSchedulerNotifyDebounceTests
@@ -12,7 +10,7 @@ public class SoftSchedulerNotifyDebounceTests
 
         debounce.NotifySafely(5);
 
-        receivedValues.Should().Contain("5");
+        Assert.Contains("5", receivedValues);
     }
 
     [Fact]
@@ -28,7 +26,7 @@ public class SoftSchedulerNotifyDebounceTests
         var countAfterSecond = receivedValues.Count;
 
         // Second call with same non-zero value should be suppressed
-        countAfterSecond.Should().Be(countAfterFirst);
+        Assert.Equal(countAfterFirst, countAfterSecond);
     }
 
     [Fact]
@@ -40,8 +38,8 @@ public class SoftSchedulerNotifyDebounceTests
         debounce.NotifySafely(1);
         debounce.NotifySafely(2);
 
-        receivedValues.Should().Contain("1");
-        receivedValues.Should().Contain("2");
+        Assert.Contains("1", receivedValues);
+        Assert.Contains("2", receivedValues);
     }
 
     [Fact]
@@ -57,7 +55,7 @@ public class SoftSchedulerNotifyDebounceTests
         debounce.Flush();
 
         // Flush should ensure the latest value is pushed
-        receivedValues.Should().NotBeEmpty();
+        Assert.NotEmpty(receivedValues);
     }
 
     [Fact]
@@ -71,7 +69,7 @@ public class SoftSchedulerNotifyDebounceTests
 
         debounce.NotifySafely(100);
 
-        receivedValues.Count.Should().Be(countBeforeNotify);
+        Assert.Equal(countBeforeNotify, receivedValues.Count);
     }
 
     [Fact]
@@ -79,13 +77,13 @@ public class SoftSchedulerNotifyDebounceTests
     {
         var debounce = new SoftSchedulerNotifyDebounce(_ => { });
 
-        var act = () =>
+        var exception = Record.Exception(() =>
         {
             debounce.Dispose();
             debounce.Dispose();
-        };
+        });
 
-        act.Should().NotThrow();
+        Assert.Null(exception);
     }
 
     [Fact]
@@ -99,7 +97,7 @@ public class SoftSchedulerNotifyDebounceTests
         debounce.NotifySafely(0);
         debounce.NotifySafely(0);
 
-        callCount.Should().BeGreaterThanOrEqualTo(2);
+        Assert.True(callCount >= 2);
     }
 
     [Fact]
@@ -108,6 +106,6 @@ public class SoftSchedulerNotifyDebounceTests
         var callCount = 0;
         using var debounce = new SoftSchedulerNotifyDebounce(_ => callCount++);
 
-        callCount.Should().Be(0);
+        Assert.Equal(0, callCount);
     }
 }

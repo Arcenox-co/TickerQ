@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,8 +23,8 @@ public class AuthServiceHostTests
 
         var result = await svc.AuthenticateAsync(context);
 
-        result.IsAuthenticated.Should().BeTrue();
-        result.Username.Should().Be("alice");
+        Assert.True(result.IsAuthenticated);
+        Assert.Equal("alice", result.Username);
     }
 
     [Fact]
@@ -42,8 +41,8 @@ public class AuthServiceHostTests
 
         var result = await svc.AuthenticateAsync(context);
 
-        result.IsAuthenticated.Should().BeTrue();
-        result.Username.Should().Be("host-user");
+        Assert.True(result.IsAuthenticated);
+        Assert.Equal("host-user", result.Username);
     }
 
     [Fact]
@@ -59,8 +58,8 @@ public class AuthServiceHostTests
 
         var result = await svc.AuthenticateAsync(context);
 
-        result.IsAuthenticated.Should().BeFalse();
-        result.ErrorMessage.Should().Contain("Host authentication required");
+        Assert.False(result.IsAuthenticated);
+        Assert.Contains("Host authentication required", result.ErrorMessage);
     }
 
     [Fact]
@@ -86,7 +85,7 @@ public class AuthServiceHostTests
         var result = await svc.AuthenticateAsync(context);
 
         // Expected: authentication should fail because the policy was not satisfied.
-        result.IsAuthenticated.Should().BeFalse();
+        Assert.False(result.IsAuthenticated);
     }
 
     [Fact]
@@ -111,8 +110,8 @@ public class AuthServiceHostTests
 
         var result = await svc.AuthenticateAsync(context);
 
-        result.IsAuthenticated.Should().BeTrue();
-        result.Username.Should().Be("alice");
+        Assert.True(result.IsAuthenticated);
+        Assert.Equal("alice", result.Username);
     }
 
     [Fact]
@@ -143,7 +142,7 @@ public class AuthServiceHostTests
 
         var result = await svc.AuthenticateAsync(context);
 
-        result.IsAuthenticated.Should().BeTrue();
-        result.Username.Should().Be("host-user");
+        Assert.True(result.IsAuthenticated);
+        Assert.Equal("host-user", result.Username);
     }
 }

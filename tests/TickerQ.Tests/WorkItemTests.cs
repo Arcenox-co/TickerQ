@@ -1,4 +1,3 @@
-using FluentAssertions;
 using TickerQ.TickerQThreadPool;
 
 namespace TickerQ.Tests;
@@ -13,17 +12,15 @@ public class WorkItemTests
 
         var item = new WorkItem(work, cts.Token);
 
-        item.Work.Should().BeSameAs(work);
-        item.UserToken.Should().Be(cts.Token);
+        Assert.Same(work, item.Work);
+        Assert.Equal(cts.Token, item.UserToken);
     }
 
     [Fact]
     public void Constructor_ThrowsArgumentNullException_WhenWorkIsNull()
     {
-        var act = () => new WorkItem(null!, CancellationToken.None);
-
-        act.Should().Throw<ArgumentNullException>()
-            .And.ParamName.Should().Be("work");
+        var ex = Assert.Throws<ArgumentNullException>(() => { _ = new WorkItem(null!, CancellationToken.None); });
+        Assert.Equal("work", ex.ParamName);
     }
 
     [Fact]
@@ -31,7 +28,7 @@ public class WorkItemTests
     {
         var item = new WorkItem(_ => Task.CompletedTask, CancellationToken.None);
 
-        item.UserToken.Should().Be(CancellationToken.None);
+        Assert.Equal(CancellationToken.None, item.UserToken);
     }
 
     [Fact]
@@ -42,7 +39,7 @@ public class WorkItemTests
 
         var item = new WorkItem(_ => Task.CompletedTask, cts.Token);
 
-        item.UserToken.IsCancellationRequested.Should().BeTrue();
+        Assert.True(item.UserToken.IsCancellationRequested);
     }
 
     [Fact]
@@ -57,6 +54,6 @@ public class WorkItemTests
 
         await item.Work(CancellationToken.None);
 
-        executed.Should().BeTrue();
+        Assert.True(executed);
     }
 }

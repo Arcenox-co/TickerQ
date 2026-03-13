@@ -1,7 +1,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using FluentAssertions;
 using Xunit;
 
 namespace TickerQ.Tests;
@@ -16,7 +15,7 @@ public class SafeCancellationTokenSourceTests
         cts.Dispose();
         cts.Dispose(); // second dispose should not throw
 
-        cts.IsDisposed.Should().BeTrue();
+        Assert.True(cts.IsDisposed);
     }
 
     [Fact]
@@ -25,9 +24,7 @@ public class SafeCancellationTokenSourceTests
         var cts = new SafeCancellationTokenSource();
         cts.Dispose();
 
-        var act = () => cts.Cancel();
-
-        act.Should().NotThrow();
+        cts.Cancel(); // should not throw
     }
 
     [Fact]
@@ -36,9 +33,7 @@ public class SafeCancellationTokenSourceTests
         var cts = new SafeCancellationTokenSource();
         cts.Dispose();
 
-        var act = () => cts.CancelAfter(TimeSpan.FromSeconds(1));
-
-        act.Should().NotThrow();
+        cts.CancelAfter(TimeSpan.FromSeconds(1)); // should not throw
     }
 
     [Fact]
@@ -47,9 +42,7 @@ public class SafeCancellationTokenSourceTests
         var cts = new SafeCancellationTokenSource();
         cts.Dispose();
 
-        var act = () => cts.CancelAfter(1000);
-
-        act.Should().NotThrow();
+        cts.CancelAfter(1000); // should not throw
     }
 
     [Fact]
@@ -60,8 +53,8 @@ public class SafeCancellationTokenSourceTests
 
         cts.Cancel();
 
-        cts.IsCancellationRequested.Should().BeTrue();
-        token.IsCancellationRequested.Should().BeTrue();
+        Assert.True(cts.IsCancellationRequested);
+        Assert.True(token.IsCancellationRequested);
     }
 
     [Fact]
@@ -72,7 +65,7 @@ public class SafeCancellationTokenSourceTests
 
         parent.Cancel();
 
-        linked.IsCancellationRequested.Should().BeTrue();
+        Assert.True(linked.IsCancellationRequested);
         linked.Dispose();
     }
 
@@ -89,7 +82,7 @@ public class SafeCancellationTokenSourceTests
 
             await Task.WhenAll(t1, t2);
 
-            cts.IsDisposed.Should().BeTrue();
+            Assert.True(cts.IsDisposed);
         }
     }
 }
