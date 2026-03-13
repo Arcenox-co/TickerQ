@@ -1,5 +1,4 @@
 using System;
-using FluentAssertions;
 using TickerQ.Utilities;
 using Xunit;
 
@@ -14,7 +13,7 @@ public class CronScheduleCacheTests
 
         var next = CronScheduleCache.GetNextOccurrenceOrDefault("invalid cron", DateTime.UtcNow);
 
-        next.Should().BeNull();
+        Assert.Null(next);
     }
 
     [Fact]
@@ -29,12 +28,11 @@ public class CronScheduleCacheTests
         var next1 = CronScheduleCache.GetNextOccurrenceOrDefault(expr1, now);
         var next2 = CronScheduleCache.GetNextOccurrenceOrDefault(expr2, now);
 
-        next1.Should().NotBeNull();
-        next2.Should().NotBeNull();
-        next2.Should().Be(next1);
+        Assert.NotNull(next1);
+        Assert.NotNull(next2);
+        Assert.Equal(next1, next2);
 
         var invalidated = CronScheduleCache.Invalidate(expr1);
-        invalidated.Should().BeTrue();
+        Assert.True(invalidated);
     }
 }
-

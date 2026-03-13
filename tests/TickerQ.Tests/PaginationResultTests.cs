@@ -1,4 +1,3 @@
-using FluentAssertions;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
@@ -10,11 +9,11 @@ public class PaginationResultTests
     {
         var result = new PaginationResult<string>();
 
-        result.Items.Should().NotBeNull();
-        result.Items.Should().BeEmpty();
-        result.TotalCount.Should().Be(0);
-        result.PageNumber.Should().Be(0);
-        result.PageSize.Should().Be(0);
+        Assert.NotNull(result.Items);
+        Assert.Empty(result.Items);
+        Assert.Equal(0, result.TotalCount);
+        Assert.Equal(0, result.PageNumber);
+        Assert.Equal(0, result.PageSize);
     }
 
     [Fact]
@@ -23,10 +22,10 @@ public class PaginationResultTests
         var items = new[] { "a", "b", "c" };
         var result = new PaginationResult<string>(items, totalCount: 10, pageNumber: 2, pageSize: 3);
 
-        result.Items.Should().BeEquivalentTo(items);
-        result.TotalCount.Should().Be(10);
-        result.PageNumber.Should().Be(2);
-        result.PageSize.Should().Be(3);
+        Assert.Equal(items, result.Items);
+        Assert.Equal(10, result.TotalCount);
+        Assert.Equal(2, result.PageNumber);
+        Assert.Equal(3, result.PageSize);
     }
 
     [Fact]
@@ -34,8 +33,8 @@ public class PaginationResultTests
     {
         var result = new PaginationResult<string>(null, totalCount: 5, pageNumber: 1, pageSize: 5);
 
-        result.Items.Should().NotBeNull();
-        result.Items.Should().BeEmpty();
+        Assert.NotNull(result.Items);
+        Assert.Empty(result.Items);
     }
 
     [Fact]
@@ -47,7 +46,7 @@ public class PaginationResultTests
             PageSize = 10
         };
 
-        result.TotalPages.Should().Be(3); // ceil(25/10)
+        Assert.Equal(3, result.TotalPages); // ceil(25/10)
     }
 
     [Fact]
@@ -59,7 +58,7 @@ public class PaginationResultTests
             PageSize = 10
         };
 
-        result.TotalPages.Should().Be(1);
+        Assert.Equal(1, result.TotalPages);
     }
 
     [Fact]
@@ -71,7 +70,7 @@ public class PaginationResultTests
             PageSize = 10
         };
 
-        result.TotalPages.Should().Be(2);
+        Assert.Equal(2, result.TotalPages);
     }
 
     [Fact]
@@ -79,7 +78,7 @@ public class PaginationResultTests
     {
         var result = new PaginationResult<string> { PageNumber = 1 };
 
-        result.HasPreviousPage.Should().BeFalse();
+        Assert.False(result.HasPreviousPage);
     }
 
     [Fact]
@@ -87,7 +86,7 @@ public class PaginationResultTests
     {
         var result = new PaginationResult<string> { PageNumber = 2 };
 
-        result.HasPreviousPage.Should().BeTrue();
+        Assert.True(result.HasPreviousPage);
     }
 
     [Fact]
@@ -100,7 +99,7 @@ public class PaginationResultTests
             PageSize = 10
         };
 
-        result.HasNextPage.Should().BeTrue();
+        Assert.True(result.HasNextPage);
     }
 
     [Fact]
@@ -113,7 +112,7 @@ public class PaginationResultTests
             PageSize = 10
         };
 
-        result.HasNextPage.Should().BeFalse();
+        Assert.False(result.HasNextPage);
     }
 
     [Fact]
@@ -125,7 +124,7 @@ public class PaginationResultTests
             PageSize = 10
         };
 
-        result.FirstItemIndex.Should().Be(21); // (3-1)*10 + 1
+        Assert.Equal(21, result.FirstItemIndex); // (3-1)*10 + 1
     }
 
     [Fact]
@@ -138,7 +137,7 @@ public class PaginationResultTests
             TotalCount = 25
         };
 
-        result.LastItemIndex.Should().Be(25); // Min(30, 25)
+        Assert.Equal(25, result.LastItemIndex); // Min(30, 25)
     }
 
     [Fact]
@@ -151,6 +150,6 @@ public class PaginationResultTests
             TotalCount = 30
         };
 
-        result.LastItemIndex.Should().Be(20);
+        Assert.Equal(20, result.LastItemIndex);
     }
 }

@@ -34,6 +34,9 @@ namespace TickerQ.Provider
         private static readonly ConcurrentDictionary<Guid, CronTickerOccurrenceEntity<TCronTicker>> CronOccurrences =
             new(new Dictionary<Guid, CronTickerOccurrenceEntity<TCronTicker>>());
 
+        // Unique index on (ExecutionTime, CronTickerId) to prevent duplicate cron occurrences - mirrors EF Core's Upsert constraint
+        private static readonly ConcurrentDictionary<(DateTime ExecutionTime, Guid CronTickerId), Guid> CronOccurrenceIndex = new();
+
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
 
@@ -703,7 +706,12 @@ namespace TickerQ.Provider
                 }
                 else
                 {
-                    // Create new occurrence (normal case - each execution time gets its own occurrence)
+                    var indexKey = (cronTickerOccurrences.Key, context.Id);
+
+                    // Atomically check uniqueness on (ExecutionTime, CronTickerId) - mirrors EF Core's Upsert .On() constraint
+                    if (!CronOccurrenceIndex.TryAdd(indexKey, occurrenceId))
+                        continue;
+
                     var newOccurrence = new CronTickerOccurrenceEntity<TCronTicker>
                     {
                         Id = occurrenceId,
@@ -716,16 +724,19 @@ namespace TickerQ.Provider
                         UpdatedAt = now,
                         RetryCount = 0
                     };
-                    
-                    // Try to get the cron ticker
+
                     if (CronTickers.TryGetValue(context.Id, out var cronTicker))
                     {
                         newOccurrence.CronTicker = cronTicker;
                     }
-                    
+
                     if (CronOccurrences.TryAdd(newOccurrence.Id, newOccurrence))
                     {
                         yield return newOccurrence;
+                    }
+                    else
+                    {
+                        CronOccurrenceIndex.TryRemove(indexKey, out _);
                     }
                 }
             }
@@ -933,10 +944,17 @@ namespace TickerQ.Provider
                     occurrence.CronTicker = cronTicker;
                 }
 
-                if (CronOccurrences.TryAdd(occurrence.Id, occurrence))
+                var indexKey = (occurrence.ExecutionTime, occurrence.CronTickerId);
+                if (CronOccurrenceIndex.TryAdd(indexKey, occurrence.Id) && CronOccurrences.TryAdd(occurrence.Id, occurrence))
+                {
                     count++;
+                }
+                else
+                {
+                    CronOccurrenceIndex.TryRemove(indexKey, out _);
+                }
             }
-            
+
             return Task.FromResult(count);
         }
 
@@ -945,10 +963,13 @@ namespace TickerQ.Provider
             var count = 0;
             foreach (var id in cronTickerOccurrences)
             {
-                if (CronOccurrences.TryRemove(id, out _))
+                if (CronOccurrences.TryRemove(id, out var removed))
+                {
+                    CronOccurrenceIndex.TryRemove((removed.ExecutionTime, removed.CronTickerId), out _);
                     count++;
+                }
             }
-            
+
             return Task.FromResult(count);
         }
 

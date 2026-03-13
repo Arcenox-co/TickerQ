@@ -1,6 +1,5 @@
 using System;
 using System.Threading;
-using FluentAssertions;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
@@ -25,12 +24,12 @@ public class TickerCancellationTokenManagerTests : IDisposable
         TickerCancellationTokenManager.AddTickerCancellationToken(cts, context, isDue: false);
 
         var token = cts.Token;
-        token.IsCancellationRequested.Should().BeFalse();
+        Assert.False(token.IsCancellationRequested);
 
         var result = TickerCancellationTokenManager.RequestTickerCancellationById(tickerId);
 
-        result.Should().BeTrue();
-        token.IsCancellationRequested.Should().BeTrue();
+        Assert.True(result);
+        Assert.True(token.IsCancellationRequested);
     }
 
     [Fact]
@@ -38,7 +37,7 @@ public class TickerCancellationTokenManagerTests : IDisposable
     {
         var result = TickerCancellationTokenManager.RequestTickerCancellationById(Guid.NewGuid());
 
-        result.Should().BeFalse();
+        Assert.False(result);
     }
 
     [Fact]
@@ -51,7 +50,7 @@ public class TickerCancellationTokenManagerTests : IDisposable
 
         TickerCancellationTokenManager.AddTickerCancellationToken(cts, context, isDue: false);
 
-        TickerCancellationTokenManager.IsParentRunning(parentId).Should().BeTrue();
+        Assert.True(TickerCancellationTokenManager.IsParentRunning(parentId));
     }
 
     [Fact]
@@ -65,7 +64,7 @@ public class TickerCancellationTokenManagerTests : IDisposable
         TickerCancellationTokenManager.AddTickerCancellationToken(cts, context, isDue: false);
         TickerCancellationTokenManager.RemoveTickerCancellationToken(tickerId);
 
-        TickerCancellationTokenManager.IsParentRunning(parentId).Should().BeFalse();
+        Assert.False(TickerCancellationTokenManager.IsParentRunning(parentId));
     }
 
     [Fact]
@@ -78,8 +77,7 @@ public class TickerCancellationTokenManagerTests : IDisposable
 
         TickerCancellationTokenManager.AddTickerCancellationToken(cts, context, isDue: false);
 
-        TickerCancellationTokenManager.IsParentRunningExcludingSelf(parentId, tickerId)
-            .Should().BeFalse();
+        Assert.False(TickerCancellationTokenManager.IsParentRunningExcludingSelf(parentId, tickerId));
     }
 
     [Fact]
@@ -94,8 +92,7 @@ public class TickerCancellationTokenManagerTests : IDisposable
         TickerCancellationTokenManager.AddTickerCancellationToken(
             new CancellationTokenSource(), MakeContext(ticker2, parentId), isDue: false);
 
-        TickerCancellationTokenManager.IsParentRunningExcludingSelf(parentId, ticker1)
-            .Should().BeTrue();
+        Assert.True(TickerCancellationTokenManager.IsParentRunningExcludingSelf(parentId, ticker1));
     }
 
     [Fact]
@@ -118,8 +115,7 @@ public class TickerCancellationTokenManagerTests : IDisposable
 
         TickerCancellationTokenManager.RequestTickerCancellationById(tickerId);
 
-        wasTrackedDuringCancel.Should().BeTrue(
-            "the entry should still be in the dictionary when Cancel fires");
+        Assert.True(wasTrackedDuringCancel, "the entry should still be in the dictionary when Cancel fires");
     }
 
     private static InternalFunctionContext MakeContext(Guid tickerId, Guid? parentId = null)

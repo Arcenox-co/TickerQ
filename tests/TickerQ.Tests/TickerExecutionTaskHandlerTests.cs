@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using TickerQ.Exceptions;
@@ -43,7 +42,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.Status.Should().Be(TickerStatus.Done);
+        Assert.Equal(TickerStatus.Done, context.Status);
     }
 
     [Fact]
@@ -53,7 +52,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: true);
 
-        context.Status.Should().Be(TickerStatus.DueDone);
+        Assert.Equal(TickerStatus.DueDone, context.Status);
     }
 
     [Fact]
@@ -75,7 +74,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.ElapsedTime.Should().BeGreaterThanOrEqualTo(0);
+        Assert.True(context.ElapsedTime >= 0);
     }
 
     [Fact]
@@ -87,7 +86,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.ExecutedAt.Should().Be(now);
+        Assert.Equal(now, context.ExecutedAt);
     }
 
     #endregion
@@ -101,7 +100,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.Status.Should().Be(TickerStatus.Failed);
+        Assert.Equal(TickerStatus.Failed, context.Status);
     }
 
     [Fact]
@@ -111,8 +110,8 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.ExceptionDetails.Should().NotBeNullOrWhiteSpace();
-        context.ExceptionDetails.Should().Contain("boom");
+        Assert.False(string.IsNullOrWhiteSpace(context.ExceptionDetails));
+        Assert.Contains("boom", context.ExceptionDetails);
     }
 
     [Fact]
@@ -177,7 +176,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        observedUpdates.Should().Contain(x =>
+        Assert.Contains(observedUpdates, x =>
             x.Status == TickerStatus.InProgress &&
             !string.IsNullOrWhiteSpace(x.ExceptionDetails));
     }
@@ -193,7 +192,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.Status.Should().Be(TickerStatus.Cancelled);
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
     }
 
     [Fact]
@@ -228,7 +227,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.Status.Should().Be(TickerStatus.Skipped);
+        Assert.Equal(TickerStatus.Skipped, context.Status);
     }
 
     [Fact]
@@ -239,7 +238,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.Status.Should().Be(TickerStatus.Cancelled);
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
     }
 
     [Fact]
@@ -250,7 +249,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.ExceptionDetails.Should().Contain("skip reason");
+        Assert.Contains("skip reason", context.ExceptionDetails);
     }
 
     [Fact]
@@ -262,7 +261,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.ExceptionDetails.Should().Contain("inner reason");
+        Assert.Contains("inner reason", context.ExceptionDetails);
     }
 
     #endregion
@@ -276,8 +275,8 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        context.Status.Should().Be(TickerStatus.Failed);
-        context.ExceptionDetails.Should().Contain("was not found");
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Contains("was not found", context.ExceptionDetails);
     }
 
     #endregion
@@ -304,7 +303,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(parentContext, isDue: false);
 
-        childExecuted.Should().BeTrue();
+        Assert.True(childExecuted);
     }
 
     [Fact]
@@ -327,7 +326,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(parentContext, isDue: false);
 
-        childExecuted.Should().BeTrue();
+        Assert.True(childExecuted);
     }
 
     [Fact]
@@ -350,7 +349,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(parentContext, isDue: false);
 
-        childExecuted.Should().BeFalse();
+        Assert.False(childExecuted);
     }
 
     [Fact]
@@ -373,7 +372,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(parentContext, isDue: false);
 
-        childExecuted.Should().BeTrue();
+        Assert.True(childExecuted);
     }
 
     [Fact]
@@ -396,7 +395,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(parentContext, isDue: false);
 
-        childExecuted.Should().BeFalse();
+        Assert.False(childExecuted);
     }
 
     [Fact]
@@ -427,8 +426,8 @@ public class TickerExecutionTaskHandlerTests
         parentFail.TimeTickerChildren.Add(childFail);
         await _handler.ExecuteTaskAsync(parentFail, isDue: false);
 
-        childExecutedOnSuccess.Should().BeTrue();
-        childExecutedOnFail.Should().BeTrue();
+        Assert.True(childExecutedOnSuccess);
+        Assert.True(childExecutedOnFail);
     }
 
     [Fact]
@@ -447,7 +446,7 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(parentContext, isDue: false);
 
-        childExecuted.Should().BeTrue();
+        Assert.True(childExecuted);
     }
 
     [Fact]
@@ -514,8 +513,8 @@ public class TickerExecutionTaskHandlerTests
 
         await _handler.ExecuteTaskAsync(context, isDue: false);
 
-        executed.Should().BeTrue();
-        context.Status.Should().Be(TickerStatus.Done);
+        Assert.True(executed);
+        Assert.Equal(TickerStatus.Done, context.Status);
     }
 
     #endregion

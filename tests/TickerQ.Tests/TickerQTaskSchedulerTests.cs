@@ -1,7 +1,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using FluentAssertions;
 using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities.Enums;
 using Xunit;
@@ -28,8 +27,8 @@ public class TickerQTaskSchedulerTests
 
         await scheduler.DisposeAsync();
 
-        scheduler.TotalQueuedTasks.Should().BeLessThanOrEqualTo(0);
-        scheduler.IsDisposed.Should().BeTrue();
+        Assert.True(scheduler.TotalQueuedTasks <= 0);
+        Assert.True(scheduler.IsDisposed);
     }
 
     [Fact]
@@ -38,9 +37,8 @@ public class TickerQTaskSchedulerTests
         var scheduler = new TickerQTaskScheduler(1);
         await scheduler.DisposeAsync();
 
-        Func<Task> act = () => scheduler.QueueAsync(_ => Task.CompletedTask, TickerTaskPriority.Normal).AsTask();
-
-        await act.Should().ThrowAsync<ObjectDisposedException>();
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            () => scheduler.QueueAsync(_ => Task.CompletedTask, TickerTaskPriority.Normal).AsTask());
     }
 
     [Fact]
@@ -49,9 +47,8 @@ public class TickerQTaskSchedulerTests
         var scheduler = new TickerQTaskScheduler(1);
         scheduler.Freeze();
 
-        Func<Task> act = () => scheduler.QueueAsync(_ => Task.CompletedTask, TickerTaskPriority.Normal).AsTask();
-
-        await act.Should().ThrowAsync<InvalidOperationException>();
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => scheduler.QueueAsync(_ => Task.CompletedTask, TickerTaskPriority.Normal).AsTask());
 
         await scheduler.DisposeAsync();
     }
@@ -62,10 +59,10 @@ public class TickerQTaskSchedulerTests
         var scheduler = new TickerQTaskScheduler(1);
 
         scheduler.Freeze();
-        scheduler.IsFrozen.Should().BeTrue();
+        Assert.True(scheduler.IsFrozen);
 
         scheduler.Resume();
-        scheduler.IsFrozen.Should().BeFalse();
+        Assert.False(scheduler.IsFrozen);
 
         // Should be able to queue after resume
         var executed = false;
@@ -78,7 +75,7 @@ public class TickerQTaskSchedulerTests
         // Give worker time to pick it up
         await Task.Delay(200);
 
-        executed.Should().BeTrue();
+        Assert.True(executed);
         await scheduler.DisposeAsync();
     }
 }
