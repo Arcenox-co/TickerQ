@@ -1,0 +1,12 @@
+# Files that must remain version-specific per target branch.
+# These are reset to the target branch version after cherry-picking from main.
+#
+# Reason: EF Core 10 introduced UpdateSettersBuilder<T> and IDbContextOptionsConfiguration<T>
+# which don't exist in EF Core 8/9. These files use different APIs per version.
+
+src/TickerQ.EntityFrameworkCore/Infrastructure/MappingExtensions.cs
+src/TickerQ.EntityFrameworkCore/Infrastructure/BasePersistenceProvider.cs
+src/TickerQ.EntityFrameworkCore/Infrastructure/TickerQueryExtensions.cs
+
+# Solution file — main uses .slnx (net10+), older branches use .sln
+TickerQ.sln
