@@ -36,7 +36,7 @@ public class ServiceExtensionTests
 
         builder.Services.AddDbContext<TestDbContext>(options =>
         {
-            options.UseInMemoryDatabase("TestDb");
+            options.UseSqlite("Data Source=ServiceExtensionTest;Mode=Memory;Cache=Shared");
         });
 
         builder.Services.AddTickerQ(tickerOptions =>
