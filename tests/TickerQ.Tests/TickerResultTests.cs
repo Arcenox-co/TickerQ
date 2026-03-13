@@ -1,4 +1,3 @@
-using FluentAssertions;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
@@ -14,9 +13,9 @@ public class TickerResultTests
     {
         var result = CreateSuccessResult("value");
 
-        result.IsSucceeded.Should().BeTrue();
-        result.Result.Should().Be("value");
-        result.Exception.Should().BeNull();
+        Assert.True(result.IsSucceeded);
+        Assert.Equal("value", result.Result);
+        Assert.Null(result.Exception);
     }
 
     [Fact]
@@ -25,9 +24,9 @@ public class TickerResultTests
         var ex = new InvalidOperationException("fail");
         var result = CreateFailureResult(ex);
 
-        result.IsSucceeded.Should().BeFalse();
-        result.Exception.Should().BeSameAs(ex);
-        result.Result.Should().BeNull();
+        Assert.False(result.IsSucceeded);
+        Assert.Same(ex, result.Exception);
+        Assert.Null(result.Result);
     }
 
     [Fact]
@@ -35,8 +34,8 @@ public class TickerResultTests
     {
         var result = CreateAffectedRowsResult(5);
 
-        result.IsSucceeded.Should().BeTrue();
-        result.AffectedRows.Should().Be(5);
+        Assert.True(result.IsSucceeded);
+        Assert.Equal(5, result.AffectedRows);
     }
 
     [Fact]
@@ -44,9 +43,9 @@ public class TickerResultTests
     {
         var result = CreateResultWithRows("value", 3);
 
-        result.IsSucceeded.Should().BeTrue();
-        result.Result.Should().Be("value");
-        result.AffectedRows.Should().Be(3);
+        Assert.True(result.IsSucceeded);
+        Assert.Equal("value", result.Result);
+        Assert.Equal(3, result.AffectedRows);
     }
 
     // Use reflection to create instances since constructors are internal

@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using FluentAssertions;
 using NSubstitute;
 using TickerQ.BackgroundServices;
 using TickerQ.Utilities;
@@ -44,8 +43,8 @@ public class TickerQSchedulerBackgroundServiceTests
         var runTask = InvokeRunSchedulerAsync(service, CancellationToken.None, cts.Token);
 
         var next = await WaitForNextOccurrenceAsync(executionContext, TimeSpan.FromSeconds(2));
-        next.Should().NotBeNull();
-        (next!.Value - before).Should().BeGreaterThanOrEqualTo(schedulerOptions.MinPollingInterval);
+        Assert.NotNull(next);
+        Assert.True(next!.Value - before >= schedulerOptions.MinPollingInterval);
 
         cts.Cancel();
         try
@@ -66,9 +65,9 @@ public class TickerQSchedulerBackgroundServiceTests
         var method = typeof(TickerQSchedulerBackgroundService)
             .GetMethod("RunTickerQSchedulerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
 
-        method.Should().NotBeNull();
+        Assert.NotNull(method);
         var task = method!.Invoke(service, new object[] { stoppingToken, cancellationToken }) as Task;
-        task.Should().NotBeNull();
+        Assert.NotNull(task);
 
         return task!;
     }
