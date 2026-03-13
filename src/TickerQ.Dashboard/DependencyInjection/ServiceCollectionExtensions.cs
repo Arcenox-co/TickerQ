@@ -92,8 +92,10 @@ namespace TickerQ.Dashboard.DependencyInjection
 
                 // Set up routing and CORS
                 dashboardApp.UseRouting();
-                dashboardApp.UseAuthorization();
                 dashboardApp.UseCors("TickerQ_Dashboard_CORS");
+                
+                // Set up authorization
+                dashboardApp.UseAuthorization();
 
                 // Add authentication middleware (only protects API endpoints)
                 if (config.Auth.IsEnabled)
