@@ -21,7 +21,8 @@ namespace TickerQ
         }
 
         /// <summary>
-        /// Debounces notifications; fires immediately when count == 0, otherwise after Debounce.
+        /// Sends notifications in a thread-safe way and suppresses duplicates.
+        /// Fires immediately for every change.
         /// </summary>
         internal void NotifySafely(int count)
         {
@@ -30,16 +31,8 @@ namespace TickerQ
             if (Volatile.Read(ref _disposed) == 1)
                 return;
 
-            var due = (count == 0) ? TimeSpan.Zero : Debounce;
-
-            try
-            {
-                _timer.Change(due, Timeout.InfiniteTimeSpan);
-            }
-            catch (ObjectDisposedException)
-            {
-                // Raced with Dispose(); ignore.
-            }
+            // Call immediately so the reported thread count stays in sync
+            Callback(null);
         }
 
         /// <summary>
