@@ -1,7 +1,6 @@
 using System;
 using System.Linq;
 using System.Reflection;
-using FluentAssertions;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Models;
@@ -23,12 +22,14 @@ public class InternalFunctionContextTests
 
         var updated = context.GetPropsToUpdate();
 
-        updated.Should().Contain(new[] { nameof(InternalFunctionContext.Status), nameof(InternalFunctionContext.ElapsedTime), nameof(InternalFunctionContext.ReleaseLock) });
-        updated.Count.Should().Be(3);
+        Assert.Contains(nameof(InternalFunctionContext.Status), updated);
+        Assert.Contains(nameof(InternalFunctionContext.ElapsedTime), updated);
+        Assert.Contains(nameof(InternalFunctionContext.ReleaseLock), updated);
+        Assert.Equal(3, updated.Count);
 
-        context.Status.Should().Be(TickerStatus.InProgress);
-        context.ElapsedTime.Should().Be(123L);
-        context.ReleaseLock.Should().BeTrue();
+        Assert.Equal(TickerStatus.InProgress, context.Status);
+        Assert.Equal(123L, context.ElapsedTime);
+        Assert.True(context.ReleaseLock);
     }
 
     [Fact]
@@ -40,11 +41,11 @@ public class InternalFunctionContextTests
             .SetProperty(c => c.Status, TickerStatus.Done)
             .SetProperty(c => c.ElapsedTime, 500L);
 
-        context.GetPropsToUpdate().Should().NotBeEmpty();
+        Assert.NotEmpty(context.GetPropsToUpdate());
 
         context.ResetUpdateProps();
 
-        context.GetPropsToUpdate().Should().BeEmpty();
+        Assert.Empty(context.GetPropsToUpdate());
     }
 
     [Fact]
@@ -58,9 +59,9 @@ public class InternalFunctionContextTests
 
         context.ResetUpdateProps();
 
-        context.Status.Should().Be(TickerStatus.Done);
-        context.ElapsedTime.Should().Be(250L);
-        context.GetPropsToUpdate().Should().BeEmpty();
+        Assert.Equal(TickerStatus.Done, context.Status);
+        Assert.Equal(250L, context.ElapsedTime);
+        Assert.Empty(context.GetPropsToUpdate());
     }
 
     [Fact]
@@ -72,14 +73,14 @@ public class InternalFunctionContextTests
         var parametersProperty = typeof(InternalFunctionContext)
             .GetProperty("ParametersToUpdate", BindingFlags.Instance | BindingFlags.Public);
 
-        parametersProperty.Should().NotBeNull();
+        Assert.NotNull(parametersProperty);
         parametersProperty!.SetValue(context, null);
 
         context.SetProperty(c => c.Status, TickerStatus.InProgress);
 
         var updated = context.GetPropsToUpdate();
-        updated.Should().NotBeNull();
-        updated.Should().Contain(nameof(InternalFunctionContext.Status));
+        Assert.NotNull(updated);
+        Assert.Contains(nameof(InternalFunctionContext.Status), updated);
     }
 
     [Fact]
@@ -91,11 +92,11 @@ public class InternalFunctionContextTests
             .SetProperty(c => c.Status, TickerStatus.InProgress)
             .SetProperty(c => c.Status, TickerStatus.Failed);
 
-        context.Status.Should().Be(TickerStatus.Failed);
+        Assert.Equal(TickerStatus.Failed, context.Status);
 
         var updated = context.GetPropsToUpdate();
-        updated.Should().Contain(nameof(InternalFunctionContext.Status));
-        updated.Count.Should().Be(1);
+        Assert.Contains(nameof(InternalFunctionContext.Status), updated);
+        Assert.Equal(1, updated.Count);
     }
 
     [Fact]
@@ -103,10 +104,9 @@ public class InternalFunctionContextTests
     {
         var context = new InternalFunctionContext();
 
-        Action act = () => context.SetProperty(c => c.ElapsedTime + 1, 10L);
+        var ex = Assert.Throws<ArgumentException>(() => context.SetProperty(c => c.ElapsedTime + 1, 10L));
 
-        act.Should().Throw<ArgumentException>()
-            .WithMessage("*Expression must point to a property*");
+        Assert.Contains("Expression must point to a property", ex.Message);
     }
 
     [Fact]
@@ -114,8 +114,8 @@ public class InternalFunctionContextTests
     {
         var context = new InternalFunctionContext();
 
-        context.TimeTickerChildren.Should().NotBeNull();
-        context.TimeTickerChildren.Should().BeEmpty();
+        Assert.NotNull(context.TimeTickerChildren);
+        Assert.Empty(context.TimeTickerChildren);
 
         var child = new InternalFunctionContext
         {
@@ -126,8 +126,8 @@ public class InternalFunctionContextTests
 
         context.TimeTickerChildren.Add(child);
 
-        context.TimeTickerChildren.Should().ContainSingle();
-        context.TimeTickerChildren.Single().FunctionName.Should().Be("ChildFunction");
+        Assert.Single(context.TimeTickerChildren);
+        Assert.Equal("ChildFunction", context.TimeTickerChildren.Single().FunctionName);
     }
 
     [Fact]
@@ -139,8 +139,8 @@ public class InternalFunctionContextTests
         context.CachedDelegate = handler;
         context.CachedPriority = TickerTaskPriority.High;
 
-        context.CachedDelegate.Should().BeSameAs(handler);
-        context.CachedPriority.Should().Be(TickerTaskPriority.High);
+        Assert.Same(handler, context.CachedDelegate);
+        Assert.Equal(TickerTaskPriority.High, context.CachedPriority);
     }
 
     [Fact]
@@ -154,14 +154,11 @@ public class InternalFunctionContextTests
             .SetProperty(c => c.RetryIntervals, intervals)
             .SetProperty(c => c.ExceptionDetails, exceptionDetails);
 
-        context.RetryIntervals.Should().BeSameAs(intervals);
-        context.ExceptionDetails.Should().Be(exceptionDetails);
+        Assert.Same(intervals, context.RetryIntervals);
+        Assert.Equal(exceptionDetails, context.ExceptionDetails);
 
         var updated = context.GetPropsToUpdate();
-        updated.Should().Contain(new[]
-        {
-            nameof(InternalFunctionContext.RetryIntervals),
-            nameof(InternalFunctionContext.ExceptionDetails)
-        });
+        Assert.Contains(nameof(InternalFunctionContext.RetryIntervals), updated);
+        Assert.Contains(nameof(InternalFunctionContext.ExceptionDetails), updated);
     }
 }

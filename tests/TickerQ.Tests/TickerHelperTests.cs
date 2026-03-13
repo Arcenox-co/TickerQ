@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using TickerQ.Utilities;
 
 namespace TickerQ.Tests;
@@ -34,8 +33,8 @@ public class TickerHelperTests : IDisposable
         var bytes = TickerHelper.CreateTickerRequest(data);
 
         var json = Encoding.UTF8.GetString(bytes);
-        json.Should().Contain("test");
-        json.Should().Contain("42");
+        Assert.Contains("test", json);
+        Assert.Contains("42", json);
     }
 
     [Fact]
@@ -46,7 +45,7 @@ public class TickerHelperTests : IDisposable
 
         var result = TickerHelper.CreateTickerRequest(original);
 
-        result.Should().BeEquivalentTo(original);
+        Assert.Equal(original, result);
     }
 
     [Fact]
@@ -57,7 +56,7 @@ public class TickerHelperTests : IDisposable
         var bytes = TickerHelper.CreateTickerRequest("hello");
 
         var result = Encoding.UTF8.GetString(bytes);
-        result.Should().Contain("hello");
+        Assert.Contains("hello", result);
     }
 
     #endregion
@@ -73,11 +72,11 @@ public class TickerHelperTests : IDisposable
         var bytes = TickerHelper.CreateTickerRequest(data);
 
         // GZip signature is appended at end: [0x1f, 0x8b, 0x08, 0x00]
-        bytes.Length.Should().BeGreaterThan(4);
-        bytes[^4].Should().Be(0x1f);
-        bytes[^3].Should().Be(0x8b);
-        bytes[^2].Should().Be(0x08);
-        bytes[^1].Should().Be(0x00);
+        Assert.True(bytes.Length > 4);
+        Assert.Equal(0x1f, bytes[^4]);
+        Assert.Equal(0x8b, bytes[^3]);
+        Assert.Equal(0x08, bytes[^2]);
+        Assert.Equal(0x00, bytes[^1]);
     }
 
     [Fact]
@@ -90,7 +89,7 @@ public class TickerHelperTests : IDisposable
         // Pass the already-compressed bytes back in
         var result = TickerHelper.CreateTickerRequest(original);
 
-        result.Should().BeEquivalentTo(original);
+        Assert.Equal(original, result);
     }
 
     #endregion
@@ -106,8 +105,8 @@ public class TickerHelperTests : IDisposable
 
         var result = TickerHelper.ReadTickerRequest<TestPayload>(bytes);
 
-        result.Name.Should().Be("read_test");
-        result.Value.Should().Be(7);
+        Assert.Equal("read_test", result.Name);
+        Assert.Equal(7, result.Value);
     }
 
     [Fact]
@@ -119,7 +118,7 @@ public class TickerHelperTests : IDisposable
 
         var result = TickerHelper.ReadTickerRequestAsString(bytes);
 
-        result.Should().Be(json);
+        Assert.Equal(json, result);
     }
 
     #endregion
@@ -135,8 +134,8 @@ public class TickerHelperTests : IDisposable
 
         var result = TickerHelper.ReadTickerRequest<TestPayload>(bytes);
 
-        result.Name.Should().Be("gzip_test");
-        result.Value.Should().Be(100);
+        Assert.Equal("gzip_test", result.Name);
+        Assert.Equal(100, result.Value);
     }
 
     [Fact]
@@ -145,9 +144,9 @@ public class TickerHelperTests : IDisposable
         TickerHelper.UseGZipCompression = true;
         var plainBytes = Encoding.UTF8.GetBytes("not compressed");
 
-        var act = () => TickerHelper.ReadTickerRequestAsString(plainBytes);
+        var ex = Assert.Throws<Exception>(() => TickerHelper.ReadTickerRequestAsString(plainBytes));
 
-        act.Should().Throw<Exception>().WithMessage("*not GZip compressed*");
+        Assert.Contains("not GZip compressed", ex.Message);
     }
 
     #endregion
@@ -163,8 +162,8 @@ public class TickerHelperTests : IDisposable
         var bytes = TickerHelper.CreateTickerRequest(original);
         var result = TickerHelper.ReadTickerRequest<TestPayload>(bytes);
 
-        result.Name.Should().Be(original.Name);
-        result.Value.Should().Be(original.Value);
+        Assert.Equal(original.Name, result.Name);
+        Assert.Equal(original.Value, result.Value);
     }
 
     [Fact]
@@ -176,8 +175,8 @@ public class TickerHelperTests : IDisposable
         var bytes = TickerHelper.CreateTickerRequest(original);
         var result = TickerHelper.ReadTickerRequest<TestPayload>(bytes);
 
-        result.Name.Should().Be(original.Name);
-        result.Value.Should().Be(original.Value);
+        Assert.Equal(original.Name, result.Name);
+        Assert.Equal(original.Value, result.Value);
     }
 
     [Fact]
@@ -193,8 +192,8 @@ public class TickerHelperTests : IDisposable
         var bytes = TickerHelper.CreateTickerRequest(original);
         var json = Encoding.UTF8.GetString(bytes);
 
-        json.Should().Contain("\"name\"");
-        json.Should().Contain("\"value\"");
+        Assert.Contains("\"name\"", json);
+        Assert.Contains("\"value\"", json);
     }
 
     [Fact]
@@ -211,10 +210,10 @@ public class TickerHelperTests : IDisposable
         var bytes = TickerHelper.CreateTickerRequest(original);
         var result = TickerHelper.ReadTickerRequest<ComplexPayload>(bytes);
 
-        result.Id.Should().Be(original.Id);
-        result.Items.Should().BeEquivalentTo(original.Items);
-        result.Nested.Name.Should().Be("nested");
-        result.Nested.Value.Should().Be(10);
+        Assert.Equal(original.Id, result.Id);
+        Assert.Equal(original.Items, result.Items);
+        Assert.Equal("nested", result.Nested.Name);
+        Assert.Equal(10, result.Nested.Value);
     }
 
     #endregion

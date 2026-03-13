@@ -1,4 +1,3 @@
-using FluentAssertions;
 using TickerQ.Exceptions;
 using TickerQ.Utilities.Enums;
 
@@ -11,9 +10,9 @@ public class TerminateExecutionExceptionTests
     {
         var ex = new TerminateExecutionException("test message");
 
-        ex.Message.Should().Be("test message");
-        ex.Status.Should().Be(TickerStatus.Skipped);
-        ex.InnerException.Should().BeNull();
+        Assert.Equal("test message", ex.Message);
+        Assert.Equal(TickerStatus.Skipped, ex.Status);
+        Assert.Null(ex.InnerException);
     }
 
     [Fact]
@@ -21,9 +20,9 @@ public class TerminateExecutionExceptionTests
     {
         var ex = new TerminateExecutionException(TickerStatus.Cancelled, "cancelled");
 
-        ex.Message.Should().Be("cancelled");
-        ex.Status.Should().Be(TickerStatus.Cancelled);
-        ex.InnerException.Should().BeNull();
+        Assert.Equal("cancelled", ex.Message);
+        Assert.Equal(TickerStatus.Cancelled, ex.Status);
+        Assert.Null(ex.InnerException);
     }
 
     [Fact]
@@ -32,9 +31,9 @@ public class TerminateExecutionExceptionTests
         var inner = new InvalidOperationException("inner");
         var ex = new TerminateExecutionException("outer", inner);
 
-        ex.Message.Should().Be("outer");
-        ex.InnerException.Should().BeSameAs(inner);
-        ex.Status.Should().Be(TickerStatus.Skipped);
+        Assert.Equal("outer", ex.Message);
+        Assert.Same(inner, ex.InnerException);
+        Assert.Equal(TickerStatus.Skipped, ex.Status);
     }
 
     [Fact]
@@ -43,9 +42,9 @@ public class TerminateExecutionExceptionTests
         var inner = new InvalidOperationException("inner");
         var ex = new TerminateExecutionException(TickerStatus.Failed, "failed", inner);
 
-        ex.Message.Should().Be("failed");
-        ex.Status.Should().Be(TickerStatus.Failed);
-        ex.InnerException.Should().BeSameAs(inner);
+        Assert.Equal("failed", ex.Message);
+        Assert.Equal(TickerStatus.Failed, ex.Status);
+        Assert.Same(inner, ex.InnerException);
     }
 
     [Fact]
@@ -53,7 +52,7 @@ public class TerminateExecutionExceptionTests
     {
         var ex = new TerminateExecutionException("test");
 
-        ex.Should().BeAssignableTo<Exception>();
+        Assert.IsAssignableFrom<Exception>(ex);
     }
 
     [Theory]
@@ -65,6 +64,6 @@ public class TerminateExecutionExceptionTests
     public void Constructor_WithStatus_SupportsAllStatusValues(TickerStatus status)
     {
         var ex = new TerminateExecutionException(status, "msg");
-        ex.Status.Should().Be(status);
+        Assert.Equal(status, ex.Status);
     }
 }

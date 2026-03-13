@@ -1,5 +1,3 @@
-using FluentAssertions;
-
 namespace TickerQ.Tests;
 
 public class RestartThrottleManagerTests
@@ -15,7 +13,7 @@ public class RestartThrottleManagerTests
         // Debounce window is 50ms, give some extra time
         await Task.Delay(200);
 
-        triggered.Should().BeTrue();
+        Assert.True(triggered);
     }
 
     [Fact]
@@ -31,7 +29,7 @@ public class RestartThrottleManagerTests
 
         await Task.Delay(200);
 
-        triggerCount.Should().Be(1);
+        Assert.Equal(1, triggerCount);
     }
 
     [Fact]
@@ -49,16 +47,16 @@ public class RestartThrottleManagerTests
         // After full debounce from the last request it should trigger
         await Task.Delay(100);
 
-        triggerCount.Should().Be(1);
+        Assert.Equal(1, triggerCount);
     }
 
     [Fact]
     public void Dispose_CanBeCalledSafely()
     {
         var manager = new RestartThrottleManager(() => { });
-        var act = () => manager.Dispose();
+        var exception = Record.Exception(() => manager.Dispose());
 
-        act.Should().NotThrow();
+        Assert.Null(exception);
     }
 
     [Fact]
@@ -67,8 +65,8 @@ public class RestartThrottleManagerTests
         var manager = new RestartThrottleManager(() => { });
 
         // Timer hasn't been created yet (lazy creation)
-        var act = () => manager.Dispose();
-        act.Should().NotThrow();
+        var exception = Record.Exception(() => manager.Dispose());
+        Assert.Null(exception);
     }
 
     [Fact]
@@ -77,7 +75,7 @@ public class RestartThrottleManagerTests
         var manager = new RestartThrottleManager(() => { });
         manager.RequestRestart();
 
-        var act = () => manager.Dispose();
-        act.Should().NotThrow();
+        var exception = Record.Exception(() => manager.Dispose());
+        Assert.Null(exception);
     }
 }
