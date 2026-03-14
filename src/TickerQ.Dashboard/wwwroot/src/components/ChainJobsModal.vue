@@ -1156,7 +1156,9 @@ const getConfiguredChildren = () => {
 const formatExecutionTime = (job: any) => {
   if (job.ignoreDateTime) return 'Immediate'
   if (job.executionDate && job.executionTime) {
-    return `${job.executionDate.toLocaleDateString()} at ${job.executionTime}`
+    const d = job.executionDate as Date
+    const datePart = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    return `${datePart} at ${job.executionTime}`
   }
   return 'Not set'
 }
