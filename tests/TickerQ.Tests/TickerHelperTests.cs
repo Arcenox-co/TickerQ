@@ -151,6 +151,70 @@ public class TickerHelperTests : IDisposable
 
     #endregion
 
+    #region ReadTickerRequest - Null/Empty Input
+
+    [Fact]
+    public void ReadTickerRequest_NullBytes_ReturnsDefault()
+    {
+        TickerHelper.UseGZipCompression = false;
+
+        var result = TickerHelper.ReadTickerRequest<TestPayload>(null);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ReadTickerRequest_EmptyBytes_ReturnsDefault()
+    {
+        TickerHelper.UseGZipCompression = false;
+
+        var result = TickerHelper.ReadTickerRequest<TestPayload>(Array.Empty<byte>());
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ReadTickerRequest_NullBytes_NullableValueType_ReturnsDefault()
+    {
+        TickerHelper.UseGZipCompression = false;
+
+        var result = TickerHelper.ReadTickerRequest<int?>(null);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ReadTickerRequest_EmptyBytes_WithCompression_ReturnsDefault()
+    {
+        TickerHelper.UseGZipCompression = true;
+
+        var result = TickerHelper.ReadTickerRequest<TestPayload>(Array.Empty<byte>());
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ReadTickerRequest_WhitespaceBytes_ReturnsDefault()
+    {
+        TickerHelper.UseGZipCompression = false;
+
+        var result = TickerHelper.ReadTickerRequest<int?>(Encoding.UTF8.GetBytes("   "));
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ReadTickerRequest_WhitespaceBytes_ReferenceType_ReturnsDefault()
+    {
+        TickerHelper.UseGZipCompression = false;
+
+        var result = TickerHelper.ReadTickerRequest<TestPayload>(Encoding.UTF8.GetBytes(""));
+
+        Assert.Null(result);
+    }
+
+    #endregion
+
     #region Round-Trip Tests
 
     [Fact]
