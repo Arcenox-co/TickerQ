@@ -11,6 +11,7 @@ using TickerQ.Dashboard.Authentication;
 using TickerQ.Dashboard.Endpoints;
 using TickerQ.Dashboard.Infrastructure;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Text.RegularExpressions;
 using TickerQ.Utilities.Entities;
 
@@ -29,7 +30,8 @@ namespace TickerQ.Dashboard.DependencyInjection
                 {
                     PropertyNameCaseInsensitive = true,
                     PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                    Converters = { new StringToByteArrayConverter() }
+                    Converters = { new StringToByteArrayConverter() },
+                    TypeInfoResolverChain = { DashboardJsonSerializerContext.Default, new DefaultJsonTypeInfoResolver() }
                 };
             }
             else
@@ -39,6 +41,9 @@ namespace TickerQ.Dashboard.DependencyInjection
                 {
                     config.DashboardJsonOptions.Converters.Add(new StringToByteArrayConverter());
                 }
+
+                // Ensure the source-generated context is in the resolver chain
+                config.DashboardJsonOptions.TypeInfoResolverChain.Insert(0, DashboardJsonSerializerContext.Default);
             }
             
             // Register the dashboard configuration for DI
@@ -163,28 +168,26 @@ namespace TickerQ.Dashboard.DependencyInjection
             var frontendBasePath = CombinePathBase(pathBase, basePath);
 
             // Build the config object
-            var authInfo = new
+            var envConfig = new FrontendConfigResponse
             {
-                mode = config.Auth.Mode.ToString().ToLower(),
-                enabled = config.Auth.IsEnabled,
-                sessionTimeout = config.Auth.SessionTimeoutMinutes
-            };
-            
-            var envConfig = new
-            {
-                basePath = frontendBasePath,
-                backendDomain = config.BackendDomain,
-                auth = authInfo
+                BasePath = frontendBasePath,
+                BackendDomain = config.BackendDomain,
+                Auth = new AuthInfoResponse
+                {
+                    Mode = config.Auth.Mode.ToString().ToLower(),
+                    Enabled = config.Auth.IsEnabled,
+                    SessionTimeout = config.Auth.SessionTimeoutMinutes
+                }
             };
 
             // Serialize without over-escaping, but make sure it won't break </script>
-            var json = JsonSerializer.Serialize(
-                envConfig,
-                new JsonSerializerOptions
-                {
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-                });
+            var frontendJsonOptions = new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+                TypeInfoResolverChain = { DashboardJsonSerializerContext.Default }
+            };
+            var json = JsonSerializer.Serialize(envConfig, frontendJsonOptions);
 
             json = SanitizeForInlineScript(json);
 

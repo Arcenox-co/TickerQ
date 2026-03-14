@@ -20,9 +20,10 @@ namespace TickerQ.Dashboard.Infrastructure
                 if (string.IsNullOrEmpty(stringValue))
                     return null;
                 
-                var dataToObject = JsonSerializer.Deserialize<object>(stringValue);
+                using var doc = JsonDocument.Parse(stringValue);
+                var element = doc.RootElement.Clone();
                 // Use TickerHelper to convert string to bytes (same logic as backend)
-                return TickerHelper.CreateTickerRequest(dataToObject);
+                return TickerHelper.CreateTickerRequest(element);
             }
             
             if (reader.TokenType == JsonTokenType.StartArray)
