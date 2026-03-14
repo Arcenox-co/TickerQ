@@ -264,10 +264,11 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var functions = cronTickers.Select(x => x.Function).ToList();
         var cronSet = dbContext.Set<TCronTicker>();
 
-        // Build the complete set of registered function names to detect orphaned tickers.
+        // Build the complete list of registered function names to detect orphaned tickers.
         // This covers functions whose InitIdentifier was cleared by a dashboard edit (#517).
-        var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys
-            .ToHashSet(StringComparer.Ordinal);
+        // Use List<string> instead of HashSet<string> for broader EF Core provider compatibility
+        // (some providers like Devart MySQL don't assign type mappings to HashSet parameters).
+        var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys.ToList();
 
         // Find all cron tickers whose function no longer exists in the code definitions.
         // This includes seeded tickers (InitIdentifier = "MemoryTicker_Seeded_*") as well as
