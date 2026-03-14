@@ -48,7 +48,14 @@ namespace TickerQ.Dashboard.DependencyInjection
             
             // Register the dashboard configuration for DI
             services.AddSingleton(config);
-            
+
+            // Register source-generated context into ASP.NET's HTTP JSON options
+            // so minimal API endpoint parameter binding works with reflection disabled
+            services.ConfigureHttpJsonOptions(options =>
+            {
+                options.SerializerOptions.TypeInfoResolverChain.Insert(0, DashboardJsonSerializerContext.Default);
+            });
+
             services.AddRouting();
             services.AddSignalR();
 

@@ -63,6 +63,7 @@ namespace TickerQ.Dashboard.Infrastructure;
 // Primitives used in responses
 [JsonSerializable(typeof(Guid))]
 [JsonSerializable(typeof(Guid?))]
+[JsonSerializable(typeof(Guid[]))]
 [JsonSerializable(typeof(DateTime))]
 [JsonSerializable(typeof(DateTime?))]
 [JsonSerializable(typeof(TimeSpan))]
