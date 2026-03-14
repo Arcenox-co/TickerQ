@@ -80,6 +80,29 @@ namespace TickerQ.Dashboard.DependencyInjection
             // Validate and normalize base path
             var basePath = NormalizeBasePath(config.BasePath);
 
+            // Extract inline preload script from embedded index.html at startup.
+            // Serving it as an external file allows CSP script-src 'self' without 'unsafe-inline'.
+            string preloadScript = null;
+            string htmlTemplate = null;
+            var indexFile = embeddedFileProvider.GetFileInfo("index.html");
+            if (indexFile.Exists)
+            {
+                using var stream = indexFile.CreateReadStream();
+                using var reader = new StreamReader(stream);
+                var rawHtml = reader.ReadToEnd();
+
+                var scriptMatch = Regex.Match(rawHtml, @"<script>\s*([\s\S]*?)\s*</script>");
+                if (scriptMatch.Success)
+                {
+                    preloadScript = scriptMatch.Groups[1].Value;
+                    htmlTemplate = rawHtml.Remove(scriptMatch.Index, scriptMatch.Length);
+                }
+                else
+                {
+                    htmlTemplate = rawHtml;
+                }
+            }
+
             // Map a branch for the basePath to properly isolate dashboard
             app.Map(basePath, dashboardApp =>
             {
@@ -94,12 +117,38 @@ namespace TickerQ.Dashboard.DependencyInjection
                     OnPrepareResponse = ctx =>
                     {
                         // Cache static assets for 1 hour
-                        if (ctx.File.Name.EndsWith(".js") || ctx.File.Name.EndsWith(".css") || 
+                        if (ctx.File.Name.EndsWith(".js") || ctx.File.Name.EndsWith(".css") ||
                             ctx.File.Name.EndsWith(".ico") || ctx.File.Name.EndsWith(".png"))
                         {
                             ctx.Context.Response.Headers.CacheControl = "public,max-age=3600";
                         }
                     }
+                });
+
+                // Serve dashboard config and preload scripts as external files (before auth).
+                // This eliminates inline scripts so the dashboard works with CSP script-src 'self'.
+                dashboardApp.Use(async (context, next) =>
+                {
+                    var path = context.Request.Path.Value;
+
+                    if (string.Equals(path, "/__tickerq-config.js", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var configJs = GenerateConfigJs(context, basePath, config);
+                        context.Response.ContentType = "application/javascript; charset=utf-8";
+                        context.Response.Headers.CacheControl = "no-cache";
+                        await context.Response.WriteAsync(configJs);
+                        return;
+                    }
+
+                    if (string.Equals(path, "/__tickerq-preload.js", StringComparison.OrdinalIgnoreCase) && preloadScript != null)
+                    {
+                        context.Response.ContentType = "application/javascript; charset=utf-8";
+                        context.Response.Headers.CacheControl = "public,max-age=3600";
+                        await context.Response.WriteAsync(preloadScript);
+                        return;
+                    }
+
+                    await next();
                 });
 
                 // Set up routing and CORS
@@ -129,22 +178,13 @@ namespace TickerQ.Dashboard.DependencyInjection
                 {
                     await next();
 
-                    if (context.Response.StatusCode == 404)
+                    if (context.Response.StatusCode == 404 && htmlTemplate != null)
                     {
-                        var file = embeddedFileProvider.GetFileInfo("index.html");
-                        if (file.Exists)
-                        {
-                            await using var stream = file.CreateReadStream();
-                            using var reader = new StreamReader(stream);
-                            var htmlContent = await reader.ReadToEndAsync();
+                        var htmlContent = InjectExternalScripts(htmlTemplate, context, basePath);
 
-                            // Inject the base tag and other replacements into the HTML
-                            htmlContent = ReplaceBasePath(htmlContent, context, basePath, config);
-
-                            context.Response.ContentType = "text/html";
-                            context.Response.StatusCode = 200;
-                            await context.Response.WriteAsync(htmlContent);
-                        }
+                        context.Response.ContentType = "text/html";
+                        context.Response.StatusCode = 200;
+                        await context.Response.WriteAsync(htmlContent);
                     }
                 });
             });
@@ -161,20 +201,18 @@ namespace TickerQ.Dashboard.DependencyInjection
             return basePath.TrimEnd('/');
         }
 
-        private static string ReplaceBasePath(string htmlContent, HttpContext httpContext, string basePath, DashboardOptionsBuilder config)
+        /// <summary>
+        /// Generates the runtime config JavaScript served as an external file.
+        /// Sets window.TickerQConfig and window.__dynamic_base__ for Vite dynamic base.
+        /// </summary>
+        private static string GenerateConfigJs(HttpContext httpContext, string basePath, DashboardOptionsBuilder config)
         {
-            if (string.IsNullOrEmpty(htmlContent))
-                return htmlContent ?? string.Empty;
-
-            // Compute the frontend base path as PathBase + backend basePath.
-            // This ensures correct URLs when the host app uses UsePathBase.
             var pathBase = httpContext.Request.PathBase.HasValue
                 ? httpContext.Request.PathBase.Value
                 : string.Empty;
 
             var frontendBasePath = CombinePathBase(pathBase, basePath);
 
-            // Build the config object
             var envConfig = new FrontendConfigResponse
             {
                 BasePath = frontendBasePath,
@@ -187,7 +225,6 @@ namespace TickerQ.Dashboard.DependencyInjection
                 }
             };
 
-            // Serialize without over-escaping, but make sure it won't break </script>
             var frontendJsonOptions = new JsonSerializerOptions
             {
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -196,41 +233,37 @@ namespace TickerQ.Dashboard.DependencyInjection
             };
             var json = JsonSerializer.Serialize(envConfig, frontendJsonOptions);
 
-            json = SanitizeForInlineScript(json);
+            return $"(function(){{try{{window.TickerQConfig={json};window.__dynamic_base__=window.TickerQConfig.basePath;}}catch(e){{console.error('TickerQ config failed:',e);}}}})();";
+        }
 
-            // Add base tag for proper asset loading
-            var baseTag = $@"<base href=""{frontendBasePath}/"" />";
+        /// <summary>
+        /// Injects base tag and external script references into the HTML template.
+        /// Config must load before preload since the preload script uses window.__dynamic_base__.
+        /// </summary>
+        private static string InjectExternalScripts(string htmlTemplate, HttpContext httpContext, string basePath)
+        {
+            if (string.IsNullOrEmpty(htmlTemplate))
+                return htmlTemplate ?? string.Empty;
 
-            // Inline bootstrap: set TickerQConfig and derive __dynamic_base__ (vite-plugin-dynamic-base)
-            var script = $@"<script>
-                (function() {{
-                try {{
-                    // Expose config
-                    window.TickerQConfig = {json};
+            var pathBase = httpContext.Request.PathBase.HasValue
+                ? httpContext.Request.PathBase.Value
+                : string.Empty;
 
-                    // Derive dynamic base for vite-plugin-dynamic-base
-                    window.__dynamic_base__ = window.TickerQConfig.basePath;
-                }} catch (e) {{ console.error('Runtime config injection failed:', e); }}
-                }})();
-                </script>";
+            var frontendBasePath = CombinePathBase(pathBase, basePath);
 
-            var fullInjection = baseTag + script;
-            // Prefer inject immediately after opening <head ...>
-            var headOpen = Regex.Match(htmlContent, "(?is)<head\\b[^>]*>");
+            var injection = $@"<base href=""{frontendBasePath}/"" />" +
+                            @"<script src=""__tickerq-config.js""></script>" +
+                            @"<script src=""__tickerq-preload.js""></script>";
+
+            var headOpen = Regex.Match(htmlTemplate, "(?is)<head\\b[^>]*>");
             if (headOpen.Success)
-            {
-                return htmlContent.Insert(headOpen.Index + headOpen.Length, fullInjection);
-            }
+                return htmlTemplate.Insert(headOpen.Index + headOpen.Length, injection);
 
-            // Fallback: just before </head>
-            var closeIdx = htmlContent.IndexOf("</head>", StringComparison.OrdinalIgnoreCase);
+            var closeIdx = htmlTemplate.IndexOf("</head>", StringComparison.OrdinalIgnoreCase);
             if (closeIdx >= 0)
-            {
-                return htmlContent.Insert(closeIdx, fullInjection);
-            }
+                return htmlTemplate.Insert(closeIdx, injection);
 
-            // Last resort: prepend (ensures script runs early)
-            return fullInjection + htmlContent;
+            return injection + htmlTemplate;
         }
 
         private static string CombinePathBase(string pathBase, string basePath)
@@ -260,10 +293,5 @@ namespace TickerQ.Dashboard.DependencyInjection
             return pathBase + basePath;
         }
 
-        /// <summary>
-        /// Prevents &lt;/script&gt; in JSON strings from prematurely closing the inline script.
-        /// </summary>
-        private static string SanitizeForInlineScript(string json)
-            => json.Replace("</script", "<\\/script", StringComparison.OrdinalIgnoreCase);
     }
 }
