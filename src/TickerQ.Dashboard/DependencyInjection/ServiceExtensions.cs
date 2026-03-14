@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Dashboard.Endpoints;
 using TickerQ.Dashboard.Hubs;
+using TickerQ.Dashboard.Infrastructure;
 using TickerQ.Dashboard.Infrastructure.Dashboard;
 using TickerQ.Dashboard.Authentication;
 using TickerQ.Utilities;
@@ -8,6 +9,7 @@ using TickerQ.Utilities.Interfaces;
 using System;
 using System.Linq;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using TickerQ.Utilities.Entities;
 
@@ -59,6 +61,10 @@ namespace TickerQ.Dashboard.DependencyInjection
                 
                 services.AddDashboardService<TTimeTicker, TCronTicker>(dashboardConfig);
                 services.AddSingleton<DashboardOptionsBuilder>(_ => dashboardConfig);
+
+                // Register IStartupFilter for old Startup.cs pattern where IHost != IApplicationBuilder.
+                // In the new WebApplication pattern, UseDashboardDelegate handles it directly.
+                services.AddSingleton<IStartupFilter>(new DashboardStartupFilter<TTimeTicker, TCronTicker>(dashboardConfig));
             };
 
             UseDashboardDelegate(tickerConfiguration, dashboardConfig);
@@ -72,16 +78,15 @@ namespace TickerQ.Dashboard.DependencyInjection
         {
             tickerConfiguration.UseDashboardApplication((appObj) =>
             {
-                if (appObj is not IApplicationBuilder app)
-                    throw new InvalidOperationException(
-                        "TickerQ Dashboard can only be used in ASP.NET Core applications. " +
-                        "The current host does not provide an HTTP application pipeline " +
-                        "(IApplicationBuilder is not available). " +
-                        "If you are running a Worker Service, Console app, or background node, " +
-                        "remove the dashboard configuration or move it to a WebApplication."
-                    );
-                // Configure static files and middleware with endpoints
-                app.UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(dashboardConfig);
+                if (appObj is IApplicationBuilder app)
+                {
+                    // New WebApplication pattern: WebApplication implements both IHost and IApplicationBuilder.
+                    // Mark as applied so DashboardStartupFilter skips duplicate registration.
+                    dashboardConfig.MiddlewareApplied = true;
+                    app.UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(dashboardConfig);
+                }
+                // Old Startup.cs pattern: IHost is not IApplicationBuilder.
+                // Dashboard middleware is injected via IStartupFilter registered in AddDashboard.
             });
         }
     }
