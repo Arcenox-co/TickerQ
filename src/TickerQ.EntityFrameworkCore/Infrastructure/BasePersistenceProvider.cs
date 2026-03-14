@@ -347,6 +347,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 var dbContext = session.Context;
                 return await dbContext.Set<TCronTicker>()
                     .AsNoTracking()
+                    .Where(x => x.IsEnabled)
                     .Select(MappingExtensions.ForCronTickerExpressions<CronTickerEntity>())
                     .ToArrayAsync(ct)
                     .ConfigureAwait(false);
@@ -361,6 +362,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var dbContext = session.Context;
         return await dbContext.Set<TCronTicker>()
             .AsNoTracking()
+            .Where(x => x.IsEnabled)
             .Select(MappingExtensions.ForCronTickerExpressions<CronTickerEntity>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
     }

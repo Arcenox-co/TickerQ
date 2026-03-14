@@ -42,6 +42,7 @@ const getCronTickerRangeGraphDataById = cronTickerService.getTimeTickersGraphDat
 const getCronTickersGraphDataAndParseToGraph = cronTickerService.getTimeTickersGraphData()
 const deleteCronTicker = cronTickerService.deleteCronTicker()
 const runCronTickerOnDemand = cronTickerService.runCronTickerOnDemand()
+const toggleCronTicker = cronTickerService.toggleCronTicker()
 
 // Pagination state
 const currentPage = ref(1)
@@ -74,6 +75,9 @@ const handlePageSizeChange = async (size: number) => {
 }
 
 const confirmDialog = useDialog<ConfirmDialogProps & { id: string }>().withComponent(
+  () => import('@/components/common/ConfirmDialog.vue'),
+)
+const toggleConfirmDialog = useDialog<ConfirmDialogProps & { id: string; isEnabled: boolean }>().withComponent(
   () => import('@/components/common/ConfirmDialog.vue'),
 )
 const cronOccurrenceDialog = useDialog<{
@@ -466,6 +470,36 @@ const RunCronTickerOnDemand = async (id: string) => {
   await runCronTickerOnDemand.requestAsync(id)
   await sleep(1000)
   await loadPageData()
+}
+
+const ToggleCronTickerEnabled = (id: string, isEnabled: boolean) => {
+  toggleConfirmDialog.open({
+    ...new ConfirmDialogProps(),
+    id,
+    isEnabled,
+    icon: isEnabled ? 'mdi-power-off' : 'mdi-power',
+    iconColor: isEnabled ? '#F44336' : '#4CAF50',
+    title: isEnabled ? 'Disable Cron Ticker' : 'Enable Cron Ticker',
+    text: isEnabled
+      ? 'Are you sure you want to disable this cron ticker? It will stop generating new occurrences.'
+      : 'Are you sure you want to enable this cron ticker? It will start generating occurrences again.',
+    confirmText: isEnabled ? 'Disable' : 'Enable',
+    confirmColor: isEnabled ? '#F44336' : '#4CAF50',
+  })
+}
+
+const onSubmitToggleConfirmDialog = async () => {
+  try {
+    const id = toggleConfirmDialog.propData?.id!
+    const isEnabled = toggleConfirmDialog.propData?.isEnabled!
+    toggleConfirmDialog.close()
+    await toggleCronTicker.requestAsync(id, isEnabled)
+    await loadPageData()
+  } catch (error: any) {
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+      return
+    }
+  }
 }
 
 onMounted(async () => {
@@ -1221,6 +1255,23 @@ const refreshData = async () => {
 
             <template v-slot:item.actions="{ item }">
               <div class="action-buttons-container">
+                <!-- Enable/Disable Button -->
+                <div class="action-btn-wrapper">
+                  <v-tooltip location="top">
+                    <template v-slot:activator="{ props }">
+                      <button
+                        v-bind="props"
+                        @click="ToggleCronTickerEnabled(item.id, !item.isEnabled)"
+                        class="modern-action-btn"
+                        :class="item.isEnabled ? 'disable-btn' : 'enable-btn'"
+                      >
+                        <v-icon size="16">mdi-power</v-icon>
+                      </button>
+                    </template>
+                    <span>{{ item.isEnabled ? 'Disable' : 'Enable' }}</span>
+                  </v-tooltip>
+                </div>
+
                 <!-- Chart Button -->
                 <div class="action-btn-wrapper">
                   <v-tooltip location="top">
@@ -1288,6 +1339,8 @@ const refreshData = async () => {
                         v-bind="props"
                         @click="RunCronTickerOnDemand(item.id)"
                         class="modern-action-btn run-btn"
+                        :class="{ 'btn-disabled': !item.isEnabled }"
+                        :disabled="!item.isEnabled"
                       >
                         <v-icon size="16">mdi-play-outline</v-icon>
                       </button>
@@ -1353,6 +1406,12 @@ const refreshData = async () => {
       :dialog-props="confirmDialog.propData"
       @close="confirmDialog.close()"
       @confirm="onSubmitConfirmDialog"
+    />
+    <toggleConfirmDialog.Component
+      :is-open="toggleConfirmDialog.isOpen"
+      :dialog-props="toggleConfirmDialog.propData"
+      @close="toggleConfirmDialog.close()"
+      @confirm="onSubmitToggleConfirmDialog"
     />
   </div>
 </template> 
@@ -1872,6 +1931,28 @@ const refreshData = async () => {
   border-color: rgba(255, 255, 255, 0.15);
 }
 
+.enable-btn {
+  color: #4caf50;
+  border-color: rgba(76, 175, 80, 0.2);
+}
+
+.enable-btn:hover {
+  border-color: rgba(76, 175, 80, 0.5);
+  box-shadow: 0 8px 25px rgba(76, 175, 80, 0.4);
+  background: rgba(76, 175, 80, 0.15);
+}
+
+.disable-btn {
+  color: #ffa726;
+  border-color: rgba(255, 167, 38, 0.2);
+}
+
+.disable-btn:hover {
+  border-color: rgba(255, 167, 38, 0.5);
+  box-shadow: 0 8px 25px rgba(255, 167, 38, 0.4);
+  background: rgba(255, 167, 38, 0.15);
+}
+
 .table-container {
   background: linear-gradient(135deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.15) 100%);
   border-radius: 12px;
@@ -2062,6 +2143,14 @@ const refreshData = async () => {
   border-color: rgba(229, 115, 115, 0.5);
   box-shadow: 0 8px 25px rgba(229, 115, 115, 0.4);
   background: rgba(229, 115, 115, 0.15);
+}
+
+.btn-disabled {
+  color: #616161 !important;
+  border-color: rgba(97, 97, 97, 0.2) !important;
+  opacity: 0.5;
+  cursor: not-allowed !important;
+  pointer-events: none;
 }
 
 .expression-tooltip {
