@@ -4,12 +4,19 @@ using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities.Instrumentation;
+using TickerQ.Utilities;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
 
-public class RetryBehaviorTests
+[Collection("TickerCancellationTokenState")]
+public class RetryBehaviorTests : IDisposable
 {
+    public void Dispose()
+    {
+        TickerCancellationTokenManager.CleanUpTickerCancellationTokens();
+    }
+
     // End-to-end unit tests that call the public ExecuteTaskAsync with a CronTickerOccurrence
     // so RunContextFunctionAsync + retry logic is exercised. Tests use short intervals (1..3s).
 

@@ -138,6 +138,10 @@ public static class DashboardEndpoints
             .WithName("UpdateCronTicker")
             .WithSummary("Update cron ticker");
 
+        apiGroup.MapPut("/cron-ticker/toggle", ToggleCronTicker<TTimeTicker, TCronTicker>)
+            .WithName("ToggleCronTicker")
+            .WithSummary("Toggle cron ticker enabled/disabled");
+
         apiGroup.MapPost("/cron-ticker/run", RunCronTickerOnDemand<TTimeTicker, TCronTicker>)
             .WithName("RunCronTickerOnDemand")
             .WithSummary("Run cron ticker on demand");
@@ -548,6 +552,23 @@ public static class DashboardEndpoints
         return Results.Json(new { 
             success = result.IsSucceeded, 
             message = result.IsSucceeded ? "Cron ticker updated successfully" : "Failed to update cron ticker"
+        }, dashboardOptions.DashboardJsonOptions);
+    }
+
+    private static async Task<IResult> ToggleCronTicker<TTimeTicker, TCronTicker>(
+        Guid id,
+        bool isEnabled,
+        ITickerDashboardRepository<TTimeTicker, TCronTicker> repository,
+        DashboardOptionsBuilder dashboardOptions,
+        CancellationToken cancellationToken)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var success = await repository.ToggleCronTickerAsync(id, isEnabled, cancellationToken);
+
+        return Results.Json(new {
+            success,
+            message = success ? $"Cron ticker {(isEnabled ? "enabled" : "disabled")} successfully" : "Failed to toggle cron ticker"
         }, dashboardOptions.DashboardJsonOptions);
     }
 

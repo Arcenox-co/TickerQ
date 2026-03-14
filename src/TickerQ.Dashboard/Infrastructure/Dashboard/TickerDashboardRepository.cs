@@ -569,6 +569,26 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             return finalData;
         }
 
+        public async Task<bool> ToggleCronTickerAsync(Guid id, bool isEnabled, CancellationToken cancellationToken)
+        {
+            var cronTicker = await _persistenceProvider.GetCronTickerById(id, cancellationToken);
+            if (cronTicker == null)
+                return false;
+
+            cronTicker.IsEnabled = isEnabled;
+            cronTicker.UpdatedAt = DateTime.UtcNow;
+
+            var affectedRows = await _persistenceProvider.UpdateCronTickers([cronTicker], cancellationToken);
+
+            if (affectedRows > 0)
+            {
+                _tickerQHostScheduler.Restart();
+                await _notificationHubSender.UpdateCronTickerNotifyAsync(cronTicker);
+            }
+
+            return affectedRows > 0;
+        }
+
         public bool CancelTickerById(Guid tickerId)
             => TickerCancellationTokenManager.RequestTickerCancellationById(tickerId);
 
