@@ -17,7 +17,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Expression = e.Expression,
                 Function = e.Function,
                 RetryIntervals = e.RetryIntervals,
-                Retries = e.Retries
+                Retries = e.Retries,
+                IsEnabled = e.IsEnabled
             };
         
         internal static Expression<Func<TTimeTicker, TimeTickerEntity>> ForQueueTimeTickers<TTimeTicker>() where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
