@@ -20,9 +20,12 @@ namespace TickerQ.Dashboard.Infrastructure
                 if (string.IsNullOrEmpty(stringValue))
                     return null;
                 
-                var dataToObject = JsonSerializer.Deserialize<object>(stringValue);
-                // Use TickerHelper to convert string to bytes (same logic as backend)
-                return TickerHelper.CreateTickerRequest(dataToObject);
+                // Serialize the JSON string to UTF-8 bytes using the current options
+                // (which have the source-gen resolver chain), avoiding reflection
+                var serialized = JsonSerializer.SerializeToUtf8Bytes(
+                    JsonDocument.Parse(stringValue).RootElement, options);
+                // Pass pre-serialized bytes to CreateTickerRequest for compression handling
+                return TickerHelper.CreateTickerRequest(serialized);
             }
             
             if (reader.TokenType == JsonTokenType.StartArray)
