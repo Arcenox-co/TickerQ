@@ -213,6 +213,39 @@ namespace TickerQ.SourceGenerator.Utilities
             var lastDotIndex = fullTypeName.LastIndexOf('.');
             return lastDotIndex > 0 ? fullTypeName.Substring(0, lastDotIndex) : string.Empty;
         }
+
+        /// <summary>
+        /// Sanitizes an assembly name into a valid C# namespace identifier.
+        /// Replaces invalid characters (e.g. dashes) with underscores, and prepends
+        /// an underscore if the result starts with a digit.
+        /// </summary>
+        public static string SanitizeNamespace(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return name;
+
+            var sb = new System.Text.StringBuilder(name.Length);
+            for (var i = 0; i < name.Length; i++)
+            {
+                var c = name[i];
+                if (c == '.' || char.IsLetterOrDigit(c) || c == '_')
+                    sb.Append(c);
+                else
+                    sb.Append('_');
+            }
+
+            var result = sb.ToString();
+
+            // Each segment between dots must not start with a digit
+            var segments = result.Split('.');
+            for (var i = 0; i < segments.Length; i++)
+            {
+                if (segments[i].Length > 0 && char.IsDigit(segments[i][0]))
+                    segments[i] = "_" + segments[i];
+            }
+
+            return string.Join(".", segments);
+        }
     }
 
     /// <summary>
