@@ -33,6 +33,7 @@ public class DesignTimeDbContextTests : IDisposable
         // Simulate design-time: create DbContext without registering TickerQEfCoreOptionBuilder
         var options = new DbContextOptionsBuilder<TickerQDbContext>()
             .UseSqlite(_connection)
+            .EnableServiceProviderCaching(false)
             .Options;
 
         using var context = new TickerQDbContext(options);
@@ -64,6 +65,7 @@ public class DesignTimeDbContextTests : IDisposable
         var options = new DbContextOptionsBuilder<TickerQDbContext>()
             .UseSqlite(_connection)
             .UseApplicationServiceProvider(serviceProvider)
+            .EnableServiceProviderCaching(false)
             .Options;
 
         using var context = new TickerQDbContext(options);
@@ -80,6 +82,7 @@ public class DesignTimeDbContextTests : IDisposable
         // Verify the full design-time flow: create context → ensure created (simulates migration)
         var options = new DbContextOptionsBuilder<TickerQDbContext>()
             .UseSqlite(_connection)
+            .EnableServiceProviderCaching(false)
             .Options;
 
         using var context = new TickerQDbContext(options);
@@ -101,6 +104,7 @@ public class DesignTimeDbContextTests : IDisposable
         var options = new DbContextOptionsBuilder<CustomAppDbContext>()
             .UseSqlite(_connection)
             .ReplaceService<IModelCustomizer, TickerModelCustomizer<TimeTickerEntity, CronTickerEntity>>()
+            .EnableServiceProviderCaching(false)
             .Options;
 
         using var context = new CustomAppDbContext(options);
@@ -126,6 +130,7 @@ public class DesignTimeDbContextTests : IDisposable
             .UseSqlite(_connection)
             .ReplaceService<IModelCustomizer, TickerModelCustomizer<TimeTickerEntity, CronTickerEntity>>()
             .UseApplicationServiceProvider(serviceProvider)
+            .EnableServiceProviderCaching(false)
             .Options;
 
         using var context = new CustomAppDbContext(options);
