@@ -54,6 +54,7 @@ namespace TickerQ.SourceGenerator.Generators
             string functionName,
             int functionPriority,
             string cronExpression,
+            int maxConcurrency = 0,
             string assemblyName = null,
             HashSet<string> classNameConflicts = null,
             HashSet<string> typeNameConflicts = null)
@@ -73,7 +74,7 @@ namespace TickerQ.SourceGenerator.Generators
             AddStandardParameter(methodDeclaration, parametersList);
             GenerateMethodCall(sb, classDeclaration, methodDeclaration, parametersList, methodInfo, assemblyName, classNameConflicts, typeNameConflicts);
 
-            sb.AppendLine("            })));");
+            sb.AppendLine($"            }}), {maxConcurrency}));");
 
             return sb.ToString();
         }

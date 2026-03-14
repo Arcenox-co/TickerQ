@@ -20,6 +20,7 @@ namespace TickerQ.Utilities.Models
         [JsonIgnore]
         public TickerFunctionDelegate CachedDelegate { get; set; }
         public TickerTaskPriority CachedPriority { get; set; }
+        public int CachedMaxConcurrency { get; set; }
         public string FunctionName { get; set; }
         public Guid TickerId { get; set; }
         public Guid? ParentId { get; set; }

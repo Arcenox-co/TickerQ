@@ -16,13 +16,13 @@ public class TickerQDispatcherTests
     {
         _taskScheduler = Substitute.For<ITickerQTaskScheduler>();
         _taskHandler = Substitute.For<ITickerExecutionTaskHandler>();
-        _dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler);
+        _dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, new TickerFunctionConcurrencyGate());
     }
 
     [Fact]
     public void Constructor_ThrowsArgumentNullException_WhenTaskSchedulerIsNull()
     {
-        var act = () => new TickerQDispatcher(null!, _taskHandler);
+        var act = () => new TickerQDispatcher(null!, _taskHandler, new TickerFunctionConcurrencyGate());
 
         var ex = Assert.Throws<ArgumentNullException>(act);
         Assert.Equal("taskScheduler", ex.ParamName);
@@ -31,7 +31,7 @@ public class TickerQDispatcherTests
     [Fact]
     public void Constructor_ThrowsArgumentNullException_WhenTaskHandlerIsNull()
     {
-        var act = () => new TickerQDispatcher(_taskScheduler, null!);
+        var act = () => new TickerQDispatcher(_taskScheduler, null!, new TickerFunctionConcurrencyGate());
 
         var ex = Assert.Throws<ArgumentNullException>(act);
         Assert.Equal("taskHandler", ex.ParamName);

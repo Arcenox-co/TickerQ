@@ -75,6 +75,7 @@ namespace TickerQ.DependencyInjection
                 services.AddSingleton<ITickerQHostScheduler, NoOpTickerQHostScheduler>();
                 services.AddSingleton<ITickerQDispatcher, NoOpTickerQDispatcher>();
             }
+            services.AddSingleton<ITickerFunctionConcurrencyGate, TickerFunctionConcurrencyGate>();
             services.AddSingleton<ITickerExecutionTaskHandler, TickerExecutionTaskHandler>();
             services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
             

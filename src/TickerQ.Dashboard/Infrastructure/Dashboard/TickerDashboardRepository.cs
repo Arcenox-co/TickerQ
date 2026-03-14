@@ -434,6 +434,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 {
                     context.CachedDelegate = tickerItem.Delegate;
                     context.CachedPriority = tickerItem.Priority;
+                    context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
                 }
 
                 await _dispatcher.DispatchAsync([context], cancellationToken).ConfigureAwait(false);

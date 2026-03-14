@@ -163,6 +163,7 @@ namespace TickerQ.SourceGenerator
                     attributeValues.functionName,
                     attributeValues.taskPriority,
                     attributeValues.cronExpression,
+                    attributeValues.maxConcurrency,
                     assemblyName ?? compilation.Assembly.Name,
                     classNameConflicts,
                     typeNameConflicts
@@ -180,21 +181,23 @@ namespace TickerQ.SourceGenerator
             string functionName,
             int functionPriority,
             string cronExpression,
+            int maxConcurrency,
             string assemblyName,
             HashSet<string> classNameConflicts = null,
             HashSet<string> typeNameConflicts = null)
         {
             var methodInfo = DelegateGenerator.AnalyzeMethodParameters(methodDeclaration, semanticModel);
             var isAwaitable = SourceGeneratorUtilities.IsMethodAwaitable(methodDeclaration);
-            
+
             var delegateCode = DelegateGenerator.GenerateDelegateCode(
-                classDeclaration, 
-                methodDeclaration, 
-                methodInfo, 
-                isAwaitable, 
-                functionName, 
-                functionPriority, 
+                classDeclaration,
+                methodDeclaration,
+                methodInfo,
+                isAwaitable,
+                functionName,
+                functionPriority,
                 cronExpression,
+                maxConcurrency,
                 assemblyName,
                 classNameConflicts,
                 typeNameConflicts);
@@ -429,7 +432,7 @@ namespace TickerQ.SourceGenerator
             
             if (delegateCount > 0)
             {
-                sb.AppendLine($"            var tickerFunctionDelegateDict = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>({delegateCount});");
+                sb.AppendLine($"            var tickerFunctionDelegateDict = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>({delegateCount});");
                 
                 foreach (var delegateCode in delegateList)
                 {
@@ -454,7 +457,7 @@ namespace TickerQ.SourceGenerator
             
             if (delegateCount > 0)
             {
-                sb.AppendLine($"      var tickerFunctionDelegateDict = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>({delegateCount});");
+                sb.AppendLine($"      var tickerFunctionDelegateDict = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>({delegateCount});");
                 
                 foreach (var delegateCode in delegateList)
                 {

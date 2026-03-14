@@ -54,9 +54,9 @@ public class TickerFunctionProviderTests : IDisposable
     [Fact]
     public void RegisterFunctions_And_Build_FunctionExists()
     {
-        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
         {
-            ["MyFunc"] = ("*/5 * * * *", TickerTaskPriority.Normal, NoOpDelegate)
+            ["MyFunc"] = ("*/5 * * * *", TickerTaskPriority.Normal, NoOpDelegate, 0)
         };
 
         TickerFunctionProvider.RegisterFunctions(functions);
@@ -73,9 +73,9 @@ public class TickerFunctionProviderTests : IDisposable
     [Fact]
     public void RegisterFunctions_WithCapacity_DoesNotThrow()
     {
-        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
         {
-            ["CapFunc"] = ("0 0 * * *", TickerTaskPriority.High, NoOpDelegate)
+            ["CapFunc"] = ("0 0 * * *", TickerTaskPriority.High, NoOpDelegate, 0)
         };
 
         TickerFunctionProvider.RegisterFunctions(functions, 100);
@@ -137,9 +137,9 @@ public class TickerFunctionProviderTests : IDisposable
             return Task.CompletedTask;
         };
 
-        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
         {
-            ["TrackFunc"] = ("0 * * * *", TickerTaskPriority.Low, trackingDelegate)
+            ["TrackFunc"] = ("0 * * * *", TickerTaskPriority.Low, trackingDelegate, 0)
         };
 
         TickerFunctionProvider.RegisterFunctions(functions);
@@ -165,9 +165,9 @@ public class TickerFunctionProviderTests : IDisposable
     [Fact]
     public void Build_CalledTwice_DoesNotCrashOrLoseData()
     {
-        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
         {
-            ["DoubleFunc"] = ("0 0 1 * *", TickerTaskPriority.Normal, NoOpDelegate)
+            ["DoubleFunc"] = ("0 0 1 * *", TickerTaskPriority.Normal, NoOpDelegate, 0)
         };
 
         TickerFunctionProvider.RegisterFunctions(functions);
@@ -186,9 +186,9 @@ public class TickerFunctionProviderTests : IDisposable
     [Fact]
     public void UpdateCronExpressionsFromIConfiguration_UpdatesExpressions()
     {
-        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
         {
-            ["CronFunc"] = ("%CronSettings:Schedule%", TickerTaskPriority.High, NoOpDelegate)
+            ["CronFunc"] = ("%CronSettings:Schedule%", TickerTaskPriority.High, NoOpDelegate, 0)
         };
 
         TickerFunctionProvider.RegisterFunctions(functions);
@@ -205,9 +205,9 @@ public class TickerFunctionProviderTests : IDisposable
     [Fact]
     public void UpdateCronExpressionsFromIConfiguration_NoConfigValue_KeepsOriginal()
     {
-        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
         {
-            ["KeepFunc"] = ("%Missing:Key%", TickerTaskPriority.Normal, NoOpDelegate)
+            ["KeepFunc"] = ("%Missing:Key%", TickerTaskPriority.Normal, NoOpDelegate, 0)
         };
 
         TickerFunctionProvider.RegisterFunctions(functions);
@@ -228,11 +228,11 @@ public class TickerFunctionProviderTests : IDisposable
     [Fact]
     public void FunctionLookup_AfterBuild_RetrievableByKey()
     {
-        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
         {
-            ["Alpha"] = ("0 0 * * *", TickerTaskPriority.High, NoOpDelegate),
-            ["Beta"]  = ("0 0 1 * *", TickerTaskPriority.Low, NoOpDelegate),
-            ["Gamma"] = ("*/10 * * * *", TickerTaskPriority.Normal, NoOpDelegate)
+            ["Alpha"] = ("0 0 * * *", TickerTaskPriority.High, NoOpDelegate, 0),
+            ["Beta"]  = ("0 0 1 * *", TickerTaskPriority.Low, NoOpDelegate, 0),
+            ["Gamma"] = ("*/10 * * * *", TickerTaskPriority.Normal, NoOpDelegate, 0)
         };
 
         TickerFunctionProvider.RegisterFunctions(functions);
