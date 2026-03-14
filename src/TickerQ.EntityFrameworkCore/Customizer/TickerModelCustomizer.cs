@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using System;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using TickerQ.EntityFrameworkCore.Configurations;
 using TickerQ.Utilities.Entities;
@@ -16,7 +17,15 @@ namespace TickerQ.EntityFrameworkCore.Customizer
 
         public override void Customize(ModelBuilder builder, DbContext context)
         {
-            var schema = context.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>()?.Schema ?? Constants.DefaultSchema;
+            string schema;
+            try
+            {
+                schema = context.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>()?.Schema ?? Constants.DefaultSchema;
+            }
+            catch (InvalidOperationException)
+            {
+                schema = Constants.DefaultSchema;
+            }
 
             builder.ApplyConfiguration(new TimeTickerConfigurations<TTimeTicker>(schema));
             builder.ApplyConfiguration(new CronTickerConfigurations<TCronTicker>(schema));
