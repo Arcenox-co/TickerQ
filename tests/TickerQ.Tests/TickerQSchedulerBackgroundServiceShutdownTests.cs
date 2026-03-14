@@ -41,7 +41,8 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
             _taskHandler,
             _taskScheduler,
             _internalManager,
-            _schedulerOptions);
+            _schedulerOptions,
+            new TickerFunctionConcurrencyGate());
     }
 
     [Fact]

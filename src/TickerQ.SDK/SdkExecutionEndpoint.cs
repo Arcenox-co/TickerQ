@@ -75,12 +75,29 @@ public static class SdkExecutionEndpoint
             {
                 function.CachedDelegate = tickerItem.Delegate;
                 function.CachedPriority = tickerItem.Priority;
+                function.CachedMaxConcurrency = tickerItem.MaxConcurrency;
             }
             
             if (scheduler is not null && !scheduler.IsDisposed && !scheduler.IsFrozen)
             {
+                var concurrencyGate = scope.ServiceProvider.GetService<ITickerFunctionConcurrencyGate>();
+                var semaphore = concurrencyGate?.GetSemaphoreOrNull(function.FunctionName, function.CachedMaxConcurrency);
+
                 await scheduler.QueueAsync(
-                    ct => taskHandler.ExecuteTaskAsync(function, context.IsDue, ct),
+                    async ct =>
+                    {
+                        if (semaphore != null)
+                            await semaphore.WaitAsync(ct).ConfigureAwait(false);
+
+                        try
+                        {
+                            await taskHandler.ExecuteTaskAsync(function, context.IsDue, ct).ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            semaphore?.Release();
+                        }
+                    },
                     TickerTaskPriority.LongRunning,
                     cancellationToken: CancellationToken.None);
             }

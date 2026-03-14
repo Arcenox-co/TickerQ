@@ -45,7 +45,8 @@ public class TickerQFallbackBackgroundServiceTests
             _internalManager,
             _schedulerOptions,
             _taskHandler,
-            _taskScheduler);
+            _taskScheduler,
+            new TickerFunctionConcurrencyGate());
     }
 
     [Fact]

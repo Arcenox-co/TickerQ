@@ -184,7 +184,7 @@ public class RemoteFunctionsSyncService : BackgroundService
                 // Use cronExpression if available
                 var cronExpression = function.NodeExpression ?? string.Empty;
                 
-                functionDict[function.FunctionName] = (cronExpression, priority, functionDelegate);
+                functionDict[function.FunctionName] = (cronExpression, priority, functionDelegate, 0);
                 RemoteFunctionRegistry.MarkRemote(function.FunctionName);
                 requestInfoDict[function.FunctionName] = (
                     function.RequestType,
