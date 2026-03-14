@@ -9,8 +9,14 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
 
-public class RetryExhaustionTests
+[Collection("TickerCancellationTokenState")]
+public class RetryExhaustionTests : IDisposable
 {
+    public void Dispose()
+    {
+        TickerCancellationTokenManager.CleanUpTickerCancellationTokens();
+    }
+
     private readonly ITickerClock _clock;
     private readonly IInternalTickerManager _internalManager;
     private readonly ITickerQInstrumentation _instrumentation;

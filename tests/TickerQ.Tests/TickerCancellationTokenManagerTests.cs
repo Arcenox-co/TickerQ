@@ -7,6 +7,7 @@ using Xunit;
 
 namespace TickerQ.Tests;
 
+[Collection("TickerCancellationTokenState")]
 public class TickerCancellationTokenManagerTests : IDisposable
 {
     public void Dispose()

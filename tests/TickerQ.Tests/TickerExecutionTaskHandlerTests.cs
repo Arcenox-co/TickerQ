@@ -10,8 +10,14 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
 
-public class TickerExecutionTaskHandlerTests
+[Collection("TickerCancellationTokenState")]
+public class TickerExecutionTaskHandlerTests : IDisposable
 {
+    public void Dispose()
+    {
+        TickerCancellationTokenManager.CleanUpTickerCancellationTokens();
+    }
+
     private readonly ITickerClock _clock;
     private readonly IInternalTickerManager _internalManager;
     private readonly ITickerQInstrumentation _instrumentation;

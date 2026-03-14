@@ -563,9 +563,10 @@ namespace TickerQ.Provider
         public Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken)
         {
             var result = CronTickers.Values
+                .Where(x => x.IsEnabled)
                 .Cast<CronTickerEntity>()
                 .ToArray();
-                
+
             return Task.FromResult(result);
         }
 
