@@ -14,7 +14,7 @@
 
     <ItemGroup>
         <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
-        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="$(DotNetVersion)" />
+        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="$(DotNetAbstractionsVersion)" />
     </ItemGroup>
 
     <Target Name="CopyAnalyzer" AfterTargets="Build">
