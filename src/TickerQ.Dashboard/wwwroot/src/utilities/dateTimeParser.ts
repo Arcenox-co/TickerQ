@@ -6,32 +6,41 @@ export function formatDate(
     timeZone?: string
 ): string {
     if (!utcDateString) {
-        return ‘’;
+        return '';
     }
 
-    // Ensure there’s a “Z” so JS treats it as UTC
+    // Ensure there is a "Z" so JS treats it as UTC
     let iso = utcDateString.trim();
-    if (!iso.endsWith(‘Z’)) {
-        iso = iso.replace(‘ ‘, ‘T’) + ‘Z’;
+    if (!iso.endsWith('Z')) {
+        iso = iso.replace(' ', 'T') + 'Z';
     }
 
     const dateObj = new Date(iso);
 
     const options: Intl.DateTimeFormatOptions = {
-        year: ‘numeric’,
-        month: ‘2-digit’,
-        day: ‘2-digit’,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
         ...(timeZone ? { timeZone } : {}),
     };
 
     if (includeTime) {
-        options.hour = ‘2-digit’;
-        options.minute = ‘2-digit’;
-        options.second = ‘2-digit’;
+        options.hour = '2-digit';
+        options.minute = '2-digit';
+        options.second = '2-digit';
         options.hour12 = false;
     }
 
-    return new Intl.DateTimeFormat(undefined, options).format(dateObj);
+    // Use formatToParts for a consistent, locale-independent YYYY-MM-DD HH:mm:ss format
+    const formatter = new Intl.DateTimeFormat('en-CA', options);
+    const parts = formatter.formatToParts(dateObj);
+    const get = (type: string) => parts.find(p => p.type === type)?.value ?? '';
+
+    const datePart = `${get('year')}-${get('month')}-${get('day')}`;
+    if (!includeTime) {
+        return datePart;
+    }
+    return `${datePart} ${get('hour')}:${get('minute')}:${get('second')}`;
 }
 
 export function formatTime(time: number, inputInMilliseconds = false): string {
@@ -94,8 +103,8 @@ export function formatFromUtcToLocal(utcDateString: string): string {
 export function formatTimeAgo(date: string | Date): string {
     // Front-end often passes dates as strings straight up from JSON payloads.
     // All dates on back-end are UTC but dates loaded by EF have DateTimeKind.Unspecified by default,
-    // which is serialized to JSON without any offset suffix. 
-    // We have to specify them as UTC so that they're not parsed as local time by JS.
+    // which is serialized to JSON without any offset suffix.
+    // We have to specify them as UTC so that they are not parsed as local time by JS.
     if (typeof date === 'string' && !date.endsWith('Z')) {
         date = date + 'Z'
     }
