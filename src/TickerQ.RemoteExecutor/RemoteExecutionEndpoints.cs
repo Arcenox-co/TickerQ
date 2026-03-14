@@ -128,7 +128,7 @@ public static class RemoteExecutionEndpoints
                         sp => sp.GetRequiredService<TickerQRemoteExecutionOptions>().WebHookSignature,
                         allowEmptySecret: true);
 
-                    if (functionDict.TryAdd(newFunction.Name, (newFunction.CronExpression, newFunction.Priority, newFunctionDelegate)))
+                    if (functionDict.TryAdd(newFunction.Name, (newFunction.CronExpression, newFunction.Priority, newFunctionDelegate, 0)))
                     {
                         RemoteFunctionRegistry.MarkRemote(newFunction.Name);
                         requestInfoDict[newFunction.Name] = (newFunction.RequestType, newFunction.RequestExampleJson);
