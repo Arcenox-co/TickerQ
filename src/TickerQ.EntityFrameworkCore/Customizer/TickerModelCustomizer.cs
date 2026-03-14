@@ -16,9 +16,11 @@ namespace TickerQ.EntityFrameworkCore.Customizer
 
         public override void Customize(ModelBuilder builder, DbContext context)
         {
-            builder.ApplyConfiguration(new TimeTickerConfigurations<TTimeTicker>());
-            builder.ApplyConfiguration(new CronTickerConfigurations<TCronTicker>());
-            builder.ApplyConfiguration(new CronTickerOccurrenceConfigurations<TCronTicker>());
+            var schema = context.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>().Schema;
+
+            builder.ApplyConfiguration(new TimeTickerConfigurations<TTimeTicker>(schema));
+            builder.ApplyConfiguration(new CronTickerConfigurations<TCronTicker>(schema));
+            builder.ApplyConfiguration(new CronTickerOccurrenceConfigurations<TCronTicker>(schema));
 
             base.Customize(builder, context);
         }
