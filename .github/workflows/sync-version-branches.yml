@@ -222,19 +222,32 @@ jobs:
 
           # 3. Update Directory.Build.props from main with correct version numbers
           if [ -f "src/Directory.Build.props" ]; then
+            # Save DotNetAbstractionsVersion from target branch before overwriting
+            target_abstractions_version=$(grep -oP '<DotNetAbstractionsVersion>\K[^<]+' src/Directory.Build.props 2>/dev/null || echo "")
+
             git checkout main -- src/Directory.Build.props
 
-            # Version: 10.x.x → {dotnet_ver}.x.x
+            # Version: e.g. 10.x.x → 8.x.x
             current_version=$(grep -oP '<Version>\K[^<]+' src/Directory.Build.props)
-            new_version=$(echo "$current_version" | sed "s/^10\./$DOTNET_VER./")
+            new_version=$(echo "$current_version" | sed "s/^[0-9]\+\./$DOTNET_VER./")
             sed -i "s|<Version>$current_version</Version>|<Version>$new_version</Version>|g" src/Directory.Build.props
 
-            # TargetFramework: net10.0 → net{dotnet_ver}.0
-            sed -i "s|<TargetFramework>net10\.0</TargetFramework>|<TargetFramework>net${DOTNET_VER}.0</TargetFramework>|g" src/Directory.Build.props
+            # TargetFramework: e.g. net10.0 → net8.0
+            sed -i "s|<TargetFramework>net[0-9]\+\.0</TargetFramework>|<TargetFramework>net${DOTNET_VER}.0</TargetFramework>|g" src/Directory.Build.props
 
-            # DotNetVersion: [10.0.0,11.0.0) → [{dotnet_ver}.0.0,{dotnet_ver+1}.0.0)
+            # DotNetVersion: e.g. [10.0.0,11.0.0) → [8.0.0,9.0.0)
             next_ver=$((DOTNET_VER + 1))
-            sed -i "s|<DotNetVersion>\[10\.0\.0,11\.0\.0)</DotNetVersion>|<DotNetVersion>[${DOTNET_VER}.0.0,${next_ver}.0.0)</DotNetVersion>|g" src/Directory.Build.props
+            sed -i "s|<DotNetVersion>\[[0-9]\+\.0\.0,[0-9]\+\.0\.0)</DotNetVersion>|<DotNetVersion>[${DOTNET_VER}.0.0,${next_ver}.0.0)</DotNetVersion>|g" src/Directory.Build.props
+
+            # Preserve DotNetAbstractionsVersion from target branch if it differs
+            if [ -n "$target_abstractions_version" ]; then
+              if grep -q '<DotNetAbstractionsVersion>' src/Directory.Build.props; then
+                sed -i "s|<DotNetAbstractionsVersion>[^<]*</DotNetAbstractionsVersion>|<DotNetAbstractionsVersion>$target_abstractions_version</DotNetAbstractionsVersion>|g" src/Directory.Build.props
+              else
+                sed -i "/<DotNetVersion>/a\\        <DotNetAbstractionsVersion>$target_abstractions_version</DotNetAbstractionsVersion>" src/Directory.Build.props
+              fi
+              echo "  Preserved DotNetAbstractionsVersion: $target_abstractions_version"
+            fi
 
             echo "  Updated Directory.Build.props: Version=$new_version, TF=net${DOTNET_VER}.0, DotNetVersion=[${DOTNET_VER}.0.0,${next_ver}.0.0)"
           fi
