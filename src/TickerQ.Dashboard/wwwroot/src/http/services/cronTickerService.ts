@@ -176,6 +176,16 @@ const getTimeTickersGraphData = () => {
     };
 }
 
+const toggleCronTicker = () => {
+    const baseHttp = useBaseHttpService<object, object>('single')
+    const requestAsync = async (id: string, isEnabled: boolean) => (await baseHttp.sendAsync("PUT", "cron-ticker/toggle", { paramData: { id, isEnabled } }));
+
+    return {
+        ...baseHttp,
+        requestAsync
+    };
+}
+
 export const cronTickerService = {
     getCronTickers,
     getCronTickersPaginated,
@@ -183,6 +193,7 @@ export const cronTickerService = {
     addCronTicker,
     deleteCronTicker,
     runCronTickerOnDemand,
+    toggleCronTicker,
     getTimeTickersGraphDataRange,
     getTimeTickersGraphDataRangeById,
     getTimeTickersGraphData

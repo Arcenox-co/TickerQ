@@ -12,6 +12,7 @@ export class GetCronTickerResponse {
     createdAt!:string;
     updatedAt!:string;
     retries!:number;
+    isEnabled!:boolean;
     actions:string|undefined = undefined;
 }
 
@@ -22,6 +23,7 @@ export class UpdateCronTickerRequest {
     retries?: number;
     description?: string;
     intervals?:number[];
+    isEnabled?: boolean;
 }
 
 export class GetCronTickerGraphDataRangeResponse{

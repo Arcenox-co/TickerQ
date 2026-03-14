@@ -9,5 +9,6 @@ namespace TickerQ.Utilities.Entities
         public virtual byte[] Request { get; set; }
         public virtual int Retries { get; set; }
         public virtual int[] RetryIntervals { get; set; }
+        public virtual bool IsEnabled { get; set; } = true;
     }
 }

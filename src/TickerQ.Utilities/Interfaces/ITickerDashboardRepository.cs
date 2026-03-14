@@ -26,6 +26,7 @@ namespace TickerQ.Utilities.Interfaces
         Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetCronTickersOccurrencesAsync(Guid guid, CancellationToken cancellationToken = default);
         Task<PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>> GetCronTickersOccurrencesPaginatedAsync(Guid guid, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
         Task<IList<CronOccurrenceTickerGraphData>> GetCronTickersOccurrencesGraphDataAsync(Guid guid, CancellationToken cancellationToken = default);
+        Task<bool> ToggleCronTickerAsync(Guid id, bool isEnabled, CancellationToken cancellationToken = default);
         bool CancelTickerById(Guid tickerId);
         Task DeleteCronTickerOccurrenceByIdAsync(Guid id, CancellationToken cancellationToken = default);
         Task<(string, int)> GetTickerRequestByIdAsync(Guid tickerId, TickerType tickerType, CancellationToken cancellationToken = default);
