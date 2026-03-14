@@ -220,6 +220,9 @@ jobs:
           if [ -f "src/Directory.Build.props" ]; then
             echo "📝 Getting Directory.Build.props from main and updating for ${{ matrix.target_branch }}..."
             
+            # Save DotNetAbstractionsVersion from target branch before overwriting
+            target_abstractions_version=$(grep -oP '<DotNetAbstractionsVersion>\K[^<]+' src/Directory.Build.props 2>/dev/null || echo "")
+
             # Explicitly get the file from main branch
             git checkout main -- src/Directory.Build.props
             
@@ -230,16 +233,27 @@ jobs:
             echo "Directory.Build.props from main (before update):"
             grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
             
-            # Update version (9.x.x → 8.x.x) keeping the same minor/patch/suffix
+            # Update version (e.g. 10.0.1 → 8.0.1) keeping the same minor/patch/suffix
             current_version=$(grep -oP '<Version>\K[^<]+' src/Directory.Build.props)
-            new_version=$(echo "$current_version" | sed "s/^9\./$dotnet_version./")
+            new_version=$(echo "$current_version" | sed "s/^[0-9]\+\./$dotnet_version./")
             sed -i "s|<Version>$current_version</Version>|<Version>$new_version</Version>|g" src/Directory.Build.props
+
+            # Update target framework (e.g. net10.0 → net8.0)
+            sed -i "s|<TargetFramework>net[0-9]\+\.0</TargetFramework>|<TargetFramework>net$dotnet_version.0</TargetFramework>|g" src/Directory.Build.props
+
+            # Update DotNetVersion range (e.g. [10.0.0,11.0.0) → [8.0.0,9.0.0))
+            next_version=$((dotnet_version + 1))
+            sed -i "s|<DotNetVersion>\[[0-9]\+\.0\.0,[0-9]\+\.0\.0)</DotNetVersion>|<DotNetVersion>[$dotnet_version.0.0,$next_version.0.0)</DotNetVersion>|g" src/Directory.Build.props
             
-            # Update target framework (net9.0 → net8.0)
-            sed -i "s|<TargetFramework>net9\.0</TargetFramework>|<TargetFramework>net$dotnet_version.0</TargetFramework>|g" src/Directory.Build.props
-            
+            # Preserve DotNetAbstractionsVersion from target branch (not present on main)
+            if [ -n "$target_abstractions_version" ]; then
+              # Insert DotNetAbstractionsVersion after DotNetVersion line
+              sed -i "/<DotNetVersion>/a\\        <DotNetAbstractionsVersion>$target_abstractions_version</DotNetAbstractionsVersion>" src/Directory.Build.props
+              echo "Preserved DotNetAbstractionsVersion: $target_abstractions_version"
+            fi
+
             echo "Directory.Build.props after update:"
-            grep -E "<Version>|<TargetFramework>" src/Directory.Build.props
+            grep -E "<Version>|<TargetFramework>|<DotNetVersion>|<DotNetAbstractionsVersion>" src/Directory.Build.props
           fi
           
           # Reset workflow files to avoid including workflow changes in the PR
