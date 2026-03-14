@@ -96,5 +96,14 @@ namespace TickerQ.SourceGenerator.Validation
             DiagnosticSeverity.Error,
             true
         );
+
+        public static readonly DiagnosticDescriptor InvalidMaxConcurrency = new DiagnosticDescriptor(
+            "TQ011",
+            "Invalid maxConcurrency value",
+            "The maxConcurrency value for function '{0}' must be >= 0 (0 = unlimited)",
+            "TickerQ.SourceGenerator",
+            DiagnosticSeverity.Error,
+            true
+        );
     }
 }

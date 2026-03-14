@@ -23,12 +23,12 @@ namespace TickerQ.Utilities
         // Callback actions to collect registrations
         private static Action<Dictionary<string, (string, Type)>> _requestTypeRegistrations;
         private static Action<Dictionary<string, (string RequestType, string RequestExampleJson)>> _requestInfoRegistrations;
-        private static Action<Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)>> _functionRegistrations;
+        private static Action<Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>> _functionRegistrations;
         
         // Final frozen dictionaries
         public static FrozenDictionary<string, (string, Type)> TickerFunctionRequestTypes;
         public static FrozenDictionary<string, (string RequestType, string RequestExampleJson)> TickerFunctionRequestInfos;
-        public static FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)> TickerFunctions;
+        public static FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> TickerFunctions;
 
         /// <summary>
         /// Registers ticker functions during application startup by adding to the callback chain.
@@ -36,7 +36,7 @@ namespace TickerQ.Utilities
         /// </summary>
         /// <param name="functions">The functions to register. Cannot be null.</param>
         /// <exception cref="ArgumentNullException">Thrown when functions parameter is null.</exception>
-        public static void RegisterFunctions(IDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)> functions)
+        public static void RegisterFunctions(IDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)> functions)
         {
             if (functions == null)
                 throw new ArgumentNullException(nameof(functions));
@@ -60,7 +60,7 @@ namespace TickerQ.Utilities
         /// <param name="functions">The functions to register. Cannot be null.</param>
         /// <param name="_">The total expected capacity (ignored - capacity calculated automatically).</param>
         /// <exception cref="ArgumentNullException">Thrown when functions parameter is null.</exception>
-        public static void RegisterFunctions(IDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)> functions, int _)
+        public static void RegisterFunctions(IDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)> functions, int _)
         {
             // For callback approach, capacity is calculated automatically in Build()
             RegisterFunctions(functions);
@@ -143,7 +143,7 @@ namespace TickerQ.Utilities
             
                         if (!string.IsNullOrEmpty(mappedCronExpression))
                         {
-                            dict[key] = (mappedCronExpression, value.Priority, value.Delegate);
+                            dict[key] = (mappedCronExpression, value.Priority, value.Delegate, value.MaxConcurrency);
                         }
                     }
                 }
@@ -162,7 +162,7 @@ namespace TickerQ.Utilities
             if (_functionRegistrations != null)
             {
                 // Single pass: execute callbacks directly on final dictionary
-                var functionsDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)>();
+                var functionsDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>();
                 _functionRegistrations(functionsDict);
                 TickerFunctions = functionsDict.ToFrozenDictionary();
                 _functionRegistrations = null; // Release callback chain
@@ -171,7 +171,7 @@ namespace TickerQ.Utilities
             {
                 if (TickerFunctions == null)
                 {
-                    TickerFunctions = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate)>()
+                    TickerFunctions = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>()
                         .ToFrozenDictionary();
                 }
             }

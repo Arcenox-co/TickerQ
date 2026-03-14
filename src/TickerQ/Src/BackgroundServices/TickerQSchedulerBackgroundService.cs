@@ -20,22 +20,25 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private SafeCancellationTokenSource _schedulerLoopCancellationTokenSource;
     private readonly ITickerQTaskScheduler  _taskScheduler;
     private readonly ITickerExecutionTaskHandler  _taskHandler;
+    private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
     private int _started;
     public bool SkipFirstRun;
     public bool IsRunning => _started == 1;
 
-    
+
     public TickerQSchedulerBackgroundService(
         TickerExecutionContext executionContext,
-        ITickerExecutionTaskHandler taskHandler, 
-        ITickerQTaskScheduler taskScheduler, 
+        ITickerExecutionTaskHandler taskHandler,
+        ITickerQTaskScheduler taskScheduler,
         IInternalTickerManager  internalTickerManager,
-        SchedulerOptionsBuilder schedulerOptions)
+        SchedulerOptionsBuilder schedulerOptions,
+        ITickerFunctionConcurrencyGate concurrencyGate)
     {
         _executionContext = executionContext;
         _taskHandler = taskHandler;
         _taskScheduler = taskScheduler;
         _internalTickerManager = internalTickerManager ?? throw new ArgumentNullException(nameof(internalTickerManager));
+        _concurrencyGate = concurrencyGate;
         _minPollingInterval = ResolveMinPollingInterval(schedulerOptions);
         _restartThrottle = new RestartThrottleManager(() => _schedulerLoopCancellationTokenSource?.Cancel());
     }
@@ -102,7 +105,24 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 await _internalTickerManager.SetTickersInProgress(_executionContext.Functions, cancellationToken);
 
                 foreach (var function in _executionContext.Functions.OrderBy(x => x.CachedPriority))
-                    _ = _taskScheduler.QueueAsync(async ct => await _taskHandler.ExecuteTaskAsync(function,false, ct), function.CachedPriority, stoppingToken);
+                {
+                    var semaphore = _concurrencyGate.GetSemaphoreOrNull(function.FunctionName, function.CachedMaxConcurrency);
+
+                    _ = _taskScheduler.QueueAsync(async ct =>
+                    {
+                        if (semaphore != null)
+                            await semaphore.WaitAsync(ct).ConfigureAwait(false);
+
+                        try
+                        {
+                            await _taskHandler.ExecuteTaskAsync(function, false, ct).ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            semaphore?.Release();
+                        }
+                    }, function.CachedPriority, stoppingToken);
+                }
                 
                 _executionContext.SetFunctions(null);
             }

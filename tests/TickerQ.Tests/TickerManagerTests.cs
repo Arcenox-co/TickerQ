@@ -48,9 +48,9 @@ public class TickerManagerTests : IDisposable
 
         // Register the test function in TickerFunctionProvider before Build()
         TickerFunctionProvider.RegisterFunctions(
-            new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate)>
+            new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
             {
-                [ValidFunctionName] = ("", TickerTaskPriority.Normal, (_, _, _) => Task.CompletedTask)
+                [ValidFunctionName] = ("", TickerTaskPriority.Normal, (_, _, _) => Task.CompletedTask, 0)
             });
         TickerFunctionProvider.Build();
 

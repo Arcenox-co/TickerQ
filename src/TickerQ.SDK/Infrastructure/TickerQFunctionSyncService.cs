@@ -37,7 +37,7 @@ internal sealed class TickerQFunctionSyncService
             if (requestType.Item2 != null)
                 JsonExampleGenerator.TryGenerateExampleJson(requestType.Item2, out exampleJson);
 
-            var (cronExpression, priority, _) = value;
+            var (cronExpression, priority, _, _) = value;
             node.Functions.Add(new NodeFunction
             {
                 FunctionName = name,
