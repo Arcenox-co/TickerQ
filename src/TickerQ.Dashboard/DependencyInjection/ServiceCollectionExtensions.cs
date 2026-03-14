@@ -103,8 +103,12 @@ namespace TickerQ.Dashboard.DependencyInjection
                 }
             }
 
-            // Map a branch for the basePath to properly isolate dashboard
-            app.Map(basePath, dashboardApp =>
+            // Map a branch for the basePath with PathBase-aware routing.
+            // Standard app.Map() fails when UsePathBase() runs before UseTickerQ() and the user
+            // includes the PathBase prefix in SetBasePath() (e.g. SetBasePath("/cool-app/dashboard")
+            // with UsePathBase("/cool-app")), because PathBase is already stripped from Request.Path.
+            // This also handles the normal case where SetBasePath() contains only the dashboard segment.
+            app.MapPathBaseAware(basePath, dashboardApp =>
             {
                 // Execute pre-dashboard middleware
                 config.PreDashboardMiddleware?.Invoke(dashboardApp);
@@ -279,11 +283,18 @@ namespace TickerQ.Dashboard.DependencyInjection
             if (string.IsNullOrEmpty(pathBase))
                 return basePath;
 
-            // If basePath already includes the pathBase prefix, treat it as the full frontend path
+            // If basePath already includes the pathBase prefix, treat it as the full frontend path.
             // This prevents /cool-app/cool-app/... and similar double-prefix issues when users
             // configure BasePath with the full URL segment.
             if (basePath.StartsWith(pathBase, StringComparison.OrdinalIgnoreCase))
                 return basePath;
+
+            // Inside a Map() branch, ASP.NET adds the matched segment to PathBase automatically.
+            // So PathBase already ends with basePath (e.g. PathBase="/cool-app/dashboard",
+            // basePath="/dashboard"). In this case, just return PathBase — it already is the
+            // full frontend path. Without this check, we'd produce "/cool-app/dashboard/dashboard".
+            if (pathBase.EndsWith(basePath, StringComparison.OrdinalIgnoreCase))
+                return pathBase;
 
             // Normalize to avoid double slashes
             if (pathBase.EndsWith("/"))
@@ -291,6 +302,63 @@ namespace TickerQ.Dashboard.DependencyInjection
 
             // basePath is already normalized to start with '/'
             return pathBase + basePath;
+        }
+
+        /// <summary>
+        /// Like <see cref="MapExtensions.Map(IApplicationBuilder, PathString, Action{IApplicationBuilder})"/>
+        /// but handles the case where <paramref name="basePath"/> includes the application's PathBase prefix.
+        /// When <c>UsePathBase("/cool-app")</c> runs before <c>UseTickerQ()</c>, ASP.NET strips the prefix
+        /// from <c>Request.Path</c>. If the user configured <c>SetBasePath("/cool-app/dashboard")</c>, the
+        /// standard <c>Map()</c> would never match because the request path is already <c>/dashboard</c>.
+        /// This method detects and strips the PathBase prefix at request time so routing works regardless
+        /// of middleware ordering.
+        /// </summary>
+        private static void MapPathBaseAware(this IApplicationBuilder app, string basePath, Action<IApplicationBuilder> configuration)
+        {
+            var branchBuilder = app.New();
+            configuration(branchBuilder);
+            var branch = branchBuilder.Build();
+
+            app.Use(async (context, next) =>
+            {
+                var routePath = basePath;
+
+                // If basePath includes the current PathBase prefix, strip it for route matching.
+                // Example: basePath="/cool-app/dashboard", PathBase="/cool-app" → routePath="/dashboard"
+                if (context.Request.PathBase.HasValue)
+                {
+                    var pathBaseValue = context.Request.PathBase.Value;
+                    if (routePath.StartsWith(pathBaseValue, StringComparison.OrdinalIgnoreCase)
+                        && routePath.Length > pathBaseValue.Length)
+                    {
+                        routePath = routePath.Substring(pathBaseValue.Length);
+                    }
+                }
+
+                if (context.Request.Path.StartsWithSegments(routePath, out var matchedPath, out var remainingPath))
+                {
+                    var originalPath = context.Request.Path;
+                    var originalPathBase = context.Request.PathBase;
+
+                    // Mirror Map() behavior: move the matched segment from Path to PathBase
+                    context.Request.PathBase = originalPathBase.Add(matchedPath);
+                    context.Request.Path = remainingPath;
+
+                    try
+                    {
+                        await branch(context);
+                    }
+                    finally
+                    {
+                        context.Request.PathBase = originalPathBase;
+                        context.Request.Path = originalPath;
+                    }
+                }
+                else
+                {
+                    await next();
+                }
+            });
         }
 
     }
