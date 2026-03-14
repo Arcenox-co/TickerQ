@@ -35,7 +35,8 @@ public class TickerQSchedulerBackgroundServiceTests
             taskHandler,
             taskScheduler,
             internalManager,
-            schedulerOptions);
+            schedulerOptions,
+            new TickerFunctionConcurrencyGate());
 
         using var cts = new CancellationTokenSource();
         var before = DateTime.UtcNow;
