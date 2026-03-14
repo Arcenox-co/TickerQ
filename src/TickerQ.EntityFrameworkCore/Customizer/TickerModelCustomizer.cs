@@ -16,7 +16,7 @@ namespace TickerQ.EntityFrameworkCore.Customizer
 
         public override void Customize(ModelBuilder builder, DbContext context)
         {
-            var schema = context.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>().Schema;
+            var schema = context.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>()?.Schema ?? Constants.DefaultSchema;
 
             builder.ApplyConfiguration(new TimeTickerConfigurations<TTimeTicker>(schema));
             builder.ApplyConfiguration(new CronTickerConfigurations<TCronTicker>(schema));

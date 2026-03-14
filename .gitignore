@@ -42,3 +42,6 @@ tmpgen/
 
 # ReSharper/Rider user settings
 *.DotSettings.user
+
+# Local issue tracking
+tickerq_open_issues.md
