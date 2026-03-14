@@ -27,6 +27,9 @@ public class DashboardOptionsBuilder
     /// Separate from request serialization options to prevent user configuration from breaking dashboard APIs.
     /// </summary>
     internal JsonSerializerOptions DashboardJsonOptions { get; set; }
+
+    /// <summary>Tracks whether dashboard middleware has been applied to prevent double registration.</summary>
+    internal bool MiddlewareApplied { get; set; }
     
     public void SetCorsPolicy(Action<CorsPolicyBuilder> corsPolicyBuilder)
         => CorsPolicyBuilder = corsPolicyBuilder;
