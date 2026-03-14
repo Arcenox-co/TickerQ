@@ -7,17 +7,19 @@ namespace TickerQ.Utilities.Base
     public class TickerFunctionAttribute : Attribute
     {
         public TickerFunctionAttribute(string functionName, string cronExpression = null,
-            TickerTaskPriority taskPriority = TickerTaskPriority.Normal)
+            TickerTaskPriority taskPriority = TickerTaskPriority.Normal, int maxConcurrency = 0)
         {
             _ = functionName;
             _ = cronExpression;
             _ = taskPriority;
+            _ = maxConcurrency;
         }
 
-        public TickerFunctionAttribute(string functionName, TickerTaskPriority taskPriority)
+        public TickerFunctionAttribute(string functionName, TickerTaskPriority taskPriority, int maxConcurrency = 0)
         {
             _ = functionName;
             _ = taskPriority;
+            _ = maxConcurrency;
         }
     }
 }

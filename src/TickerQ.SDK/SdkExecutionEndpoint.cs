@@ -75,6 +75,7 @@ public static class SdkExecutionEndpoint
             {
                 function.CachedDelegate = tickerItem.Delegate;
                 function.CachedPriority = tickerItem.Priority;
+                function.CachedMaxConcurrency = tickerItem.MaxConcurrency;
             }
             
             if (scheduler is not null && !scheduler.IsDisposed && !scheduler.IsFrozen)

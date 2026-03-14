@@ -16,7 +16,7 @@ public class TickerQDispatcherExtendedTests
     {
         _taskScheduler = Substitute.For<ITickerQTaskScheduler>();
         _taskHandler = Substitute.For<ITickerExecutionTaskHandler>();
-        _dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler);
+        _dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, new TickerFunctionConcurrencyGate());
     }
 
     [Fact]

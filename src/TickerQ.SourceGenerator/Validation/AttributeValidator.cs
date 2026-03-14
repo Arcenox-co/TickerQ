@@ -13,7 +13,7 @@ namespace TickerQ.SourceGenerator.Validation
         /// Validates all aspects of a TickerFunction attribute and its usage.
         /// </summary>
         public static void ValidateTickerFunctionAttribute(
-            (string functionName, string cronExpression, int taskPriority) attributeValues,
+            (string functionName, string cronExpression, int taskPriority, int maxConcurrency) attributeValues,
             ClassDeclarationSyntax classDeclaration,
             MethodDeclarationSyntax methodDeclaration,
             IMethodSymbol methodSymbol,
@@ -47,6 +47,16 @@ namespace TickerQ.SourceGenerator.Validation
                 {
                     usedFunctionNames.Add(attributeValues.functionName);
                 }
+            }
+
+            // Validate maxConcurrency
+            if (attributeValues.maxConcurrency < 0)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    DiagnosticDescriptors.InvalidMaxConcurrency,
+                    attributeLocation,
+                    attributeValues.functionName ?? methodDeclaration.Identifier.Text
+                ));
             }
 
             // Validate cron expression
