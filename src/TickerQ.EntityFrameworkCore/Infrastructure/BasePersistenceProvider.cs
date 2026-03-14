@@ -381,16 +381,10 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueTimedOutCronTickerOccurrences([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var now = _clock.UtcNow;
-<<<<<<< HEAD
-        var fallbackThreshold = now.AddMilliseconds(-100);  // Fallback picks up tasks overdue by > 100ms
-        
-        await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);;
-=======
         var fallbackThreshold = now.AddSeconds(-1);  // Fallback picks up tasks older than main 1-second window
 
         using var session = await DbContextFactory.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
         var dbContext = session.Context;
->>>>>>> 4ddd580 (Fix UseApplicationDbContext implementation #498 (#590))
         var context = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>();
             
         var cronTickersToUpdate = await context
@@ -559,14 +553,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var now = _clock.UtcNow;
         var mainSchedulerThreshold = now.AddMilliseconds(-now.Millisecond);
         var idList = ids.ToList();
-<<<<<<< HEAD
-        
-        await using var dbContext = await DbContextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        
-=======
         using var session = await DbContextFactory.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
         var dbContext = session.Context;
->>>>>>> 4ddd580 (Fix UseApplicationDbContext implementation #498 (#590))
         return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .AsNoTracking()
             .Include(x => x.CronTicker)
