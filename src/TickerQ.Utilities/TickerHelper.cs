@@ -73,8 +73,14 @@ namespace TickerQ.Utilities
 
         public static T ReadTickerRequest<T>(byte[] gzipBytes)
         {
+            if (gzipBytes == null || gzipBytes.Length == 0)
+                return default;
+
             var serializedObject = ReadTickerRequestAsString(gzipBytes);
-            
+
+            if (string.IsNullOrWhiteSpace(serializedObject))
+                return default;
+
             return JsonSerializer.Deserialize<T>(serializedObject, RequestJsonSerializerOptions);
         }
         
