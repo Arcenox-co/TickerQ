@@ -33,36 +33,44 @@ namespace TickerQ.SourceGenerator
             var compilationAndMethods = context.CompilationProvider
                 .Combine(tickerMethods.Collect());
 
-            context.RegisterSourceOutput(compilationAndMethods, (productionContext, source) =>
+            var configOptionsProvider = context.AnalyzerConfigOptionsProvider;
+
+            context.RegisterSourceOutput(compilationAndMethods.Combine(configOptionsProvider), (productionContext, source) =>
             {
-                var (compilation, methodPairs) = source;
+                var ((compilation, methodPairs), configOptions) = source;
 
                 if (compilation.Assembly.Name == "TickerQ")
                     return;
 
+                // Prefer RootNamespace from build properties, fall back to sanitized assembly name
+                configOptions.GlobalOptions.TryGetValue("build_property.RootNamespace", out var rootNamespace);
+                var effectiveNamespace = !string.IsNullOrEmpty(rootNamespace)
+                    ? rootNamespace
+                    : SourceGeneratorUtilities.SanitizeNamespace(compilation.Assembly.Name);
+
                 // Generate constructor calls (no need for class conflict detection since we always use full names)
-                var constructorCalls = BuildConstructorMethodCalls(methodPairs, compilation, compilation.Assembly.Name).ToList();
+                var constructorCalls = BuildConstructorMethodCalls(methodPairs, compilation, effectiveNamespace).ToList();
                 
                 // Generate delegates and detect type conflicts for generic types
-                var initialDelegatesWithMetadata = BuildTickerFunctionDelegates(methodPairs, compilation, productionContext, compilation.Assembly.Name).ToList();
+                var initialDelegatesWithMetadata = BuildTickerFunctionDelegates(methodPairs, compilation, productionContext, effectiveNamespace).ToList();
                 var typeNames = initialDelegatesWithMetadata.Select(d => d.Item2.GenericTypeName).Where(t => !string.IsNullOrEmpty(t)).ToList();
                 var typeNameConflicts = DetectTypeNameConflicts(typeNames);
-                
+
                 // Regenerate delegates with type conflict information for generic types
-                var delegatesWithMetadata = BuildTickerFunctionDelegates(methodPairs, compilation, productionContext, compilation.Assembly.Name, null, typeNameConflicts).ToList();
-                
+                var delegatesWithMetadata = BuildTickerFunctionDelegates(methodPairs, compilation, productionContext, effectiveNamespace, null, typeNameConflicts).ToList();
+
                 // Collect namespaces from the source types
                 var sourceNamespaces = NamespaceCollector.CollectNamespacesFromSourceTypes(methodPairs, compilation);
-                
+
                 // Extract data once to avoid multiple enumeration
                 var delegateCodes = delegatesWithMetadata.Select(x => x.DelegateCode).ToList();
                 var requestTypes = delegatesWithMetadata.Select(x => x.Item2).ToList();
-                
+
                 var generatedCode = GenerateSourceWithFullNamespaces(
                     delegateCodes,
                     constructorCalls,
                     requestTypes,
-                    compilation.Assembly.Name,
+                    effectiveNamespace,
                     typeNameConflicts
                 );
 
