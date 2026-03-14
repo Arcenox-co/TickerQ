@@ -106,7 +106,11 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
         private static string GenerateExampleJson(Type type)
         {
-            return JsonSerializer.Serialize(GenerateExample(type), new JsonSerializerOptions { WriteIndented = true });
+            return JsonSerializer.Serialize(GenerateExample(type), new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                TypeInfoResolverChain = { DashboardJsonSerializerContext.Default, new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver() }
+            });
         }
 
         public static bool TryGenerateExampleJson(Type type, out string json)
