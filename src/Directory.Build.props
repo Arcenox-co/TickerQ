@@ -10,6 +10,7 @@
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
         <Version>8.1.1</Version>
         <DotNetVersion>[8.0.0,9.0.0)</DotNetVersion>
+        <DotNetAbstractionsVersion>[8.0.0,)</DotNetAbstractionsVersion>
         <LangVersion>default</LangVersion>
     </PropertyGroup>
 
