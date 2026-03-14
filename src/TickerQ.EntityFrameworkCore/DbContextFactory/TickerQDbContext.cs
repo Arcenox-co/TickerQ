@@ -23,7 +23,15 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        var schema = this.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>()?.Schema ?? Constants.DefaultSchema;
+        string schema;
+        try
+        {
+            schema = this.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>()?.Schema ?? Constants.DefaultSchema;
+        }
+        catch (InvalidOperationException)
+        {
+            schema = Constants.DefaultSchema;
+        }
 
         modelBuilder.ApplyConfiguration(new TimeTickerConfigurations<TTimeTicker>(schema)); 
         modelBuilder.ApplyConfiguration(new CronTickerConfigurations<TCronTicker>(schema)); 
