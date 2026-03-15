@@ -73,16 +73,16 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var dbContext = session.Context;
         var context = dbContext.Set<TTimeTicker>();
         var now = _clock.UtcNow;
-        var fallbackThreshold = now.AddMilliseconds(-100);  // Fallback picks up tasks overdue by > 100ms
+        var fallbackThreshold = now.AddSeconds(-1);  // Fallback picks up tasks older than main 1-second window
             
         var timeTickersToUpdate =  await context
             .AsNoTracking()
             .Where(x => x.ExecutionTime != null)
             .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
-            .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks overdue by more than 100ms
+            .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks older than 1 second
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
-            .ToArrayAsync(cancellationToken).ConfigureAwait(false);;
+            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (var timeTicker in timeTickersToUpdate)
         {
@@ -391,7 +391,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .AsNoTracking()
             .Include(x => x.CronTicker)
             .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
-            .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks overdue by more than 100ms
+            .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks older than 1 second
             .Select(MappingExtensions.ForQueueCronTickerOccurrence<CronTickerOccurrenceEntity<TCronTicker>, TCronTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
@@ -551,7 +551,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     public async Task<CronTickerOccurrenceEntity<TCronTicker>> GetEarliestAvailableCronOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
     {
         var now = _clock.UtcNow;
-        var mainSchedulerThreshold = now.AddMilliseconds(-now.Millisecond);
+        var mainSchedulerThreshold = now.AddSeconds(-1);
         var idList = ids.ToList();
         using var session = await DbContextFactory.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
         var dbContext = session.Context;
