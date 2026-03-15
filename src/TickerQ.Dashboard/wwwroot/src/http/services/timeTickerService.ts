@@ -157,11 +157,12 @@ const getTimeTickersPaginated = () => {
 }
 
 const getTimeTickersGraphDataRange = () => {
+    const timeZoneStore = useTimeZoneStore();
     const baseHttp = useBaseHttpService<object, GetTimeTickerGraphDataRangeResponse>('array')
         .FixToResponseModel(GetTimeTickerGraphDataRangeResponse, (item) => {
             return {
                 ...item,
-                date: formatDate(item.date, false),
+                date: formatDate(item.date, false, timeZoneStore.effectiveTimeZone),
             }
         });
 
