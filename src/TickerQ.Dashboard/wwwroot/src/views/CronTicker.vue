@@ -493,7 +493,7 @@ const onSubmitToggleConfirmDialog = async () => {
     const id = toggleConfirmDialog.propData?.id!
     const isEnabled = toggleConfirmDialog.propData?.isEnabled!
     toggleConfirmDialog.close()
-    await toggleCronTicker.requestAsync(id, isEnabled)
+    await toggleCronTicker.requestAsync(id, !isEnabled)
     await loadPageData()
   } catch (error: any) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
@@ -1261,7 +1261,7 @@ const refreshData = async () => {
                     <template v-slot:activator="{ props }">
                       <button
                         v-bind="props"
-                        @click="ToggleCronTickerEnabled(item.id, !item.isEnabled)"
+                        @click="ToggleCronTickerEnabled(item.id, item.isEnabled)"
                         class="modern-action-btn"
                         :class="item.isEnabled ? 'disable-btn' : 'enable-btn'"
                       >
