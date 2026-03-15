@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using TickerQ.BackgroundServices;
 using TickerQ.Dispatcher;
@@ -46,7 +47,6 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ITickerQRedisContext, NoOpTickerQRedisContext>();
-            services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ITickerQNotificationHubSender, NoOpTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
             
@@ -80,6 +80,11 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
             
             optionInstance.ExternalProviderConfigServiceAction?.Invoke(services);
+
+            // Register in-memory persistence as fallback — only used when no external provider
+            // (EF Core, Redis, SDK) has been configured via ExternalProviderConfigServiceAction above.
+            services.TryAddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
+
             optionInstance.DashboardServiceAction?.Invoke(services);
 
             if (optionInstance.TickerExceptionHandlerType != null)

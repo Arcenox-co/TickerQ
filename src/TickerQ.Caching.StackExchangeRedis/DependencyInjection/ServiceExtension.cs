@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using StackExchange.Redis;
 using TickerQ.Caching.StackExchangeRedis.Infrastructure;
 using TickerQ.Utilities;
@@ -38,7 +39,7 @@ public static class ServiceExtension
             services.AddSingleton<ITickerQRedisContext, TickerQRedisContext>();
             services.AddKeyedSingleton<IDistributedCache>("tickerq", (sp, key) => new RedisCache(options));
             services.AddSingleton(_ => options);
-            services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerRedisPersistenceProvider<TTimeTicker, TCronTicker>>();
+            services.TryAddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerRedisPersistenceProvider<TTimeTicker, TCronTicker>>();
         };
 
         return tickerConfiguration;
