@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,28 +21,20 @@ public static class ServiceBuilder
         {
             if (configurationType == ConfigurationType.UseModelCustomizer)
             {
-                var originalDescriptor = services.FirstOrDefault(d => d.ServiceType == typeof(DbContextOptions<TContext>));
-
-                if (originalDescriptor == null)
-                    throw new Exception($"Ticker: Cannot use UseModelCustomizer with empty {typeof(TContext).Name} configurations");
-
                 services.TryAddEnumerable(ServiceDescriptor.Singleton<IDbContextOptionsConfiguration<TContext>, TickerQOptionsConfiguration<TContext, TTimeTicker, TCronTicker>>());
             }
-
-            services.TryAddSingleton<ITickerDbContextFactory<TContext>, TickerDbContextFactory<TContext>>();
 
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
         };
     }
-    
-    internal static void UseTickerQDbContext<TContext, TTimeTicker, TCronTicker>(TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> builder, Action<DbContextOptionsBuilder> optionsAction) 
+
+    internal static void UseTickerQDbContext<TContext, TTimeTicker, TCronTicker>(TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> builder, Action<DbContextOptionsBuilder> optionsAction)
         where TContext : TickerQDbContext<TTimeTicker, TCronTicker>
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         builder.ConfigureServices = (services) =>
         {
-            services.TryAddSingleton<ITickerDbContextFactory<TContext>, TickerDbContextFactory<TContext>>();
             services.TryAddSingleton<IDbContextFactory<TContext>>(sp =>
             {
                 var optionsBuilder = new DbContextOptionsBuilder<TContext>();
