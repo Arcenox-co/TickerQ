@@ -23,6 +23,12 @@ import VueTheMask from 'vue-the-mask'
 // Import styles
 import './assets/main.css'
 
+import { getDateFormatRegion, buildDatePart } from '@/utilities/dateTimeParser'
+import { useTimeZoneStore } from './stores/timeZoneStore'
+
+// Create Pinia store (before Vuetify so the date format function can access the timezone store)
+const pinia = createPinia()
+
 // Create Vuetify instance
 const vuetify = createVuetify({
   components: {
@@ -31,6 +37,18 @@ const vuetify = createVuetify({
     VPullToRefresh
   },
   directives,
+  date: {
+    formats: {
+      keyboardDate: (date: Date) => {
+        const timeZoneStore = useTimeZoneStore(pinia)
+        const region = getDateFormatRegion(timeZoneStore.effectiveTimeZone)
+        const year = String(date.getFullYear())
+        const month = String(date.getMonth() + 1).padStart(2, '0')
+        const day = String(date.getDate()).padStart(2, '0')
+        return buildDatePart(region, year, month, day)
+      },
+    },
+  },
   icons: {
     defaultSet: 'mdi',
     aliases,
@@ -42,9 +60,6 @@ const vuetify = createVuetify({
     defaultTheme: 'dark'
   }
 })
-
-// Create Pinia store
-const pinia = createPinia()
 
 // Create Vue app
 const app = createApp(App)

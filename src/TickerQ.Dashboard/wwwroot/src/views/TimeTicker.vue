@@ -1275,7 +1275,7 @@ const canBeForceDeleted = ref<string[]>([])
             <template v-slot:item.lockHolder="{ item }">
               <span class="text-caption">{{ item.lockHolder }}</span>
               <v-tooltip v-if="item.lockHolder != ''" activator="parent" location="left">
-                <span>Locked At: {{ formatDate(item.lockedAt) }}</span>
+                <span>Locked At: {{ formatDate(item.lockedAt, true, timeZoneStore.effectiveTimeZone) }}</span>
               </v-tooltip>
             </template>
 
