@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - net8
+      - net9
 
 jobs:
   pr:
@@ -17,7 +18,7 @@ jobs:
       - name: Setup .NET SDKs
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: 8.0.x
 
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
@@ -56,8 +57,10 @@ jobs:
           dotnet build src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release
           dotnet build tests/TickerQ.Tests/TickerQ.Tests.csproj --configuration Release
           dotnet build tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj --configuration Release
+          dotnet build tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj --configuration Release
 
       - name: Run tests
         run: |
           dotnet test tests/TickerQ.Tests/ --configuration Release --no-build
           dotnet test tests/TickerQ.EntityFrameworkCore.Tests/ --configuration Release --no-build
+          dotnet test tests/TickerQ.Caching.StackExchangeRedis.Tests/ --configuration Release --no-build
