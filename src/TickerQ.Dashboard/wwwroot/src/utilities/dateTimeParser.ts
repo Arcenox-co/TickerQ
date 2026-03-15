@@ -1,5 +1,32 @@
 import { format as timeago } from 'timeago.js';
 
+type DateFormatRegion = 'eu' | 'us' | 'iso';
+
+const europeanZonePrefixes = ['Europe/', 'Africa/'];
+const americanZonePrefixes = ['America/', 'US/'];
+
+export function getDateFormatRegion(timeZone?: string): DateFormatRegion {
+    if (!timeZone) return 'iso';
+
+    if (europeanZonePrefixes.some(prefix => timeZone.startsWith(prefix))) {
+        return 'eu';
+    }
+
+    if (americanZonePrefixes.some(prefix => timeZone.startsWith(prefix))) {
+        return 'us';
+    }
+
+    return 'iso';
+}
+
+export function buildDatePart(region: DateFormatRegion, year: string, month: string, day: string): string {
+    switch (region) {
+        case 'eu': return `${day}/${month}/${year}`;
+        case 'us': return `${month}/${day}/${year}`;
+        default:   return `${year}-${month}-${day}`;
+    }
+}
+
 export function formatDate(
     utcDateString: string,
     includeTime = true,
@@ -31,12 +58,13 @@ export function formatDate(
         options.hour12 = false;
     }
 
-    // Use formatToParts for a consistent, locale-independent YYYY-MM-DD HH:mm:ss format
     const formatter = new Intl.DateTimeFormat('en-CA', options);
     const parts = formatter.formatToParts(dateObj);
     const get = (type: string) => parts.find(p => p.type === type)?.value ?? '';
 
-    const datePart = `${get('year')}-${get('month')}-${get('day')}`;
+    const region = getDateFormatRegion(timeZone);
+    const datePart = buildDatePart(region, get('year'), get('month'), get('day'));
+
     if (!includeTime) {
         return datePart;
     }

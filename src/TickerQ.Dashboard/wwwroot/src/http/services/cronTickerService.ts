@@ -132,11 +132,12 @@ const runCronTickerOnDemand = () => {
 }
 
 const getTimeTickersGraphDataRange = () => {
+    const timeZoneStore = useTimeZoneStore();
     const baseHttp = useBaseHttpService<object, GetCronTickerGraphDataRangeResponse>('array')
         .FixToResponseModel(GetCronTickerGraphDataRangeResponse, (item) => {
             return {
                 ...item,
-                date: formatDate(item.date, false),
+                date: formatDate(item.date, false, timeZoneStore.effectiveTimeZone),
             }
         });
 
@@ -149,11 +150,12 @@ const getTimeTickersGraphDataRange = () => {
 }
 
 const getTimeTickersGraphDataRangeById = () => {
+    const timeZoneStore = useTimeZoneStore();
     const baseHttp = useBaseHttpService<object, GetCronTickerGraphDataRangeResponse>('array')
         .FixToResponseModel(GetCronTickerGraphDataRangeResponse, (item) => {
             return {
                 ...item,
-                date: formatDate(item.date, false),
+                date: formatDate(item.date, false, timeZoneStore.effectiveTimeZone),
             }
         });
 
