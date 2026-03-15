@@ -8,7 +8,7 @@
         <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <Version>9.1.1</Version>
+        <Version>9.2.0</Version>
         <DotNetVersion>[9.0.0,10.0.0)</DotNetVersion>
         <DotNetAbstractionsVersion>[8.0.0,)</DotNetAbstractionsVersion>
         <LangVersion>default</LangVersion>
