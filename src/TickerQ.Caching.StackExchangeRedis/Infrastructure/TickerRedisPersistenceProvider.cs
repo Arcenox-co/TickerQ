@@ -570,7 +570,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             cancellationToken.ThrowIfCancellationRequested();
             if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
             var cron = await GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
-            if (cron == null) continue;
+            if (cron == null || !cron.IsEnabled) continue;
             list.Add(new CronTickerEntity
             {
                 Id = cron.Id,
