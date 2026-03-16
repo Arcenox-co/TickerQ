@@ -12,6 +12,9 @@
     <File Path=".github/workflows/pr.yaml" />
     <File Path=".github/workflows/publish.yml" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/TickerQ.Benchmarks/TickerQ.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/TickerQ.Sample.ApplicationDbContext/TickerQ.Sample.ApplicationDbContext.csproj" />
     <Project Path="samples/TickerQ.Sample.Console/TickerQ.Sample.Console.csproj" />
