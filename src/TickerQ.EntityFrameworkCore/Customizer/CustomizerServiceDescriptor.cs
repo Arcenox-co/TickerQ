@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,7 +13,7 @@ namespace TickerQ.EntityFrameworkCore.Customizer;
 
 public static class ServiceBuilder
 {
-    internal static void UseApplicationDbContext<TContext, TTimeTicker, TCronTicker>(TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> builder, ConfigurationType configurationType) 
+    internal static void UseApplicationDbContext<TContext, TTimeTicker, TCronTicker>(TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> builder, ConfigurationType configurationType)
         where TContext : DbContext
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
@@ -21,7 +22,19 @@ public static class ServiceBuilder
         {
             if (configurationType == ConfigurationType.UseModelCustomizer)
             {
-                services.TryAddEnumerable(ServiceDescriptor.Singleton<IDbContextOptionsConfiguration<TContext>, TickerQOptionsConfiguration<TContext, TTimeTicker, TCronTicker>>());
+                var originalDescriptor = services.FirstOrDefault(descriptor => descriptor.ServiceType == typeof(DbContextOptions<TContext>));
+
+                if (originalDescriptor == null)
+                    throw new Exception($"Ticker: Cannot use UseModelCustomizer with empty {typeof(TContext).Name} configurations");
+
+                var newDescriptor = new ServiceDescriptor(
+                    typeof(DbContextOptions<TContext>),
+                    provider => UpdateDbContextOptionsService<TContext, TTimeTicker, TCronTicker>(provider, originalDescriptor.ImplementationFactory),
+                    originalDescriptor.Lifetime
+                );
+
+                services.Remove(originalDescriptor);
+                services.Add(newDescriptor);
             }
 
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
@@ -46,16 +59,16 @@ public static class ServiceBuilder
         };
     }
 
-    public class TickerQOptionsConfiguration<TContext, TTimeTicker, TCronTicker>
-        : IDbContextOptionsConfiguration<TContext>
+    private static DbContextOptions<TContext> UpdateDbContextOptionsService<TContext, TTimeTicker, TCronTicker>(IServiceProvider serviceProvider, Func<IServiceProvider, object> oldFactory)
         where TContext : DbContext
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
+
     {
-        public void Configure(IServiceProvider serviceProvider, DbContextOptionsBuilder optionsBuilder)
-        {
-            optionsBuilder
-                .ReplaceService<IModelCustomizer, TickerModelCustomizer<TTimeTicker, TCronTicker>>();
-        }
+        var factory = (DbContextOptions<TContext>)oldFactory(serviceProvider);
+
+        return new DbContextOptionsBuilder<TContext>(factory)
+            .ReplaceService<IModelCustomizer, TickerModelCustomizer<TTimeTicker, TCronTicker>>()
+            .Options;
     }
 }
