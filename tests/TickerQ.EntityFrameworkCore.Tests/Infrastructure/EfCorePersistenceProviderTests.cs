@@ -6,7 +6,6 @@ using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 
 using TickerQ.EntityFrameworkCore.Configurations;
-using TickerQ.EntityFrameworkCore.DbContextFactory;
 using TickerQ.EntityFrameworkCore.Infrastructure;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
@@ -38,60 +37,17 @@ public class TestTickerQDbContext : DbContext
 }
 
 /// <summary>
-/// A simple session wrapper around an already-created DbContext.
-/// </summary>
-internal class TestDbContextSession : ITickerDbContextSession<TestTickerQDbContext>
-{
-    public TestTickerQDbContext Context { get; }
-
-    public TestDbContextSession(TestTickerQDbContext context)
-    {
-        Context = context;
-    }
-
-    public void Dispose()
-    {
-        Context.Dispose();
-    }
-}
-
-/// <summary>
-/// Factory that creates new TestTickerQDbContext instances sharing the same SQLite connection.
-/// Each call to CreateSessionAsync returns a fresh context on the shared connection.
-/// </summary>
-internal class TestDbContextFactory : ITickerDbContextFactory<TestTickerQDbContext>
-{
-    private readonly DbContextOptions<TestTickerQDbContext> _options;
-
-    public TestDbContextFactory(DbContextOptions<TestTickerQDbContext> options)
-    {
-        _options = options;
-    }
-
-    public ITickerDbContextSession<TestTickerQDbContext> CreateSession()
-    {
-        return new TestDbContextSession(new TestTickerQDbContext(_options));
-    }
-
-    public Task<ITickerDbContextSession<TestTickerQDbContext>> CreateSessionAsync(CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult<ITickerDbContextSession<TestTickerQDbContext>>(
-            new TestDbContextSession(new TestTickerQDbContext(_options)));
-    }
-}
-
-/// <summary>
 /// Concrete subclass that exposes TickerEfCorePersistenceProvider for testing.
 /// This is needed because TickerEfCorePersistenceProvider is internal.
 /// </summary>
 internal class TestableProvider : TickerEfCorePersistenceProvider<TestTickerQDbContext, TimeTickerEntity, CronTickerEntity>
 {
     public TestableProvider(
-        ITickerDbContextFactory<TestTickerQDbContext> dbContextFactory,
+        IServiceProvider serviceProvider,
         ITickerClock clock,
         SchedulerOptionsBuilder optionsBuilder,
         ITickerQRedisContext redisContext)
-        : base(dbContextFactory, clock, optionsBuilder, redisContext)
+        : base(serviceProvider, clock, optionsBuilder, redisContext)
     {
     }
 }
@@ -141,9 +97,13 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         await _seedContext.Database.EnsureCreatedAsync();
 
         var schedulerOptions = new SchedulerOptionsBuilder { NodeIdentifier = NodeId };
-        var factory = new TestDbContextFactory(_options);
 
-        _provider = new TestableProvider(factory, _clock, schedulerOptions, _redisContext);
+        var services = new ServiceCollection();
+        services.AddSingleton<IDbContextFactory<TestTickerQDbContext>>(
+            new PooledDbContextFactory<TestTickerQDbContext>(_options));
+        var serviceProvider = services.BuildServiceProvider();
+
+        _provider = new TestableProvider(serviceProvider, _clock, schedulerOptions, _redisContext);
     }
 
     public async Task DisposeAsync()
