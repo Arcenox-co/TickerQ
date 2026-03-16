@@ -55,6 +55,7 @@ public static class ServiceBuilder
                 optionsBuilder.UseApplicationServiceProvider(sp);
                 return new PooledDbContextFactory<TContext>(optionsBuilder.Options, builder.PoolSize);
             });
+            services.TryAddScoped<TContext>(sp => sp.GetRequiredService<IDbContextFactory<TContext>>().CreateDbContext());
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
         };
     }
