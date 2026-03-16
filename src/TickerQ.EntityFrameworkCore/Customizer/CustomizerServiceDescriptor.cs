@@ -37,8 +37,6 @@ public static class ServiceBuilder
                 services.Add(newDescriptor);
             }
 
-            services.TryAddSingleton<ITickerDbContextFactory<TContext>, TickerDbContextFactory<TContext>>();
-
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
         };
     }
@@ -50,7 +48,6 @@ public static class ServiceBuilder
     {
         builder.ConfigureServices = (services) =>
         {
-            services.TryAddSingleton<ITickerDbContextFactory<TContext>, TickerDbContextFactory<TContext>>();
             services.TryAddSingleton<IDbContextFactory<TContext>>(sp =>
             {
                 var optionsBuilder = new DbContextOptionsBuilder<TContext>();
