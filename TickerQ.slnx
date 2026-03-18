@@ -27,8 +27,8 @@
     <Project Path="src/TickerQ.Dashboard/TickerQ.Dashboard.csproj" />
     <Project Path="src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj" />
     <Project Path="src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj" />
-    <Project Path="src/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj" />
-    <Project Path="src/TickerQ.SDK/TickerQ.SDK.csproj" />
+    <Project Path="hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj" />
+    <Project Path="hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj" />
     <Project Path="src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj" />
     <Project Path="src/TickerQ.Utilities/TickerQ.Utilities.csproj" />
     <Project Path="src/TickerQ/TickerQ.csproj" />
