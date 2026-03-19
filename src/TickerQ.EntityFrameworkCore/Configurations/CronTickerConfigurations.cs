@@ -28,7 +28,8 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
             builder.Property(e => e.IsEnabled)
                 .IsRequired()
-                .HasDefaultValue(true);
+                .HasDefaultValueSql("1")
+                .HasSentinel(true);
 
             builder.ToTable("CronTickers", _schema);
         }
