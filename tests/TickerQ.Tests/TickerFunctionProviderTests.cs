@@ -37,12 +37,16 @@ public class TickerFunctionProviderTests : IDisposable
         var type = typeof(TickerFunctionProvider);
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public;
 
-        type.GetField("TickerFunctions", flags)!.SetValue(null, null);
-        type.GetField("TickerFunctionRequestTypes", flags)!.SetValue(null, null);
-        type.GetField("TickerFunctionRequestInfos", flags)!.SetValue(null, null);
+        type.GetField("TickerFunctions", flags)!.SetValue(null,
+            System.Collections.Frozen.FrozenDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>.Empty);
+        type.GetField("TickerFunctionRequestTypes", flags)!.SetValue(null,
+            System.Collections.Frozen.FrozenDictionary<string, (string, Type)>.Empty);
+        type.GetField("TickerFunctionRequestInfos", flags)!.SetValue(null,
+            System.Collections.Frozen.FrozenDictionary<string, (string, string)>.Empty);
         type.GetField("_functionRegistrations", flags)!.SetValue(null, null);
         type.GetField("_requestTypeRegistrations", flags)!.SetValue(null, null);
         type.GetField("_requestInfoRegistrations", flags)!.SetValue(null, null);
+        type.GetProperty("IsBuilt", flags)!.SetValue(null, false);
     }
 
     private static Task NoOpDelegate(CancellationToken ct, IServiceProvider sp, TickerQ.Utilities.Base.TickerFunctionContext ctx)

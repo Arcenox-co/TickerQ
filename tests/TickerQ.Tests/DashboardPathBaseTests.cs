@@ -3,7 +3,9 @@ using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using TickerQ.Dashboard.DependencyInjection;
 
@@ -269,6 +271,128 @@ public class DashboardPathBaseTests
             .StartAsync();
 
         return host;
+    }
+
+    #endregion
+
+    #region MapPathBaseAware — endpoint routing coexistence (issue #456)
+
+    [Fact]
+    public async Task MapPathBaseAware_ClearsHostEndpoint_SoBranchRoutingCanReevaluate()
+    {
+        // Simulates the scenario in issue #456: host-level routing (e.g. MapStaticAssets)
+        // sets an endpoint before the dashboard branch runs. The branch must clear it so
+        // its own UseRouting() re-evaluates against dashboard endpoints.
+        var mapMethod = typeof(ServiceCollectionExtensions).GetMethod(
+            "MapPathBaseAware",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        using var host = await new HostBuilder()
+            .ConfigureWebHost(webBuilder =>
+            {
+                webBuilder.UseTestServer();
+                webBuilder.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                });
+                webBuilder.Configure(app =>
+                {
+                    // Simulate host-level routing setting an endpoint (like MapStaticAssets does)
+                    app.Use(async (context, next) =>
+                    {
+                        var dummyEndpoint = new Endpoint(
+                            _ => Task.CompletedTask,
+                            new EndpointMetadataCollection(),
+                            "DummyHostEndpoint");
+                        context.SetEndpoint(dummyEndpoint);
+                        context.Request.RouteValues["dummy"] = "value";
+                        await next();
+                    });
+
+                    var configuration = new Action<IApplicationBuilder>(branch =>
+                    {
+                        branch.Run(async context =>
+                        {
+                            // Verify endpoint was cleared inside the branch
+                            var endpoint = context.GetEndpoint();
+                            var hasRouteValues = context.Request.RouteValues.Count > 0;
+                            await context.Response.WriteAsync(
+                                endpoint == null && !hasRouteValues ? "cleared" : "not-cleared");
+                        });
+                    });
+
+                    mapMethod.Invoke(null, new object[] { app, "/dashboard", configuration });
+
+                    app.Run(async context =>
+                    {
+                        await context.Response.WriteAsync("fallthrough");
+                    });
+                });
+            })
+            .StartAsync();
+
+        var client = host.GetTestClient();
+        var response = await client.GetAsync("/dashboard/test");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal("cleared", body);
+    }
+
+    [Fact]
+    public async Task MapPathBaseAware_WithHostEndpoint_NonMatchingPath_PreservesEndpoint()
+    {
+        // Non-matching paths should pass through without clearing the host endpoint
+        var mapMethod = typeof(ServiceCollectionExtensions).GetMethod(
+            "MapPathBaseAware",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        using var host = await new HostBuilder()
+            .ConfigureWebHost(webBuilder =>
+            {
+                webBuilder.UseTestServer();
+                webBuilder.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                });
+                webBuilder.Configure(app =>
+                {
+                    app.Use(async (context, next) =>
+                    {
+                        var dummyEndpoint = new Endpoint(
+                            _ => Task.CompletedTask,
+                            new EndpointMetadataCollection(),
+                            "DummyHostEndpoint");
+                        context.SetEndpoint(dummyEndpoint);
+                        await next();
+                    });
+
+                    var configuration = new Action<IApplicationBuilder>(branch =>
+                    {
+                        branch.Run(async context =>
+                        {
+                            await context.Response.WriteAsync("branch-hit");
+                        });
+                    });
+
+                    mapMethod.Invoke(null, new object[] { app, "/dashboard", configuration });
+
+                    app.Run(async context =>
+                    {
+                        var endpoint = context.GetEndpoint();
+                        await context.Response.WriteAsync(
+                            endpoint?.DisplayName == "DummyHostEndpoint" ? "preserved" : "lost");
+                    });
+                });
+            })
+            .StartAsync();
+
+        var client = host.GetTestClient();
+        var response = await client.GetAsync("/other/path");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal("preserved", body);
     }
 
     #endregion
