@@ -96,6 +96,10 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton(_ => optionInstance);
             services.AddSingleton(_ => tickerExecutionContext);
             services.AddSingleton(_ => schedulerOptionsBuilder);
+
+            // Register AFTER initializer and scheduler to ensure it runs last
+            services.AddHostedService<TickerQStartupValidator>();
+
             return services;
         }
 
