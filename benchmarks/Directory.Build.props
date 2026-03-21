@@ -1,0 +1,10 @@
+<Project>
+
+    <Import Project="$(MSBuildThisFileDirectory)..\src\Directory.Build.props" />
+
+    <PropertyGroup>
+        <IsPackable>false</IsPackable>
+        <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    </PropertyGroup>
+
+</Project>
