@@ -1,5 +1,5 @@
 # Files that must remain version-specific per target branch.
-# These are reset to the target branch version after cherry-picking from main.
+# These are restored from the target branch after merging main.
 #
 # Reason: EF Core 10 introduced UpdateSettersBuilder<T> and IDbContextOptionsConfiguration<T>
 # which don't exist in EF Core 8/9. These files use different APIs per version.
