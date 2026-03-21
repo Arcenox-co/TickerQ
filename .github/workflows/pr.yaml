@@ -15,10 +15,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Detect .NET version
+        id: detect
+        run: |
+          DOTNET_VER=$(grep -oP '<TargetFramework>net\K[0-9]+' src/Directory.Build.props)
+          echo "dotnet_version=${DOTNET_VER}.0.x" >> $GITHUB_OUTPUT
+          if [ -f "TickerQ.slnx" ]; then
+            echo "solution=TickerQ.slnx" >> $GITHUB_OUTPUT
+          else
+            echo "solution=TickerQ.sln" >> $GITHUB_OUTPUT
+          fi
+
       - name: Setup .NET SDKs
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: ${{ steps.detect.outputs.dotnet_version }}
 
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
@@ -43,7 +54,7 @@ jobs:
         run: dotnet nuget add source "$(pwd)/nupkgs" --name LocalNupkgs
 
       - name: Restore packages with local source
-        run: dotnet restore
+        run: dotnet restore ${{ steps.detect.outputs.solution }}
 
       - name: Build TickerQ.SourceGenerator
         run: dotnet build src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release

@@ -1,10 +1,11 @@
 <Project>
 
+    <Import Project="$(MSBuildThisFileDirectory)..\src\Directory.Build.props" />
+
     <PropertyGroup>
-        <TargetFramework>net8.0</TargetFramework>
-        <DotNetVersion>[8.0.0,9.0.0)</DotNetVersion>
+        <IsPackable>false</IsPackable>
+        <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
         <DotNetAbstractionsVersion>[8.0.0,)</DotNetAbstractionsVersion>
     </PropertyGroup>
 
-    <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
 </Project>
