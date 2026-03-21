@@ -10,3 +10,4 @@ src/TickerQ.EntityFrameworkCore/Infrastructure/TickerQueryExtensions.cs
 
 # Solution files — main uses .slnx (net10+), older branches use .sln
 TickerQ.slnx
+src/src.sln
