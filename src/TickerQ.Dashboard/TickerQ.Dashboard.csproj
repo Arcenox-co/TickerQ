@@ -15,7 +15,7 @@
             <_Parameter1>TickerQ.Tests</_Parameter1>
         </AssemblyAttribute>
     </ItemGroup>
-
+	
     <ItemGroup>
         <None Include="README.md" Pack="true" PackagePath="" />
     </ItemGroup>
