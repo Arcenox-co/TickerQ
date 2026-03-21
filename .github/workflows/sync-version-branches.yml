@@ -88,14 +88,14 @@ jobs:
           sync_branch="sync-main-to-${TARGET}-$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$sync_branch" "$TARGET"
 
-          # ── Load .sync-exclude list ──
+          # ── Load .sync-exclude list from main ──
           EXCLUDE_FILES=()
-          if [ -f ".sync-exclude" ]; then
+          if git show main:.sync-exclude > /tmp/.sync-exclude 2>/dev/null; then
             while IFS= read -r line; do
               line=$(echo "$line" | sed 's/#.*//' | xargs)
               [ -n "$line" ] && EXCLUDE_FILES+=("$line")
-            done < .sync-exclude
-            echo "📋 Loaded ${#EXCLUDE_FILES[@]} files from .sync-exclude"
+            done < /tmp/.sync-exclude
+            echo "Loaded ${#EXCLUDE_FILES[@]} files from .sync-exclude (main)"
           fi
 
           # ── Save excluded files from target branch before merge ──
@@ -218,7 +218,8 @@ jobs:
             esac
 
             if [ "$current_val" != "$new_val" ]; then
-              sed -i "s|<${element}>${current_val}</${element}>|<${element}>${new_val}</${element}>|g" "$file"
+              escaped_current=$(printf '%s' "$current_val" | sed 's/[][().^$*+?{}\\|]/\\&/g')
+              sed -i "s|<${element}>${escaped_current}</${element}>|<${element}>${new_val}</${element}>|g" "$file"
               git add "$file"
               OVERRIDE_DETAILS+=("${file}: \`${element}\` ${current_val} -> ${new_val}")
               echo "  Override: ${element} ${current_val} -> ${new_val} in ${file}"
