@@ -1,0 +1,62 @@
+{
+  "name": "@tickerq/sdk",
+  "version": "1.0.0",
+  "description": "TickerQ Node.js SDK — Connect your Node.js application to TickerQ Hub for distributed job scheduling.",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "tickerq",
+    "scheduler",
+    "background-jobs",
+    "cron",
+    "distributed",
+    "hub",
+    "sdk"
+  ],
+  "author": "Arcenox",
+  "license": "(MIT OR Apache-2.0)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Arcenox-co/TickerQ",
+    "directory": "sdks/node"
+  },
+  "homepage": "https://tickerq.net",
+  "bugs": {
+    "url": "https://github.com/Arcenox-co/TickerQ/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "express": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.0"
+  }
+}

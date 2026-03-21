@@ -9,8 +9,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="OpenTelemetry" Version="1.7.0" />
-    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.7.0" />
+    <PackageReference Include="OpenTelemetry" Version="[1.7.0,)" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="[1.7.0,)" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(DotNetAbstractionsVersion)" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(DotNetAbstractionsVersion)" />
   </ItemGroup>
