@@ -5,8 +5,8 @@
 </h1>
 
 <p align="center">
-  <strong>Robust. Adaptive. Precise.</strong><br />
-  A fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
+  <strong>The modern job scheduler for .NET</strong><br />
+  Source-generated task scheduling with built-in persistence, cron & time-based execution, and real-time monitoring.
 </p>
 
 <p align="center">
