@@ -2,6 +2,9 @@
 
     <PropertyGroup>
         <TargetFramework>net9.0</TargetFramework>
+        <Version>9.2.2</Version>
+        <DotNetVersion>[9.0.0,10.0.0)</DotNetVersion>
+        <DotNetAbstractionsVersion>[10.0.0,11.0.0)</DotNetAbstractionsVersion>
         <RepositoryUrl>https://github.com/arcenox-co/TickerQ</RepositoryUrl>
         <PackageProjectUrl>https://tickerq.net/</PackageProjectUrl>
         <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
@@ -10,9 +13,6 @@
         <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <Version>9.2.2</Version>
-        <DotNetVersion>[9.0.0,10.0.0)</DotNetVersion>
-        <DotNetAbstractionsVersion>[10.0.0,11.0.0)</DotNetAbstractionsVersion>
         <LangVersion>default</LangVersion>
     </PropertyGroup>
 

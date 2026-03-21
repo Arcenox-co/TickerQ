@@ -12,7 +12,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="FlexLabs.EntityFrameworkCore.Upsert" Version="[9.0.0,10.0.0)" />
+		<PackageReference Include="FlexLabs.EntityFrameworkCore.Upsert" Version="$(DotNetVersion)" />
 		<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="$(DotNetVersion)" />
 		<PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
 	</ItemGroup>
