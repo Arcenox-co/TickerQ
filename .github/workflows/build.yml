@@ -1,11 +1,9 @@
 name: Build NuGet Packages
 
 on:
-  push:
-    branches:
-      - main
-      - net8
-      - net9
+  release:
+    types: [published]
+  workflow_dispatch:
 
 jobs:
   check-nuget:
@@ -109,6 +107,15 @@ jobs:
           dotnet build src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release
           dotnet build hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release
           dotnet build hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release
+          dotnet build tests/TickerQ.Tests/TickerQ.Tests.csproj --configuration Release
+          dotnet build tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj --configuration Release
+          dotnet build tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj --configuration Release
+
+      - name: Run tests
+        run: |
+          dotnet test tests/TickerQ.Tests/ --configuration Release --no-build
+          dotnet test tests/TickerQ.EntityFrameworkCore.Tests/ --configuration Release --no-build
+          dotnet test tests/TickerQ.Caching.StackExchangeRedis.Tests/ --configuration Release --no-build
 
       - name: Pack other projects
         run: |
@@ -120,12 +127,11 @@ jobs:
           dotnet pack hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release --output ./nupkgs
           dotnet pack hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release --output ./nupkgs
 
-      - name: Show .nupkg file sizes
+      - name: Show package file sizes
         run: |
           echo "📦 Package sizes:"
-          for pkg in ./nupkgs/*.nupkg; do
-            size=$(du -h "$pkg" | cut -f1)
-            echo " - $(basename "$pkg"): $size"
+          for pkg in ./nupkgs/*.nupkg ./nupkgs/*.snupkg; do
+            [ -f "$pkg" ] && size=$(du -h "$pkg" | cut -f1) && echo " - $(basename "$pkg"): $size"
           done
 
       - name: Upload nupkgs artifact
@@ -172,7 +178,7 @@ jobs:
                 'Accept': 'application/vnd.github.v3+json'
               },
               body: JSON.stringify({
-                ref: 'main',
+                ref: '${{ github.event.release.target_commitish || github.ref_name }}',
                 inputs: {
                   version: version,
                   artifact_id: artifactId
@@ -190,18 +196,10 @@ jobs:
       - name: Send Discord Notification
         if: always()
         run: |
-          # Safely handle the commit message
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          BRANCH="${GITHUB_REF#refs/heads/}"
-
-          if [[ "${{ github.event.head_commit.message }}" =~ ^Merge\ pull\ request ]]; then
-            PR_BRANCH=$(echo "${{ github.event.head_commit.message }}" | sed -n "s/Merge pull request #[0-9]\+ from [^/]*\/\(.*\)/\1/p")
-            MESSAGE="📦 *${REPO_NAME}* | Branch: \`${BRANCH}\` | Merged from: \`${PR_BRANCH}\`"
-          else
-            # Use a shortened commit message to avoid issues
-            SHORT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -n1)
-            MESSAGE="📦 *${REPO_NAME}* | Branch: \`${BRANCH}\` | Commit: \`${SHORT_MSG}\`"
-          fi
+          BRANCH="${{ github.event.release.target_commitish || github.ref_name }}"
+          TAG="${{ github.event.release.tag_name || 'manual' }}"
+          MESSAGE="📦 *${REPO_NAME}* | Branch: \`${BRANCH}\` | Release: \`${TAG}\`"
 
           # Determine status based on check-nuget and build results
           if [ "${{ needs.check-nuget.result }}" != "success" ]; then
