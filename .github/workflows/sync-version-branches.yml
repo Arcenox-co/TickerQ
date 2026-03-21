@@ -218,8 +218,15 @@ jobs:
             esac
 
             if [ "$current_val" != "$new_val" ]; then
-              escaped_current=$(printf '%s' "$current_val" | sed 's/[][().^$*+?{}\\|]/\\&/g')
-              sed -i "s|<${element}>${escaped_current}</${element}>|<${element}>${new_val}</${element}>|g" "$file"
+              awk -v elem="$element" -v old="$current_val" -v new="$new_val" '{
+                target = "<" elem ">" old "</" elem ">"
+                replacement = "<" elem ">" new "</" elem ">"
+                idx = index($0, target)
+                if (idx > 0) {
+                  $0 = substr($0, 1, idx-1) replacement substr($0, idx + length(target))
+                }
+                print
+              }' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
               git add "$file"
               OVERRIDE_DETAILS+=("${file}: \`${element}\` ${current_val} -> ${new_val}")
               echo "  Override: ${element} ${current_val} -> ${new_val} in ${file}"
