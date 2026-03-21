@@ -7,6 +7,7 @@
 src/TickerQ.EntityFrameworkCore/Infrastructure/MappingExtensions.cs
 src/TickerQ.EntityFrameworkCore/Infrastructure/BasePersistenceProvider.cs
 src/TickerQ.EntityFrameworkCore/Infrastructure/TickerQueryExtensions.cs
+src/TickerQ.EntityFrameworkCore/Customizer/CustomizerServiceDescriptor.cs
 
 # Solution file — main uses .slnx (net10+), older branches use .sln
 TickerQ.sln
