@@ -10,11 +10,11 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ", "TickerQ\TickerQ.
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.SourceGenerator", "TickerQ.SourceGenerator\TickerQ.SourceGenerator.csproj", "{A3A3A9E3-C853-8C16-87A7-2829FAC084DF}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.RemoteExecutor", "TickerQ.RemoteExecutor\TickerQ.RemoteExecutor.csproj", "{3467E6BF-D4A0-E969-6FC2-3113EA08E567}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.RemoteExecutor", "..\hub\remoteExecutor\TickerQ.RemoteExecutor\TickerQ.RemoteExecutor.csproj", "{3467E6BF-D4A0-E969-6FC2-3113EA08E567}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.EntityFrameworkCore", "TickerQ.EntityFrameworkCore\TickerQ.EntityFrameworkCore.csproj", "{63A97B66-4163-9B2B-9DB4-1CD235095817}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.SDK", "TickerQ.SDK\TickerQ.SDK.csproj", "{0ECE4EF0-96D0-4E9B-53FC-BBE86F65437F}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.SDK", "..\hub\sdks\dotnet\TickerQ.SDK\TickerQ.SDK.csproj", "{0ECE4EF0-96D0-4E9B-53FC-BBE86F65437F}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TickerQ.Caching.StackExchangeRedis", "TickerQ.Caching.StackExchangeRedis\TickerQ.Caching.StackExchangeRedis.csproj", "{E1B5AE18-2847-D83A-2F51-BC0E86571A9F}"
 EndProject
