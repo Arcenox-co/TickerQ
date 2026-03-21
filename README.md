@@ -172,11 +172,15 @@ We want to acknowledge the individuals and organizations who support the develop
 
 ## 🤝 Contribution
 
-PRs, ideas, and issues are welcome!
+PRs, ideas, and issues are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) and sign the [CLA](CLA.md) before submitting a pull request.
 
-1. Fork & branch
-2. Code your change
-3. Submit a Pull Request
+## Contributors
+
+Thanks to all our wonderful contributors! See [CONTRIBUTORS.md](CONTRIBUTORS.md) for details.
+
+<a href="https://github.com/Arcenox-co/TickerQ/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Arcenox-co/TickerQ" />
+</a>
 
 ---
 
