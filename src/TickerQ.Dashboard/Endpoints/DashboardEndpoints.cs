@@ -262,7 +262,7 @@ public static class DashboardEndpoints
             IdleWorkerTimeOut = schedulerOptions.IdleWorkerTimeOut,
             CurrentMachine = schedulerOptions.NodeIdentifier,
             LastHostExceptionMessage = executionContext.LastHostExceptionMessage,
-            SchedulerTimeZone = schedulerOptions.SchedulerTimeZone?.Id
+            SchedulerTimeZone = ToIanaTimeZoneId(schedulerOptions.SchedulerTimeZone)
         }, dashboardOptions.DashboardJsonOptions);
     }
 
@@ -735,6 +735,25 @@ public static class DashboardEndpoints
     {
         var machineJobs = await repository.GetMachineJobsAsync(cancellationToken);
         return Results.Json(machineJobs.Select(x => new TupleResponse<string, int> { Item1 = x.Item1, Item2 = x.Item2 }).ToArray(), dashboardOptions.DashboardJsonOptions);
+    }
+
+    internal static string? ToIanaTimeZoneId(TimeZoneInfo? timeZone)
+    {
+        if (timeZone == null)
+            return null;
+
+        var id = timeZone.Id;
+
+        // Already an IANA id (contains '/')
+        if (id.Contains('/') || id == "UTC")
+            return id;
+
+        // Convert Windows timezone id to IANA
+        if (TimeZoneInfo.TryConvertWindowsIdToIanaId(id, out var ianaId))
+            return ianaId;
+
+        // Fallback: return the original id
+        return id;
     }
 
     #endregion
