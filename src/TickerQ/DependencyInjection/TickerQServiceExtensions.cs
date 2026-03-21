@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -107,17 +108,20 @@ namespace TickerQ.DependencyInjection
         
         private static void InitializeTickerQ(IHost host, TickerQStartMode qStartMode)
         {
+            if (IsDesignTimeTool())
+                return;
+
             var serviceProvider = host.Services;
             var tickerExecutionContext = serviceProvider.GetService<TickerExecutionContext>();
             var configuration = serviceProvider.GetService<IConfiguration>();
             var notificationHubSender = serviceProvider.GetService<ITickerQNotificationHubSender>();
             var backgroundScheduler = serviceProvider.GetService<TickerQSchedulerBackgroundService>();
-            
+
             // If background services are registered, configure them
             if (backgroundScheduler != null)
             {
                 backgroundScheduler.SkipFirstRun = qStartMode == TickerQStartMode.Manual;
-                
+
                 tickerExecutionContext.NotifyCoreAction += (value, type) =>
                 {
                     if (type == CoreNotifyActionType.NotifyHostExceptionMessage)
@@ -135,17 +139,17 @@ namespace TickerQ.DependencyInjection
             }
             // If background services are not registered (due to DisableBackgroundServices()),
             // silently skip background service configuration. This is expected behavior.
-            
+
             if (tickerExecutionContext?.DashboardApplicationAction != null)
             {
                 // Cast object back to IApplicationBuilder for Dashboard middleware
                 tickerExecutionContext.DashboardApplicationAction(host);
                 tickerExecutionContext.DashboardApplicationAction = null;
             }
-            
+
             TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
             TickerFunctionProvider.Build();
-            
+
             // Run core seeding pipeline based on main options (works for both in-memory and EF providers).
             var options = tickerExecutionContext.OptionsSeeding;
 
@@ -170,6 +174,25 @@ namespace TickerQ.DependencyInjection
                 tickerExecutionContext.ExternalProviderApplicationAction(serviceProvider);
                 tickerExecutionContext.ExternalProviderApplicationAction = null;
             }
+        }
+
+        /// <summary>
+        /// Detects whether the application is running inside a .NET design-time tool
+        /// (e.g., dotnet-getdocument for OpenAPI generation, dotnet-ef for migrations).
+        /// These tools invoke Program.Main to build the host but should not trigger
+        /// runtime initialization like database seeding or background service startup.
+        /// </summary>
+        internal static bool IsDesignTimeTool()
+        {
+            var entryAssembly = Assembly.GetEntryAssembly();
+            if (entryAssembly is null)
+                return false;
+
+            var entryName = entryAssembly.GetName().Name;
+            if (entryName is null)
+                return false;
+
+            return entryName.StartsWith("dotnet-", StringComparison.OrdinalIgnoreCase);
         }
         
         private static async Task SeedDefinedCronTickers(IServiceProvider serviceProvider)
