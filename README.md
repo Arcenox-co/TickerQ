@@ -5,8 +5,8 @@
 </h1>
 
 <p align="center">
-  <strong>Robust. Adaptive. Precise.</strong><br />
-  A fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
+  <strong>The modern job scheduler for .NET</strong><br />
+  Source-generated task scheduling with built-in persistence, cron & time-based execution, and real-time monitoring.
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
   <a href="https://www.nuget.org/packages/tickerq"><img src="https://img.shields.io/nuget/vpre/tickerq.svg?style=flat-square" alt="NuGet Version" /></a>
   <a href="https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/Arcenox-co/TickerQ/build.yml?branch=main&style=flat-square" alt="Build Status" /></a>
   <a href="https://tickerq.arcenox.com"><img src="https://img.shields.io/badge/docs-tickerq.net-blue?style=flat-square" alt="Documentation" /></a>
-  <a href="https://discord.gg/ZJemWvp9MK"><img src="https://img.shields.io/discord/1234567890?style=flat-square&logo=discord&logoColor=white&label=discord&color=5865F2" alt="Discord" /></a>
+  <a href="https://discord.gg/ZJemWvp9MK"><img src="https://img.shields.io/badge/discord-TickerQ-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord" /></a>
   <a href="https://opencollective.com/tickerq"><img src="https://opencollective.com/tickerq/tiers/badge.svg?style=flat-square" alt="OpenCollective" /></a>
 </p>
 
@@ -134,4 +134,4 @@ Thanks to all our wonderful contributors! See [CONTRIBUTORS.md](CONTRIBUTORS.md)
 
 ## License
 
-Dual licensed under **MIT** and **Apache 2.0** © [Arcenox](https://arcenox.com)
+Dual licensed under **MIT** and **Apache 2.0** © [Arcenox LLC](https://arcenox.com)
