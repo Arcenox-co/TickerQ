@@ -1,11 +1,9 @@
 name: Build NuGet Packages
 
 on:
-  push:
-    branches:
-      - main
-      - net8
-      - net9
+  release:
+    types: [published]
+  workflow_dispatch:
 
 jobs:
   check-nuget:
@@ -172,7 +170,7 @@ jobs:
                 'Accept': 'application/vnd.github.v3+json'
               },
               body: JSON.stringify({
-                ref: 'main',
+                ref: '${{ github.event.release.target_commitish || github.ref_name }}',
                 inputs: {
                   version: version,
                   artifact_id: artifactId
@@ -190,18 +188,10 @@ jobs:
       - name: Send Discord Notification
         if: always()
         run: |
-          # Safely handle the commit message
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          BRANCH="${GITHUB_REF#refs/heads/}"
-
-          if [[ "${{ github.event.head_commit.message }}" =~ ^Merge\ pull\ request ]]; then
-            PR_BRANCH=$(echo "${{ github.event.head_commit.message }}" | sed -n "s/Merge pull request #[0-9]\+ from [^/]*\/\(.*\)/\1/p")
-            MESSAGE="📦 *${REPO_NAME}* | Branch: \`${BRANCH}\` | Merged from: \`${PR_BRANCH}\`"
-          else
-            # Use a shortened commit message to avoid issues
-            SHORT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -n1)
-            MESSAGE="📦 *${REPO_NAME}* | Branch: \`${BRANCH}\` | Commit: \`${SHORT_MSG}\`"
-          fi
+          BRANCH="${{ github.event.release.target_commitish || github.ref_name }}"
+          TAG="${{ github.event.release.tag_name || 'manual' }}"
+          MESSAGE="📦 *${REPO_NAME}* | Branch: \`${BRANCH}\` | Release: \`${TAG}\`"
 
           # Determine status based on check-nuget and build results
           if [ "${{ needs.check-nuget.result }}" != "success" ]; then
