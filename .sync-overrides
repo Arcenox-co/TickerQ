@@ -13,19 +13,8 @@
 #   {VER}  — target .NET version number (e.g. 8, 9)
 #   {NEXT} — VER + 1 (e.g. 9, 10)
 
+# All projects inherit from src/Directory.Build.props — single source of truth
 src/Directory.Build.props|Version|version-major
 src/Directory.Build.props|TargetFramework|framework
 src/Directory.Build.props|DotNetVersion|version-range
 src/Directory.Build.props|DotNetAbstractionsVersion|preserve
-
-tests/Directory.Build.props|TargetFramework|framework
-tests/Directory.Build.props|DotNetVersion|version-range
-tests/Directory.Build.props|DotNetAbstractionsVersion|preserve
-
-samples/TickerQ.Sample.ApplicationDbContext/TickerQ.Sample.ApplicationDbContext.csproj|TargetFramework|framework
-samples/TickerQ.Sample.Console/TickerQ.Sample.Console.csproj|TargetFramework|framework
-samples/TickerQ.Sample.Dashboard.ReflectionFree/TickerQ.Sample.Dashboard.ReflectionFree.csproj|TargetFramework|framework
-samples/TickerQ.Sample.WebApi/TickerQ.Sample.WebApi.csproj|TargetFramework|framework
-samples/TickerQ.Sample.WorkerService/TickerQ.Sample.WorkerService.csproj|TargetFramework|framework
-
-benchmarks/TickerQ.Benchmarks/TickerQ.Benchmarks.csproj|TargetFramework|framework
