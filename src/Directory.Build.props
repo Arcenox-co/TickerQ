@@ -5,6 +5,8 @@
         <RepositoryUrl>https://github.com/arcenox-co/TickerQ</RepositoryUrl>
         <PackageProjectUrl>https://tickerq.net/</PackageProjectUrl>
         <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+        <Authors>Arcenox LLC</Authors>
+        <Copyright>Copyright 2025-present Arcenox LLC</Copyright>
         <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>

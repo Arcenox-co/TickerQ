@@ -1,6 +1,6 @@
 # TickerQ Contributor License Agreement
 
-Thank you for your interest in contributing to TickerQ, owned and maintained by Arcenox ("Company", "we", "us"). This Contributor License Agreement ("Agreement") documents the rights granted by contributors to the Company.
+Thank you for your interest in contributing to TickerQ, owned and maintained by Arcenox LLC ("Company", "we", "us"). This Contributor License Agreement ("Agreement") documents the rights granted by contributors to the Company.
 
 By submitting a Contribution to any repository owned by the Company, you accept and agree to the following terms and conditions.
 
