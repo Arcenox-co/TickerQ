@@ -134,4 +134,4 @@ Thanks to all our wonderful contributors! See [CONTRIBUTORS.md](CONTRIBUTORS.md)
 
 ## License
 
-Dual licensed under **MIT** and **Apache 2.0** © [Arcenox](https://arcenox.com)
+Dual licensed under **MIT** and **Apache 2.0** © [Arcenox LLC](https://arcenox.com)
