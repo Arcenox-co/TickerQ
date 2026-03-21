@@ -1,0 +1,31 @@
+# Version override rules applied after merging main into target branches.
+# These replace values in the specified files so they match the target .NET version.
+#
+# Format: file|element|action
+#
+# Actions:
+#   version-major  — replace the major version number with the target .NET version
+#   framework      — replace with net{VER}.0
+#   version-range  — replace with [{VER}.0.0,{NEXT}.0.0)
+#   preserve       — keep the target branch value (do not overwrite from main)
+#
+# Variables available:
+#   {VER}  — target .NET version number (e.g. 8, 9)
+#   {NEXT} — VER + 1 (e.g. 9, 10)
+
+src/Directory.Build.props|Version|version-major
+src/Directory.Build.props|TargetFramework|framework
+src/Directory.Build.props|DotNetVersion|version-range
+src/Directory.Build.props|DotNetAbstractionsVersion|preserve
+
+tests/Directory.Build.props|TargetFramework|framework
+tests/Directory.Build.props|DotNetVersion|version-range
+tests/Directory.Build.props|DotNetAbstractionsVersion|preserve
+
+samples/TickerQ.Sample.ApplicationDbContext/TickerQ.Sample.ApplicationDbContext.csproj|TargetFramework|framework
+samples/TickerQ.Sample.Console/TickerQ.Sample.Console.csproj|TargetFramework|framework
+samples/TickerQ.Sample.Dashboard.ReflectionFree/TickerQ.Sample.Dashboard.ReflectionFree.csproj|TargetFramework|framework
+samples/TickerQ.Sample.WebApi/TickerQ.Sample.WebApi.csproj|TargetFramework|framework
+samples/TickerQ.Sample.WorkerService/TickerQ.Sample.WorkerService.csproj|TargetFramework|framework
+
+benchmarks/TickerQ.Benchmarks/TickerQ.Benchmarks.csproj|TargetFramework|framework
