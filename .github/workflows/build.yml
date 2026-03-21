@@ -127,12 +127,11 @@ jobs:
           dotnet pack hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release --output ./nupkgs
           dotnet pack hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release --output ./nupkgs
 
-      - name: Show .nupkg file sizes
+      - name: Show package file sizes
         run: |
           echo "📦 Package sizes:"
-          for pkg in ./nupkgs/*.nupkg; do
-            size=$(du -h "$pkg" | cut -f1)
-            echo " - $(basename "$pkg"): $size"
+          for pkg in ./nupkgs/*.nupkg ./nupkgs/*.snupkg; do
+            [ -f "$pkg" ] && size=$(du -h "$pkg" | cut -f1) && echo " - $(basename "$pkg"): $size"
           done
 
       - name: Upload nupkgs artifact

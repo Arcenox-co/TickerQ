@@ -31,6 +31,19 @@ jobs:
         continue-on-error: true
         run: |
           for f in ./nupkgs/*.nupkg; do
+            echo "📦 Pushing $(basename "$f")..."
+            dotnet nuget push "$f" \
+              --source https://api.nuget.org/v3/index.json \
+              --api-key ${{ secrets.NUGET_API_KEY }} \
+              --skip-duplicate
+          done
+
+      - name: Publish symbols to NuGet
+        continue-on-error: true
+        run: |
+          for f in ./nupkgs/*.snupkg; do
+            [ -f "$f" ] || continue
+            echo "🔗 Pushing symbols $(basename "$f")..."
             dotnet nuget push "$f" \
               --source https://api.nuget.org/v3/index.json \
               --api-key ${{ secrets.NUGET_API_KEY }} \
