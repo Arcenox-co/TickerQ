@@ -228,7 +228,7 @@ jobs:
                 print
               }' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
               git add "$file"
-              OVERRIDE_DETAILS+=("${file}: \`${element}\` ${current_val} -> ${new_val}")
+              OVERRIDE_DETAILS+=("${file}|${element}|${current_val} -> ${new_val}")
               echo "  Override: ${element} ${current_val} -> ${new_val} in ${file}"
             else
               echo "  Unchanged: ${element}=${current_val} in ${file}"
@@ -348,9 +348,8 @@ jobs:
             COMMENT+="|------|----------|--------|\n"
             while IFS= read -r detail; do
               if [ -n "$detail" ]; then
-                file=$(echo "$detail" | cut -d: -f1)
-                rest=$(echo "$detail" | cut -d: -f2-)
-                COMMENT+="| \`${file}\` | ${rest} |\n"
+                IFS='|' read -r file prop change <<< "$detail"
+                COMMENT+="| \`${file}\` | \`${prop}\` | ${change} |\n"
               fi
             done <<< "${{ env.OVERRIDE_DETAILS }}"
             COMMENT+="\n"

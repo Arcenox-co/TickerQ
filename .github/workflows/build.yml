@@ -61,10 +61,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Detect .NET version
+        id: detect
+        run: |
+          DOTNET_VER=$(grep -oP '<TargetFramework>net\K[0-9]+' src/Directory.Build.props)
+          echo "dotnet_version=${DOTNET_VER}.0.x" >> $GITHUB_OUTPUT
+
       - name: Setup .NET SDKs
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: ${{ steps.detect.outputs.dotnet_version }}
 
       - name: Setup Node.js 20
         uses: actions/setup-node@v4

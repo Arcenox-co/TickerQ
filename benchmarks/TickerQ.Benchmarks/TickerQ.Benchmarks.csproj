@@ -11,7 +11,7 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="[10.0.0,11.0.0)" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="$(DotNetVersion)" />
     <PackageReference Include="Hangfire.Core" Version="1.8.*" />
     <PackageReference Include="Hangfire.InMemory" Version="1.0.*" />
     <PackageReference Include="Quartz" Version="3.14.*" />
