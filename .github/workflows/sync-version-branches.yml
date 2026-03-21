@@ -82,214 +82,182 @@ jobs:
 
           TARGET="${{ matrix.target_branch }}"
           DOTNET_VER=$(echo "$TARGET" | sed 's/[^0-9]*//g')
+          NEXT_VER=$((DOTNET_VER + 1))
 
-          # Create sync branch
+          # Create sync branch from target
           sync_branch="sync-main-to-${TARGET}-$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$sync_branch" "$TARGET"
 
-          # ── Load .sync-exclude list ──
-          # These files have version-specific implementations and must stay as-is on the target branch
+          # ── Load .sync-exclude list from main ──
           EXCLUDE_FILES=()
-          if [ -f ".sync-exclude" ]; then
+          if git show main:.sync-exclude > /tmp/.sync-exclude 2>/dev/null; then
             while IFS= read -r line; do
               line=$(echo "$line" | sed 's/#.*//' | xargs)
               [ -n "$line" ] && EXCLUDE_FILES+=("$line")
-            done < .sync-exclude
-            echo "📋 Loaded ${#EXCLUDE_FILES[@]} files from .sync-exclude"
+            done < /tmp/.sync-exclude
+            echo "Loaded ${#EXCLUDE_FILES[@]} files from .sync-exclude (main)"
           fi
 
-          # ── Determine commits to cherry-pick ──
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            git log "${{ github.event.before }}..${{ github.event.after }}" --format="%H" --reverse > /tmp/commits.txt
-          else
-            merge_base=$(git merge-base "$TARGET" main)
-            git log "$merge_base..main" --format="%H" --reverse > /tmp/commits.txt
-          fi
-
-          if [ ! -s /tmp/commits.txt ]; then
-            echo "No commits found"
-            exit 0
-          fi
-
-          # ── Filter already-applied commits using git cherry ──
-          echo "🔍 Filtering already-applied commits..."
-          declare -A applied=()
-          cherry_output=$(git cherry "$TARGET" main 2>/dev/null || echo "")
-          if [ -n "$cherry_output" ]; then
-            while IFS= read -r line; do
-              if [[ $line == -* ]]; then
-                hash=$(echo "$line" | awk '{print $2}')
-                [ -n "$hash" ] && applied["$hash"]=1
-              fi
-            done <<< "$cherry_output"
-          fi
-
-          # ── Cherry-pick commits ──
-          successful=0
-          skipped=0
-          failed_commits=""
-          excluded_file_changes=""
-
-          while read -r commit; do
-            msg=$(git log -1 --format="%s" "$commit" 2>/dev/null || echo "unknown")
-
-            # Skip if already applied (exact hash or patch match)
-            if git branch --contains "$commit" 2>/dev/null | grep -q "$TARGET"; then
-              echo "⏭️  Already in branch (exact): $msg"
-              skipped=$((skipped + 1))
-              continue
-            fi
-            if [[ -n "${applied[$commit]:-}" ]]; then
-              echo "⏭️  Already in branch (patch): $msg"
-              skipped=$((skipped + 1))
-              continue
-            fi
-
-            # Check if this commit touches any excluded files
-            commit_files=$(git diff-tree --no-commit-id --name-only -r "$commit" 2>/dev/null || true)
-            for excl in "${EXCLUDE_FILES[@]}"; do
-              if echo "$commit_files" | grep -qF "$excl"; then
-                excluded_file_changes="${excluded_file_changes}\n- \`${commit:0:8}\` ($msg) modified \`$excl\`"
-              fi
-            done
-
-            # Try cherry-pick
-            if git cherry-pick --no-commit "$commit" 2>/dev/null; then
-              if git diff --cached --quiet && git diff --quiet; then
-                echo "⏭️  Empty after apply: $msg"
-                git cherry-pick --abort 2>/dev/null || true
-                skipped=$((skipped + 1))
-              else
-                echo "✅ Applied: $msg"
-                successful=$((successful + 1))
-              fi
-            else
-              # Conflict — accept incoming changes for non-excluded files, keep target for excluded
-              echo "⚠️  Conflict on: $msg — auto-resolving..."
-
-              # Get list of conflicted files
-              conflicted_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
-              resolved=true
-
-              for file in $conflicted_files; do
-                is_excluded=false
-                for excl in "${EXCLUDE_FILES[@]}"; do
-                  if [ "$file" = "$excl" ]; then
-                    is_excluded=true
-                    break
-                  fi
-                done
-
-                if [ "$is_excluded" = true ]; then
-                  # Keep target branch version for excluded files
-                  git checkout "$TARGET" -- "$file" 2>/dev/null || true
-                else
-                  # Accept incoming (main) version for everything else
-                  git checkout --theirs -- "$file" 2>/dev/null || true
-                fi
-                git add "$file" 2>/dev/null || true
-              done
-
-              if [ "$resolved" = true ] && ! git diff --cached --quiet; then
-                echo "✅ Resolved & applied: $msg"
-                successful=$((successful + 1))
-              else
-                echo "❌ Could not resolve: $msg"
-                git cherry-pick --abort 2>/dev/null || true
-                failed_commits="${failed_commits}\n- ${commit:0:8}: $msg"
-              fi
-            fi
-          done < /tmp/commits.txt
-
-          echo "📊 Summary: $successful applied, $skipped skipped"
-          if [ -n "$failed_commits" ]; then
-            echo "❌ Failed commits:$failed_commits"
-          fi
-
-          # ── Reset version-specific files ──
-          echo "📝 Resetting version-specific files..."
-
-          # 1. Reset all .csproj files to target branch
-          find . -name "*.csproj" -type f -exec git checkout "$TARGET" -- {} \; 2>/dev/null || true
-
-          # 2. Reset .sync-exclude files to target branch
+          # ── Save excluded files from target branch before merge ──
+          echo "📦 Saving version-specific files from $TARGET..."
+          mkdir -p /tmp/excluded-files
           for excl in "${EXCLUDE_FILES[@]}"; do
-            if git show "${TARGET}:${excl}" >/dev/null 2>&1; then
-              git checkout "$TARGET" -- "$excl"
-              echo "  Reset excluded: $excl"
+            if [ -f "$excl" ]; then
+              mkdir -p "/tmp/excluded-files/$(dirname "$excl")"
+              cp "$excl" "/tmp/excluded-files/$excl"
+              echo "  Saved: $excl"
             fi
           done
 
-          # 3. Update Directory.Build.props from main with correct version numbers
-          if [ -f "src/Directory.Build.props" ]; then
-            # Save DotNetAbstractionsVersion from target branch before overwriting
-            target_abstractions_version=$(grep -oP '<DotNetAbstractionsVersion>\K[^<]+' src/Directory.Build.props 2>/dev/null || echo "")
+          # ── Load .sync-overrides rules from main ──
+          declare -A PRESERVE_VALUES
+          OVERRIDE_RULES=()
+          if git show main:.sync-overrides > /tmp/.sync-overrides 2>/dev/null; then
+            while IFS= read -r line; do
+              line=$(echo "$line" | sed 's/#.*//' | xargs)
+              [ -n "$line" ] && OVERRIDE_RULES+=("$line")
+            done < /tmp/.sync-overrides
+            echo "Loaded ${#OVERRIDE_RULES[@]} override rules from .sync-overrides (main)"
+          fi
 
-            git checkout main -- src/Directory.Build.props
-
-            # Version: e.g. 10.x.x → 8.x.x
-            current_version=$(grep -oP '<Version>\K[^<]+' src/Directory.Build.props)
-            new_version=$(echo "$current_version" | sed "s/^[0-9]\+\./$DOTNET_VER./")
-            sed -i "s|<Version>$current_version</Version>|<Version>$new_version</Version>|g" src/Directory.Build.props
-
-            # TargetFramework: e.g. net10.0 → net8.0
-            sed -i "s|<TargetFramework>net[0-9]\+\.0</TargetFramework>|<TargetFramework>net${DOTNET_VER}.0</TargetFramework>|g" src/Directory.Build.props
-
-            # DotNetVersion: e.g. [10.0.0,11.0.0) → [8.0.0,9.0.0)
-            next_ver=$((DOTNET_VER + 1))
-            sed -i "s|<DotNetVersion>\[[0-9]\+\.0\.0,[0-9]\+\.0\.0)</DotNetVersion>|<DotNetVersion>[${DOTNET_VER}.0.0,${next_ver}.0.0)</DotNetVersion>|g" src/Directory.Build.props
-
-            # Preserve DotNetAbstractionsVersion from target branch if it differs
-            if [ -n "$target_abstractions_version" ]; then
-              if grep -q '<DotNetAbstractionsVersion>' src/Directory.Build.props; then
-                sed -i "s|<DotNetAbstractionsVersion>[^<]*</DotNetAbstractionsVersion>|<DotNetAbstractionsVersion>$target_abstractions_version</DotNetAbstractionsVersion>|g" src/Directory.Build.props
-              else
-                sed -i "/<DotNetVersion>/a\\        <DotNetAbstractionsVersion>$target_abstractions_version</DotNetAbstractionsVersion>" src/Directory.Build.props
+          # ── Save "preserve" values from target branch before merge ──
+          for rule in "${OVERRIDE_RULES[@]}"; do
+            IFS='|' read -r file element action <<< "$rule"
+            if [ "$action" = "preserve" ] && [ -f "$file" ]; then
+              val=$(grep -oP "<${element}>\K[^<]+" "$file" 2>/dev/null || echo "")
+              if [ -n "$val" ]; then
+                PRESERVE_VALUES["${file}|${element}"]="$val"
+                echo "  Saved ${element}=${val} from $file"
               fi
-              echo "  Preserved DotNetAbstractionsVersion: $target_abstractions_version"
             fi
+          done
 
-            echo "  Updated Directory.Build.props: Version=$new_version, TF=net${DOTNET_VER}.0, DotNetVersion=[${DOTNET_VER}.0.0,${next_ver}.0.0)"
+          # ── Merge main into sync branch ──
+          echo "🔀 Merging main into $TARGET..."
+          merge_failed=false
+          if ! git merge main --no-edit -m "Merge main into ${TARGET}" 2>/dev/null; then
+            echo "⚠️  Merge conflicts detected — auto-resolving..."
+
+            # Get list of conflicted files
+            conflicted_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+
+            for file in $conflicted_files; do
+              is_excluded=false
+              for excl in "${EXCLUDE_FILES[@]}"; do
+                if [ "$file" = "$excl" ]; then
+                  is_excluded=true
+                  break
+                fi
+              done
+
+              if [ "$is_excluded" = true ]; then
+                # Keep target branch version for excluded files
+                git checkout --ours -- "$file" 2>/dev/null || true
+                echo "  Kept $TARGET version: $file"
+              else
+                # Accept main version for everything else
+                git checkout --theirs -- "$file" 2>/dev/null || true
+                echo "  Accepted main version: $file"
+              fi
+              git add "$file" 2>/dev/null || true
+            done
+
+            # Complete the merge
+            if ! git commit --no-edit 2>/dev/null; then
+              echo "::error::Failed to complete merge"
+              merge_failed=true
+            fi
           fi
 
-          # 4. Reset workflow files to target branch
-          if [ -d ".github/workflows" ]; then
-            git checkout "$TARGET" -- .github/workflows/ 2>/dev/null || true
+          if [ "$merge_failed" = true ]; then
+            echo "::error::Merge failed and could not be resolved"
+            exit 1
           fi
 
-          # ── Stage and commit ──
+          echo "✅ Merge completed"
+
+          # ── Restore excluded files from target branch ──
+          RESTORED_FILES=()
+          echo "Restoring version-specific files..."
+          for excl in "${EXCLUDE_FILES[@]}"; do
+            if [ -f "/tmp/excluded-files/$excl" ]; then
+              cp "/tmp/excluded-files/$excl" "$excl"
+              git add "$excl"
+              RESTORED_FILES+=("$excl")
+              echo "  Restored: $excl"
+            fi
+          done
+
+          # ── Apply .sync-overrides rules ──
+          OVERRIDE_DETAILS=()
+          for rule in "${OVERRIDE_RULES[@]}"; do
+            IFS='|' read -r file element action <<< "$rule"
+            [ ! -f "$file" ] && continue
+
+            current_val=$(grep -oP "<${element}>\K[^<]+" "$file" 2>/dev/null || echo "")
+            [ -z "$current_val" ] && continue
+
+            case "$action" in
+              version-major)
+                new_val=$(echo "$current_val" | sed "s/^[0-9]\+\./$DOTNET_VER./")
+                ;;
+              framework)
+                new_val="net${DOTNET_VER}.0"
+                ;;
+              version-range)
+                new_val="[${DOTNET_VER}.0.0,${NEXT_VER}.0.0)"
+                ;;
+              preserve)
+                key="${file}|${element}"
+                new_val="${PRESERVE_VALUES[$key]:-$current_val}"
+                ;;
+              *)
+                echo "  Unknown action: $action"
+                continue
+                ;;
+            esac
+
+            if [ "$current_val" != "$new_val" ]; then
+              awk -v elem="$element" -v old="$current_val" -v new="$new_val" '{
+                target = "<" elem ">" old "</" elem ">"
+                replacement = "<" elem ">" new "</" elem ">"
+                idx = index($0, target)
+                if (idx > 0) {
+                  $0 = substr($0, 1, idx-1) replacement substr($0, idx + length(target))
+                }
+                print
+              }' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+              git add "$file"
+              OVERRIDE_DETAILS+=("${file}|${element}|${current_val} -> ${new_val}")
+              echo "  Override: ${element} ${current_val} -> ${new_val} in ${file}"
+            else
+              echo "  Unchanged: ${element}=${current_val} in ${file}"
+            fi
+          done
+
+          # ── Save details for PR comment ──
+          {
+            echo "RESTORED_FILES<<EOFRF"
+            printf '%s\n' "${RESTORED_FILES[@]}"
+            echo "EOFRF"
+            echo "OVERRIDE_DETAILS<<EOFOD"
+            printf '%s\n' "${OVERRIDE_DETAILS[@]}"
+            echo "EOFOD"
+          } >> $GITHUB_ENV
+
+          # ── Stage and amend if there are post-merge fixes ──
           git add -A
 
-          echo "📋 Files changed:"
-          git diff --cached --stat
-
-          if git diff --cached --quiet; then
-            echo "No changes to commit after processing"
-            exit 0
+          if ! git diff --cached --quiet; then
+            git commit -m "Apply version-specific overrides for ${TARGET}"
           fi
+
+          echo "📋 Final state:"
+          git log --oneline -3
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "🏃 Dry run — not committing"
+            echo "🏃 Dry run — not pushing"
             exit 0
-          fi
-
-          # Build commit message with failed commits info
-          COMMIT_MSG="Sync changes from main to ${TARGET}"
-          if [ -n "$failed_commits" ]; then
-            COMMIT_MSG="${COMMIT_MSG}
-
-          ⚠️ Commits that could not be applied (need manual review):$(echo -e "$failed_commits")"
-          fi
-
-          git commit -m "$COMMIT_MSG"
-
-          # Save excluded file changes for PR comment
-          if [ -n "$excluded_file_changes" ]; then
-            {
-              echo "excluded_file_changes<<EXCL_EOF"
-              echo -e "$excluded_file_changes"
-              echo "EXCL_EOF"
-            } >> $GITHUB_ENV
           fi
 
           # ── Push ──
@@ -321,27 +289,12 @@ jobs:
       - name: Create Pull Request
         if: steps.check.outputs.needs_sync == 'true' && env.sync_branch != ''
         run: |
-          dotnet_version=$(echo "${{ matrix.target_branch }}" | sed 's/[^0-9]*//g')
+          PR_BODY="## Automated Branch Sync
 
-          PR_BODY=$(cat << 'PREOF'
-          ## Automated Branch Sync
-
-          This PR syncs recent changes from `main` to `${{ matrix.target_branch }}`.
-
-          ### What was done:
-          - Cherry-picked new commits from main
-          - Updated `Directory.Build.props` versions (10.x.x → ${dotnet_version}.x.x, DotNetVersion range)
-          - Preserved all `.csproj` files from ${{ matrix.target_branch }}
-          - Preserved version-specific files listed in `.sync-exclude`
-          - Skipped commits already in the target branch (patch-level dedup)
-
-          ### Version-specific files (NOT synced):
-          Files in `.sync-exclude` have different implementations per .NET version and are kept as-is.
+          This PR merges recent changes from \`main\` into \`${{ matrix.target_branch }}\`.
 
           ---
-          _Created automatically by branch sync workflow_
-          PREOF
-          )
+          _Created automatically by branch sync workflow_"
 
           if [ "${{ env.push_repo }}" = "${{ github.repository }}" ]; then
             gh pr create \
@@ -364,30 +317,47 @@ jobs:
           PR_NUMBER=$(grep -oP '(?<=pull/)\d+' pr_output.txt || echo "")
           if [ -n "$PR_NUMBER" ]; then
             gh pr edit "$PR_NUMBER" --add-label "automated,sync,${{ matrix.target_branch }}" 2>/dev/null || true
-            echo "Created PR #$PR_NUMBER: https://github.com/${{ github.repository }}/pull/$PR_NUMBER"
             echo "pr_number=$PR_NUMBER" >> $GITHUB_ENV
+            echo "Created PR #$PR_NUMBER"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
-      - name: Comment on PR about excluded file changes
-        if: env.pr_number != '' && env.excluded_file_changes != ''
+      - name: Add sync details comment
+        if: steps.check.outputs.needs_sync == 'true' && env.pr_number != ''
         run: |
-          COMMENT_BODY=$(cat << 'COMMENTEOF'
-          ⚠️ **Manual review needed — version-specific files were modified on main**
+          COMMENT="### Sync Details\n\n"
 
-          The following commits changed files listed in `.sync-exclude`. These files have different implementations per .NET version and were **not synced** automatically. You may need to manually apply the equivalent changes to the `${{ matrix.target_branch }}` version:
+          # Excluded files restored
+          if [ -n "${{ env.RESTORED_FILES }}" ]; then
+            COMMENT+="#### Excluded files restored from \`${{ matrix.target_branch }}\`\n"
+            COMMENT+="_These files have version-specific implementations and were kept as-is (defined in \`.sync-exclude\`)._\n\n"
+            while IFS= read -r file; do
+              [ -n "$file" ] && COMMENT+="- \`${file}\`\n"
+            done <<< "${{ env.RESTORED_FILES }}"
+            COMMENT+="\n"
+          else
+            COMMENT+="#### Excluded files\nNo excluded files were restored.\n\n"
+          fi
 
-          ${{ env.excluded_file_changes }}
+          # Version overrides applied
+          if [ -n "${{ env.OVERRIDE_DETAILS }}" ]; then
+            COMMENT+="#### Version overrides applied\n"
+            COMMENT+="_Rules from \`.sync-overrides\` were applied to match \`${{ matrix.target_branch }}\` versions._\n\n"
+            COMMENT+="| File | Property | Change |\n"
+            COMMENT+="|------|----------|--------|\n"
+            while IFS= read -r detail; do
+              if [ -n "$detail" ]; then
+                IFS='|' read -r file prop change <<< "$detail"
+                COMMENT+="| \`${file}\` | \`${prop}\` | ${change} |\n"
+              fi
+            done <<< "${{ env.OVERRIDE_DETAILS }}"
+            COMMENT+="\n"
+          else
+            COMMENT+="#### Version overrides\nNo overrides were needed.\n\n"
+          fi
 
-          **What to do:**
-          1. Review each commit above on `main`
-          2. Determine if the change needs an equivalent update for `${{ matrix.target_branch }}`
-          3. If so, apply the change manually using the version-specific API (e.g., `SetPropertyCalls<T>` instead of `UpdateSettersBuilder<T>`)
-          COMMENTEOF
-          )
-
-          gh pr comment "${{ env.pr_number }}" --body "$COMMENT_BODY"
+          echo -e "$COMMENT" | gh pr comment "${{ env.pr_number }}" --body-file -
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
