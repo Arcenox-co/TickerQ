@@ -109,15 +109,15 @@ jobs:
             fi
           done
 
-          # ── Load .sync-overrides rules ──
+          # ── Load .sync-overrides rules from main ──
           declare -A PRESERVE_VALUES
           OVERRIDE_RULES=()
-          if [ -f ".sync-overrides" ]; then
+          if git show main:.sync-overrides > /tmp/.sync-overrides 2>/dev/null; then
             while IFS= read -r line; do
               line=$(echo "$line" | sed 's/#.*//' | xargs)
               [ -n "$line" ] && OVERRIDE_RULES+=("$line")
-            done < .sync-overrides
-            echo "Loaded ${#OVERRIDE_RULES[@]} override rules from .sync-overrides"
+            done < /tmp/.sync-overrides
+            echo "Loaded ${#OVERRIDE_RULES[@]} override rules from .sync-overrides (main)"
           fi
 
           # ── Save "preserve" values from target branch before merge ──
