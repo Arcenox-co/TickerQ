@@ -357,7 +357,14 @@ jobs:
             COMMENT+="#### Version overrides\nNo overrides were needed.\n\n"
           fi
 
-          echo -e "$COMMENT" | gh pr comment "${{ env.pr_number }}" --body-file -
+          # Retry in case PR isn't fully indexed yet
+          for i in 1 2 3; do
+            if echo -e "$COMMENT" | gh pr comment "${{ env.pr_number }}" --body-file - 2>/dev/null; then
+              break
+            fi
+            echo "Retry $i — waiting for PR to be available..."
+            sleep 5
+          done
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
 
