@@ -93,7 +93,17 @@ jobs:
         run: dotnet nuget add source "$(pwd)/nupkgs" --name LocalNupkgs
 
       - name: Restore packages with local source
-        run: dotnet restore
+        run: |
+          dotnet restore src/TickerQ/TickerQ.csproj
+          dotnet restore src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj
+          dotnet restore src/TickerQ.Dashboard/TickerQ.Dashboard.csproj
+          dotnet restore src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj
+          dotnet restore src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj
+          dotnet restore hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj
+          dotnet restore hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj
+          dotnet restore tests/TickerQ.Tests/TickerQ.Tests.csproj
+          dotnet restore tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj
+          dotnet restore tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj
 
       - name: Build TickerQ.SourceGenerator
         run: dotnet build src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
