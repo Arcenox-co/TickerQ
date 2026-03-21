@@ -160,6 +160,16 @@ namespace TickerQ.Dashboard.DependencyInjection
                 dashboardApp.UseRouting();
                 dashboardApp.UseCors("TickerQ_Dashboard_CORS");
 
+                // Add ASP.NET Core authorization middleware when auth is enabled.
+                // This is required because Host-mode endpoints use RequireAuthorization(),
+                // and ASP.NET Core's EndpointMiddleware throws InvalidOperationException
+                // if no AuthorizationMiddleware exists between UseRouting() and UseEndpoints().
+                // The host app's UseAuthorization() does not propagate into Map() branches.
+                if (config.Auth.IsEnabled)
+                {
+                    dashboardApp.UseAuthorization();
+                }
+
                 // Add authentication middleware (only protects API endpoints)
                 if (config.Auth.IsEnabled)
                 {
