@@ -15,7 +15,6 @@
 [![Documentation](https://img.shields.io/badge/docs%20-official%20web-blue)](https://tickerq.arcenox.com)
 [![](https://opencollective.com/tickerq/tiers/badge.svg)](https://opencollective.com/tickerq)
 
-
 **Robust. Adaptive. Precise.**  
 TickerQ is a fast, reflection-free background task scheduler for .NET — built with source generators, EF Core integration, cron + time-based execution, and a real-time dashboard.
 
