@@ -20,15 +20,19 @@ namespace TickerQ.Utilities
     /// </summary>
     public static class TickerFunctionProvider
     {
+        private static readonly object _buildLock = new();
+
         // Callback actions to collect registrations
         private static Action<Dictionary<string, (string, Type)>> _requestTypeRegistrations;
         private static Action<Dictionary<string, (string RequestType, string RequestExampleJson)>> _requestInfoRegistrations;
         private static Action<Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>> _functionRegistrations;
-        
+
         // Final frozen dictionaries
-        public static FrozenDictionary<string, (string, Type)> TickerFunctionRequestTypes;
-        public static FrozenDictionary<string, (string RequestType, string RequestExampleJson)> TickerFunctionRequestInfos;
-        public static FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> TickerFunctions;
+        public static FrozenDictionary<string, (string, Type)> TickerFunctionRequestTypes = FrozenDictionary<string, (string, Type)>.Empty;
+        public static FrozenDictionary<string, (string RequestType, string RequestExampleJson)> TickerFunctionRequestInfos = FrozenDictionary<string, (string RequestType, string RequestExampleJson)>.Empty;
+        public static FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> TickerFunctions = FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>.Empty;
+
+        public static bool IsBuilt { get; private set; }
 
         /// <summary>
         /// Registers ticker functions during application startup by adding to the callback chain.
@@ -158,57 +162,36 @@ namespace TickerQ.Utilities
         /// </summary>
         public static void Build()
         {
-            // Build functions dictionary
-            if (_functionRegistrations != null)
+            lock (_buildLock)
             {
-                // Single pass: execute callbacks directly on final dictionary
-                var functionsDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>();
-                _functionRegistrations(functionsDict);
-                TickerFunctions = functionsDict.ToFrozenDictionary();
-                _functionRegistrations = null; // Release callback chain
-            }
-            else
-            {
-                if (TickerFunctions == null)
+                // Build functions dictionary
+                if (_functionRegistrations != null)
                 {
-                    TickerFunctions = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>()
-                        .ToFrozenDictionary();
+                    var functionsDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>();
+                    _functionRegistrations(functionsDict);
+                    TickerFunctions = functionsDict.ToFrozenDictionary();
+                    _functionRegistrations = null;
                 }
-            }
 
-            // Build request types dictionary  
-            if (_requestTypeRegistrations != null)
-            {
-                // Single pass: execute callbacks directly on final dictionary
-                var requestTypesDict = new Dictionary<string, (string, Type)>();
-                _requestTypeRegistrations(requestTypesDict);
-                TickerFunctionRequestTypes = requestTypesDict.ToFrozenDictionary();
-                _requestTypeRegistrations = null; // Release callback chain
-            }
-            else
-            {
-                if (TickerFunctionRequestTypes == null)
+                // Build request types dictionary
+                if (_requestTypeRegistrations != null)
                 {
-                    TickerFunctionRequestTypes = new Dictionary<string, (string, Type)>()
-                        .ToFrozenDictionary();
+                    var requestTypesDict = new Dictionary<string, (string, Type)>();
+                    _requestTypeRegistrations(requestTypesDict);
+                    TickerFunctionRequestTypes = requestTypesDict.ToFrozenDictionary();
+                    _requestTypeRegistrations = null;
                 }
-            }
 
-            // Build request info dictionary (string type + example JSON)
-            if (_requestInfoRegistrations != null)
-            {
-                var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>();
-                _requestInfoRegistrations(requestInfoDict);
-                TickerFunctionRequestInfos = requestInfoDict.ToFrozenDictionary();
-                _requestInfoRegistrations = null;
-            }
-            else
-            {
-                if (TickerFunctionRequestInfos == null)
+                // Build request info dictionary (string type + example JSON)
+                if (_requestInfoRegistrations != null)
                 {
-                    TickerFunctionRequestInfos = new Dictionary<string, (string RequestType, string RequestExampleJson)>()
-                        .ToFrozenDictionary();
+                    var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>();
+                    _requestInfoRegistrations(requestInfoDict);
+                    TickerFunctionRequestInfos = requestInfoDict.ToFrozenDictionary();
+                    _requestInfoRegistrations = null;
                 }
+
+                IsBuilt = true;
             }
         }
     }
