@@ -5,6 +5,10 @@ type DateFormatRegion = 'eu' | 'us' | 'iso';
 const europeanZonePrefixes = ['Europe/', 'Africa/'];
 const americanZonePrefixes = ['America/', 'US/'];
 
+// Fallback patterns for Windows timezone IDs that didn't get converted to IANA on the backend
+const windowsEuropeanPatterns = ['W. Europe', 'Central Europe', 'E. Europe', 'GMT ', 'Greenwich'];
+const windowsAmericanPatterns = ['Eastern', 'Central Standard', 'Mountain', 'Pacific', 'Alaskan', 'Hawaiian', 'US '];
+
 export function getDateFormatRegion(timeZone?: string): DateFormatRegion {
     if (!timeZone) return 'iso';
 
@@ -13,6 +17,16 @@ export function getDateFormatRegion(timeZone?: string): DateFormatRegion {
     }
 
     if (americanZonePrefixes.some(prefix => timeZone.startsWith(prefix))) {
+        return 'us';
+    }
+
+    // Handle Windows timezone IDs as fallback (check European first to avoid
+    // "Central European" matching the American "Central Standard" pattern)
+    if (windowsEuropeanPatterns.some(p => timeZone.startsWith(p))) {
+        return 'eu';
+    }
+
+    if (windowsAmericanPatterns.some(p => timeZone.startsWith(p))) {
         return 'us';
     }
 
@@ -44,25 +58,33 @@ export function formatDate(
 
     const dateObj = new Date(iso);
 
-    const options: Intl.DateTimeFormatOptions = {
+    const baseOptions: Intl.DateTimeFormatOptions = {
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
-        ...(timeZone ? { timeZone } : {}),
     };
 
     if (includeTime) {
-        options.hour = '2-digit';
-        options.minute = '2-digit';
-        options.second = '2-digit';
-        options.hour12 = false;
+        baseOptions.hour = '2-digit';
+        baseOptions.minute = '2-digit';
+        baseOptions.second = '2-digit';
+        baseOptions.hour12 = false;
     }
 
-    const formatter = new Intl.DateTimeFormat('en-CA', options);
+    // Try with the provided timezone; fall back to no timezone if it's invalid (e.g. Windows timezone ID)
+    let formatter: Intl.DateTimeFormat;
+    let effectiveTimeZone = timeZone;
+    try {
+        formatter = new Intl.DateTimeFormat('en-CA', { ...baseOptions, ...(timeZone ? { timeZone } : {}) });
+    } catch {
+        effectiveTimeZone = undefined;
+        formatter = new Intl.DateTimeFormat('en-CA', baseOptions);
+    }
+
     const parts = formatter.formatToParts(dateObj);
     const get = (type: string) => parts.find(p => p.type === type)?.value ?? '';
 
-    const region = getDateFormatRegion(timeZone);
+    const region = getDateFormatRegion(effectiveTimeZone);
     const datePart = buildDatePart(region, get('year'), get('month'), get('day'));
 
     if (!includeTime) {

@@ -13,6 +13,7 @@ using TickerQ.Dashboard.Infrastructure;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Routing;
 using TickerQ.Utilities.Entities;
 
 namespace TickerQ.Dashboard.DependencyInjection
@@ -343,6 +344,15 @@ namespace TickerQ.Dashboard.DependencyInjection
                     // Mirror Map() behavior: move the matched segment from Path to PathBase
                     context.Request.PathBase = originalPathBase.Add(matchedPath);
                     context.Request.Path = remainingPath;
+
+                    // Clear any endpoint matched by host-level routing so the branch's
+                    // own UseRouting() re-evaluates against dashboard endpoints.
+                    // Without this, host Map*() calls (e.g. MapStaticAssets().ShortCircuit())
+                    // can cause the branch's routing middleware to skip evaluation — the
+                    // EndpointRoutingMiddleware short-circuits when GetEndpoint() is non-null.
+                    // This results in 405 responses for SignalR/WebSocket requests (#456).
+                    context.SetEndpoint(null);
+                    context.Request.RouteValues?.Clear();
 
                     try
                     {
