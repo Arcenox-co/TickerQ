@@ -14,7 +14,7 @@
   <a href="https://www.nuget.org/packages/tickerq"><img src="https://img.shields.io/nuget/vpre/tickerq.svg?style=flat-square" alt="NuGet Version" /></a>
   <a href="https://github.com/Arcenox-co/TickerQ/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/Arcenox-co/TickerQ/build.yml?branch=main&style=flat-square" alt="Build Status" /></a>
   <a href="https://tickerq.arcenox.com"><img src="https://img.shields.io/badge/docs-tickerq.net-blue?style=flat-square" alt="Documentation" /></a>
-  <a href="https://discord.gg/ZJemWvp9MK"><img src="https://img.shields.io/discord/1234567890?style=flat-square&logo=discord&logoColor=white&label=discord&color=5865F2" alt="Discord" /></a>
+  <a href="https://discord.gg/ZJemWvp9MK"><img src="https://img.shields.io/badge/discord-TickerQ-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord" /></a>
   <a href="https://opencollective.com/tickerq"><img src="https://opencollective.com/tickerq/tiers/badge.svg?style=flat-square" alt="OpenCollective" /></a>
 </p>
 
