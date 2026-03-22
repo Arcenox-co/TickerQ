@@ -1,0 +1,18 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What would you like?
+      placeholder: Describe the feature and why you need it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Usage example
+      description: If applicable, show how you'd like to use it.
+      render: csharp

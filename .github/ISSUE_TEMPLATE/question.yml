@@ -1,0 +1,10 @@
+name: Question
+description: Ask a question about TickerQ
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: What's your question?
+    validations:
+      required: true
