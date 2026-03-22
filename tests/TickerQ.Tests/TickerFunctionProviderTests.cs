@@ -183,6 +183,29 @@ public class TickerFunctionProviderTests : IDisposable
         Assert.True(TickerFunctionProvider.TickerFunctions.ContainsKey("DoubleFunc"));
         Assert.Single(TickerFunctionProvider.TickerFunctions);
     }
+    
+    [Fact]
+    public void Build_CalledTwiceWithCronUpdateAfterInitialBuild_DoesNotClearFunctions()
+    {
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
+        {
+            ["CronRaceFunc"] = ("0 0 1 * *", TickerTaskPriority.Normal, NoOpDelegate, 0)
+        };
+
+        var configuration = Substitute.For<IConfiguration>();
+     
+        TickerFunctionProvider.RegisterFunctions(functions);
+        
+        TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
+        TickerFunctionProvider.Build();
+
+        // Simulate another host that UpdateCronExpressionsFromIConfiguration and Build again.
+        TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
+        TickerFunctionProvider.Build();
+
+        Assert.True(TickerFunctionProvider.TickerFunctions.ContainsKey("CronRaceFunc"));
+        Assert.Single(TickerFunctionProvider.TickerFunctions);
+    }
 
     // ---------------------------------------------------------------
     // 7. UpdateCronExpressionsFromIConfiguration – mock IConfiguration
@@ -204,6 +227,30 @@ public class TickerFunctionProviderTests : IDisposable
         TickerFunctionProvider.Build();
 
         Assert.Equal("0 30 * * *", TickerFunctionProvider.TickerFunctions["CronFunc"].cronExpression);
+    }
+    
+    [Fact]
+    public void UpdateCronExpressionsFromIConfiguration_AfterInitialBuild_UpdatesExpressions()
+    {
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
+        {
+            ["CronRaceFunc"] = ("%CronSettings:Schedule%", TickerTaskPriority.Normal, NoOpDelegate, 0)
+        };
+
+        TickerFunctionProvider.RegisterFunctions(functions);
+        TickerFunctionProvider.Build();
+
+        // Simulate another host that contributes config-based cron update callback.
+        var configuration = Substitute.For<IConfiguration>();
+        configuration["CronSettings:Schedule"].Returns("0 30 * * *");
+
+        TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
+       
+        // Second Build should not throw and data should still be present
+        TickerFunctionProvider.Build();
+
+        Assert.True(TickerFunctionProvider.TickerFunctions.ContainsKey("CronRaceFunc"));
+        Assert.Equal("0 30 * * *", TickerFunctionProvider.TickerFunctions["CronRaceFunc"].cronExpression);
     }
 
     [Fact]
