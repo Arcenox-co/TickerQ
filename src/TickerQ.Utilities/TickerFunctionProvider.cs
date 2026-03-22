@@ -167,7 +167,7 @@ namespace TickerQ.Utilities
                 // Build functions dictionary
                 if (_functionRegistrations != null)
                 {
-                    var functionsDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>();
+                    var functionsDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>(TickerFunctions);
                     _functionRegistrations(functionsDict);
                     TickerFunctions = functionsDict.ToFrozenDictionary();
                     _functionRegistrations = null;
@@ -176,7 +176,7 @@ namespace TickerQ.Utilities
                 // Build request types dictionary
                 if (_requestTypeRegistrations != null)
                 {
-                    var requestTypesDict = new Dictionary<string, (string, Type)>();
+                    var requestTypesDict = new Dictionary<string, (string, Type)>(TickerFunctionRequestTypes);
                     _requestTypeRegistrations(requestTypesDict);
                     TickerFunctionRequestTypes = requestTypesDict.ToFrozenDictionary();
                     _requestTypeRegistrations = null;
@@ -185,7 +185,7 @@ namespace TickerQ.Utilities
                 // Build request info dictionary (string type + example JSON)
                 if (_requestInfoRegistrations != null)
                 {
-                    var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>();
+                    var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>(TickerFunctionRequestInfos);
                     _requestInfoRegistrations(requestInfoDict);
                     TickerFunctionRequestInfos = requestInfoDict.ToFrozenDictionary();
                     _requestInfoRegistrations = null;
