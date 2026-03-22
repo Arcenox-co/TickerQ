@@ -1,0 +1,33 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: TickerQ & .NET Version
+      placeholder: "e.g. TickerQ 10.2.4 / net10.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      placeholder: Describe the bug and what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      placeholder: Steps, code snippet, or minimal project to reproduce the issue.
+      render: csharp
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error / Stack Trace
+      description: If applicable.
+      render: text
