@@ -1,5 +1,5 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
+using TickerQ.Dashboard.DependencyInjection;
 using TickerQ.DependencyInjection;
 using TickerQ.EntityFrameworkCore.DbContextFactory;
 using TickerQ.EntityFrameworkCore.DependencyInjection;
@@ -21,6 +21,7 @@ builder.Services.AddTickerQ(options =>
                 b => b.MigrationsAssembly("TickerQ.Sample.WebApi"));
         });
     });
+    options.AddDashboard();
 });
 
 var app = builder.Build();
