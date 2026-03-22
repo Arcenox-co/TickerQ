@@ -159,6 +159,9 @@ namespace TickerQ.Dashboard.DependencyInjection
                 // Set up routing and CORS
                 dashboardApp.UseRouting();
                 dashboardApp.UseCors("TickerQ_Dashboard_CORS");
+                
+                // Set up authorization
+                dashboardApp.UseAuthorization();
 
                 // Add ASP.NET Core authorization middleware when auth is enabled.
                 // This is required because Host-mode endpoints use RequireAuthorization(),
