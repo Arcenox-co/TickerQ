@@ -27,9 +27,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
                 .HasDatabaseName("IX_Function_Expression");
 
             builder.Property(e => e.IsEnabled)
-                .IsRequired()
-                .HasDefaultValueSql("1")
-                .HasSentinel(true);
+                .IsRequired();
 
             builder.ToTable("CronTickers", _schema);
         }
