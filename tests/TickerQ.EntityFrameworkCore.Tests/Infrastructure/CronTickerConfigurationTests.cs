@@ -1,8 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
-
-using TickerQ.EntityFrameworkCore.Configurations;
 using TickerQ.Utilities.Entities;
 
 namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure;
@@ -33,23 +31,22 @@ public class CronTickerConfigurationTests : IAsyncLifetime
     }
 
     [Fact]
-    public void IsEnabled_Uses_ProviderAgnostic_DefaultValue()
+    public void IsEnabled_Has_No_Database_Default()
     {
         var entityType = _context.Model.FindEntityType(typeof(CronTickerEntity))!;
         var property = entityType.FindProperty(nameof(CronTickerEntity.IsEnabled))!;
 
-        // HasDefaultValue(true) lets each EF Core provider translate the CLR bool
-        // into the correct SQL literal (1 for SQL Server, TRUE for PostgreSQL, etc.)
-        var defaultValue = property.GetDefaultValue();
-        Assert.Equal(true, defaultValue);
+        // No database default — the CLR property initializer (= true) handles the default.
+        // This avoids any provider-specific SQL translation concerns.
+        Assert.Equal(ValueGenerated.Never, property.ValueGenerated);
+        Assert.Null(property.GetDefaultValueSql());
+    }
 
-        // No raw SQL default should be set — provider handles the translation
-        var defaultValueSql = property.GetDefaultValueSql();
-        Assert.Null(defaultValueSql);
-
-        // The sentinel is set to true so EF Core sends false explicitly
-        var sentinel = property.Sentinel;
-        Assert.Equal(true, sentinel);
+    [Fact]
+    public void IsEnabled_CLR_Default_Is_True()
+    {
+        var entity = new CronTickerEntity();
+        Assert.True(entity.IsEnabled);
     }
 
     [Fact]
@@ -64,8 +61,8 @@ public class CronTickerConfigurationTests : IAsyncLifetime
     [Fact]
     public async Task Insert_CronTicker_Without_IsEnabled_Gets_Default_True()
     {
-        // The C# property initializer sets IsEnabled = true,
-        // and the database default is 1 — both paths produce true.
+        // The C# property initializer sets IsEnabled = true;
+        // EF Core always includes it in the INSERT — no DB default needed.
         var ticker = new CronTickerEntity
         {
             Id = Guid.NewGuid(),
