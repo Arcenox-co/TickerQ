@@ -33,14 +33,19 @@ public class CronTickerConfigurationTests : IAsyncLifetime
     }
 
     [Fact]
-    public void IsEnabled_Uses_DefaultValueSql_Not_DefaultValue()
+    public void IsEnabled_Uses_ProviderAgnostic_DefaultValue()
     {
         var entityType = _context.Model.FindEntityType(typeof(CronTickerEntity))!;
         var property = entityType.FindProperty(nameof(CronTickerEntity.IsEnabled))!;
 
-        // HasDefaultValueSql sets the relational default SQL, not the CLR default value
-        var relational = property.GetDefaultValueSql();
-        Assert.Equal("1", relational);
+        // HasDefaultValue(true) lets each EF Core provider translate the CLR bool
+        // into the correct SQL literal (1 for SQL Server, TRUE for PostgreSQL, etc.)
+        var defaultValue = property.GetDefaultValue();
+        Assert.Equal(true, defaultValue);
+
+        // No raw SQL default should be set — provider handles the translation
+        var defaultValueSql = property.GetDefaultValueSql();
+        Assert.Null(defaultValueSql);
 
         // The sentinel is set to true so EF Core sends false explicitly
         var sentinel = property.Sentinel;
