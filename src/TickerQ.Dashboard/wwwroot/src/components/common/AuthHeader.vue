@@ -156,7 +156,7 @@ watch(isAuthenticated, (newValue) => {
 <template>
   <div class="auth-header">
     <!-- Login Form -->
-    <div v-if="!isAuthenticated && showLoginForm" class="auth-section">
+    <div v-if="!isAuthenticated && showLoginForm && authMode !== 'none'" class="auth-section">
       <div v-if="!shouldShowLoginForm" class="login-prompt">
         <v-btn
           color="primary"
