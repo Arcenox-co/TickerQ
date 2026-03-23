@@ -599,5 +599,23 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ConfigureAwait(false);
     }
     
+    public async Task<int> SkipStaleCronOccurrencesAsync(CancellationToken cancellationToken = default)
+    {
+        var now = _clock.UtcNow;
+        var cutoff = now.AddSeconds(-5);
+
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var dbContext = session.Context;
+
+        return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+            .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
+            .Where(x => x.ExecutionTime < cutoff)
+            .ExecuteUpdateAsync(setter => setter
+                .SetProperty(x => x.Status, TickerStatus.Skipped)
+                .SetProperty(x => x.SkippedReason, "Missed: occurrence was pending when the application restarted")
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     #endregion
 }

@@ -1007,6 +1007,36 @@ namespace TickerQ.Provider
             return Task.FromResult(acquired.ToArray());
         }
 
+        public Task<int> SkipStaleCronOccurrencesAsync(CancellationToken cancellationToken = default)
+        {
+            var now = _clock.UtcNow;
+            var cutoff = now.AddSeconds(-5);
+            var count = 0;
+
+            var staleOccurrences = CronOccurrences.Values
+                .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
+                .Where(x => x.ExecutionTime < cutoff)
+                .ToArray();
+
+            foreach (var occurrence in staleOccurrences)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!CronOccurrences.TryGetValue(occurrence.Id, out var current))
+                    continue;
+
+                var updated = CloneCronOccurrence(current);
+                updated.Status = TickerStatus.Skipped;
+                updated.SkippedReason = "Missed: occurrence was pending when the application restarted";
+                updated.UpdatedAt = now;
+
+                if (CronOccurrences.TryUpdate(occurrence.Id, updated, current))
+                    count++;
+            }
+
+            return Task.FromResult(count);
+        }
+
         #endregion
 
         #region Helper Methods
