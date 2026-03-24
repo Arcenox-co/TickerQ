@@ -70,6 +70,7 @@ public class DesignTimeToolDetectionTests
         services.AddSingleton(context);
         services.AddSingleton(configuration);
         services.AddSingleton(internalManager);
+        services.AddSingleton(new SchedulerOptionsBuilder());
 
         var sp = services.BuildServiceProvider();
         var initializer = new TickerQInitializerHostedService(context, sp, configuration);
@@ -123,6 +124,7 @@ public class DesignTimeToolDetectionTests
         services.AddSingleton(context);
         services.AddSingleton(configuration);
         services.AddSingleton(internalManager);
+        services.AddSingleton(new SchedulerOptionsBuilder());
 
         var sp = services.BuildServiceProvider();
         var initializer = new TickerQInitializerHostedService(context, sp, configuration);
