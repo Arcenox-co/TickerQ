@@ -97,7 +97,11 @@ internal sealed class TickerQInitializerHostedService : IHostedService
 
     private static async Task SkipStaleCronOccurrencesAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
     {
+        var schedulerOptions = serviceProvider.GetRequiredService<SchedulerOptionsBuilder>();
+        if (schedulerOptions.StaleCronOccurrenceThreshold <= TimeSpan.Zero)
+            return;
+
         var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
-        await internalTickerManager.SkipStaleCronOccurrencesAsync(cancellationToken);
+        await internalTickerManager.SkipStaleCronOccurrencesAsync(schedulerOptions.StaleCronOccurrenceThreshold, cancellationToken);
     }
 }

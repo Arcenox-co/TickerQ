@@ -1007,10 +1007,13 @@ namespace TickerQ.Provider
             return Task.FromResult(acquired.ToArray());
         }
 
-        public Task<int> SkipStaleCronOccurrencesAsync(CancellationToken cancellationToken = default)
+        public Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
         {
+            if (staleThreshold <= TimeSpan.Zero)
+                return Task.FromResult(0);
+
             var now = _clock.UtcNow;
-            var cutoff = now.AddSeconds(-5);
+            var cutoff = now - staleThreshold;
             var count = 0;
 
             var staleOccurrences = CronOccurrences.Values

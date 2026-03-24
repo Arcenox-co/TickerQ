@@ -26,6 +26,9 @@ public class SkipStaleCronOccurrencesTests : IAsyncLifetime
     private readonly List<Guid> _createdCronTickerIds = new();
     private readonly List<Guid> _createdOccurrenceIds = new();
 
+    /// <summary>Default threshold used in most tests (matches SchedulerOptionsBuilder default).</summary>
+    private static readonly TimeSpan DefaultThreshold = TimeSpan.FromSeconds(5);
+
     public SkipStaleCronOccurrencesTests()
     {
         _now = new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc);
@@ -56,14 +59,12 @@ public class SkipStaleCronOccurrencesTests : IAsyncLifetime
         var cronTickerId = Guid.NewGuid();
         await SetupCronTicker(cronTickerId);
 
-        // Create an occurrence that is 10 seconds past-due (well beyond the 5s grace)
         var occurrenceId = await InsertOccurrence(cronTickerId, _now.AddSeconds(-10), TickerStatus.Idle);
 
-        var skipped = await _provider.SkipStaleCronOccurrencesAsync(CancellationToken.None);
+        var skipped = await _provider.SkipStaleCronOccurrencesAsync(DefaultThreshold, CancellationToken.None);
 
         Assert.Equal(1, skipped);
 
-        // Verify it's now Skipped
         var all = await _provider.GetAllCronTickerOccurrences(x => x.Id == occurrenceId, CancellationToken.None);
         Assert.Single(all);
         Assert.Equal(TickerStatus.Skipped, all[0].Status);
@@ -76,10 +77,9 @@ public class SkipStaleCronOccurrencesTests : IAsyncLifetime
         var cronTickerId = Guid.NewGuid();
         await SetupCronTicker(cronTickerId);
 
-        // Create a Queued occurrence that is 10 seconds past-due
         var occurrenceId = await InsertOccurrence(cronTickerId, _now.AddSeconds(-10), TickerStatus.Queued);
 
-        var skipped = await _provider.SkipStaleCronOccurrencesAsync(CancellationToken.None);
+        var skipped = await _provider.SkipStaleCronOccurrencesAsync(DefaultThreshold, CancellationToken.None);
 
         Assert.Equal(1, skipped);
 
@@ -94,10 +94,9 @@ public class SkipStaleCronOccurrencesTests : IAsyncLifetime
         var cronTickerId = Guid.NewGuid();
         await SetupCronTicker(cronTickerId);
 
-        // Create a future occurrence (30 seconds from now)
         var occurrenceId = await InsertOccurrence(cronTickerId, _now.AddSeconds(30), TickerStatus.Idle);
 
-        var skipped = await _provider.SkipStaleCronOccurrencesAsync(CancellationToken.None);
+        var skipped = await _provider.SkipStaleCronOccurrencesAsync(DefaultThreshold, CancellationToken.None);
 
         Assert.Equal(0, skipped);
 
@@ -112,10 +111,9 @@ public class SkipStaleCronOccurrencesTests : IAsyncLifetime
         var cronTickerId = Guid.NewGuid();
         await SetupCronTicker(cronTickerId);
 
-        // Create an occurrence that is only 2 seconds past-due (within 5s grace period)
         var occurrenceId = await InsertOccurrence(cronTickerId, _now.AddSeconds(-2), TickerStatus.Idle);
 
-        var skipped = await _provider.SkipStaleCronOccurrencesAsync(CancellationToken.None);
+        var skipped = await _provider.SkipStaleCronOccurrencesAsync(DefaultThreshold, CancellationToken.None);
 
         Assert.Equal(0, skipped);
 
@@ -130,10 +128,9 @@ public class SkipStaleCronOccurrencesTests : IAsyncLifetime
         var cronTickerId = Guid.NewGuid();
         await SetupCronTicker(cronTickerId);
 
-        // Create a completed past-due occurrence
         var occurrenceId = await InsertOccurrence(cronTickerId, _now.AddSeconds(-60), TickerStatus.Done);
 
-        var skipped = await _provider.SkipStaleCronOccurrencesAsync(CancellationToken.None);
+        var skipped = await _provider.SkipStaleCronOccurrencesAsync(DefaultThreshold, CancellationToken.None);
 
         Assert.Equal(0, skipped);
 
@@ -148,10 +145,9 @@ public class SkipStaleCronOccurrencesTests : IAsyncLifetime
         var cronTickerId = Guid.NewGuid();
         await SetupCronTicker(cronTickerId);
 
-        // Create an InProgress past-due occurrence (being actively processed by another node)
         var occurrenceId = await InsertOccurrence(cronTickerId, _now.AddSeconds(-60), TickerStatus.InProgress);
 
-        var skipped = await _provider.SkipStaleCronOccurrencesAsync(CancellationToken.None);
+        var skipped = await _provider.SkipStaleCronOccurrencesAsync(DefaultThreshold, CancellationToken.None);
 
         Assert.Equal(0, skipped);
 
@@ -168,11 +164,11 @@ public class SkipStaleCronOccurrencesTests : IAsyncLifetime
 
         await InsertOccurrence(cronTickerId, _now.AddSeconds(-10), TickerStatus.Idle);
 
-        var first = await _provider.SkipStaleCronOccurrencesAsync(CancellationToken.None);
-        var second = await _provider.SkipStaleCronOccurrencesAsync(CancellationToken.None);
+        var first = await _provider.SkipStaleCronOccurrencesAsync(DefaultThreshold, CancellationToken.None);
+        var second = await _provider.SkipStaleCronOccurrencesAsync(DefaultThreshold, CancellationToken.None);
 
         Assert.Equal(1, first);
-        Assert.Equal(0, second); // Already Skipped, should not match again
+        Assert.Equal(0, second);
     }
 
     [Fact]
@@ -181,17 +177,78 @@ public class SkipStaleCronOccurrencesTests : IAsyncLifetime
         var cronTickerId = Guid.NewGuid();
         await SetupCronTicker(cronTickerId);
 
-        // Create a past-due Idle occurrence
         await InsertOccurrence(cronTickerId, _now.AddSeconds(-10), TickerStatus.Idle);
 
-        // Skip stale occurrences
-        await _provider.SkipStaleCronOccurrencesAsync(CancellationToken.None);
+        await _provider.SkipStaleCronOccurrencesAsync(DefaultThreshold, CancellationToken.None);
 
-        // Fallback should find no timed-out occurrences
         var fallbackResults = await CollectAsync(
             _provider.QueueTimedOutCronTickerOccurrences(CancellationToken.None));
 
         Assert.Empty(fallbackResults);
+    }
+
+    [Fact]
+    public async Task SkipStaleCronOccurrences_CustomThreshold_SkipsOlderOccurrences()
+    {
+        var cronTickerId = Guid.NewGuid();
+        await SetupCronTicker(cronTickerId);
+
+        // 30 seconds past-due — stale under a 20-second threshold
+        var staleId = await InsertOccurrence(cronTickerId, _now.AddSeconds(-30), TickerStatus.Idle);
+        // 10 seconds past-due — NOT stale under a 20-second threshold
+        var recentId = await InsertOccurrence(cronTickerId, _now.AddSeconds(-10), TickerStatus.Idle);
+
+        var skipped = await _provider.SkipStaleCronOccurrencesAsync(TimeSpan.FromSeconds(20), CancellationToken.None);
+
+        Assert.Equal(1, skipped);
+
+        var stale = await _provider.GetAllCronTickerOccurrences(x => x.Id == staleId, CancellationToken.None);
+        Assert.Equal(TickerStatus.Skipped, stale[0].Status);
+
+        var recent = await _provider.GetAllCronTickerOccurrences(x => x.Id == recentId, CancellationToken.None);
+        Assert.Equal(TickerStatus.Idle, recent[0].Status);
+    }
+
+    [Fact]
+    public async Task SkipStaleCronOccurrences_ZeroThreshold_SkipsNothing()
+    {
+        var cronTickerId = Guid.NewGuid();
+        await SetupCronTicker(cronTickerId);
+
+        // Even a very old occurrence should NOT be skipped when threshold is zero
+        var occurrenceId = await InsertOccurrence(cronTickerId, _now.AddMinutes(-60), TickerStatus.Idle);
+
+        var skipped = await _provider.SkipStaleCronOccurrencesAsync(TimeSpan.Zero, CancellationToken.None);
+
+        Assert.Equal(0, skipped);
+
+        var all = await _provider.GetAllCronTickerOccurrences(x => x.Id == occurrenceId, CancellationToken.None);
+        Assert.Equal(TickerStatus.Idle, all[0].Status);
+    }
+
+    [Fact]
+    public void SchedulerOptionsBuilder_DefaultThreshold_IsZero_DisabledByDefault()
+    {
+        var options = new SchedulerOptionsBuilder();
+        Assert.Equal(TimeSpan.Zero, options.StaleCronOccurrenceThreshold);
+    }
+
+    [Fact]
+    public async Task SkipStaleCronOccurrences_DisabledByDefault_DoesNotSkip()
+    {
+        var cronTickerId = Guid.NewGuid();
+        await SetupCronTicker(cronTickerId);
+
+        var occurrenceId = await InsertOccurrence(cronTickerId, _now.AddMinutes(-60), TickerStatus.Idle);
+
+        // Use the default threshold (Zero = disabled)
+        var defaultOptions = new SchedulerOptionsBuilder();
+        var skipped = await _provider.SkipStaleCronOccurrencesAsync(defaultOptions.StaleCronOccurrenceThreshold, CancellationToken.None);
+
+        Assert.Equal(0, skipped);
+
+        var all = await _provider.GetAllCronTickerOccurrences(x => x.Id == occurrenceId, CancellationToken.None);
+        Assert.Equal(TickerStatus.Idle, all[0].Status);
     }
 
     private async Task SetupCronTicker(Guid cronTickerId)

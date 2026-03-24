@@ -599,10 +599,13 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ConfigureAwait(false);
     }
     
-    public async Task<int> SkipStaleCronOccurrencesAsync(CancellationToken cancellationToken = default)
+    public async Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
     {
+        if (staleThreshold <= TimeSpan.Zero)
+            return 0;
+
         var now = _clock.UtcNow;
-        var cutoff = now.AddSeconds(-5);
+        var cutoff = now - staleThreshold;
 
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var dbContext = session.Context;

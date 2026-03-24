@@ -38,7 +38,7 @@ namespace TickerQ.Utilities.Interfaces
         Task<byte[]> GetCronTickerOccurrenceRequest(Guid tickerId, CancellationToken cancellationToken = default);
         Task UpdateCronTickerOccurrencesWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default);
         Task ReleaseDeadNodeOccurrenceResources(string instanceIdentifier, CancellationToken cancellationToken = default);
-        Task<int> SkipStaleCronOccurrencesAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
+        Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default) => Task.FromResult(0);
         #endregion
         
         #region Time_Ticker_Shared_Methods
