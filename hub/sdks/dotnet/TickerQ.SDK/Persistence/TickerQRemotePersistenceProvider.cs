@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.SDK.Client;
@@ -11,7 +10,7 @@ using TickerQ.Utilities.Models;
 namespace TickerQ.SDK.Persistence;
 
 /// <summary>
-/// HTTP-based implementation of ITickerPersistenceProvider used by the SDK.
+/// gRPC-based implementation of ITickerPersistenceProvider used by the SDK.
 /// Only the methods required for creating, updating, and deleting jobs are implemented.
 /// All other members throw NotImplementedException and are intended to be handled
 /// by the server-side TickerQ host.
@@ -21,12 +20,9 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
-    private readonly TickerQSdkHttpClient _client;
+    private readonly TickerQSdkGrpcClient _client;
 
-    private const string TimeTickersPath = "time-tickers";
-    private const string CronTickersPath = "cron-tickers";
-
-    public TickerQRemotePersistenceProvider(TickerQSdkHttpClient client)
+    public TickerQRemotePersistenceProvider(TickerQSdkGrpcClient client)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
     }
@@ -50,41 +46,18 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
         if (functionContext == null)
             throw new ArgumentNullException(nameof(functionContext));
 
-        // PUT /time-tickers/context  (body: InternalFunctionContext)
-        var affected = await _client
-            .PutAsync<InternalFunctionContext, int?>(
-                $"{TimeTickersPath}/context",
-                functionContext,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        // Default to 1 row affected if server does not return a value
-        return affected ?? 1;
+        return await _client.UpdateTimeTickerContextAsync(functionContext, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<byte[]> GetTimeTickerRequest(Guid id, CancellationToken cancellationToken)
-        => GetRequestBytesAsync($"{TimeTickersPath}/request/{id}", cancellationToken);
+        => GetRequestBytesAsync(() => _client.GetTimeTickerRequestAsync(id, cancellationToken));
 
     public async Task UpdateTimeTickersWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
     {
-        if (timeTickerIds == null)
-            throw new ArgumentNullException(nameof(timeTickerIds));
-        if (functionContext == null)
-            throw new ArgumentNullException(nameof(functionContext));
+        if (timeTickerIds == null) throw new ArgumentNullException(nameof(timeTickerIds));
+        if (functionContext == null) throw new ArgumentNullException(nameof(functionContext));
 
-        // POST /time-tickers/unified-context
-        // Body carries both ids and the unified InternalFunctionContext
-        var payload = new
-        {
-            ids = timeTickerIds,
-            context = functionContext
-        };
-
-        await _client
-            .PostAsync<object, object?>(
-                $"{TimeTickersPath}/unified-context",
-                payload,
-                cancellationToken)
+        await _client.UpdateTimeTickersUnifiedContextAsync(timeTickerIds, functionContext, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -122,25 +95,14 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
         if (functionContext == null)
             throw new ArgumentNullException(nameof(functionContext));
 
-        const string cronOccurrencesPath = "cron-ticker-occurrences";
-
-        // PUT /cron-ticker-occurrences/context  (body: InternalFunctionContext)
-        var affected = await _client
-            .PutAsync<InternalFunctionContext, int?>(
-                $"{cronOccurrencesPath}/context",
-                functionContext,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        // We ignore the result; InternalTickerManager does not use the return value
-        _ = affected;
+        await _client.UpdateCronOccurrenceContextAsync(functionContext, cancellationToken).ConfigureAwait(false);
     }
 
     public Task ReleaseAcquiredCronTickerOccurrences(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
         => throw new NotImplementedException("ReleaseAcquiredCronTickerOccurrences is handled by the server-side TickerQ host.");
 
     public Task<byte[]> GetCronTickerOccurrenceRequest(Guid tickerId, CancellationToken cancellationToken = default)
-        => GetRequestBytesAsync($"cron-ticker-occurrences/request/{tickerId}", cancellationToken);
+        => GetRequestBytesAsync(() => _client.GetCronOccurrenceRequestAsync(tickerId, cancellationToken));
 
     public Task UpdateCronTickerOccurrencesWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         => throw new NotImplementedException("Execution status updates are handled by the server-side TickerQ host.");
@@ -163,51 +125,21 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
 
     public async Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
     {
-        if (tickers == null || tickers.Length == 0)
-            return 0;
-
-        // POST /time-tickers  (body: TTimeTicker[])
-        var affected = await _client
-            .PostAsync<TTimeTicker[], int?>(
-                TimeTickersPath,
-                tickers,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        return affected ?? tickers.Length;
+        if (tickers == null || tickers.Length == 0) return 0;
+        return await _client.AddTimeTickersAsync(tickers, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> UpdateTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
     {
-        if (tickers == null || tickers.Length == 0)
-            return 0;
-
-        // PUT /time-tickers  (body: TTimeTicker[])
-        var affected = await _client
-            .PutAsync<TTimeTicker[], int?>(
-                TimeTickersPath,
-                tickers,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        return affected ?? tickers.Length;
+        if (tickers == null || tickers.Length == 0) return 0;
+        return await _client.UpdateTimeTickersAsync(tickers, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default)
     {
         tickerIds ??= Array.Empty<Guid>();
-        if (tickerIds.Length == 0)
-            return 0;
-
-        // POST /time-tickers/delete  (body: Guid[])
-        var affected = await _client
-            .PostAsync<Guid[], int?>(
-                $"{TimeTickersPath}/delete",
-                tickerIds,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        return affected ?? tickerIds.Length;
+        if (tickerIds.Length == 0) return 0;
+        return await _client.DeleteTimeTickersAsync(tickerIds, cancellationToken).ConfigureAwait(false);
     }
 
     #endregion
@@ -225,51 +157,21 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
 
     public async Task<int> InsertCronTickers(TCronTicker[] tickers, CancellationToken cancellationToken)
     {
-        if (tickers == null || tickers.Length == 0)
-            return 0;
-
-        // POST /cron-tickers  (body: TCronTicker[])
-        var affected = await _client
-            .PostAsync<TCronTicker[], int?>(
-                CronTickersPath,
-                tickers,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        return affected ?? tickers.Length;
+        if (tickers == null || tickers.Length == 0) return 0;
+        return await _client.AddCronTickersAsync(tickers, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> UpdateCronTickers(TCronTicker[] cronTicker, CancellationToken cancellationToken)
     {
-        if (cronTicker == null || cronTicker.Length == 0)
-            return 0;
-
-        // PUT /cron-tickers  (body: TCronTicker[])
-        var affected = await _client
-            .PutAsync<TCronTicker[], int?>(
-                CronTickersPath,
-                cronTicker,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        return affected ?? cronTicker.Length;
+        if (cronTicker == null || cronTicker.Length == 0) return 0;
+        return await _client.UpdateCronTickersAsync(cronTicker, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> RemoveCronTickers(Guid[] cronTickerIds, CancellationToken cancellationToken)
     {
         cronTickerIds ??= Array.Empty<Guid>();
-        if (cronTickerIds.Length == 0)
-            return 0;
-
-        // POST /cron-tickers/delete  (body: Guid[])
-        var affected = await _client
-            .PostAsync<Guid[], int?>(
-                $"{CronTickersPath}/delete",
-                cronTickerIds,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        return affected ?? cronTickerIds.Length;
+        if (cronTickerIds.Length == 0) return 0;
+        return await _client.DeleteCronTickersAsync(cronTickerIds, cancellationToken).ConfigureAwait(false);
     }
 
     #endregion
@@ -293,13 +195,13 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
 
     #endregion
 
-    private async Task<byte[]?> GetRequestBytesAsync(string path, CancellationToken cancellationToken)
+    private static async Task<byte[]?> GetRequestBytesAsync(Func<Task<byte[]?>> fetchAsync)
     {
         try
         {
-            return await _client.GetBytesAsync(path, cancellationToken).ConfigureAwait(false);
+            return await fetchAsync().ConfigureAwait(false);
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        catch (global::Grpc.Core.RpcException ex) when (ex.StatusCode == global::Grpc.Core.StatusCode.NotFound)
         {
             return null;
         }

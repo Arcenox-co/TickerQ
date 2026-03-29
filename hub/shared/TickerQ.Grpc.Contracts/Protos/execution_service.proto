@@ -1,0 +1,91 @@
+syntax = "proto3";
+package tickerq.v1;
+option csharp_namespace = "TickerQ.Grpc.Contracts";
+
+import "Protos/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// Bidirectional stream between RemoteExecutor (server) and SDK (client).
+// SDK connects on startup, receives tasks, sends results and logs.
+service ExecutionService {
+  rpc ExecutionStream(stream ExecutionResult) returns (stream ExecutionCommand);
+  rpc SendLogs(stream LogEntry) returns (LogAck);
+}
+
+// Messages sent FROM RemoteExecutor TO SDK
+message ExecutionCommand {
+  oneof command {
+    DispatchTask dispatch_task = 1;
+    ResyncSignal resync = 2;
+    DrainSignal drain = 3;
+  }
+}
+
+message DispatchTask {
+  string id = 1;
+  string function_name = 2;
+  TickerType type = 3;
+  int32 retry_count = 4;
+  bool is_due = 5;
+  google.protobuf.Timestamp scheduled_for = 6;
+}
+
+message ResyncSignal {}
+
+// Messages sent FROM SDK TO RemoteExecutor
+message ExecutionResult {
+  oneof result {
+    TaskCompleted task_completed = 1;
+    TaskFailed task_failed = 2;
+    NodeReady node_ready = 3;
+    CapacityUpdate capacity_update = 4;
+    DrainSignal drain_signal = 5;
+    DrainComplete drain_complete = 6;
+  }
+}
+
+message NodeReady {
+  string node_name = 1;
+  int32 max_concurrency = 2;
+}
+
+message CapacityUpdate {
+  int32 active_tasks = 1;
+  int32 max_concurrency = 2;
+}
+
+message DrainSignal {
+  string reason = 1;
+}
+
+message DrainComplete {
+  int32 tasks_drained = 1;
+}
+
+message TaskCompleted {
+  string ticker_id = 1;
+  TickerType type = 2;
+  int64 elapsed_ms = 3;
+  string function_name = 4;
+  TickerStatus status = 5;
+  google.protobuf.Timestamp executed_at = 6;
+}
+
+message TaskFailed {
+  string ticker_id = 1;
+  TickerType type = 2;
+  int64 elapsed_ms = 3;
+  string exception_details = 4;
+  string function_name = 5;
+  google.protobuf.Timestamp executed_at = 6;
+}
+
+message LogEntry {
+  string execution_id = 1;
+  string function_name = 2;
+  LogLevel level = 3;
+  string message = 4;
+  google.protobuf.Timestamp timestamp = 5;
+}
+
+message LogAck {}

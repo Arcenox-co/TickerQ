@@ -1,17 +1,23 @@
 using TickerQ.SDK.Client;
 using TickerQ.SDK.Models;
+using TickerQ.Grpc.Contracts;
 using TickerQ.Utilities;
 
 namespace TickerQ.SDK.Infrastructure;
 
 internal sealed class TickerQFunctionSyncService
 {
-    private readonly TickerQSdkHttpClient _client;
+    private readonly TickerQSdkGrpcClient _grpcClient;
+    private readonly TickerQGrpcChannelProvider _channelProvider;
     private readonly TickerSdkOptions _options;
 
-    public TickerQFunctionSyncService(TickerQSdkHttpClient client, TickerSdkOptions options)
+    public TickerQFunctionSyncService(
+        TickerQSdkGrpcClient grpcClient,
+        TickerQGrpcChannelProvider channelProvider,
+        TickerSdkOptions options)
     {
-        _client = client ?? throw new ArgumentNullException(nameof(client));
+        _grpcClient = grpcClient ?? throw new ArgumentNullException(nameof(grpcClient));
+        _channelProvider = channelProvider ?? throw new ArgumentNullException(nameof(channelProvider));
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
@@ -23,12 +29,14 @@ internal sealed class TickerQFunctionSyncService
             return null;
         }
 
-        var node = new Node
+        // Step 1: Build sync request with all local functions
+        var syncRequest = new SyncNodesFunctionsRequest
         {
             NodeName = _options.NodeName ?? "node",
-            CallbackUrl = _options.CallbackUri?.ToString(),
-            Functions = []
+            CallbackUrl = _options.CallbackUri?.ToString() ?? string.Empty
         };
+
+        var grpcFunctions = new List<FunctionDescriptor>();
 
         foreach (var (name, value) in TickerFunctionProvider.TickerFunctions)
         {
@@ -38,37 +46,62 @@ internal sealed class TickerQFunctionSyncService
                 JsonExampleGenerator.TryGenerateExampleJson(requestType.Item2, out exampleJson);
 
             var (cronExpression, priority, _, _) = value;
-            node.Functions.Add(new NodeFunction
+
+            syncRequest.Functions.Add(new SyncFunctionDescriptor
             {
                 FunctionName = name,
                 RequestType = requestType.Item1 ?? string.Empty,
-                RequestExampleJson = exampleJson,
-                TaskPriority = priority,
-                Expression = cronExpression
+                RequestExampleJson = exampleJson ?? string.Empty,
+                TaskPriority = (TickerQ.Grpc.Contracts.TickerTaskPriority)(int)priority,
+                Expression = cronExpression ?? string.Empty
+            });
+
+            grpcFunctions.Add(new FunctionDescriptor
+            {
+                Name = name,
+                CronExpression = cronExpression ?? string.Empty,
+                RequestType = requestType.Item1 ?? string.Empty,
+                RequestExampleJson = exampleJson ?? string.Empty,
+                Priority = (TickerQ.Grpc.Contracts.TickerTaskPriority)(int)priority,
+                IsActive = true
             });
         }
 
-        var hubBase = new Uri(TickerQSdkConstants.HubBaseUrl);
-        var syncUri = new Uri(hubBase, "api/apps/sync/nodes-functions/batch");
-
-        var result = await _client
-            .PostAsync<Node, SyncNodesAndFunctionsResult?>(
-                syncUri.ToString(),
-                node,
-                cancellationToken)
+        // Step 2: Sync with Hub via gRPC
+        var response = await _grpcClient.SyncNodesFunctionsAsync(syncRequest, cancellationToken)
             .ConfigureAwait(false);
 
-        if (result != null)
+        SyncNodesAndFunctionsResult? result = null;
+
+        if (response != null)
         {
-            if (!string.IsNullOrWhiteSpace(result.ApplicationUrl))
+            result = new SyncNodesAndFunctionsResult
             {
-                _options.ApiUri = new Uri(result.ApplicationUrl.TrimEnd('/') + "/");
+                ApplicationUrl = response.ApplicationUrl,
+                WebhookSignature = response.WebhookSignature
+            };
+
+            if (!string.IsNullOrWhiteSpace(response.ApplicationUrl))
+            {
+                _options.ApiUri = new Uri(response.ApplicationUrl.TrimEnd('/') + "/");
             }
 
-            if (!string.IsNullOrWhiteSpace(result.WebhookSignature))
+            if (!string.IsNullOrWhiteSpace(response.WebhookSignature))
             {
-                _options.WebhookSignature = result.WebhookSignature;
+                _options.WebhookSignature = response.WebhookSignature;
             }
+        }
+
+        // Step 3: Initialize gRPC channel now that we have the scheduler URL
+        _channelProvider.Initialize();
+
+        // Step 4: Register functions with RemoteExecutor via gRPC
+        if (grpcFunctions.Count > 0)
+        {
+            await _grpcClient.RegisterFunctionsAsync(
+                grpcFunctions.ToArray(),
+                _options.NodeName ?? "node",
+                cancellationToken).ConfigureAwait(false);
         }
 
         return result;

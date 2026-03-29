@@ -33,6 +33,7 @@
   </Folder>
   <Folder Name="/hub/">
     <File Path="hub/Directory.Build.props" />
+    <Project Path="hub/shared/TickerQ.Grpc.Contracts/TickerQ.Grpc.Contracts.csproj" />
     <Project Path="hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj" />
     <Project Path="hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj" />
   </Folder>

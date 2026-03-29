@@ -13,6 +13,12 @@
 
   <ItemGroup>
     <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.31.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../shared/TickerQ.Grpc.Contracts/TickerQ.Grpc.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

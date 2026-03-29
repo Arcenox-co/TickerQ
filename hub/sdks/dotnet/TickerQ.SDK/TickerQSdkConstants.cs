@@ -9,7 +9,7 @@ public static class TickerQSdkConstants
     /// The base URL of the TickerQ Hub service.
     /// This is a fixed endpoint and cannot be configured by users.
     /// </summary>
-    public const string HubBaseUrl = "https://hub.tickerq.net/";
+    public const string HubBaseUrl = "https://grpc.hub.tickerq.net/";
 
     /// <summary>
     /// The Hub hostname used for request routing.

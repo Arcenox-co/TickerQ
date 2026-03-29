@@ -1,0 +1,35 @@
+syntax = "proto3";
+package tickerq.v1;
+option csharp_namespace = "TickerQ.Grpc.Contracts";
+
+import "Protos/common.proto";
+import "google/protobuf/empty.proto";
+
+// SDK registers its local functions with RemoteExecutor.
+// Server: RemoteExecutor | Client: SDK
+service FunctionRegistrationService {
+  rpc RegisterFunctions(RegisterFunctionsRequest) returns (google.protobuf.Empty);
+  rpc RemoveFunction(RemoveFunctionByNameRequest) returns (RemoveFunctionResponse);
+}
+
+message FunctionDescriptor {
+  string name = 1;
+  string cron_expression = 2;
+  string request_type = 3;
+  string request_example_json = 4;
+  TickerTaskPriority priority = 5;
+  bool is_active = 6;
+}
+
+message RegisterFunctionsRequest {
+  repeated FunctionDescriptor functions = 1;
+  string node_name = 2;
+}
+
+message RemoveFunctionByNameRequest {
+  string function_name = 1;
+}
+
+message RemoveFunctionResponse {
+  bool removed = 1;
+}

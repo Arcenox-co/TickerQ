@@ -1,0 +1,130 @@
+syntax = "proto3";
+package tickerq.v1;
+option csharp_namespace = "TickerQ.Grpc.Contracts";
+
+import "google/protobuf/timestamp.proto";
+
+enum TickerStatus {
+  TICKER_STATUS_IDLE = 0;
+  TICKER_STATUS_QUEUED = 1;
+  TICKER_STATUS_IN_PROGRESS = 2;
+  TICKER_STATUS_DONE = 3;
+  TICKER_STATUS_DUE_DONE = 4;
+  TICKER_STATUS_FAILED = 5;
+  TICKER_STATUS_CANCELLED = 6;
+  TICKER_STATUS_SKIPPED = 7;
+}
+
+enum TickerType {
+  TICKER_TYPE_CRON_TICKER_OCCURRENCE = 0;
+  TICKER_TYPE_TIME_TICKER = 1;
+}
+
+enum TickerTaskPriority {
+  TICKER_TASK_PRIORITY_LONG_RUNNING = 0;
+  TICKER_TASK_PRIORITY_HIGH = 1;
+  TICKER_TASK_PRIORITY_NORMAL = 2;
+  TICKER_TASK_PRIORITY_LOW = 3;
+}
+
+enum RunCondition {
+  RUN_CONDITION_ON_SUCCESS = 0;
+  RUN_CONDITION_ON_FAILURE = 1;
+  RUN_CONDITION_ON_CANCELLED = 2;
+  RUN_CONDITION_ON_FAILURE_OR_CANCELLED = 3;
+  RUN_CONDITION_ON_ANY_COMPLETED_STATUS = 4;
+  RUN_CONDITION_IN_PROGRESS = 5;
+}
+
+enum LogLevel {
+  LOG_LEVEL_TRACE = 0;
+  LOG_LEVEL_DEBUG = 1;
+  LOG_LEVEL_INFO = 2;
+  LOG_LEVEL_WARNING = 3;
+  LOG_LEVEL_ERROR = 4;
+}
+
+// Mirrors InternalFunctionContext for context updates
+message FunctionContext {
+  string function_name = 1;
+  string ticker_id = 2;
+  optional string parent_id = 3;
+  TickerType type = 4;
+  int32 retries = 5;
+  int32 retry_count = 6;
+  TickerStatus status = 7;
+  int64 elapsed_time = 8;
+  string exception_details = 9;
+  google.protobuf.Timestamp executed_at = 10;
+  repeated int32 retry_intervals = 11;
+  bool release_lock = 12;
+  google.protobuf.Timestamp execution_time = 13;
+  RunCondition run_condition = 14;
+  repeated string parameters_to_update = 15;
+  TickerTaskPriority cached_priority = 16;
+  int32 cached_max_concurrency = 17;
+}
+
+// ── Entity messages ──────────────────────────────────────────────────
+
+// Mirrors TimeTickerEntity for CRUD over gRPC.
+message TimeTickerMessage {
+  string id = 1;
+  string function = 2;
+  string description = 3;
+  string init_identifier = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  TickerStatus status = 7;
+  string lock_holder = 8;
+  bytes request = 9;                          // user-defined request payload
+  optional google.protobuf.Timestamp execution_time = 10;
+  optional google.protobuf.Timestamp locked_at = 11;
+  optional google.protobuf.Timestamp executed_at = 12;
+  string exception_message = 13;
+  string skipped_reason = 14;
+  int64 elapsed_time = 15;
+  int32 retries = 16;
+  int32 retry_count = 17;
+  repeated int32 retry_intervals = 18;
+  optional string parent_id = 19;
+  optional RunCondition run_condition = 20;
+}
+
+// Mirrors CronTickerEntity for CRUD over gRPC.
+message CronTickerMessage {
+  string id = 1;
+  string function = 2;
+  string description = 3;
+  string init_identifier = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  string expression = 7;
+  bytes request = 8;                          // user-defined request payload
+  int32 retries = 9;
+  repeated int32 retry_intervals = 10;
+  bool is_enabled = 11;
+}
+
+// ── Shared response / request messages ───────────────────────────────
+
+message AffectedResponse {
+  int32 affected = 1;
+}
+
+message IdRequest {
+  string id = 1;
+}
+
+message IdsRequest {
+  repeated string ids = 1;
+}
+
+message BytesResponse {
+  bytes data = 1;
+}
+
+message UnifiedContextRequest {
+  repeated string ids = 1;
+  FunctionContext context = 2;
+}

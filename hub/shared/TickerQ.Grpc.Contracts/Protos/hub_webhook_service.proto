@@ -1,0 +1,23 @@
+syntax = "proto3";
+package tickerq.v1;
+option csharp_namespace = "TickerQ.Grpc.Contracts";
+
+import "google/protobuf/empty.proto";
+
+// gRPC service hosted on RemoteExecutor, called by hub.tickerq.net.
+// Replaces the HTTP webhook endpoints (webhooks/hub, webhooks/hub/remove-function).
+service HubWebhookService {
+  // Hub tells RemoteExecutor to resync functions.
+  rpc TriggerResync(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+  // Hub tells RemoteExecutor to remove a specific function.
+  rpc RemoveFunction(RemoveFunctionRequest) returns (RemoveFunctionResult);
+}
+
+message RemoveFunctionRequest {
+  string function_name = 1;
+}
+
+message RemoveFunctionResult {
+  bool removed = 1;
+}

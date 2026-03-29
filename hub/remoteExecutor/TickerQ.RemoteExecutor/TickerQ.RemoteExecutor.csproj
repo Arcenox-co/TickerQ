@@ -13,5 +13,10 @@
 
   <ItemGroup>
     <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.76.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../shared/TickerQ.Grpc.Contracts/TickerQ.Grpc.Contracts.csproj" />
   </ItemGroup>
 </Project>

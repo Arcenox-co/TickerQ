@@ -4,13 +4,22 @@ public class TickerQRemoteExecutionOptions
 {
     internal string? ApiKey { get; set; }
     internal string? ApiSecret { get; set; }
+    internal string? WebHookSignature { get; set; }
 
     /// <summary>
-    /// The Hub endpoint URL. Fixed to the TickerQ Hub service and cannot be changed.
+    /// Max items per SDK node's bounded write channel. Default: 100.
     /// </summary>
-    internal string HubEndpointUrl { get; } = TickerQRemoteExecutorConstants.HubBaseUrl;
+    public int NodeChannelCapacity { get; set; } = 100;
 
-    internal string? WebHookSignature { get; set; }
+    /// <summary>
+    /// Consecutive task failures before a node's circuit breaker opens. Default: 5.
+    /// </summary>
+    public int CircuitBreakerFailureThreshold { get; set; } = 5;
+
+    /// <summary>
+    /// How long a node's circuit stays open before allowing a probe request. Default: 30s.
+    /// </summary>
+    public TimeSpan CircuitBreakerCooldown { get; set; } = TimeSpan.FromSeconds(30);
 
     public void SetApiKey(string apiKey)
     {

@@ -1,0 +1,71 @@
+syntax = "proto3";
+package tickerq.v1;
+option csharp_namespace = "TickerQ.Grpc.Contracts";
+
+import "Protos/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// gRPC service hosted on hub.tickerq.net.
+// Called by SDK nodes and RemoteExecutor instances.
+service HubService {
+  // SDK calls this to sync its node and functions with the hub.
+  rpc SyncNodesFunctions(SyncNodesFunctionsRequest) returns (SyncNodesFunctionsResponse);
+
+  // RemoteExecutor calls this to get all registered nodes and functions.
+  rpc GetRegisteredFunctions(GetRegisteredFunctionsRequest) returns (GetRegisteredFunctionsResponse);
+}
+
+// ── SDK → Hub ────────────────────────────────────────────────────────
+
+message SyncNodesFunctionsRequest {
+  string node_name = 1;
+  string callback_url = 2;
+  repeated SyncFunctionDescriptor functions = 3;
+}
+
+message SyncFunctionDescriptor {
+  string function_name = 1;
+  string request_type = 2;
+  string request_example_json = 3;
+  TickerTaskPriority task_priority = 4;
+  string expression = 5;
+}
+
+message SyncNodesFunctionsResponse {
+  string application_url = 1;
+  string webhook_signature = 2;
+}
+
+// ── RemoteExecutor → Hub ─────────────────────────────────────────────
+
+message GetRegisteredFunctionsRequest {}
+
+message GetRegisteredFunctionsResponse {
+  string application_id = 1;
+  string environment_id = 2;
+  string environment_name = 3;
+  string webhook_signature = 4;
+  repeated HubNode nodes = 5;
+}
+
+message HubNode {
+  string id = 1;
+  string node_name = 2;
+  string callback_url = 3;
+  bool is_synced = 4;
+  bool auto_sync = 5;
+  bool auto_migrate_expressions = 6;
+  optional google.protobuf.Timestamp last_synced_at = 7;
+  repeated HubFunction functions = 8;
+}
+
+message HubFunction {
+  string id = 1;
+  string function_name = 2;
+  string request_type = 3;
+  string request_example_json = 4;
+  string node_expression = 5;
+  TickerTaskPriority task_priority = 6;
+  optional google.protobuf.Timestamp applied_at = 7;
+  bool is_active = 8;
+}

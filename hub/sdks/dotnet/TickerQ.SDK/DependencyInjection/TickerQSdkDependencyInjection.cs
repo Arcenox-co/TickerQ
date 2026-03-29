@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using TickerQ.SDK.Client;
 using TickerQ.SDK.Infrastructure;
 using TickerQ.SDK.HostedServices;
@@ -11,11 +11,6 @@ namespace TickerQ.SDK.DependencyInjection;
 
 public static class TickerQSdkDependencyInjection
 {
-    /// <summary>
-    /// Default timeout for HTTP requests to Hub and Scheduler.
-    /// </summary>
-    private static readonly TimeSpan DefaultHttpTimeout = TimeSpan.FromSeconds(30);
-
     public static TickerOptionsBuilder<TTimeTicker, TCronTicker> AddTickerQSdk<TTimeTicker, TCronTicker>(this TickerOptionsBuilder<TTimeTicker, TCronTicker> builder, Action<TickerSdkOptions> configure)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
@@ -26,7 +21,6 @@ public static class TickerQSdkDependencyInjection
         {
             var options = new TickerSdkOptions
             {
-                // ApiUri initially points to Hub, will be updated to Scheduler URL after sync
                 ApiUri = new Uri(TickerQSdkConstants.HubBaseUrl)
             };
 
@@ -34,24 +28,25 @@ public static class TickerQSdkDependencyInjection
             options.Validate();
             services.AddSingleton(options);
 
-            // Register HTTP clients with IHttpClientFactory
-            services.AddHttpClient(TickerQSdkHttpClient.HubClientName, client =>
-            {
-                client.BaseAddress = new Uri(TickerQSdkConstants.HubBaseUrl);
-                client.Timeout = DefaultHttpTimeout;
-                client.DefaultRequestHeaders.Add("X-Api-Key", options.ApiKey);
-                client.DefaultRequestHeaders.Add("X-Api-Secret", options.ApiSecret);
-            });
+            // gRPC interceptor (HMAC signing for all outgoing gRPC calls)
+            services.AddSingleton<TickerQGrpcClientInterceptor>();
 
-            services.AddHttpClient(TickerQSdkHttpClient.SchedulerClientName, client =>
-            {
-                client.Timeout = DefaultHttpTimeout;
-            });
+            // Hub gRPC channel (to hub.tickerq.net)
+            services.AddSingleton<TickerQHubGrpcChannelProvider>();
 
-            services.AddSingleton<TickerQSdkHttpClient>();
+            // Scheduler gRPC channel (to RemoteExecutor, initialized after hub sync)
+            services.AddSingleton<TickerQGrpcChannelProvider>();
+
+            // gRPC client (wraps all service stubs)
+            services.AddSingleton<TickerQSdkGrpcClient>();
+
+            // Services
             services.AddSingleton<TickerQFunctionSyncService>();
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>>();
+
+            // Hosted services
             services.AddHostedService<TickerQFunctionRegistrationHostedService>();
+            services.AddHostedService<TickerQExecutionStreamService>();
         };
 
         return builder;

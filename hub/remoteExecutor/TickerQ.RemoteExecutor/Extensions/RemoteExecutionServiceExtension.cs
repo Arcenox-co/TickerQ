@@ -1,5 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using TickerQ.RemoteExecutor.Client;
+using TickerQ.RemoteExecutor.Execution;
+using TickerQ.RemoteExecutor.GrpcServices;
+using TickerQ.RemoteExecutor.Security;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
@@ -20,19 +24,28 @@ public static class RemoteExecutionServiceExtension
 
         tickerConfiguration.ExternalProviderConfigServiceAction += services =>
         {
-            services.AddHttpClient("tickerq-hub", cfg =>
+            // gRPC services (SDK-facing + Hub webhook)
+            services.AddGrpc(options =>
             {
-                cfg.BaseAddress = new Uri(tickerqRemoteExecutionOptions.HubEndpointUrl);
-                cfg.DefaultRequestHeaders.Add("X-Api-Key", tickerqRemoteExecutionOptions.ApiKey);
-                cfg.DefaultRequestHeaders.Add("X-Api-Secret", tickerqRemoteExecutionOptions.ApiSecret);
+                options.Interceptors.Add<TickerQGrpcAuthInterceptor>();
+                options.MaxReceiveMessageSize = 16 * 1024 * 1024;
             });
-            services.AddHttpClient("tickerq-callback");
+
+            // Auth interceptors
+            services.AddSingleton<TickerQGrpcAuthInterceptor>();
+            services.AddSingleton<TickerQHubGrpcClientInterceptor>();
+
+            // Hub gRPC channel (to hub.tickerq.net)
+            services.AddSingleton<TickerQHubGrpcChannelProvider>();
+
+            // Execution
+            services.AddSingleton<GrpcNodeConnectionManager>();
             services.AddSingleton<TickerRemoteExecutionTaskHandler>();
             services.AddSingleton<ITickerExecutionTaskHandler, TickerExecutionTaskHandlerRouter>();
-            
+
             // Register options as singleton so background service can access it
             services.AddSingleton(tickerqRemoteExecutionOptions);
-            
+
             // Register background service to sync remote functions (also injectable for webhooks)
             services.AddSingleton<RemoteFunctionsSyncService>();
             services.AddHostedService(sp => sp.GetRequiredService<RemoteFunctionsSyncService>());

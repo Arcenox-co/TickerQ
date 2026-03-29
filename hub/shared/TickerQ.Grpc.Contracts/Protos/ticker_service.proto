@@ -1,0 +1,45 @@
+syntax = "proto3";
+package tickerq.v1;
+option csharp_namespace = "TickerQ.Grpc.Contracts";
+
+import "Protos/common.proto";
+import "google/protobuf/empty.proto";
+
+// Handles all ticker CRUD and context updates.
+// Server: RemoteExecutor | Client: SDK
+service TickerService {
+  // Time Ticker CRUD
+  rpc AddTimeTickers(AddTimeTickersRequest) returns (AffectedResponse);
+  rpc UpdateTimeTickers(UpdateTimeTickersRequest) returns (AffectedResponse);
+  rpc DeleteTimeTickers(IdsRequest) returns (AffectedResponse);
+  rpc GetTimeTickerRequest(IdRequest) returns (BytesResponse);
+
+  // Time Ticker Context
+  rpc UpdateTimeTickerContext(FunctionContext) returns (AffectedResponse);
+  rpc UpdateTimeTickersUnifiedContext(UnifiedContextRequest) returns (google.protobuf.Empty);
+
+  // Cron Ticker CRUD
+  rpc AddCronTickers(AddCronTickersRequest) returns (AffectedResponse);
+  rpc UpdateCronTickers(UpdateCronTickersRequest) returns (AffectedResponse);
+  rpc DeleteCronTickers(IdsRequest) returns (AffectedResponse);
+
+  // Cron Ticker Occurrence Context
+  rpc UpdateCronOccurrenceContext(FunctionContext) returns (AffectedResponse);
+  rpc GetCronOccurrenceRequest(IdRequest) returns (BytesResponse);
+}
+
+message AddTimeTickersRequest {
+  repeated TimeTickerMessage tickers = 1;
+}
+
+message UpdateTimeTickersRequest {
+  repeated TimeTickerMessage tickers = 1;
+}
+
+message AddCronTickersRequest {
+  repeated CronTickerMessage tickers = 1;
+}
+
+message UpdateCronTickersRequest {
+  repeated CronTickerMessage tickers = 1;
+}
