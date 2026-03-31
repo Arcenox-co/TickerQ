@@ -12,9 +12,9 @@
         <None Include="..\..\README.md" Pack="true" PackagePath="" />
     </ItemGroup>
 
-    <ItemGroup>
-        <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
-    </ItemGroup>
+<!--    <ItemGroup>-->
+<!--        <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />-->
+<!--    </ItemGroup>-->
 
     <Target Name="CopyAnalyzer" AfterTargets="Build">
         <MakeDir Directories="$(OutputPath)analyzers/dotnet/cs" />
@@ -24,5 +24,9 @@
         <None Include="..\TickerQ.SourceGenerator\bin\$(Configuration)\netstandard2.0\TickerQ.SourceGenerator.dll"
               Pack="true"
               PackagePath="analyzers/dotnet/cs" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
     </ItemGroup>
 </Project>

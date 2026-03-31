@@ -1,32 +1,28 @@
-using Microsoft.EntityFrameworkCore;
 using TickerQ.DependencyInjection;
-using TickerQ.EntityFrameworkCore.DbContextFactory;
-using TickerQ.EntityFrameworkCore.DependencyInjection;
 using TickerQ.Dashboard.DependencyInjection;
-using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Base;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddTickerQ(options =>
 {
-    options.AddOperationalStore(ef =>
-    {
-        ef.UseTickerQDbContext<TickerQDbContext>(db =>
-            db.UseSqlite("Data Source=tickerq-reflection-free.db"));
-    });
-
     options.AddDashboard();
 });
 
 var app = builder.Build();
 
-using (var scope = app.Services.CreateScope())
-{
-    var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<TickerQDbContext>>();
-    using var db = factory.CreateDbContext();
-    db.Database.EnsureCreated();
-}
-
 app.UseTickerQ();
+
+// Approach 2: Interface-based registration
+app.MapTicker<TickerQ.Sample.Dashboard.ReflectionFree.CleanupJob>()
+   .WithCron("0 0 * * * *");
+
+app.MapTicker<TickerQ.Sample.Dashboard.ReflectionFree.ProcessOrderJob>();
+
+// Approach 3: Lambda-based registration
+app.MapTimeTicker("InlinePing", async (ctx, ct) =>
+{
+    Console.WriteLine($"[{DateTime.UtcNow}] Ping! Id={ctx.Id}");
+});
 
 app.Run();

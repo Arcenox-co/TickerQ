@@ -32,7 +32,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                     PropertyNameCaseInsensitive = true,
                     PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                     Converters = { new StringToByteArrayConverter() },
-                    TypeInfoResolverChain = { DashboardJsonSerializerContext.Default, new DefaultJsonTypeInfoResolver() }
+                    TypeInfoResolverChain = { DashboardJsonSerializerContext.Default }
                 };
             }
             else
@@ -47,6 +47,9 @@ namespace TickerQ.Dashboard.DependencyInjection
                 config.DashboardJsonOptions.TypeInfoResolverChain.Insert(0, DashboardJsonSerializerContext.Default);
             }
             
+            // Configure example JSON generator with the dashboard's serializer options
+            Infrastructure.Dashboard.JsonExampleGenerator.Configure(config.DashboardJsonOptions);
+
             // Register the dashboard configuration for DI
             services.AddSingleton(config);
 
@@ -246,7 +249,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                 Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
                 TypeInfoResolverChain = { DashboardJsonSerializerContext.Default }
             };
-            var json = JsonSerializer.Serialize(envConfig, frontendJsonOptions);
+            var json = JsonSerializer.Serialize(envConfig, frontendJsonOptions.GetTypeInfo(typeof(FrontendConfigResponse)));
 
             return $"(function(){{try{{window.TickerQConfig={json};window.__dynamic_base__=window.TickerQConfig.basePath;}}catch(e){{console.error('TickerQ config failed:',e);}}}})();";
         }

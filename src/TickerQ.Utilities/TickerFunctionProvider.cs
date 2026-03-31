@@ -129,6 +129,27 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
+        /// Configures an already-registered function's settings (cron, priority, concurrency).
+        /// Called by MapTicker&lt;T&gt;() at runtime to override source-generator defaults.
+        /// Must be called before Build().
+        /// </summary>
+        public static void Configure(string functionName, string cronExpression = null, TickerTaskPriority? priority = null, int? maxConcurrency = null)
+        {
+            _functionRegistrations += dict =>
+            {
+                if (!dict.TryGetValue(functionName, out var existing))
+                    return;
+
+                dict[functionName] = (
+                    cronExpression ?? existing.cronExpression,
+                    priority ?? existing.Priority,
+                    existing.Delegate,
+                    maxConcurrency ?? existing.MaxConcurrency
+                );
+            };
+        }
+
+        /// <summary>
         /// Updates cron expressions for registered functions by adding to the callback chain.
         /// This method should only be called during application startup before Build() is called.
         /// </summary>
@@ -208,11 +229,17 @@ namespace TickerQ.Utilities
             catch (Exception e)
             {
                 var logger = context.ServiceScope.ServiceProvider.GetService<ITickerQInstrumentation>();
-                
+
                 logger.LogRequestDeserializationFailure(typeof(T).FullName, context.FunctionName, context.Id, context.Type, e);
             }
-            
+
             return default;
+        }
+
+        public static async Task<TickerFunctionContext<T>> ToGenericContextAsync<T>(TickerFunctionContext context, CancellationToken cancellationToken)
+        {
+            var request = await GetRequestAsync<T>(context, cancellationToken);
+            return new TickerFunctionContext<T>(context, request);
         }
     }
 }
