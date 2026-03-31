@@ -3,7 +3,6 @@ using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using TickerQ.SourceGenerator.Analysis;
@@ -20,7 +19,8 @@ namespace TickerQ.SourceGenerator
     {
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
-            // Path 1: [TickerFunction] attribute on methods (existing)
+            // Only scan [TickerFunction] attribute on methods
+            // ITickerFunction interface implementations are handled at runtime via MapTicker<T>()
             var attributeMethods = context.SyntaxProvider
                 .CreateSyntaxProvider(
                     predicate: (node, _) => node is MethodDeclarationSyntax m && m.AttributeLists.Count > 0,
@@ -28,23 +28,14 @@ namespace TickerQ.SourceGenerator
                 .Where(pair => pair != null)
                 .Select((pair, _) => pair.Value);
 
-            // Path 2: Classes implementing ITickerFunction / ITickerFunction<T> (new)
-            var interfaceClasses = context.SyntaxProvider
-                .CreateSyntaxProvider(
-                    predicate: (node, _) => node is ClassDeclarationSyntax c && c.BaseList?.Types.Count > 0,
-                    transform: (ctx, _) => GetTickerFunctionClassIfAny(ctx))
-                .Where(info => info != null)
-                .Select((info, _) => info.Value);
-
             var compilationAndMethods = context.CompilationProvider
-                .Combine(attributeMethods.Collect())
-                .Combine(interfaceClasses.Collect());
+                .Combine(attributeMethods.Collect());
 
             var configOptionsProvider = context.AnalyzerConfigOptionsProvider;
 
             context.RegisterSourceOutput(compilationAndMethods.Combine(configOptionsProvider), (productionContext, source) =>
             {
-                var (((compilation, methodPairs), interfacePairs), configOptions) = source;
+                var ((compilation, methodPairs), configOptions) = source;
 
                 if (compilation.Assembly.Name == "TickerQ")
                     return;
@@ -54,8 +45,8 @@ namespace TickerQ.SourceGenerator
                     ? rootNamespace
                     : SourceGeneratorUtilities.SanitizeNamespace(compilation.Assembly.Name);
 
-                GenerateFactory(productionContext, compilation, methodPairs, interfacePairs, effectiveNamespace);
-                GenerateFunctionRefs(productionContext, compilation, methodPairs, interfacePairs, effectiveNamespace);
+                GenerateFactory(productionContext, compilation, methodPairs, effectiveNamespace);
+                GenerateFunctionRefs(productionContext, compilation, methodPairs, effectiveNamespace);
             });
         }
 
@@ -82,64 +73,12 @@ namespace TickerQ.SourceGenerator
 
         #endregion
 
-        #region Discovery: ITickerFunction interface
-
-        private static TickerFunctionInterfaceInfo? GetTickerFunctionClassIfAny(GeneratorSyntaxContext ctx)
-        {
-            if (!(ctx.Node is ClassDeclarationSyntax classDecl)) return null;
-
-            var semanticModel = ctx.SemanticModel;
-            var classSymbol = semanticModel.GetDeclaredSymbol(classDecl) as INamedTypeSymbol;
-            if (classSymbol == null) return null;
-            if (classSymbol.IsAbstract) return null;
-
-            if (classSymbol.ContainingAssembly.Name != semanticModel.Compilation.Assembly.Name)
-                return null;
-
-            // Check all interfaces for ITickerFunction variants
-            foreach (var iface in classSymbol.AllInterfaces)
-            {
-                var ifaceName = iface.ToDisplayString();
-
-                if (ifaceName == "TickerQ.Utilities.Interfaces.ITickerFunction" ||
-                    ifaceName.StartsWith("TickerQ.Utilities.Interfaces.ITickerFunction<"))
-                {
-                    // Check it doesn't also have [TickerFunction] attribute on any method
-                    var hasAttribute = classSymbol.GetMembers().OfType<IMethodSymbol>()
-                        .Any(m => m.GetAttributes().Any(a => a.AttributeClass?.Name == SourceGeneratorConstants.TickerFunctionAttributeName));
-
-                    if (hasAttribute)
-                    {
-                        // Will be handled by attribute path — skip to avoid TQ012
-                        return null;
-                    }
-
-                    var isGeneric = iface.TypeArguments.Length > 0;
-                    var requestType = isGeneric ? iface.TypeArguments[0].ToDisplayString() : null;
-
-                    return new TickerFunctionInterfaceInfo
-                    {
-                        ClassDecl = classDecl,
-                        ClassName = classSymbol.Name,
-                        ClassFullName = classSymbol.ToDisplayString(),
-                        HasGenericRequest = isGeneric,
-                        RequestTypeFullName = requestType
-                    };
-                }
-            }
-
-            return null;
-        }
-
-        #endregion
-
         #region Factory Generation (TickerQInstanceFactory.g.cs)
 
         private static void GenerateFactory(
             SourceProductionContext productionContext,
             Compilation compilation,
             ImmutableArray<(ClassDeclarationSyntax ClassDecl, MethodDeclarationSyntax MethodDecl)> methodPairs,
-            ImmutableArray<TickerFunctionInterfaceInfo> interfacePairs,
             string effectiveNamespace)
         {
             var methods = new List<TickerMethodModel>();
@@ -147,7 +86,6 @@ namespace TickerQ.SourceGenerator
             var validatedClasses = new HashSet<string>();
             var usedFunctionNames = new HashSet<string>();
 
-            // Path 1: [TickerFunction] attribute methods
             foreach (var (classDecl, methodDecl) in methodPairs)
             {
                 var semanticModel = compilation.GetSemanticModel(methodDecl.SyntaxTree);
@@ -182,31 +120,9 @@ namespace TickerQ.SourceGenerator
                 methods.Add(method);
             }
 
-            // Path 2: ITickerFunction interface implementations
-            foreach (var info in interfacePairs)
-            {
-                var semanticModel = compilation.GetSemanticModel(info.ClassDecl.SyntaxTree);
-                var functionName = info.ClassName; // Type name = function name
-
-                if (!usedFunctionNames.Add(functionName))
-                {
-                    var location = info.ClassDecl.Identifier.GetLocation();
-                    productionContext.ReportDiagnostic(Diagnostic.Create(
-                        DiagnosticDescriptors.DuplicateFunctionName, location, functionName));
-                    continue;
-                }
-
-                var method = InterfaceMethodAnalyzer.Analyze(info);
-                if (method != null)
-                    methods.Add(method);
-            }
-
-            // Analyze constructors for all distinct classes (both paths)
-            var allClasses = methodPairs.Select(p => p.ClassDecl)
-                .Concat(interfacePairs.Select(p => p.ClassDecl))
-                .Distinct();
-
-            foreach (var classDecl in allClasses)
+            // Analyze constructors for distinct classes
+            var distinctClasses = methodPairs.Select(p => p.ClassDecl).Distinct();
+            foreach (var classDecl in distinctClasses)
             {
                 var semanticModel = compilation.GetSemanticModel(classDecl.SyntaxTree);
                 var ctor = ConstructorAnalyzer.Analyze(classDecl, semanticModel);
@@ -230,13 +146,10 @@ namespace TickerQ.SourceGenerator
             SourceProductionContext productionContext,
             Compilation compilation,
             ImmutableArray<(ClassDeclarationSyntax ClassDecl, MethodDeclarationSyntax MethodDecl)> methodPairs,
-            ImmutableArray<TickerFunctionInterfaceInfo> interfacePairs,
             string effectiveNamespace)
         {
             var methods = new List<TickerMethodModel>();
-            var additionalNamespaces = new HashSet<string>();
 
-            // Path 1: attribute methods
             foreach (var (classDecl, methodDecl) in methodPairs)
             {
                 var semanticModel = compilation.GetSemanticModel(methodDecl.SyntaxTree);
@@ -245,20 +158,12 @@ namespace TickerQ.SourceGenerator
                 methods.Add(method);
             }
 
-            // Path 2: interface implementations
-            foreach (var info in interfacePairs)
-            {
-                var method = InterfaceMethodAnalyzer.Analyze(info);
-                if (method != null)
-                    methods.Add(method);
-            }
-
             if (methods.Count == 0) return;
 
             var tickerFunctionRefType = compilation.GetTypeByMetadataName("TickerQ.Utilities.TickerFunctionRef");
             if (tickerFunctionRefType == null) return;
 
-            var source = FunctionRefsGenerator.Generate(effectiveNamespace, methods, additionalNamespaces);
+            var source = FunctionRefsGenerator.Generate(effectiveNamespace, methods, new HashSet<string>());
             var formatted = SourceGeneratorUtilities.FormatCode(source);
 
             productionContext.AddSource(

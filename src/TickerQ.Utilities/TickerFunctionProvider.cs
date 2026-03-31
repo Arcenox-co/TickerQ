@@ -27,12 +27,33 @@ namespace TickerQ.Utilities
         private static Action<Dictionary<string, (string RequestType, string RequestExampleJson)>> _requestInfoRegistrations;
         private static Action<Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>> _functionRegistrations;
 
+        // Type → function name mapping for manager.AddAsync<T>() lookups
+        private static readonly Dictionary<Type, string> _typeMappings = new();
+
         // Final frozen dictionaries
         public static FrozenDictionary<string, (string, Type)> TickerFunctionRequestTypes = FrozenDictionary<string, (string, Type)>.Empty;
         public static FrozenDictionary<string, (string RequestType, string RequestExampleJson)> TickerFunctionRequestInfos = FrozenDictionary<string, (string RequestType, string RequestExampleJson)>.Empty;
         public static FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> TickerFunctions = FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>.Empty;
 
         public static bool IsBuilt { get; private set; }
+
+        /// <summary>
+        /// Registers a Type → function name mapping for type-safe manager lookups.
+        /// Called by MapTicker&lt;T&gt;() at registration time.
+        /// </summary>
+        public static void RegisterTypeMapping(Type type, string functionName)
+        {
+            _typeMappings[type] = functionName;
+        }
+
+        /// <summary>
+        /// Gets the function name registered for a type, or falls back to Type.Name.
+        /// Used by manager.AddAsync&lt;T&gt;() to resolve function names without strings.
+        /// </summary>
+        public static string GetFunctionName<T>()
+        {
+            return _typeMappings.TryGetValue(typeof(T), out var name) ? name : typeof(T).Name;
+        }
 
         /// <summary>
         /// Registers ticker functions during application startup by adding to the callback chain.
