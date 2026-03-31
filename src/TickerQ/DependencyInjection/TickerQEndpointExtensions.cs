@@ -74,7 +74,7 @@ namespace TickerQ.DependencyInjection
         /// Registers a lambda-based ticker function (no request payload).
         /// </summary>
         public static TickerFunctionBuilder<object> MapTimeTicker(
-            this IServiceCollection services,
+            this IServiceCollection _,
             string functionName,
             Func<TickerFunctionContext, CancellationToken, Task> handler)
         {
@@ -87,10 +87,26 @@ namespace TickerQ.DependencyInjection
         }
 
         /// <summary>
+        /// Registers a lambda-based ticker function with access to IServiceProvider (no request payload).
+        /// </summary>
+        public static TickerFunctionBuilder<object> MapTimeTicker(
+            this IServiceCollection _,
+            string functionName,
+            Func<TickerFunctionContext, IServiceProvider, CancellationToken, Task> handler)
+        {
+            TickerFunctionProvider.RegisterFunctions(new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
+            {
+                [functionName] = (string.Empty, TickerTaskPriority.Normal, new TickerFunctionDelegate((ct, sp, ctx) => handler(ctx, sp, ct)), 0)
+            });
+
+            return new TickerFunctionBuilder<object>(functionName);
+        }
+
+        /// <summary>
         /// Registers a lambda-based ticker function with typed request.
         /// </summary>
         public static TickerFunctionBuilder<object> MapTimeTicker<TRequest>(
-            this IServiceCollection services,
+            this IServiceCollection _,
             string functionName,
             Func<TickerFunctionContext<TRequest>, CancellationToken, Task> handler)
         {
@@ -100,6 +116,31 @@ namespace TickerQ.DependencyInjection
                 {
                     var genericContext = await TickerRequestProvider.ToGenericContextAsync<TRequest>(ctx, ct);
                     await handler(genericContext, ct);
+                }), 0)
+            });
+
+            TickerFunctionProvider.RegisterRequestType(new Dictionary<string, (string, Type)>
+            {
+                [functionName] = (typeof(TRequest).FullName, typeof(TRequest))
+            });
+
+            return new TickerFunctionBuilder<object>(functionName);
+        }
+
+        /// <summary>
+        /// Registers a lambda-based ticker function with typed request and access to IServiceProvider.
+        /// </summary>
+        public static TickerFunctionBuilder<object> MapTimeTicker<TRequest>(
+            this IServiceCollection services,
+            string functionName,
+            Func<TickerFunctionContext<TRequest>, IServiceProvider, CancellationToken, Task> handler)
+        {
+            TickerFunctionProvider.RegisterFunctions(new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
+            {
+                [functionName] = (string.Empty, TickerTaskPriority.Normal, new TickerFunctionDelegate(async (ct, sp, ctx) =>
+                {
+                    var genericContext = await TickerRequestProvider.ToGenericContextAsync<TRequest>(ctx, ct);
+                    await handler(genericContext, sp, ct);
                 }), 0)
             });
 
