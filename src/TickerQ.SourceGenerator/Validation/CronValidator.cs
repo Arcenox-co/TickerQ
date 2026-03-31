@@ -12,17 +12,35 @@ namespace TickerQ.SourceGenerator.Validation
         // Performance constants
         private const int RequiredPartsCount = 6;
 
+        /// <summary>
+        /// If expression has 5 parts (standard cron), prepends "0 " to add seconds.
+        /// Returns the expression as-is if already 6 parts.
+        /// </summary>
+        public static string NormalizeToSixPart(string expression)
+        {
+            if (string.IsNullOrEmpty(expression)) return expression;
+            var partCount = 0;
+            foreach (var c in expression.AsSpan())
+            {
+                if (c == ' ' && partCount < 6) partCount++;
+            }
+            // partCount = number of spaces = parts - 1
+            return partCount == 4 ? "0 " + expression.Trim() : expression.Trim();
+        }
+
         public static bool IsValidCronExpression(string expression)
         {
             if (string.IsNullOrEmpty(expression)) return false;
 
+            // Auto-normalize 5-part to 6-part
+            var normalized = NormalizeToSixPart(expression);
+
             // Use Span for efficient string splitting without allocations
-            var expressionSpan = expression.AsSpan();
+            var expressionSpan = normalized.AsSpan();
             var parts = new string[RequiredPartsCount];
             var partCount = SplitIntoSpan(expressionSpan, parts);
-            
-            // Only support 6-part cron expressions with seconds
-            if (partCount != RequiredPartsCount) 
+
+            if (partCount != RequiredPartsCount)
                 return false;
 
             // Validate each part with corresponding min/max values

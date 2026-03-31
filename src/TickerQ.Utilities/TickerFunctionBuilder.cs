@@ -16,13 +16,14 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Sets the cron expression for this function. Overrides any default from ICronTickerFunction.
+        /// Sets the cron expression for this function. Validates immediately — throws if invalid.
+        /// Accepts string (implicit conversion) or CronExpression.Parse().
         /// </summary>
-        public TickerFunctionBuilder<TFunction> WithCron(string cronExpression)
+        public TickerFunctionBuilder<TFunction> WithCron(CronExpression cronExpression)
         {
-            TickerFunctionProvider.Configure(FunctionName, cronExpression: cronExpression);
+            TickerFunctionProvider.Configure(FunctionName, cronExpression: cronExpression.Value);
             return this;
-        }
+        } 
 
         /// <summary>
         /// Sets the maximum concurrent executions for this function.

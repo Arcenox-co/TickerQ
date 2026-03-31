@@ -41,7 +41,9 @@ namespace TickerQ.SourceGenerator.Analysis
             var model = new TickerMethodModel
             {
                 FunctionName = functionName,
-                CronExpression = cronExpression,
+                CronExpression = !string.IsNullOrEmpty(cronExpression)
+                    ? Validation.CronValidator.NormalizeToSixPart(cronExpression)
+                    : cronExpression,
                 TaskPriority = taskPriority,
                 MaxConcurrency = maxConcurrency,
                 MethodName = methodDecl.Identifier.Text,
