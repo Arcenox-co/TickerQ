@@ -213,6 +213,13 @@ class AuthService {
       
       clearTimeout(timeoutId);
 
+      // Handle transparent redirects from ASP.NET Core Challenge()
+      if (response.redirected && response.url) {
+        window.location.href = response.url;
+        // Return a non-resolving promise so execution halts while browser navigates
+        return new Promise<AuthStatus>(() => {});
+      }
+
       if (response.ok) {
         const result = await response.json();
         return {
@@ -220,6 +227,15 @@ class AuthService {
           username: result.username,
           message: result.message
         };
+      }
+
+      // If the backend returned 401 directly without redirecting
+      if (response.status === 401 && this.config?.mode === 'host') {
+         // Use a non-API URL to trigger the browser's native navigation challenge flow
+         const config = window.TickerQConfig;
+         const baseUrl = config?.backendDomain || config?.basePath || '/tickerq/dashboard';
+         window.location.href = `${baseUrl}/auth/challenge`;
+         return new Promise<AuthStatus>(() => {});
       }
 
       return { authenticated: false, message: `Server error: ${response.status}` };
