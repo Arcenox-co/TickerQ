@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities.Entities;
@@ -83,6 +84,21 @@ namespace TickerQ.Utilities
         /// </summary>
         internal JsonSerializerOptions RequestJsonSerializerOptions { get; set; }
         
+        /// <summary>
+        /// Configures a JsonSerializerContext for AOT-compatible ticker request serialization/deserialization.
+        /// Use this when publishing with Native AOT or when trimming is enabled.
+        /// </summary>
+        /// <param name="context">The JsonSerializerContext that includes all TRequest types used in ticker functions.</param>
+        /// <returns>The TickerOptionsBuilder for method chaining</returns>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> WithJsonContext(IJsonTypeInfoResolver context)
+        {
+            RequestJsonSerializerOptions = new JsonSerializerOptions
+            {
+                TypeInfoResolver = context
+            };
+            return this;
+        }
+
         /// <summary>
         /// Configures the JSON serialization options specifically for ticker request serialization/deserialization.
         /// </summary>

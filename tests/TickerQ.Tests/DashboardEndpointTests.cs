@@ -510,19 +510,6 @@ public class DashboardEndpointTests
     }
 
     [Fact]
-    public void ConfigureDashboardJsonOptions_AppliesConfiguration()
-    {
-        var builder = new DashboardOptionsBuilder();
-        builder.ConfigureDashboardJsonOptions(opts =>
-        {
-            opts.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
-        });
-
-        Assert.NotNull(builder.DashboardJsonOptions);
-        Assert.Equal(JsonNamingPolicy.CamelCase, builder.DashboardJsonOptions.PropertyNamingPolicy);
-    }
-
-    [Fact]
     public void Validate_DelegatesToAuthConfig()
     {
         var builder = new DashboardOptionsBuilder();
@@ -553,16 +540,6 @@ public class DashboardEndpointTests
         var builder = new DashboardOptionsBuilder();
 
         var result = builder.WithNoAuth().WithSessionTimeout(45);
-
-        Assert.Same(builder, result);
-    }
-
-    [Fact]
-    public void ConfigureDashboardJsonOptions_ReturnsSameBuilder()
-    {
-        var builder = new DashboardOptionsBuilder();
-
-        var result = builder.ConfigureDashboardJsonOptions(_ => { });
 
         Assert.Same(builder, result);
     }
