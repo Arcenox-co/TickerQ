@@ -136,6 +136,7 @@ namespace TickerQ.SourceGenerator
             productionContext.AddSource(
                 SourceGeneratorConstants.GeneratedFileName,
                 SourceText.From(formatted, Encoding.UTF8));
+
         }
 
         #endregion

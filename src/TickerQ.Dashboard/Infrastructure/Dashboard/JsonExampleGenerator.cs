@@ -3,38 +3,27 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using TickerQ.Utilities;
 
 namespace TickerQ.Dashboard.Infrastructure.Dashboard
 {
     /// <summary>
     /// Generates example JSON using JsonTypeInfo.Properties — no reflection.
-    /// Uses the configured JsonSerializerOptions which includes source-gen contexts.
+    /// Uses TickerHelper.RequestJsonSerializerOptions (configured via WithJsonContext).
     /// Results are cached per type.
     /// </summary>
     internal static class JsonExampleGenerator
     {
         private static readonly ConcurrentDictionary<Type, string> Cache = new();
-        private static JsonSerializerOptions _options;
-
-        internal static void Configure(JsonSerializerOptions options)
-        {
-            _options = options;
-        }
 
         public static bool TryGenerateExampleJson(Type type, out string json)
         {
-            if (_options == null)
-            {
-                json = string.Empty;
-                return false;
-            }
-
             if (Cache.TryGetValue(type, out json))
                 return json.Length > 0;
 
             try
             {
-                var typeInfo = _options.GetTypeInfo(type);
+                var typeInfo = TickerHelper.RequestJsonSerializerOptions.GetTypeInfo(type);
                 json = BuildExampleJson(typeInfo, depth: 0);
                 Cache[type] = json;
                 return true;
@@ -76,7 +65,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     string propValue;
                     try
                     {
-                        var propTypeInfo = _options.GetTypeInfo(prop.PropertyType);
+                        var propTypeInfo = TickerHelper.RequestJsonSerializerOptions.GetTypeInfo(prop.PropertyType);
                         propValue = BuildExampleJson(propTypeInfo, depth + 1, visited);
                     }
                     catch
@@ -101,7 +90,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 {
                     try
                     {
-                        var elementTypeInfo = _options.GetTypeInfo(elementType);
+                        var elementTypeInfo = TickerHelper.RequestJsonSerializerOptions.GetTypeInfo(elementType);
                         var elementExample = BuildExampleJson(elementTypeInfo, depth + 1, visited);
                         return $"[{elementExample}]";
                     }

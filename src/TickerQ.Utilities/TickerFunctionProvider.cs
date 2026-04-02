@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
@@ -260,6 +261,28 @@ namespace TickerQ.Utilities
         public static async Task<TickerFunctionContext<T>> ToGenericContextAsync<T>(TickerFunctionContext context, CancellationToken cancellationToken)
         {
             var request = await GetRequestAsync<T>(context, cancellationToken);
+            return new TickerFunctionContext<T>(context, request);
+        }
+
+        public static async Task<T> GetRequestAsync<T>(TickerFunctionContext context, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var internalTickerManager = context.ServiceScope.ServiceProvider.GetService<IInternalTickerManager>();
+                return await internalTickerManager.GetRequestAsync(context.Id, context.Type, typeInfo, cancellationToken);
+            }
+            catch (Exception e)
+            {
+                var logger = context.ServiceScope.ServiceProvider.GetService<ITickerQInstrumentation>();
+                logger.LogRequestDeserializationFailure(typeof(T).FullName, context.FunctionName, context.Id, context.Type, e);
+            }
+
+            return default;
+        }
+
+        public static async Task<TickerFunctionContext<T>> ToGenericContextAsync<T>(TickerFunctionContext context, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
+        {
+            var request = await GetRequestAsync(context, typeInfo, cancellationToken);
             return new TickerFunctionContext<T>(context, request);
         }
     }

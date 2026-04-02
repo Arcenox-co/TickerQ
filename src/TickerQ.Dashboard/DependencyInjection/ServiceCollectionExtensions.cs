@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Builder;
@@ -24,32 +23,14 @@ namespace TickerQ.Dashboard.DependencyInjection
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
-            // Configure default Dashboard JSON options if not already configured
-            if (config.DashboardJsonOptions == null)
+            config.DashboardJsonOptions = new JsonSerializerOptions
             {
-                config.DashboardJsonOptions = new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true,
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                    Converters = { new StringToByteArrayConverter() },
-                    TypeInfoResolverChain = { DashboardJsonSerializerContext.Default }
-                };
-            }
-            else
-            {
-                // Ensure StringToByteArrayConverter is always present
-                if (!config.DashboardJsonOptions.Converters.Any(c => c is StringToByteArrayConverter))
-                {
-                    config.DashboardJsonOptions.Converters.Add(new StringToByteArrayConverter());
-                }
-
-                // Ensure the source-generated context is in the resolver chain
-                config.DashboardJsonOptions.TypeInfoResolverChain.Insert(0, DashboardJsonSerializerContext.Default);
-            }
+                PropertyNameCaseInsensitive = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                Converters = { new StringToByteArrayConverter() },
+                TypeInfoResolverChain = { DashboardJsonSerializerContext.Default }
+            };
             
-            // Configure example JSON generator with the dashboard's serializer options
-            Infrastructure.Dashboard.JsonExampleGenerator.Configure(config.DashboardJsonOptions);
-
             // Register the dashboard configuration for DI
             services.AddSingleton(config);
 
@@ -61,7 +42,12 @@ namespace TickerQ.Dashboard.DependencyInjection
             });
 
             services.AddRouting();
-            services.AddSignalR();
+            services.AddSignalR()
+                .AddJsonProtocol(options =>
+                {
+                    options.PayloadSerializerOptions.TypeInfoResolverChain
+                        .Add(DashboardJsonSerializerContext.Default);
+                });
 
             // The new authentication system is registered in ServiceExtensions.cs
             // This method is kept for backward compatibility with existing middleware pipeline

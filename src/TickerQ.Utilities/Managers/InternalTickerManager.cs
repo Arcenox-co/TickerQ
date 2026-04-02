@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
@@ -394,6 +395,17 @@ namespace TickerQ.Utilities.Managers
             return request == null || request.Length == 0
                 ? default
                 : TickerHelper.ReadTickerRequest<T>(request);
+        }
+
+        public async Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken = default)
+        {
+            var request = type == TickerType.CronTickerOccurrence
+                ? await _persistenceProvider.GetCronTickerOccurrenceRequest(tickerId, cancellationToken: cancellationToken).ConfigureAwait(false)
+                : await _persistenceProvider.GetTimeTickerRequest(tickerId, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            return request == null || request.Length == 0
+                ? default
+                : TickerHelper.ReadTickerRequest(request, typeInfo);
         }
 
         public async Task<InternalFunctionContext[]> RunTimedOutTickers(CancellationToken cancellationToken = default)

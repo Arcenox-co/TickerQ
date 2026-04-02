@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Xunit;
 using TickerQ.Dashboard.Infrastructure.Dashboard;
+using TickerQ.Utilities;
 
 namespace TickerQ.Tests;
 
@@ -9,12 +10,12 @@ public class JsonExampleGeneratorTests
 {
     public JsonExampleGeneratorTests()
     {
-        JsonExampleGenerator.Configure(new JsonSerializerOptions
+        TickerHelper.RequestJsonSerializerOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             TypeInfoResolverChain = { new DefaultJsonTypeInfoResolver() }
-        });
+        };
     }
 
     [Fact]

@@ -28,7 +28,7 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// <summary>
         /// Schedules a ticker function by type with a typed request payload.
         /// </summary>
-        Task<TickerResult<TTimeTicker>> AddAsync<TFunction, TRequest>(TRequest request, DateTime? executionTime = null, CancellationToken cancellationToken = default)
+        Task<TickerResult<TTimeTicker>> AddAsync<TFunction, TRequest>(DateTime? executionTime, TRequest request, CancellationToken cancellationToken = default)
             where TFunction : class, ITickerFunction<TRequest>;
     }
 }

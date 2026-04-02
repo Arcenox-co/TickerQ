@@ -14,7 +14,7 @@ public class SampleJobs
     }
 
     [TickerFunction("ReflectionFree_TimeJob")]
-    public Task TimeJobAsync(TickerFunctionContext context)
+    public Task TimeJobAsync(TickerFunctionContext<OrderRequest> context)
     {
         Console.WriteLine($"[{DateTime.UtcNow}] Time job executed! Id={context.Id}");
         return Task.CompletedTask;

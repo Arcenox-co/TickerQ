@@ -81,7 +81,7 @@ namespace TickerQ.Utilities.Managers
             return AddTimeTickerAsync(entity, cancellationToken);
         }
 
-        Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddAsync<TFunction, TRequest>(TRequest request, DateTime? executionTime, CancellationToken cancellationToken)
+        Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddAsync<TFunction, TRequest>(DateTime? executionTime, TRequest request, CancellationToken cancellationToken)
         {
             var functionName = TickerFunctionProvider.GetFunctionName<TFunction>();
             var entity = new TTimeTicker

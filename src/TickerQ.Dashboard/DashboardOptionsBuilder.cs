@@ -22,10 +22,6 @@ public class DashboardOptionsBuilder
     public Action<IApplicationBuilder> PreDashboardMiddleware { get; set; }
     public Action<IApplicationBuilder> PostDashboardMiddleware { get; set; }
     
-    /// <summary>
-    /// JsonSerializerOptions specifically for Dashboard API endpoints.
-    /// Separate from request serialization options to prevent user configuration from breaking dashboard APIs.
-    /// </summary>
     internal JsonSerializerOptions DashboardJsonOptions { get; set; }
 
     /// <summary>Tracks whether dashboard middleware has been applied to prevent double registration.</summary>
@@ -88,19 +84,6 @@ public class DashboardOptionsBuilder
     public DashboardOptionsBuilder WithSessionTimeout(int minutes)
     {
         Auth.SessionTimeoutMinutes = minutes;
-        return this;
-    }
-    
-    /// <summary>
-    /// Configure JSON serialization options for Dashboard API endpoints.
-    /// These are separate from request serialization to maintain dashboard integrity.
-    /// </summary>
-    /// <param name="configure">Action to configure JsonSerializerOptions for dashboard APIs</param>
-    /// <returns>The DashboardOptionsBuilder for method chaining</returns>
-    public DashboardOptionsBuilder ConfigureDashboardJsonOptions(Action<JsonSerializerOptions> configure)
-    {
-        DashboardJsonOptions ??= new JsonSerializerOptions();
-        configure?.Invoke(DashboardJsonOptions);
         return this;
     }
     
