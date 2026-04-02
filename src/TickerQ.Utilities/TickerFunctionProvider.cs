@@ -48,13 +48,16 @@ namespace TickerQ.Utilities
             if (functions.Count == 0)
                 return;
 
-            _functionRegistrations += dict =>
+            lock (_buildLock)
             {
-                foreach (var (key, value) in functions)
+                _functionRegistrations += dict =>
                 {
-                    dict.TryAdd(key, value); // Preserves existing entries
-                }
-            };
+                    foreach (var (key, value) in functions)
+                    {
+                        dict.TryAdd(key, value); // Preserves existing entries
+                    }
+                };
+            }
         }
 
         /// <summary>
@@ -84,13 +87,16 @@ namespace TickerQ.Utilities
             if (requestTypes.Count == 0)
                 return;
 
-            _requestTypeRegistrations += dict =>
+            lock (_buildLock)
             {
-                foreach (var (key, value) in requestTypes)
+                _requestTypeRegistrations += dict =>
                 {
-                    dict.TryAdd(key, value); // Preserves existing entries
-                }
-            };
+                    foreach (var (key, value) in requestTypes)
+                    {
+                        dict.TryAdd(key, value); // Preserves existing entries
+                    }
+                };
+            }
         }
 
         /// <summary>
@@ -119,13 +125,16 @@ namespace TickerQ.Utilities
             if (requestInfos.Count == 0)
                 return;
 
-            _requestInfoRegistrations += dict =>
+            lock (_buildLock)
             {
-                foreach (var (key, value) in requestInfos)
+                _requestInfoRegistrations += dict =>
                 {
-                    dict.TryAdd(key, value);
-                }
-            };
+                    foreach (var (key, value) in requestInfos)
+                    {
+                        dict.TryAdd(key, value);
+                    }
+                };
+            }
         }
 
         /// <summary>
@@ -136,22 +145,26 @@ namespace TickerQ.Utilities
         /// <exception cref="ArgumentNullException">Thrown when cronUpdates parameter is null.</exception>
         internal static void UpdateCronExpressionsFromIConfiguration(IConfiguration configuration)
         {
-            _functionRegistrations += dict =>
+            lock (_buildLock)
             {
-                foreach (var (key, value) in dict)
+                _functionRegistrations += dict =>
                 {
-                    if (value.cronExpression.StartsWith('%'))
+                    foreach (var (key, value) in dict)
                     {
-                        var configKey = value.cronExpression.Trim('%');
-                        var mappedCronExpression = configuration[configKey];
-            
-                        if (!string.IsNullOrEmpty(mappedCronExpression))
+                        if (value.cronExpression.StartsWith('%'))
                         {
-                            dict[key] = (mappedCronExpression, value.Priority, value.Delegate, value.MaxConcurrency);
+                            var configKey = value.cronExpression.Trim('%');
+                            var mappedCronExpression = configuration[configKey];
+
+                            if (!string.IsNullOrEmpty(mappedCronExpression))
+                            {
+                                dict[key] = (mappedCronExpression, value.Priority, value.Delegate,
+                                             value.MaxConcurrency);
+                            }
                         }
                     }
-                }
-            };
+                };
+            }
         }
 
         /// <summary>
@@ -167,7 +180,7 @@ namespace TickerQ.Utilities
                 // Build functions dictionary
                 if (_functionRegistrations != null)
                 {
-                    var functionsDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>();
+                    var functionsDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>(TickerFunctions);
                     _functionRegistrations(functionsDict);
                     TickerFunctions = functionsDict.ToFrozenDictionary();
                     _functionRegistrations = null;
@@ -176,7 +189,7 @@ namespace TickerQ.Utilities
                 // Build request types dictionary
                 if (_requestTypeRegistrations != null)
                 {
-                    var requestTypesDict = new Dictionary<string, (string, Type)>();
+                    var requestTypesDict = new Dictionary<string, (string, Type)>(TickerFunctionRequestTypes);
                     _requestTypeRegistrations(requestTypesDict);
                     TickerFunctionRequestTypes = requestTypesDict.ToFrozenDictionary();
                     _requestTypeRegistrations = null;
@@ -185,7 +198,7 @@ namespace TickerQ.Utilities
                 // Build request info dictionary (string type + example JSON)
                 if (_requestInfoRegistrations != null)
                 {
-                    var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>();
+                    var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>(TickerFunctionRequestInfos);
                     _requestInfoRegistrations(requestInfoDict);
                     TickerFunctionRequestInfos = requestInfoDict.ToFrozenDictionary();
                     _requestInfoRegistrations = null;
