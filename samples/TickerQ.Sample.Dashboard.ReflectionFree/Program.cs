@@ -25,7 +25,7 @@ var orderJobs = builder.Services.MapTickerGroup("Orders")
 orderJobs.MapTicker<ProcessOrderJob, OrderRequest>();
 
 // No group — lambda-based
-builder.Services.MapTimeTicker("InlinePing", (ctx, ct) =>
+builder.Services.MapTicker("InlinePing", (ctx, ct) =>
 {
     Console.WriteLine($"[{DateTime.UtcNow}] Ping! Id={ctx.Id}");
     return Task.CompletedTask;

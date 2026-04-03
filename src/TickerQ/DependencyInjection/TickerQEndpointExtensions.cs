@@ -68,12 +68,12 @@ namespace TickerQ.DependencyInjection
 
         #endregion
 
-        #region MapTimeTicker (lambda-based)
+        #region MapTicker (lambda-based)
 
         /// <summary>
         /// Registers a lambda-based ticker function (no request payload).
         /// </summary>
-        public static TickerFunctionBuilder<object> MapTimeTicker(
+        public static TickerFunctionBuilder<object> MapTicker(
             this IServiceCollection _,
             string functionName,
             Func<TickerFunctionContext, CancellationToken, Task> handler)
@@ -89,7 +89,7 @@ namespace TickerQ.DependencyInjection
         /// <summary>
         /// Registers a lambda-based ticker function with access to IServiceProvider (no request payload).
         /// </summary>
-        public static TickerFunctionBuilder<object> MapTimeTicker(
+        public static TickerFunctionBuilder<object> MapTicker(
             this IServiceCollection _,
             string functionName,
             Func<TickerFunctionContext, IServiceProvider, CancellationToken, Task> handler)
@@ -105,7 +105,7 @@ namespace TickerQ.DependencyInjection
         /// <summary>
         /// Registers a lambda-based ticker function with typed request.
         /// </summary>
-        public static TickerFunctionBuilder<object> MapTimeTicker<TRequest>(
+        public static TickerFunctionBuilder<object> MapTicker<TRequest>(
             this IServiceCollection _,
             string functionName,
             Func<TickerFunctionContext<TRequest>, CancellationToken, Task> handler)
@@ -130,7 +130,7 @@ namespace TickerQ.DependencyInjection
         /// <summary>
         /// Registers a lambda-based ticker function with typed request and access to IServiceProvider.
         /// </summary>
-        public static TickerFunctionBuilder<object> MapTimeTicker<TRequest>(
+        public static TickerFunctionBuilder<object> MapTicker<TRequest>(
             this IServiceCollection services,
             string functionName,
             Func<TickerFunctionContext<TRequest>, IServiceProvider, CancellationToken, Task> handler)
