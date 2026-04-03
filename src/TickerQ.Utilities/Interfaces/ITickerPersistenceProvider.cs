@@ -40,6 +40,12 @@ namespace TickerQ.Utilities.Interfaces
         Task ReleaseDeadNodeOccurrenceResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         #endregion
         
+        #region Queryable
+        ITickerQueryable<TTimeTicker> TimeTickersQuery();
+        ITickerQueryable<TCronTicker> CronTickersQuery();
+        ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery();
+        #endregion
+
         #region Time_Ticker_Shared_Methods
         Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default);
         Task<TTimeTicker[]> GetTimeTickers(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken = default);

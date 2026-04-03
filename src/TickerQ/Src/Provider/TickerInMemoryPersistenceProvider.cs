@@ -11,6 +11,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Provider
@@ -1307,6 +1308,28 @@ namespace TickerQ.Provider
 
             // UPDATED_AT ALWAYS
             occurrence.UpdatedAt = _clock.UtcNow;
+        }
+
+        #endregion
+
+        #region Queryable
+
+        public ITickerQueryable<TTimeTicker> TimeTickersQuery()
+        {
+            return new InMemoryTickerQueryable<TTimeTicker>(_ =>
+                Task.FromResult(TimeTickers.Values.ToList()));
+        }
+
+        public ITickerQueryable<TCronTicker> CronTickersQuery()
+        {
+            return new InMemoryTickerQueryable<TCronTicker>(_ =>
+                Task.FromResult(CronTickers.Values.ToList()));
+        }
+
+        public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
+        {
+            return new InMemoryTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>(_ =>
+                Task.FromResult(CronOccurrences.Values.ToList()));
         }
 
         #endregion

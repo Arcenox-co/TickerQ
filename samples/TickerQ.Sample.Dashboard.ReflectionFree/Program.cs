@@ -31,6 +31,11 @@ builder.Services.MapTicker("InlinePing", (ctx, ct) =>
     return Task.CompletedTask;
 });
 
+builder.Services.MapTickerGroup("gr",gr =>
+{
+    gr.WithMaxConcurrency(2);
+});
+
 var app = builder.Build();
 
 app.UseTickerQ();

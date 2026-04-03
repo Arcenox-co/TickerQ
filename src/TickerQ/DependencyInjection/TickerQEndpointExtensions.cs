@@ -19,7 +19,7 @@ namespace TickerQ.DependencyInjection
         /// Registers a ticker function via ITickerFunction (no request payload).
         /// Function name defaults to typeof(T).Name.
         /// </summary>
-        public static TickerFunctionBuilder<TFunction> MapTicker<TFunction>(
+        public static TickerFunctionBuilder MapTicker<TFunction>(
             this IServiceCollection services,
             ServiceLifetime lifetime = ServiceLifetime.Scoped)
             where TFunction : class, ITickerFunction
@@ -35,7 +35,7 @@ namespace TickerQ.DependencyInjection
         /// <summary>
         /// Registers a ticker function via ITickerFunction&lt;TRequest&gt; (with typed request).
         /// </summary>
-        public static TickerFunctionBuilder<TFunction> MapTicker<TFunction, TRequest>(
+        public static TickerFunctionBuilder MapTicker<TFunction, TRequest>(
             this IServiceCollection services,
             ServiceLifetime lifetime = ServiceLifetime.Scoped)
             where TFunction : class, ITickerFunction<TRequest>
@@ -73,7 +73,7 @@ namespace TickerQ.DependencyInjection
         /// <summary>
         /// Registers a lambda-based ticker function (no request payload).
         /// </summary>
-        public static TickerFunctionBuilder<object> MapTicker(
+        public static TickerFunctionBuilder MapTicker(
             this IServiceCollection _,
             string functionName,
             Func<TickerFunctionContext, CancellationToken, Task> handler)
@@ -83,13 +83,13 @@ namespace TickerQ.DependencyInjection
                 [functionName] = (string.Empty, TickerTaskPriority.Normal, new TickerFunctionDelegate((ct, sp, ctx) => handler(ctx, ct)), 0)
             });
 
-            return new TickerFunctionBuilder<object>(functionName);
+            return new TickerFunctionBuilder(functionName);
         }
 
         /// <summary>
         /// Registers a lambda-based ticker function with access to IServiceProvider (no request payload).
         /// </summary>
-        public static TickerFunctionBuilder<object> MapTicker(
+        public static TickerFunctionBuilder MapTicker(
             this IServiceCollection _,
             string functionName,
             Func<TickerFunctionContext, IServiceProvider, CancellationToken, Task> handler)
@@ -99,13 +99,13 @@ namespace TickerQ.DependencyInjection
                 [functionName] = (string.Empty, TickerTaskPriority.Normal, new TickerFunctionDelegate((ct, sp, ctx) => handler(ctx, sp, ct)), 0)
             });
 
-            return new TickerFunctionBuilder<object>(functionName);
+            return new TickerFunctionBuilder(functionName);
         }
 
         /// <summary>
         /// Registers a lambda-based ticker function with typed request.
         /// </summary>
-        public static TickerFunctionBuilder<object> MapTicker<TRequest>(
+        public static TickerFunctionBuilder MapTicker<TRequest>(
             this IServiceCollection _,
             string functionName,
             Func<TickerFunctionContext<TRequest>, CancellationToken, Task> handler)
@@ -124,13 +124,13 @@ namespace TickerQ.DependencyInjection
                 [functionName] = (typeof(TRequest).FullName, typeof(TRequest))
             });
 
-            return new TickerFunctionBuilder<object>(functionName);
+            return new TickerFunctionBuilder(functionName);
         }
 
         /// <summary>
         /// Registers a lambda-based ticker function with typed request and access to IServiceProvider.
         /// </summary>
-        public static TickerFunctionBuilder<object> MapTicker<TRequest>(
+        public static TickerFunctionBuilder MapTicker<TRequest>(
             this IServiceCollection services,
             string functionName,
             Func<TickerFunctionContext<TRequest>, IServiceProvider, CancellationToken, Task> handler)
@@ -149,14 +149,14 @@ namespace TickerQ.DependencyInjection
                 [functionName] = (typeof(TRequest).FullName, typeof(TRequest))
             });
 
-            return new TickerFunctionBuilder<object>(functionName);
+            return new TickerFunctionBuilder(functionName);
         }
 
         #endregion
 
         #region Internal registration helpers
 
-        internal static TickerFunctionBuilder<TFunction> RegisterTickerFunction<TFunction>(
+        internal static TickerFunctionBuilder RegisterTickerFunction<TFunction>(
             IServiceCollection services,
             string groupName,
             string nameOverride,
@@ -175,10 +175,10 @@ namespace TickerQ.DependencyInjection
 
             TickerFunctionProvider.RegisterTypeMapping(typeof(TFunction), name);
 
-            return new TickerFunctionBuilder<TFunction>(name);
+            return new TickerFunctionBuilder(name);
         }
 
-        internal static TickerFunctionBuilder<TFunction> RegisterTickerFunctionWithRequest<TFunction, TRequest>(
+        internal static TickerFunctionBuilder RegisterTickerFunctionWithRequest<TFunction, TRequest>(
             IServiceCollection services,
             string groupName,
             string nameOverride,
@@ -206,7 +206,7 @@ namespace TickerQ.DependencyInjection
 
             TickerFunctionProvider.RegisterTypeMapping(typeof(TFunction), name);
 
-            return new TickerFunctionBuilder<TFunction>(name);
+            return new TickerFunctionBuilder(name);
         }
 
         private static string BuildFunctionName<T>(string groupName, string nameOverride)
@@ -266,7 +266,7 @@ namespace TickerQ.DependencyInjection
         /// Registers a ticker function (no request) in this group.
         /// Name: "GroupName.ClassName" or "GroupName.CustomName" if overridden.
         /// </summary>
-        public TickerFunctionBuilder<TFunction> MapTicker<TFunction>(string nameOverride = null)
+        public TickerFunctionBuilder MapTicker<TFunction>(string nameOverride = null)
             where TFunction : class, ITickerFunction
         {
             var builder = TickerQEndpointExtensions.RegisterTickerFunction<TFunction>(
@@ -288,7 +288,7 @@ namespace TickerQ.DependencyInjection
         /// <summary>
         /// Registers a ticker function with typed request in this group.
         /// </summary>
-        public TickerFunctionBuilder<TFunction> MapTicker<TFunction, TRequest>(string nameOverride = null)
+        public TickerFunctionBuilder MapTicker<TFunction, TRequest>(string nameOverride = null)
             where TFunction : class, ITickerFunction<TRequest>
         {
             var builder = TickerQEndpointExtensions.RegisterTickerFunctionWithRequest<TFunction, TRequest>(

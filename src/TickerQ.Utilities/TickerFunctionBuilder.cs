@@ -3,10 +3,10 @@ using TickerQ.Utilities.Enums;
 namespace TickerQ.Utilities
 {
     /// <summary>
-    /// Fluent builder for configuring a ticker function registered via MapTicker&lt;T&gt;().
+    /// Fluent builder for configuring a ticker function registered via MapTicker.
     /// Each setter immediately applies the configuration to TickerFunctionProvider.
     /// </summary>
-    public sealed class TickerFunctionBuilder<TFunction> where TFunction : class
+    public sealed class TickerFunctionBuilder
     {
         internal string FunctionName { get; }
 
@@ -19,16 +19,16 @@ namespace TickerQ.Utilities
         /// Sets the cron expression for this function. Validates immediately — throws if invalid.
         /// Accepts string (implicit conversion) or CronExpression.Parse().
         /// </summary>
-        public TickerFunctionBuilder<TFunction> WithCron(CronExpression cronExpression)
+        public TickerFunctionBuilder WithCron(CronExpression cronExpression)
         {
             TickerFunctionProvider.Configure(FunctionName, cronExpression: cronExpression.Value);
             return this;
-        } 
+        }
 
         /// <summary>
         /// Sets the maximum concurrent executions for this function.
         /// </summary>
-        public TickerFunctionBuilder<TFunction> WithMaxConcurrency(int maxConcurrency)
+        public TickerFunctionBuilder WithMaxConcurrency(int maxConcurrency)
         {
             TickerFunctionProvider.Configure(FunctionName, maxConcurrency: maxConcurrency);
             return this;
@@ -37,7 +37,7 @@ namespace TickerQ.Utilities
         /// <summary>
         /// Sets the task priority for this function.
         /// </summary>
-        public TickerFunctionBuilder<TFunction> WithPriority(TickerTaskPriority priority)
+        public TickerFunctionBuilder WithPriority(TickerTaskPriority priority)
         {
             TickerFunctionProvider.Configure(FunctionName, priority: priority);
             return this;

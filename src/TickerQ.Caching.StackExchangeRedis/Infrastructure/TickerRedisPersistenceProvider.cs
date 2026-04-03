@@ -13,6 +13,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Caching.StackExchangeRedis.Infrastructure;
@@ -1081,5 +1082,60 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             await _db.KeyDeleteAsync(CronOccurrenceKey(occId)).ConfigureAwait(false);
         }
     }
+    #endregion
+
+    #region Queryable
+
+    public ITickerQueryable<TTimeTicker> TimeTickersQuery()
+    {
+        return new InMemoryTickerQueryable<TTimeTicker>(async ct =>
+        {
+            var ids = await _db.SetMembersAsync(TimeTickerIdsKey).ConfigureAwait(false);
+            var list = new List<TTimeTicker>();
+            foreach (var redisValue in ids)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
+                var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
+                if (ticker != null) list.Add(ticker);
+            }
+            return list;
+        });
+    }
+
+    public ITickerQueryable<TCronTicker> CronTickersQuery()
+    {
+        return new InMemoryTickerQueryable<TCronTicker>(async ct =>
+        {
+            var ids = await _db.SetMembersAsync(CronIdsKey).ConfigureAwait(false);
+            var list = new List<TCronTicker>();
+            foreach (var redisValue in ids)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
+                var cron = await GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
+                if (cron != null) list.Add(cron);
+            }
+            return list;
+        });
+    }
+
+    public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
+    {
+        return new InMemoryTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>(async ct =>
+        {
+            var ids = await _db.SetMembersAsync(CronOccurrenceIdsKey).ConfigureAwait(false);
+            var list = new List<CronTickerOccurrenceEntity<TCronTicker>>();
+            foreach (var redisValue in ids)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
+                var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
+                if (occurrence != null) list.Add(occurrence);
+            }
+            return list;
+        });
+    }
+
     #endregion
 }
