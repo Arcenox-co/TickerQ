@@ -16,5 +16,4 @@
 		<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="$(DotNetVersion)" />
 		<PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
 	</ItemGroup>
-
 </Project>

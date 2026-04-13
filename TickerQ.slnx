@@ -37,6 +37,7 @@
     <Project Path="hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj" />
     <Project Path="tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj" />
     <Project Path="tests/TickerQ.Tests/TickerQ.Tests.csproj" />
   </Folder>
