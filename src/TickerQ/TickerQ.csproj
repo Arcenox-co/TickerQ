@@ -4,17 +4,18 @@
         <Description>A lightweight, developer-friendly library for queuing and executing cron and time-based jobs in the background.</Description>
         <PackageTags>$(PackageTags);background-jobs;task-scheduling</PackageTags>
         <PackageId>TickerQ</PackageId>
+        <LangVersion>latest</LangVersion>
         <PackageReadmeFile>README.md</PackageReadmeFile>
+        <IsAotCompatible>true</IsAotCompatible>
     </PropertyGroup>
 
     <ItemGroup>
         <None Include="..\..\README.md" Pack="true" PackagePath="" />
     </ItemGroup>
 
-    <ItemGroup>
-        <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
-        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="$(DotNetAbstractionsVersion)" />
-    </ItemGroup>
+   <ItemGroup>
+       <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+   </ItemGroup>
 
     <Target Name="CopyAnalyzer" AfterTargets="Build">
         <MakeDir Directories="$(OutputPath)analyzers/dotnet/cs" />

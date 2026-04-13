@@ -72,6 +72,7 @@ namespace TickerQ.Dashboard.Infrastructure;
 [JsonSerializable(typeof(int))]
 [JsonSerializable(typeof(int[]))]
 [JsonSerializable(typeof(bool))]
+[JsonSerializable(typeof(System.Text.Json.JsonElement))]
 internal partial class DashboardJsonSerializerContext : JsonSerializerContext
 {
 }

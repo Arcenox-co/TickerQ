@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace TickerQ.Utilities
 {
@@ -81,7 +82,49 @@ namespace TickerQ.Utilities
             if (string.IsNullOrWhiteSpace(serializedObject))
                 return default;
 
+            if (RequestJsonSerializerOptions?.TypeInfoResolver?.GetTypeInfo(typeof(T), RequestJsonSerializerOptions) is JsonTypeInfo<T> typeInfo)
+                return JsonSerializer.Deserialize(serializedObject, typeInfo);
+
             return JsonSerializer.Deserialize<T>(serializedObject, RequestJsonSerializerOptions);
+        }
+
+        public static T ReadTickerRequest<T>(byte[] gzipBytes, JsonTypeInfo<T> typeInfo)
+        {
+            if (gzipBytes == null || gzipBytes.Length == 0)
+                return default;
+
+            var serializedObject = ReadTickerRequestAsString(gzipBytes);
+
+            if (string.IsNullOrWhiteSpace(serializedObject))
+                return default;
+
+            return JsonSerializer.Deserialize(serializedObject, typeInfo);
+        }
+
+        public static byte[] CreateTickerRequest<T>(T data, JsonTypeInfo<T> typeInfo)
+        {
+            var serialized = JsonSerializer.SerializeToUtf8Bytes(data, typeInfo);
+
+            if (!UseGZipCompression)
+                return serialized;
+
+            Span<byte> compressedBytes;
+            using (var memoryStream = new MemoryStream())
+            {
+                using (var stream = new GZipStream(memoryStream, CompressionMode.Compress, true))
+                {
+                    stream.Write(serialized);
+                }
+
+                compressedBytes = memoryStream.GetBuffer().AsSpan()[..(int)memoryStream.Length];
+            }
+
+            var returnVal = new byte[compressedBytes.Length + GZipSignature.Length];
+            var returnValSpan = returnVal.AsSpan();
+            compressedBytes.CopyTo(returnValSpan);
+            GZipSignature.AsSpan().CopyTo(returnValSpan[compressedBytes.Length..]);
+
+            return returnVal;
         }
         
         public static string ReadTickerRequestAsString(byte[] gzipBytes)
