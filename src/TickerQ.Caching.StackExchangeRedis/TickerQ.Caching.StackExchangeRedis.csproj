@@ -6,7 +6,12 @@
         <Title>TickerQ StackExchange.Redis Caching</Title>
         <Description>Redis caching and distributed synchronization provider for TickerQ job scheduler using StackExchange.Redis</Description>
         <PackageTags>$(PackageTags);Redis;Caching;Distributed;StackExchange</PackageTags>
+        <IsAotCompatible>true</IsAotCompatible>
     </PropertyGroup>
+
+    <ItemGroup>
+      <EmbeddedResource Include="Scripts\*.lua" />
+    </ItemGroup>
 
     <ItemGroup>
       <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="$(DotNetVersion)" />

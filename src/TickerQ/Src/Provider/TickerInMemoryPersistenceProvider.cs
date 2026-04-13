@@ -11,6 +11,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Provider
@@ -1007,6 +1008,39 @@ namespace TickerQ.Provider
             return Task.FromResult(acquired.ToArray());
         }
 
+        public Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
+        {
+            if (staleThreshold <= TimeSpan.Zero)
+                return Task.FromResult(0);
+
+            var now = _clock.UtcNow;
+            var cutoff = now - staleThreshold;
+            var count = 0;
+
+            var staleOccurrences = CronOccurrences.Values
+                .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
+                .Where(x => x.ExecutionTime < cutoff)
+                .ToArray();
+
+            foreach (var occurrence in staleOccurrences)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!CronOccurrences.TryGetValue(occurrence.Id, out var current))
+                    continue;
+
+                var updated = CloneCronOccurrence(current);
+                updated.Status = TickerStatus.Skipped;
+                updated.SkippedReason = "Missed: occurrence was pending when the application restarted";
+                updated.UpdatedAt = now;
+
+                if (CronOccurrences.TryUpdate(occurrence.Id, updated, current))
+                    count++;
+            }
+
+            return Task.FromResult(count);
+        }
+
         #endregion
 
         #region Helper Methods
@@ -1307,6 +1341,28 @@ namespace TickerQ.Provider
 
             // UPDATED_AT ALWAYS
             occurrence.UpdatedAt = _clock.UtcNow;
+        }
+
+        #endregion
+
+        #region Queryable
+
+        public ITickerQueryable<TTimeTicker> TimeTickersQuery()
+        {
+            return new InMemoryTickerQueryable<TTimeTicker>(_ =>
+                Task.FromResult(TimeTickers.Values.ToList()));
+        }
+
+        public ITickerQueryable<TCronTicker> CronTickersQuery()
+        {
+            return new InMemoryTickerQueryable<TCronTicker>(_ =>
+                Task.FromResult(CronTickers.Values.ToList()));
+        }
+
+        public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
+        {
+            return new InMemoryTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>(_ =>
+                Task.FromResult(CronOccurrences.Values.ToList()));
         }
 
         #endregion

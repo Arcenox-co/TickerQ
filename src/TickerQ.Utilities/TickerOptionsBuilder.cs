@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities.Entities;
@@ -84,6 +85,21 @@ namespace TickerQ.Utilities
         internal JsonSerializerOptions RequestJsonSerializerOptions { get; set; }
         
         /// <summary>
+        /// Configures a JsonSerializerContext for AOT-compatible ticker request serialization/deserialization.
+        /// Use this when publishing with Native AOT or when trimming is enabled.
+        /// </summary>
+        /// <param name="context">The JsonSerializerContext that includes all TRequest types used in ticker functions.</param>
+        /// <returns>The TickerOptionsBuilder for method chaining</returns>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> WithJsonContext(IJsonTypeInfoResolver context)
+        {
+            RequestJsonSerializerOptions = new JsonSerializerOptions
+            {
+                TypeInfoResolver = context
+            };
+            return this;
+        }
+
+        /// <summary>
         /// Configures the JSON serialization options specifically for ticker request serialization/deserialization.
         /// </summary>
         /// <param name="configure">Action to configure JsonSerializerOptions for ticker requests</param>
@@ -103,6 +119,22 @@ namespace TickerQ.Utilities
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseGZipCompression()
         {
             RequestGZipCompressionEnabled = true;
+            return this;
+        }
+
+        /// <summary>
+        /// Enables skipping of stale cron occurrences on application startup.
+        /// Idle/Queued occurrences whose execution time is further behind the current
+        /// time than <paramref name="threshold"/> are marked <c>Skipped</c>, preventing
+        /// duplicate executions after a restart (see #776).
+        /// </summary>
+        /// <param name="threshold">
+        /// How far behind the current time an occurrence must be to be considered stale.
+        /// Defaults to 5 seconds when not specified.
+        /// </param>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SkipStaleCronOccurrencesOnStartup(TimeSpan? threshold = null)
+        {
+            _schedulerOptions.StaleCronOccurrenceThreshold = threshold ?? TimeSpan.FromSeconds(5);
             return this;
         }
 
@@ -196,6 +228,17 @@ namespace TickerQ.Utilities
         /// Prevents tight loops when tasks are due or when the database is empty.
         /// </summary>
         public TimeSpan MinPollingInterval { get; set; } = TimeSpan.FromSeconds(1);
+        /// <summary>
+        /// How far behind the current time an Idle/Queued cron occurrence must be
+        /// before it is marked <c>Skipped</c> on startup. Occurrences whose
+        /// <c>ExecutionTime</c> is closer to the current time than this threshold
+        /// are left for normal scheduling to pick up.
+        /// <para>
+        /// Disabled by default (<see cref="TimeSpan.Zero"/>). Enable via
+        /// <c>SkipStaleCronOccurrencesOnStartup()</c> on the options builder.
+        /// </para>
+        /// </summary>
+        public TimeSpan StaleCronOccurrenceThreshold { get; set; } = TimeSpan.Zero;
         public TimeZoneInfo SchedulerTimeZone = TimeZoneInfo.Local;
     }
 }

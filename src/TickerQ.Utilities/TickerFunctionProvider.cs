@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
@@ -27,12 +28,33 @@ namespace TickerQ.Utilities
         private static Action<Dictionary<string, (string RequestType, string RequestExampleJson)>> _requestInfoRegistrations;
         private static Action<Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>> _functionRegistrations;
 
+        // Type → function name mapping for manager.AddAsync<T>() lookups
+        private static readonly Dictionary<Type, string> _typeMappings = new();
+
         // Final frozen dictionaries
         public static FrozenDictionary<string, (string, Type)> TickerFunctionRequestTypes = FrozenDictionary<string, (string, Type)>.Empty;
         public static FrozenDictionary<string, (string RequestType, string RequestExampleJson)> TickerFunctionRequestInfos = FrozenDictionary<string, (string RequestType, string RequestExampleJson)>.Empty;
         public static FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> TickerFunctions = FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>.Empty;
 
         public static bool IsBuilt { get; private set; }
+
+        /// <summary>
+        /// Registers a Type → function name mapping for type-safe manager lookups.
+        /// Called by MapTicker&lt;T&gt;() at registration time.
+        /// </summary>
+        public static void RegisterTypeMapping(Type type, string functionName)
+        {
+            _typeMappings[type] = functionName;
+        }
+
+        /// <summary>
+        /// Gets the function name registered for a type, or falls back to Type.Name.
+        /// Used by manager.AddAsync&lt;T&gt;() to resolve function names without strings.
+        /// </summary>
+        public static string GetFunctionName<T>()
+        {
+            return _typeMappings.TryGetValue(typeof(T), out var name) ? name : typeof(T).Name;
+        }
 
         /// <summary>
         /// Registers ticker functions during application startup by adding to the callback chain.
@@ -48,13 +70,16 @@ namespace TickerQ.Utilities
             if (functions.Count == 0)
                 return;
 
-            _functionRegistrations += dict =>
+            lock (_buildLock)
             {
-                foreach (var (key, value) in functions)
+                _functionRegistrations += dict =>
                 {
-                    dict.TryAdd(key, value); // Preserves existing entries
-                }
-            };
+                    foreach (var (key, value) in functions)
+                    {
+                        dict.TryAdd(key, value); // Preserves existing entries
+                    }
+                };
+            }
         }
 
         /// <summary>
@@ -84,13 +109,16 @@ namespace TickerQ.Utilities
             if (requestTypes.Count == 0)
                 return;
 
-            _requestTypeRegistrations += dict =>
+            lock (_buildLock)
             {
-                foreach (var (key, value) in requestTypes)
+                _requestTypeRegistrations += dict =>
                 {
-                    dict.TryAdd(key, value); // Preserves existing entries
-                }
-            };
+                    foreach (var (key, value) in requestTypes)
+                    {
+                        dict.TryAdd(key, value); // Preserves existing entries
+                    }
+                };
+            }
         }
 
         /// <summary>
@@ -119,12 +147,36 @@ namespace TickerQ.Utilities
             if (requestInfos.Count == 0)
                 return;
 
-            _requestInfoRegistrations += dict =>
+            lock (_buildLock)
             {
-                foreach (var (key, value) in requestInfos)
+                _requestInfoRegistrations += dict =>
                 {
-                    dict.TryAdd(key, value);
-                }
+                    foreach (var (key, value) in requestInfos)
+                    {
+                        dict.TryAdd(key, value);
+                    }
+                };
+            }
+        }
+
+        /// <summary>
+        /// Configures an already-registered function's settings (cron, priority, concurrency).
+        /// Called by MapTicker&lt;T&gt;() at runtime to override source-generator defaults.
+        /// Must be called before Build().
+        /// </summary>
+        public static void Configure(string functionName, string cronExpression = null, TickerTaskPriority? priority = null, int? maxConcurrency = null)
+        {
+            _functionRegistrations += dict =>
+            {
+                if (!dict.TryGetValue(functionName, out var existing))
+                    return;
+
+                dict[functionName] = (
+                    cronExpression ?? existing.cronExpression,
+                    priority ?? existing.Priority,
+                    existing.Delegate,
+                    maxConcurrency ?? existing.MaxConcurrency
+                );
             };
         }
 
@@ -136,22 +188,26 @@ namespace TickerQ.Utilities
         /// <exception cref="ArgumentNullException">Thrown when cronUpdates parameter is null.</exception>
         internal static void UpdateCronExpressionsFromIConfiguration(IConfiguration configuration)
         {
-            _functionRegistrations += dict =>
+            lock (_buildLock)
             {
-                foreach (var (key, value) in dict)
+                _functionRegistrations += dict =>
                 {
-                    if (value.cronExpression.StartsWith('%'))
+                    foreach (var (key, value) in dict)
                     {
-                        var configKey = value.cronExpression.Trim('%');
-                        var mappedCronExpression = configuration[configKey];
-            
-                        if (!string.IsNullOrEmpty(mappedCronExpression))
+                        if (value.cronExpression.StartsWith('%'))
                         {
-                            dict[key] = (mappedCronExpression, value.Priority, value.Delegate, value.MaxConcurrency);
+                            var configKey = value.cronExpression.Trim('%');
+                            var mappedCronExpression = configuration[configKey];
+
+                            if (!string.IsNullOrEmpty(mappedCronExpression))
+                            {
+                                dict[key] = (mappedCronExpression, value.Priority, value.Delegate,
+                                             value.MaxConcurrency);
+                            }
                         }
                     }
-                }
-            };
+                };
+            }
         }
 
         /// <summary>
@@ -167,7 +223,7 @@ namespace TickerQ.Utilities
                 // Build functions dictionary
                 if (_functionRegistrations != null)
                 {
-                    var functionsDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>();
+                    var functionsDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>(TickerFunctions);
                     _functionRegistrations(functionsDict);
                     TickerFunctions = functionsDict.ToFrozenDictionary();
                     _functionRegistrations = null;
@@ -176,7 +232,7 @@ namespace TickerQ.Utilities
                 // Build request types dictionary
                 if (_requestTypeRegistrations != null)
                 {
-                    var requestTypesDict = new Dictionary<string, (string, Type)>();
+                    var requestTypesDict = new Dictionary<string, (string, Type)>(TickerFunctionRequestTypes);
                     _requestTypeRegistrations(requestTypesDict);
                     TickerFunctionRequestTypes = requestTypesDict.ToFrozenDictionary();
                     _requestTypeRegistrations = null;
@@ -185,7 +241,7 @@ namespace TickerQ.Utilities
                 // Build request info dictionary (string type + example JSON)
                 if (_requestInfoRegistrations != null)
                 {
-                    var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>();
+                    var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>(TickerFunctionRequestInfos);
                     _requestInfoRegistrations(requestInfoDict);
                     TickerFunctionRequestInfos = requestInfoDict.ToFrozenDictionary();
                     _requestInfoRegistrations = null;
@@ -208,11 +264,39 @@ namespace TickerQ.Utilities
             catch (Exception e)
             {
                 var logger = context.ServiceScope.ServiceProvider.GetService<ITickerQInstrumentation>();
-                
+
                 logger.LogRequestDeserializationFailure(typeof(T).FullName, context.FunctionName, context.Id, context.Type, e);
             }
-            
+
             return default;
+        }
+
+        public static async Task<TickerFunctionContext<T>> ToGenericContextAsync<T>(TickerFunctionContext context, CancellationToken cancellationToken)
+        {
+            var request = await GetRequestAsync<T>(context, cancellationToken);
+            return new TickerFunctionContext<T>(context, request);
+        }
+
+        public static async Task<T> GetRequestAsync<T>(TickerFunctionContext context, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var internalTickerManager = context.ServiceScope.ServiceProvider.GetService<IInternalTickerManager>();
+                return await internalTickerManager.GetRequestAsync(context.Id, context.Type, typeInfo, cancellationToken);
+            }
+            catch (Exception e)
+            {
+                var logger = context.ServiceScope.ServiceProvider.GetService<ITickerQInstrumentation>();
+                logger.LogRequestDeserializationFailure(typeof(T).FullName, context.FunctionName, context.Id, context.Type, e);
+            }
+
+            return default;
+        }
+
+        public static async Task<TickerFunctionContext<T>> ToGenericContextAsync<T>(TickerFunctionContext context, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
+        {
+            var request = await GetRequestAsync(context, typeInfo, cancellationToken);
+            return new TickerFunctionContext<T>(context, request);
         }
     }
 }

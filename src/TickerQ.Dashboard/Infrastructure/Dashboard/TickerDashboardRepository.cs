@@ -49,7 +49,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         {
             var timeTickers = await _persistenceProvider.GetTimeTickers(null, cancellationToken: cancellationToken);
 
-            var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
+            var allStatuses = Enum.GetValues<TickerStatus>();
 
             // Group by status and get counts
             var rawData = timeTickers
@@ -89,7 +89,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 cancellationToken);
 
             // Get all possible statuses once
-            var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
+            var allStatuses = Enum.GetValues<TickerStatus>();
 
             var rawData = timeTickers
                 .GroupBy(x => new { x.ExecutionTime!.Value.Date, x.Status })
@@ -142,7 +142,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var cronTickerOccurrences =
                 await _persistenceProvider.GetAllCronTickerOccurrences((x => x.CronTickerId == id && x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate), cancellationToken);
 
-            var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
+            var allStatuses = Enum.GetValues<TickerStatus>();
 
             var rawData = cronTickerOccurrences
                 .GroupBy(x => new { x.ExecutionTime.Date, x.Status })
@@ -187,7 +187,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         public async Task<IList<Tuple<TickerStatus, int>>> GetCronTickerFullDataAsync(CancellationToken cancellationToken)
         {
             var cronTickerOccurrences = await _persistenceProvider.GetAllCronTickerOccurrences(null, cancellationToken: cancellationToken);
-            var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
+            var allStatuses = Enum.GetValues<TickerStatus>();
 
             var rawData = cronTickerOccurrences
                 .GroupBy(x => x.Status)
@@ -221,7 +221,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var cronTickerOccurrences = await _persistenceProvider
                 .GetAllCronTickerOccurrences(x => x.ExecutionTime.Date >= startDate && x.ExecutionTime.Date <= endDate, cancellationToken: cancellationToken);
             
-            var allStatuses = Enum.GetValues(typeof(TickerStatus)).Cast<TickerStatus>().ToArray();
+            var allStatuses = Enum.GetValues<TickerStatus>();
 
             var rawData = cronTickerOccurrences
                 .GroupBy(x => new { x.ExecutionTime.Date, x.Status })
@@ -636,7 +636,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     out var functionTypeContext)) return (jsonRequest, 2);
             try
             {
-                JsonSerializer.Deserialize(jsonRequest, functionTypeContext.Item2, _dashboardOptions.DashboardJsonOptions);
+                var typeInfo = _dashboardOptions.DashboardJsonOptions.GetTypeInfo(functionTypeContext.Item2);
+                JsonSerializer.Deserialize(jsonRequest, typeInfo);
                 return (jsonRequest, 1);
             }
             catch
