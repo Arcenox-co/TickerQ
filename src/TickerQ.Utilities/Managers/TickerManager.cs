@@ -70,6 +70,29 @@ namespace TickerQ.Utilities.Managers
         Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.DeleteBatchAsync(List<Guid> ids, CancellationToken cancellationToken)
             => DeleteTimeTickersBatchAsync(ids, cancellationToken);
 
+        Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddAsync<TFunction>(DateTime? executionTime, CancellationToken cancellationToken)
+        {
+            var functionName = TickerFunctionProvider.GetFunctionName<TFunction>();
+            var entity = new TTimeTicker
+            {
+                Function = functionName,
+                ExecutionTime = executionTime
+            };
+            return AddTimeTickerAsync(entity, cancellationToken);
+        }
+
+        Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddAsync<TFunction, TRequest>(DateTime? executionTime, TRequest request, CancellationToken cancellationToken)
+        {
+            var functionName = TickerFunctionProvider.GetFunctionName<TFunction>();
+            var entity = new TTimeTicker
+            {
+                Function = functionName,
+                ExecutionTime = executionTime,
+                Request = TickerHelper.CreateTickerRequest(request)
+            };
+            return AddTimeTickerAsync(entity, cancellationToken);
+        }
+
         Task<TickerResult<List<TCronTicker>>> ICronTickerManager<TCronTicker>.AddBatchAsync(List<TCronTicker> entities, CancellationToken cancellationToken)
             => AddCronTickersBatchAsync(entities, cancellationToken);
 

@@ -11,6 +11,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
+using System.Collections.Generic;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
@@ -24,6 +25,52 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         public TickerEfCorePersistenceProvider(IServiceProvider serviceProvider, ITickerClock clock, SchedulerOptionsBuilder optionsBuilder, ITickerQRedisContext  redisContext)
             :  base(serviceProvider, clock, optionsBuilder, redisContext) { }
         
+        #region Queryable
+
+        public ITickerQueryable<TTimeTicker> TimeTickersQuery()
+        {
+            return new EfTickerQueryable<TDbContext, TTimeTicker>(
+                _serviceProvider,
+                (query, relations) =>
+                {
+                    foreach (var relation in relations)
+                    {
+                        query = relation switch
+                        {
+                            TickerRelation.Children => query
+                                .Include(x => x.Children),
+                            TickerRelation.ChildrenDeep => query
+                                .Include(x => x.Children)
+                                .ThenInclude(x => x.Children),
+                            _ => query
+                        };
+                    }
+                    return query;
+                });
+        }
+
+        public ITickerQueryable<TCronTicker> CronTickersQuery()
+        {
+            return new EfTickerQueryable<TDbContext, TCronTicker>(_serviceProvider);
+        }
+
+        public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
+        {
+            return new EfTickerQueryable<TDbContext, CronTickerOccurrenceEntity<TCronTicker>>(
+                _serviceProvider,
+                (query, relations) =>
+                {
+                    foreach (var relation in relations)
+                    {
+                        if (relation == TickerRelation.CronTicker)
+                            query = query.Include(x => x.CronTicker);
+                    }
+                    return query;
+                });
+        }
+
+        #endregion
+
         #region Time_Ticker_Implementations
 
         public async Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default)

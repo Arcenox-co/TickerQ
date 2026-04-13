@@ -13,6 +13,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Caching.StackExchangeRedis.Infrastructure;

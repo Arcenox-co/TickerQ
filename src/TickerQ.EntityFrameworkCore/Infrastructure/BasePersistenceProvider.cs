@@ -29,7 +29,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         _lockHolder = optionsBuilder.NodeIdentifier;
     }
 
-    private readonly IServiceProvider _serviceProvider;
+    protected readonly IServiceProvider _serviceProvider;
     protected readonly string _lockHolder;
     protected readonly ITickerClock _clock;
     protected readonly ITickerQRedisContext RedisContext;

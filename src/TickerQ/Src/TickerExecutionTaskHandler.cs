@@ -352,7 +352,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         {
             Message = ex.Message,
             StackTrace = frame?.ToString() ?? rootException.StackTrace
-        });
+        }, TickerQInternalJsonContext.Default.ExceptionDetailClassForSerialization);
     }
 
     private static bool ShouldRunChild(InternalFunctionContext childContext, TickerStatus parentStatus)

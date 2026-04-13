@@ -1,11 +1,23 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Xunit;
 using TickerQ.Dashboard.Infrastructure.Dashboard;
+using TickerQ.Utilities;
 
 namespace TickerQ.Tests;
 
 public class JsonExampleGeneratorTests
 {
+    public JsonExampleGeneratorTests()
+    {
+        TickerHelper.RequestJsonSerializerOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            TypeInfoResolverChain = { new DefaultJsonTypeInfoResolver() }
+        };
+    }
+
     [Fact]
     public void TryGenerateExampleJson_WithInt_ReturnsValidJson()
     {

@@ -8,6 +8,7 @@
         <PackageTags>dashboard;monitoring;scheduler;ui</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <Nullable>enable</Nullable>
+        <IsAotCompatible>true</IsAotCompatible>
     </PropertyGroup>
 
     <ItemGroup>
