@@ -1,9 +1,12 @@
 using System.Buffers;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Caching.StackExchangeRedis.DependencyInjection;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.Caching.StackExchangeRedis;
@@ -31,17 +34,17 @@ internal class TickerQRedisContext : ITickerQRedisContext
         var node = _schedulerOptions.NodeIdentifier;
         var key  = $"hb:{node}";
 
-        var payload = new
+        var payload = new NodeHeartbeatPayload
         {
-            ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), node
+            Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Node = node
         };
 
         await _notificationHubSender.UpdateNodeHeartBeatAsync(payload);
 
-        var interval = _tickerQRedisOptionBuilder.NodeHeartbeatInterval; 
+        var interval = _tickerQRedisOptionBuilder.NodeHeartbeatInterval;
         var ttl      = TimeSpan.FromSeconds(interval.TotalSeconds + 20);
 
-        await _cache.SetStringAsync(key, JsonSerializer.Serialize(payload),
+        await _cache.SetStringAsync(key, JsonSerializer.Serialize(payload, RedisContextJsonSerializerContext.Default.NodeHeartbeatPayload),
             new DistributedCacheEntryOptions
             {
                 AbsoluteExpirationRelativeToNow = ttl
@@ -56,7 +59,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
         var nodesJson = await _cache.GetStringAsync("nodes:registry");
         if (string.IsNullOrEmpty(nodesJson)) return [];
     
-        var allNodes = JsonSerializer.Deserialize<HashSet<string>>(nodesJson);
+        var allNodes = JsonSerializer.Deserialize(nodesJson, RedisContextJsonSerializerContext.Default.HashSetString);
         var deadNodes = new HashSet<string>();
 
         // Check which ones are dead
@@ -82,11 +85,11 @@ internal class TickerQRedisContext : ITickerQRedisContext
         var nodesJson = await _cache.GetStringAsync("nodes:registry");
         var nodesList = string.IsNullOrEmpty(nodesJson) 
             ? []
-            : JsonSerializer.Deserialize<HashSet<string>>(nodesJson);
+            : JsonSerializer.Deserialize(nodesJson, RedisContextJsonSerializerContext.Default.HashSetString);
         
             nodesList.RemoveWhere(nodes.Contains);
             
-            await _cache.SetStringAsync("nodes:registry", JsonSerializer.Serialize(nodesList),
+            await _cache.SetStringAsync("nodes:registry", JsonSerializer.Serialize(nodesList, RedisContextJsonSerializerContext.Default.HashSetString),
                 new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromDays(30) });
     }
     
@@ -95,11 +98,11 @@ internal class TickerQRedisContext : ITickerQRedisContext
         var nodesJson = await _cache.GetStringAsync("nodes:registry");
         var nodesList = string.IsNullOrEmpty(nodesJson) 
             ? []
-            : JsonSerializer.Deserialize<HashSet<string>>(nodesJson);
+            : JsonSerializer.Deserialize(nodesJson, RedisContextJsonSerializerContext.Default.HashSetString);
 
         if (nodesList.Add(node))
         {
-            await _cache.SetStringAsync("nodes:registry", JsonSerializer.Serialize(nodesList),
+            await _cache.SetStringAsync("nodes:registry", JsonSerializer.Serialize(nodesList, RedisContextJsonSerializerContext.Default.HashSetString),
                 new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromDays(30) });
         }
     }
@@ -108,13 +111,14 @@ internal class TickerQRedisContext : ITickerQRedisContext
         Func<CancellationToken, Task<TResult[]>> factory, TimeSpan? expiration = null,
         CancellationToken cancellationToken = default) where TResult : class
     {
+        var typeInfo = RedisContextJsonSerializerContext.Default.GetTypeInfo(typeof(TResult[]));
+
         try
         {
             var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
             if (cachedBytes?.Length > 0)
             {
-                ReadOnlySpan<byte> cachedSpan = cachedBytes.AsSpan();
-                var cached = JsonSerializer.Deserialize<TResult[]>(cachedSpan);
+                var cached = (TResult[])JsonSerializer.Deserialize(cachedBytes, typeInfo);
 
                 if (cached != null)
                     return cached;
@@ -135,7 +139,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
             var bufferWriter = new ArrayBufferWriter<byte>();
             await using var writer = new Utf8JsonWriter(bufferWriter);
 
-            JsonSerializer.Serialize(writer, result);
+            JsonSerializer.Serialize(writer, result, typeInfo);
             await writer.FlushAsync(cancellationToken);
 
             await _cache.SetAsync(cacheKey, bufferWriter.WrittenMemory.ToArray(), cancellationToken);
@@ -148,3 +152,38 @@ internal class TickerQRedisContext : ITickerQRedisContext
         return result;
     }
 }
+
+internal sealed class NodeHeartbeatPayload
+{
+    public long Ts { get; set; }
+    public string Node { get; set; }
+}
+
+[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
+// Redis context types
+[JsonSerializable(typeof(NodeHeartbeatPayload))]
+[JsonSerializable(typeof(HashSet<string>))]
+// Entity types
+[JsonSerializable(typeof(TimeTickerEntity))]
+[JsonSerializable(typeof(TimeTickerEntity[]))]
+[JsonSerializable(typeof(List<TimeTickerEntity>))]
+[JsonSerializable(typeof(CronTickerEntity))]
+[JsonSerializable(typeof(CronTickerEntity[]))]
+[JsonSerializable(typeof(CronTickerOccurrenceEntity<CronTickerEntity>))]
+[JsonSerializable(typeof(CronTickerOccurrenceEntity<CronTickerEntity>[]))]
+// Enums
+[JsonSerializable(typeof(TickerStatus))]
+[JsonSerializable(typeof(RunCondition))]
+[JsonSerializable(typeof(RunCondition?))]
+// Primitives used in entities
+[JsonSerializable(typeof(Guid))]
+[JsonSerializable(typeof(Guid?))]
+[JsonSerializable(typeof(DateTime))]
+[JsonSerializable(typeof(DateTime?))]
+[JsonSerializable(typeof(byte[]))]
+[JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(int))]
+[JsonSerializable(typeof(int[]))]
+[JsonSerializable(typeof(long))]
+[JsonSerializable(typeof(bool))]
+internal partial class RedisContextJsonSerializerContext : JsonSerializerContext;

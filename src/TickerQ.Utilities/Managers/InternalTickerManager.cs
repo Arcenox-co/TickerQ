@@ -479,6 +479,9 @@ namespace TickerQ.Utilities.Managers
                 await _persistenceProvider.RemoveTimeTickers([tickerId], cancellationToken).ConfigureAwait(false);
         }
 
+        public async Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
+            => await _persistenceProvider.SkipStaleCronOccurrencesAsync(staleThreshold, cancellationToken).ConfigureAwait(false);
+
         public async Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default)
         {
             var cronOccurrence = _persistenceProvider.ReleaseDeadNodeOccurrenceResources(instanceIdentifier, cancellationToken);

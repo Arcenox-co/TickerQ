@@ -3,12 +3,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
-using System.Runtime.CompilerServices;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
-using TickerQ.Caching.StackExchangeRedis.Converter;
+using static TickerQ.Caching.StackExchangeRedis.DependencyInjection.ServiceExtension;
+using static TickerQ.Caching.StackExchangeRedis.Helpers.RedisKeyBuilder;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -18,782 +18,35 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Caching.StackExchangeRedis.Infrastructure;
 
-/// <summary>
-/// Redis-native persistence provider that stores all ticker data directly in Redis
-/// (hashes/sets/zsets via string serialization) rather than keeping in-memory snapshots.
-/// This mirrors the EF Core provider’s behavior: optimistic concurrency on UpdatedAt,
-/// lock-holder semantics, and scheduling via execution time ordering.
-/// </summary>
-internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> : ITickerPersistenceProvider<TTimeTicker, TCronTicker>
+internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
+    BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>,
+    ITickerPersistenceProvider<TTimeTicker, TCronTicker>
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
-    private readonly IDatabase _db;
-    private readonly ITickerClock _clock;
-    private readonly string _lockHolder;
-    private readonly JsonSerializerOptions _jsonOptions;
-
-    private const string Prefix = "tq";
-    private const string TimeTickerIdsKey = $"{Prefix}:tt:ids";
-    private const string TimeTickerPendingKey = $"{Prefix}:tt:pending";
-    private const string CronIdsKey = $"{Prefix}:cron:ids";
-    private const string CronOccurrenceIdsKey = $"{Prefix}:co:ids";
-    private const string CronOccurrencePendingKey = $"{Prefix}:co:pending";
-
-    public TickerRedisPersistenceProvider(IDatabase db, ITickerClock clock, SchedulerOptionsBuilder optionsBuilder)
-    {
-        _db = db ?? throw new ArgumentNullException(nameof(db));
-        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
-        _lockHolder = optionsBuilder?.NodeIdentifier ?? Environment.MachineName;
-        _jsonOptions = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true,
-            WriteIndented = false,
-            Converters = { new TimeTickerEntityConverter() }
-        };
-    }
-
-    #region Key helpers
-    private static string TimeTickerKey(Guid id) => $"{Prefix}:tt:{id}";
-    private static string CronKey(Guid id) => $"{Prefix}:cron:{id}";
-    private static string CronOccurrenceKey(Guid id) => $"{Prefix}:co:{id}";
-    private static double ToScore(DateTime utc) => utc.ToUniversalTime().Ticks;
-    #endregion
-
-    #region Serialization helpers
-    private async Task<T> GetAsync<T>(string key) where T : class
-    {
-        var val = await _db.StringGetAsync(key).ConfigureAwait(false);
-        if (val.IsNullOrEmpty) return null;
-        try { return JsonSerializer.Deserialize<T>((string)val, _jsonOptions); }
-        catch { return null; }
-    }
-
-    private Task SetAsync<T>(string key, T value) where T : class
-    {
-        var payload = JsonSerializer.Serialize(value, _jsonOptions);
-        return _db.StringSetAsync(key, payload);
-    }
-
-    private T DeserializeOrNull<T>(string json) where T : class
-    {
-        if (string.IsNullOrEmpty(json)) return null;
-        try { return JsonSerializer.Deserialize<T>(json, _jsonOptions); }
-        catch { return null; }
-    }
-    #endregion
-
-    #region Lua scripts
-    // Lua status constants matching TickerStatus enum values
-    private const int LuaStatusIdle = (int)TickerStatus.Idle;
-    private const int LuaStatusQueued = (int)TickerStatus.Queued;
-    private const int LuaStatusInProgress = (int)TickerStatus.InProgress;
-
-    /// <summary>
-    /// Atomically acquires a ticker if CanAcquire passes and (optionally) UpdatedAt matches.
-    /// KEYS[1] = ticker key
-    /// ARGV[1] = lockHolder, ARGV[2] = now (ISO), ARGV[3] = target status (int),
-    /// ARGV[4] = expected UpdatedAt (ISO) or empty string to skip check
-    /// Returns: updated JSON on success, nil on failure.
-    /// </summary>
-    private static readonly LuaScript AcquireScript = LuaScript.Prepare(
-        """
-        local json = redis.call('GET', @key)
-        if not json then return nil end
-        local obj = cjson.decode(json)
-        local status = obj['Status'] or obj['status']
-        if status == nil then return nil end
-        status = tonumber(status)
-        if status ~= tonumber(@statusIdle) and status ~= tonumber(@statusQueued) then return nil end
-        local holder = obj['LockHolder'] or obj['lockHolder']
-        if holder and holder ~= '' and holder ~= cjson.null and holder ~= @lockHolder then return nil end
-        local expectedUpdatedAt = @expectedUpdatedAt
-        if expectedUpdatedAt ~= '' then
-            local currentUpdatedAt = obj['UpdatedAt'] or obj['updatedAt']
-            if currentUpdatedAt ~= expectedUpdatedAt then return nil end
-        end
-        obj['LockHolder'] = @lockHolder
-        obj['lockHolder'] = nil
-        obj['LockedAt'] = @now
-        obj['lockedAt'] = nil
-        obj['UpdatedAt'] = @now
-        obj['updatedAt'] = nil
-        obj['Status'] = tonumber(@targetStatus)
-        obj['status'] = nil
-        local updated = cjson.encode(obj)
-        redis.call('SET', @key, updated)
-        return updated
-        """);
-
-    /// <summary>
-    /// Atomically releases a ticker if CanAcquire passes.
-    /// KEYS[1] = ticker key
-    /// ARGV[1] = lockHolder, ARGV[2] = now (ISO)
-    /// Returns: updated JSON on success, nil on failure.
-    /// </summary>
-    private static readonly LuaScript ReleaseScript = LuaScript.Prepare(
-        """
-        local json = redis.call('GET', @key)
-        if not json then return nil end
-        local obj = cjson.decode(json)
-        local status = obj['Status'] or obj['status']
-        if status == nil then return nil end
-        status = tonumber(status)
-        if status ~= tonumber(@statusIdle) and status ~= tonumber(@statusQueued) then return nil end
-        local holder = obj['LockHolder'] or obj['lockHolder']
-        if holder and holder ~= '' and holder ~= cjson.null and holder ~= @lockHolder then return nil end
-        obj['LockHolder'] = cjson.null
-        obj['lockHolder'] = nil
-        obj['LockedAt'] = cjson.null
-        obj['lockedAt'] = nil
-        obj['Status'] = tonumber(@statusIdle)
-        obj['status'] = nil
-        obj['UpdatedAt'] = @now
-        obj['updatedAt'] = nil
-        local updated = cjson.encode(obj)
-        redis.call('SET', @key, updated)
-        return updated
-        """);
-
-    /// <summary>
-    /// Atomically recovers a ticker from a dead node.
-    /// KEYS[1] = ticker key
-    /// ARGV[1] = dead node identifier, ARGV[2] = now (ISO)
-    /// Returns: updated JSON on success, nil on failure.
-    /// </summary>
-    private static readonly LuaScript RecoverDeadNodeScript = LuaScript.Prepare(
-        """
-        local json = redis.call('GET', @key)
-        if not json then return nil end
-        local obj = cjson.decode(json)
-        local holder = obj['LockHolder'] or obj['lockHolder']
-        if holder ~= @deadNodeId then return nil end
-        local status = obj['Status'] or obj['status']
-        if status == nil then return nil end
-        status = tonumber(status)
-        if status ~= tonumber(@statusIdle) and status ~= tonumber(@statusQueued) and status ~= tonumber(@statusInProgress) then return nil end
-        obj['LockHolder'] = cjson.null
-        obj['lockHolder'] = nil
-        obj['LockedAt'] = cjson.null
-        obj['lockedAt'] = nil
-        obj['Status'] = tonumber(@statusIdle)
-        obj['status'] = nil
-        obj['UpdatedAt'] = @now
-        obj['updatedAt'] = nil
-        local updated = cjson.encode(obj)
-        redis.call('SET', @key, updated)
-        return updated
-        """);
-
-    private async Task<T> TryAcquireAsync<T>(string key, TickerStatus targetStatus, string expectedUpdatedAt = "") where T : class
-    {
-        var now = _clock.UtcNow;
-        var result = await _db.ScriptEvaluateAsync(AcquireScript, new
-        {
-            key = (RedisKey)key,
-            lockHolder = (RedisValue)_lockHolder,
-            now = (RedisValue)now.ToString("O"),
-            targetStatus = (RedisValue)(int)targetStatus,
-            expectedUpdatedAt = (RedisValue)(expectedUpdatedAt ?? ""),
-            statusIdle = (RedisValue)LuaStatusIdle,
-            statusQueued = (RedisValue)LuaStatusQueued
-        }).ConfigureAwait(false);
-
-        if (result.IsNull) return null;
-        return DeserializeOrNull<T>((string)result);
-    }
-
-    private async Task<T> TryReleaseAsync<T>(string key) where T : class
-    {
-        var now = _clock.UtcNow;
-        var result = await _db.ScriptEvaluateAsync(ReleaseScript, new
-        {
-            key = (RedisKey)key,
-            lockHolder = (RedisValue)_lockHolder,
-            now = (RedisValue)now.ToString("O"),
-            statusIdle = (RedisValue)LuaStatusIdle,
-            statusQueued = (RedisValue)LuaStatusQueued
-        }).ConfigureAwait(false);
-
-        if (result.IsNull) return null;
-        return DeserializeOrNull<T>((string)result);
-    }
-
-    private async Task<T> TryRecoverDeadNodeAsync<T>(string key, string deadNodeId) where T : class
-    {
-        var now = _clock.UtcNow;
-        var result = await _db.ScriptEvaluateAsync(RecoverDeadNodeScript, new
-        {
-            key = (RedisKey)key,
-            deadNodeId = (RedisValue)deadNodeId,
-            now = (RedisValue)now.ToString("O"),
-            statusIdle = (RedisValue)LuaStatusIdle,
-            statusQueued = (RedisValue)LuaStatusQueued,
-            statusInProgress = (RedisValue)LuaStatusInProgress
-        }).ConfigureAwait(false);
-
-        if (result.IsNull) return null;
-        return DeserializeOrNull<T>((string)result);
-    }
-    #endregion
-
-    #region Common helpers
-    private static bool CanAcquire(TickerStatus status, string currentHolder, string lockHolder)
-    {
-        return status is TickerStatus.Idle or TickerStatus.Queued &&
-               (string.IsNullOrEmpty(currentHolder) || string.Equals(currentHolder, lockHolder, StringComparison.Ordinal));
-    }
-
-    private static TimeTickerEntity MapForQueue(TTimeTicker ticker)
-    {
-        return new TimeTickerEntity
-        {
-            Id = ticker.Id,
-            Function = ticker.Function,
-            Retries = ticker.Retries,
-            RetryIntervals = ticker.RetryIntervals,
-            UpdatedAt = ticker.UpdatedAt,
-            ParentId = ticker.ParentId,
-            ExecutionTime = ticker.ExecutionTime,
-            Status = ticker.Status,
-            LockHolder = ticker.LockHolder,
-            LockedAt = ticker.LockedAt,
-            Children = ticker.Children?.OfType<TTimeTicker>().Select(ch => new TimeTickerEntity
-            {
-                Id = ch.Id,
-                Function = ch.Function,
-                Retries = ch.Retries,
-                RetryIntervals = ch.RetryIntervals,
-                RunCondition = ch.RunCondition,
-                ParentId = ch.ParentId,
-                Children = ch.Children?.OfType<TTimeTicker>().Select(gch => new TimeTickerEntity
-                {
-                    Id = gch.Id,
-                    Function = gch.Function,
-                    Retries = gch.Retries,
-                    RetryIntervals = gch.RetryIntervals,
-                    RunCondition = gch.RunCondition,
-                    ParentId = gch.ParentId
-                }).ToArray()
-            }).ToArray()
-        };
-    }
-
-    // Batched index updates — single round-trip per call via IBatch
-    private Task AddTimeTickerIndexesAsync(TTimeTicker ticker)
-    {
-        var batch = _db.CreateBatch();
-        var idStr = (RedisValue)ticker.Id.ToString();
-
-        var t1 = batch.SetAddAsync(TimeTickerIdsKey, idStr);
-        Task t2;
-        if (ticker.ExecutionTime.HasValue && CanAcquire(ticker.Status, ticker.LockHolder, _lockHolder))
-            t2 = batch.SortedSetAddAsync(TimeTickerPendingKey, idStr, ToScore(ticker.ExecutionTime.Value));
-        else
-            t2 = batch.SortedSetRemoveAsync(TimeTickerPendingKey, idStr);
-
-        batch.Execute();
-        return Task.WhenAll(t1, t2);
-    }
-
-    private Task RemoveTimeTickerIndexesAsync(Guid id)
-    {
-        var batch = _db.CreateBatch();
-        var idStr = (RedisValue)id.ToString();
-
-        var t1 = batch.SetRemoveAsync(TimeTickerIdsKey, idStr);
-        var t2 = batch.SortedSetRemoveAsync(TimeTickerPendingKey, idStr);
-
-        batch.Execute();
-        return Task.WhenAll(t1, t2);
-    }
-
-    private Task AddCronIndexesAsync(TCronTicker ticker)
-    {
-        return _db.SetAddAsync(CronIdsKey, ticker.Id.ToString());
-    }
-
-    private Task RemoveCronIndexesAsync(Guid id)
-    {
-        return _db.SetRemoveAsync(CronIdsKey, id.ToString());
-    }
-
-    private Task AddCronOccurrenceIndexesAsync(CronTickerOccurrenceEntity<TCronTicker> occurrence)
-    {
-        var batch = _db.CreateBatch();
-        var idStr = (RedisValue)occurrence.Id.ToString();
-
-        var t1 = batch.SetAddAsync(CronOccurrenceIdsKey, idStr);
-        Task t2;
-        if (CanAcquire(occurrence.Status, occurrence.LockHolder, _lockHolder))
-            t2 = batch.SortedSetAddAsync(CronOccurrencePendingKey, idStr, ToScore(occurrence.ExecutionTime));
-        else
-            t2 = batch.SortedSetRemoveAsync(CronOccurrencePendingKey, idStr);
-
-        batch.Execute();
-        return Task.WhenAll(t1, t2);
-    }
-
-    private Task RemoveCronOccurrenceIndexesAsync(Guid id)
-    {
-        var batch = _db.CreateBatch();
-        var idStr = (RedisValue)id.ToString();
-
-        var t1 = batch.SetRemoveAsync(CronOccurrenceIdsKey, idStr);
-        var t2 = batch.SortedSetRemoveAsync(CronOccurrencePendingKey, idStr);
-
-        batch.Execute();
-        return Task.WhenAll(t1, t2);
-    }
-    #endregion
-
-    #region Time_Ticker_Core_Methods
-    public async IAsyncEnumerable<TimeTickerEntity> QueueTimeTickers(TimeTickerEntity[] timeTickers, [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        foreach (var timeTicker in timeTickers)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var acquired = await TryAcquireAsync<TTimeTicker>(
-                TimeTickerKey(timeTicker.Id),
-                TickerStatus.Queued,
-                timeTicker.UpdatedAt.ToString("O")).ConfigureAwait(false);
-
-            if (acquired == null) continue;
-
-            await AddTimeTickerIndexesAsync(acquired).ConfigureAwait(false);
-
-            timeTicker.LockHolder = acquired.LockHolder;
-            timeTicker.LockedAt = acquired.LockedAt;
-            timeTicker.UpdatedAt = acquired.UpdatedAt;
-            timeTicker.Status = acquired.Status;
-
-            yield return timeTicker;
-        }
-    }
-
-    public async IAsyncEnumerable<TimeTickerEntity> QueueTimedOutTimeTickers([EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        var threshold = _clock.UtcNow.AddMilliseconds(-100);
-
-        // Fetch due tickers by score
-        var dueIds = await _db.SortedSetRangeByScoreAsync(TimeTickerPendingKey, double.NegativeInfinity, ToScore(threshold)).ConfigureAwait(false);
-
-        foreach (var redisValue in dueIds)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-
-            var acquired = await TryAcquireAsync<TTimeTicker>(
-                TimeTickerKey(id),
-                TickerStatus.InProgress).ConfigureAwait(false);
-
-            if (acquired == null) continue;
-
-            await AddTimeTickerIndexesAsync(acquired).ConfigureAwait(false);
-
-            yield return MapForQueue(acquired);
-        }
-    }
-
-    public async Task ReleaseAcquiredTimeTickers(Guid[] timeTickerIds, CancellationToken cancellationToken = default)
-    {
-        var ids = timeTickerIds.Length == 0
-            ? (await _db.SetMembersAsync(TimeTickerIdsKey).ConfigureAwait(false)).Select(x => Guid.Parse(x.ToString())).ToArray()
-            : timeTickerIds;
-
-        foreach (var id in ids)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var released = await TryReleaseAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
-            if (released == null) continue;
-
-            await AddTimeTickerIndexesAsync(released).ConfigureAwait(false);
-        }
-    }
-
-    public async Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken = default)
-    {
-        var now = _clock.UtcNow;
-        var oneSecondAgoScore = ToScore(now.AddSeconds(-1));
-
-        // Get the earliest entry in window
-        var first = await _db.SortedSetRangeByScoreWithScoresAsync(TimeTickerPendingKey, oneSecondAgoScore, double.PositiveInfinity, Exclude.None, Order.Ascending, 0, 1).ConfigureAwait(false);
-        if (first.Length == 0) return [];
-
-        var earliestScore = first[0].Score;
-        var minSecond = new DateTime((long)earliestScore, DateTimeKind.Utc);
-        var maxScore = ToScore(minSecond.AddSeconds(1));
-
-        // Fetch all tickers within that second
-        var ids = await _db.SortedSetRangeByScoreAsync(TimeTickerPendingKey, earliestScore, maxScore).ConfigureAwait(false);
-        var result = new List<TimeTickerEntity>();
-        foreach (var redisValue in ids)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-            var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
-            if (ticker == null) continue;
-            if (!CanAcquire(ticker.Status, ticker.LockHolder, _lockHolder)) continue;
-            result.Add(MapForQueue(ticker));
-        }
-
-        return result.ToArray();
-    }
-
-    public async Task<int> UpdateTimeTicker(InternalFunctionContext functionContexts, CancellationToken cancellationToken = default)
-    {
-        var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(functionContexts.TickerId)).ConfigureAwait(false);
-        if (ticker == null) return 0;
-
-        ApplyFunctionContextToTicker(ticker, functionContexts);
-        await SetAsync(TimeTickerKey(ticker.Id), ticker).ConfigureAwait(false);
-        await AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
-        return 1;
-    }
-
-    public async Task<byte[]> GetTimeTickerRequest(Guid id, CancellationToken cancellationToken)
-    {
-        var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
-        return ticker?.Request;
-    }
-
-    public async Task UpdateTimeTickersWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
-    {
-        foreach (var id in timeTickerIds)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
-            if (ticker == null) continue;
-            ApplyFunctionContextToTicker(ticker, functionContext);
-            await SetAsync(TimeTickerKey(id), ticker).ConfigureAwait(false);
-            await AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
-        }
-    }
-
-    public async Task<TimeTickerEntity[]> AcquireImmediateTimeTickersAsync(Guid[] ids, CancellationToken cancellationToken = default)
-    {
-        if (ids == null || ids.Length == 0) return Array.Empty<TimeTickerEntity>();
-
-        var acquired = new List<TimeTickerEntity>();
-        foreach (var id in ids)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var ticker = await TryAcquireAsync<TTimeTicker>(
-                TimeTickerKey(id),
-                TickerStatus.InProgress).ConfigureAwait(false);
-
-            if (ticker == null) continue;
-
-            await AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
-            acquired.Add(MapForQueue(ticker));
-        }
-
-        return acquired.ToArray();
-    }
-    #endregion
-
-    #region Cron_Ticker_Core_Methods
-    public async Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
-    {
-        var now = _clock.UtcNow;
-        const string seedPrefix = "MemoryTicker_Seeded_";
-
-        // Build the complete set of registered function names to detect orphaned tickers.
-        // This covers functions whose InitIdentifier was cleared by a dashboard edit (#517).
-        var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys
-            .ToHashSet(StringComparer.Ordinal);
-
-        // Load all existing cron tickers
-        var existingIds = await _db.SetMembersAsync(CronIdsKey).ConfigureAwait(false);
-        var existingList = new List<TCronTicker>();
-        foreach (var redisValue in existingIds)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-            var cron = await GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
-            if (cron != null) existingList.Add(cron);
-        }
-
-        // Delete all cron tickers whose function no longer exists in the code definitions
-        var orphanedToDelete = existingList
-            .Where(c => !allRegisteredFunctions.Contains(c.Function))
-            .Select(c => c.Id).ToArray();
-
-        foreach (var id in orphanedToDelete)
-        {
-            await RemoveCronIndexesAsync(id).ConfigureAwait(false);
-            await RemoveCronOccurrenceIndexesAsyncForCron(id).ConfigureAwait(false);
-            await _db.KeyDeleteAsync(CronKey(id)).ConfigureAwait(false);
-        }
-
-        var orphanedSet = orphanedToDelete.ToHashSet();
-        var existingByFunction = existingList
-            .Where(c => !orphanedSet.Contains(c.Id))
-            .ToDictionary(c => c.Function, c => c, StringComparer.Ordinal);
-        foreach (var (function, expression) in cronTickers)
-        {
-            if (existingByFunction.TryGetValue(function, out var cron))
-            {
-                if (!string.Equals(cron.Expression, expression, StringComparison.Ordinal))
-                {
-                    cron.Expression = expression;
-                    cron.UpdatedAt = now;
-                    await SetAsync(CronKey(cron.Id), cron).ConfigureAwait(false);
-                }
-            }
-            else
-            {
-                var entity = new TCronTicker
-                {
-                    Id = Guid.NewGuid(),
-                    Function = function,
-                    Expression = expression,
-                    InitIdentifier = $"{seedPrefix}{function}",
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                    Request = []
-                };
-                await SetAsync(CronKey(entity.Id), entity).ConfigureAwait(false);
-                await AddCronIndexesAsync(entity).ConfigureAwait(false);
-            }
-        }
-    }
-
-    public async Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken = default)
-    {
-        var ids = await _db.SetMembersAsync(CronIdsKey).ConfigureAwait(false);
-        var list = new List<CronTickerEntity>();
-        foreach (var redisValue in ids)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-            var cron = await GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
-            if (cron == null || !cron.IsEnabled) continue;
-            list.Add(new CronTickerEntity
-            {
-                Id = cron.Id,
-                Expression = cron.Expression,
-                Function = cron.Function,
-                RetryIntervals = cron.RetryIntervals,
-                Retries = cron.Retries
-            });
-        }
-        return list.ToArray();
-    }
-
-    public async Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default)
-    {
-        var ids = await _db.SetMembersAsync(TimeTickerIdsKey).ConfigureAwait(false);
-
-        foreach (var redisValue in ids)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-
-            var recovered = await TryRecoverDeadNodeAsync<TTimeTicker>(TimeTickerKey(id), instanceIdentifier).ConfigureAwait(false);
-            if (recovered == null) continue;
-
-            await AddTimeTickerIndexesAsync(recovered).ConfigureAwait(false);
-        }
-    }
-    #endregion
-
-    #region Cron_TickerOccurrence_Core_Methods
-    public async Task<CronTickerOccurrenceEntity<TCronTicker>> GetEarliestAvailableCronOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
-    {
-        if (ids == null || ids.Length == 0) return null;
-
-        // Scan earliest pending occurrences and pick the first that belongs to provided ids
-        var candidates = await _db.SortedSetRangeByScoreAsync(CronOccurrencePendingKey, double.NegativeInfinity, double.PositiveInfinity, Exclude.None, Order.Ascending, 0, 200).ConfigureAwait(false);
-        foreach (var redisValue in candidates)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-            var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
-            if (occurrence == null) continue;
-            if (!ids.Contains(occurrence.CronTickerId)) continue;
-            if (!CanAcquire(occurrence.Status, occurrence.LockHolder, _lockHolder)) continue;
-            return occurrence;
-        }
-
-        return null;
-    }
-
-    public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueCronTickerOccurrences((DateTime Key, InternalManagerContext[] Items) cronTickerOccurrences, [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        var now = _clock.UtcNow;
-        var executionTime = cronTickerOccurrences.Key;
-
-        foreach (var item in cronTickerOccurrences.Items)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (item.NextCronOccurrence is null)
-            {
-                var occurrence = new CronTickerOccurrenceEntity<TCronTicker>
-                {
-                    Id = Guid.NewGuid(),
-                    Status = TickerStatus.Queued,
-                    LockHolder = _lockHolder,
-                    ExecutionTime = executionTime,
-                    CronTickerId = item.Id,
-                    LockedAt = now,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                    CronTicker = new TCronTicker
-                    {
-                        Id = item.Id,
-                        Function = item.FunctionName,
-                        Expression = item.Expression,
-                        Retries = item.Retries,
-                        RetryIntervals = item.RetryIntervals
-                    }
-                };
-
-                await SetAsync(CronOccurrenceKey(occurrence.Id), occurrence).ConfigureAwait(false);
-                await AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
-                yield return occurrence;
-            }
-            else
-            {
-                // Atomically acquire the lock on the existing occurrence
-                var acquired = await TryAcquireAsync<CronTickerOccurrenceEntity<TCronTicker>>(
-                    CronOccurrenceKey(item.NextCronOccurrence.Id),
-                    TickerStatus.Queued).ConfigureAwait(false);
-
-                if (acquired == null) continue;
-
-                // Lock is now held by this node — safe to update additional fields
-                acquired.ExecutionTime = executionTime;
-
-                if (acquired.CronTicker == null)
-                {
-                    acquired.CronTicker = new TCronTicker
-                    {
-                        Id = item.Id,
-                        Function = item.FunctionName,
-                        Expression = item.Expression,
-                        Retries = item.Retries,
-                        RetryIntervals = item.RetryIntervals
-                    };
-                }
-
-                await SetAsync(CronOccurrenceKey(acquired.Id), acquired).ConfigureAwait(false);
-                await AddCronOccurrenceIndexesAsync(acquired).ConfigureAwait(false);
-                yield return acquired;
-            }
-        }
-    }
-
-    public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueTimedOutCronTickerOccurrences([EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        var threshold = _clock.UtcNow.AddMilliseconds(-100);
-
-        var dueIds = await _db.SortedSetRangeByScoreAsync(CronOccurrencePendingKey, double.NegativeInfinity, ToScore(threshold)).ConfigureAwait(false);
-        foreach (var redisValue in dueIds)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-
-            var acquired = await TryAcquireAsync<CronTickerOccurrenceEntity<TCronTicker>>(
-                CronOccurrenceKey(id),
-                TickerStatus.InProgress).ConfigureAwait(false);
-
-            if (acquired == null) continue;
-
-            await AddCronOccurrenceIndexesAsync(acquired).ConfigureAwait(false);
-            yield return acquired;
-        }
-    }
-
-    public async Task UpdateCronTickerOccurrence(InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
-    {
-        var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(functionContext.TickerId)).ConfigureAwait(false);
-        if (occurrence == null) return;
-
-        ApplyFunctionContextToCronOccurrence(occurrence, functionContext);
-        await SetAsync(CronOccurrenceKey(occurrence.Id), occurrence).ConfigureAwait(false);
-        await AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
-    }
-
-    public async Task ReleaseAcquiredCronTickerOccurrences(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
-    {
-        var ids = occurrenceIds.Length == 0
-            ? (await _db.SetMembersAsync(CronOccurrenceIdsKey).ConfigureAwait(false)).Select(x => Guid.Parse(x.ToString())).ToArray()
-            : occurrenceIds;
-
-        foreach (var id in ids)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var released = await TryReleaseAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
-            if (released == null) continue;
-
-            await AddCronOccurrenceIndexesAsync(released).ConfigureAwait(false);
-        }
-    }
-
-    public async Task<byte[]> GetCronTickerOccurrenceRequest(Guid tickerId, CancellationToken cancellationToken = default)
-    {
-        var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(tickerId)).ConfigureAwait(false);
-        return occurrence?.CronTicker?.Request;
-    }
-
-    public async Task UpdateCronTickerOccurrencesWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
-    {
-        foreach (var id in timeTickerIds)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
-            if (occurrence == null) continue;
-            ApplyFunctionContextToCronOccurrence(occurrence, functionContext);
-            await SetAsync(CronOccurrenceKey(id), occurrence).ConfigureAwait(false);
-            await AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
-        }
-    }
-
-    public async Task ReleaseDeadNodeOccurrenceResources(string instanceIdentifier, CancellationToken cancellationToken = default)
-    {
-        var ids = await _db.SetMembersAsync(CronOccurrenceIdsKey).ConfigureAwait(false);
-        foreach (var redisValue in ids)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-
-            var recovered = await TryRecoverDeadNodeAsync<CronTickerOccurrenceEntity<TCronTicker>>(
-                CronOccurrenceKey(id), instanceIdentifier).ConfigureAwait(false);
-
-            if (recovered == null) continue;
-
-            await AddCronOccurrenceIndexesAsync(recovered).ConfigureAwait(false);
-        }
-    }
-    #endregion
+    public TickerRedisPersistenceProvider(
+        IDatabase db,
+        ITickerClock clock,
+        SchedulerOptionsBuilder optionsBuilder,
+        TickerQRedisOptionBuilder redisOptions,
+        ILogger<TickerRedisPersistenceProvider<TTimeTicker, TCronTicker>> logger)
+        : base(db, clock, optionsBuilder, redisOptions, logger) { }
 
     #region Time_Ticker_Shared_Methods
     public async Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default)
     {
-        return await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
+        return await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
     }
 
     public async Task<TTimeTicker[]> GetTimeTickers(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken)
     {
-        var ids = await _db.SetMembersAsync(TimeTickerIdsKey).ConfigureAwait(false);
-        var list = new List<TTimeTicker>();
-        foreach (var redisValue in ids)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-            var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
-            if (ticker != null) list.Add(ticker);
-        }
+        var compiled = predicate?.Compile();
 
-        var query = list.Where(x => x.ParentId == null).AsQueryable();
-        if (predicate != null) query = query.Where(predicate);
+        var list = await Serializer.LoadAllFromSetAsync<TTimeTicker>(
+            TimeTickerIdsKey, TimeTickerKey, cancellationToken,
+            t => t.ParentId == null && (compiled == null || compiled(t))).ConfigureAwait(false);
 
-        return query.OrderByDescending(x => x.ExecutionTime).ToArray();
+        return list.OrderByDescending(x => x.ExecutionTime).ToArray();
     }
 
     public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(Expression<Func<TTimeTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
@@ -806,27 +59,27 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
 
     public async Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
     {
-        var now = _clock.UtcNow;
+        var now = Clock.UtcNow;
         foreach (var ticker in tickers)
         {
             cancellationToken.ThrowIfCancellationRequested();
             ticker.CreatedAt = ticker.CreatedAt == default ? now : ticker.CreatedAt;
             ticker.UpdatedAt = ticker.UpdatedAt == default ? now : ticker.UpdatedAt;
-            await SetAsync(TimeTickerKey(ticker.Id), ticker).ConfigureAwait(false);
-            await AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
+            await Serializer.SetAsync(TimeTickerKey(ticker.Id), ticker).ConfigureAwait(false);
+            await IndexManager.AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
         }
         return tickers.Length;
     }
 
     public async Task<int> UpdateTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
     {
-        var now = _clock.UtcNow;
+        var now = Clock.UtcNow;
         foreach (var ticker in tickers)
         {
             cancellationToken.ThrowIfCancellationRequested();
             ticker.UpdatedAt = now;
-            await SetAsync(TimeTickerKey(ticker.Id), ticker).ConfigureAwait(false);
-            await AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
+            await Serializer.SetAsync(TimeTickerKey(ticker.Id), ticker).ConfigureAwait(false);
+            await IndexManager.AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
         }
         return tickers.Length;
     }
@@ -837,8 +90,8 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var id in tickerIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await RemoveTimeTickerIndexesAsync(id).ConfigureAwait(false);
-            if (await _db.KeyDeleteAsync(TimeTickerKey(id)).ConfigureAwait(false))
+            await IndexManager.RemoveTimeTickerIndexesAsync(id).ConfigureAwait(false);
+            if (await Db.KeyDeleteAsync(TimeTickerKey(id)).ConfigureAwait(false))
                 count++;
         }
         return count;
@@ -848,25 +101,15 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     #region Cron_Ticker_Shared_Methods
     public async Task<TCronTicker> GetCronTickerById(Guid id, CancellationToken cancellationToken)
     {
-        return await GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
+        return await Serializer.GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
     }
 
     public async Task<TCronTicker[]> GetCronTickers(Expression<Func<TCronTicker, bool>> predicate, CancellationToken cancellationToken)
     {
-        var ids = await _db.SetMembersAsync(CronIdsKey).ConfigureAwait(false);
-        var list = new List<TCronTicker>();
-        foreach (var redisValue in ids)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-            var cron = await GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
-            if (cron != null) list.Add(cron);
-        }
+        var list = await Serializer.LoadAllFromSetAsync<TCronTicker>(
+            CronIdsKey, CronKey, cancellationToken, predicate?.Compile()).ConfigureAwait(false);
 
-        var query = list.AsQueryable();
-        if (predicate != null) query = query.Where(predicate);
-
-        return query.OrderByDescending(x => x.CreatedAt).ToArray();
+        return list.OrderByDescending(x => x.CreatedAt).ToArray();
     }
 
     public async Task<PaginationResult<TCronTicker>> GetCronTickersPaginated(Expression<Func<TCronTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
@@ -879,27 +122,27 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
 
     public async Task<int> InsertCronTickers(TCronTicker[] tickers, CancellationToken cancellationToken)
     {
-        var now = _clock.UtcNow;
+        var now = Clock.UtcNow;
         foreach (var ticker in tickers)
         {
             cancellationToken.ThrowIfCancellationRequested();
             ticker.CreatedAt = ticker.CreatedAt == default ? now : ticker.CreatedAt;
             ticker.UpdatedAt = ticker.UpdatedAt == default ? now : ticker.UpdatedAt;
-            await SetAsync(CronKey(ticker.Id), ticker).ConfigureAwait(false);
-            await AddCronIndexesAsync(ticker).ConfigureAwait(false);
+            await Serializer.SetAsync(CronKey(ticker.Id), ticker).ConfigureAwait(false);
+            await IndexManager.AddCronIndexesAsync(ticker).ConfigureAwait(false);
         }
         return tickers.Length;
     }
 
     public async Task<int> UpdateCronTickers(TCronTicker[] cronTicker, CancellationToken cancellationToken)
     {
-        var now = _clock.UtcNow;
+        var now = Clock.UtcNow;
         foreach (var ticker in cronTicker)
         {
             cancellationToken.ThrowIfCancellationRequested();
             ticker.UpdatedAt = now;
-            await SetAsync(CronKey(ticker.Id), ticker).ConfigureAwait(false);
-            await AddCronIndexesAsync(ticker).ConfigureAwait(false);
+            await Serializer.SetAsync(CronKey(ticker.Id), ticker).ConfigureAwait(false);
+            await IndexManager.AddCronIndexesAsync(ticker).ConfigureAwait(false);
         }
         return cronTicker.Length;
     }
@@ -910,9 +153,9 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var id in cronTickerIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await RemoveCronIndexesAsync(id).ConfigureAwait(false);
-            await RemoveCronOccurrenceIndexesAsyncForCron(id).ConfigureAwait(false);
-            if (await _db.KeyDeleteAsync(CronKey(id)).ConfigureAwait(false))
+            await IndexManager.RemoveCronIndexesAsync(id).ConfigureAwait(false);
+            await IndexManager.RemoveCronOccurrencesByParentAsync(id).ConfigureAwait(false);
+            if (await Db.KeyDeleteAsync(CronKey(id)).ConfigureAwait(false))
                 removed++;
         }
         return removed;
@@ -922,19 +165,10 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     #region Cron_TickerOccurrence_Shared_Methods
     public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetAllCronTickerOccurrences(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, CancellationToken cancellationToken = default)
     {
-        var ids = await _db.SetMembersAsync(CronOccurrenceIdsKey).ConfigureAwait(false);
-        var list = new List<CronTickerOccurrenceEntity<TCronTicker>>();
-        foreach (var redisValue in ids)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-            var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
-            if (occurrence != null) list.Add(occurrence);
-        }
+        var list = await Serializer.LoadAllFromSetAsync<CronTickerOccurrenceEntity<TCronTicker>>(
+            CronOccurrenceIdsKey, CronOccurrenceKey, cancellationToken, predicate?.Compile()).ConfigureAwait(false);
 
-        var query = list.AsQueryable();
-        if (predicate != null) query = query.Where(predicate);
-        return query.OrderByDescending(x => x.ExecutionTime).ToArray();
+        return list.OrderByDescending(x => x.ExecutionTime).ToArray();
     }
 
     public async Task<PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>> GetAllCronTickerOccurrencesPaginated(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
@@ -950,8 +184,8 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var occurrence in cronTickerOccurrences)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await SetAsync(CronOccurrenceKey(occurrence.Id), occurrence).ConfigureAwait(false);
-            await AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
+            await Serializer.SetAsync(CronOccurrenceKey(occurrence.Id), occurrence).ConfigureAwait(false);
+            await IndexManager.AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
         }
         return cronTickerOccurrences.Length;
     }
@@ -962,8 +196,10 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var id in cronTickerOccurrences)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await RemoveCronOccurrenceIndexesAsync(id).ConfigureAwait(false);
-            if (await _db.KeyDeleteAsync(CronOccurrenceKey(id)).ConfigureAwait(false))
+            var occurrence = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
+            if (occurrence != null)
+                await IndexManager.RemoveCronOccurrenceIndexesAsync(id, occurrence.CronTickerId).ConfigureAwait(false);
+            if (await Db.KeyDeleteAsync(CronOccurrenceKey(id)).ConfigureAwait(false))
                 removed++;
         }
         return removed;
@@ -972,7 +208,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
     {
         if (occurrenceIds == null || occurrenceIds.Length == 0)
-            return Array.Empty<CronTickerOccurrenceEntity<TCronTicker>>();
+            return [];
 
         var acquired = new List<CronTickerOccurrenceEntity<TCronTicker>>();
         foreach (var id in occurrenceIds)
@@ -985,157 +221,11 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
 
             if (occurrence == null) continue;
 
-            await AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
+            await IndexManager.AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
             acquired.Add(occurrence);
         }
 
         return acquired.ToArray();
     }
-    #endregion
-
-    #region Apply FunctionContext
-    private void ApplyFunctionContextToTicker(TTimeTicker ticker, InternalFunctionContext context)
-    {
-        var propsToUpdate = context.GetPropsToUpdate();
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
-            context.Status != TickerStatus.Skipped)
-        {
-            ticker.Status = context.Status;
-        }
-        else if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)))
-        {
-            ticker.Status = context.Status;
-            ticker.SkippedReason = context.ExceptionDetails;
-        }
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
-            ticker.ExecutedAt = context.ExecutedAt;
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)) &&
-            context.Status != TickerStatus.Skipped)
-            ticker.ExceptionMessage = context.ExceptionDetails;
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
-            ticker.ElapsedTime = context.ElapsedTime;
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
-            ticker.RetryCount = context.RetryCount;
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
-        {
-            ticker.LockHolder = null;
-            ticker.LockedAt = null;
-        }
-
-        ticker.UpdatedAt = _clock.UtcNow;
-    }
-
-    private void ApplyFunctionContextToCronOccurrence(CronTickerOccurrenceEntity<TCronTicker> occurrence, InternalFunctionContext context)
-    {
-        var propsToUpdate = context.GetPropsToUpdate();
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
-            context.Status != TickerStatus.Skipped)
-        {
-            occurrence.Status = context.Status;
-        }
-        else if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)))
-        {
-            occurrence.Status = context.Status;
-            occurrence.SkippedReason = context.ExceptionDetails;
-        }
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
-            occurrence.ExecutedAt = context.ExecutedAt;
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)) &&
-            context.Status != TickerStatus.Skipped)
-            occurrence.ExceptionMessage = context.ExceptionDetails;
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
-            occurrence.ElapsedTime = context.ElapsedTime;
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
-            occurrence.RetryCount = context.RetryCount;
-
-        if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
-        {
-            occurrence.LockHolder = null;
-            occurrence.LockedAt = null;
-        }
-
-        occurrence.UpdatedAt = _clock.UtcNow;
-    }
-    #endregion
-
-    #region Helpers for cascade cleanup
-    private async Task RemoveCronOccurrenceIndexesAsyncForCron(Guid cronId)
-    {
-        var ids = await _db.SetMembersAsync(CronOccurrenceIdsKey).ConfigureAwait(false);
-        foreach (var redisValue in ids)
-        {
-            if (!Guid.TryParse(redisValue.ToString(), out var occId)) continue;
-            var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(occId)).ConfigureAwait(false);
-            if (occurrence == null || occurrence.CronTickerId != cronId) continue;
-            await RemoveCronOccurrenceIndexesAsync(occId).ConfigureAwait(false);
-            await _db.KeyDeleteAsync(CronOccurrenceKey(occId)).ConfigureAwait(false);
-        }
-    }
-    #endregion
-
-    #region Queryable
-
-    public ITickerQueryable<TTimeTicker> TimeTickersQuery()
-    {
-        return new InMemoryTickerQueryable<TTimeTicker>(async ct =>
-        {
-            var ids = await _db.SetMembersAsync(TimeTickerIdsKey).ConfigureAwait(false);
-            var list = new List<TTimeTicker>();
-            foreach (var redisValue in ids)
-            {
-                ct.ThrowIfCancellationRequested();
-                if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-                var ticker = await GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
-                if (ticker != null) list.Add(ticker);
-            }
-            return list;
-        });
-    }
-
-    public ITickerQueryable<TCronTicker> CronTickersQuery()
-    {
-        return new InMemoryTickerQueryable<TCronTicker>(async ct =>
-        {
-            var ids = await _db.SetMembersAsync(CronIdsKey).ConfigureAwait(false);
-            var list = new List<TCronTicker>();
-            foreach (var redisValue in ids)
-            {
-                ct.ThrowIfCancellationRequested();
-                if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-                var cron = await GetAsync<TCronTicker>(CronKey(id)).ConfigureAwait(false);
-                if (cron != null) list.Add(cron);
-            }
-            return list;
-        });
-    }
-
-    public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
-    {
-        return new InMemoryTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>(async ct =>
-        {
-            var ids = await _db.SetMembersAsync(CronOccurrenceIdsKey).ConfigureAwait(false);
-            var list = new List<CronTickerOccurrenceEntity<TCronTicker>>();
-            foreach (var redisValue in ids)
-            {
-                ct.ThrowIfCancellationRequested();
-                if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
-                var occurrence = await GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
-                if (occurrence != null) list.Add(occurrence);
-            }
-            return list;
-        });
-    }
-
     #endregion
 }

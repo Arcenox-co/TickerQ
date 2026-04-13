@@ -123,6 +123,22 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
+        /// Enables skipping of stale cron occurrences on application startup.
+        /// Idle/Queued occurrences whose execution time is further behind the current
+        /// time than <paramref name="threshold"/> are marked <c>Skipped</c>, preventing
+        /// duplicate executions after a restart (see #776).
+        /// </summary>
+        /// <param name="threshold">
+        /// How far behind the current time an occurrence must be to be considered stale.
+        /// Defaults to 5 seconds when not specified.
+        /// </param>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SkipStaleCronOccurrencesOnStartup(TimeSpan? threshold = null)
+        {
+            _schedulerOptions.StaleCronOccurrenceThreshold = threshold ?? TimeSpan.FromSeconds(5);
+            return this;
+        }
+
+        /// <summary>
         /// Disable automatic seeding of code-defined cron tickers on startup.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> IgnoreSeedDefinedCronTickers()
@@ -212,6 +228,17 @@ namespace TickerQ.Utilities
         /// Prevents tight loops when tasks are due or when the database is empty.
         /// </summary>
         public TimeSpan MinPollingInterval { get; set; } = TimeSpan.FromSeconds(1);
+        /// <summary>
+        /// How far behind the current time an Idle/Queued cron occurrence must be
+        /// before it is marked <c>Skipped</c> on startup. Occurrences whose
+        /// <c>ExecutionTime</c> is closer to the current time than this threshold
+        /// are left for normal scheduling to pick up.
+        /// <para>
+        /// Disabled by default (<see cref="TimeSpan.Zero"/>). Enable via
+        /// <c>SkipStaleCronOccurrencesOnStartup()</c> on the options builder.
+        /// </para>
+        /// </summary>
+        public TimeSpan StaleCronOccurrenceThreshold { get; set; } = TimeSpan.Zero;
         public TimeZoneInfo SchedulerTimeZone = TimeZoneInfo.Local;
     }
 }

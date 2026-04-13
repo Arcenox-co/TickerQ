@@ -1,5 +1,5 @@
 using System;
-using System.Runtime.CompilerServices;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.DependencyInjection;
@@ -48,5 +48,13 @@ public static class ServiceExtension
     public class TickerQRedisOptionBuilder : RedisCacheOptions
     {
         public TimeSpan NodeHeartbeatInterval { get; set; } = TimeSpan.FromMinutes(1);
+
+        /// <summary>
+        /// Optional source-generated JsonSerializerContext for AOT compatibility.
+        /// When provided, enables trimming-safe JSON serialization for ticker entities.
+        /// The context should include [JsonSerializable] attributes for your TTimeTicker,
+        /// TCronTicker, and CronTickerOccurrenceEntity&lt;TCronTicker&gt; types.
+        /// </summary>
+        public JsonSerializerContext JsonSerializerContext { get; set; }
     }
 }

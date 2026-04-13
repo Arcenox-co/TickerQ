@@ -69,6 +69,12 @@ internal sealed class TickerQInitializerHostedService : IHostedService
             await options.CronSeederAction(_serviceProvider);
         }
 
+        // Skip stale cron occurrences that were pending before this restart.
+        // This prevents the fallback service from catching up past-due occurrences
+        // from a previous application lifecycle, which would cause unexpected
+        // duplicate executions at startup (see #776).
+        await SkipStaleCronOccurrencesAsync(_serviceProvider, cancellationToken);
+
         if (_executionContext.ExternalProviderApplicationAction != null)
         {
             _executionContext.ExternalProviderApplicationAction(_serviceProvider);
@@ -87,5 +93,15 @@ internal sealed class TickerQInitializerHostedService : IHostedService
             .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
 
         await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed);
+    }
+
+    private static async Task SkipStaleCronOccurrencesAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
+    {
+        var schedulerOptions = serviceProvider.GetRequiredService<SchedulerOptionsBuilder>();
+        if (schedulerOptions.StaleCronOccurrenceThreshold <= TimeSpan.Zero)
+            return;
+
+        var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
+        await internalTickerManager.SkipStaleCronOccurrencesAsync(schedulerOptions.StaleCronOccurrenceThreshold, cancellationToken);
     }
 }

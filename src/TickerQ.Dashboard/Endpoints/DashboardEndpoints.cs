@@ -43,6 +43,11 @@ public static class DashboardEndpoints
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous(), config);
 
+        WithGroupNameIfSet(endpoints.MapGet("/auth/challenge", (DashboardOptionsBuilder dashboardOptions) => 
+            dashboardOptions.Auth.Mode == AuthMode.Host ? Results.Challenge() : Results.Unauthorized())
+            .ExcludeFromDescription()
+            .AllowAnonymous(), config);
+            
         var apiGroup = endpoints.MapGroup("/api").WithTags("TickerQ Dashboard").RequireCors("TickerQ_Dashboard_CORS");
         WithGroupNameIfSet(apiGroup, config);
 
@@ -261,7 +266,12 @@ public static class DashboardEndpoints
             return;
         }
 
-        context.Response.StatusCode = 401;
+        if (dashboardOptions.Auth.Mode == AuthMode.Host)
+        {
+            return Results.Challenge();
+        }
+
+        return Results.Unauthorized();
     }
 
 

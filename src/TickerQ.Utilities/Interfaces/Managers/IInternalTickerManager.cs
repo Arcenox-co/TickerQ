@@ -20,5 +20,6 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task DeleteTicker(Guid tickerId, TickerType type, CancellationToken cancellationToken = default);
         Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         Task UpdateSkipTimeTickersWithUnifiedContextAsync(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
+        Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default);
     }
 }
