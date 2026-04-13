@@ -31,6 +31,19 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
         _client = client ?? throw new ArgumentNullException(nameof(client));
     }
 
+    #region Queryable_Methods
+
+    public ITickerQueryable<TTimeTicker> TimeTickersQuery()
+        => throw new NotImplementedException("TimeTickersQuery is handled by the server-side TickerQ host.");
+
+    public ITickerQueryable<TCronTicker> CronTickersQuery()
+        => throw new NotImplementedException("CronTickersQuery is handled by the server-side TickerQ host.");
+
+    public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
+        => throw new NotImplementedException("CronTickerOccurrencesQuery is handled by the server-side TickerQ host.");
+
+    #endregion
+
     #region Time_Ticker_Core_Methods
 
     public IAsyncEnumerable<TimeTickerEntity> QueueTimeTickers(TimeTickerEntity[] timeTickers, CancellationToken cancellationToken = default)

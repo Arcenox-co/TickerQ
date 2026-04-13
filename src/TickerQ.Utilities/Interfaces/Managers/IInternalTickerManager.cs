@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Enums;
@@ -13,10 +14,12 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task SetTickersInProgress(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
         Task UpdateTickerAsync(InternalFunctionContext context, CancellationToken cancellationToken = default);
         Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, CancellationToken cancellationToken = default);
+        Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken = default);
         Task<InternalFunctionContext[]> RunTimedOutTickers(CancellationToken cancellationToken = default);
         Task MigrateDefinedCronTickers((string, string)[] cronExpressions, CancellationToken cancellationToken = default);
         Task DeleteTicker(Guid tickerId, TickerType type, CancellationToken cancellationToken = default);
         Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         Task UpdateSkipTimeTickersWithUnifiedContextAsync(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
+        Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default);
     }
 }

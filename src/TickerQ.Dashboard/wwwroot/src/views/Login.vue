@@ -131,36 +131,23 @@
           @submit.prevent="handleLogin"
           class="login-form mt-4"
         >
-          <v-text-field
-            v-model="authStore.credentials.hostAccessKey"
-            label="Access Key"
-            placeholder="Bearer xyz123 or ApiKey abc456"
-            prepend-inner-icon="mdi-key-variant"
-            :rules="rules.hostAccessKey"
-            variant="outlined"
-            class="mb-6 login-input"
-            :disabled="authStore.isLoading"
-            @input="authStore.clearError()"
-            @keyup.enter="handleLogin"
-            autofocus
-          />
-
           <v-btn
             type="submit"
             color="primary"
-            size="large"
+            size="x-large"
             block
             :loading="authStore.isLoading"
-            :disabled="!isFormValid || authStore.isLoading"
+            :disabled="authStore.isLoading"
             class="login-btn"
+            elevation="0"
           >
-            <v-icon start>mdi-shield-key</v-icon>
-            {{ authStore.isLoading ? 'Setting Access Key...' : 'Set Access Key' }}
+            <v-icon start>mdi-login-variant</v-icon>
+            {{ authStore.isLoading ? 'Authenticating...' : 'Authenticate' }}
           </v-btn>
 
           <div class="auth-help-text">
             <v-icon size="small" class="mr-1">mdi-information-outline</v-icon>
-            Enter your full access key (including Bearer/ApiKey prefix) for API calls
+            Click to validate if you are authenticated in the host application
           </div>
         </v-form>
       </div>
@@ -207,10 +194,6 @@ const rules = {
   apiKey: [
     (v: string) => !!v || 'API key is required',
     (v: string) => v.length >= 10 || 'API key must be at least 10 characters'
-  ],
-  hostAccessKey: [
-    (v: string) => !!v || 'Access key is required',
-    (v: string) => v.length >= 10 || 'Access key must be at least 10 characters'
   ]
 }
 
@@ -222,7 +205,7 @@ const isFormValid = computed(() => {
   } else if (authMode.value === 'apikey') {
     return (authStore.credentials.apiKey?.length || 0) >= 10
   } else if (authMode.value === 'host') {
-    return (authStore.credentials.hostAccessKey?.length || 0) >= 10
+    return true
   }
   return false
 })
