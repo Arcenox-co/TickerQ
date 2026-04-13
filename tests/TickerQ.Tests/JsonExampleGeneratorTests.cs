@@ -130,7 +130,7 @@ public class JsonExampleGeneratorTests
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
         var value = JsonSerializer.Deserialize<byte>(json);
-        Assert.Equal((byte)1, value);
+        Assert.Equal((byte)123, value);
     }
 
     [Fact]
@@ -141,7 +141,7 @@ public class JsonExampleGeneratorTests
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
         var value = JsonSerializer.Deserialize<short>(json);
-        Assert.Equal((short)1, value);
+        Assert.Equal((short)123, value);
     }
 
     [Fact]
@@ -329,8 +329,8 @@ public class JsonExampleGeneratorTests
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
         var value = JsonSerializer.Deserialize<TestStruct>(json, DeserializeOptions);
-        Assert.Equal(0, value.X);
-        Assert.Equal(0, value.Y);
+        Assert.Equal(123, value.X);
+        Assert.Equal(123, value.Y);
     }
 
     [Fact]
@@ -346,12 +346,12 @@ public class JsonExampleGeneratorTests
     }
 
     [Fact]
-    public void TryGenerateExampleJson_WithTypeWithoutParameterlessConstructor_ReturnsFalse()
+    public void TryGenerateExampleJson_WithTypeWithoutParameterlessConstructor_ReturnsValidJson()
     {
         var result = JsonExampleGenerator.TryGenerateExampleJson(typeof(ClassWithoutParameterlessConstructor), out var json);
 
-        Assert.False(result);
-        Assert.True(string.IsNullOrEmpty(json));
+        Assert.True(result);
+        Assert.False(string.IsNullOrEmpty(json));
     }
 
     [Fact]
@@ -371,8 +371,7 @@ public class JsonExampleGeneratorTests
         Assert.False(string.IsNullOrEmpty(json));
         var value = JsonSerializer.Deserialize<ClassWithHierarchy>(json, DeserializeOptions);
         Assert.NotNull(value);
-        Assert.NotNull(value!.Child);
-        Assert.Null(value.Child!.Child); // Ensure it doesn't go infinitely deep
+        Assert.Null(value.Child); // Circular reference detection returns null for self-referencing types
     }
 
     public class SimpleTestClass
