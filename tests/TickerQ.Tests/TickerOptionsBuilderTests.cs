@@ -154,6 +154,44 @@ public class TickerOptionsBuilderTests
     }
 
     [Fact]
+    public void SkipStaleCronOccurrencesOnStartup_DefaultThreshold_SetsFiveSeconds()
+    {
+        var executionContext = new TickerExecutionContext();
+        var schedulerOptions = new SchedulerOptionsBuilder();
+
+        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(executionContext, schedulerOptions);
+
+        builder.SkipStaleCronOccurrencesOnStartup();
+
+        Assert.Equal(TimeSpan.FromSeconds(5), schedulerOptions.StaleCronOccurrenceThreshold);
+    }
+
+    [Fact]
+    public void SkipStaleCronOccurrencesOnStartup_CustomThreshold_SetsValue()
+    {
+        var executionContext = new TickerExecutionContext();
+        var schedulerOptions = new SchedulerOptionsBuilder();
+
+        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(executionContext, schedulerOptions);
+
+        builder.SkipStaleCronOccurrencesOnStartup(TimeSpan.FromMinutes(2));
+
+        Assert.Equal(TimeSpan.FromMinutes(2), schedulerOptions.StaleCronOccurrenceThreshold);
+    }
+
+    [Fact]
+    public void SkipStaleCronOccurrencesOnStartup_NotCalled_ThresholdRemainsZero()
+    {
+        var executionContext = new TickerExecutionContext();
+        var schedulerOptions = new SchedulerOptionsBuilder();
+
+        // Don't call SkipStaleCronOccurrencesOnStartup
+        _ = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(executionContext, schedulerOptions);
+
+        Assert.Equal(TimeSpan.Zero, schedulerOptions.StaleCronOccurrenceThreshold);
+    }
+
+    [Fact]
     public void DisableBackgroundServices_Sets_Flag_To_False()
     {
         var executionContext = new TickerExecutionContext();
