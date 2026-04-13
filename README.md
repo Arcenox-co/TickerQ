@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="https://tickerq.net/tickerq-logo.png" alt="TickerQ Logo" width="140" />
+  <img src="https://tickerq.net/tickerq-logo.svg" alt="TickerQ Logo" width="140" />
   <br />
   TickerQ
 </h1>
