@@ -1,10 +1,5 @@
 #nullable disable
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Linq.Expressions;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using static TickerQ.Caching.StackExchangeRedis.DependencyInjection.ServiceExtension;
@@ -31,6 +26,38 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         TickerQRedisOptionBuilder redisOptions,
         ILogger<TickerRedisPersistenceProvider<TTimeTicker, TCronTicker>> logger)
         : base(db, clock, optionsBuilder, redisOptions, logger) { }
+
+    #region Queryable_Methods
+    public ITickerQueryable<TTimeTicker> TimeTickersQuery()
+    {
+        return new InMemoryTickerQueryable<TTimeTicker>(async ct =>
+        {
+            var list = await Serializer.LoadAllFromSetAsync<TTimeTicker>(
+                TimeTickerIdsKey, TimeTickerKey, ct).ConfigureAwait(false);
+            return list;
+        });
+    }
+
+    public ITickerQueryable<TCronTicker> CronTickersQuery()
+    {
+        return new InMemoryTickerQueryable<TCronTicker>(async ct =>
+        {
+            var list = await Serializer.LoadAllFromSetAsync<TCronTicker>(
+                CronIdsKey, CronKey, ct).ConfigureAwait(false);
+            return list;
+        });
+    }
+
+    public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
+    {
+        return new InMemoryTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>(async ct =>
+        {
+            var list = await Serializer.LoadAllFromSetAsync<CronTickerOccurrenceEntity<TCronTicker>>(
+                CronOccurrenceIdsKey, CronOccurrenceKey, ct).ConfigureAwait(false);
+            return list;
+        });
+    }
+    #endregion
 
     #region Time_Ticker_Shared_Methods
     public async Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default)

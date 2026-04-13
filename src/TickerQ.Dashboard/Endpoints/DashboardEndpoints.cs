@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -268,10 +269,11 @@ public static class DashboardEndpoints
 
         if (dashboardOptions.Auth.Mode == AuthMode.Host)
         {
-            return Results.Challenge();
+            await context.ChallengeAsync();
+            return;
         }
 
-        return Results.Unauthorized();
+        context.Response.StatusCode = 401;
     }
 
 
