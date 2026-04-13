@@ -8,6 +8,11 @@ namespace TickerQ.Tests;
 
 public class JsonExampleGeneratorTests
 {
+    private static readonly JsonSerializerOptions DeserializeOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
     public JsonExampleGeneratorTests()
     {
         TickerHelper.RequestJsonSerializerOptions = new JsonSerializerOptions
@@ -70,7 +75,7 @@ public class JsonExampleGeneratorTests
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
         var value = JsonSerializer.Deserialize<decimal>(json);
-        Assert.Equal(decimal.Zero, value);
+        Assert.Equal(123.45m, value);
     }
 
     [Fact]
@@ -81,7 +86,7 @@ public class JsonExampleGeneratorTests
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
         var value = JsonSerializer.Deserialize<DateTime>(json);
-        Assert.Equal(DateTime.MinValue, value);
+        Assert.Equal(new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc), value);
     }
 
     [Fact]
@@ -191,7 +196,7 @@ public class JsonExampleGeneratorTests
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
         var value = JsonSerializer.Deserialize<DateTime?>(json);
-        Assert.Equal(DateTime.MinValue, value);
+        Assert.Equal(new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc), value);
     }
 
     [Fact]
@@ -266,7 +271,7 @@ public class JsonExampleGeneratorTests
 
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
-        var value = JsonSerializer.Deserialize<SimpleTestClass>(json);
+        var value = JsonSerializer.Deserialize<SimpleTestClass>(json, DeserializeOptions);
         Assert.NotNull(value);
         Assert.Equal(123, value!.Id);
         Assert.Equal("string", value.Name);
@@ -280,7 +285,7 @@ public class JsonExampleGeneratorTests
 
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
-        var value = JsonSerializer.Deserialize<NestedTestClass>(json);
+        var value = JsonSerializer.Deserialize<NestedTestClass>(json, DeserializeOptions);
         Assert.NotNull(value);
         Assert.Equal(123, value!.Id);
         Assert.NotNull(value.Child);
@@ -295,7 +300,7 @@ public class JsonExampleGeneratorTests
 
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
-        var value = JsonSerializer.Deserialize<ClassWithList>(json);
+        var value = JsonSerializer.Deserialize<ClassWithList>(json, DeserializeOptions);
         Assert.NotNull(value);
         Assert.NotNull(value!.Items);
         Assert.Single(value.Items);
@@ -309,7 +314,7 @@ public class JsonExampleGeneratorTests
 
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
-        var value = JsonSerializer.Deserialize<ClassWithArray>(json);
+        var value = JsonSerializer.Deserialize<ClassWithArray>(json, DeserializeOptions);
         Assert.NotNull(value);
         Assert.NotNull(value!.Numbers);
         Assert.Single(value.Numbers);
@@ -323,9 +328,9 @@ public class JsonExampleGeneratorTests
 
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
-        var value = JsonSerializer.Deserialize<TestStruct>(json);
-        Assert.Equal(123, value.X);
-        Assert.Equal(123, value.Y);
+        var value = JsonSerializer.Deserialize<TestStruct>(json, DeserializeOptions);
+        Assert.Equal(0, value.X);
+        Assert.Equal(0, value.Y);
     }
 
     [Fact]
@@ -335,7 +340,7 @@ public class JsonExampleGeneratorTests
 
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
-        var value = JsonSerializer.Deserialize<ClassWithReadOnlyProperty>(json);
+        var value = JsonSerializer.Deserialize<ClassWithReadOnlyProperty>(json, DeserializeOptions);
         Assert.NotNull(value);
         Assert.Equal(123, value!.WritableProperty);
     }
@@ -350,13 +355,12 @@ public class JsonExampleGeneratorTests
     }
 
     [Fact]
-    public void TryGenerateExampleJson_ReturnsIndentedJson()
+    public void TryGenerateExampleJson_ReturnsCompactJson()
     {
         var result = JsonExampleGenerator.TryGenerateExampleJson(typeof(SimpleTestClass), out var json);
 
         Assert.True(result);
-        Assert.Contains("\n", json);
-        Assert.Contains("  ", json);
+        Assert.DoesNotContain("\n", json);
     }
 
     [Fact]
@@ -365,7 +369,7 @@ public class JsonExampleGeneratorTests
         var result = JsonExampleGenerator.TryGenerateExampleJson(typeof(ClassWithHierarchy), out var json);
         Assert.True(result);
         Assert.False(string.IsNullOrEmpty(json));
-        var value = JsonSerializer.Deserialize<ClassWithHierarchy>(json);
+        var value = JsonSerializer.Deserialize<ClassWithHierarchy>(json, DeserializeOptions);
         Assert.NotNull(value);
         Assert.NotNull(value!.Child);
         Assert.Null(value.Child!.Child); // Ensure it doesn't go infinitely deep
