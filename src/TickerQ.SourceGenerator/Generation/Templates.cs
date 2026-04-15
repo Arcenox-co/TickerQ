@@ -52,7 +52,7 @@ namespace {{NAMESPACE}}
         /// <summary>
         /// Constructor factory method for DI
         /// </summary>
-        internal const string ConstructorMethod = @"        private static {{CLASS_NAME}} {{FACTORY_METHOD_NAME}}(IServiceProvider serviceProvider)
+        internal const string ConstructorMethod = @"        private static {{CLASS_NAME}} {{FACTORY_METHOD_NAME}}(IServiceProvider __serviceProvider)
         {
 {{SERVICE_RESOLUTIONS}}
             return new {{CLASS_NAME}}({{CONSTRUCTOR_ARGS}});
@@ -62,7 +62,7 @@ namespace {{NAMESPACE}}
         /// <summary>
         /// Parameterless constructor factory method
         /// </summary>
-        internal const string ParameterlessConstructorMethod = @"        private static {{CLASS_NAME}} {{FACTORY_METHOD_NAME}}(IServiceProvider serviceProvider)
+        internal const string ParameterlessConstructorMethod = @"        private static {{CLASS_NAME}} {{FACTORY_METHOD_NAME}}(IServiceProvider __serviceProvider)
         {
             return new {{CLASS_NAME}}();
         }
@@ -71,12 +71,12 @@ namespace {{NAMESPACE}}
         /// <summary>
         /// Service resolution line within constructor method
         /// </summary>
-        internal const string ServiceResolution = @"            var {{PARAM_NAME}} = serviceProvider.GetService<{{SERVICE_TYPE}}>();";
+        internal const string ServiceResolution = @"            var {{PARAM_NAME}} = __serviceProvider.GetService<{{SERVICE_TYPE}}>();";
 
         /// <summary>
         /// Keyed service resolution line within constructor method
         /// </summary>
-        internal const string KeyedServiceResolution = @"            var {{PARAM_NAME}} = serviceProvider.GetKeyedService<{{SERVICE_TYPE}}>({{SERVICE_KEY}});";
+        internal const string KeyedServiceResolution = @"            var {{PARAM_NAME}} = __serviceProvider.GetKeyedService<{{SERVICE_TYPE}}>({{SERVICE_KEY}});";
 
 
         /// <summary>
