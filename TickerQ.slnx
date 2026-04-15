@@ -39,6 +39,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj" />
     <Project Path="tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj" />
+    <Project Path="tests/TickerQ.SourceGenerator.Tests/TickerQ.SourceGenerator.Tests.csproj" />
     <Project Path="tests/TickerQ.Tests/TickerQ.Tests.csproj" />
   </Folder>
 </Solution>
