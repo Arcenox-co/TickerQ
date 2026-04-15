@@ -27,17 +27,30 @@ public static class ServiceExtension
             };
             
             setupAction?.Invoke(options);
-            if (string.IsNullOrWhiteSpace(options.Configuration) && options.ConfigurationOptions == null)
-                throw new InvalidOperationException("Redis configuration must be provided when enabling StackExchange.Redis persistence.");
+            if (string.IsNullOrWhiteSpace(options.Configuration)
+                && options.ConfigurationOptions == null
+                && options.ConnectionMultiplexer == null
+                && options.ConnectionMultiplexerFactory == null)
+                throw new InvalidOperationException("Redis configuration or connection must be provided when enabling StackExchange.Redis persistence.");
 
-            services.AddSingleton<IConnectionMultiplexer>(_ =>
-                options.ConfigurationOptions != null
-                    ? ConnectionMultiplexer.Connect(options.ConfigurationOptions)
-                    : ConnectionMultiplexer.Connect(options.Configuration));
-            services.AddSingleton(sp => sp.GetRequiredService<IConnectionMultiplexer>().GetDatabase());
+            services.AddKeyedSingleton<IConnectionMultiplexer>("tickerq", (_, _) =>
+                options.ConnectionMultiplexer
+                ?? (options.ConnectionMultiplexerFactory != null
+                    ? options.ConnectionMultiplexerFactory().GetAwaiter().GetResult()
+                    : (options.ConfigurationOptions != null
+                        ? ConnectionMultiplexer.Connect(options.ConfigurationOptions)
+                        : ConnectionMultiplexer.Connect(options.Configuration))));
+            services.AddKeyedSingleton<IDatabase>("tickerq", (sp, _) =>
+                sp.GetRequiredKeyedService<IConnectionMultiplexer>("tickerq").GetDatabase());
             services.AddHostedService<NodeHeartBeatBackgroundService>();
             services.AddSingleton<ITickerQRedisContext, TickerQRedisContext>();
-            services.AddKeyedSingleton<IDistributedCache>("tickerq", (sp, key) => new RedisCache(options));
+            services.AddKeyedSingleton<IDistributedCache>("tickerq", (sp, _) =>
+                new RedisCache(new RedisCacheOptions
+                {
+                    InstanceName = options.InstanceName,
+                    ConnectionMultiplexerFactory = () => Task.FromResult(
+                        sp.GetRequiredKeyedService<IConnectionMultiplexer>("tickerq")),
+                }));
             services.AddSingleton(_ => options);
             services.TryAddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerRedisPersistenceProvider<TTimeTicker, TCronTicker>>();
         };
@@ -48,6 +61,14 @@ public static class ServiceExtension
     public class TickerQRedisOptionBuilder : RedisCacheOptions
     {
         public TimeSpan NodeHeartbeatInterval { get; set; } = TimeSpan.FromMinutes(1);
+
+        /// <summary>
+        /// An existing <see cref="IConnectionMultiplexer"/> to use for all Redis operations.
+        /// When set, <see cref="RedisCacheOptions.Configuration"/> and
+        /// <see cref="RedisCacheOptions.ConfigurationOptions"/> are ignored.
+        /// The caller is responsible for the lifetime and disposal of the multiplexer.
+        /// </summary>
+        public IConnectionMultiplexer ConnectionMultiplexer { get; set; }
 
         /// <summary>
         /// Optional source-generated JsonSerializerContext for AOT compatibility.
