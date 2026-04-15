@@ -150,6 +150,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         {
             FunctionName = context.FunctionName,
             Id = context.TickerId,
+            ParentId = context.ParentId,
             Type = context.Type,
             IsDue = isDue,
             ScheduledFor = context.ExecutionTime,
