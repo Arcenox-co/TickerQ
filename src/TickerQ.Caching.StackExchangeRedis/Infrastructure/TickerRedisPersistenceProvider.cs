@@ -1,5 +1,6 @@
 #nullable disable
 using System.Linq.Expressions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using static TickerQ.Caching.StackExchangeRedis.DependencyInjection.ServiceExtension;
@@ -20,7 +21,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     where TCronTicker : CronTickerEntity, new()
 {
     public TickerRedisPersistenceProvider(
-        IDatabase db,
+        [FromKeyedServices("tickerq")] IDatabase db,
         ITickerClock clock,
         SchedulerOptionsBuilder optionsBuilder,
         TickerQRedisOptionBuilder redisOptions,
