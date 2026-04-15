@@ -27,14 +27,19 @@ public static class ServiceExtension
             };
             
             setupAction?.Invoke(options);
-            if (string.IsNullOrWhiteSpace(options.Configuration) && options.ConfigurationOptions == null && options.ConnectionMultiplexer == null)
+            if (string.IsNullOrWhiteSpace(options.Configuration)
+                && options.ConfigurationOptions == null
+                && options.ConnectionMultiplexer == null
+                && options.ConnectionMultiplexerFactory == null)
                 throw new InvalidOperationException("Redis configuration or connection must be provided when enabling StackExchange.Redis persistence.");
 
             services.AddKeyedSingleton<IConnectionMultiplexer>("tickerq", (_, _) =>
                 options.ConnectionMultiplexer
-                ?? (options.ConfigurationOptions != null
-                    ? ConnectionMultiplexer.Connect(options.ConfigurationOptions)
-                    : ConnectionMultiplexer.Connect(options.Configuration)));
+                ?? (options.ConnectionMultiplexerFactory != null
+                    ? options.ConnectionMultiplexerFactory().GetAwaiter().GetResult()
+                    : (options.ConfigurationOptions != null
+                        ? ConnectionMultiplexer.Connect(options.ConfigurationOptions)
+                        : ConnectionMultiplexer.Connect(options.Configuration))));
             services.AddKeyedSingleton<IDatabase>("tickerq", (sp, _) =>
                 sp.GetRequiredKeyedService<IConnectionMultiplexer>("tickerq").GetDatabase());
             services.AddHostedService<NodeHeartBeatBackgroundService>();

@@ -136,6 +136,59 @@ public class ServiceExtensionTests
     }
 
     [Fact]
+    public void AddStackExchangeRedis_WithConnectionMultiplexerFactory_DoesNotThrow()
+    {
+        // ConnectionMultiplexerFactory is inherited from RedisCacheOptions. Callers who set
+        // only this property (the standard RedisCacheOptions pattern) must not hit the
+        // InvalidOperationException — validation must accept it as a fourth valid option.
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        var mockMultiplexer = Substitute.For<IConnectionMultiplexer>();
+
+        var exception = Record.Exception(() =>
+        {
+            services.AddTickerQ(options =>
+            {
+                options.AddStackExchangeRedis(redis =>
+                {
+                    redis.ConnectionMultiplexerFactory = () => Task.FromResult(mockMultiplexer);
+                });
+            });
+        });
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void AddStackExchangeRedis_WithConnectionMultiplexerFactory_ResolvesInstanceFromFactory()
+    {
+        // The keyed IConnectionMultiplexer singleton must be built by invoking the factory
+        // (mirroring what Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache does
+        // in its sync Connect() path via .GetAwaiter().GetResult()).
+        // The resolved instance must be the exact one the factory returned.
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        var mockMultiplexer = Substitute.For<IConnectionMultiplexer>();
+
+        services.AddTickerQ(options =>
+        {
+            options.AddStackExchangeRedis(redis =>
+            {
+                redis.ConnectionMultiplexerFactory = () => Task.FromResult(mockMultiplexer);
+            });
+        });
+
+        var provider = services.BuildServiceProvider();
+        var resolved = provider.GetRequiredKeyedService<IConnectionMultiplexer>("tickerq");
+
+        Assert.True(ReferenceEquals(mockMultiplexer, resolved),
+            "The resolved keyed IConnectionMultiplexer should be the exact instance returned by ConnectionMultiplexerFactory.");
+    }
+
+
+    [Fact]
     public void AddStackExchangeRedis_WithConnectionMultiplexer_ResolvesProvidedInstance()
     {
         // TickerQRedisOptionBuilder had no ConnectionMultiplexer property,
