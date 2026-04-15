@@ -10,6 +10,7 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
     {
         Request = request;
         Id = tickerFunctionContext.Id;
+        ParentId = tickerFunctionContext.ParentId;
         Type = tickerFunctionContext.Type;
         RetryCount = tickerFunctionContext.RetryCount;
         IsDue = tickerFunctionContext.IsDue;
@@ -27,6 +28,13 @@ public class TickerFunctionContext
     internal AsyncServiceScope ServiceScope { get; set; }
     internal Action RequestCancelOperationAction { get; set; }
     public Guid Id { get; internal set; }
+    /// <summary>
+    /// The parent ticker identifier.
+    /// For cron ticker occurrences, this is the owning CronTicker's Id.
+    /// For chained time tickers, this is the parent TimeTicker's Id.
+    /// Null when the ticker has no parent.
+    /// </summary>
+    public Guid? ParentId { get; internal set; }
     public TickerType Type { get; internal set; }
     public int RetryCount { get; internal set; }
     public bool IsDue { get; internal set; }
