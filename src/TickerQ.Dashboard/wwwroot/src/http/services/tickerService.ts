@@ -16,7 +16,7 @@ const requestCancel = () => {
 const getRequestData = () => {
     const baseHttp = useBaseHttpService<GetTickerDataRequest, GetTickerDataResponse>('single');
 
-    const requestAsync = async (id: string, type: number) => (await baseHttp.sendAsync("GET", "ticker-request/id", { paramData: { tickerId: id, tickerType: type } }));
+    const requestAsync = async (id: string, type: number) => (await baseHttp.sendAsync("GET", `ticker-request/${id}`, { paramData: { tickerType: type } }));
 
     return {
         ...baseHttp,
