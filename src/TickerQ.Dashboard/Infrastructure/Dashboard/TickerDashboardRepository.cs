@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -42,8 +43,30 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         public async Task<TTimeTicker[]> GetTimeTickersAsync(CancellationToken cancellationToken)
             => await _persistenceProvider.GetTimeTickers(null, cancellationToken);
         
-        public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginatedAsync(int pageNumber, int pageSize, CancellationToken cancellationToken)
-            => await _persistenceProvider.GetTimeTickersPaginated(null, pageNumber, pageSize, cancellationToken);
+        public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginatedAsync(int pageNumber, int pageSize, TickerStatus? status = null, string search = null, CancellationToken cancellationToken = default)
+        {
+            var predicate = BuildTimeTickerFilter(status, search);
+            return await _persistenceProvider.GetTimeTickersPaginated(predicate, pageNumber, pageSize, cancellationToken);
+        }
+
+        internal static Expression<Func<TTimeTicker, bool>> BuildTimeTickerFilter(TickerStatus? status, string search)
+        {
+            var term = string.IsNullOrWhiteSpace(search) ? null : search;
+
+            if (status is { } s && term is not null)
+                return x => x.Status == s &&
+                    ((x.Function != null && x.Function.Contains(term)) ||
+                     (x.ExceptionMessage != null && x.ExceptionMessage.Contains(term)));
+
+            if (status is { } statusOnly)
+                return x => x.Status == statusOnly;
+
+            if (term is not null)
+                return x => (x.Function != null && x.Function.Contains(term)) ||
+                            (x.ExceptionMessage != null && x.ExceptionMessage.Contains(term));
+
+            return null;
+        }
 
         public async Task<IList<Tuple<TickerStatus, int>>> GetTimeTickerFullDataAsync(CancellationToken cancellationToken)
         {
