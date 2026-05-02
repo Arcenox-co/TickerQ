@@ -320,7 +320,12 @@ public static class DashboardEndpoints
         int.TryParse(context.Request.Query["pageSize"].ToString(), out var pageSize);
         if (pageSize < 1) pageSize = 20;
 
-        var result = await repository.GetTimeTickersPaginatedAsync(pageNumber, pageSize, cancellationToken);
+        TickerStatus? status = Enum.TryParse<TickerStatus>(context.Request.Query["status"].ToString(), ignoreCase: true, out var parsedStatus)
+            ? parsedStatus
+            : null;
+        var search = context.Request.Query["search"].ToString();
+
+        var result = await repository.GetTimeTickersPaginatedAsync(pageNumber, pageSize, status, search, cancellationToken);
         await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
     }
 
@@ -332,10 +337,10 @@ public static class DashboardEndpoints
         var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
         var cancellationToken = context.RequestAborted;
 
-        int.TryParse(context.Request.Query["pastDays"].ToString(), out var pastDays);
-        if (pastDays < 1) pastDays = 3;
-        int.TryParse(context.Request.Query["futureDays"].ToString(), out var futureDays);
-        if (futureDays < 1) futureDays = 3;
+        if (!int.TryParse(context.Request.Query["pastDays"].ToString(), out var pastDays))
+            pastDays = -3;
+        if (!int.TryParse(context.Request.Query["futureDays"].ToString(), out var futureDays))
+            futureDays = 3;
 
         var result = await repository.GetTimeTickersGraphSpecificDataAsync(pastDays, futureDays, cancellationToken);
         await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
@@ -502,10 +507,10 @@ public static class DashboardEndpoints
         var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
         var cancellationToken = context.RequestAborted;
 
-        int.TryParse(context.Request.Query["pastDays"].ToString(), out var pastDays);
-        if (pastDays < 1) pastDays = 3;
-        int.TryParse(context.Request.Query["futureDays"].ToString(), out var futureDays);
-        if (futureDays < 1) futureDays = 3;
+        if (!int.TryParse(context.Request.Query["pastDays"].ToString(), out var pastDays))
+            pastDays = -3;
+        if (!int.TryParse(context.Request.Query["futureDays"].ToString(), out var futureDays))
+            futureDays = 3;
 
         var result = await repository.GetCronTickersGraphSpecificDataAsync(pastDays, futureDays, cancellationToken);
         await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
@@ -520,10 +525,10 @@ public static class DashboardEndpoints
         var cancellationToken = context.RequestAborted;
 
         var id = Guid.Parse(context.Request.Query["id"].ToString());
-        int.TryParse(context.Request.Query["pastDays"].ToString(), out var pastDays);
-        if (pastDays < 1) pastDays = 3;
-        int.TryParse(context.Request.Query["futureDays"].ToString(), out var futureDays);
-        if (futureDays < 1) futureDays = 3;
+        if (!int.TryParse(context.Request.Query["pastDays"].ToString(), out var pastDays))
+            pastDays = -3;
+        if (!int.TryParse(context.Request.Query["futureDays"].ToString(), out var futureDays))
+            futureDays = 3;
 
         var result = await repository.GetCronTickersGraphSpecificDataByIdAsync(id, pastDays, futureDays, cancellationToken);
         await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);

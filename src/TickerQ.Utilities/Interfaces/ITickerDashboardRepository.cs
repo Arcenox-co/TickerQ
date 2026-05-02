@@ -14,7 +14,7 @@ namespace TickerQ.Utilities.Interfaces
         where TCronTicker : CronTickerEntity, new()
     {
         Task<TTimeTicker[]> GetTimeTickersAsync(CancellationToken cancellationToken = default);
-        Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginatedAsync(int pageNumber, int pageSize, CancellationToken cancellationToken = default);
+        Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginatedAsync(int pageNumber, int pageSize, TickerStatus? status = null, string search = null, CancellationToken cancellationToken = default);
         Task<IList<Tuple<TickerStatus, int>>> GetTimeTickerFullDataAsync(CancellationToken cancellationToken);
         Task<IList<TickerGraphData>> GetTimeTickersGraphSpecificDataAsync(int pastDays, int futureDays,CancellationToken cancellationToken);
         Task<IList<TickerGraphData>> GetCronTickersGraphSpecificDataAsync(int pastDays, int futureDays,CancellationToken cancellationToken);

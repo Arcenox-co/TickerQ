@@ -130,6 +130,9 @@ namespace TickerQ.SourceGenerator
                     constructors.Add(ctor);
             }
 
+            if (methods.Count == 0)
+                return;
+
             var source = FactoryGenerator.Generate(effectiveNamespace, methods, constructors);
             var formatted = SourceGeneratorUtilities.FormatCode(source);
 

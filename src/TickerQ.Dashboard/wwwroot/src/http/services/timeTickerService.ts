@@ -143,10 +143,16 @@ const getTimeTickersPaginated = () => {
             return response;
     };
     
-    const requestAsync = async (pageNumber: number = 1, pageSize: number = 20) => {
-        const response = await baseHttp.sendAsync("GET", "time-tickers/paginated", { 
-            paramData: { pageNumber, pageSize } 
-        });
+    const requestAsync = async (
+        pageNumber: number = 1,
+        pageSize: number = 20,
+        status?: string,
+        search?: string
+    ) => {
+        const paramData: Record<string, string | number> = { pageNumber, pageSize };
+        if (status) paramData.status = status;
+        if (search) paramData.search = search;
+        const response = await baseHttp.sendAsync("GET", "time-tickers/paginated", { paramData });
         return processResponse(response);
     };
     
