@@ -78,7 +78,10 @@ const chainJobsModal = ref({
 })
 
 const expandedParents = ref(new Set<string>())
-const tableSearch = ref('')
+// Server-side filters: input is staged, only the active term is sent to the API.
+const filterSearchInput = ref<string | null>('')
+const filterSearchActive = ref('')
+const filterStatus = ref<string | null>(null)
 
 const selectedItems = ref(new Set<string>())
 
@@ -156,7 +159,12 @@ onUnmounted(() => {
 // Load page data with pagination
 const loadPageData = async () => {
   try {
-    const response = await getTimeTickersPaginated.requestAsync(currentPage.value, pageSize.value)
+    const response = await getTimeTickersPaginated.requestAsync(
+      currentPage.value,
+      pageSize.value,
+      filterStatus.value ?? undefined,
+      filterSearchActive.value || undefined,
+    )
     if (response) {
       totalCount.value = response.totalCount || 0
     }
@@ -171,12 +179,49 @@ const handlePageChange = async (page: number) => {
   await loadPageData()
 }
 
-// Handle page size change  
+// Handle page size change
 const handlePageSizeChange = async (size: number) => {
   pageSize.value = size
   currentPage.value = 1  // Reset to first page when changing page size
   await loadPageData()
 }
+
+const applyFilters = async () => {
+  filterSearchActive.value = (filterSearchInput.value ?? '').trim()
+  currentPage.value = 1
+  await loadPageData()
+}
+
+// Auto-apply only when the input transitions to empty so the visible field
+// can never disagree with the term currently sent to the API.
+watch(filterSearchInput, (next, prev) => {
+  const wasEmpty = !(prev ?? '').trim()
+  const isEmpty = !(next ?? '').trim()
+  if (!wasEmpty && isEmpty && filterSearchActive.value !== '') {
+    applyFilters()
+  }
+})
+
+const clearFilters = async () => {
+  filterSearchInput.value = ''
+  filterSearchActive.value = ''
+  filterStatus.value = null
+  currentPage.value = 1
+  await loadPageData()
+}
+
+// Mirrors the TickerStatus enum order.
+const statusFilterOptions = [
+  { value: null, title: 'All statuses' },
+  { value: 'Idle', title: 'Idle' },
+  { value: 'Queued', title: 'Queued' },
+  { value: 'InProgress', title: 'In Progress' },
+  { value: 'Done', title: 'Done' },
+  { value: 'DueDone', title: 'Due Done' },
+  { value: 'Failed', title: 'Failed' },
+  { value: 'Cancelled', title: 'Cancelled' },
+  { value: 'Skipped', title: 'Skipped' },
+]
 
 // Chart data loading functions
 const loadTimeSeriesChartData = async (min: number, max: number) => {
@@ -1008,15 +1053,52 @@ const canBeForceDeleted = ref<string[]>([])
             <!-- Search and Info Group -->
             <div class="search-info-group">
               <v-text-field
-                v-model="tableSearch"
+                v-model="filterSearchInput"
                 prepend-inner-icon="mdi-magnify"
-                label="Search tickers..."
+                label="Search Function / Error..."
                 variant="outlined"
                 density="compact"
                 hide-details
-                style="width: 200px"
+                clearable
+                style="width: 240px"
                 class="search-field"
+                @keyup.enter="applyFilters"
               ></v-text-field>
+
+              <v-select
+                v-model="filterStatus"
+                :items="statusFilterOptions"
+                item-title="title"
+                item-value="value"
+                label="Status"
+                variant="outlined"
+                density="compact"
+                hide-details
+                style="width: 160px"
+                @update:modelValue="applyFilters"
+              ></v-select>
+
+              <v-btn
+                size="small"
+                variant="tonal"
+                color="primary"
+                prepend-icon="mdi-magnify"
+                :disabled="getTimeTickersPaginated.loader.value"
+                @click="applyFilters"
+              >
+                Search
+              </v-btn>
+
+              <v-btn
+                v-if="filterSearchActive || filterStatus"
+                size="small"
+                variant="text"
+                prepend-icon="mdi-close"
+                :disabled="getTimeTickersPaginated.loader.value"
+                @click="clearFilters"
+              >
+                Clear
+              </v-btn>
 
               <v-chip
                 :color="getTimeTickersPaginated.loader.value ? 'warning' : 'success'"
@@ -1095,7 +1177,6 @@ const canBeForceDeleted = ref<string[]>([])
             item-value="Id"
             :items-per-page="-1"
             class="enhanced-table dense-table"
-            :search="tableSearch"
             hide-default-footer
             :item-height="32"
           >

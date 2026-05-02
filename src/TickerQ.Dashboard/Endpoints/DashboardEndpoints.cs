@@ -320,7 +320,12 @@ public static class DashboardEndpoints
         int.TryParse(context.Request.Query["pageSize"].ToString(), out var pageSize);
         if (pageSize < 1) pageSize = 20;
 
-        var result = await repository.GetTimeTickersPaginatedAsync(pageNumber, pageSize, cancellationToken);
+        TickerStatus? status = Enum.TryParse<TickerStatus>(context.Request.Query["status"].ToString(), ignoreCase: true, out var parsedStatus)
+            ? parsedStatus
+            : null;
+        var search = context.Request.Query["search"].ToString();
+
+        var result = await repository.GetTimeTickersPaginatedAsync(pageNumber, pageSize, status, search, cancellationToken);
         await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
     }
 
