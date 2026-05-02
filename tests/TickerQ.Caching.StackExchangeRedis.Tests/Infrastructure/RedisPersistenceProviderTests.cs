@@ -879,6 +879,55 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         Assert.Empty(results);
     }
 
+    /// <summary>
+    /// Regression test for the NullReferenceException in
+    /// TickerDashboardRepository.AddOnDemandCronTickerOccurrenceAsync:
+    ///     FunctionName = occurrence.CronTicker.Function
+    ///
+    /// Root cause: InsertCronTickerOccurrences stores the occurrence with CronTicker=null
+    /// (the navigation property is never set — only CronTickerId is populated).
+    /// The Redis provider serialises and deserialises as-is, so AcquireImmediateCronOccurrencesAsync
+    /// returns an occurrence whose CronTicker property is still null.
+    /// The EF Core provider avoids the crash because it re-hydrates the nav property via a JOIN,
+    /// but the Redis provider does not.
+    ///
+    /// This test asserts the CORRECT behaviour (CronTicker is populated after acquire).
+    /// </summary>
+    [Fact]
+    public async Task AcquireImmediateCronOccurrencesAsync_WithRedisProvider_CronTickerNavigationProperty_ShouldBeHydrated()
+    {
+        // Arrange — a cron ticker stored in Redis (the "parent" row)
+        const string expectedFunction = "MyScheduledJob";
+        var cron = CreateCronTicker(function: expectedFunction);
+        SeedCronTicker(cron);
+
+        // Simulate what AddOnDemandCronTickerOccurrenceAsync does:
+        // it creates the occurrence with only CronTickerId set — CronTicker nav property is null.
+        var onDemandOccurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
+        {
+            Id = Guid.NewGuid(),
+            Status = TickerStatus.Idle,
+            ExecutionTime = _fixedNow,
+            LockedAt = null,
+            CronTickerId = cron.Id,
+            CronTicker = null!  // explicitly null — mirrors the dashboard repository (nav prop not set)
+        };
+        await _provider.InsertCronTickerOccurrences([onDemandOccurrence], CancellationToken.None);
+
+        // Act — acquire the occurrence, exactly as the dashboard does
+        var acquired = await _provider.AcquireImmediateCronOccurrencesAsync(
+            [onDemandOccurrence.Id], CancellationToken.None);
+
+        // Assert — the occurrence must be returned and CronTicker must be rehydrated
+        // so that occurrence.CronTicker.Function does not throw NullReferenceException.
+        Assert.Single(acquired);
+        var occurrence = acquired[0];
+
+        // This assertion fails today (CronTicker is null) and passes after the fix.
+        Assert.NotNull(occurrence.CronTicker);
+        Assert.Equal(expectedFunction, occurrence.CronTicker.Function);
+    }
+
     // =========================================================================
     // 15. ReleaseAcquiredCronTickerOccurrences
     // =========================================================================
