@@ -60,6 +60,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Id = e.Id,
                 UpdatedAt = e.UpdatedAt,
                 CronTickerId = e.CronTickerId,
+                ExecutionTime = e.ExecutionTime,
                 CronTicker = new TCronTicker
                 {
                     Id = e.CronTicker.Id,

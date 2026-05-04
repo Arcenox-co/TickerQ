@@ -802,6 +802,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
 
         Assert.Single(results);
         Assert.Equal(occ.Id, results[0].Id);
+        Assert.Equal(oldTime, results[0].ExecutionTime);
 
         // Verify DB
         using var ctx = CreateVerifyContext();
