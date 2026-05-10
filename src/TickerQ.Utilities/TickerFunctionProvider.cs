@@ -39,6 +39,23 @@ namespace TickerQ.Utilities
         public static bool IsBuilt { get; private set; }
 
         /// <summary>
+        /// Optional resolver returning the owning node name for a function. Set by the
+        /// RemoteExecutor during startup so scheduling code can persist which SDK node
+        /// a ticker belongs to. Returns empty string for locally-registered functions.
+        /// </summary>
+        public static Func<string, string> FunctionNodeResolver { get; set; }
+
+        /// <summary>Resolves the owning node name for a function, or null if unknown.</summary>
+        public static string ResolveNodeName(string functionName)
+        {
+            if (string.IsNullOrWhiteSpace(functionName)) return null;
+            var resolver = FunctionNodeResolver;
+            if (resolver == null) return null;
+            var name = resolver(functionName);
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+
+        /// <summary>
         /// Registers a Type → function name mapping for type-safe manager lookups.
         /// Called by MapTicker&lt;T&gt;() at registration time.
         /// </summary>
@@ -54,6 +71,34 @@ namespace TickerQ.Utilities
         public static string GetFunctionName<T>()
         {
             return _typeMappings.TryGetValue(typeof(T), out var name) ? name : typeof(T).Name;
+        }
+
+        /// <summary>
+        /// Replaces the entire frozen function registry with the provided dictionary.
+        /// Unlike <see cref="RegisterFunctions"/>, this REMOVES entries that are absent
+        /// from the new set — required for resync-style flows (e.g. RemoteExecutor pulling
+        /// the latest active functions from the Hub after a toggle).
+        /// </summary>
+        public static void ReplaceFunctions(IDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> functions)
+        {
+            if (functions == null) throw new ArgumentNullException(nameof(functions));
+            lock (_buildLock)
+            {
+                TickerFunctions = functions.ToFrozenDictionary();
+                IsBuilt = true;
+            }
+        }
+
+        /// <summary>
+        /// Replaces the request-info dictionary entirely. See <see cref="ReplaceFunctions"/>.
+        /// </summary>
+        public static void ReplaceRequestInfo(IDictionary<string, (string RequestType, string RequestExampleJson)> infos)
+        {
+            if (infos == null) throw new ArgumentNullException(nameof(infos));
+            lock (_buildLock)
+            {
+                TickerFunctionRequestInfos = infos.ToFrozenDictionary();
+            }
         }
 
         /// <summary>

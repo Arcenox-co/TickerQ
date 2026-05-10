@@ -1,0 +1,172 @@
+syntax = "proto3";
+
+option csharp_namespace = "TickerQ.RemoteExecutor.Grpc";
+
+package tickerq.dashboard.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// Write operations — proxied to host/scheduler for dashboard controls.
+service DashboardOperationService {
+  rpc ToggleCronTicker(ToggleCronTickerRequest) returns (google.protobuf.Empty);
+  rpc RunCronTickerOnDemand(OperationIdRequest) returns (google.protobuf.Empty);
+  rpc CancelTicker(OperationIdRequest) returns (google.protobuf.Empty);
+  rpc StartHost(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc StopHost(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc RestartHost(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc AddTimeTicker(AddTimeTickerRequest) returns (AddTimeTickerResponse);
+  rpc DeleteTimeTicker(OperationIdRequest) returns (google.protobuf.Empty);
+  // Reschedule an Idle/Queued time ticker to run immediately. Same id stays.
+  rpc RunTimeTickerOnDemand(OperationIdRequest) returns (google.protobuf.Empty);
+  // Create a fresh ticker that copies the original's params (function, description,
+  // retries, intervals, request payload). For chain roots the whole subtree is
+  // duplicated. Used for "Re-Run" on already-finished rows so the original
+  // execution record stays intact for history.
+  rpc DuplicateTimeTicker(DuplicateTimeTickerRequest) returns (AddTimeTickerResponse);
+  // Partial update of an Idle/Queued time ticker. Only the fields explicitly set
+  // are applied — proto3 `optional` distinguishes "not changed" from "cleared".
+  rpc UpdateTimeTicker(UpdateTimeTickerRequest) returns (google.protobuf.Empty);
+  // Persist a parent + nested children as a single entity graph. The framework
+  // requires this for chain semantics: children must have ExecutionTime=null
+  // and ParentId set, and they're saved by EF cascading from the root entity.
+  // The standalone AddTimeTicker rpc can't express that because the manager
+  // overwrites null ExecutionTime to UtcNow.
+  rpc AddTimeTickerChain(AddTimeTickerChainRequest) returns (AddTimeTickerChainResponse);
+
+  // Cron CRUD. Mirrors the time-ticker write set: create returns the new id;
+  // update is partial (proto3 `optional` flags + companion *_set bools); delete
+  // is by id. Manager enforces validation (cron expression parses, function is
+  // registered) and broadcasts the dashboard's cron-tickers SignalR scope.
+  rpc AddCronTicker(AddCronTickerRequest) returns (AddCronTickerResponse);
+  rpc UpdateCronTicker(UpdateCronTickerRequest) returns (google.protobuf.Empty);
+  rpc DeleteCronTicker(OperationIdRequest) returns (google.protobuf.Empty);
+  // Removes a single past cron occurrence row. The dashboard parallelizes
+  // these for bulk delete (same pattern as time tickers). Cascades nothing —
+  // occurrences don't own children, so a flat by-id delete is enough.
+  rpc DeleteCronOccurrence(OperationIdRequest) returns (google.protobuf.Empty);
+}
+
+message UpdateTimeTickerRequest {
+  string id = 1;
+  optional google.protobuf.Timestamp execution_time = 2;
+  optional string description = 3;
+  optional int32 retries = 4;
+  // Set to clear: send the field but leave the array empty? Tricky in proto3 —
+  // we use a separate flag. `clear_request_payload`/`clear_retry_intervals`
+  // are explicit "wipe this field" signals; otherwise empty repeateds = no change.
+  repeated int32 retry_intervals_seconds = 5;
+  bool retry_intervals_set = 6;     // true when the client deliberately sent retry_intervals_seconds
+  bytes request = 7;
+  bool request_set = 8;             // true when the client deliberately sent request
+  // Qualified function name (e.g. "SampleTimeJob@test-sdk-node"). Must already
+  // be registered in the scheduler's function provider — invalid names get
+  // rejected by the polling layer at next pickup.
+  optional string function = 9;
+  // RunCondition gates child dispatch on parent terminal status. Only applies
+  // to non-root chain nodes; ignored on roots and standalone tickers.
+  // 0=OnSuccess 1=OnFailure 2=OnCancelled 3=OnFailureOrCancelled
+  // 4=OnAnyCompletedStatus 5=InProgress.
+  optional int32 run_condition = 10;
+}
+
+message OperationIdRequest {
+  string id = 1;
+}
+
+message DuplicateTimeTickerRequest {
+  string id = 1;
+  // When set, the new ticker (or chain root) fires at this absolute UTC time.
+  // Omit to default to UtcNow (the legacy "duplicate-and-run-now" semantics).
+  optional google.protobuf.Timestamp execution_time = 2;
+}
+
+message ToggleCronTickerRequest {
+  string cron_ticker_id = 1;
+  bool is_enabled = 2;
+}
+
+message AddTimeTickerRequest {
+  string function = 1;
+  google.protobuf.Timestamp execution_time = 2;
+  optional string description = 3;
+  optional int32 retries = 4;
+  bytes request = 5;
+  // Wait time (seconds) before each retry attempt. The framework picks the
+  // matching index for each attempt, falling back to the last value if the
+  // array is shorter than `retries`. Empty → framework default of 30s.
+  repeated int32 retry_intervals_seconds = 6;
+}
+
+message AddTimeTickerResponse {
+  string id = 1;
+}
+
+// Recursive node for chain creation. The root carries ExecutionTime via the
+// outer request; children inherit lifecycle from the parent (ExecutionTime
+// stays null in the database) and are gated on the parent reaching a status
+// matching their RunCondition.
+message TimeTickerNode {
+  string function = 1;
+  optional string description = 2;
+  optional int32 retries = 3;
+  bytes request = 4;
+  repeated int32 retry_intervals_seconds = 5;
+  // RunCondition is meaningful for non-root nodes only (gates dispatch on the
+  // parent's terminal status). 0=OnSuccess 1=OnFailure 2=OnCancelled
+  // 3=OnFailureOrCancelled 4=OnAnyCompletedStatus 5=InProgress.
+  optional int32 run_condition = 6;
+  repeated TimeTickerNode children = 7;
+}
+
+message AddTimeTickerChainRequest {
+  // When the whole chain starts. Children don't have their own ExecutionTime —
+  // they wait for the parent + RunCondition gate.
+  google.protobuf.Timestamp execution_time = 1;
+  TimeTickerNode root = 2;
+}
+
+message AddTimeTickerChainResponse {
+  string root_id = 1;
+  // Total tickers created (root + every active descendant). Useful for the
+  // UI's "N jobs scheduled" toast.
+  int32 created_count = 2;
+}
+
+// Cron create. `function` is the qualified name (e.g. "DailyReport@reports-node");
+// the scheduler resolves bare names against the registered functions if no `@`
+// is present. `is_enabled = false` lets a customer create-then-enable later.
+message AddCronTickerRequest {
+  string function = 1;
+  string expression = 2;
+  optional string description = 3;
+  optional int32 retries = 4;
+  bytes request = 5;
+  // Wait time (seconds) before each retry attempt. The framework picks the
+  // matching index for each attempt, falling back to the last value if the
+  // array is shorter than `retries`. Empty → framework default of 30s.
+  repeated int32 retry_intervals_seconds = 6;
+  // Default true (matches the entity default). Send false to create disabled.
+  optional bool is_enabled = 7;
+}
+
+message AddCronTickerResponse {
+  string id = 1;
+}
+
+// Cron partial update. Only fields explicitly sent are applied — proto3
+// `optional` distinguishes "not changed" from "cleared" for primitives, and
+// companion *_set bools do the same for `repeated`/`bytes` (which proto3 can't
+// distinguish "default empty" from "absent" on).
+message UpdateCronTickerRequest {
+  string id = 1;
+  optional string function = 2;
+  optional string expression = 3;
+  optional string description = 4;
+  optional int32 retries = 5;
+  repeated int32 retry_intervals_seconds = 6;
+  bool retry_intervals_set = 7;
+  bytes request = 8;
+  bool request_set = 9;
+  optional bool is_enabled = 10;
+}

@@ -1,21 +1,27 @@
-using TickerQ.SDK.Client;
-using TickerQ.SDK.Models;
+using Grpc.Core;
+using Grpc.Net.Client;
+using TickerQ.SDK.Hub;
 using TickerQ.Utilities;
 
 namespace TickerQ.SDK.Infrastructure;
 
+/// <summary>
+/// Boot-time function-sync. Calls Hub's <c>HubService.SyncNodesFunctions</c> over gRPC
+/// to register this SDK's node + function manifest with the env identified by the
+/// API token, then captures the env's ApplicationUrl + WebhookSignature into options
+/// so the worker stream knows where to dial the Scheduler.
+/// </summary>
 internal sealed class TickerQFunctionSyncService
 {
-    private readonly TickerQSdkHttpClient _client;
     private readonly TickerSdkOptions _options;
+    private GrpcChannel? _channel;
 
-    public TickerQFunctionSyncService(TickerQSdkHttpClient client, TickerSdkOptions options)
+    public TickerQFunctionSyncService(TickerSdkOptions options)
     {
-        _client = client ?? throw new ArgumentNullException(nameof(client));
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
-    public async Task<SyncNodesAndFunctionsResult?> SyncAsync(CancellationToken cancellationToken)
+    public async Task<SyncNodesFunctionsResponse?> SyncAsync(CancellationToken cancellationToken)
     {
         if (TickerFunctionProvider.TickerFunctions == null ||
             TickerFunctionProvider.TickerFunctions.Count == 0)
@@ -23,11 +29,13 @@ internal sealed class TickerQFunctionSyncService
             return null;
         }
 
-        var node = new Node
+        var request = new SyncNodesFunctionsRequest
         {
-            NodeName = _options.NodeName ?? "node",
-            CallbackUrl = _options.CallbackUri?.ToString(),
-            Functions = []
+            NodeName = _options.NodeName,
+            // Pure-client SDK — no callback URL. Field kept on the wire for compat
+            // with existing Hub deployments; will be ignored server-side.
+            CallbackUrl = string.Empty,
+            SdkType = TickerSdkOptions.SdkType
         };
 
         foreach (var (name, value) in TickerFunctionProvider.TickerFunctions)
@@ -38,39 +46,47 @@ internal sealed class TickerQFunctionSyncService
                 JsonExampleGenerator.TryGenerateExampleJson(requestType.Item2, out exampleJson);
 
             var (cronExpression, priority, _, _) = value;
-            node.Functions.Add(new NodeFunction
+            request.Functions.Add(new SyncFunctionDescriptor
             {
                 FunctionName = name,
                 RequestType = requestType.Item1 ?? string.Empty,
-                RequestExampleJson = exampleJson,
-                TaskPriority = priority,
-                Expression = cronExpression
+                RequestExampleJson = exampleJson ?? string.Empty,
+                TaskPriority = (HubTaskPriority)(int)priority,
+                Expression = cronExpression ?? string.Empty
             });
         }
 
-        var hubBase = new Uri(TickerQSdkConstants.HubBaseUrl);
-        var syncUri = new Uri(hubBase, "api/apps/sync/nodes-functions/batch");
+        var client = new HubService.HubServiceClient(GetChannel());
+        var headers = new Metadata { { "x-api-key", _options.ApiKey ?? string.Empty } };
 
-        var result = await _client
-            .PostAsync<Node, SyncNodesAndFunctionsResult?>(
-                syncUri.ToString(),
-                node,
-                cancellationToken)
+        var response = await client
+            .SyncNodesFunctionsAsync(request, headers, cancellationToken: cancellationToken)
+            .ResponseAsync
             .ConfigureAwait(false);
 
-        if (result != null)
+        if (response != null)
         {
-            if (!string.IsNullOrWhiteSpace(result.ApplicationUrl))
+            if (!string.IsNullOrWhiteSpace(response.ApplicationUrl))
             {
-                _options.ApiUri = new Uri(result.ApplicationUrl.TrimEnd('/') + "/");
+                _options.ApiUri = new Uri(response.ApplicationUrl.TrimEnd('/') + "/");
             }
 
-            if (!string.IsNullOrWhiteSpace(result.WebhookSignature))
+            if (!string.IsNullOrWhiteSpace(response.WebhookSignature))
             {
-                _options.WebhookSignature = result.WebhookSignature;
+                _options.WebhookSignature = response.WebhookSignature;
             }
         }
 
-        return result;
+        return response;
+    }
+
+    private GrpcChannel GetChannel()
+    {
+        if (_channel != null) return _channel;
+        _channel = GrpcChannel.ForAddress(_options.HubControlUri, new GrpcChannelOptions
+        {
+            MaxReceiveMessageSize = 16 * 1024 * 1024
+        });
+        return _channel;
     }
 }

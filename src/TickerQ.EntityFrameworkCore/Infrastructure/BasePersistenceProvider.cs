@@ -276,11 +276,20 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         // (some providers like Devart MySQL don't assign type mappings to HashSet parameters).
         var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys.ToList();
 
-        // Find all cron tickers whose function no longer exists in the code definitions.
-        // This includes seeded tickers (InitIdentifier = "MemoryTicker_Seeded_*") as well as
-        // previously-seeded tickers whose InitIdentifier was cleared by a dashboard update.
+        // Orphan cleanup is intentionally narrowed to *seeded* crons (those that
+        // carry an InitIdentifier from the code-defined-cron migration). Without
+        // this filter we'd delete every dashboard-created cron whose function
+        // is registered by an SDK / RemoteExecutor — at scheduler boot the SDK
+        // hasn't synced yet, so those qualified function names (`name@node`)
+        // wouldn't be in TickerFunctionProvider.TickerFunctions yet, and the
+        // user's cron would be wiped out on every restart.
+        //
+        // Skipping non-seeded crons here is safe: they were never tied to a
+        // code definition in the first place, so "the code definition went
+        // away" doesn't apply to them.
         var orphanedCron = await cronSet
-            .Where(c => !allRegisteredFunctions.Contains(c.Function))
+            .Where(c => !string.IsNullOrEmpty(c.InitIdentifier)
+                        && !allRegisteredFunctions.Contains(c.Function))
             .Select(c => c.Id)
             .ToArrayAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -353,7 +362,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 var dbContext = session.Context;
                 return await dbContext.Set<TCronTicker>()
                     .AsNoTracking()
-                    .Where(x => x.IsEnabled)
+                    .Where(x => x.IsEnabled && !x.IsSystemPaused)
                     .Select(MappingExtensions.ForCronTickerExpressions<CronTickerEntity>())
                     .ToArrayAsync(ct)
                     .ConfigureAwait(false);

@@ -1,0 +1,108 @@
+syntax = "proto3";
+
+option csharp_namespace = "TickerQ.RemoteExecutor.Tunnel";
+
+package tickerq.tunnel.v1;
+
+service TunnelService {
+  rpc Connect(stream SchedulerEvent) returns (stream HubCommand);
+}
+
+message SchedulerEvent {
+  oneof payload {
+    RegisterRequest register = 1;
+    CallResponse response = 2;
+    Heartbeat heartbeat = 3;
+    SdkConnectionsReport sdks = 4;
+    NotificationEvent notification = 5;
+  }
+}
+
+// Real-time notification pushed from the Scheduler to the Hub. The Hub fans these
+// out to subscribed dashboard clients via SignalR (see Hub.Api/Realtime).
+// payload_json carries a typed delta DTO serialized as JSON; empty for pure scope hints.
+message NotificationEvent {
+  string event_type = 1;          // e.g. "time_ticker.updated", "node.heartbeat"
+  string scope = 2;               // optional scope hint, e.g. "time-tickers"
+  bytes payload_json = 3;         // typed delta DTO (JSON); empty for pure hints
+  int64 sequence = 4;             // monotonic per scheduler instance, for ordering / dedupe
+  int64 emitted_at_unix_ms = 5;
+}
+
+message SdkConnectionsReport {
+  repeated SdkConnection connections = 1;
+}
+
+message SdkConnection {
+  string node_name = 1;
+  string callback_url = 2;
+  int32 function_count = 3;
+  int64 last_seen_unix_ms = 4;
+  bool is_healthy = 5;
+  int64 last_success_unix_ms = 6;
+  int64 last_failure_unix_ms = 7;
+  string last_error = 8;
+}
+
+message HubCommand {
+  oneof payload {
+    RegisterAck register_ack = 1;
+    CallRequest request = 2;
+    Heartbeat heartbeat = 3;
+    Disconnect disconnect = 4;
+    // Hub-initiated webhook signature rotation. Lets connected schedulers update
+    // their cached signature in place without reconnecting / re-syncing.
+    WebhookSignatureUpdated webhook_signature_updated = 5;
+  }
+}
+
+message WebhookSignatureUpdated {
+  string signature = 1;
+}
+
+message RegisterRequest {
+  // Single bearer-style token (e.g. "tq_sched_AbCdEf..."). Carries the full
+  // credential — Hub looks up by SHA-256 of this value. Field 2 is reserved
+  // for the dropped api_secret to keep wire compatibility with old binaries.
+  string api_key = 1;
+  reserved 2;
+  reserved "api_secret";
+  string node_name = 3;
+  string sdk_version = 4;
+  // Public URL of the scheduler/application. Hub stores this as the env's
+  // ApplicationUrl so SDKs discover where to open their worker streams.
+  optional string application_url = 5;
+}
+
+message RegisterAck {
+  string environment_id = 1;
+  string application_id = 2;
+}
+
+message CallRequest {
+  string request_id = 1;
+  string method = 2;
+  bytes body = 3;
+  repeated MetadataEntry metadata = 4;
+}
+
+message CallResponse {
+  string request_id = 1;
+  int32 status_code = 2;
+  string status_detail = 3;
+  bytes body = 4;
+  repeated MetadataEntry trailers = 5;
+}
+
+message MetadataEntry {
+  string key = 1;
+  string value = 2;
+}
+
+message Heartbeat {
+  int64 unix_ms = 1;
+}
+
+message Disconnect {
+  string reason = 1;
+}

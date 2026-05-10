@@ -1,0 +1,21 @@
+syntax = "proto3";
+package tickerq.v1;
+option csharp_namespace = "TickerQ.RemoteExecutor.HubWebhook";
+
+import "google/protobuf/empty.proto";
+
+// gRPC service hosted on the scheduler / RemoteExecutor. The Hub calls this
+// to notify the scheduler that registered functions changed (resync) or that
+// a specific function should be removed locally.
+service HubWebhookService {
+  rpc TriggerResync(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc RemoveFunction(RemoveFunctionRequest) returns (RemoveFunctionResult);
+}
+
+message RemoveFunctionRequest {
+  string function_name = 1;
+}
+
+message RemoveFunctionResult {
+  bool removed = 1;
+}

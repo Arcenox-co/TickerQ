@@ -1,0 +1,72 @@
+syntax = "proto3";
+package tickerq.sdkcontrol.v1;
+option csharp_namespace = "TickerQ.SDK.Grpc.SdkControl";
+
+service SdkControlService {
+  rpc Connect(stream SdkEvent) returns (stream SdkCommand);
+}
+
+message SdkEvent {
+  oneof payload {
+    RegisterRequest register = 1;
+    CommandAck ack = 2;
+    Heartbeat heartbeat = 3;
+  }
+}
+
+message SdkCommand {
+  oneof payload {
+    RegisterAck register_ack = 1;
+    TriggerResync trigger_resync = 2;
+    RemoveFunction remove_function = 3;
+    Heartbeat heartbeat = 4;
+    Disconnect disconnect = 5;
+    // Hub-initiated webhook signature rotation. SDK updates its cached signature
+    // in place without reconnecting.
+    WebhookSignatureUpdated webhook_signature_updated = 6;
+  }
+}
+
+message WebhookSignatureUpdated {
+  string signature = 1;
+}
+
+message RegisterRequest {
+  // Single bearer-style token (e.g. "tq_sdk_AbCdEf..."). Carries the full
+  // credential — Hub looks up by SHA-256 of this value. Field 2 is reserved
+  // for the dropped api_secret to keep wire compatibility with old binaries.
+  string api_key = 1;
+  reserved 2;
+  reserved "api_secret";
+  string node_name = 3;
+  string sdk_version = 4;
+}
+
+message RegisterAck {
+  string environment_id = 1;
+  string application_id = 2;
+  string node_id = 3;
+}
+
+message TriggerResync {
+  string command_id = 1;
+}
+
+message RemoveFunction {
+  string command_id = 1;
+  string function_name = 2;
+}
+
+message CommandAck {
+  string command_id = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+message Heartbeat {
+  int64 unix_ms = 1;
+}
+
+message Disconnect {
+  string reason = 1;
+}

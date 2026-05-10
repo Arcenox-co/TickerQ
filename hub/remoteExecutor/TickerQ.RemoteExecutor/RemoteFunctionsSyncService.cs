@@ -1,30 +1,30 @@
-using System.Text.Json;
-using TickerQ.RemoteExecutor.Models;
+using Grpc.Core;
+using Grpc.Net.Client;
+using TickerQ.RemoteExecutor.Hub;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces.Managers;
 
 namespace TickerQ.RemoteExecutor;
 
+/// <summary>
+/// Pulls active nodes/functions from the Hub on startup via gRPC and registers
+/// each as a TickerFunction whose delegate POSTs to the SDK's callback URL.
+/// </summary>
 public class RemoteFunctionsSyncService : BackgroundService
 {
-    private readonly IHttpClientFactory _httpClientFactory;
     private readonly TickerQRemoteExecutionOptions _options;
     private readonly IInternalTickerManager? _internalTickerManager;
     private readonly ILogger<RemoteFunctionsSyncService>? _logger;
-    private readonly IServiceProvider _serviceProvider;
 
     public RemoteFunctionsSyncService(
-        IHttpClientFactory httpClientFactory,
         TickerQRemoteExecutionOptions options,
         IServiceProvider serviceProvider,
         ILogger<RemoteFunctionsSyncService>? logger = null)
     {
-        _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+        _internalTickerManager = serviceProvider.GetService<IInternalTickerManager>();
         _logger = logger;
-        _internalTickerManager = _serviceProvider.GetService<IInternalTickerManager>();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -34,109 +34,80 @@ public class RemoteFunctionsSyncService : BackgroundService
 
     public async Task SyncOnceAsync(CancellationToken stoppingToken)
     {
-        // Run once on startup or on demand
         try
         {
-            if (string.IsNullOrWhiteSpace(_options.HubEndpointUrl))
+            var grpcUrl = _options.HubGrpcEndpointUrl;
+            if (string.IsNullOrWhiteSpace(grpcUrl))
             {
-                _logger?.LogWarning("FunctionsEndpointUrl is not configured. Skipping remote functions sync.");
+                _logger?.LogWarning("HubGrpcEndpointUrl is not configured. Skipping remote functions sync.");
                 return;
             }
 
-            _logger?.LogInformation("Starting remote functions sync from {EndpointUrl}", _options.HubEndpointUrl);
+            // Allow gRPC over plaintext for local dev (http://) Hub deployments.
+            if (grpcUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+                AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
-            var httpClient = _httpClientFactory.CreateClient("tickerq-hub");
-            using var httpResponse =
-                await httpClient.GetAsync($"{_options.HubEndpointUrl}api/apps/sync/nodes-functions",
-                    stoppingToken);
+            _logger?.LogInformation("Starting remote functions sync from {EndpointUrl} (gRPC)", grpcUrl);
 
-            if (!httpResponse.IsSuccessStatusCode)
+            using var channel = GrpcChannel.ForAddress(grpcUrl.TrimEnd('/'), new GrpcChannelOptions
             {
-                var errorContent = await httpResponse.Content.ReadAsStringAsync(stoppingToken);
-                _logger?.LogError(
-                    "Failed to fetch functions from {EndpointUrl}. Status: {StatusCode}, Response: {Response}",
-                    _options.HubEndpointUrl,
-                    httpResponse.StatusCode,
-                    errorContent);
-                return;
-            }
+                MaxReceiveMessageSize = 16 * 1024 * 1024
+            });
+            var client = new HubService.HubServiceClient(channel);
 
-            var responseContent = await httpResponse.Content.ReadAsStringAsync(stoppingToken);
-            if (string.IsNullOrWhiteSpace(responseContent))
+            var headers = new Metadata
             {
-                _logger?.LogWarning("Received empty response from functions endpoint");
-                return;
-            }
+                { "x-api-key", _options.ApiKey ?? string.Empty }
+            };
 
-            var contentType = httpResponse.Content.Headers.ContentType?.MediaType ?? string.Empty;
-            if (!contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
-            {
-                _logger?.LogWarning(
-                    "Received non-JSON content type from {EndpointUrl}. Content-Type: {ContentType}. Attempting to parse anyway.",
-                    _options.HubEndpointUrl,
-                    contentType);
-            }
-
-            RegisteredFunctionsResponse? response;
+            GetRegisteredFunctionsResponse response;
             try
             {
-                response = JsonSerializer.Deserialize<RegisteredFunctionsResponse>(
-                    responseContent,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                response = await client.GetRegisteredFunctionsAsync(
+                    new GetRegisteredFunctionsRequest(),
+                    headers,
+                    deadline: DateTime.UtcNow.AddSeconds(30),
+                    cancellationToken: stoppingToken);
             }
-            catch (JsonException ex)
+            catch (RpcException rpcEx)
             {
-                _logger?.LogError(ex, "Failed to deserialize functions response");
+                _logger?.LogError(rpcEx,
+                    "gRPC GetRegisteredFunctions failed: {Status} - {Detail}",
+                    rpcEx.StatusCode, rpcEx.Status.Detail);
                 return;
             }
 
-            if (response == null)
-            {
-                _logger?.LogWarning("Received null response from functions endpoint");
-                return;
-            }
             _options.WebHookSignature = response.WebhookSignature;
             await RegisterFunctionsFromResponse(response, stoppingToken);
-            
+
             _logger?.LogInformation("Remote functions sync completed successfully");
-        }
-        catch (HttpRequestException ex)
-        {
-            // Transient network failure - log and continue without functions
-            _logger?.LogError(ex, "Network error during remote functions sync. Status: {StatusCode}. The service will continue without remote functions.",
-                ex.StatusCode);
-        }
-        catch (TaskCanceledException ex) when (!stoppingToken.IsCancellationRequested)
-        {
-            // Request timeout - log and continue
-            _logger?.LogError(ex, "Timeout during remote functions sync. The service will continue without remote functions.");
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            // Application shutting down - normal cancellation
             _logger?.LogInformation("Remote functions sync cancelled due to application shutdown.");
         }
-        // Note: Other exceptions (ArgumentException, NullReferenceException, etc.) are NOT caught
-        // and will propagate - this is intentional to fail fast on programming errors
+        // Other exceptions are NOT caught and will propagate — fail fast on programming errors.
     }
 
-    private async Task RegisterFunctionsFromResponse(RegisteredFunctionsResponse response, CancellationToken cancellationToken)
+    private async Task RegisterFunctionsFromResponse(GetRegisteredFunctionsResponse response, CancellationToken cancellationToken)
     {
-        if (response.Nodes.Count == 0)
-        {
-            _logger?.LogInformation("No nodes found in response");
-            return;
-        }
-
         var functionDict = TickerFunctionProvider.TickerFunctions.ToDictionary();
         var cronPairs = new List<(string Name, string CronExpression)>();
         var requestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>();
 
+        // Track every (active) remote function we see in this sync so we can reconcile the
+        // local registry afterwards: anything previously known but not in the response was
+        // disabled/removed at the Hub and must be unapplied locally.
+        var seenFunctionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var node in response.Nodes)
         {
-            if (string.IsNullOrWhiteSpace(node.CallbackUrl))
+            // CallbackUrl is no longer required — pure-client SDKs don't expose one. Dispatch
+            // happens over the worker stream the SDK opens to the scheduler. Skip empty-name
+            // nodes only.
+            if (string.IsNullOrWhiteSpace(node.NodeName))
             {
-                _logger?.LogWarning("Node {NodeName} has no callback URL, skipping", node.NodeName);
+                _logger?.LogWarning("Node has no name, skipping");
                 continue;
             }
 
@@ -154,75 +125,91 @@ public class RemoteFunctionsSyncService : BackgroundService
                     continue;
                 }
 
+                // Node-qualify the registry key so two SDKs can host functions with the same
+                // bare name without colliding. Tickers persist the qualified name too (qualified
+                // at every creation entry point), so dispatch lookups by ticker.Function still hit.
+                // Bare->node mapping is tracked separately via RemoteFunctionRegistry for
+                // server-side resolution at ticker creation time.
+                var qualifiedName = $"{function.FunctionName}@{node.NodeName}";
+
                 if (!function.IsActive)
                 {
                     if (RemoteFunctionRegistry.IsRemote(function.FunctionName) &&
-                        functionDict.Remove(function.FunctionName))
+                        functionDict.Remove(qualifiedName))
                     {
-                        requestInfoDict.Remove(function.FunctionName);
+                        requestInfoDict.Remove(qualifiedName);
                         RemoteFunctionRegistry.Remove(function.FunctionName);
-                        _logger?.LogDebug("Removed inactive remote function {FunctionName}", function.FunctionName);
+                        _logger?.LogDebug("Removed inactive remote function {FunctionName}@{NodeName}",
+                            function.FunctionName, node.NodeName);
                     }
                     else
                     {
-                        _logger?.LogDebug("Skipping inactive function {FunctionName}", function.FunctionName);
+                        _logger?.LogDebug("Skipping inactive function {FunctionName}@{NodeName}",
+                            function.FunctionName, node.NodeName);
                     }
                     continue;
                 }
 
-                // Capture callbackUrl in local variable to avoid closure issues
-                var callbackUrl = node.CallbackUrl.TrimEnd('/');
-                
-                var functionDelegate = RemoteExecutionDelegateFactory.Create(
-                    callbackUrl,
-                    _ => response.WebhookSignature,
-                    allowEmptySecret: false);
+                // Dispatch goes via the worker stream — no callback URL is dialed; the SDK
+                // is identified by NodeName and reached through its open stream registered
+                // in WorkerStreamRegistry.
+                var functionDelegate = RemoteExecutionDelegateFactory.Create(node.NodeName);
 
-                // Convert int priority to TickerTaskPriority enum
-                var priority = (TickerTaskPriority)function.TaskPriority;
-                
-                // Use cronExpression if available
+                var priority = (TickerTaskPriority)(int)function.TaskPriority;
                 var cronExpression = function.NodeExpression ?? string.Empty;
-                
-                functionDict[function.FunctionName] = (cronExpression, priority, functionDelegate, 0);
-                RemoteFunctionRegistry.MarkRemote(function.FunctionName);
-                requestInfoDict[function.FunctionName] = (
+
+                functionDict[qualifiedName] = (cronExpression, priority, functionDelegate, 0);
+                RemoteFunctionRegistry.MarkRemote(function.FunctionName, node.NodeName);
+                requestInfoDict[qualifiedName] = (
                     function.RequestType,
                     function.RequestExampleJson ?? string.Empty);
-                
+                seenFunctionNames.Add(qualifiedName);
+
                 if (node.AutoMigrateExpressions && !string.IsNullOrWhiteSpace(cronExpression))
                 {
-                    cronPairs.Add((function.FunctionName, cronExpression));
+                    cronPairs.Add((qualifiedName, cronExpression));
                 }
 
-                _logger?.LogDebug("Registered function {FunctionName} from node {NodeName}", 
-                    function.FunctionName, node.NodeName);
+                _logger?.LogDebug("Registered function {QualifiedName}", qualifiedName);
             }
         }
 
-        if (functionDict.Count > 0)
-            TickerFunctionProvider.RegisterFunctions(functionDict);
+        // Reconcile: any function we previously registered as remote that did NOT appear
+        // in the response was disabled or removed at the Hub. functionDict is keyed by the
+        // qualified name (`bare@node`) but RemoteFunctionRegistry tracks bare names — combine
+        // the two so we know which qualified key to remove.
+        foreach (var bareName in RemoteFunctionRegistry.SnapshotFunctionNames())
+        {
+            var node = RemoteFunctionRegistry.GetNodeName(bareName);
+            var qualified = string.IsNullOrEmpty(node) ? bareName : $"{bareName}@{node}";
+            if (seenFunctionNames.Contains(qualified)) continue;
+            if (functionDict.Remove(qualified))
+            {
+                requestInfoDict.Remove(qualified);
+                RemoteFunctionRegistry.Remove(bareName);
+                _logger?.LogInformation(
+                    "Unapplied stale remote function {QualifiedName} (no longer reported by Hub)",
+                    qualified);
+            }
+        }
 
-        var existingRequestTypes = TickerFunctionProvider.TickerFunctionRequestTypes;
-        if (existingRequestTypes != null && existingRequestTypes.Count > 0)
-            TickerFunctionProvider.RegisterRequestType(existingRequestTypes.ToDictionary());
+        // SDK connection liveness is tracked by WorkerStreamRegistry now (one entry per open
+        // worker stream). The Hub knows about each SDK via the Sdks tunnel report which is
+        // sourced from that registry — no separate cache to reconcile here.
 
-        if (requestInfoDict.Count > 0)
-            TickerFunctionProvider.RegisterRequestInfo(requestInfoDict);
-
-        TickerFunctionProvider.Build();
+        // Replace (not merge) so functions removed/disabled in the Hub are also removed locally.
+        TickerFunctionProvider.ReplaceFunctions(functionDict);
+        TickerFunctionProvider.ReplaceRequestInfo(requestInfoDict);
         _logger?.LogInformation("Registered {Count} functions", functionDict.Count);
-        
-        // Migrate cron tickers if we have cron expressions and the manager is available
+
         if (cronPairs.Count > 0 && _internalTickerManager != null)
         {
             await _internalTickerManager.MigrateDefinedCronTickers(
-                cronPairs.ToArray(), 
+                cronPairs.ToArray(),
                 cancellationToken)
                 .ConfigureAwait(false);
-            
+
             _logger?.LogInformation("Migrated {Count} cron tickers", cronPairs.Count);
         }
     }
-
 }

@@ -13,5 +13,22 @@
 
   <ItemGroup>
     <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.76.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.31.1" />
+    <PackageReference Include="Grpc.Tools" Version="2.76.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="Protos\common.proto" GrpcServices="None" />
+    <Protobuf Include="Protos\dashboard_service.proto" GrpcServices="Server" />
+    <Protobuf Include="Protos\dashboard_operation_service.proto" GrpcServices="Server" />
+    <Protobuf Include="Protos\tunnel_service.proto" GrpcServices="Client" />
+    <Protobuf Include="Protos\hub_service.proto" GrpcServices="Client" />
+    <Protobuf Include="Protos\hub_webhook_service.proto" GrpcServices="Server" />
+    <Protobuf Include="Protos\worker_service.proto" GrpcServices="Server" />
   </ItemGroup>
 </Project>

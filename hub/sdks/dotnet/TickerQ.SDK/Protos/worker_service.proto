@@ -1,0 +1,293 @@
+syntax = "proto3";
+
+option csharp_namespace = "TickerQ.Worker.V1";
+
+package tickerq.worker.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// =============================================================================
+//  Worker stream — single bidi gRPC connection between SDK (client) and
+//  Scheduler (server). All ticker dispatch + ticker CRUD + status updates flow
+//  over this one stream, eliminating the need for a server-side endpoint on
+//  the SDK and removing the SDK→Scheduler URL configuration item.
+//
+//  Lifecycle:
+//    1. SDK opens OpenWorkerStream as a client
+//    2. SDK sends Hello (api_key/secret/node_name/functions[])
+//    3. Scheduler validates, sends HelloAck + assigned worker_id
+//    4. Scheduler dispatches ExecuteFunction / TriggerResync / RemoveFunction
+//       commands as work arises
+//    5. SDK replies with ExecutionResult (correlated via request_id)
+//    6. Anytime the SDK's user code calls AddAsync / UpdateAsync etc., it sends
+//       AddTimeTickersRequest etc. on the same stream and awaits OperationResult
+//    7. Both sides exchange Heartbeat every ~15s for liveness
+//    8. On stream drop, SDK reconnects with exponential backoff
+// =============================================================================
+
+service SchedulerWorkerService {
+  rpc OpenWorkerStream(stream WorkerEvent) returns (stream SchedulerCommand);
+}
+
+// ---- SDK → Scheduler ----
+message WorkerEvent {
+  oneof payload {
+    // Connection lifecycle
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+
+    // Reply to a scheduler-initiated command
+    ExecutionResult execution_result = 10;
+    CommandAck ack = 11;
+
+    // SDK-initiated CRUD (correlated to OperationResult by request_id)
+    AddTimeTickersRequest add_time_tickers = 20;
+    UpdateTimeTickersRequest update_time_tickers = 21;
+    RemoveTimeTickersRequest remove_time_tickers = 22;
+    InsertCronTickersRequest insert_cron_tickers = 23;
+    UpdateCronTickersRequest update_cron_tickers = 24;
+    RemoveCronTickersRequest remove_cron_tickers = 25;
+
+    // SDK-initiated ticker status updates (post-execution)
+    UpdateTimeTickerRequest update_time_ticker = 30;
+    UpdateCronTickerOccurrenceRequest update_cron_occurrence = 31;
+    UpdateTimeTickersUnifiedRequest update_time_tickers_unified = 32;
+    GetTimeTickerRequestRequest get_time_ticker_request = 33;
+    GetCronTickerOccurrenceRequestRequest get_cron_occurrence_request = 34;
+
+    // Per-execution log line captured by the SDK's scoped ILoggerProvider.
+    // Forwarded by the scheduler to the dashboard via NotificationEvent.
+    LogLine log_line = 35;
+  }
+}
+
+// ---- Scheduler → SDK ----
+message SchedulerCommand {
+  oneof payload {
+    // Connection lifecycle
+    HelloAck hello_ack = 1;
+    Heartbeat heartbeat = 2;
+    Disconnect disconnect = 3;
+
+    // Scheduler-initiated commands (correlated to ExecutionResult / CommandAck)
+    ExecuteFunction execute_function = 10;
+    TriggerResync trigger_resync = 11;
+    RemoveFunction remove_function = 12;
+    CancelExecution cancel_execution = 13;
+
+    // Reply to an SDK-initiated request (correlated by request_id)
+    OperationResult operation_result = 90;
+    BytesResult bytes_result = 91;
+  }
+}
+
+// =============================================================================
+//  Connection-lifecycle messages
+// =============================================================================
+
+// Hello is the auth handshake. Functions are NOT registered here — they go via
+// the existing SDK→Hub HTTP function-sync (TickerQFunctionSyncService). Hub→SDK
+// already distributes the env's WebhookSignature in the sync response, and the
+// Scheduler already has it from its own boot-time GetRegisteredFunctions call.
+// Both sides therefore share the per-env secret without any new exchange here;
+// the SDK proves it knows the secret by HMAC-signing this Hello.
+message Hello {
+  string api_key = 1;               // identifies which env (informational; not the auth proof)
+  string node_name = 2;             // identifies which worker pool to register the stream under
+  string sdk_version = 3;
+  int32 max_concurrency = 4;
+
+  // Stream-level auth: HMAC-SHA256(WebhookSignature,
+  //   "{node_name}\n{sdk_version}\n{nonce}\n{unix_seconds}")
+  // base64-encoded. Replay-protected by unix_seconds (±300s skew window) and
+  // nonce (rejected if seen recently — small in-memory LRU on scheduler).
+  string nonce = 5;
+  int64 unix_seconds = 6;
+  string hmac_signature = 7;
+}
+
+message HelloAck {
+  string worker_id = 1;             // server-assigned, opaque to SDK
+  string environment_id = 2;
+  string application_id = 3;
+  string node_id = 4;
+}
+
+message Heartbeat {
+  int64 unix_ms = 1;
+}
+
+message Disconnect {
+  string reason = 1;
+}
+
+// =============================================================================
+//  Function dispatch (Scheduler → SDK → Scheduler)
+// =============================================================================
+
+message ExecuteFunction {
+  string request_id = 1;
+  string ticker_id = 2;
+  string function_name = 3;
+  int32 type = 4;                   // TickerType enum
+  int32 retry_count = 5;
+  bool is_due = 6;
+  google.protobuf.Timestamp scheduled_for = 7;
+  // Inline request payload — saves the round-trip the SDK used to make to
+  // GetTimeTickerRequest / GetCronTickerOccurrenceRequest.
+  bytes request_payload = 8;
+  // Max retry attempts on failure. Required for SDK-side retry to work — the
+  // SDK is what actually executes the function, so its TickerExecutionTaskHandler
+  // is the loop that retries.
+  int32 retries = 9;
+  // Wait (seconds) before each retry. Reused as fallback if shorter than retries.
+  repeated int32 retry_intervals_seconds = 10;
+}
+
+message ExecutionResult {
+  string request_id = 1;
+  bool success = 2;
+  string error = 3;
+  // True when body exited via cancellation. Scheduler treats this as
+  // TickerStatus.Cancelled, not Failed.
+  bool cancelled = 4;
+}
+
+message TriggerResync {
+  string request_id = 1;
+}
+
+message RemoveFunction {
+  string request_id = 1;
+  string function_name = 2;
+}
+
+// Scheduler → SDK: cancel a currently-running execution by ticker id. The SDK
+// signals the registered CancellationTokenSource for that ticker (if any);
+// the user's [TickerFunction] method awaiting on the CT throws
+// OperationCanceledException and exits. SDKs without a matching ticker ignore.
+message CancelExecution {
+  string request_id = 1;
+  string ticker_id = 2;
+}
+
+message CommandAck {
+  string request_id = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+// =============================================================================
+//  SDK-initiated CRUD (mirrors today's SchedulerSdkService methods)
+// =============================================================================
+
+message AddTimeTickersRequest {
+  string request_id = 1;
+  bytes entities_json = 2;          // TTimeTicker[] serialized via System.Text.Json
+}
+
+message UpdateTimeTickersRequest {
+  string request_id = 1;
+  bytes entities_json = 2;
+}
+
+message RemoveTimeTickersRequest {
+  string request_id = 1;
+  repeated string ids = 2;
+}
+
+message InsertCronTickersRequest {
+  string request_id = 1;
+  bytes entities_json = 2;          // TCronTicker[] serialized via System.Text.Json
+}
+
+message UpdateCronTickersRequest {
+  string request_id = 1;
+  bytes entities_json = 2;
+}
+
+message RemoveCronTickersRequest {
+  string request_id = 1;
+  repeated string ids = 2;
+}
+
+message UpdateTimeTickerRequest {
+  string request_id = 1;
+  FunctionContext context = 2;
+}
+
+message UpdateCronTickerOccurrenceRequest {
+  string request_id = 1;
+  FunctionContext context = 2;
+}
+
+message UpdateTimeTickersUnifiedRequest {
+  string request_id = 1;
+  repeated string ids = 2;
+  FunctionContext context = 3;
+}
+
+message GetTimeTickerRequestRequest {
+  string request_id = 1;
+  string ticker_id = 2;
+}
+
+message GetCronTickerOccurrenceRequestRequest {
+  string request_id = 1;
+  string ticker_id = 2;
+}
+
+// Generic OperationResult covers all CRUD/status responses (count + correlation).
+message OperationResult {
+  string request_id = 1;
+  bool success = 2;
+  int32 affected = 3;
+  string error = 4;
+}
+
+// BytesResult covers GetXxxRequest replies that carry payload bytes.
+message BytesResult {
+  string request_id = 1;
+  bool success = 2;
+  bool found = 3;
+  bytes payload = 4;
+  string error = 5;
+}
+
+// =============================================================================
+//  Shared types
+// =============================================================================
+
+// Per-execution log entry captured by the SDK's scoped ILoggerProvider.
+// One frame per log call inside a [TickerFunction] execution. The scheduler
+// appends to a per-ticker ring buffer and forwards as a NotificationEvent.
+message LogLine {
+  string ticker_id = 1;
+  int32 ticker_type = 2;       // TickerType enum (0 = TimeTicker, 1 = CronTicker)
+  int64 unix_ms = 3;
+  int32 level = 4;             // 0=Trace 1=Debug 2=Info 3=Warn 4=Error 5=Critical
+  string source = 5;           // "sdk" | "scheduler"
+  string message = 6;
+  string category = 7;         // ILogger category name; empty for scheduler-emitted
+  string function_name = 8;
+}
+
+// Mirrors today's FunctionContext from scheduler_sdk_service.proto (used in
+// status-update flows so server-side handlers reconstruct InternalFunctionContext).
+message FunctionContext {
+  string function_name = 1;
+  string ticker_id = 2;
+  optional string parent_id = 3;
+  int32 type = 4;
+  int32 retries = 5;
+  int32 retry_count = 6;
+  int32 status = 7;
+  int64 elapsed_time_ms = 8;
+  string exception_details = 9;
+  google.protobuf.Timestamp executed_at = 10;
+  repeated int32 retry_intervals = 11;
+  bool release_lock = 12;
+  google.protobuf.Timestamp execution_time = 13;
+  int32 run_condition = 14;
+  repeated string parameters_to_update = 15;
+}

@@ -1,0 +1,185 @@
+syntax = "proto3";
+
+option csharp_namespace = "TickerQ.RemoteExecutor.Grpc";
+
+package tickerq.dashboard.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ===== Enums =====
+
+enum TickerStatusProto {
+  TICKER_STATUS_IDLE = 0;
+  TICKER_STATUS_QUEUED = 1;
+  TICKER_STATUS_IN_PROGRESS = 2;
+  TICKER_STATUS_DONE = 3;
+  TICKER_STATUS_DUE_DONE = 4;
+  TICKER_STATUS_FAILED = 5;
+  TICKER_STATUS_CANCELLED = 6;
+  TICKER_STATUS_SKIPPED = 7;
+}
+
+enum TickerTaskPriorityProto {
+  TICKER_TASK_PRIORITY_LONG_RUNNING = 0;
+  TICKER_TASK_PRIORITY_HIGH = 1;
+  TICKER_TASK_PRIORITY_NORMAL = 2;
+  TICKER_TASK_PRIORITY_LOW = 3;
+}
+
+enum RunConditionProto {
+  RUN_CONDITION_UNSPECIFIED = 0;
+  RUN_CONDITION_ON_SUCCESS = 1;
+  RUN_CONDITION_ON_FAILURE = 2;
+  RUN_CONDITION_ON_CANCELLED = 3;
+  RUN_CONDITION_ON_FAILURE_OR_CANCELLED = 4;
+  RUN_CONDITION_ON_ANY_COMPLETED_STATUS = 5;
+  RUN_CONDITION_IN_PROGRESS = 6;
+}
+
+enum ExecutionTypeProto {
+  EXECUTION_TYPE_TIME_TICKER = 0;
+  EXECUTION_TYPE_CRON_OCCURRENCE = 1;
+}
+
+// ===== Pagination =====
+
+message PaginationMetadata {
+  int32 total_count = 1;
+  int32 page_number = 2;
+  int32 page_size = 3;
+  int32 total_pages = 4;
+  bool has_previous = 5;
+  bool has_next = 6;
+}
+
+// ===== Flat DTOs =====
+
+message TimeTickerFlatProto {
+  string id = 1;                                      // guid
+  string function_name = 2;
+  TickerStatusProto status = 3;
+  optional google.protobuf.Timestamp scheduled_for = 4;
+  int64 elapsed_time = 5;
+  int32 retries = 6;
+  int32 retry_count = 7;
+  TickerTaskPriorityProto priority = 8;
+  google.protobuf.Timestamp created_at = 10;
+  int32 child_count = 11;
+  optional string exception_message = 12;
+  optional string skipped_reason = 13;
+  optional string parent_id = 14;                     // guid
+  RunConditionProto run_condition = 15;
+  optional google.protobuf.Timestamp executed_at = 16;
+  optional string description = 17;
+}
+
+message CronTickerFlatProto {
+  string id = 1;
+  string function_name = 2;
+  string expression = 3;
+  optional string description = 4;
+  int32 retries = 5;
+  TickerTaskPriorityProto priority = 6;
+  google.protobuf.Timestamp created_at = 7;
+  int32 occurrence_count = 8;
+  optional TickerStatusProto last_run_status = 9;
+  optional google.protobuf.Timestamp last_run_at = 10;
+  // Whether the cron is currently enabled (firing future occurrences). Toggle
+  // via DashboardOperationService.ToggleCronTicker. Defaults true on create
+  // unless the client explicitly sends false.
+  bool is_enabled = 11;
+  // System-managed pause flag — set when the SDK node owning this cron's
+  // function disconnects, cleared on reconnect. Distinct from is_enabled so
+  // the dashboard can render "Paused (SDK offline)" vs user-disabled.
+  bool is_system_paused = 12;
+}
+
+message CronOccurrenceFlatProto {
+  string id = 1;
+  string cron_ticker_id = 2;
+  optional string function_name = 3;
+  TickerStatusProto status = 4;
+  google.protobuf.Timestamp scheduled_for = 5;
+  int64 elapsed_time = 6;
+  int32 retry_count = 7;
+  optional string exception_message = 9;
+  optional string skipped_reason = 10;
+  optional google.protobuf.Timestamp executed_at = 11;
+  google.protobuf.Timestamp created_at = 12;
+}
+
+message ExecutionFlatProto {
+  string id = 1;
+  ExecutionTypeProto type = 2;
+  optional string function_name = 3;
+  TickerStatusProto status = 4;
+  google.protobuf.Timestamp scheduled_for = 5;
+  int64 elapsed_time = 6;
+  int32 retry_count = 7;
+  optional string exception_message = 9;
+  optional google.protobuf.Timestamp executed_at = 10;
+  // Max retries on the parent ticker / cron — pairs with retry_count in the
+  // dashboard's "X/Y" rendering so the user can see how many attempts remain.
+  int32 retries = 11;
+  // Direct chain-child count (time tickers only). The executions list filters
+  // children out and uses this to render a chain icon next to roots.
+  int32 child_count = 12;
+  // Skipped reason — populated when status = Skipped (e.g. "SDK offline").
+  // The dashboard log panel shows this as a synthetic fallback line for
+  // skipped runs that produced no captured logs.
+  optional string skipped_reason = 13;
+}
+
+message StatusCountProto {
+  TickerStatusProto status = 1;
+  int32 count = 2;
+}
+
+message NodeJobCountProto {
+  string node_name = 1;
+  int32 job_count = 2;
+}
+
+// ===== Nodes / Host / Functions =====
+
+enum NodeHealthStatusProto {
+  NODE_HEALTH_STATUS_HEALTHY = 0;
+  NODE_HEALTH_STATUS_DEGRADED = 1;
+  NODE_HEALTH_STATUS_DOWN = 2;
+}
+
+message NodeProto {
+  string node_name = 1;
+  optional google.protobuf.Timestamp last_heartbeat = 2;
+  NodeHealthStatusProto health_status = 3;
+  int32 function_count = 4;
+  int32 active_jobs = 5;
+}
+
+message FunctionProto {
+  string function_name = 1;
+  optional string request_type = 2;
+  optional string request_example = 3;
+  TickerTaskPriorityProto priority = 4;
+  optional string cron_expression = 5;
+}
+
+message HostStatusProto {
+  bool is_running = 1;
+  int32 active_threads = 2;
+  int32 max_concurrency = 3;
+}
+
+message NextTickerProto {
+  optional string id = 1;
+  optional string function_name = 2;
+  optional google.protobuf.Timestamp scheduled_for = 3;
+  ExecutionTypeProto type = 4;
+}
+
+// ===== Graphs =====
+
+message GraphBucketProto {
+  google.protobuf.Timestamp date = 1;
+  repeated StatusCountProto counts = 2;
+}

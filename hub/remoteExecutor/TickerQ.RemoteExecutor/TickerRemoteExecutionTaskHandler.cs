@@ -34,10 +34,16 @@ public class TickerRemoteExecutionTaskHandler : ITickerExecutionTaskHandler
                 Type = context.Type,
                 FunctionName = context.FunctionName,
                 RetryCount = context.RetryCount,
+                // Forward retry config from the InternalFunctionContext so the
+                // remote-dispatch delegate can ship it to the SDK alongside the
+                // ExecuteFunction frame — the SDK's task handler is what actually
+                // runs the retry loop for remote functions.
+                Retries = context.Retries,
+                RetryIntervals = context.RetryIntervals,
                 IsDue = isDue,
                 ScheduledFor = context.ExecutionTime,
                 ServiceScope = scope
-            };        
+            };
             var stopwatch = Stopwatch.StartNew();
 
             try

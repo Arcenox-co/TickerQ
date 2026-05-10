@@ -9,6 +9,7 @@ using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -81,6 +82,7 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerFunctionConcurrencyGate, TickerFunctionConcurrencyGate>();
             services.AddSingleton<ITickerExecutionTaskHandler, TickerExecutionTaskHandler>();
             services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
+            services.AddSingleton<ITickerDashboardDataService<TTimeTicker, TCronTicker>, TickerDashboardDataService<TTimeTicker, TCronTicker>>();
 
             optionInstance.ExternalProviderConfigServiceAction?.Invoke(services);
 

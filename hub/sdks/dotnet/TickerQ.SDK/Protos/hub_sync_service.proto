@@ -1,0 +1,46 @@
+syntax = "proto3";
+package tickerq.v1;
+option csharp_namespace = "TickerQ.SDK.Hub";
+
+// SDK-side stub for the Hub's HubService.SyncNodesFunctions RPC. Wire-compatible
+// with the Hub server's hub_service.proto definition (same package + message
+// shapes); duplicated here so the SDK package doesn't depend on the Scheduler's
+// remoteExecutor proto.
+//
+// Boot-time: the SDK calls SyncNodesFunctions once after start to register its
+// node + function manifest with the Hub. The Hub returns the env's
+// ApplicationUrl (where SDK opens the worker stream) and WebhookSignature
+// (for HMAC validation on the Scheduler↔SDK plane).
+service HubService {
+  rpc SyncNodesFunctions(SyncNodesFunctionsRequest) returns (SyncNodesFunctionsResponse);
+}
+
+enum HubTaskPriority {
+  LONG_RUNNING = 0;
+  HIGH = 1;
+  NORMAL = 2;
+  LOW = 3;
+}
+
+message SyncNodesFunctionsRequest {
+  string node_name = 1;
+  // Reserved: legacy callback-mode field, unused by pure-client SDKs.
+  string callback_url = 2;
+  repeated SyncFunctionDescriptor functions = 3;
+  // SDK runtime identifier ("dotnet", "nodejs", ...). Drives per-node logo
+  // in the dashboard. Hub defaults to "dotnet" when omitted.
+  string sdk_type = 4;
+}
+
+message SyncFunctionDescriptor {
+  string function_name = 1;
+  string request_type = 2;
+  string request_example_json = 3;
+  HubTaskPriority task_priority = 4;
+  string expression = 5;
+}
+
+message SyncNodesFunctionsResponse {
+  string application_url = 1;
+  string webhook_signature = 2;
+}

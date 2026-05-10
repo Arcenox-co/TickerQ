@@ -42,6 +42,29 @@ public abstract class TickerQBaseLoggerInstrumentation
             functionName, jobId, retryCount, exception.Message);
     }
 
+    public virtual void LogJobAttemptFailed(Guid jobId, string functionName, int attempt, int maxRetries, long elapsedMs, Exception exception)
+    {
+        // attempt is 0-indexed in the loop. attempt=0 means the initial run (not a retry);
+        // attempt>=1 means it's the Nth retry attempt — matches "N/M" in the dashboard's
+        // Retries column ("retries done / max").
+        if (attempt == 0)
+        {
+            _logger.LogError(exception, "Attempt of {Function} failed in {ElapsedMs}ms — {Error}",
+                functionName, elapsedMs, exception.Message);
+        }
+        else
+        {
+            _logger.LogError(exception, "Retry {Attempt} of {MaxRetries} for {Function} failed in {ElapsedMs}ms — {Error}",
+                attempt, maxRetries, functionName, elapsedMs, exception.Message);
+        }
+    }
+
+    public virtual void LogJobRetryScheduled(Guid jobId, string functionName, int nextAttempt, int maxRetries, int intervalSeconds)
+    {
+        _logger.LogWarning("Retrying in {IntervalSeconds}s (retry {NextAttempt} of {MaxRetries})…",
+            intervalSeconds, nextAttempt, maxRetries);
+    }
+
     public virtual void LogJobCancelled(Guid jobId, string functionName, string reason)
     {
         _logger.LogWarning("TickerQ Job cancelled: {Function} ({JobId}) - {Reason}",

@@ -37,6 +37,10 @@ public class TickerFunctionContext
     public Guid? ParentId { get; internal set; }
     public TickerType Type { get; internal set; }
     public int RetryCount { get; internal set; }
+    /// <summary>Max retry attempts configured on the ticker. Internal — not part of the user-facing API.</summary>
+    internal int Retries { get; set; }
+    /// <summary>Per-retry wait (seconds). Reused as fallback if shorter than <see cref="Retries"/>. Internal.</summary>
+    internal int[] RetryIntervals { get; set; }
     public bool IsDue { get; internal set; }
     /// <summary>
     /// The time this ticker was scheduled to run (UTC).

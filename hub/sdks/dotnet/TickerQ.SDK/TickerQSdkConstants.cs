@@ -1,18 +1,21 @@
 namespace TickerQ.SDK;
 
 /// <summary>
-/// Constants used by the TickerQ SDK.
+/// Fixed endpoint constants for the production TickerQ Hub. Not user-configurable —
+/// the SDK always dials the same Hub. Per-environment scoping is handled by the API
+/// token (<c>tq_sdk_*</c>), not by URL.
 /// </summary>
 public static class TickerQSdkConstants
 {
     /// <summary>
-    /// The base URL of the TickerQ Hub service.
-    /// This is a fixed endpoint and cannot be configured by users.
+    /// gRPC base URL of the Hub. Used by both the boot-time SyncNodesFunctions RPC
+    /// and the persistent SDK control stream. SDK is gRPC-only; there is no REST
+    /// path to the Hub anymore.
     /// </summary>
-    public const string HubBaseUrl = "https://hub.tickerq.net/";
+    public const string HubGrpcBaseUrl = "https://grpc.hub.tickerq.net/";
 
     /// <summary>
-    /// The Hub hostname used for request routing.
+    /// SDK version reported in the worker-stream Hello handshake.
     /// </summary>
-    public const string HubHostname = "hub.tickerq.net";
+    public const string SdkVersion = "1.0.0";
 }

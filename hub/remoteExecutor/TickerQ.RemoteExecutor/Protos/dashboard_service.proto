@@ -1,0 +1,209 @@
+syntax = "proto3";
+
+option csharp_namespace = "TickerQ.RemoteExecutor.Grpc";
+
+package tickerq.dashboard.v1;
+
+import "google/protobuf/timestamp.proto";
+import "Protos/common.proto";
+
+// ===== Service =====
+
+service DashboardService {
+  // Time tickers
+  rpc GetTimeTickers(TimeTickerQueryRequest) returns (TimeTickerListResponse);
+  rpc GetTimeTickerById(GetByIdRequest) returns (TimeTickerFlatProto);
+  rpc GetTimeTickerChildren(GetByIdRequest) returns (TimeTickerListResponse);
+  rpc GetTimeTickerRequest(GetByIdRequest) returns (TickerRequestResponse);
+
+  // Cron tickers
+  rpc GetCronTickers(CronTickerQueryRequest) returns (CronTickerListResponse);
+  rpc GetCronTickerById(GetByIdRequest) returns (CronTickerFlatProto);
+
+  // Cron occurrences
+  rpc GetCronOccurrences(CronOccurrenceQueryRequest) returns (CronOccurrenceListResponse);
+  rpc GetCronOccurrenceById(GetByIdRequest) returns (CronOccurrenceFlatProto);
+  rpc GetCronOccurrenceRequest(GetByIdRequest) returns (TickerRequestResponse);
+
+  // Executions (unified)
+  rpc GetExecutions(ExecutionQueryRequest) returns (ExecutionListResponse);
+
+  // Stats
+  rpc GetOverallStatuses(EmptyRequest) returns (StatusCountsResponse);
+  rpc GetNodeJobs(EmptyRequest) returns (NodeJobCountsResponse);
+
+  // Overview
+  rpc GetUpcomingTickers(CountRequest) returns (TimeTickerListResponse);
+  rpc GetRecentActivity(CountRequest) returns (ExecutionListResponse);
+
+  // Nodes
+  rpc GetNodes(EmptyRequest) returns (NodeListResponse);
+  rpc GetNodeFunctions(NodeNameRequest) returns (FunctionListResponse);
+  rpc GetAllFunctions(EmptyRequest) returns (FunctionListResponse);
+
+  // Host
+  rpc GetHostStatus(EmptyRequest) returns (HostStatusProto);
+  rpc GetNextTicker(EmptyRequest) returns (NextTickerProto);
+
+  // Graphs
+  rpc GetTimeTickersGraph(GraphRangeRequest) returns (GraphResponse);
+  rpc GetCronTickersGraph(GraphRangeRequest) returns (GraphResponse);
+  rpc GetCronTickerGraphById(CronTickerGraphRangeRequest) returns (GraphResponse);
+  rpc GetCronOccurrencesGraph(GetByIdRequest) returns (GraphResponse);
+
+  // Per-ticker execution logs (in-memory tail on the scheduler — last N lines, ~30 min TTL).
+  // Used by the dashboard's log panel to hydrate when a user opens a ticker after the
+  // execution finished. Live streaming for in-flight runs goes through SignalR fan-out.
+  rpc GetTickerLogTail(GetByIdRequest) returns (TickerLogTailResponse);
+}
+
+// ===== Common =====
+
+message EmptyRequest {}
+
+message GetByIdRequest {
+  string id = 1;  // guid
+}
+
+message CountRequest {
+  int32 count = 1;
+}
+
+message TickerRequestResponse {
+  bytes payload = 1;
+}
+
+// ===== Time tickers =====
+
+message TimeTickerQueryRequest {
+  optional string function_name = 1;
+  repeated TickerStatusProto statuses = 2;
+  optional google.protobuf.Timestamp scheduled_from = 3;
+  optional google.protobuf.Timestamp scheduled_to = 4;
+  optional google.protobuf.Timestamp executed_from = 5;
+  optional google.protobuf.Timestamp executed_to = 6;
+  optional bool parent_only = 8;
+  optional bool has_children = 9;
+  optional string search = 10;
+  optional string sort_by = 11;
+  bool sort_descending = 12;
+  int32 page_number = 13;
+  int32 page_size = 14;
+}
+
+message TimeTickerListResponse {
+  repeated TimeTickerFlatProto items = 1;
+  PaginationMetadata pagination = 2;
+}
+
+// ===== Cron tickers =====
+
+message CronTickerQueryRequest {
+  optional string function_name = 1;
+  repeated TickerStatusProto last_run_statuses = 2;
+  optional string expression = 3;
+  optional string search = 4;
+  optional string sort_by = 5;
+  bool sort_descending = 6;
+  int32 page_number = 7;
+  int32 page_size = 8;
+}
+
+message CronTickerListResponse {
+  repeated CronTickerFlatProto items = 1;
+  PaginationMetadata pagination = 2;
+}
+
+// ===== Cron occurrences =====
+
+message CronOccurrenceQueryRequest {
+  string cron_ticker_id = 1;
+  repeated TickerStatusProto statuses = 2;
+  optional google.protobuf.Timestamp scheduled_from = 3;
+  optional google.protobuf.Timestamp scheduled_to = 4;
+  optional string sort_by = 6;
+  bool sort_descending = 7;
+  int32 page_number = 8;
+  int32 page_size = 9;
+}
+
+message CronOccurrenceListResponse {
+  repeated CronOccurrenceFlatProto items = 1;
+  PaginationMetadata pagination = 2;
+}
+
+// ===== Executions =====
+
+message ExecutionQueryRequest {
+  repeated ExecutionTypeProto types = 1;
+  repeated TickerStatusProto statuses = 2;
+  optional string function_name = 3;
+  optional google.protobuf.Timestamp executed_from = 5;
+  optional google.protobuf.Timestamp executed_to = 6;
+  optional string search = 7;
+  optional string sort_by = 8;
+  bool sort_descending = 9;
+  int32 page_number = 10;
+  int32 page_size = 11;
+}
+
+message ExecutionListResponse {
+  repeated ExecutionFlatProto items = 1;
+  PaginationMetadata pagination = 2;
+}
+
+// ===== Stats =====
+
+message StatusCountsResponse {
+  repeated StatusCountProto items = 1;
+}
+
+message NodeJobCountsResponse {
+  repeated NodeJobCountProto items = 1;
+}
+
+// ===== Nodes / Host / Functions =====
+
+message NodeNameRequest {
+  string node_name = 1;
+}
+
+message NodeListResponse {
+  repeated NodeProto items = 1;
+}
+
+message FunctionListResponse {
+  repeated FunctionProto items = 1;
+}
+
+// ===== Graphs =====
+
+message GraphRangeRequest {
+  int32 past_days = 1;
+  int32 future_days = 2;
+}
+
+message CronTickerGraphRangeRequest {
+  string cron_ticker_id = 1;
+  int32 past_days = 2;
+  int32 future_days = 3;
+}
+
+message GraphResponse {
+  repeated GraphBucketProto buckets = 1;
+}
+
+// ===== Logs =====
+
+message TickerLogLineProto {
+  int64 unix_ms = 1;
+  int32 level = 2;            // 0=Trace 1=Debug 2=Info 3=Warn 4=Error 5=Critical
+  string source = 3;          // "sdk" | "scheduler"
+  string message = 4;
+  string category = 5;
+  string function_name = 6;
+}
+
+message TickerLogTailResponse {
+  repeated TickerLogLineProto lines = 1;
+}

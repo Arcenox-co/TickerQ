@@ -525,14 +525,21 @@ namespace TickerQ.Provider
         {
             var now = _clock.UtcNow;
 
-            // Remove orphaned cron tickers whose function no longer exists in the code definitions (#517).
+            // Remove orphaned cron tickers whose function no longer exists in the
+            // code definitions (#517). Limited to *seeded* crons (non-empty
+            // InitIdentifier) so dashboard-created crons targeting SDK / remote
+            // functions aren't wiped on scheduler restart — at boot the SDK
+            // hasn't synced its functions yet, so the registry wouldn't contain
+            // qualified `name@node` entries. See the EF provider's mirror
+            // comment for the full rationale.
             var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys
                 .ToHashSet(StringComparer.Ordinal);
 
             var snapshot = CronTickers.ToArray();
             foreach (var (id, ticker) in snapshot)
             {
-                if (!allRegisteredFunctions.Contains(ticker.Function))
+                if (!string.IsNullOrEmpty(ticker.InitIdentifier)
+                    && !allRegisteredFunctions.Contains(ticker.Function))
                     CronTickers.TryRemove(id, out _);
             }
 
@@ -564,7 +571,7 @@ namespace TickerQ.Provider
         public Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken)
         {
             var result = CronTickers.Values
-                .Where(x => x.IsEnabled)
+                .Where(x => x.IsEnabled && !x.IsSystemPaused)
                 .Cast<CronTickerEntity>()
                 .ToArray();
 

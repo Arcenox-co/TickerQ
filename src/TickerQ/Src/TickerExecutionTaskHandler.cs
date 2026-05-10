@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Exceptions;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Instrumentation;
@@ -140,6 +141,11 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
 
         var stopWatch = new Stopwatch();
+        // Total wall-clock from first attempt start through the final outcome,
+        // including retry wait intervals. Persisted as ElapsedTime so the
+        // dashboard's Duration column reflects the user's lived time, not just
+        // the last attempt's CPU time.
+        var totalStopWatch = Stopwatch.StartNew();
         var cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         // IMPORTANT: Register the ticker FIRST, before creating the SkipIfAlreadyRunningAction callback
@@ -154,6 +160,11 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             Type = context.Type,
             IsDue = isDue,
             ScheduledFor = context.ExecutionTime,
+            // Forward retry config so delegates that defer execution to a different
+            // process (e.g. the remote-dispatch delegate that ships work to the SDK)
+            // can pass it along — without these the SDK would see Retries=0.
+            Retries = context.Retries,
+            RetryIntervals = context.RetryIntervals,
             RequestCancelOperationAction = () => cancellationTokenSource.Cancel(),
             CronOccurrenceOperations = new CronOccurrenceOperations
             {
@@ -190,9 +201,25 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 stopWatch.Restart();
 
                 if (context.CachedDelegate is null)
+                {
+                    // Qualified function name (`name@nodeName`) with no
+                    // matching delegate almost always means the SDK that
+                    // owns it is currently offline — its functions get
+                    // unregistered from TickerFunctionProvider when the
+                    // worker stream drops. Surface as SdkOfflineSkipException
+                    // so the run lands as Skipped (with the SDK-offline
+                    // reason persisted) instead of burning user retries on
+                    // something that can't run until the node is back.
+                    if (!string.IsNullOrEmpty(context.FunctionName) && context.FunctionName.Contains('@'))
+                    {
+                        var node = context.FunctionName[(context.FunctionName.IndexOf('@') + 1)..];
+                        throw new SdkOfflineSkipException(
+                            $"SDK node '{node}' is offline (function '{context.FunctionName}' is not currently registered).");
+                    }
                     throw new InvalidOperationException(
                         $"Ticker function '{context.FunctionName}' was not found in the registered functions. " +
                         "Ensure the function is properly decorated with [TickerFunction] attribute and the containing class is registered.");
+                }
 
                 // Create service scope - will be disposed automatically via await using
                 await using var scope = _serviceProvider.CreateAsyncScope();
@@ -255,24 +282,58 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
                 return;
             }
+            catch (SdkOfflineSkipException ex)
+            {
+                // SDK node is offline and the transport-retry window
+                // expired. Don't burn the user's Retries budget — retrying
+                // is pointless while the node is down. Land on Skipped with
+                // the reason persisted so the dashboard can distinguish
+                // "would have run but SDK was offline" from "ran and broke".
+                context.SetProperty(x => x.Status, TickerStatus.Skipped)
+                    .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
+                    .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
+                    .SetProperty(x => x.ExceptionDetails, ex.Message);
+
+                jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
+                jobActivity?.SetTag("tickerq.job.skip_reason", ex.Message);
+                _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
+
+                await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+
+                TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
+                return;
+            }
             catch (Exception ex)
             {
                 lastException = ex;
-                
+
                 context.SetProperty(x => x.ExceptionDetails, SerializeException(ex));
-                
+
                 if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
                     await handler.HandleExceptionAsync(ex, context.TickerId, context.Type);
 
+                // Per-attempt failure log so retries are visible in trace/logs.
+                // The terminal failure (last attempt that exhausts retries) is logged
+                // by the post-loop block below as Error — guard with `attempt < Retries`
+                // so non-terminal attempts log as Warning instead and the final attempt
+                // isn't double-logged.
+                if (attempt < context.Retries)
+                    _tickerQInstrumentation.LogJobAttemptFailed(
+                        context.TickerId, context.FunctionName, attempt, context.Retries, stopWatch.ElapsedMilliseconds, ex);
+
                 await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
-                
+
                 context.ResetUpdateProps();
             }
         }
 
         stopWatch.Stop();
+        totalStopWatch.Stop();
 
-        context.SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
+        // Persist the *total* time (first attempt start → final outcome, includes
+        // retry waits). The per-attempt stopWatch is still used for instrumentation
+        // ("attempt X failed in 200ms") but doesn't reflect user-lived duration.
+        context.SetProperty(x => x.ElapsedTime, totalStopWatch.ElapsedMilliseconds)
             .SetProperty(x => x.ExecutedAt, _clock.UtcNow);
 
         if (success)
@@ -284,7 +345,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             jobActivity?.SetTag("tickerq.job.final_retry_count", context.RetryCount);
             
             // Log job completed successfully
-            _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, stopWatch.ElapsedMilliseconds, true);
+            _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, totalStopWatch.ElapsedMilliseconds, true);
 
             await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
         }
@@ -300,7 +361,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             
             // Log job failed
             _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, lastException, context.RetryCount);
-            _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, stopWatch.ElapsedMilliseconds, false);
+            _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, totalStopWatch.ElapsedMilliseconds, false);
 
             await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
         }
@@ -330,6 +391,11 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 ? context.RetryIntervals[attempt - 1]
                 : context.RetryIntervals[^1])
             : 30;
+
+        // Announce the upcoming retry. attempt is the 1-based retry number that's
+        // about to run, matching the dashboard's "N/M" Retries column ("retries done / max").
+        _tickerQInstrumentation.LogJobRetryScheduled(
+            context.TickerId, context.FunctionName, attempt, context.Retries, retryInterval);
 
         await Task.Delay(TimeSpan.FromSeconds(retryInterval), cancellationTokenSource.Token);
 

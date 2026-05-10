@@ -111,10 +111,10 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TTimeTicker>(
                     new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
             
-            entity.ExecutionTime = entity.ExecutionTime == null 
+            entity.ExecutionTime = entity.ExecutionTime == null
                 ? _clock.UtcNow
                 : ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
-            
+
             entity.CreatedAt = _clock.UtcNow;
             entity.UpdatedAt = _clock.UtcNow;
             
@@ -125,6 +125,16 @@ namespace TickerQ.Utilities.Managers
 
                 // Persist first
                 await _persistenceProvider.AddTimeTickers([entity], cancellationToken: cancellationToken);
+
+                // Notify the dashboard BEFORE the dispatch path — for tickers
+                // scheduled at "now" the dispatcher acquires + runs immediately
+                // and execution often finishes before this method returns. If
+                // the SignalR push happens after dispatch, the dashboard never
+                // sees the row in its Idle/Queued/InProgress states; it just
+                // appears already Done. Sending the scope.changed event up
+                // front guarantees the list refetches the moment the row is
+                // committed to the DB.
+                await _notificationHubSender.AddTimeTickerNotifyAsync(entity.Id).ConfigureAwait(false);
 
                 // Only try to dispatch immediately if dispatcher is enabled (background services running)
                 if (_dispatcher.IsEnabled && executionTime <= now.AddSeconds(1))
@@ -145,9 +155,6 @@ namespace TickerQ.Utilities.Managers
                 {
                     _tickerQHostScheduler.RestartIfNeeded(executionTime);
                 }
-
-                await _notificationHubSender.AddTimeTickerNotifyAsync(entity.Id).ConfigureAwait(false);
-
 
                 return new TickerResult<TTimeTicker>(entity);
             }
