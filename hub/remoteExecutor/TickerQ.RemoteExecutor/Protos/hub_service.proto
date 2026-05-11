@@ -62,6 +62,20 @@ message HubNode {
   bool auto_migrate_expressions = 6;
   optional google.protobuf.Timestamp last_synced_at = 7;
   repeated HubFunction functions = 8;
+  // True when the Hub currently has a live control stream to this SDK node —
+  // i.e. dispatch to this node has a route. Schedulers use this to skip
+  // (un-register) functions whose owning node is offline, so cron occurrences
+  // don't sit InProgress forever waiting for a node that can't answer.
+  //
+  // Marked `optional` so an old Hub that doesn't populate this field is
+  // distinguishable from one that explicitly says "false". Clients read
+  // `HasIsDispatchable` first: if false, treat the node as dispatchable
+  // (fallback to legacy behavior — never skip). Only when the field is
+  // present and explicitly false do we unregister.
+  optional bool is_dispatchable = 9;
+  // Unix milliseconds when Hub last saw activity from this node's control
+  // stream. Informational; useful for dashboard "last seen" displays.
+  int64 last_seen_unix_ms = 10;
 }
 
 message HubFunction {
@@ -72,5 +86,10 @@ message HubFunction {
   string node_expression = 5;
   HubTaskPriority task_priority = 6;
   optional google.protobuf.Timestamp applied_at = 7;
+  // SDK-reported presence — the SDK still declares this function in source.
   bool is_active = 8;
+  // User intent — the function is enabled for dispatch. False after manual Unapply.
+  // Optional for backward compatibility: an old Hub returns the field absent,
+  // which the scheduler treats as "unknown → assume enabled" (legacy semantics).
+  optional bool is_enabled = 11;
 }

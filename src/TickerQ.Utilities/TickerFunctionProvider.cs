@@ -78,6 +78,11 @@ namespace TickerQ.Utilities
         /// Unlike <see cref="RegisterFunctions"/>, this REMOVES entries that are absent
         /// from the new set — required for resync-style flows (e.g. RemoteExecutor pulling
         /// the latest active functions from the Hub after a toggle).
+        ///
+        /// <para><b>Prefer <see cref="MergeRemoteFunctions"/></b> when you only want to
+        /// rewrite the remote slice and leave local source-gen registrations alone.
+        /// Calling <c>ReplaceFunctions</c> with only the remote slice will wipe the
+        /// local source-gen <c>[TickerFunction]</c> entries, which is almost always a bug.</para>
         /// </summary>
         public static void ReplaceFunctions(IDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> functions)
         {
@@ -98,6 +103,71 @@ namespace TickerQ.Utilities
             lock (_buildLock)
             {
                 TickerFunctionRequestInfos = infos.ToFrozenDictionary();
+            }
+        }
+
+        /// <summary>
+        /// Rewrites only the <i>remote</i> slice of the function registry, preserving
+        /// every entry that <paramref name="isCurrentlyRemote"/> returns <c>false</c> for.
+        /// Used by the RemoteExecutor's periodic Hub sync — it knows which keys belong to
+        /// remote SDK nodes (via <c>RemoteFunctionRegistry</c>) and replaces only those,
+        /// so local <c>[TickerFunction]</c> registrations from source-gen are never wiped.
+        /// </summary>
+        /// <param name="remoteFunctions">Fresh remote slice from the Hub. Keyed by the qualified name (<c>bare@node</c>).</param>
+        /// <param name="isCurrentlyRemote">Returns true for keys currently tracked as remote. Those entries are dropped before the new slice is applied.</param>
+        public static void MergeRemoteFunctions(
+            IDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> remoteFunctions,
+            Func<string, bool> isCurrentlyRemote)
+        {
+            if (remoteFunctions == null) throw new ArgumentNullException(nameof(remoteFunctions));
+            if (isCurrentlyRemote == null) throw new ArgumentNullException(nameof(isCurrentlyRemote));
+
+            lock (_buildLock)
+            {
+                var merged = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>(TickerFunctions.Count + remoteFunctions.Count);
+
+                // Keep only entries NOT currently flagged as remote — that's the local slice.
+                foreach (var (k, v) in TickerFunctions)
+                {
+                    if (!isCurrentlyRemote(k)) merged[k] = v;
+                }
+
+                // Apply the fresh remote slice (overwrites if a key collides with a local one;
+                // remote-wins-on-collision is intentional because the qualified key shape
+                // ("bare@node") shouldn't collide with a bare local name in the first place).
+                foreach (var (k, v) in remoteFunctions)
+                {
+                    merged[k] = v;
+                }
+
+                TickerFunctions = merged.ToFrozenDictionary();
+                IsBuilt = true;
+            }
+        }
+
+        /// <summary>Same as <see cref="MergeRemoteFunctions"/> but for the request-info table.</summary>
+        public static void MergeRemoteRequestInfo(
+            IDictionary<string, (string RequestType, string RequestExampleJson)> remoteInfos,
+            Func<string, bool> isCurrentlyRemote)
+        {
+            if (remoteInfos == null) throw new ArgumentNullException(nameof(remoteInfos));
+            if (isCurrentlyRemote == null) throw new ArgumentNullException(nameof(isCurrentlyRemote));
+
+            lock (_buildLock)
+            {
+                var merged = new Dictionary<string, (string RequestType, string RequestExampleJson)>(TickerFunctionRequestInfos.Count + remoteInfos.Count);
+
+                foreach (var (k, v) in TickerFunctionRequestInfos)
+                {
+                    if (!isCurrentlyRemote(k)) merged[k] = v;
+                }
+
+                foreach (var (k, v) in remoteInfos)
+                {
+                    merged[k] = v;
+                }
+
+                TickerFunctionRequestInfos = merged.ToFrozenDictionary();
             }
         }
 
