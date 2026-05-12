@@ -1,6 +1,7 @@
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using TickerQ.RemoteExecutor.Grpc;
+using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -150,7 +151,13 @@ public sealed class DashboardOperationGrpcService<TTimeTicker, TCronTicker> : Da
         // registry entry. If the dashboard already sent a qualified name we trust it;
         // otherwise resolve the owning node from the registry.
         var function = request.Function;
-        if (!function.Contains('@'))
+        // Only auto-qualify if there's no scheduler-owned (bare-keyed) entry. When
+            // both a local source-gen function and an SDK function share the same bare
+            // name, the dashboard sends `bare` when the user picked the scheduler row in
+            // the dropdown (it sends `bare@node` for the SDK row). Without this guard we
+            // upgraded every bare submission to `bare@node`, sending the user's scheduler
+            // choice to the SDK.
+            if (!function.Contains('@') && !TickerFunctionProvider.TickerFunctions.ContainsKey(function))
         {
             var nodeName = RemoteFunctionRegistry.GetNodeName(function);
             if (!string.IsNullOrEmpty(nodeName))
@@ -247,7 +254,13 @@ public sealed class DashboardOperationGrpcService<TTimeTicker, TCronTicker> : Da
             // Mirror the Add path: qualify bare names with @nodeName so dispatch
             // lookups hit the right registry entry. Pre-qualified names trusted as-is.
             var function = request.Function;
-            if (!function.Contains('@'))
+            // Only auto-qualify if there's no scheduler-owned (bare-keyed) entry. When
+            // both a local source-gen function and an SDK function share the same bare
+            // name, the dashboard sends `bare` when the user picked the scheduler row in
+            // the dropdown (it sends `bare@node` for the SDK row). Without this guard we
+            // upgraded every bare submission to `bare@node`, sending the user's scheduler
+            // choice to the SDK.
+            if (!function.Contains('@') && !TickerFunctionProvider.TickerFunctions.ContainsKey(function))
             {
                 var nodeName = RemoteFunctionRegistry.GetNodeName(function);
                 if (!string.IsNullOrEmpty(nodeName))
@@ -307,7 +320,13 @@ public sealed class DashboardOperationGrpcService<TTimeTicker, TCronTicker> : Da
         // Mirror the qualification logic from AddTimeTicker so bare names hit
         // the right registry entry on dispatch.
         var function = node.Function;
-        if (!function.Contains('@'))
+        // Only auto-qualify if there's no scheduler-owned (bare-keyed) entry. When
+            // both a local source-gen function and an SDK function share the same bare
+            // name, the dashboard sends `bare` when the user picked the scheduler row in
+            // the dropdown (it sends `bare@node` for the SDK row). Without this guard we
+            // upgraded every bare submission to `bare@node`, sending the user's scheduler
+            // choice to the SDK.
+            if (!function.Contains('@') && !TickerFunctionProvider.TickerFunctions.ContainsKey(function))
         {
             var nodeName = RemoteFunctionRegistry.GetNodeName(function);
             if (!string.IsNullOrEmpty(nodeName))
@@ -466,7 +485,13 @@ public sealed class DashboardOperationGrpcService<TTimeTicker, TCronTicker> : Da
         // Same node-qualification rule as AddTimeTicker: bare names get the
         // owning node appended so dispatch hits the right registry entry.
         var function = request.Function;
-        if (!function.Contains('@'))
+        // Only auto-qualify if there's no scheduler-owned (bare-keyed) entry. When
+            // both a local source-gen function and an SDK function share the same bare
+            // name, the dashboard sends `bare` when the user picked the scheduler row in
+            // the dropdown (it sends `bare@node` for the SDK row). Without this guard we
+            // upgraded every bare submission to `bare@node`, sending the user's scheduler
+            // choice to the SDK.
+            if (!function.Contains('@') && !TickerFunctionProvider.TickerFunctions.ContainsKey(function))
         {
             var nodeName = RemoteFunctionRegistry.GetNodeName(function);
             if (!string.IsNullOrEmpty(nodeName))
@@ -509,7 +534,13 @@ public sealed class DashboardOperationGrpcService<TTimeTicker, TCronTicker> : Da
         if (request.HasFunction && !string.IsNullOrWhiteSpace(request.Function))
         {
             var function = request.Function;
-            if (!function.Contains('@'))
+            // Only auto-qualify if there's no scheduler-owned (bare-keyed) entry. When
+            // both a local source-gen function and an SDK function share the same bare
+            // name, the dashboard sends `bare` when the user picked the scheduler row in
+            // the dropdown (it sends `bare@node` for the SDK row). Without this guard we
+            // upgraded every bare submission to `bare@node`, sending the user's scheduler
+            // choice to the SDK.
+            if (!function.Contains('@') && !TickerFunctionProvider.TickerFunctions.ContainsKey(function))
             {
                 var nodeName = RemoteFunctionRegistry.GetNodeName(function);
                 if (!string.IsNullOrEmpty(nodeName))

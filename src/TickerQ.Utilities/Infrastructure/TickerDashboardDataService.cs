@@ -655,33 +655,24 @@ namespace TickerQ.Utilities.Infrastructure
             var functions = TickerFunctionProvider.TickerFunctions;
             var infos = TickerFunctionProvider.TickerFunctionRequestInfos;
 
-            // Skip qualified entries ("bare@node") — those are SDK-contributed routes
-            // merged into the local registry so the dispatch loop can find them, but
-            // they are not scheduler-owned functions. The Hub already knows about SDK
-            // functions via the SDK's own function-sync; surfacing them here would
-            // cause every SDK function to appear in the scheduler's "Functions" list
-            // as if the scheduler owned it.
-            var result = functions
-                .Where(kvp => kvp.Key.IndexOf('@') < 0)
-                .Select(kvp =>
+            var result = functions.Select(kvp =>
+            {
+                var name = kvp.Key;
+                string reqType = null, reqExample = null;
+                if (infos != null && infos.TryGetValue(name, out var info))
                 {
-                    var name = kvp.Key;
-                    string reqType = null, reqExample = null;
-                    if (infos != null && infos.TryGetValue(name, out var info))
-                    {
-                        reqType = info.RequestType;
-                        reqExample = info.RequestExampleJson;
-                    }
-                    return new FunctionInfoDto
-                    {
-                        FunctionName = name,
-                        RequestType = reqType,
-                        RequestExample = reqExample,
-                        Priority = kvp.Value.Priority,
-                        CronExpression = kvp.Value.cronExpression
-                    };
-                })
-                .ToList();
+                    reqType = info.RequestType;
+                    reqExample = info.RequestExampleJson;
+                }
+                return new FunctionInfoDto
+                {
+                    FunctionName = name,
+                    RequestType = reqType,
+                    RequestExample = reqExample,
+                    Priority = kvp.Value.Priority,
+                    CronExpression = kvp.Value.cronExpression
+                };
+            }).ToList();
 
             return Task.FromResult<IList<FunctionInfoDto>>(result);
         }
