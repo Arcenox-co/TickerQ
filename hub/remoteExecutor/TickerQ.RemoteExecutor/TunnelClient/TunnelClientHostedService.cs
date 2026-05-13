@@ -333,8 +333,6 @@ public sealed class TunnelClientHostedService : BackgroundService
             KeepAlivePingTimeout = TimeSpan.FromSeconds(30),
             PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5)
         };
-        // Trust local dev certs when the hub is on loopback.
-        handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
         return handler;
     }
 

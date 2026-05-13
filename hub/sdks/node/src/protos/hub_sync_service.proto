@@ -1,0 +1,33 @@
+syntax = "proto3";
+package tickerq.v1;
+
+service HubService {
+  rpc SyncNodesFunctions(SyncNodesFunctionsRequest) returns (SyncNodesFunctionsResponse);
+}
+
+enum TickerTaskPriority {
+  TICKER_TASK_PRIORITY_LONG_RUNNING = 0;
+  TICKER_TASK_PRIORITY_HIGH = 1;
+  TICKER_TASK_PRIORITY_NORMAL = 2;
+  TICKER_TASK_PRIORITY_LOW = 3;
+}
+
+message SyncNodesFunctionsRequest {
+  string node_name = 1;
+  string callback_url = 2;
+  repeated SyncFunctionDescriptor functions = 3;
+  string sdk_type = 4;
+}
+
+message SyncFunctionDescriptor {
+  string function_name = 1;
+  string request_type = 2;
+  string request_example_json = 3;
+  TickerTaskPriority task_priority = 4;
+  string expression = 5;
+}
+
+message SyncNodesFunctionsResponse {
+  string application_url = 1;
+  string webhook_signature = 2;
+}

@@ -104,11 +104,15 @@ export class TickerQTaskScheduler {
      * Wait for all running tasks to complete.
      */
     async waitForRunningTasks(timeoutMs?: number): Promise<boolean> {
-        if (this.runningTasks.size === 0 && this.totalQueuedTasks === 0) {
+        const allDone = (async () => {
+            while (this.runningTasks.size > 0 || this.totalQueuedTasks > 0) {
+                if (this.runningTasks.size === 0) {
+                    this.processNext();
+                }
+                await Promise.all([...this.runningTasks]);
+            }
             return true;
-        }
-
-        const allDone = Promise.all(this.runningTasks).then(() => true);
+        })();
 
         if (timeoutMs == null) {
             await allDone;

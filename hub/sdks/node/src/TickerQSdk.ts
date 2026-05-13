@@ -1,5 +1,5 @@
 import { TickerSdkOptions } from './TickerSdkOptions';
-import { TickerQSdkHttpClient, TickerQLogger } from './client/TickerQSdkHttpClient';
+import type { TickerQLogger } from './logging/TickerQLogger';
 import {
     TickerFunctionProvider,
     type TickerFunctionHandler,
@@ -10,7 +10,8 @@ import { TickerQFunctionSyncService } from './infrastructure/TickerQFunctionSync
 import { TickerQRemotePersistenceProvider } from './persistence/TickerQRemotePersistenceProvider';
 import { TickerQTaskScheduler } from './worker/TickerQTaskScheduler';
 import { TickerFunctionConcurrencyGate } from './worker/TickerFunctionConcurrencyGate';
-import { SdkExecutionEndpoint } from './middleware/SdkExecutionEndpoint';
+import { WorkerStreamClient } from './worker/WorkerStreamClient';
+import { TickerQSdkControlClient } from './control/TickerQSdkControlClient';
 
 /**
  * Main entry point for the TickerQ Node.js SDK.
@@ -19,8 +20,6 @@ import { SdkExecutionEndpoint } from './middleware/SdkExecutionEndpoint';
  * ```ts
  * const sdk = new TickerQSdk(opts => opts
  *     .setApiKey('your-key')
- *     .setApiSecret('your-secret')
- *     .setCallbackUri('https://your-app.com')
  *     .setNodeName('node-1')
  * );
  *
@@ -38,18 +37,17 @@ import { SdkExecutionEndpoint } from './middleware/SdkExecutionEndpoint';
  *     });
  *
  * await sdk.start();
- * sdk.expressHandlers().mount(app);
  * ```
  */
 export class TickerQSdk {
     readonly options: TickerSdkOptions;
-    readonly httpClient: TickerQSdkHttpClient;
     readonly syncService: TickerQFunctionSyncService;
     readonly persistenceProvider: TickerQRemotePersistenceProvider;
     readonly taskScheduler: TickerQTaskScheduler;
     readonly concurrencyGate: TickerFunctionConcurrencyGate;
+    readonly workerStream: WorkerStreamClient;
+    readonly controlClient: TickerQSdkControlClient;
 
-    private readonly endpoint: SdkExecutionEndpoint;
     private readonly logger: TickerQLogger | null;
     private _started = false;
 
@@ -62,20 +60,22 @@ export class TickerQSdk {
         this.options.validate();
 
         this.logger = logger ?? null;
-        this.httpClient = new TickerQSdkHttpClient(this.options, this.logger ?? undefined);
-        this.syncService = new TickerQFunctionSyncService(this.httpClient, this.options);
-        this.persistenceProvider = new TickerQRemotePersistenceProvider(this.httpClient);
+        this.syncService = new TickerQFunctionSyncService(this.options);
         this.taskScheduler = new TickerQTaskScheduler();
         this.concurrencyGate = new TickerFunctionConcurrencyGate();
-
-        this.endpoint = new SdkExecutionEndpoint(
+        this.workerStream = new WorkerStreamClient(
             this.options,
             this.syncService,
             this.taskScheduler,
             this.concurrencyGate,
-            this.persistenceProvider,
             this.logger ?? undefined,
         );
+        this.controlClient = new TickerQSdkControlClient(
+            this.options,
+            this.syncService,
+            this.logger ?? undefined,
+        );
+        this.persistenceProvider = new TickerQRemotePersistenceProvider(this.options, this.workerStream);
     }
 
     /**
@@ -166,9 +166,7 @@ export class TickerQSdk {
 
         TickerFunctionProvider.build();
 
-        this.logger?.info(
-            `TickerQ SDK: Starting with ${TickerFunctionProvider.tickerFunctions.size} registered function(s)...`,
-        );
+        this.logger?.info(`TickerQ SDK: Starting with ${TickerFunctionProvider.tickerFunctions.size} registered function(s)...`);
 
         const result = await this.syncService.syncAsync();
 
@@ -176,6 +174,8 @@ export class TickerQSdk {
             this.logger?.info(
                 `TickerQ SDK: Synced with Hub. Scheduler URL: ${result.applicationUrl}`,
             );
+            await this.controlClient.start();
+            await this.workerStream.start();
         } else {
             this.logger?.warn('TickerQ SDK: Hub sync returned null. Functions may not be scheduled.');
         }
@@ -188,27 +188,38 @@ export class TickerQSdk {
      */
     async stop(timeoutMs = 30_000): Promise<void> {
         this.logger?.info('TickerQ SDK: Stopping...');
+        const drained = await this.taskScheduler.waitForRunningTasks(timeoutMs);
         this.taskScheduler.freeze();
-        await this.taskScheduler.waitForRunningTasks(timeoutMs);
+        this.controlClient.stop();
+        if (!drained) {
+            this.logger?.warn(`TickerQ SDK: Stop timed out after ${timeoutMs}ms; cancelling running executions.`);
+        }
+        await this.workerStream.stop(!drained);
         this.taskScheduler.dispose();
+        this._started = false;
         this.logger?.info('TickerQ SDK: Stopped.');
-    }
-
-    /**
-     * Returns a framework-agnostic HTTP handler for /execute and /resync.
-     */
-    createHandler(prefix = ''): (req: import('http').IncomingMessage, res: import('http').ServerResponse) => void {
-        return this.endpoint.createHandler(prefix);
-    }
-
-    /**
-     * Returns Express-compatible route handlers for /execute and /resync.
-     */
-    expressHandlers(prefix = '') {
-        return this.endpoint.expressHandlers(prefix);
     }
 
     get isStarted(): boolean {
         return this._started;
     }
+}
+
+export interface CreateTickerSdkOptions {
+    apiKey: string;
+    nodeName?: string;
+    timeoutMs?: number;
+    allowSelfSignedCerts?: boolean;
+}
+
+export function createTickerSdk(
+    options: CreateTickerSdkOptions,
+    logger?: TickerQLogger,
+): TickerQSdk {
+    return new TickerQSdk((sdkOptions) => {
+        sdkOptions.setApiKey(options.apiKey);
+        if (options.nodeName) sdkOptions.setNodeName(options.nodeName);
+        if (options.timeoutMs != null) sdkOptions.setTimeoutMs(options.timeoutMs);
+        if (options.allowSelfSignedCerts != null) sdkOptions.setAllowSelfSignedCerts(options.allowSelfSignedCerts);
+    }, logger);
 }

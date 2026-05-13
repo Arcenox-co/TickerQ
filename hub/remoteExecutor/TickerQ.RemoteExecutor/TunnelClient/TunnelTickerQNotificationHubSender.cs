@@ -36,6 +36,7 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
     private readonly TunnelClientHostedService _tunnel;
     private readonly TickerLogRingBuffer _logBuffer;
     private readonly ILogger<TunnelTickerQNotificationHubSender>? _logger;
+    private readonly string _sourceId = Guid.NewGuid().ToString("N");
     private long _sequence;
 
     // Track which tickers have already emitted a terminal lifecycle log line.
@@ -306,19 +307,20 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
 
         try
         {
-            var notification = new NotificationEvent
-            {
-                EventType = eventType,
-                Scope = scope ?? string.Empty,
-                Sequence = Interlocked.Increment(ref _sequence),
-                EmittedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-            if (payload != null)
-                notification.PayloadJson = ByteString.CopyFrom(JsonSerializer.SerializeToUtf8Bytes(payload, Json));
-
             await _tunnel.WriteLock.WaitAsync().ConfigureAwait(false);
             try
             {
+                var notification = new NotificationEvent
+                {
+                    EventType = eventType,
+                    Scope = scope ?? string.Empty,
+                    Sequence = ++_sequence,
+                    EmittedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    SourceId = _sourceId
+                };
+                if (payload != null)
+                    notification.PayloadJson = ByteString.CopyFrom(JsonSerializer.SerializeToUtf8Bytes(payload, Json));
+
                 await writer.WriteAsync(new SchedulerEvent { Notification = notification }).ConfigureAwait(false);
             }
             finally

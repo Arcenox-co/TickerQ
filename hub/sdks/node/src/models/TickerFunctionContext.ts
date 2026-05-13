@@ -1,5 +1,14 @@
 import { TickerType } from '../enums';
 
+export interface TickerExecutionLogger {
+    trace(message: string, category?: string): void;
+    debug(message: string, category?: string): void;
+    info(message: string, category?: string): void;
+    warn(message: string, category?: string): void;
+    error(message: string, category?: string): void;
+    critical(message: string, category?: string): void;
+}
+
 /**
  * Base context passed to every ticker function handler.
  *
@@ -14,4 +23,6 @@ export interface TickerFunctionContext<TRequest = never> {
     scheduledFor: Date;
     functionName: string;
     request: TRequest;
+    /** Forward execution-scoped log lines to the TickerQ dashboard. */
+    log: TickerExecutionLogger;
 }

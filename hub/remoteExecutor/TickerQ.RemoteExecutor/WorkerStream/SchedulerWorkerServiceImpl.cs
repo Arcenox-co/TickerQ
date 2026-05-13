@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
@@ -42,6 +43,8 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
     // Replay window: ±300s skew. Same as today's per-call HMAC, just done once per stream.
     private static readonly TimeSpan ReplaySkew = TimeSpan.FromSeconds(300);
+    private static readonly TimeSpan NonceRetention = TimeSpan.FromMinutes(10);
+    private static readonly ConcurrentDictionary<string, long> SeenHelloNonces = new();
 
     private readonly TickerQRemoteExecutionOptions _options;
     private readonly WorkerStreamRegistry _registry;
@@ -51,6 +54,7 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
     // Optional: only set when tunnel is enabled (NoOp sender otherwise).
     private readonly TunnelTickerQNotificationHubSender? _tunnelSender;
     private readonly ILogger<SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>> _logger;
+    private readonly SemaphoreSlim _eventLock = new(1, 1);
 
     public SchedulerWorkerServiceImpl(
         TickerQRemoteExecutionOptions options,
@@ -120,9 +124,7 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
             while (await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
             {
                 var msg = requestStream.Current;
-                // Process each inbound frame in a fire-and-forget task so a slow handler
-                // doesn't block the read loop and starve the stream.
-                _ = HandleEventAsync(conn, msg, context.CancellationToken);
+                await HandleEventAsync(conn, msg, context.CancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { /* client disconnect — expected */ }
@@ -137,6 +139,7 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
 
     private async Task HandleEventAsync(SchedulerWorkerConnection conn, WorkerEvent msg, System.Threading.CancellationToken ct)
     {
+        await _eventLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             switch (msg.PayloadCase)
@@ -227,6 +230,10 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
                 }
                 catch { /* best-effort */ }
             }
+        }
+        finally
+        {
+            _eventLock.Release();
         }
     }
 
@@ -463,6 +470,9 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
         if (Math.Abs(nowSec - hello.UnixSeconds) > ReplaySkew.TotalSeconds)
             throw new RpcException(new Status(StatusCode.Unauthenticated, "Hello timestamp outside replay window"));
 
+        if (string.IsNullOrWhiteSpace(hello.Nonce))
+            throw new RpcException(new Status(StatusCode.Unauthenticated, "Hello.nonce is required"));
+
         if (string.IsNullOrEmpty(hello.HmacSignature))
             throw new RpcException(new Status(StatusCode.Unauthenticated, "Hello.hmac_signature is required"));
 
@@ -476,6 +486,20 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
                 Encoding.UTF8.GetBytes(hello.HmacSignature)))
         {
             throw new RpcException(new Status(StatusCode.Unauthenticated, "Hello HMAC signature invalid"));
+        }
+
+        PruneSeenNonces(nowSec);
+        if (!SeenHelloNonces.TryAdd(hello.Nonce, nowSec))
+            throw new RpcException(new Status(StatusCode.Unauthenticated, "Hello nonce has already been used"));
+    }
+
+    private static void PruneSeenNonces(long nowSec)
+    {
+        var cutoff = nowSec - (long)NonceRetention.TotalSeconds;
+        foreach (var item in SeenHelloNonces)
+        {
+            if (item.Value < cutoff)
+                SeenHelloNonces.TryRemove(item.Key, out _);
         }
     }
 }

@@ -1,7 +1,7 @@
 {
   "name": "@tickerq/sdk",
   "version": "1.0.0",
-  "description": "TickerQ Node.js SDK — Connect your Node.js application to TickerQ Hub for distributed job scheduling.",
+  "description": "TickerQ Node.js SDK — outbound gRPC worker for TickerQ Hub remote execution.",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"const fs=require('fs');fs.cpSync('src/protos','dist/protos',{recursive:true});\"",
     "watch": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
@@ -46,16 +46,11 @@
     "LICENSE",
     "README.md"
   ],
-  "peerDependencies": {
-    "express": ">=4.0.0"
-  },
-  "peerDependenciesMeta": {
-    "express": {
-      "optional": true
-    }
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.0",
+    "@grpc/proto-loader": "^0.8.0"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
     "@types/node": "^20.11.0",
     "typescript": "^5.3.0"
   }

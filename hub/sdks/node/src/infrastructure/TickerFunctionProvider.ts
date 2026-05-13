@@ -1,5 +1,6 @@
 import { TickerTaskPriority } from '../enums';
 import { TickerFunctionContext } from '../models/TickerFunctionContext';
+import { toBareFunctionName } from '../utils/FunctionName';
 
 /**
  * Handler for a function WITH a typed request payload.
@@ -149,7 +150,7 @@ class TickerFunctionProviderImpl {
      * Get the stored request default for a function (used to populate ctx.request from raw bytes).
      */
     getRequestDefault(functionName: string): unknown | undefined {
-        return this._requestDefaults.get(functionName);
+        return this._requestDefaults.get(toBareFunctionName(functionName));
     }
 
     build(): void {
@@ -157,11 +158,19 @@ class TickerFunctionProviderImpl {
     }
 
     getFunction(functionName: string): TickerFunctionRegistration | undefined {
-        return this._functions.get(functionName);
+        return this._functions.get(toBareFunctionName(functionName));
     }
 
     hasFunction(functionName: string): boolean {
-        return this._functions.has(functionName);
+        return this._functions.has(toBareFunctionName(functionName));
+    }
+
+    removeFunction(functionName: string): boolean {
+        const bareName = toBareFunctionName(functionName);
+        const removed = this._functions.delete(bareName);
+        this._requestInfos.delete(bareName);
+        this._requestDefaults.delete(bareName);
+        return removed;
     }
 
     reset(): void {

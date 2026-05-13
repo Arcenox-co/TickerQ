@@ -1,6 +1,6 @@
 # @tickerq/sdk
 
-Node.js SDK for [TickerQ](https://tickerq.net) — connect your Node.js application to TickerQ Hub for distributed job scheduling.
+Node.js SDK for [TickerQ](https://tickerq.net) — run Node.js jobs from TickerQ Hub through outbound gRPC streams.
 
 ## Installation
 
@@ -13,20 +13,13 @@ npm install @tickerq/sdk
 ## Quick Start
 
 ```ts
-import express from 'express';
-import { TickerQSdk, TickerTaskPriority } from '@tickerq/sdk';
-
-const app = express();
-app.use(express.raw({ type: 'application/json' }));
+import { createTickerSdk, TickerTaskPriority } from '@tickerq/sdk';
 
 // 1. Initialize SDK
-const sdk = new TickerQSdk((opts) =>
-    opts
-        .setApiKey('your-api-key')
-        .setApiSecret('your-api-secret')
-        .setCallbackUri('https://your-app.com')
-        .setNodeName('my-node'),
-);
+const sdk = createTickerSdk({
+    apiKey: 'tq_sdk_...',
+    nodeName: 'my-node',
+});
 
 // 2. Register functions
 sdk.function('SendEmail', { priority: TickerTaskPriority.High })
@@ -35,11 +28,8 @@ sdk.function('SendEmail', { priority: TickerTaskPriority.High })
         console.log(`Sending email to ${ctx.request.to}`);
     });
 
-// 3. Mount endpoints & start
-sdk.expressHandlers().mount(app);
-
+// 3. Start outbound Hub/control + scheduler worker streams
 await sdk.start();
-app.listen(3000);
 ```
 
 ## Registering Functions
@@ -96,42 +86,22 @@ sdk.function('ResizeImage')
 ## SDK Configuration
 
 ```ts
-const sdk = new TickerQSdk((opts) =>
-    opts
-        .setApiKey('your-api-key')          // Required — Hub API key
-        .setApiSecret('your-api-secret')    // Required — Hub API secret
-        .setCallbackUri('https://...')       // Required — URL where Hub sends execution callbacks
-        .setNodeName('my-node')             // Required — Unique node identifier
-        .setTimeoutMs(30000)                // Optional — HTTP timeout (default: 30s)
-        .setAllowSelfSignedCerts(true),     // Optional — Skip TLS verification (dev only)
-);
+const sdk = createTickerSdk({
+    apiKey: 'tq_sdk_...',            // Required — Hub-issued SDK token
+    nodeName: 'my-node',             // Optional — defaults to host name
+    timeoutMs: 30000,                // Optional — gRPC operation timeout (default: 30s)
+    allowSelfSignedCerts: true,      // Optional — local scheduler/dev only
+});
 ```
 
-## Mounting Endpoints
+## Hub And Remote Execution
 
-The SDK exposes two HTTP endpoints that the Hub calls:
+The Node SDK matches the .NET SDK remote-execution model:
 
-- `POST /execute` — Receives function execution requests
-- `POST /resync` — Re-syncs function registry with the Hub
-
-### Express
-
-```ts
-sdk.expressHandlers().mount(app);
-
-// Or with a prefix
-sdk.expressHandlers('/tickerq').mount(app);
-```
-
-### Raw Node.js HTTP
-
-```ts
-import { createServer } from 'node:http';
-
-const handler = sdk.createHandler();
-const server = createServer(handler);
-server.listen(3000);
-```
+- Startup calls `HubService.SyncNodesFunctions` on `https://grpc.hub.tickerq.net/`.
+- The SDK opens a persistent Hub control stream for resync, remove-function, signature rotation, and heartbeat commands.
+- The SDK opens a scheduler worker stream to the `ApplicationUrl` returned by Hub. Dispatch, cancellation, ticker CRUD, status updates, and request payloads flow over that stream.
+- No inbound HTTP server, callback URL, or API secret is required.
 
 ## Lifecycle
 
@@ -160,6 +130,7 @@ sdk.function('MyJob')
         ctx.retryCount;    // number — current retry attempt
         ctx.scheduledFor;  // Date — when this execution was scheduled
         ctx.isDue;         // boolean
+        ctx.log.info('Starting MyJob'); // forwarded to dashboard logs
 
         // Use signal for cancellation
         if (signal.aborted) return;
@@ -197,18 +168,15 @@ const logger: TickerQLogger = {
     error: (msg, ...args) => console.error(msg, ...args),
 };
 
-const sdk = new TickerQSdk((opts) => opts
-    .setApiKey('...')
-    .setApiSecret('...')
-    .setCallbackUri('...')
-    .setNodeName('...'),
-    logger,
-);
+const sdk = createTickerSdk({
+    apiKey: '...',
+    nodeName: '...',
+}, logger);
 ```
 
-## Zero Dependencies
+## Runtime Dependencies
 
-The SDK has **no runtime dependencies**. It uses only Node.js built-in modules (`node:http`, `node:https`, `node:crypto`). Express is an optional peer dependency for the `expressHandlers()` convenience method.
+The SDK uses `@grpc/grpc-js` and `@grpc/proto-loader` for Hub and scheduler streams.
 
 ## License
 
