@@ -37,7 +37,7 @@ jobs:
           node-version: "20"
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci --ignore-scripts
         working-directory: src/TickerQ.Dashboard/wwwroot
 
       - name: Build frontend
