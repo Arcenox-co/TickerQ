@@ -151,5 +151,67 @@ namespace TickerQ.Dashboard.Hubs
         {
             await _hubContext.Clients.All.SendAsync("CanceledTickerNotification", id);
         }
+
+        // -------------------------------------------------------------------
+        // Periodic ticker notifications. Mirror the cron flow so that the
+        // dashboard UI consumes a single, consistent stream of ticker events.
+        // -------------------------------------------------------------------
+
+        public async Task AddPeriodicTickerNotifyAsync(object periodicTicker)
+        {
+            // Use object-typed JsonSerializer overload because PeriodicTickerEntity is the
+            // base type and consumers may pass subclasses; the AOT context covers the base.
+            var json = JsonSerializer.SerializeToElement((PeriodicTickerEntity)periodicTicker, DashboardJsonSerializerContext.Default.PeriodicTickerEntity);
+            await _hubContext.Clients.All.SendAsync("AddPeriodicTickerNotification", json);
+        }
+
+        public async Task UpdatePeriodicTickerNotifyAsync(object periodicTicker)
+        {
+            var json = JsonSerializer.SerializeToElement((PeriodicTickerEntity)periodicTicker, DashboardJsonSerializerContext.Default.PeriodicTickerEntity);
+            await _hubContext.Clients.All.SendAsync("UpdatePeriodicTickerNotification", json);
+        }
+
+        public async Task RemovePeriodicTickerNotifyAsync(Guid id)
+        {
+            await _hubContext.Clients.All.SendAsync("RemovePeriodicTickerNotification", id);
+        }
+
+        public async Task AddPeriodicOccurrenceAsync(Guid groupId, object occurrence)
+        {
+            var json = JsonSerializer.SerializeToElement(
+                (PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>)occurrence,
+                DashboardJsonSerializerContext.Default.PeriodicTickerOccurrenceEntityPeriodicTickerEntity);
+            await _hubContext.Clients.Group(groupId.ToString()).SendAsync("AddPeriodicOccurrenceNotification", json);
+        }
+
+        public async Task UpdatePeriodicOccurrenceAsync(Guid groupId, object occurrence)
+        {
+            var json = JsonSerializer.SerializeToElement(
+                (PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>)occurrence,
+                DashboardJsonSerializerContext.Default.PeriodicTickerOccurrenceEntityPeriodicTickerEntity);
+            await _hubContext.Clients.Group(groupId.ToString()).SendAsync("UpdatePeriodicOccurrenceNotification", json);
+        }
+
+        public Task UpdatePeriodicOccurrenceFromInternalFunctionContext<TPeriodicTicker>(InternalFunctionContext internalFunctionContext)
+            where TPeriodicTicker : PeriodicTickerEntity, new()
+        {
+            var payload = new PeriodicOccurrenceUpdateNotification
+            {
+                Id = internalFunctionContext.TickerId,
+                Status = internalFunctionContext.Status,
+                PeriodicTickerId = internalFunctionContext.ParentId,
+                ExecutedAt = internalFunctionContext.ExecutedAt,
+                ElapsedTime = internalFunctionContext.ElapsedTime,
+                RetryCount = internalFunctionContext.RetryCount,
+                ExceptionMessage = internalFunctionContext.ExceptionDetails
+            };
+
+            var json = JsonSerializer.SerializeToElement(payload, DashboardJsonSerializerContext.Default.PeriodicOccurrenceUpdateNotification);
+            _ = _hubContext.Clients
+                .Group(internalFunctionContext.ParentId?.ToString() ?? string.Empty)
+                .SendAsync("UpdatePeriodicOccurrenceNotification", json);
+
+            return Task.CompletedTask;
+        }
     }
 }

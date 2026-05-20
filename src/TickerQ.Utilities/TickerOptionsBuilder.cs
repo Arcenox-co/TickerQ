@@ -56,6 +56,8 @@ namespace TickerQ.Utilities
         bool ITickerOptionsSeeding.SeedDefinedCronTickers => SeedDefinedCronTickers;
         Func<IServiceProvider, System.Threading.Tasks.Task> ITickerOptionsSeeding.TimeSeederAction => TimeSeederAction;
         Func<IServiceProvider, System.Threading.Tasks.Task> ITickerOptionsSeeding.CronSeederAction => CronSeederAction;
+        bool ITickerOptionsSeeding.PeriodicEnabled => PeriodicEnabled;
+        Type ITickerOptionsSeeding.PeriodicTickerType => PeriodicTickerType;
 
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }

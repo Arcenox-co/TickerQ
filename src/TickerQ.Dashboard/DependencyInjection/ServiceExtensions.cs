@@ -30,10 +30,25 @@ namespace TickerQ.Dashboard.DependencyInjection
             };
             
             configureDashboard?.Invoke(dashboardConfig);
-            
+
+            // Propagate periodic-ticker opt-in from core options so the dashboard can register
+            // its periodic repository / endpoints.
+            dashboardConfig.PeriodicEnabled = tickerConfiguration.PeriodicEnabled;
+            dashboardConfig.PeriodicTickerType = tickerConfiguration.PeriodicTickerType;
+
             tickerConfiguration.DashboardServiceAction = (services) =>
             {
                 services.AddScoped<ITickerDashboardRepository<TTimeTicker, TCronTicker>, TickerDashboardRepository<TTimeTicker, TCronTicker>>();
+
+                // Periodic dashboard repository is registered reflectively so callers
+                // don't need to specify TPeriodicTicker on AddDashboard().
+                if (dashboardConfig.PeriodicEnabled && dashboardConfig.PeriodicTickerType != null)
+                {
+                    var repoInterface = typeof(IPeriodicDashboardRepository<>).MakeGenericType(dashboardConfig.PeriodicTickerType);
+                    var repoImpl = typeof(PeriodicDashboardRepository<>).MakeGenericType(dashboardConfig.PeriodicTickerType);
+                    services.AddScoped(repoInterface, repoImpl);
+                }
+
                 services.Replace(ServiceDescriptor.Singleton(services.AddSingleton<ITickerQNotificationHubSender, TickerQNotificationHubSender>()));
                 
                 // Validate configuration

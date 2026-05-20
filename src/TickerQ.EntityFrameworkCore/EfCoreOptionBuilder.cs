@@ -17,6 +17,30 @@ namespace TickerQ.EntityFrameworkCore
         internal int PoolSize { get; set; } = 1024;
         internal string Schema { get; set; } = "ticker";
 
+        // Periodic-ticker opt-in. Set via EnablePeriodic<T>(); consumed by ServiceBuilder
+        // to register the EF-backed periodic persistence provider and customizer variant.
+        internal bool PeriodicEnabled { get; private set; }
+        internal Type PeriodicTickerType { get; private set; }
+
+        /// <summary>
+        /// Enables EF Core persistence for <see cref="PeriodicTickerEntity"/> using the default entity type.
+        /// Must be paired with <c>tickerOptions.EnablePeriodic()</c> on the core
+        /// <c>TickerOptionsBuilder</c>; this call wires the EF-backed provider for it.
+        /// </summary>
+        public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> EnablePeriodic()
+            => EnablePeriodic<PeriodicTickerEntity>();
+
+        /// <summary>
+        /// Enables EF Core persistence for a custom <see cref="PeriodicTickerEntity"/> subclass.
+        /// </summary>
+        public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> EnablePeriodic<TPeriodicTicker>()
+            where TPeriodicTicker : PeriodicTickerEntity, new()
+        {
+            PeriodicEnabled = true;
+            PeriodicTickerType = typeof(TPeriodicTicker);
+            return this;
+        }
+
         public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseApplicationDbContext<TDbContext>(ConfigurationType configurationType) where TDbContext : DbContext
         {
             ServiceBuilder.UseApplicationDbContext<TDbContext, TTimeTicker, TCronTicker>(this, configurationType);

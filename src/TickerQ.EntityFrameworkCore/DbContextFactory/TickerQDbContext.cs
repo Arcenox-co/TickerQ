@@ -47,6 +47,43 @@ public class TickerQDbContext : TickerQDbContext<TimeTickerEntity, CronTickerEnt
     }
 }
 
+/// <summary>
+/// DbContext variant that also maps <see cref="PeriodicTickerEntity"/> tables. Use this base
+/// (or a subclass) when <c>EnablePeriodic&lt;TPeriodicTicker&gt;()</c> is configured. Existing
+/// users on the two-parameter <see cref="TickerQDbContext{TTimeTicker,TCronTicker}"/> are not
+/// affected and do not get periodic tables in their schema.
+/// </summary>
+public class TickerQDbContext<TTimeTicker, TCronTicker, TPeriodicTicker>
+    : TickerQDbContext<TTimeTicker, TCronTicker>
+    where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+    where TCronTicker : CronTickerEntity, new()
+    where TPeriodicTicker : PeriodicTickerEntity, new()
+{
+    public TickerQDbContext(DbContextOptions<TickerQDbContext<TTimeTicker, TCronTicker, TPeriodicTicker>> options) : base(options)
+    { }
+
+    protected TickerQDbContext(DbContextOptions options) : base(options)
+    { }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        string schema;
+        try
+        {
+            schema = this.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>()?.Schema ?? Constants.DefaultSchema;
+        }
+        catch (InvalidOperationException)
+        {
+            schema = Constants.DefaultSchema;
+        }
+
+        modelBuilder.ApplyConfiguration(new PeriodicTickerConfigurations<TPeriodicTicker>(schema));
+        modelBuilder.ApplyConfiguration(new PeriodicTickerOccurrenceConfigurations<TPeriodicTicker>(schema));
+    }
+}
+
 internal readonly struct DbContextLease<TContext> : IDisposable
     where TContext : DbContext
 {

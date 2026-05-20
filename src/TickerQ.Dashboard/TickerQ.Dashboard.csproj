@@ -24,8 +24,7 @@
         <FrameworkReference Include="Microsoft.AspNetCore.App" />
     </ItemGroup>
     <ItemGroup>
-        <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
-        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+        <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
     </ItemGroup>
 
     <!-- Prevent static web asset discovery -->

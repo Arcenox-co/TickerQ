@@ -4,14 +4,14 @@ namespace TickerQ.SourceGenerator.AttributeSyntaxes
 {
     public static class ExtractAttributeExtensions
     {
-        public static (string functionName, string cronExpression, int taskPriority, int maxConcurrency)
+        public static (string functionName, string cronExpression, int taskPriority, int maxConcurrency, string periodicInterval)
             GetTickerFunctionAttributeValues(this AttributeData attrData)
         {
             // If for some reason there is no ctor (should be rare), return defaults
             var ctor = attrData.AttributeConstructor;
             if (ctor == null)
             {
-                return (null, null, 0, 0);
+                return (null, null, 0, 0, null);
             }
 
             var parameters = ctor.Parameters;
@@ -19,6 +19,7 @@ namespace TickerQ.SourceGenerator.AttributeSyntaxes
             string cronExpression = null;
             int taskPriority = 0;
             int maxConcurrency = 0;
+            string periodicInterval = null;
 
             for (int i = 0; i < parameters.Length; i++)
             {
@@ -56,7 +57,16 @@ namespace TickerQ.SourceGenerator.AttributeSyntaxes
                 }
             }
 
-            return (functionName, cronExpression, taskPriority, maxConcurrency);
+            // PeriodicInterval is exposed as a named property — extract from NamedArguments.
+            foreach (var named in attrData.NamedArguments)
+            {
+                if (named.Key == "PeriodicInterval" && named.Value.Value is string s)
+                {
+                    periodicInterval = s;
+                }
+            }
+
+            return (functionName, cronExpression, taskPriority, maxConcurrency, periodicInterval);
         }
     }
 }

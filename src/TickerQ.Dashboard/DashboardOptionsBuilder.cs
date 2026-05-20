@@ -26,6 +26,12 @@ public class DashboardOptionsBuilder
 
     /// <summary>Tracks whether dashboard middleware has been applied to prevent double registration.</summary>
     internal bool MiddlewareApplied { get; set; }
+
+    /// <summary>True when the parent <see cref="TickerOptionsBuilder{TTime,TCron}"/> has periodic tickers enabled.</summary>
+    internal bool PeriodicEnabled { get; set; }
+
+    /// <summary>The concrete periodic ticker entity type (set when <c>EnablePeriodic&lt;T&gt;()</c> is configured on the core).</summary>
+    internal Type PeriodicTickerType { get; set; }
     
     public void SetCorsPolicy(Action<CorsPolicyBuilder> corsPolicyBuilder)
         => CorsPolicyBuilder = corsPolicyBuilder;

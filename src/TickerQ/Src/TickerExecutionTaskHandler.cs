@@ -39,7 +39,9 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
     public async Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
     {
-        if (context.Type != TickerType.TimeTicker)
+        // Time tickers have a child-graph (sequential/parallel job composition); cron- and
+        // periodic-occurrences are leaf executions and bypass the child orchestration path.
+        if (context.Type is TickerType.CronTickerOccurrence or TickerType.PeriodicTickerOccurrence)
         {
             await RunContextFunctionAsync(context, isDue, cancellationToken);
             return;

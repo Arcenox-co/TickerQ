@@ -26,13 +26,15 @@ namespace TickerQ.SourceGenerator.Generation
             }
 
             var requestTypes = BuildRequestTypeRegistrations(methods);
+            var periodicIntervals = BuildPeriodicIntervalRegistrations(methods);
 
             return Templates.InstanceFactory
                 .Replace("{{NAMESPACE}}", rootNamespace)
                 .Replace("{{METHOD_COUNT}}", methods.Count.ToString())
                 .Replace("{{DELEGATE_REGISTRATIONS}}", delegateRegistrations.ToString().TrimEnd())
                 .Replace("{{CONSTRUCTOR_METHODS}}", constructorMethods.ToString().TrimEnd())
-                .Replace("{{REQUEST_TYPE_REGISTRATIONS}}", requestTypes);
+                .Replace("{{REQUEST_TYPE_REGISTRATIONS}}", requestTypes)
+                .Replace("{{PERIODIC_INTERVAL_REGISTRATIONS}}", periodicIntervals);
         }
 
         private static string BuildDelegateRegistration(TickerMethodModel method, List<ConstructorModel> constructors)
@@ -149,6 +151,25 @@ namespace TickerQ.SourceGenerator.Generation
 
             return Templates.RequestTypeRegistration
                 .Replace("{{COUNT}}", genericMethods.Count.ToString())
+                .Replace("{{ENTRIES}}", entries.ToString().TrimEnd());
+        }
+
+        private static string BuildPeriodicIntervalRegistrations(List<TickerMethodModel> methods)
+        {
+            var periodicMethods = methods.Where(m => !string.IsNullOrEmpty(m.PeriodicInterval)).ToList();
+            if (periodicMethods.Count == 0)
+                return string.Empty;
+
+            var entries = new StringBuilder();
+            foreach (var m in periodicMethods)
+            {
+                entries.AppendLine(Templates.PeriodicIntervalEntry
+                    .Replace("{{FUNCTION_NAME}}", m.FunctionName)
+                    .Replace("{{INTERVAL}}", m.PeriodicInterval));
+            }
+
+            return Templates.PeriodicIntervalRegistration
+                .Replace("{{COUNT}}", periodicMethods.Count.ToString())
                 .Replace("{{ENTRIES}}", entries.ToString().TrimEnd());
         }
 

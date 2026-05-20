@@ -210,6 +210,16 @@ public static class DashboardEndpoints
             .WithName("GetMachineJobs")
             .WithSummary("Get machine jobs");
 
+        // Optional periodic-ticker endpoints (registered only when EnablePeriodic<T>() is configured).
+        if (config.PeriodicEnabled && config.PeriodicTickerType != null)
+        {
+            var mapMethod = typeof(PeriodicDashboardEndpoints)
+                .GetMethod(nameof(PeriodicDashboardEndpoints.MapPeriodicEndpoints),
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+                .MakeGenericMethod(config.PeriodicTickerType);
+            mapMethod.Invoke(null, new object[] { apiGroup });
+        }
+
         // SignalR Hub - authentication handled in hub OnConnectedAsync
         endpoints.MapHub<TickerQNotificationHub>($"/ticker-notification-hub")
             .AllowAnonymous();

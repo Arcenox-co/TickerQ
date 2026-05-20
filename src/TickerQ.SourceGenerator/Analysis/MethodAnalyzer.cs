@@ -32,7 +32,7 @@ namespace TickerQ.SourceGenerator.Analysis
             if (attrData == null)
                 return null;
 
-            var (functionName, cronExpression, taskPriority, maxConcurrency) = attrData.GetTickerFunctionAttributeValues();
+            var (functionName, cronExpression, taskPriority, maxConcurrency, periodicInterval) = attrData.GetTickerFunctionAttributeValues();
 
             var fullClassName = SourceGeneratorUtilities.GetFullClassName(classDecl);
             var isStatic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
@@ -46,6 +46,7 @@ namespace TickerQ.SourceGenerator.Analysis
                     : cronExpression,
                 TaskPriority = taskPriority,
                 MaxConcurrency = maxConcurrency,
+                PeriodicInterval = string.IsNullOrWhiteSpace(periodicInterval) ? null : periodicInterval,
                 MethodName = methodDecl.Identifier.Text,
                 ClassName = classDecl.Identifier.Text,
                 ClassFullName = Global(fullClassName),

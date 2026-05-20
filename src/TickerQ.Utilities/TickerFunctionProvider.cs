@@ -27,6 +27,7 @@ namespace TickerQ.Utilities
         private static Action<Dictionary<string, (string, Type)>> _requestTypeRegistrations;
         private static Action<Dictionary<string, (string RequestType, string RequestExampleJson)>> _requestInfoRegistrations;
         private static Action<Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>> _functionRegistrations;
+        private static Action<Dictionary<string, TimeSpan>> _periodicIntervalRegistrations;
 
         // Type → function name mapping for manager.AddAsync<T>() lookups
         private static readonly Dictionary<Type, string> _typeMappings = new();
@@ -35,6 +36,13 @@ namespace TickerQ.Utilities
         public static FrozenDictionary<string, (string, Type)> TickerFunctionRequestTypes = FrozenDictionary<string, (string, Type)>.Empty;
         public static FrozenDictionary<string, (string RequestType, string RequestExampleJson)> TickerFunctionRequestInfos = FrozenDictionary<string, (string RequestType, string RequestExampleJson)>.Empty;
         public static FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> TickerFunctions = FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>.Empty;
+
+        /// <summary>
+        /// Periodic intervals declared via <c>[TickerFunction(..., PeriodicInterval = "...")]</c>.
+        /// Populated by the source generator. Consumed at startup to seed
+        /// <c>PeriodicTickerEntity</c> rows when <c>EnablePeriodic&lt;T&gt;()</c> is on.
+        /// </summary>
+        public static FrozenDictionary<string, TimeSpan> TickerFunctionPeriodicIntervals = FrozenDictionary<string, TimeSpan>.Empty;
 
         public static bool IsBuilt { get; private set; }
 
@@ -211,6 +219,31 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
+        /// Registers periodic intervals declared via <c>[TickerFunction(..., PeriodicInterval = "...")]</c>.
+        /// Called from generated code (<see cref="TickerQInstanceFactoryExtensions"/>).
+        /// </summary>
+        public static void RegisterPeriodicIntervals(IDictionary<string, TimeSpan> intervals)
+        {
+            if (intervals == null) throw new ArgumentNullException(nameof(intervals));
+            if (intervals.Count == 0) return;
+
+            lock (_buildLock)
+            {
+                _periodicIntervalRegistrations += dict =>
+                {
+                    foreach (var (key, value) in intervals)
+                    {
+                        dict[key] = value; // last-writer-wins, intentional
+                    }
+                };
+            }
+        }
+
+        /// <summary>Capacity-overload kept for symmetry with <see cref="RegisterFunctions(System.Collections.Generic.IDictionary{string, System.ValueTuple{string, TickerTaskPriority, TickerFunctionDelegate, int}}, int)"/>.</summary>
+        public static void RegisterPeriodicIntervals(IDictionary<string, TimeSpan> intervals, int _)
+            => RegisterPeriodicIntervals(intervals);
+
+        /// <summary>
         /// Registers request types during application startup by adding to the callback chain.
         /// This method should only be called during application startup before Build() is called.
         /// </summary>
@@ -360,6 +393,15 @@ namespace TickerQ.Utilities
                     _requestInfoRegistrations(requestInfoDict);
                     TickerFunctionRequestInfos = requestInfoDict.ToFrozenDictionary();
                     _requestInfoRegistrations = null;
+                }
+
+                // Build periodic intervals dictionary
+                if (_periodicIntervalRegistrations != null)
+                {
+                    var intervalsDict = new Dictionary<string, TimeSpan>(TickerFunctionPeriodicIntervals);
+                    _periodicIntervalRegistrations(intervalsDict);
+                    TickerFunctionPeriodicIntervals = intervalsDict.ToFrozenDictionary();
+                    _periodicIntervalRegistrations = null;
                 }
 
                 IsBuilt = true;
