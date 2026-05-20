@@ -2,251 +2,166 @@
 
 ## Summary
 
-Add support for **Periodic Tickers** - jobs that execute at fixed time intervals (e.g., every 5 minutes, every hour).
+Add support for **Periodic Tickers** — jobs that execute at fixed time intervals
+(e.g., every 5 minutes, every 30 seconds), filling the gap between one-shot
+**Time Tickers** and calendar-based **Cron Tickers**.
 
 ## Motivation
 
-Currently TickerQ supports:
-- **Time Tickers** - one-time scheduled jobs at a specific time
-- **Cron Tickers** - recurring jobs based on cron expressions (calendar-based)
+| Need | Time Ticker | Cron Ticker | Periodic Ticker |
+|---|---|---|---|
+| Sub-second cadence (`100ms`, `500ms`) | n/a (one-shot) | ❌ | ✅ |
+| Trivial API (`TimeSpan.FromMinutes(5)`) | n/a | needs cron syntax | ✅ |
+| Drift-free interval from last execution | n/a | calendar-anchored | ✅ |
+| Pause / resume without rewriting cron | n/a | manual | first-class |
+| `[TickerFunction(PeriodicInterval = "...")]` declarative attribute | n/a | ✅ (cron) | ✅ |
 
-**The gap:** When you need a job that runs **both regularly AND at specific time intervals**, neither option fits perfectly:
-- Time Tickers are one-time only
-- Cron Tickers are calendar-based (e.g., "at minute 0 of every hour") rather than interval-based
+The scheduler is `TimeSpan`-based (`Task.Delay`), so millisecond precision works
+natively; the entity stores `TimeSpan Interval` directly.
 
-**Periodic Tickers fill this gap** by providing:
-1. **Interval-based scheduling** - "every 5 minutes" regardless of wall-clock time
-2. **Simpler API** - `TimeSpan.FromMinutes(5)` vs cron syntax `*/5 * * * *`
-3. **Sub-minute precision** - intervals like 30 seconds, which cron cannot express
-4. **Drift-free execution** - maintains consistent intervals from last execution
-
-## Precision Comparison
-
-| Feature | Time Ticker | Cron Ticker | Periodic Ticker |
-|---------|-------------|-------------|-----------------|
-| Minimum interval | N/A (one-time) | 1 second* | **1 millisecond** |
-| Scheduling type | One-time | Calendar-based | Interval-based |
-| Sub-second support | ✅ (DateTime) | ❌ (NCrontab limitation) | ✅ (TimeSpan) |
-
-*NCrontab supports seconds with `IncludingSeconds = true`, but minimum granularity is 1 second.
-
-### Millisecond Support in TickerQ Architecture
-
-**Yes, millisecond intervals are supported!**
-
-The scheduler uses `Task.Delay(TimeSpan)` which natively supports millisecond precision:
+## Public API
 
 ```csharp
-// In TickerQSchedulerBackgroundService.cs
-sleepDuration = timeRemaining <= TimeSpan.Zero
-    ? TimeSpan.FromMilliseconds(1)  // Minimum 1ms
-    : timeRemaining;
-
-await Task.Delay(sleepDuration, cancellationToken);
-```
-
-**Periodic Ticker uses `TimeSpan` for intervals:**
-```csharp
-public class PeriodicTickerEntity
+// 1. Enable periodic support (opt-in)
+services.AddTickerQ(options =>
 {
-    public virtual TimeSpan Interval { get; set; }  // Supports ms precision!
-}
+    options.EnablePeriodic();                      // uses default PeriodicTickerEntity
+    // OR options.EnablePeriodic<MyCustomPeriodicTicker>();
 
-// Usage examples:
-new PeriodicTickerEntity { Interval = TimeSpan.FromMilliseconds(100) }  // 100ms
-new PeriodicTickerEntity { Interval = TimeSpan.FromSeconds(0.5) }       // 500ms
-new PeriodicTickerEntity { Interval = TimeSpan.FromMinutes(5) }         // 5 min
-```
-
-### Performance Considerations for High-Frequency Jobs
-
-For very short intervals (< 100ms), consider:
-- Database overhead if using EF Core persistence
-- In-memory provider recommended for high-frequency scenarios
-- Thread pool saturation at extremely high frequencies
-
-## Proposed Solution
-
-### New Entity Types
-
-```csharp
-public class PeriodicTickerEntity : BaseTickerEntity
-{
-    public TimeSpan Interval { get; set; }
-    public byte[] Request { get; set; }
-    public int Retries { get; set; }
-    public int[] RetryIntervals { get; set; }
-    public bool IsActive { get; set; }
-    public DateTime? StartTime { get; set; }
-    public DateTime? EndTime { get; set; }
-    public DateTime? LastExecutedAt { get; set; }
-    public int ExecutionCount { get; set; }
-}
-
-public class PeriodicTickerOccurrenceEntity<TPeriodicTicker>
-{
-    public Guid Id { get; set; }
-    public Guid PeriodicTickerId { get; set; }
-    public TPeriodicTicker PeriodicTicker { get; set; }
-    public DateTime ExecutionTime { get; set; }
-    public TickerStatus Status { get; set; }
-    // ... other occurrence properties
-}
-```
-
-### Usage API
-
-```csharp
-// Enable Periodic support
-services.AddTickerQ(options => {
-    options.EnablePeriodic();
-    options.AddOperationalStore(ef => ef.UseTickerQDbContext<MyDbContext>(...));
-});
-
-// Create periodic ticker via manager
-var manager = serviceProvider.GetRequiredService<IPeriodicTickerManager<PeriodicTickerEntity>>();
-
-await manager.CreateAsync(new PeriodicTickerEntity
-{
-    Function = "MyPeriodicJob",
-    Interval = TimeSpan.FromMinutes(5),
-    IsActive = true
-});
-```
-
-## Implementation Scope
-
-### Phase 1 (This PR) ✅
-- [x] `PeriodicTickerEntity` and `PeriodicTickerOccurrenceEntity`
-- [x] `IPeriodicTickerPersistenceProvider<T>` interface
-- [x] `PeriodicTickerInMemoryPersistenceProvider<T>` implementation
-- [x] `IPeriodicTickerManager<T>` and `PeriodicTickerManager<T>`
-- [x] `InternalTickerManagerWithPeriodic<,,>` for scheduling
-- [x] `EnablePeriodic()` / `EnablePeriodic<T>()` API in `TickerOptionsBuilder`
-
-### Phase 2 (Future PR)
-- [ ] EF Core configurations for Periodic tables
-- [ ] `PeriodicTickerEfCorePersistenceProvider<T>`
-- [ ] EF Core migrations support
-
-### Phase 3 (Future PR)
-- [ ] Dashboard UI for Periodic Tickers
-- [ ] Dashboard API endpoints for Periodic management
-
-## Breaking Changes
-
-**None** - Periodic support is opt-in via `EnablePeriodic()`.
-
-## Related Issues
-
-- N/A (new feature)
-
----
-
-# Pull Request: Add Periodic Ticker Support
-
-## Description
-
-This PR adds support for Periodic Tickers - jobs that execute at fixed time intervals.
-
-## Changes
-
-### TickerQ.Utilities
-
-**New Files:**
-- `Entities/PeriodicTickerEntity.cs` - Periodic ticker entity
-- `Entities/PeriodicTickerOccurrenceEntity.cs` - Occurrence entity for tracking executions
-- `Interfaces/IPeriodicTickerPersistenceProvider.cs` - Persistence provider interface
-- `Interfaces/Managers/IPeriodicTickerManager.cs` - Manager interface
-- `Managers/PeriodicTickerManager.cs` - Manager implementation
-- `Managers/InternalTickerManagerWithPeriodic.cs` - Internal scheduler with Periodic support
-- `Models/InternalManagerContext.cs` - Added `NextPeriodicOccurrence` property
-
-**Modified Files:**
-- `TickerOptionsBuilder.cs` - Added `EnablePeriodic()` and `EnablePeriodic<T>()` methods
-
-### TickerQ
-
-**New Files:**
-- `Src/Provider/PeriodicTickerInMemoryPersistenceProvider.cs` - In-memory provider
-- `DependencyInjection/TickerQPeriodicExtensions.cs` - Extension methods (deprecated, use `EnablePeriodic()`)
-
-**Modified Files:**
-- `DependencyInjection/TickerQServiceExtensions.cs` - Register Periodic services when enabled
-
-## Usage
-
-```csharp
-// Simple usage with default PeriodicTickerEntity
-services.AddTickerQ(options => {
-    options.EnablePeriodic();
-});
-
-// With custom entity type
-services.AddTickerQ(options => {
-    options.EnablePeriodic<MyCustomPeriodicTicker>();
-});
-
-// With EF Core (Phase 2)
-services.AddTickerQ(options => {
-    options.EnablePeriodic();
-    options.AddOperationalStore(ef => {
-        ef.UseTickerQDbContext<TickerQDbContext>(db => db.UseSqlServer(...));
+    options.AddOperationalStore(ef =>
+    {
+        ef.EnablePeriodic();                       // mirror flag for EF Core layer
+        ef.UseTickerQDbContext<MyDbContext>(db => db.UseSqlServer(...));
     });
 });
+
+// 2. Imperative scheduling
+var manager = sp.GetRequiredService<IPeriodicTickerManager<PeriodicTickerEntity>>();
+await manager.AddAsync(new PeriodicTickerEntity
+{
+    Function = "MyJob",
+    Interval = TimeSpan.FromMinutes(5),
+    StartTime = DateTime.UtcNow.AddMinutes(1),     // optional
+    EndTime   = DateTime.UtcNow.AddDays(7),        // optional
+    Retries = 3,
+    RetryIntervals = new[] { 5, 30, 120 }
+});
+
+// 3. Declarative — auto-seeded at startup
+public class Jobs
+{
+    [TickerFunction("Heartbeat", PeriodicInterval = "00:00:05")]
+    public Task HeartbeatAsync(TickerFunctionContext ctx, CancellationToken ct) { ... }
+}
 ```
 
-## Testing
+## Architecture (Path A)
 
-- [ ] Unit tests for `PeriodicTickerManager`
-- [ ] Unit tests for `PeriodicTickerInMemoryPersistenceProvider`
-- [ ] Integration tests for scheduling
-- [ ] Manual testing with sample application
+The pre-existing core is parameterised over two entity types
+(`InternalTickerManager<TTimeTicker, TCronTicker>`). Adding a third dimension
+without breaking consumers is achieved through **inheritance + reflection-gated
+DI**, _not_ by reworking generic arity of every public type.
 
-## Checklist
+```
+TickerOptionsBuilder<TTimeTicker, TCronTicker>
+    .EnablePeriodic<TPeriodicTicker>()  ──── opt-in flag
+                          │
+                          ▼ (reflection-typed registration)
+InternalTickerManagerWithPeriodic<TTime, TCron, TPeriodic>
+    : InternalTickerManager<TTime, TCron>
+    + IPeriodicTickerPersistenceProvider<TPeriodic>
+    + scheduler hooks for periodic occurrences
+```
 
-- [x] Code compiles without errors
-- [x] No breaking changes to existing API
-- [x] XML documentation added
-- [ ] Unit tests added
-- [ ] README updated
-- [ ] Sample application updated
+The same gating pattern is mirrored:
 
-## Screenshots
+* **EF Core**: `TickerModelCustomizerWithPeriodic<,,>` and
+  `TickerEFCorePeriodicPersistenceProvider<TContext, TPeriodic>` registered
+  only when `EfCoreOptionBuilder.EnablePeriodic()` is called.
+* **Dashboard**: `IPeriodicDashboardRepository<TPeriodicTicker>` +
+  `PeriodicDashboardEndpoints.MapPeriodicEndpoints<T>()` plugged in via
+  reflection from `DashboardEndpoints` only when `PeriodicEnabled` is set.
 
-N/A (no UI changes in this PR)
+Consumers who do **not** call `EnablePeriodic()` see no behavioural or schema
+change.
+
+## Implementation Status
+
+### ✅ Phase 1 — Core
+- [x] `PeriodicTickerEntity`, `PeriodicTickerOccurrenceEntity<T>`
+- [x] `IPeriodicTickerPersistenceProvider<T>` + in-memory implementation
+- [x] `IPeriodicTickerManager<T>` + `PeriodicTickerManager<T>` with
+      `CalculateNextExecution` (start-time, catch-up alignment, end-time)
+- [x] `InternalTickerManagerWithPeriodic<,,>` + scheduler integration
+- [x] `EnablePeriodic()` / `EnablePeriodic<T>()` on `TickerOptionsBuilder`
+
+### ✅ Phase 2 — EF Core
+- [x] `PeriodicTickerConfigurations<T>` + `PeriodicTickerOccurrenceConfigurations<T>`
+- [x] `TickerEFCorePeriodicPersistenceProvider<TContext, T>`
+- [x] `TickerModelCustomizerWithPeriodic<,,>` for `UseApplicationDbContext` flow
+- [x] `TickerQDbContext<TTime, TCron, TPeriodic>` with periodic mappings in
+      `OnModelCreating` for the `UseTickerQDbContext` flow
+- [x] `EfCoreOptionBuilder.EnablePeriodic()` mirror
+
+### ✅ Phase 3 — Dashboard backend
+- [x] `IPeriodicDashboardRepository<T>` + `PeriodicDashboardRepository<T>`:
+      paginated listing, 14-day occurrence graph window, AOT-safe request
+      payload validation via `DashboardJsonOptions.GetTypeInfo()`
+- [x] `PeriodicDashboardEndpoints.MapPeriodicEndpoints<T>()`: 17 REST endpoints
+      covering CRUD, batch, pause/resume, toggle, occurrence delete, request fetch
+- [x] `DashboardOptionsBuilder` — `PeriodicEnabled` / `PeriodicTickerType`
+      propagated from core options; reflection-based DI + endpoint mapping
+
+### ✅ Phase 4 — Source Generator + auto-seeding
+- [x] `[TickerFunction(..., PeriodicInterval = "00:00:30")]` named property
+- [x] Source-gen emits `RegisterPeriodicIntervals()` into
+      `TickerQInstanceFactory.g.cs` using
+      `TimeSpan.Parse(value, CultureInfo.InvariantCulture)`
+- [x] `TickerFunctionProvider.TickerFunctionPeriodicIntervals`
+      (`FrozenDictionary<string, TimeSpan>`) populated in `Build()`
+- [x] `TickerQInitializerHostedService.SeedDefinedPeriodicTickersAsync`
+      idempotently inserts new declared periodic tickers at startup
+      (skipped when a row with the same `Function` already exists);
+      seeded rows are tagged with `InitIdentifier=TQ_SYSTEM_<func>_<ticks>`
+- [x] `ITickerOptionsSeeding` exposes `PeriodicEnabled` / `PeriodicTickerType`
+
+### ⏳ Out-of-scope for this PR
+- Dashboard frontend (Vue) — separate PR
+- RemoteExecutor SDK additions for periodic — separate PR
+
+## Tests
+
+| Project | Periodic-related tests | Result |
+|---|---|---|
+| `TickerQ.SourceGenerator.Tests` | `PeriodicIntervalGenerationTests` × 4 | ✅ 4/4 |
+| `TickerQ.Tests` | `PeriodicTickerManagerCalculateNextExecutionTests` × 7 | ✅ 7/7 |
+| Manual sample | `TickerQ.Sample.Console` heartbeat every 5s | ✅ verified |
+
+`dotnet build TickerQ.slnx` → **0 errors**, 11 pre-existing NuGet/analyzer warnings.
+
+## Backward compatibility
+
+- All existing public types retain their generic arity.
+- All persistence-provider interfaces are untouched on the existing path.
+- Periodic services, dashboard endpoints and EF mappings are conditionally
+  registered; unconfigured deployments remain bit-for-bit identical.
 
 ## Notes
 
-### Why a separate `InternalTickerManagerWithPeriodic`?
+### Why `InternalTickerManagerWithPeriodic` instead of editing the base class?
 
-The current TickerQ architecture has tight coupling between managers and persistence interfaces:
+`InternalTickerManager<TTime, TCron>` is a public surface across:
+- the core scheduler,
+- every persistence provider (`InMemory`, `EFCore`, `StackExchange.Redis`),
+- the dashboard repository, the remote-executor SDK, downstream user code.
 
-```csharp
-// InternalTickerManager is tightly bound to ITickerPersistenceProvider
-internal class InternalTickerManager<TTimeTicker, TCronTicker> : IInternalTickerManager
-{
-    private readonly ITickerPersistenceProvider<TTimeTicker, TCronTicker> _persistenceProvider;
-    // Constructor requires this specific interface
-}
-```
+Adding a third type parameter or a constructor dependency to that class is a
+**hard breaking change** for every caller of `IInternalTickerManager` and every
+provider implementation. The chosen Path A — derive from the existing class,
+add periodic capabilities by composition, and gate registration behind
+`EnablePeriodic()` — keeps the existing generic surface intact while still
+giving periodic-aware code a strong-typed entry point.
 
-**The problem:** Adding Periodic support to the existing `InternalTickerManager` would require:
-1. Breaking change to constructor signature (add `IPeriodicTickerPersistenceProvider`)
-2. Or making it optional via `IServiceProvider` (anti-pattern, hides dependencies)
-3. Or modifying `ITickerPersistenceProvider` to include Periodic methods (breaks all existing implementations)
+The duplicated scheduling glue is a deliberate trade-off; consolidation can
+happen in a future major version once `Periodic` becomes the default.
 
-**Our solution:** Create `InternalTickerManagerWithPeriodic<TTime, TCron, TPeriodic>` that:
-- Extends functionality without modifying existing classes
-- Registered only when `EnablePeriodic()` is called
-- Maintains full backward compatibility
-
-**Trade-off:** ~600 lines of duplicated scheduling logic. This is intentional debt for backward compatibility.
-
-### Future refactoring options
-
-1. **Extract common scheduling logic** into a base class
-2. **Use composition** with separate schedulers for Time/Cron/Periodic
-3. **Introduce `ISchedulingProvider`** non-generic interface for core operations
-
-These changes would be breaking and are deferred to a major version bump.
