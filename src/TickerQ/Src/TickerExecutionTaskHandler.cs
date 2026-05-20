@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -39,7 +39,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
     public async Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
     {
-        if (context.Type != TickerType.TimeTickerOccurrence)
+        if (context.Type != TickerType.TimeTicker)
         {
             await RunContextFunctionAsync(context, isDue, cancellationToken);
             return;

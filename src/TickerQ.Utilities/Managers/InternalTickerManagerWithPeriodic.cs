@@ -508,7 +508,7 @@ namespace TickerQ.Utilities.Managers
         public async Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, CancellationToken cancellationToken = default)
         {
             byte[] request;
-            
+
             if (type == TickerType.CronTickerOccurrence)
                 request = await _persistenceProvider.GetCronTickerOccurrenceRequest(tickerId, cancellationToken).ConfigureAwait(false);
             else if (type == TickerType.PeriodicTickerOccurrence)
@@ -518,6 +518,25 @@ namespace TickerQ.Utilities.Managers
 
             return request == null ? default : TickerHelper.ReadTickerRequest<T>(request);
         }
+
+        public async Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken = default)
+        {
+            byte[] request;
+
+            if (type == TickerType.CronTickerOccurrence)
+                request = await _persistenceProvider.GetCronTickerOccurrenceRequest(tickerId, cancellationToken).ConfigureAwait(false);
+            else if (type == TickerType.PeriodicTickerOccurrence)
+                request = await _periodicPersistenceProvider.GetPeriodicTickerOccurrenceRequest(tickerId, cancellationToken).ConfigureAwait(false);
+            else
+                request = await _persistenceProvider.GetTimeTickerRequest(tickerId, cancellationToken).ConfigureAwait(false);
+
+            return request == null || request.Length == 0
+                ? default
+                : TickerHelper.ReadTickerRequest(request, typeInfo);
+        }
+
+        public async Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
+            => await _persistenceProvider.SkipStaleCronOccurrencesAsync(staleThreshold, cancellationToken).ConfigureAwait(false);
 
         public async Task<InternalFunctionContext[]> RunTimedOutTickers(CancellationToken cancellationToken = default)
         {
