@@ -16,6 +16,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
+    <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
   </ItemGroup>
 </Project>
