@@ -46,6 +46,3 @@ tmpgen/
 
 # Local issue tracking
 tickerq_open_issues.md
-
-# Roslyn EmitCompilerGeneratedFiles output (occasionally produced during local source-generator debugging)
-GeneratedFiles/
