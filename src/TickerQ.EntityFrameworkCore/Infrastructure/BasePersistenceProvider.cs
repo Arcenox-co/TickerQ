@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 
 using System;
 using System.Collections.Generic;
@@ -135,7 +135,11 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var dbContext = session.Context;
         return await dbContext.Set<TTimeTicker>()
             .Where(x => x.Id == functionContexts.TickerId)
+#if NET10_0_OR_GREATER
             .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(functionContexts, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
+#else
+            .ExecuteUpdateAsync(MappingExtensions.BuildUpdateTimeTicker<TTimeTicker>(functionContexts, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
+#endif
     }
         
     public async Task UpdateTimeTickersWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
@@ -145,7 +149,11 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var idList = timeTickerIds.ToList();
         await dbContext.Set<TTimeTicker>()
             .Where(x => idList.Contains(x.Id))
+#if NET10_0_OR_GREATER
             .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(functionContext, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
+#else
+            .ExecuteUpdateAsync(MappingExtensions.BuildUpdateTimeTicker<TTimeTicker>(functionContext, _clock.UtcNow), cancellationToken).ConfigureAwait(false);
+#endif
     }
         
     public async Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken)
@@ -279,7 +287,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         // Orphan cleanup is intentionally narrowed to *seeded* crons (those that
         // carry an InitIdentifier from the code-defined-cron migration). Without
         // this filter we'd delete every dashboard-created cron whose function
-        // is registered by an SDK / RemoteExecutor — at scheduler boot the SDK
+        // is registered by an SDK / RemoteExecutor вЂ” at scheduler boot the SDK
         // hasn't synced yet, so those qualified function names (`name@node`)
         // wouldn't be in TickerFunctionProvider.TickerFunctions yet, and the
         // user's cron would be wiped out on every restart.
@@ -388,10 +396,17 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     {
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var dbContext = session.Context;
+#if NET10_0_OR_GREATER
         await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .Where(x => x.Id == functionContext.TickerId)
             .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
             .ConfigureAwait(false);
+#else
+        await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+            .Where(x => x.Id == functionContext.TickerId)
+            .ExecuteUpdateAsync(MappingExtensions.BuildUpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
+            .ConfigureAwait(false);
+#endif
     }
     
     public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueTimedOutCronTickerOccurrences([EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -604,7 +619,11 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var dbContext = session.Context;
         await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .Where(x => idList.Contains(x.Id))
+#if NET10_0_OR_GREATER
             .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
+#else
+            .ExecuteUpdateAsync(MappingExtensions.BuildUpdateCronTickerOccurrence<TCronTicker>(functionContext), cancellationToken)
+#endif
             .ConfigureAwait(false);
     }
     
