@@ -41,6 +41,11 @@ namespace TickerQ.DependencyInjection
 
             // Configure whether ticker request payloads should use GZip compression
             TickerHelper.UseGZipCompression = optionInstance.RequestGZipCompressionEnabled;
+
+            // Apply global fluent-chain-builder limits (breadth/depth guards).
+            TickerChainConfig.MaxChildrenPerNode = optionInstance.MaxChainChildrenPerNode;
+            TickerChainConfig.MaxDepth = optionInstance.MaxChainDepth;
+
             services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             

@@ -1,12 +1,15 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Managers
@@ -26,15 +29,23 @@ namespace TickerQ.Utilities.Managers
         where TPeriodicTicker : PeriodicTickerEntity, new()
     {
         private readonly IPeriodicTickerPersistenceProvider<TPeriodicTicker> _periodicProvider;
+        private readonly IServiceProvider _serviceProvider;
+
+        // Tracks the id-set of the most recently materialized chain per periodic ticker, so an
+        // overlapping fire with ChainOverlapBehavior.Skip can detect whether the prior chain is
+        // still running. Single-node scope; cross-node overlap suppression is a follow-up.
+        private static readonly ConcurrentDictionary<Guid, Guid[]> LastMaterializedChain = new();
 
         public InternalTickerManagerWithPeriodic(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             IPeriodicTickerPersistenceProvider<TPeriodicTicker> periodicProvider,
             ITickerClock clock,
-            ITickerQNotificationHubSender notificationHubSender)
+            ITickerQNotificationHubSender notificationHubSender,
+            IServiceProvider serviceProvider)
             : base(persistenceProvider, clock, notificationHubSender)
         {
             _periodicProvider = periodicProvider ?? throw new ArgumentNullException(nameof(periodicProvider));
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         }
 
         // ---------------------------------------------------------------------
@@ -237,7 +248,10 @@ namespace TickerQ.Utilities.Managers
                     Type = TickerType.PeriodicTickerOccurrence,
                     Retries = occurrence.PeriodicTicker?.Retries ?? 0,
                     RetryIntervals = occurrence.PeriodicTicker?.RetryIntervals,
-                    ExecutionTime = occurrence.ExecutionTime
+                    ExecutionTime = occurrence.ExecutionTime,
+                    PeriodicChainTemplate = occurrence.PeriodicTicker?.ChainTemplate,
+                    RootRequest = occurrence.PeriodicTicker?.Request,
+                    ChainOverlapBehavior = occurrence.PeriodicTicker?.ChainOverlapBehavior ?? ChainOverlapBehavior.Allow
                 });
 
                 if (NotificationHubSender != null)
@@ -380,7 +394,10 @@ namespace TickerQ.Utilities.Managers
                     Retries = timedOut.PeriodicTicker?.Retries ?? 0,
                     RetryIntervals = timedOut.PeriodicTicker?.RetryIntervals,
                     ParentId = timedOut.PeriodicTickerId,
-                    ExecutionTime = timedOut.ExecutionTime
+                    ExecutionTime = timedOut.ExecutionTime,
+                    PeriodicChainTemplate = timedOut.PeriodicTicker?.ChainTemplate,
+                    RootRequest = timedOut.PeriodicTicker?.Request,
+                    ChainOverlapBehavior = timedOut.PeriodicTicker?.ChainOverlapBehavior ?? ChainOverlapBehavior.Allow
                 };
 
                 periodicResults.Add(ctx);
@@ -414,6 +431,96 @@ namespace TickerQ.Utilities.Managers
             var baseTask = base.ReleaseDeadNodeResources(instanceIdentifier, cancellationToken);
             var periodicTask = _periodicProvider.ReleaseDeadNodePeriodicOccurrenceResources(instanceIdentifier, cancellationToken);
             await Task.WhenAll(baseTask, periodicTask).ConfigureAwait(false);
+        }
+
+        // ---------------------------------------------------------------------
+        // Periodic job-chaining (Variant A): on each fire, materialize the chain
+        // template into a fresh TimeTicker graph whose root is the periodic ticker's
+        // own work and whose descendants are the template steps. The proven TimeTicker
+        // chaining engine then runs it (RunCondition, retries, statuses, depth).
+        // ---------------------------------------------------------------------
+        public override async Task<bool> MaterializePeriodicChainAsync(InternalFunctionContext context, CancellationToken cancellationToken = default)
+        {
+            if (context.PeriodicChainTemplate is null || context.PeriodicChainTemplate.Length == 0)
+                return false;
+
+            // Overlap suppression: skip if the previously materialized chain is still running.
+            if (context.ChainOverlapBehavior == ChainOverlapBehavior.Skip
+                && context.ParentId.HasValue
+                && await IsPreviousChainRunningAsync(context.ParentId.Value, cancellationToken).ConfigureAwait(false))
+            {
+                return false;
+            }
+
+            var timeTickerManager = _serviceProvider.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+
+            // Root = the periodic ticker's "main work", scheduled to run immediately.
+            var root = new TTimeTicker
+            {
+                Id = Guid.NewGuid(),
+                Function = context.FunctionName,
+                Request = context.RootRequest,
+                Retries = context.Retries,
+                RetryIntervals = context.RetryIntervals,
+                ExecutionTime = Clock.UtcNow
+            };
+
+            var chainIds = new List<Guid> { root.Id };
+            BuildChildren(root, context.PeriodicChainTemplate, chainIds);
+
+            await timeTickerManager.AddAsync(root, cancellationToken).ConfigureAwait(false);
+
+            if (context.ParentId.HasValue)
+                LastMaterializedChain[context.ParentId.Value] = chainIds.ToArray();
+
+            return true;
+        }
+
+        private async Task<bool> IsPreviousChainRunningAsync(Guid periodicTickerId, CancellationToken cancellationToken)
+        {
+            if (!LastMaterializedChain.TryGetValue(periodicTickerId, out var ids) || ids.Length == 0)
+                return false;
+
+            var idSet = new HashSet<Guid>(ids);
+            var tickers = await PersistenceProvider
+                .GetTimeTickers(t => idSet.Contains(t.Id), cancellationToken)
+                .ConfigureAwait(false);
+
+            // Any chain member not in a terminal state means the chain is still running.
+            return tickers.Any(t => !IsTerminalStatus(t.Status));
+        }
+
+        private static bool IsTerminalStatus(TickerStatus status)
+            => status is TickerStatus.Done or TickerStatus.DueDone
+                or TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped;
+
+        // Recursively expands template steps into the TimeTicker child graph.
+        // New Ids, ParentId linkage, RunCondition carried over. No ExecutionTime on children:
+        // they fire by RunCondition once their parent reaches a terminal status (as with TimeTicker chaining).
+        private static void BuildChildren(TTimeTicker parent, IEnumerable<PeriodicChainStep> steps, List<Guid> chainIds)
+        {
+            if (steps is null) return;
+
+            foreach (var step in steps)
+            {
+                if (step is null) continue;
+
+                var child = new TTimeTicker
+                {
+                    Id = Guid.NewGuid(),
+                    Function = step.Function,
+                    Request = step.Request,
+                    Retries = step.Retries,
+                    RetryIntervals = step.RetryIntervals,
+                    ParentId = parent.Id,
+                    RunCondition = step.RunCondition
+                };
+
+                parent.Children.Add(child);
+                chainIds.Add(child.Id);
+
+                BuildChildren(child, step.Children, chainIds);
+            }
         }
     }
 }

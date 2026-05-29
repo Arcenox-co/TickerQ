@@ -254,6 +254,36 @@ namespace TickerQ.Utilities
             PeriodicTickerType = typeof(TPeriodicTicker);
             return this;
         }
+
+        /// <summary>
+        /// Maximum number of children allowed under a single node in fluent chain builders. Default: 5.
+        /// </summary>
+        internal int MaxChainChildrenPerNode { get; set; } = TickerChainConfig.MaxChildrenPerNode;
+
+        /// <summary>
+        /// Maximum nesting depth below the root in fluent chain builders
+        /// (child = level 1, grandchild = level 2). Default: 2.
+        /// </summary>
+        internal int MaxChainDepth { get; set; } = TickerChainConfig.MaxDepth;
+
+        /// <summary>
+        /// Configures the global limits used by the fluent chain builders
+        /// (<see cref="Managers.FluentChainTickerBuilder{TTimeTicker}"/> and the periodic chain builder).
+        /// The execution engine supports arbitrary depth/branching; these limits only guard the builders.
+        /// </summary>
+        /// <param name="maxChildrenPerNode">Maximum children allowed under one node (breadth).</param>
+        /// <param name="maxDepth">Maximum nesting depth below the root (child = 1, grandchild = 2, ...).</param>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SetChainLimits(int maxChildrenPerNode, int maxDepth)
+        {
+            if (maxChildrenPerNode < 1)
+                throw new ArgumentOutOfRangeException(nameof(maxChildrenPerNode), "Must be at least 1.");
+            if (maxDepth < 1)
+                throw new ArgumentOutOfRangeException(nameof(maxDepth), "Must be at least 1.");
+
+            MaxChainChildrenPerNode = maxChildrenPerNode;
+            MaxChainDepth = maxDepth;
+            return this;
+        }
     }
 
     public class SchedulerOptionsBuilder

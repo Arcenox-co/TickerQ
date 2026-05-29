@@ -482,6 +482,11 @@ namespace TickerQ.Utilities.Managers
         public virtual async Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
             => await PersistenceProvider.SkipStaleCronOccurrencesAsync(staleThreshold, cancellationToken).ConfigureAwait(false);
 
+        // Periodic chaining is only available when Periodic support is enabled
+        // (see InternalTickerManagerWithPeriodic). Base manager has no periodic concept.
+        public virtual Task<bool> MaterializePeriodicChainAsync(InternalFunctionContext context, CancellationToken cancellationToken = default)
+            => Task.FromResult(false);
+
         public virtual async Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default)
         {
             var cronOccurrence = PersistenceProvider.ReleaseDeadNodeOccurrenceResources(instanceIdentifier, cancellationToken);

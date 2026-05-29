@@ -1,5 +1,6 @@
 using System;
 using TickerQ.Utilities.Entities.BaseEntity;
+using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.Entities
 {
@@ -56,5 +57,19 @@ namespace TickerQ.Utilities.Entities
         /// Total number of times this ticker has been executed.
         /// </summary>
         public virtual long ExecutionCount { get; internal set; }
+
+        /// <summary>
+        /// Optional job-chain template. When set, every fire materializes a fresh TimeTicker chain whose
+        /// root is this periodic ticker's own work (Function/Request/Retries/RetryIntervals) and whose
+        /// descendants are these steps. The occurrence itself does NOT execute the function directly —
+        /// the materialized chain root does. When null/empty the periodic ticker behaves as before.
+        /// </summary>
+        public virtual PeriodicChainStep[] ChainTemplate { get; set; }
+
+        /// <summary>
+        /// Controls behavior when this periodic ticker fires again while a previously materialized chain
+        /// is still running. Defaults to <see cref="ChainOverlapBehavior.Allow"/>.
+        /// </summary>
+        public virtual ChainOverlapBehavior ChainOverlapBehavior { get; set; } = ChainOverlapBehavior.Allow;
     }
 }

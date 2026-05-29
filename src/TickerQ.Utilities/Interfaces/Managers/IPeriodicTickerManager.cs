@@ -20,6 +20,14 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Result containing the added ticker.</returns>
         Task<TickerResult<TPeriodicTicker>> AddAsync(TPeriodicTicker entity, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Gets a periodic ticker by id (for safe read-modify-write of the schedule/chain template).
+        /// </summary>
+        /// <param name="id">The id of the ticker.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <returns>The ticker, or null when not found.</returns>
+        Task<TPeriodicTicker> GetAsync(Guid id, CancellationToken cancellationToken = default);
         
         /// <summary>
         /// Updates an existing periodic ticker.

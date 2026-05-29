@@ -173,10 +173,15 @@ internal sealed class NodeHeartbeatPayload
 [JsonSerializable(typeof(CronTickerEntity[]))]
 [JsonSerializable(typeof(CronTickerOccurrenceEntity<CronTickerEntity>))]
 [JsonSerializable(typeof(CronTickerOccurrenceEntity<CronTickerEntity>[]))]
+// Periodic chain template types
+[JsonSerializable(typeof(PeriodicChainStep))]
+[JsonSerializable(typeof(PeriodicChainStep[]))]
+[JsonSerializable(typeof(List<PeriodicChainStep>))]
 // Enums
 [JsonSerializable(typeof(TickerStatus))]
 [JsonSerializable(typeof(RunCondition))]
 [JsonSerializable(typeof(RunCondition?))]
+[JsonSerializable(typeof(ChainOverlapBehavior))]
 // Primitives used in entities
 [JsonSerializable(typeof(Guid))]
 [JsonSerializable(typeof(Guid?))]

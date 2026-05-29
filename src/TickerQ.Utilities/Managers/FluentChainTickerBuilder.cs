@@ -162,6 +162,34 @@ namespace TickerQ.Utilities.Managers
         /// </summary>
         public static implicit operator TTimeTicker(FluentChainTickerBuilder<TTimeTicker> builder) => builder.Build();
 
+        /// <summary>
+        /// Adds a child to the root using the recursive, arbitrary-depth API. Multiple calls add parallel
+        /// siblings; use <paramref name="descendants"/> to nest deeper (one child per level = sequential spine).
+        /// Breadth/depth are bounded by <see cref="TickerChainConfig"/> (configurable via <c>SetChainLimits(...)</c>).
+        /// The legacy ordinal methods (<c>WithFirstChild</c>..<c>WithFifthChild</c> / grandchildren) remain for
+        /// backward compatibility.
+        /// </summary>
+        public FluentChainTickerBuilder<TTimeTicker> WithChild(
+            Action<ChildBuilder<TTimeTicker>> configure,
+            Action<ChainNodeBuilder<TTimeTicker>> descendants = null)
+        {
+            if (configure == null) throw new ArgumentNullException(nameof(configure));
+
+            if (TickerChainConfig.MaxDepth < 1)
+                throw new InvalidOperationException("Configured chain MaxDepth must be at least 1.");
+            if (_rootTicker.Children.Count >= TickerChainConfig.MaxChildrenPerNode)
+                throw new InvalidOperationException(
+                    $"Number of children at the root exceeds the configured maximum ({TickerChainConfig.MaxChildrenPerNode}). " +
+                    "Increase it via SetChainLimits(maxChildrenPerNode, maxDepth).");
+
+            var child = CreateChild();
+            configure(new ChildBuilder<TTimeTicker>(child));
+            _rootTicker.Children.Add(child);
+
+            descendants?.Invoke(new ChainNodeBuilder<TTimeTicker>(child, 1));
+            return this;
+        }
+
         // Individual child builders to prevent duplicate configuration
         public class FirstChildBuilder
         {
@@ -724,6 +752,54 @@ namespace TickerQ.Utilities.Managers
         {
             _grandChild.Retries = retries;
             _grandChild.RetryIntervals = intervals;
+            return this;
+        }
+    }
+
+    /// <summary>
+    /// Recursive node builder enabling arbitrary-depth chains for <see cref="FluentChainTickerBuilder{TTimeTicker}"/>.
+    /// Multiple <see cref="WithChild"/> calls add parallel siblings under this node; nest via the
+    /// <c>descendants</c> action for deeper levels. Breadth/depth are bounded by <see cref="TickerChainConfig"/>.
+    /// </summary>
+    public sealed class ChainNodeBuilder<TTimeTicker> where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+    {
+        private readonly TTimeTicker _node;
+        private readonly int _depth; // depth of THIS node below the root (root child = 1)
+
+        internal ChainNodeBuilder(TTimeTicker node, int depth)
+        {
+            _node = node;
+            _depth = depth;
+        }
+
+        public ChainNodeBuilder<TTimeTicker> WithChild(
+            Action<ChildBuilder<TTimeTicker>> configure,
+            Action<ChainNodeBuilder<TTimeTicker>> descendants = null)
+        {
+            if (configure == null) throw new ArgumentNullException(nameof(configure));
+
+            if (_depth + 1 > TickerChainConfig.MaxDepth)
+                throw new InvalidOperationException(
+                    $"Chain depth {_depth + 1} exceeds the configured maximum ({TickerChainConfig.MaxDepth}). " +
+                    "Increase it via SetChainLimits(maxChildrenPerNode, maxDepth).");
+
+            if (_node.Children.Count >= TickerChainConfig.MaxChildrenPerNode)
+                throw new InvalidOperationException(
+                    $"Number of children at this level exceeds the configured maximum ({TickerChainConfig.MaxChildrenPerNode}). " +
+                    "Increase it via SetChainLimits(maxChildrenPerNode, maxDepth).");
+
+            var child = new TTimeTicker
+            {
+                Id = Guid.NewGuid(),
+                ParentId = _node.Id,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+                Children = new List<TTimeTicker>()
+            };
+            configure(new ChildBuilder<TTimeTicker>(child));
+            _node.Children.Add(child);
+
+            descendants?.Invoke(new ChainNodeBuilder<TTimeTicker>(child, _depth + 1));
             return this;
         }
     }

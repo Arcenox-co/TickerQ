@@ -472,7 +472,9 @@ namespace TickerQ.Provider
                 LastExecutedAt = source.LastExecutedAt,
                 ExecutionCount = source.ExecutionCount,
                 CreatedAt = source.CreatedAt,
-                UpdatedAt = source.UpdatedAt
+                UpdatedAt = source.UpdatedAt,
+                ChainTemplate = source.ChainTemplate,
+                ChainOverlapBehavior = source.ChainOverlapBehavior
             };
         }
 

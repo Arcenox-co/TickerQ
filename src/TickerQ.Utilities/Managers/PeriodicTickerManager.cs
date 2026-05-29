@@ -40,6 +40,10 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TPeriodicTicker>(
                     new TickerValidatorException($"Cannot find TickerFunction with name {entity.Function}"));
 
+            if (ValidateChainTemplate(entity.ChainTemplate) is { } missing)
+                return new TickerResult<TPeriodicTicker>(
+                    new TickerValidatorException($"Cannot find TickerFunction with name {missing} referenced in ChainTemplate"));
+
             if (entity.Interval <= TimeSpan.Zero)
                 return new TickerResult<TPeriodicTicker>(
                     new TickerValidatorException("Interval must be greater than zero"));
@@ -73,6 +77,10 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TPeriodicTicker>(
                     new TickerValidatorException("Interval must be greater than zero"));
 
+            if (ValidateChainTemplate(periodicTicker.ChainTemplate) is { } missingUpd)
+                return new TickerResult<TPeriodicTicker>(
+                    new TickerValidatorException($"Cannot find TickerFunction with name {missingUpd} referenced in ChainTemplate"));
+
             periodicTicker.UpdatedAt = _clock.UtcNow;
 
             try
@@ -94,6 +102,48 @@ namespace TickerQ.Utilities.Managers
         {
             var affectedRows = await _persistenceProvider.RemovePeriodicTickers([id], cancellationToken);
             return new TickerResult<TPeriodicTicker>(affectedRows);
+        }
+
+        public async Task<TPeriodicTicker> GetAsync(Guid id, CancellationToken cancellationToken = default)
+            => await _persistenceProvider.GetPeriodicTickerById(id, cancellationToken);
+
+        /// <summary>
+        /// Returns the first chain-template function name that is not registered, or null if all are valid.
+        /// </summary>
+        private static string ValidateChainTemplate(PeriodicChainStep[] template)
+        {
+            if (template == null || template.Length == 0)
+                return null;
+
+            foreach (var step in template)
+            {
+                var missing = ValidateStep(step);
+                if (missing != null)
+                    return missing;
+            }
+
+            return null;
+        }
+
+        private static string ValidateStep(PeriodicChainStep step)
+        {
+            if (step == null)
+                return null;
+
+            if (string.IsNullOrEmpty(step.Function) || TickerFunctionProvider.TickerFunctions.All(x => x.Key != step.Function))
+                return step.Function ?? "(null)";
+
+            if (step.Children != null)
+            {
+                foreach (var child in step.Children)
+                {
+                    var missing = ValidateStep(child);
+                    if (missing != null)
+                        return missing;
+                }
+            }
+
+            return null;
         }
 
         public async Task<TickerResult<TPeriodicTicker>> PauseAsync(Guid id, CancellationToken cancellationToken = default)
@@ -144,6 +194,10 @@ namespace TickerQ.Utilities.Managers
                 if (TickerFunctionProvider.TickerFunctions.All(x => x.Key != entity.Function))
                     return new TickerResult<List<TPeriodicTicker>>(
                         new TickerValidatorException($"Cannot find TickerFunction with name {entity.Function}"));
+
+                if (ValidateChainTemplate(entity.ChainTemplate) is { } missingChain)
+                    return new TickerResult<List<TPeriodicTicker>>(
+                        new TickerValidatorException($"Cannot find TickerFunction with name {missingChain} referenced in ChainTemplate"));
 
                 if (entity.Interval <= TimeSpan.Zero)
                     return new TickerResult<List<TPeriodicTicker>>(
