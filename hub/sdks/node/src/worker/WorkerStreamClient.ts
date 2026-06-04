@@ -723,10 +723,18 @@ export class WorkerStreamClient {
     }
 
     private createReadyPromise(): Promise<void> {
-        return new Promise<void>((resolve, reject) => {
+        const promise = new Promise<void>((resolve, reject) => {
             this.readyResolve = resolve;
             this.readyReject = reject;
         });
+        // failPending() rejects this promise on every disconnect/stop. When no
+        // send()/waitForReady() is awaiting it, that rejection would surface as an
+        // unhandledRejection (log noise, or a hard crash under
+        // --unhandled-rejections=strict). Attach a no-op catch so the stored
+        // promise is always considered handled; real awaiters still observe the
+        // rejection through their own await.
+        promise.catch(() => undefined);
+        return promise;
     }
 
     private waitUntilReady(timeoutMs: number): Promise<void> {

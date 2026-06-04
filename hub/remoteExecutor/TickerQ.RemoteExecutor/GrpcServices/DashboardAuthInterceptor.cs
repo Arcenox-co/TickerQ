@@ -11,7 +11,7 @@ namespace TickerQ.RemoteExecutor.GrpcServices;
 /// dashboard requests. Clients must include:
 ///   - x-tickerq-signature : base64(HMAC-SHA256(secret, method + "\n" + timestamp))
 ///   - x-tickerq-timestamp : unix seconds
-/// No-op if <see cref="TickerQRemoteExecutionOptions.WebHookSignature"/> is empty.
+/// Fails closed until <see cref="TickerQRemoteExecutionOptions.WebHookSignature"/> is populated.
 /// </summary>
 public sealed class DashboardAuthInterceptor : Interceptor
 {
@@ -75,9 +75,8 @@ public sealed class DashboardAuthInterceptor : Interceptor
         if (context.Method != null && context.Method.Contains(".SchedulerWorkerService/", StringComparison.Ordinal))
             return;
 
-        // Signature validation is opt-in: skip if no secret configured.
         if (string.IsNullOrWhiteSpace(_options.WebHookSignature))
-            return;
+            throw new RpcException(new Status(StatusCode.Unavailable, "Dashboard signature is not ready"));
 
         var signature = GetHeader(context, SignatureHeader);
         var timestamp = GetHeader(context, TimestampHeader);

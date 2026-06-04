@@ -79,7 +79,6 @@ internal sealed class TickerQSdkControlClient : BackgroundService
             KeepAlivePingTimeout = TimeSpan.FromSeconds(30),
             PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5)
         };
-        handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
 
         _channel = GrpcChannel.ForAddress(hubUri, new GrpcChannelOptions
         {
