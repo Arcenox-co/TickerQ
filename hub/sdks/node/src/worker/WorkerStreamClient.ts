@@ -225,6 +225,10 @@ export class WorkerStreamClient {
     private connectWithBackoff(delayMs: number): void {
         if (this.stopped || this.connecting || this.reconnectTimer) return;
 
+        // Jitter only the sleep, not the value threaded back into
+        // nextReconnectDelay(), so the base keeps growing deterministically while a
+        // fleet of SDKs that dropped together (e.g. a Hub restart) doesn't reconnect
+        // in lockstep and stampede the scheduler.
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
             if (this.stopped) return;
@@ -235,7 +239,14 @@ export class WorkerStreamClient {
                 this.logger?.warn('TickerQ SDK: Worker stream failed:', err);
                 this.scheduleReconnect(this.nextReconnectDelay(delayMs));
             });
-        }, delayMs);
+        }, this.applyJitter(delayMs));
+    }
+
+    // Uniform ±20% spread around the base delay; never negative.
+    private applyJitter(delayMs: number): number {
+        if (delayMs <= 0) return 0;
+        const factor = 1 + (Math.random() * 2 - 1) * 0.2;
+        return Math.max(0, Math.floor(delayMs * factor));
     }
 
     private scheduleReconnect(delayMs: number): void {

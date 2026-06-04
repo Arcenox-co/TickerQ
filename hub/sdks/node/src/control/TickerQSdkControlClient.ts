@@ -49,6 +49,9 @@ export class TickerQSdkControlClient {
     private connect(delayMs: number): void {
         if (this.stopped || this.connecting || this.reconnectTimer) return;
 
+        // Jitter only the sleep (not the value threaded into nextReconnectDelay), so
+        // a fleet of SDKs whose control streams dropped together (e.g. a Hub restart)
+        // doesn't reconnect in lockstep and stampede the Hub.
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
             if (this.stopped) return;
@@ -91,7 +94,14 @@ export class TickerQSdkControlClient {
             });
 
             this.startHeartbeat();
-        }, delayMs);
+        }, this.applyJitter(delayMs));
+    }
+
+    // Uniform ±20% spread around the base delay; never negative.
+    private applyJitter(delayMs: number): number {
+        if (delayMs <= 0) return 0;
+        const factor = 1 + (Math.random() * 2 - 1) * 0.2;
+        return Math.max(0, Math.floor(delayMs * factor));
     }
 
     private scheduleReconnect(delayMs: number): void {

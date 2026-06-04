@@ -170,11 +170,23 @@ internal sealed class WorkerStreamHostedService : BackgroundService
                 _logger.LogWarning(ex, "Worker stream error; reconnecting in {Backoff}", backoff);
             }
 
-            try { await Task.Delay(backoff, stoppingToken).ConfigureAwait(false); }
+            // Jitter only the sleep, not the `backoff` value that keeps doubling
+            // below, so a fleet of SDK workers that all dropped at once (e.g. a
+            // Hub/scheduler restart) doesn't reconnect in lockstep and stampede the
+            // scheduler, while the base delay still grows deterministically.
+            try { await Task.Delay(ApplyReconnectJitter(backoff), stoppingToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
 
             backoff = TimeSpan.FromSeconds(Math.Min(ReconnectMax.TotalSeconds, backoff.TotalSeconds * 2));
         }
+    }
+
+    // Uniform ±20% spread around the base delay; never negative. Random.Shared is
+    // thread-safe and fine here (jitter doesn't need a cryptographic RNG).
+    private static TimeSpan ApplyReconnectJitter(TimeSpan delay)
+    {
+        var factor = 1.0 + ((Random.Shared.NextDouble() * 2.0) - 1.0) * 0.2;
+        return TimeSpan.FromMilliseconds(Math.Max(0, delay.TotalMilliseconds * factor));
     }
 
     private async Task RunOnceAsync(CancellationToken stoppingToken)
