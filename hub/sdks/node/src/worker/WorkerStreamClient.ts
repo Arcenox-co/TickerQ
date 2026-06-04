@@ -19,7 +19,6 @@ type Pending<T> = {
 
 const MIN_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
-const DEFAULT_RETRY_DELAY_SECONDS = 30;
 
 export interface WorkerExecuteFunction {
     requestId: string;
@@ -399,7 +398,7 @@ export class WorkerStreamClient {
                 if (linkedController.signal.aborted) {
                     throw new DOMException('Aborted', 'AbortError');
                 }
-                await this.runWithRetries(req, bareFunctionName, registration, linkedController.signal);
+                await this.executeFunctionOnce(req, bareFunctionName, registration, linkedController.signal);
                 const elapsed = Math.round(performance.now() - startedAt);
                 await this.reportStatus(req, bareFunctionName, registration, req.isDue ? TickerStatus.DueDone : TickerStatus.Done, elapsed, null);
                 await this.sendExecutionResult(req.requestId, true);
@@ -432,57 +431,37 @@ export class WorkerStreamClient {
         });
     }
 
-    private async runWithRetries(
+    /**
+     * Runs the user function exactly ONCE for the attempt the scheduler dispatched.
+     *
+     * Retries are owned by the scheduler in the worker-stream model: on failure it
+     * re-dispatches a fresh ExecuteFunction with an incremented `retryCount`, having
+     * already waited the configured retry interval. The SDK must therefore execute a
+     * single attempt per message — looping here as well would compound the user's
+     * retry budget (≈ Retries² executions) and double the delays. `retries` /
+     * `retryIntervalsSeconds` are intentionally NOT consulted for looping here; they
+     * are the scheduler's to act on.
+     */
+    private async executeFunctionOnce(
         req: WorkerExecuteFunction,
         bareFunctionName: string,
         registration: TickerFunctionRegistration,
         signal: AbortSignal,
     ): Promise<void> {
-        const currentRetryCount = req.retryCount ?? 0;
-        const retries = Math.max(0, req.retries ?? 0);
-        const attempts = Math.max(1, retries - currentRetryCount + 1);
-        let lastError: unknown = null;
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-        for (let attempt = 0; attempt < attempts; attempt++) {
-            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-            const retryCount = currentRetryCount + attempt;
-            req.retryCount = retryCount;
-
-            try {
-                const ctx: TickerFunctionContext<unknown> = {
-                    id: req.tickerId,
-                    type: req.type as TickerType,
-                    retryCount,
-                    isDue: req.isDue,
-                    scheduledFor: timestampToDate(req.scheduledFor),
-                    functionName: bareFunctionName,
-                    request: deserializeRequest(req.requestPayload) ?? TickerFunctionProvider.getRequestDefault(bareFunctionName),
-                    log: this.createExecutionLogger(req, bareFunctionName),
-                };
-                await registration.delegate(ctx, signal);
-                return;
-            } catch (err) {
-                lastError = err;
-                if (signal.aborted || attempt >= attempts - 1) {
-                    throw err;
-                }
-
-                const delaySeconds = req.retryIntervalsSeconds?.[retryCount]
-                    ?? req.retryIntervalsSeconds?.[req.retryIntervalsSeconds.length - 1]
-                    ?? DEFAULT_RETRY_DELAY_SECONDS;
-                if (delaySeconds > 0) {
-                    await new Promise<void>((resolve, reject) => {
-                        const timer = setTimeout(resolve, delaySeconds * 1000);
-                        signal.addEventListener('abort', () => {
-                            clearTimeout(timer);
-                            reject(new DOMException('Aborted', 'AbortError'));
-                        }, { once: true });
-                    });
-                }
-            }
-        }
-
-        throw lastError;
+        const retryCount = req.retryCount ?? 0;
+        const ctx: TickerFunctionContext<unknown> = {
+            id: req.tickerId,
+            type: req.type as TickerType,
+            retryCount,
+            isDue: req.isDue,
+            scheduledFor: timestampToDate(req.scheduledFor),
+            functionName: bareFunctionName,
+            request: deserializeRequest(req.requestPayload) ?? TickerFunctionProvider.getRequestDefault(bareFunctionName),
+            log: this.createExecutionLogger(req, bareFunctionName),
+        };
+        await registration.delegate(ctx, signal);
     }
 
     private async reportStatus(
