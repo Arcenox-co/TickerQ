@@ -1,10 +1,10 @@
 using System;
-using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Google.Protobuf;
 using Grpc.Core;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using TickerQ.RemoteExecutor.Logging;
 using TickerQ.RemoteExecutor.Tunnel;
@@ -39,17 +39,23 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
     private readonly string _sourceId = Guid.NewGuid().ToString("N");
     private long _sequence;
 
+    // Bound the dedupe state so a long-running scheduler with millions of ticker
+    // ids doesn't grow these maps without limit. Sliding-expiration MemoryCache
+    // drops entries that haven't been touched for a while; if a ticker re-enters
+    // a terminal state after that window we emit one extra line, which is fine.
+    private static readonly TimeSpan DedupeSlidingExpiration = TimeSpan.FromHours(6);
+
     // Track which tickers have already emitted a terminal lifecycle log line.
     // The internal manager fires UpdateTimeTickerFromInternalFunctionContext on
     // multiple status transitions, sometimes more than once at completion — without
     // dedup the panel renders a "Completed in Xms" line per call. We only want one
     // per ticker run (across Done/DueDone/Failed/Cancelled).
-    private readonly ConcurrentDictionary<Guid, byte> _lifecycleEmitted = new();
+    private readonly MemoryCache _lifecycleEmitted = new(new MemoryCacheOptions());
 
     // Last status seen per ticker — used to emit "Status: X → Y" transition lines.
     // Without this we'd repeat the same line every time UpdateTimeTickerFromInternalFunctionContext
     // fires with the same status (which it does for InProgress during execution).
-    private readonly ConcurrentDictionary<Guid, TickerStatus> _lastSeenStatus = new();
+    private readonly MemoryCache _lastSeenStatus = new(new MemoryCacheOptions());
 
     public TunnelTickerQNotificationHubSender(
         TunnelClientHostedService tunnel,
@@ -220,11 +226,14 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
         if (ctx.TickerId == Guid.Empty) return;
 
         var status = ctx.Status;
-        var prev = _lastSeenStatus.TryGetValue(ctx.TickerId, out var p) ? (TickerStatus?)p : null;
+        var prev = _lastSeenStatus.TryGetValue(ctx.TickerId, out TickerStatus p) ? (TickerStatus?)p : null;
 
         // Skip if status didn't change — multiple SDK reports can carry the same status.
         if (prev == status) return;
-        _lastSeenStatus[ctx.TickerId] = status;
+        _lastSeenStatus.Set(ctx.TickerId, status, new MemoryCacheEntryOptions
+        {
+            SlidingExpiration = DedupeSlidingExpiration,
+        });
 
         var isTerminal = status is TickerStatus.Done or TickerStatus.DueDone
             or TickerStatus.Failed or TickerStatus.Cancelled;
@@ -232,7 +241,11 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
         if (isTerminal)
         {
             // First-terminal-wins per ticker. Guards against retries that re-enter Done.
-            if (!_lifecycleEmitted.TryAdd(ctx.TickerId, 0)) return;
+            if (_lifecycleEmitted.TryGetValue(ctx.TickerId, out _)) return;
+            _lifecycleEmitted.Set(ctx.TickerId, (byte)0, new MemoryCacheEntryOptions
+            {
+                SlidingExpiration = DedupeSlidingExpiration,
+            });
 
             var (level, msg) = status switch
             {
@@ -300,10 +313,10 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
         var writer = _tunnel.ActiveWriter;
         if (writer == null)
         {
-            _logger?.LogInformation("[diag] Push DROPPED — no active writer ({EventType})", eventType);
+            _logger?.LogTrace("Push dropped — no active writer ({EventType})", eventType);
             return;
         }
-        _logger?.LogInformation("[diag] Push {EventType} scope={Scope}", eventType, scope ?? "(none)");
+        _logger?.LogTrace("Push {EventType} scope={Scope}", eventType, scope ?? "(none)");
 
         try
         {

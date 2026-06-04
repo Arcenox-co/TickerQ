@@ -51,10 +51,15 @@ public static class RemoteExecutionServiceExtension
             services.AddSingleton<RemoteFunctionsSyncService>();
             services.AddHostedService(sp => sp.GetRequiredService<RemoteFunctionsSyncService>());
 
-            // gRPC server for Hub dashboard queries
+            // gRPC server for Hub dashboard queries.
+            // Message-size limits must match the client side (Node SDK + tunnel client),
+            // otherwise a large entities_json payload from the SDK will be rejected
+            // mid-stream with no clear correlation back to the request.
             services.AddGrpc(options =>
             {
                 options.Interceptors.Add<DashboardAuthInterceptor>();
+                options.MaxReceiveMessageSize = 16 * 1024 * 1024;
+                options.MaxSendMessageSize = 16 * 1024 * 1024;
             });
             services.AddSingleton<DashboardAuthInterceptor>();
             services.AddScoped<DashboardGrpcService<TTimeTicker, TCronTicker>>();

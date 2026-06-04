@@ -37,6 +37,10 @@ public static class DashboardGrpcServiceExtension
             services.AddGrpc(options =>
             {
                 options.Interceptors.Add<DashboardAuthInterceptor>();
+                // Match the 16 MB limits used elsewhere (Node SDK client, tunnel client,
+                // RemoteExecutionServiceExtension AddGrpc).
+                options.MaxReceiveMessageSize = 16 * 1024 * 1024;
+                options.MaxSendMessageSize = 16 * 1024 * 1024;
             });
             services.AddSingleton<DashboardAuthInterceptor>();
             services.AddScoped<DashboardGrpcService<TTimeTicker, TCronTicker>>();

@@ -478,12 +478,21 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
 
         var canonical = $"{hello.NodeName}\n{hello.SdkVersion}\n{hello.Nonce}\n{hello.UnixSeconds}";
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
-        var computed = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(canonical)));
+        var computed = hmac.ComputeHash(Encoding.UTF8.GetBytes(canonical));
 
-        // Fixed-time comparison
-        if (!CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(computed),
-                Encoding.UTF8.GetBytes(hello.HmacSignature)))
+        // Decode the supplied base64 first so the fixed-time compare runs over the
+        // canonical 32-byte HMAC outputs, not the (variable-length, padding-sensitive)
+        // base64 text. Comparing the encoded form would short-circuit on length
+        // mismatches and reject equivalent signatures that round-tripped through
+        // different base64 padding.
+        byte[] provided;
+        try { provided = Convert.FromBase64String(hello.HmacSignature); }
+        catch (FormatException)
+        {
+            throw new RpcException(new Status(StatusCode.Unauthenticated, "Hello HMAC signature invalid"));
+        }
+
+        if (!CryptographicOperations.FixedTimeEquals(computed, provided))
         {
             throw new RpcException(new Status(StatusCode.Unauthenticated, "Hello HMAC signature invalid"));
         }

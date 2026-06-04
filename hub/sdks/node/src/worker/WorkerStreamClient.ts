@@ -141,6 +141,10 @@ export class WorkerStreamClient {
     private started = false;
     private connecting = false;
     private ready = false;
+    // gRPC typically fires both 'error' and 'end' on a torn-down stream;
+    // this flag keeps cleanupStream + scheduleReconnect from running twice
+    // per disconnect (which produced duplicate "closed before reply" warnings).
+    private streamClosed = false;
     private readyResolve: (() => void) | null = null;
     private readyReject: ((reason: unknown) => void) | null = null;
     private readyPromise: Promise<void> = this.createReadyPromise();
@@ -264,6 +268,7 @@ export class WorkerStreamClient {
 
         const stream = client.openWorkerStream();
         this.writer = stream;
+        this.streamClosed = false;
 
         stream.on('data', (command: any) => {
             this.handleCommand(command).catch((err) => {
@@ -271,11 +276,13 @@ export class WorkerStreamClient {
             });
         });
         stream.on('error', (err: Error) => {
+            if (this.streamClosed) return;
             this.logger?.warn('TickerQ SDK: Worker stream error:', err);
             this.cleanupStream();
             this.scheduleReconnect(this.nextReconnectDelay(previousDelayMs));
         });
         stream.on('end', () => {
+            if (this.streamClosed) return;
             this.cleanupStream();
             this.scheduleReconnect(1_000);
         });
@@ -284,6 +291,8 @@ export class WorkerStreamClient {
     }
 
     private cleanupStream(): void {
+        if (this.streamClosed) return;
+        this.streamClosed = true;
         if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
         this.connecting = false;
         this.ready = false;
