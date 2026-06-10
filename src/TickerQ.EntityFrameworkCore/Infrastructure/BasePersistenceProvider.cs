@@ -11,6 +11,7 @@ using TickerQ.EntityFrameworkCore.DbContextFactory;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 

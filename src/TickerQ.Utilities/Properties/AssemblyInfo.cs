@@ -2,6 +2,7 @@
 
 [assembly: InternalsVisibleTo("TickerQ")]
 [assembly: InternalsVisibleTo("TickerQ.EntityFrameworkCore")]
+[assembly: InternalsVisibleTo("TickerQ.MongoDB")]
 [assembly: InternalsVisibleTo("TickerQ.Dashboard")]
 [assembly: InternalsVisibleTo("TickerQ.Tests")]
 [assembly: InternalsVisibleTo("TickerQ.SDK")]
