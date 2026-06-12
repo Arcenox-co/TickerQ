@@ -185,15 +185,20 @@ namespace TickerQ.Provider
 
         public Task UpdatePeriodicTickerAfterExecution(Guid periodicTickerId, DateTime executedAt, bool succeeded = true, CancellationToken cancellationToken = default)
         {
-            if (PeriodicTickers.TryGetValue(periodicTickerId, out var ticker))
+            // CAS-retry: TryUpdate fails if another writer (e.g. UpdateAsync from the app, or a
+            // concurrent scheduler pass) swapped the snapshot in between. A plain TryUpdate would
+            // silently drop the schedule advancement, leaving LastExecutedAt stale and reopening the
+            // perpetual-refire window. Re-read the current snapshot and retry until the swap sticks.
+            while (PeriodicTickers.TryGetValue(periodicTickerId, out var ticker))
             {
                 var updated = CloneTicker(ticker);
                 updated.LastExecutedAt = executedAt;
                 if (succeeded)
-                    updated.ExecutionCount++;
+                    updated.ExecutionCount = ticker.ExecutionCount + 1;
                 updated.UpdatedAt = _clock.UtcNow;
 
-                PeriodicTickers.TryUpdate(periodicTickerId, updated, ticker);
+                if (PeriodicTickers.TryUpdate(periodicTickerId, updated, ticker))
+                    break;
             }
 
             return Task.CompletedTask;

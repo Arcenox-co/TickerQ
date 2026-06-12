@@ -80,5 +80,49 @@ public class PeriodicTickerInMemoryChainCloneTests
         Assert.Equal(executedAt, stored.LastExecutedAt);
         Assert.Equal(0, stored.ExecutionCount);
     }
+
+    /// <summary>
+    /// Regression for the lost-update race: the in-memory provider advances schedule state with a
+    /// compare-and-swap (TryUpdate by reference). Without a retry loop, concurrent advancements race
+    /// each other and a losing TryUpdate silently drops the update — LastExecutedAt would stall and
+    /// ExecutionCount would undercount. Hammer the method from many threads and assert no increment
+    /// is lost.
+    /// </summary>
+    [Fact]
+    public async Task UpdateAfterExecution_UnderConcurrency_DoesNotLoseIncrements()
+    {
+        var provider = CreateProvider();
+
+        var ticker = new PeriodicTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = "PollPort",
+            Interval = TimeSpan.FromMinutes(1)
+        };
+
+        await provider.InsertPeriodicTickers(new[] { ticker }, default);
+
+        const int concurrency = 32;
+        const int iterationsPerTask = 50;
+        const int expected = concurrency * iterationsPerTask;
+
+        var tasks = new Task[concurrency];
+        for (var t = 0; t < concurrency; t++)
+        {
+            tasks[t] = Task.Run(async () =>
+            {
+                for (var i = 0; i < iterationsPerTask; i++)
+                    await provider.UpdatePeriodicTickerAfterExecution(ticker.Id, DateTime.UtcNow, succeeded: true);
+            });
+        }
+
+        await Task.WhenAll(tasks);
+
+        var stored = await provider.GetPeriodicTickerById(ticker.Id, default);
+
+        Assert.NotNull(stored);
+        Assert.NotNull(stored.LastExecutedAt);
+        Assert.Equal(expected, stored.ExecutionCount);
+    }
 }
 
