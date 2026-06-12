@@ -47,9 +47,16 @@ namespace TickerQ.Utilities.Interfaces
         Task UpdatePeriodicTickerOccurrence(InternalFunctionContext functionContext, CancellationToken cancellationToken = default);
         
         /// <summary>
-        /// Updates the parent periodic ticker after occurrence execution (LastExecutedAt, ExecutionCount).
+        /// Advances the parent periodic ticker's schedule after an occurrence reaches a terminal status.
+        /// <para>
+        /// <paramref name="executedAt"/> always moves <c>LastExecutedAt</c> forward so the next interval is
+        /// computed from the attempt that just finished — this is what keeps a perpetually failing periodic
+        /// ticker from refiring every scheduler pass (a terminal Failed left <c>LastExecutedAt</c> null, and
+        /// <c>CalculateNextExecution</c> then returned "now"). <c>ExecutionCount</c> is only incremented when
+        /// <paramref name="succeeded"/> is true, so it remains a count of successful runs.
+        /// </para>
         /// </summary>
-        Task UpdatePeriodicTickerAfterExecution(Guid periodicTickerId, DateTime executedAt, CancellationToken cancellationToken = default);
+        Task UpdatePeriodicTickerAfterExecution(Guid periodicTickerId, DateTime executedAt, bool succeeded = true, CancellationToken cancellationToken = default);
         
         /// <summary>
         /// Releases locked periodic ticker occurrences.

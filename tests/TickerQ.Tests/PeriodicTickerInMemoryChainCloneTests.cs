@@ -40,7 +40,7 @@ public class PeriodicTickerInMemoryChainCloneTests
 
         await provider.InsertPeriodicTickers(new[] { ticker }, default);
 
-        await provider.UpdatePeriodicTickerAfterExecution(ticker.Id, DateTime.UtcNow, default);
+        await provider.UpdatePeriodicTickerAfterExecution(ticker.Id, DateTime.UtcNow, succeeded: true);
 
         var stored = await provider.GetPeriodicTickerById(ticker.Id, default);
 
@@ -50,6 +50,35 @@ public class PeriodicTickerInMemoryChainCloneTests
         Assert.Single(stored.ChainTemplate);
         Assert.Equal("ScheduledCalculations", stored.ChainTemplate[0].Function);
         Assert.Equal(ChainOverlapBehavior.Skip, stored.ChainOverlapBehavior);
+    }
+
+    /// <summary>
+    /// Regression for the perpetual-refire bug: a terminal Failed occurrence must still advance
+    /// LastExecutedAt (so CalculateNextExecution waits the interval instead of returning "now"),
+    /// but must NOT inflate ExecutionCount, which counts successful runs only.
+    /// </summary>
+    [Fact]
+    public async Task UpdateAfterExecution_OnFailure_AdvancesLastExecutedAt_ButNotExecutionCount()
+    {
+        var provider = CreateProvider();
+
+        var ticker = new PeriodicTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = "PollPort",
+            Interval = TimeSpan.FromMinutes(1)
+        };
+
+        await provider.InsertPeriodicTickers(new[] { ticker }, default);
+
+        var executedAt = DateTime.UtcNow;
+        await provider.UpdatePeriodicTickerAfterExecution(ticker.Id, executedAt, succeeded: false);
+
+        var stored = await provider.GetPeriodicTickerById(ticker.Id, default);
+
+        Assert.NotNull(stored);
+        Assert.Equal(executedAt, stored.LastExecutedAt);
+        Assert.Equal(0, stored.ExecutionCount);
     }
 }
 

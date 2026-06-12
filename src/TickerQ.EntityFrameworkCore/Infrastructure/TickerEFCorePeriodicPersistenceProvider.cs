@@ -247,19 +247,31 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .ConfigureAwait(false);
         }
 
-        public async Task UpdatePeriodicTickerAfterExecution(Guid periodicTickerId, DateTime executedAt, CancellationToken cancellationToken = default)
+        public async Task UpdatePeriodicTickerAfterExecution(Guid periodicTickerId, DateTime executedAt, bool succeeded = true, CancellationToken cancellationToken = default)
         {
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
             var now = _clock.UtcNow;
 
-            await dbContext.Set<TPeriodicTicker>()
-                .Where(x => x.Id == periodicTickerId)
-                .ExecuteUpdateAsync(setter => setter
-                    .SetProperty(x => x.LastExecutedAt, executedAt)
-                    .SetProperty(x => x.ExecutionCount, x => x.ExecutionCount + 1)
-                    .SetProperty(x => x.UpdatedAt, now), cancellationToken)
-                .ConfigureAwait(false);
+            var query = dbContext.Set<TPeriodicTicker>().Where(x => x.Id == periodicTickerId);
+
+            // LastExecutedAt always advances (success or terminal failure) so the schedule moves forward;
+            // ExecutionCount only counts successful runs. Two branches keep each setter expression translatable.
+            if (succeeded)
+            {
+                await query.ExecuteUpdateAsync(setter => setter
+                        .SetProperty(x => x.LastExecutedAt, executedAt)
+                        .SetProperty(x => x.ExecutionCount, x => x.ExecutionCount + 1)
+                        .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await query.ExecuteUpdateAsync(setter => setter
+                        .SetProperty(x => x.LastExecutedAt, executedAt)
+                        .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                    .ConfigureAwait(false);
+            }
         }
 
         public async Task ReleaseAcquiredPeriodicTickerOccurrences(Guid[] occurrenceIds, CancellationToken cancellationToken = default)

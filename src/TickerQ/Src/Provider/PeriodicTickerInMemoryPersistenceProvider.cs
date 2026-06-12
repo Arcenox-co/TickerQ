@@ -183,13 +183,14 @@ namespace TickerQ.Provider
             return Task.CompletedTask;
         }
 
-        public Task UpdatePeriodicTickerAfterExecution(Guid periodicTickerId, DateTime executedAt, CancellationToken cancellationToken = default)
+        public Task UpdatePeriodicTickerAfterExecution(Guid periodicTickerId, DateTime executedAt, bool succeeded = true, CancellationToken cancellationToken = default)
         {
             if (PeriodicTickers.TryGetValue(periodicTickerId, out var ticker))
             {
                 var updated = CloneTicker(ticker);
                 updated.LastExecutedAt = executedAt;
-                updated.ExecutionCount++;
+                if (succeeded)
+                    updated.ExecutionCount++;
                 updated.UpdatedAt = _clock.UtcNow;
 
                 PeriodicTickers.TryUpdate(periodicTickerId, updated, ticker);

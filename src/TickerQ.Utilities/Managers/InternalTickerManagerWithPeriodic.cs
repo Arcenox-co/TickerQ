@@ -319,12 +319,16 @@ namespace TickerQ.Utilities.Managers
 
             await _periodicProvider.UpdatePeriodicTickerOccurrence(functionContext, cancellationToken).ConfigureAwait(false);
 
-            // On terminal-success status, advance LastExecutedAt / ExecutionCount on the parent so the
-            // next interval is calculated from the actual execution moment rather than the previous one.
-            if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone && functionContext.ParentId.HasValue)
+            // On any terminal status, advance LastExecutedAt on the parent so the next interval is calculated
+            // from the attempt that just finished rather than the previous one. This includes terminal Failed
+            // (all retries exhausted): without it LastExecutedAt stays null for a ticker that never succeeded,
+            // CalculateNextExecution returns "now", and a perpetually failing periodic ticker refires every
+            // scheduler pass (~1/s) instead of waiting its interval. ExecutionCount only counts successes.
+            if (functionContext.ParentId.HasValue && IsTerminalStatus(functionContext.Status))
             {
                 var executedAt = functionContext.ExecutedAt == default ? Clock.UtcNow : functionContext.ExecutedAt;
-                await _periodicProvider.UpdatePeriodicTickerAfterExecution(functionContext.ParentId.Value, executedAt, cancellationToken).ConfigureAwait(false);
+                var succeeded = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
+                await _periodicProvider.UpdatePeriodicTickerAfterExecution(functionContext.ParentId.Value, executedAt, succeeded, cancellationToken).ConfigureAwait(false);
             }
 
             if (NotificationHubSender != null)
