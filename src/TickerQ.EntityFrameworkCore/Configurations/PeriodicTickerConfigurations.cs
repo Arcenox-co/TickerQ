@@ -58,8 +58,9 @@ namespace TickerQ.EntityFrameworkCore.Configurations
                 .HasDefaultValue(Utilities.Enums.ChainOverlapBehavior.Allow);
 
             // Index for the scheduler scan: only active rows in the StartTime/EndTime window
-            // are candidates for the next due execution.
-            builder.HasIndex(nameof(PeriodicTickerEntity.IsActive), nameof(PeriodicTickerEntity.LastExecutedAt))
+            // are candidates for the next due execution. LastStartedAt participates in the next-time
+            // calculation (alongside LastExecutedAt) so it is part of the covering index.
+            builder.HasIndex(nameof(PeriodicTickerEntity.IsActive), nameof(PeriodicTickerEntity.LastExecutedAt), nameof(PeriodicTickerEntity.LastStartedAt))
                 .HasDatabaseName("IX_PeriodicTicker_Active_LastExecutedAt");
 
             builder.HasIndex(nameof(PeriodicTickerEntity.Function))

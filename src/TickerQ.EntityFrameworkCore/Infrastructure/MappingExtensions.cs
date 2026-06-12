@@ -178,6 +178,33 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
             setters.SetProperty(x => x.UpdatedAt, updatedAt);
         }
+
+        internal static void UpdatePeriodicTickerOccurrence<TPeriodicTicker>(
+            this UpdateSettersBuilder<PeriodicTickerOccurrenceEntity<TPeriodicTicker>> setters,
+            InternalFunctionContext functionContext, DateTime updatedAt)
+            where TPeriodicTicker : PeriodicTickerEntity, new()
+        {
+            // Honor GetPropsToUpdate() so callers passing a subset (e.g. Status+ExecutedAt only) don't
+            // clobber ExceptionMessage/RetryCount with defaults — matches the in-memory provider.
+            var propsToUpdate = functionContext.GetPropsToUpdate();
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)))
+                setters.SetProperty(x => x.Status, functionContext.Status);
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
+                setters.SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime);
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)))
+                setters.SetProperty(x => x.ExceptionMessage, functionContext.ExceptionDetails);
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
+                setters.SetProperty(x => x.ExecutedAt, functionContext.ExecutedAt == default ? (DateTime?)null : functionContext.ExecutedAt);
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
+                setters.SetProperty(x => x.RetryCount, functionContext.RetryCount);
+
+            setters.SetProperty(x => x.UpdatedAt, updatedAt);
+        }
 #else
         // EF Core 9: ExecuteUpdateAsync wants Expression<Func<SetPropertyCalls<T>, SetPropertyCalls<T>>>
         // (statically analyzable expression-tree). We dynamically build such an expression
@@ -291,6 +318,34 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 b.Append(x => x.LockHolder, (string)null);
                 b.Append(x => x.LockedAt, (DateTime?)null);
             }
+
+            b.Append(x => x.UpdatedAt, updatedAt);
+
+            return b.Build();
+        }
+
+        internal static Expression<Func<SetPropertyCalls<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>,
+                                       SetPropertyCalls<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>>>
+            BuildUpdatePeriodicTickerOccurrence<TPeriodicTicker>(InternalFunctionContext functionContext, DateTime updatedAt)
+            where TPeriodicTicker : PeriodicTickerEntity, new()
+        {
+            var b = new ChainBuilder<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>();
+            var propsToUpdate = functionContext.GetPropsToUpdate();
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)))
+                b.Append(x => x.Status, functionContext.Status);
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
+                b.Append(x => x.ElapsedTime, functionContext.ElapsedTime);
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExceptionDetails)))
+                b.Append(x => x.ExceptionMessage, functionContext.ExceptionDetails);
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ExecutedAt)))
+                b.Append(x => x.ExecutedAt, functionContext.ExecutedAt == default ? (DateTime?)null : functionContext.ExecutedAt);
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
+                b.Append(x => x.RetryCount, functionContext.RetryCount);
 
             b.Append(x => x.UpdatedAt, updatedAt);
 

@@ -127,7 +127,7 @@ namespace {{NAMESPACE}}
         /// <summary>
         /// Single periodic interval entry
         /// </summary>
-        internal const string PeriodicIntervalEntry = @"                [""{{FUNCTION_NAME}}""] = global::System.TimeSpan.Parse(""{{INTERVAL}}"", global::System.Globalization.CultureInfo.InvariantCulture),";
+        internal const string PeriodicIntervalEntry = @"                [""{{FUNCTION_NAME}}""] = {{INTERVAL_EXPR}},";
 
         /// <summary>
         /// TickerQRequestJsonContext.g.cs — generated JsonSerializerContext for all request types (AOT)

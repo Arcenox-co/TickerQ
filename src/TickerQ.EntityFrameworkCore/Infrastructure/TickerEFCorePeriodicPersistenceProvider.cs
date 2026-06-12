@@ -67,7 +67,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     StartTime = x.StartTime,
                     EndTime = x.EndTime,
                     LastExecutedAt = x.LastExecutedAt,
+                    LastStartedAt = x.LastStartedAt,
                     ExecutionCount = x.ExecutionCount,
+                    ChainOverlapBehavior = x.ChainOverlapBehavior,
                     CreatedAt = x.CreatedAt,
                     UpdatedAt = x.UpdatedAt
                 })
@@ -96,6 +98,30 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .OrderBy(x => x.ExecutionTime)
                 .FirstOrDefaultAsync(cancellationToken)
                 .ConfigureAwait(false);
+        }
+
+        public async Task<HashSet<Guid>> GetPeriodicTickerIdsWithUnfinishedOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
+        {
+            if (ids == null || ids.Length == 0)
+                return new HashSet<Guid>();
+
+            var idList = ids.ToList();
+
+            using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            var dbContext = session.Context;
+
+            var matched = await dbContext.Set<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>()
+                .AsNoTracking()
+                .Where(x => idList.Contains(x.PeriodicTickerId))
+                .Where(x => x.Status == TickerStatus.Idle
+                            || x.Status == TickerStatus.Queued
+                            || x.Status == TickerStatus.InProgress)
+                .Select(x => x.PeriodicTickerId)
+                .Distinct()
+                .ToArrayAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            return new HashSet<Guid>(matched);
         }
 
         public async IAsyncEnumerable<PeriodicTickerOccurrenceEntity<TPeriodicTicker>> QueuePeriodicTickerOccurrences(
@@ -144,6 +170,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
                     if (affected <= 0) continue;
 
+                    await AdvanceLastStartedAtAsync(dbContext, item.Id, executionTime, cancellationToken).ConfigureAwait(false);
+
                     // Hydrate parent ticker for downstream code (function name, retries)
                     var parent = await dbContext.Set<TPeriodicTicker>()
                         .AsNoTracking()
@@ -171,6 +199,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         .ConfigureAwait(false);
 
                     if (affectedUpdate <= 0) continue;
+
+                    await AdvanceLastStartedAtAsync(dbContext, item.Id, executionTime, cancellationToken).ConfigureAwait(false);
 
                     var parent = await dbContext.Set<TPeriodicTicker>()
                         .AsNoTracking()
@@ -237,13 +267,11 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
             await dbContext.Set<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>()
                 .Where(x => x.Id == functionContext.TickerId)
-                .ExecuteUpdateAsync(setter => setter
-                    .SetProperty(x => x.Status, functionContext.Status)
-                    .SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime)
-                    .SetProperty(x => x.ExceptionMessage, functionContext.ExceptionDetails)
-                    .SetProperty(x => x.ExecutedAt, functionContext.ExecutedAt == default ? (DateTime?)null : functionContext.ExecutedAt)
-                    .SetProperty(x => x.RetryCount, functionContext.RetryCount)
-                    .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+#if NET10_0_OR_GREATER
+                .ExecuteUpdateAsync(setter => setter.UpdatePeriodicTickerOccurrence<TPeriodicTicker>(functionContext, now), cancellationToken)
+#else
+                .ExecuteUpdateAsync(MappingExtensions.BuildUpdatePeriodicTickerOccurrence<TPeriodicTicker>(functionContext, now), cancellationToken)
+#endif
                 .ConfigureAwait(false);
         }
 
@@ -272,6 +300,23 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         .SetProperty(x => x.UpdatedAt, now), cancellationToken)
                     .ConfigureAwait(false);
             }
+        }
+
+        // Advances the parent's LastStartedAt to the occurrence's execution time when materialized, so
+        // the next interval is anchored to the start of the run rather than its completion (prevents a
+        // long-running occurrence from refiring on every scheduler pass). Atomic server-side UPDATE,
+        // guarded to only move forward so a re-locked older occurrence never rewinds the anchor.
+        // Shares the caller's DbContext (called from within QueuePeriodicTickerOccurrences).
+        private async Task AdvanceLastStartedAtAsync(TDbContext dbContext, Guid periodicTickerId, DateTime startedAt, CancellationToken cancellationToken)
+        {
+            var now = _clock.UtcNow;
+            await dbContext.Set<TPeriodicTicker>()
+                .Where(x => x.Id == periodicTickerId)
+                .Where(x => x.LastStartedAt == null || x.LastStartedAt < startedAt)
+                .ExecuteUpdateAsync(setter => setter
+                    .SetProperty(x => x.LastStartedAt, startedAt)
+                    .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                .ConfigureAwait(false);
         }
 
         public async Task ReleaseAcquiredPeriodicTickerOccurrences(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
@@ -360,9 +405,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
-            return await dbContext.Set<TPeriodicTicker>()
-                .AsNoTracking()
-                .Where(predicate)
+            var query = dbContext.Set<TPeriodicTicker>().AsNoTracking();
+            if (predicate != null) query = query.Where(predicate);
+            return await query
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -373,7 +418,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
-            var query = dbContext.Set<TPeriodicTicker>().AsNoTracking().Where(predicate);
+            var query = dbContext.Set<TPeriodicTicker>().AsNoTracking();
+            if (predicate != null) query = query.Where(predicate);
 
             var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
             var items = await query
@@ -405,6 +451,20 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
             dbContext.Set<TPeriodicTicker>().UpdateRange(tickers);
+
+            // Schedule-state columns are owned by the scheduler, not by callers. They have internal
+            // setters and are lost (null/0) on a JSON-deserialized entity coming from the dashboard, so
+            // a full-entity update would wipe them — zeroing ExecutionCount and nulling LastExecutedAt,
+            // which makes CalculateNextExecution return "now" and fires the ticker out of schedule.
+            // Exclude them from every update so edits never touch schedule state.
+            foreach (var entry in dbContext.ChangeTracker.Entries<TPeriodicTicker>())
+            {
+                if (entry.State != EntityState.Modified) continue;
+                entry.Property(p => p.LastExecutedAt).IsModified = false;
+                entry.Property(p => p.LastStartedAt).IsModified = false;
+                entry.Property(p => p.ExecutionCount).IsModified = false;
+            }
+
             return await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
 
@@ -429,10 +489,10 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
-            return await dbContext.Set<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>()
+            var query = dbContext.Set<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>()
                 .AsNoTracking()
-                .Include(x => x.PeriodicTicker)
-                .Where(predicate)
+                .Include(x => x.PeriodicTicker);
+            return await (predicate != null ? query.Where(predicate) : query)
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -443,10 +503,11 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
-            var query = dbContext.Set<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>()
+            IQueryable<PeriodicTickerOccurrenceEntity<TPeriodicTicker>> query = dbContext
+                .Set<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>()
                 .AsNoTracking()
-                .Include(x => x.PeriodicTicker)
-                .Where(predicate);
+                .Include(x => x.PeriodicTicker);
+            if (predicate != null) query = query.Where(predicate);
 
             var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
             var items = await query

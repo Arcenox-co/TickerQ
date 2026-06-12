@@ -102,6 +102,34 @@ namespace TickerQ.SourceGenerator.Validation
         }
 
         /// <summary>
+        /// Validates that the periodic interval parses as a TimeSpan. Without this a value like "5m"
+        /// compiles fine but crashes at startup with FormatException inside the generated
+        /// TimeSpan.Parse(...) in a [ModuleInitializer].
+        /// </summary>
+        public static void ValidatePeriodicInterval(
+            string periodicInterval,
+            string className,
+            Location attributeLocation,
+            SourceProductionContext context)
+        {
+            if (string.IsNullOrWhiteSpace(periodicInterval))
+                return;
+
+            if (IsConfigurationExpression(periodicInterval))
+                return; // Resolved from configuration at runtime — can't validate at compile time.
+
+            if (!System.TimeSpan.TryParse(periodicInterval, System.Globalization.CultureInfo.InvariantCulture, out _))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    DiagnosticDescriptors.InvalidPeriodicInterval,
+                    attributeLocation,
+                    periodicInterval,
+                    className
+                ));
+            }
+        }
+
+        /// <summary>
         /// Determines if a cron expression is a configuration placeholder.
         /// </summary>
         private static bool IsConfigurationExpression(string cronExpression)

@@ -57,6 +57,23 @@ namespace TickerQ.Provider
             return Task.FromResult(result);
         }
 
+        public Task<HashSet<Guid>> GetPeriodicTickerIdsWithUnfinishedOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
+        {
+            var result = new HashSet<Guid>();
+            if (ids == null || ids.Length == 0)
+                return Task.FromResult(result);
+
+            var idSet = new HashSet<Guid>(ids);
+            foreach (var occurrence in PeriodicOccurrences.Values)
+            {
+                if (!idSet.Contains(occurrence.PeriodicTickerId)) continue;
+                if (occurrence.Status is TickerStatus.Idle or TickerStatus.Queued or TickerStatus.InProgress)
+                    result.Add(occurrence.PeriodicTickerId);
+            }
+
+            return Task.FromResult(result);
+        }
+
         public async IAsyncEnumerable<PeriodicTickerOccurrenceEntity<TPeriodicTicker>> QueuePeriodicTickerOccurrences(
             (DateTime Key, InternalManagerContext[] Items) periodicTickerOccurrences,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -85,6 +102,7 @@ namespace TickerQ.Provider
 
                             if (PeriodicOccurrences.TryUpdate(existingOccurrence.Id, updatedOccurrence, existingOccurrence))
                             {
+                                AdvanceLastStartedAt(periodicTicker.Id, periodicTickerOccurrences.Key);
                                 yield return updatedOccurrence;
                             }
                         }
@@ -108,6 +126,7 @@ namespace TickerQ.Provider
 
                     if (PeriodicOccurrences.TryAdd(newOccurrence.Id, newOccurrence))
                     {
+                        AdvanceLastStartedAt(periodicTicker.Id, periodicTickerOccurrences.Key);
                         yield return newOccurrence;
                     }
                 }
@@ -181,6 +200,26 @@ namespace TickerQ.Provider
             }
 
             return Task.CompletedTask;
+        }
+
+        // Advances the parent's LastStartedAt to the moment an occurrence was materialized, so the
+        // next interval is anchored to the start of the run rather than its completion. Idempotent:
+        // a later (max) value wins, so re-locking the same occurrence never moves the anchor backwards.
+        // CAS-retry mirrors UpdatePeriodicTickerAfterExecution to survive concurrent snapshot swaps.
+        private void AdvanceLastStartedAt(Guid periodicTickerId, DateTime startedAt)
+        {
+            while (PeriodicTickers.TryGetValue(periodicTickerId, out var ticker))
+            {
+                if (ticker.LastStartedAt.HasValue && ticker.LastStartedAt.Value >= startedAt)
+                    return;
+
+                var updated = CloneTicker(ticker);
+                updated.LastStartedAt = startedAt;
+                updated.UpdatedAt = _clock.UtcNow;
+
+                if (PeriodicTickers.TryUpdate(periodicTickerId, updated, ticker))
+                    return;
+            }
         }
 
         public Task UpdatePeriodicTickerAfterExecution(Guid periodicTickerId, DateTime executedAt, bool succeeded = true, CancellationToken cancellationToken = default)
@@ -300,19 +339,20 @@ namespace TickerQ.Provider
 
         public Task<TPeriodicTicker[]> GetPeriodicTickers(Expression<Func<TPeriodicTicker, bool>> predicate, CancellationToken cancellationToken = default)
         {
-            var compiled = predicate.Compile();
-            var result = PeriodicTickers.Values.Where(compiled).ToArray();
-            return Task.FromResult(result);
+            // A null predicate means "match all" (dashboard list endpoints pass null).
+            var compiled = predicate?.Compile();
+            var values = compiled == null ? PeriodicTickers.Values : PeriodicTickers.Values.Where(compiled);
+            return Task.FromResult(values.ToArray());
         }
 
         public Task<PaginationResult<TPeriodicTicker>> GetPeriodicTickersPaginated(
-            Expression<Func<TPeriodicTicker, bool>> predicate, 
-            int pageNumber, 
-            int pageSize, 
+            Expression<Func<TPeriodicTicker, bool>> predicate,
+            int pageNumber,
+            int pageSize,
             CancellationToken cancellationToken = default)
         {
-            var compiled = predicate.Compile();
-            var filtered = PeriodicTickers.Values.Where(compiled).ToList();
+            var compiled = predicate?.Compile();
+            var filtered = (compiled == null ? PeriodicTickers.Values : PeriodicTickers.Values.Where(compiled)).ToList();
             var total = filtered.Count;
             var items = filtered.Skip((pageNumber - 1) * pageSize).Take(pageSize).ToArray();
 
@@ -341,10 +381,17 @@ namespace TickerQ.Provider
             var count = 0;
             foreach (var ticker in tickers)
             {
-                if (PeriodicTickers.TryGetValue(ticker.Id, out var existing) &&
-                    PeriodicTickers.TryUpdate(ticker.Id, ticker, existing))
+                if (PeriodicTickers.TryGetValue(ticker.Id, out var existing))
                 {
-                    count++;
+                    // Schedule-state columns are owned by the scheduler. A caller-supplied entity
+                    // (e.g. a dashboard edit) carries null/0 for them, so carry the existing values
+                    // forward instead of letting the swap reset the schedule.
+                    ticker.LastExecutedAt = existing.LastExecutedAt;
+                    ticker.LastStartedAt = existing.LastStartedAt;
+                    ticker.ExecutionCount = existing.ExecutionCount;
+
+                    if (PeriodicTickers.TryUpdate(ticker.Id, ticker, existing))
+                        count++;
                 }
             }
             return Task.FromResult(count);
@@ -379,9 +426,10 @@ namespace TickerQ.Provider
             Expression<Func<PeriodicTickerOccurrenceEntity<TPeriodicTicker>, bool>> predicate,
             CancellationToken cancellationToken = default)
         {
-            var compiled = predicate.Compile();
-            var result = PeriodicOccurrences.Values.Where(compiled).ToArray();
-            return Task.FromResult(result);
+            // A null predicate means "match all" (dashboard full-data endpoints pass null).
+            var compiled = predicate?.Compile();
+            var values = compiled == null ? PeriodicOccurrences.Values : PeriodicOccurrences.Values.Where(compiled);
+            return Task.FromResult(values.ToArray());
         }
 
         public Task<PaginationResult<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>> GetAllPeriodicTickerOccurrencesPaginated(
@@ -390,8 +438,8 @@ namespace TickerQ.Provider
             int pageSize,
             CancellationToken cancellationToken = default)
         {
-            var compiled = predicate.Compile();
-            var filtered = PeriodicOccurrences.Values.Where(compiled).ToList();
+            var compiled = predicate?.Compile();
+            var filtered = (compiled == null ? PeriodicOccurrences.Values : PeriodicOccurrences.Values.Where(compiled)).ToList();
             var total = filtered.Count;
             var items = filtered.Skip((pageNumber - 1) * pageSize).Take(pageSize).ToArray();
 
@@ -476,6 +524,7 @@ namespace TickerQ.Provider
                 StartTime = source.StartTime,
                 EndTime = source.EndTime,
                 LastExecutedAt = source.LastExecutedAt,
+                LastStartedAt = source.LastStartedAt,
                 ExecutionCount = source.ExecutionCount,
                 CreatedAt = source.CreatedAt,
                 UpdatedAt = source.UpdatedAt,

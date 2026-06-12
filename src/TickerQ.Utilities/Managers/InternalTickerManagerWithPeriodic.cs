@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Serialization.Metadata;
@@ -30,11 +29,6 @@ namespace TickerQ.Utilities.Managers
     {
         private readonly IPeriodicTickerPersistenceProvider<TPeriodicTicker> _periodicProvider;
         private readonly IServiceProvider _serviceProvider;
-
-        // Tracks the id-set of the most recently materialized chain per periodic ticker, so an
-        // overlapping fire with ChainOverlapBehavior.Skip can detect whether the prior chain is
-        // still running. Single-node scope; cross-node overlap suppression is a follow-up.
-        private static readonly ConcurrentDictionary<Guid, Guid[]> LastMaterializedChain = new();
 
         public InternalTickerManagerWithPeriodic(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
@@ -150,17 +144,30 @@ namespace TickerQ.Utilities.Managers
 
             var ids = periodicTickers.Select(x => x.Id).ToArray();
 
-            var earliestStored = await _periodicProvider
-                .GetEarliestAvailablePeriodicOccurrence(ids, cancellationToken)
-                .ConfigureAwait(false);
+            var earliestStoredTask = _periodicProvider.GetEarliestAvailablePeriodicOccurrence(ids, cancellationToken);
+            var unfinishedTask = _periodicProvider.GetPeriodicTickerIdsWithUnfinishedOccurrence(ids, cancellationToken);
+            await Task.WhenAll(earliestStoredTask, unfinishedTask).ConfigureAwait(false);
 
-            return EarliestPeriodicTickerGroup(periodicTickers, now, earliestStored);
+            var earliestStored = await earliestStoredTask.ConfigureAwait(false);
+            var unfinished = await unfinishedTask.ConfigureAwait(false);
+
+            return EarliestPeriodicTickerGroup(periodicTickers, now, earliestStored, unfinished);
         }
+
+        // Suppress a brand-new in-memory candidate for a Skip ticker that already has an unfinished
+        // occurrence. This is the scheduler-level overlap guard that works regardless of chain template
+        // (chain-template overlap is also guarded later in MaterializePeriodicChainAsync). A stored
+        // occurrence that is already in flight is still surfaced so it can be picked up/completed.
+        private static bool IsOverlapSuppressed(PeriodicTickerEntity p, HashSet<Guid> unfinished)
+            => p.ChainOverlapBehavior == ChainOverlapBehavior.Skip
+               && unfinished != null
+               && unfinished.Contains(p.Id);
 
         private static (DateTime Next, InternalManagerContext[] Items)? EarliestPeriodicTickerGroup(
             PeriodicTickerEntity[] periodicTickers,
             DateTime now,
-            PeriodicTickerOccurrenceEntity<TPeriodicTicker> earliestStored)
+            PeriodicTickerOccurrenceEntity<TPeriodicTicker> earliestStored,
+            HashSet<Guid> unfinished)
         {
             DateTime? min = null;
             InternalManagerContext first = null;
@@ -170,6 +177,12 @@ namespace TickerQ.Utilities.Managers
             {
                 var next = PeriodicTickerManager<TPeriodicTicker>.CalculateNextExecution(p, now);
                 if (next == DateTime.MaxValue) continue;
+
+                // Skip overlap (ChainOverlapBehavior.Skip): don't propose a fresh occurrence while a
+                // previous one for this ticker is still unfinished. The in-flight occurrence is still
+                // surfaced below via earliestStored if it's pending pickup.
+                if (IsOverlapSuppressed(p, unfinished))
+                    continue;
 
                 // Skip the in-memory candidate if a stored occurrence already covers it
                 if (earliestStored != null && earliestStored.PeriodicTickerId == p.Id && earliestStored.ExecutionTime == next)
@@ -423,7 +436,9 @@ namespace TickerQ.Utilities.Managers
         {
             if (type == TickerType.PeriodicTickerOccurrence)
             {
-                await _periodicProvider.RemovePeriodicTickers([tickerId], cancellationToken).ConfigureAwait(false);
+                // The id identifies an occurrence, not the parent periodic ticker — remove from the
+                // occurrence table. RemovePeriodicTickers targets the parent table and would no-op.
+                await _periodicProvider.RemovePeriodicTickerOccurrences([tickerId], cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -458,6 +473,10 @@ namespace TickerQ.Utilities.Managers
 
             var timeTickerManager = _serviceProvider.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
 
+            // Stamp the originating periodic ticker id on every chain node so overlap suppression can be
+            // resolved from persisted state (see IsPreviousChainRunningAsync) rather than in-memory tracking.
+            var originId = context.ParentId;
+
             // Root = the periodic ticker's "main work", scheduled to run immediately.
             var root = new TTimeTicker
             {
@@ -466,31 +485,25 @@ namespace TickerQ.Utilities.Managers
                 Request = context.RootRequest,
                 Retries = context.Retries,
                 RetryIntervals = context.RetryIntervals,
-                ExecutionTime = Clock.UtcNow
+                ExecutionTime = Clock.UtcNow,
+                OriginPeriodicTickerId = originId
             };
 
-            var chainIds = new List<Guid> { root.Id };
-            BuildChildren(root, context.PeriodicChainTemplate, chainIds);
+            BuildChildren(root, context.PeriodicChainTemplate, originId);
 
             await timeTickerManager.AddAsync(root, cancellationToken).ConfigureAwait(false);
-
-            if (context.ParentId.HasValue)
-                LastMaterializedChain[context.ParentId.Value] = chainIds.ToArray();
 
             return true;
         }
 
         private async Task<bool> IsPreviousChainRunningAsync(Guid periodicTickerId, CancellationToken cancellationToken)
         {
-            if (!LastMaterializedChain.TryGetValue(periodicTickerId, out var ids) || ids.Length == 0)
-                return false;
-
-            var idSet = new HashSet<Guid>(ids);
+            // DB-backed: any chain node stamped with this periodic id that is not yet terminal means the
+            // previous chain is still running. Works across nodes and survives process restarts.
             var tickers = await PersistenceProvider
-                .GetTimeTickers(t => idSet.Contains(t.Id), cancellationToken)
+                .GetTimeTickers(t => t.OriginPeriodicTickerId == periodicTickerId, cancellationToken)
                 .ConfigureAwait(false);
 
-            // Any chain member not in a terminal state means the chain is still running.
             return tickers.Any(t => !IsTerminalStatus(t.Status));
         }
 
@@ -501,7 +514,8 @@ namespace TickerQ.Utilities.Managers
         // Recursively expands template steps into the TimeTicker child graph.
         // New Ids, ParentId linkage, RunCondition carried over. No ExecutionTime on children:
         // they fire by RunCondition once their parent reaches a terminal status (as with TimeTicker chaining).
-        private static void BuildChildren(TTimeTicker parent, IEnumerable<PeriodicChainStep> steps, List<Guid> chainIds)
+        // OriginPeriodicTickerId is stamped on every node so the whole chain is discoverable by origin.
+        private static void BuildChildren(TTimeTicker parent, IEnumerable<PeriodicChainStep> steps, Guid? originId)
         {
             if (steps is null) return;
 
@@ -517,13 +531,13 @@ namespace TickerQ.Utilities.Managers
                     Retries = step.Retries,
                     RetryIntervals = step.RetryIntervals,
                     ParentId = parent.Id,
-                    RunCondition = step.RunCondition
+                    RunCondition = step.RunCondition,
+                    OriginPeriodicTickerId = originId
                 };
 
                 parent.Children.Add(child);
-                chainIds.Add(child.Id);
 
-                BuildChildren(child, step.Children, chainIds);
+                BuildChildren(child, step.Children, originId);
             }
         }
     }

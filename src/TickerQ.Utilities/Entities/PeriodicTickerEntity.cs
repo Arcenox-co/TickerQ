@@ -52,7 +52,17 @@ namespace TickerQ.Utilities.Entities
         /// Used to calculate the next execution time.
         /// </summary>
         public virtual DateTime? LastExecutedAt { get; internal set; }
-        
+
+        /// <summary>
+        /// The last time an occurrence of this ticker was <em>started</em> (materialized by the
+        /// scheduler), as opposed to <see cref="LastExecutedAt"/> which only advances when an
+        /// occurrence reaches a terminal status. The next execution is computed from the later of the
+        /// two so that a long-running occurrence (one that stays in progress longer than
+        /// <see cref="Interval"/>) does not cause the scheduler to refire a fresh occurrence on every
+        /// pass while the previous one is still running.
+        /// </summary>
+        public virtual DateTime? LastStartedAt { get; internal set; }
+
         /// <summary>
         /// Total number of times this ticker has been executed.
         /// </summary>

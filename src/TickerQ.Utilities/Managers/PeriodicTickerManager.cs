@@ -280,20 +280,28 @@ namespace TickerQ.Utilities.Managers
             if (ticker.StartTime.HasValue && ticker.StartTime.Value > now)
                 return ticker.StartTime.Value;
 
-            // If never executed, start now (or at StartTime if set)
-            if (!ticker.LastExecutedAt.HasValue)
+            // The next execution is anchored to the later of: when an occurrence last STARTED
+            // (materialized by the scheduler) and when one last COMPLETED. Anchoring on the start —
+            // not only the completion — prevents a long-running occurrence (one that stays in progress
+            // longer than Interval) from making the scheduler refire a fresh occurrence on every pass:
+            // once an occurrence starts, the next one is not due until start + Interval, regardless of
+            // how long the running one takes to finish.
+            var anchor = LatestOf(ticker.LastStartedAt, ticker.LastExecutedAt);
+
+            // If never started nor executed, start now (or at StartTime if set)
+            if (!anchor.HasValue)
                 return ticker.StartTime ?? now;
 
-            // Calculate next based on last execution + interval
-            var nextExecution = ticker.LastExecutedAt.Value + ticker.Interval;
+            // Calculate next based on the anchor + interval
+            var nextExecution = anchor.Value + ticker.Interval;
 
-            // If we're past the calculated time, align to now + interval
+            // If we're past the calculated time, align to the next future interval boundary
             if (nextExecution <= now)
             {
                 // Calculate how many intervals have passed
-                var elapsed = now - ticker.LastExecutedAt.Value;
+                var elapsed = now - anchor.Value;
                 var intervalsPassed = (long)(elapsed.TotalMilliseconds / ticker.Interval.TotalMilliseconds);
-                nextExecution = ticker.LastExecutedAt.Value + TimeSpan.FromMilliseconds((intervalsPassed + 1) * ticker.Interval.TotalMilliseconds);
+                nextExecution = anchor.Value + TimeSpan.FromMilliseconds((intervalsPassed + 1) * ticker.Interval.TotalMilliseconds);
             }
 
             // Check if past end time
@@ -301,6 +309,16 @@ namespace TickerQ.Utilities.Managers
                 return DateTime.MaxValue; // No more executions
 
             return nextExecution;
+        }
+
+        /// <summary>
+        /// Returns the later of two optional timestamps, or whichever one is set, or null if neither is.
+        /// </summary>
+        private static DateTime? LatestOf(DateTime? a, DateTime? b)
+        {
+            if (!a.HasValue) return b;
+            if (!b.HasValue) return a;
+            return a.Value >= b.Value ? a : b;
         }
     }
 }

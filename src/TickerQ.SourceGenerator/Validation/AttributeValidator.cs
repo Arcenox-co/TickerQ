@@ -65,6 +65,13 @@ namespace TickerQ.SourceGenerator.Validation
                 className,
                 attributeLocation,
                 context);
+
+            // Validate periodic interval
+            TickerFunctionValidator.ValidatePeriodicInterval(
+                attributeValues.periodicInterval,
+                className,
+                attributeLocation,
+                context);
         }
     }
 }

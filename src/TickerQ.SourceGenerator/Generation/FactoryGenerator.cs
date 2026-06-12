@@ -165,13 +165,29 @@ namespace TickerQ.SourceGenerator.Generation
             {
                 entries.AppendLine(Templates.PeriodicIntervalEntry
                     .Replace("{{FUNCTION_NAME}}", m.FunctionName)
-                    .Replace("{{INTERVAL}}", m.PeriodicInterval));
+                    .Replace("{{INTERVAL_EXPR}}", BuildIntervalExpression(m.PeriodicInterval)));
             }
 
             return Templates.PeriodicIntervalRegistration
                 .Replace("{{COUNT}}", periodicMethods.Count.ToString())
                 .Replace("{{ENTRIES}}", entries.ToString().TrimEnd());
         }
+
+        // Resolve the interval at generation time into new TimeSpan(ticks). This both validates the
+        // literal (an invalid value already produced a TQ012 diagnostic) and removes the need to embed
+        // a raw string into TimeSpan.Parse("..."), which a quote/backslash would break. For values that
+        // don't parse here (e.g. a %config% placeholder) fall back to a parse of the escaped literal so
+        // the generated file still compiles.
+        private static string BuildIntervalExpression(string interval)
+        {
+            if (System.TimeSpan.TryParse(interval, System.Globalization.CultureInfo.InvariantCulture, out var ts))
+                return "new global::System.TimeSpan(" + ts.Ticks + "L)";
+
+            return "global::System.TimeSpan.Parse(\"" + Escape(interval) + "\", global::System.Globalization.CultureInfo.InvariantCulture)";
+        }
+
+        private static string Escape(string value)
+            => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     }
 }

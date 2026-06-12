@@ -33,6 +33,11 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.HasIndex("Status", "ExecutionTime")
                 .HasDatabaseName("IX_TimeTicker_Status_ExecutionTime");
 
+            // Index for periodic chain-overlap suppression: find a periodic ticker's still-running
+            // materialized chain members (ChainOverlapBehavior.Skip) by origin + status.
+            builder.HasIndex(nameof(TimeTickerEntity.OriginPeriodicTickerId), "Status")
+                .HasDatabaseName("IX_TimeTicker_OriginPeriodic_Status");
+
             builder.ToTable("TimeTickers", _schema);
         }
     }

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -71,6 +72,36 @@ public static class ServiceBuilder
         // IPeriodicTickerPersistenceProvider<TPeriodic> -> TickerEfCorePeriodicPersistenceProvider<TContext, TPeriodic>.
         var providerInterface = typeof(IPeriodicTickerPersistenceProvider<>).MakeGenericType(periodicType);
         var providerImpl = typeof(TickerEfCorePeriodicPersistenceProvider<,>).MakeGenericType(typeof(TContext), periodicType);
+
+        // Fail fast on an EnablePeriodic<T>() mismatch. The core opt-in (tickerOptions.EnablePeriodic<T>())
+        // registers the in-memory IPeriodicTickerPersistenceProvider<TCore>; here we replace it with the EF
+        // provider for the EF opt-in type. If the core opt-in is missing, or its T differs from the EF T,
+        // RemoveAll(providerInterface) targets the wrong closed generic and the in-memory provider survives
+        // silently — periodic data would never persist. Surface it as a startup error instead.
+        var existingPeriodicRegistrations = services
+            .Where(d => d.ServiceType.IsGenericType
+                        && d.ServiceType.GetGenericTypeDefinition() == typeof(IPeriodicTickerPersistenceProvider<>))
+            .ToArray();
+
+        if (existingPeriodicRegistrations.Length == 0)
+            throw new InvalidOperationException(
+                $"EntityFrameworkCore EnablePeriodic<{periodicType.Name}>() was configured but the core " +
+                "tickerOptions.EnablePeriodic<T>() opt-in is missing. Add tickerOptions.EnablePeriodic<" +
+                $"{periodicType.Name}>() so periodic tickers are registered before the EF provider replaces them.");
+
+        var mismatched = existingPeriodicRegistrations
+            .Where(d => d.ServiceType != providerInterface)
+            .ToArray();
+        if (mismatched.Length > 0)
+        {
+            var coreType = mismatched[0].ServiceType.GetGenericArguments()[0];
+            throw new InvalidOperationException(
+                $"Periodic ticker type mismatch: tickerOptions.EnablePeriodic<{coreType.Name}>() does not match " +
+                $"EntityFrameworkCore EnablePeriodic<{periodicType.Name}>(). Both opt-ins must use the same periodic " +
+                "ticker type, otherwise periodic tickers would silently fall back to the in-memory provider and lose " +
+                "their persisted state on restart.");
+        }
+
         // Replace the in-memory fallback registered earlier in TickerQServiceExtensions.RegisterPeriodicServices.
         services.RemoveAll(providerInterface);
         services.AddSingleton(providerInterface, providerImpl);

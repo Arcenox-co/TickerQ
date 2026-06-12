@@ -91,6 +91,64 @@ public class PeriodicTickerManagerCalculateNextExecutionTests
     }
 
     [Fact]
+    public void LongRunningOccurrence_AnchorsOnStart_NotCompletion()
+    {
+        // The core ScheduledCalculations refire bug: an occurrence started 1 min ago is still running
+        // (LastExecutedAt not yet advanced). With interval 5 min the next fire must be start + 5 min,
+        // i.e. NOT due now — otherwise the scheduler refires a fresh occurrence every pass.
+        var startedAt = Now.AddMinutes(-1);
+        var ticker = new PeriodicTickerEntity
+        {
+            Interval = TimeSpan.FromMinutes(5),
+            LastStartedAt = startedAt,
+            LastExecutedAt = null // still in progress, never completed
+        };
+
+        var next = PeriodicTickerManager<PeriodicTickerEntity>.CalculateNextExecution(ticker, Now);
+
+        Assert.Equal(startedAt.AddMinutes(5), next);
+        Assert.True(next > Now, "a long-running occurrence must not be due again until start + interval");
+    }
+
+    [Fact]
+    public void StartedAfterLastExecuted_AnchorsOnLaterStart()
+    {
+        // Completed run at -8 min, a newer occurrence started at -1 min and is still running.
+        // Anchor must be the later timestamp (start), so next = start + interval.
+        var lastExecuted = Now.AddMinutes(-8);
+        var startedAt = Now.AddMinutes(-1);
+        var ticker = new PeriodicTickerEntity
+        {
+            Interval = TimeSpan.FromMinutes(5),
+            LastExecutedAt = lastExecuted,
+            LastStartedAt = startedAt
+        };
+
+        var next = PeriodicTickerManager<PeriodicTickerEntity>.CalculateNextExecution(ticker, Now);
+
+        Assert.Equal(startedAt.AddMinutes(5), next);
+    }
+
+    [Fact]
+    public void ExecutedAfterStart_AnchorsOnLaterExecution()
+    {
+        // Occurrence started at -6 min then completed at -1 min. Completion is the later anchor,
+        // so next = completion + interval (a fresh run can be scheduled normally).
+        var startedAt = Now.AddMinutes(-6);
+        var lastExecuted = Now.AddMinutes(-1);
+        var ticker = new PeriodicTickerEntity
+        {
+            Interval = TimeSpan.FromMinutes(5),
+            LastStartedAt = startedAt,
+            LastExecutedAt = lastExecuted
+        };
+
+        var next = PeriodicTickerManager<PeriodicTickerEntity>.CalculateNextExecution(ticker, Now);
+
+        Assert.Equal(lastExecuted.AddMinutes(5), next);
+    }
+
+    [Fact]
     public void PastEndTime_ReturnsDateTimeMaxValue()
     {
         var ticker = new PeriodicTickerEntity

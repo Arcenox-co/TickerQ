@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR;
 using TickerQ.Dashboard.Infrastructure;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 
@@ -179,7 +180,7 @@ namespace TickerQ.Dashboard.Hubs
         public async Task AddPeriodicOccurrenceAsync(Guid groupId, object occurrence)
         {
             var json = JsonSerializer.SerializeToElement(
-                (PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>)occurrence,
+                ToBaseOccurrence(occurrence),
                 DashboardJsonSerializerContext.Default.PeriodicTickerOccurrenceEntityPeriodicTickerEntity);
             await _hubContext.Clients.Group(groupId.ToString()).SendAsync("AddPeriodicOccurrenceNotification", json);
         }
@@ -187,9 +188,42 @@ namespace TickerQ.Dashboard.Hubs
         public async Task UpdatePeriodicOccurrenceAsync(Guid groupId, object occurrence)
         {
             var json = JsonSerializer.SerializeToElement(
-                (PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>)occurrence,
+                ToBaseOccurrence(occurrence),
                 DashboardJsonSerializerContext.Default.PeriodicTickerOccurrenceEntityPeriodicTickerEntity);
             await _hubContext.Clients.Group(groupId.ToString()).SendAsync("UpdatePeriodicOccurrenceNotification", json);
+        }
+
+        // The occurrence arrives as PeriodicTickerOccurrenceEntity<TPeriodicTicker> for whatever T was
+        // registered via EnablePeriodic<T>(). Generic classes are invariant, so a direct cast to the
+        // base-typed PeriodicTickerOccurrenceEntity<PeriodicTickerEntity> the AOT serializer context
+        // knows about throws InvalidCastException. Project the (T-independent) scalar fields into a
+        // base-typed occurrence so the source-generated serializer can handle any registered type.
+        // The PeriodicTicker navigation is intentionally dropped — dashboard occurrence payloads carry
+        // occurrence state only, and including it would reintroduce the type dependency.
+        private static PeriodicTickerOccurrenceEntity<PeriodicTickerEntity> ToBaseOccurrence(object occurrence)
+        {
+            if (occurrence is PeriodicTickerOccurrenceEntity<PeriodicTickerEntity> alreadyBase)
+                return alreadyBase;
+
+            var t = occurrence.GetType();
+            T Read<T>(string name) => (T)t.GetProperty(name)!.GetValue(occurrence);
+
+            return new PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>
+            {
+                Id = Read<Guid>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.Id)),
+                Status = Read<TickerStatus>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.Status)),
+                LockHolder = Read<string>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.LockHolder)),
+                ExecutionTime = Read<DateTime>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.ExecutionTime)),
+                PeriodicTickerId = Read<Guid>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.PeriodicTickerId)),
+                LockedAt = Read<DateTime?>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.LockedAt)),
+                ExecutedAt = Read<DateTime?>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.ExecutedAt)),
+                ExceptionMessage = Read<string>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.ExceptionMessage)),
+                SkippedReason = Read<string>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.SkippedReason)),
+                ElapsedTime = Read<long>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.ElapsedTime)),
+                RetryCount = Read<int>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.RetryCount)),
+                CreatedAt = Read<DateTime>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.CreatedAt)),
+                UpdatedAt = Read<DateTime>(nameof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>.UpdatedAt))
+            };
         }
 
         public Task UpdatePeriodicOccurrenceFromInternalFunctionContext<TPeriodicTicker>(InternalFunctionContext internalFunctionContext)

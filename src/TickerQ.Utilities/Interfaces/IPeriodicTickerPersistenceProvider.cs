@@ -28,6 +28,14 @@ namespace TickerQ.Utilities.Interfaces
         /// Gets the earliest available periodic ticker occurrence.
         /// </summary>
         Task<PeriodicTickerOccurrenceEntity<TPeriodicTicker>> GetEarliestAvailablePeriodicOccurrence(Guid[] ids, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Returns the subset of <paramref name="ids"/> that currently have at least one unfinished
+        /// occurrence (status Idle, Queued or InProgress). Used by the scheduler to suppress overlapping
+        /// fires for periodic tickers configured with <see cref="Enums.ChainOverlapBehavior.Skip"/> —
+        /// independent of whether the ticker uses a chain template.
+        /// </summary>
+        Task<HashSet<Guid>> GetPeriodicTickerIdsWithUnfinishedOccurrence(Guid[] ids, CancellationToken cancellationToken = default);
         
         /// <summary>
         /// Queues periodic ticker occurrences for execution.

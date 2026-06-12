@@ -77,8 +77,10 @@ namespace TestApp
         var generated = GetGeneratedFactorySource(source);
 
         Assert.Contains("RegisterPeriodicIntervals", generated);
-        Assert.Contains(@"[""Heartbeat""] = global::System.TimeSpan.Parse(""00:00:05""", generated);
-        Assert.Contains("global::System.Globalization.CultureInfo.InvariantCulture", generated);
+        // Intervals are resolved to ticks at generation time (new TimeSpan(ticks)) so no raw string is
+        // embedded into TimeSpan.Parse — that both validates the literal and avoids escaping issues.
+        // 00:00:05 = 5s = 50,000,000 ticks.
+        Assert.Contains(@"[""Heartbeat""] = new global::System.TimeSpan(50000000L)", generated);
         Assert.Contains("TickerFunctionProvider.RegisterPeriodicIntervals(periodicIntervals, 1)", generated);
     }
 
@@ -104,7 +106,7 @@ namespace TestApp
         Assert.NotEmpty(generated);
         // The empty body of RegisterPeriodicIntervals() is still emitted, but no
         // dictionary entries / no call to TickerFunctionProvider.RegisterPeriodicIntervals.
-        Assert.DoesNotContain("TimeSpan.Parse", generated);
+        Assert.DoesNotContain("new global::System.TimeSpan(", generated);
         Assert.DoesNotContain("TickerFunctionProvider.RegisterPeriodicIntervals(periodicIntervals", generated);
     }
 
@@ -130,8 +132,9 @@ namespace TestApp
 
         var generated = GetGeneratedFactorySource(source);
 
-        Assert.Contains(@"[""Fast""] = global::System.TimeSpan.Parse(""00:00:01""", generated);
-        Assert.Contains(@"[""Slow""] = global::System.TimeSpan.Parse(""1.00:00:00""", generated);
+        // 00:00:01 = 10,000,000 ticks; 1.00:00:00 = 1 day = 864,000,000,000 ticks.
+        Assert.Contains(@"[""Fast""] = new global::System.TimeSpan(10000000L)", generated);
+        Assert.Contains(@"[""Slow""] = new global::System.TimeSpan(864000000000L)", generated);
         Assert.Contains("TickerFunctionProvider.RegisterPeriodicIntervals(periodicIntervals, 2)", generated);
     }
 
@@ -158,12 +161,71 @@ namespace TestApp
 
         var generated = GetGeneratedFactorySource(source);
 
-        Assert.Contains(@"[""Periodic""] = global::System.TimeSpan.Parse(""00:00:30""", generated);
-        Assert.DoesNotContain(@"[""Cron""] = global::System.TimeSpan.Parse", generated);
+        // 00:00:30 = 300,000,000 ticks.
+        Assert.Contains(@"[""Periodic""] = new global::System.TimeSpan(300000000L)", generated);
+        Assert.DoesNotContain(@"[""Cron""] = new global::System.TimeSpan", generated);
         Assert.Contains("TickerFunctionProvider.RegisterPeriodicIntervals(periodicIntervals, 1)", generated);
     }
 
+    [Fact]
+    public void PeriodicInterval_Invalid_ReportsTq012Diagnostic()
+    {
+        // "5m" is not a valid TimeSpan. Without validation it compiles and crashes at startup with
+        // FormatException; the generator must surface TQ012 instead.
+        var source = @"
+using System.Threading;
+using System.Threading.Tasks;
+using TickerQ.Utilities.Base;
+
+namespace TestApp
+{
+    public class BadJob
+    {
+        [TickerFunction(""Bad"", PeriodicInterval = ""5m"")]
+        public Task RunAsync(TickerFunctionContext context, CancellationToken ct) => Task.CompletedTask;
+    }
+}";
+
+        var diagnostics = GetGeneratorDiagnostics(source);
+
+        Assert.Contains(diagnostics, d => d.Id == "TQ012");
+    }
+
+    [Fact]
+    public void PeriodicInterval_Valid_ReportsNoTq012Diagnostic()
+    {
+        var source = @"
+using System.Threading;
+using System.Threading.Tasks;
+using TickerQ.Utilities.Base;
+
+namespace TestApp
+{
+    public class GoodJob
+    {
+        [TickerFunction(""Good"", PeriodicInterval = ""00:05:00"")]
+        public Task RunAsync(TickerFunctionContext context, CancellationToken ct) => Task.CompletedTask;
+    }
+}";
+
+        var diagnostics = GetGeneratorDiagnostics(source);
+
+        Assert.DoesNotContain(diagnostics, d => d.Id == "TQ012");
+    }
+
     #region Helpers
+
+    private static System.Collections.Immutable.ImmutableArray<Diagnostic> GetGeneratorDiagnostics(string source)
+    {
+        var compilation = CreateCompilation(source);
+        var generator = new TickerQIncrementalSourceGenerator();
+        var parseOptions = (CSharpParseOptions)compilation.SyntaxTrees.First().Options;
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(
+            new[] { generator.AsSourceGenerator() },
+            parseOptions: parseOptions);
+        driver = driver.RunGenerators(compilation);
+        return driver.GetRunResult().Diagnostics;
+    }
 
     private string GetGeneratedFactorySource(string source)
     {
