@@ -84,6 +84,11 @@ namespace TickerQ.Provider
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                // Overlap-suppressed (Skip ticker with an in-flight occurrence): present only to keep the
+                // scheduler's wake-up alive — do not materialize a new occurrence.
+                if (item.SuppressMaterialization)
+                    continue;
+
                 if (!PeriodicTickers.TryGetValue(item.Id, out var periodicTicker))
                     continue;
 

@@ -139,6 +139,11 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                // Overlap-suppressed (Skip ticker with an in-flight occurrence): present only to keep the
+                // scheduler's wake-up alive — do not materialize a new occurrence.
+                if (item.SuppressMaterialization)
+                    continue;
+
                 if (item.NextPeriodicOccurrence is null)
                 {
                     // Insert new occurrence; rely on the unique (PeriodicTickerId, ExecutionTime)

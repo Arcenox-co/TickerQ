@@ -178,14 +178,18 @@ namespace TickerQ.Utilities.Managers
                 var next = PeriodicTickerManager<TPeriodicTicker>.CalculateNextExecution(p, now);
                 if (next == DateTime.MaxValue) continue;
 
-                // Skip overlap (ChainOverlapBehavior.Skip): don't propose a fresh occurrence while a
-                // previous one for this ticker is still unfinished. The in-flight occurrence is still
-                // surfaced below via earliestStored if it's pending pickup.
-                if (IsOverlapSuppressed(p, unfinished))
-                    continue;
+                // Skip overlap (ChainOverlapBehavior.Skip): a previous occurrence for this ticker is
+                // still in flight. We must NOT materialize a fresh occurrence, but we must still keep
+                // the candidate in the group so the scheduler schedules a wake-up for the next attempt.
+                // Dropping it entirely (the old `continue`) emptied the group while the occurrence was
+                // InProgress — invisible to earliestStored (Idle|Queued only) — so GetNextTickers
+                // returned InfiniteTimeSpan and the scheduler slept forever after the first fire.
+                var suppress = IsOverlapSuppressed(p, unfinished);
 
-                // Skip the in-memory candidate if a stored occurrence already covers it
-                if (earliestStored != null && earliestStored.PeriodicTickerId == p.Id && earliestStored.ExecutionTime == next)
+                // Skip the in-memory candidate if a stored occurrence already covers it (it will be
+                // surfaced via earliestStored). Suppressed candidates are kept regardless.
+                if (!suppress && earliestStored != null
+                    && earliestStored.PeriodicTickerId == p.Id && earliestStored.ExecutionTime == next)
                     continue;
 
                 if (min is null || next < min)
@@ -197,6 +201,7 @@ namespace TickerQ.Utilities.Managers
                         Interval = p.Interval,
                         Retries = p.Retries,
                         RetryIntervals = p.RetryIntervals,
+                        SuppressMaterialization = suppress,
                     };
                     ties = null;
                 }
@@ -209,6 +214,7 @@ namespace TickerQ.Utilities.Managers
                         Interval = p.Interval,
                         Retries = p.Retries,
                         RetryIntervals = p.RetryIntervals,
+                        SuppressMaterialization = suppress,
                     });
                 }
             }
