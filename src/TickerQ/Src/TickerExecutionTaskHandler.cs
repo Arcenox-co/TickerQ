@@ -154,6 +154,12 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
                 .SetProperty(x => x.ExceptionDetails, SerializeException(ex));
             _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, 0);
+
+            // Route through the same exception hook as ordinary execution failures so alerting /
+            // dead-letter integrations observe periodic chain-materialization failures too.
+            if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
+                await handler.HandleExceptionAsync(ex, context.TickerId, context.Type);
+
             await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
             return;
         }

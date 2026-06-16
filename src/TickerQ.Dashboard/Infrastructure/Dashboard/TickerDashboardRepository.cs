@@ -639,7 +639,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 jsonRequestBytes = timeTicker.Request;
                 functionName = timeTicker.Function;
             }
-            else
+            else if (tickerType == TickerType.CronTickerOccurrence)
             {
                 var cronTicker = await _persistenceProvider.GetCronTickerById(tickerId, cancellationToken);
 
@@ -648,6 +648,13 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
                 jsonRequestBytes = cronTicker.Request;
                 functionName = cronTicker.Function;
+            }
+            else
+            {
+                // Periodic occurrences are served by PeriodicDashboardRepository.GetPeriodicTickerRequestByIdAsync.
+                // Do not fall through to the cron table here — that would read the wrong table by id and
+                // silently return an empty/unrelated request.
+                return (string.Empty, 0);
             }
 
             if (jsonRequestBytes == null)

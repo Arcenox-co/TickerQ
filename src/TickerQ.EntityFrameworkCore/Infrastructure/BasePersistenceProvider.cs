@@ -287,7 +287,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         // Orphan cleanup is intentionally narrowed to *seeded* crons (those that
         // carry an InitIdentifier from the code-defined-cron migration). Without
         // this filter we'd delete every dashboard-created cron whose function
-        // is registered by an SDK / RemoteExecutor вЂ” at scheduler boot the SDK
+        // is registered by an SDK / RemoteExecutor — at scheduler boot the SDK
         // hasn't synced yet, so those qualified function names (`name@node`)
         // wouldn't be in TickerFunctionProvider.TickerFunctions yet, and the
         // user's cron would be wiped out on every restart.

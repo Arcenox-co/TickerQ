@@ -240,6 +240,10 @@ namespace TickerQ.Utilities.Managers
                     return new TickerResult<List<TPeriodicTicker>>(
                         new TickerValidatorException("Interval must be greater than zero"));
 
+                if (ValidateChainTemplate(ticker.ChainTemplate) is { } missingChain)
+                    return new TickerResult<List<TPeriodicTicker>>(
+                        new TickerValidatorException($"Cannot find TickerFunction with name {missingChain} referenced in ChainTemplate"));
+
                 ticker.UpdatedAt = now;
 
                 if (ticker.IsActive)

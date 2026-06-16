@@ -145,6 +145,23 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var dbContext = session.Context;
             var occSet = dbContext.Set<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>();
 
+            // Batch-load the parent tickers once instead of re-querying per item (was an N+1 across the
+            // loop). Downstream needs the full parent (Function/Interval/Retries/ChainTemplate/...), so we
+            // hydrate from this map rather than reconstructing from the lightweight InternalManagerContext.
+            var parentIds = periodicTickerOccurrences.Items
+                .Where(i => !i.SuppressMaterialization)
+                .Select(i => i.Id)
+                .Distinct()
+                .ToList();
+            var parents = parentIds.Count == 0
+                ? new Dictionary<Guid, TPeriodicTicker>()
+                : (await dbContext.Set<TPeriodicTicker>()
+                        .AsNoTracking()
+                        .Where(p => parentIds.Contains(p.Id))
+                        .ToArrayAsync(cancellationToken)
+                        .ConfigureAwait(false))
+                    .ToDictionary(p => p.Id);
+
             foreach (var item in periodicTickerOccurrences.Items)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -187,11 +204,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
                     await AdvanceLastStartedAtAsync(dbContext, item.Id, executionTime, cancellationToken).ConfigureAwait(false);
 
-                    // Hydrate parent ticker for downstream code (function name, retries)
-                    var parent = await dbContext.Set<TPeriodicTicker>()
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(p => p.Id == item.Id, cancellationToken)
-                        .ConfigureAwait(false);
+                    // Hydrate parent ticker for downstream code (function name, retries) from the batch map.
+                    parents.TryGetValue(item.Id, out var parent);
                     newRow.PeriodicTicker = parent;
                     yield return newRow;
                 }
@@ -217,10 +231,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
                     await AdvanceLastStartedAtAsync(dbContext, item.Id, executionTime, cancellationToken).ConfigureAwait(false);
 
-                    var parent = await dbContext.Set<TPeriodicTicker>()
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(p => p.Id == item.Id, cancellationToken)
-                        .ConfigureAwait(false);
+                    parents.TryGetValue(item.Id, out var parent);
 
                     yield return new PeriodicTickerOccurrenceEntity<TPeriodicTicker>
                     {
