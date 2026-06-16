@@ -21,5 +21,12 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         Task UpdateSkipTimeTickersWithUnifiedContextAsync(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
         Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Materializes a periodic ticker's chain template into a fresh TimeTicker graph and enqueues it.
+        /// Returns <c>true</c> when a chain was created, or <c>false</c> when materialization was skipped
+        /// (e.g. due to <see cref="Enums.ChainOverlapBehavior.Skip"/> with a still-running prior chain).
+        /// </summary>
+        Task<bool> MaterializePeriodicChainAsync(InternalFunctionContext context, CancellationToken cancellationToken = default);
     }
 }

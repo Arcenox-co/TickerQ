@@ -12,6 +12,8 @@ internal interface ITickerOptionsSeeding
     bool SeedDefinedCronTickers { get; }
     Func<IServiceProvider, System.Threading.Tasks.Task> TimeSeederAction { get; }
     Func<IServiceProvider, System.Threading.Tasks.Task> CronSeederAction { get; }
+    bool PeriodicEnabled { get; }
+    Type PeriodicTickerType { get; }
 }
 
 internal class TickerExecutionContext

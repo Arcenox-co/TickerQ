@@ -13,7 +13,7 @@ namespace TickerQ.SourceGenerator.Validation
         /// Validates all aspects of a TickerFunction attribute and its usage.
         /// </summary>
         public static void ValidateTickerFunctionAttribute(
-            (string functionName, string cronExpression, int taskPriority, int maxConcurrency) attributeValues,
+            (string functionName, string cronExpression, int taskPriority, int maxConcurrency, string periodicInterval) attributeValues,
             ClassDeclarationSyntax classDeclaration,
             MethodDeclarationSyntax methodDeclaration,
             IMethodSymbol methodSymbol,
@@ -62,6 +62,13 @@ namespace TickerQ.SourceGenerator.Validation
             // Validate cron expression
             TickerFunctionValidator.ValidateCronExpression(
                 attributeValues.cronExpression,
+                className,
+                attributeLocation,
+                context);
+
+            // Validate periodic interval
+            TickerFunctionValidator.ValidatePeriodicInterval(
+                attributeValues.periodicInterval,
                 className,
                 attributeLocation,
                 context);

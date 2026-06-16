@@ -39,8 +39,19 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
     public async Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
     {
-        if (context.Type == TickerType.CronTickerOccurrence)
+        // Time tickers have a child-graph (sequential/parallel job composition); cron- and
+        // periodic-occurrences are leaf executions and bypass the child orchestration path.
+        if (context.Type is TickerType.CronTickerOccurrence or TickerType.PeriodicTickerOccurrence)
         {
+            // Periodic with a chain template: materialize a fresh TimeTicker chain and finish the
+            // occurrence. The occurrence itself does NOT run the function — the chain root does.
+            if (context.Type == TickerType.PeriodicTickerOccurrence
+                && context.PeriodicChainTemplate is { Length: > 0 })
+            {
+                await MaterializeChainAndCompleteOccurrenceAsync(context, isDue, cancellationToken);
+                return;
+            }
+
             await RunContextFunctionAsync(context, isDue, cancellationToken);
             return;
         }
@@ -122,6 +133,54 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             if (taskCount > 0)
                 await Task.WhenAll(childrenToRunAfterTask.AsSpan(0, taskCount).ToArray());
         }
+    }
+
+    // Materializes a periodic ticker's chain template into a fresh TimeTicker graph, then closes the
+    // occurrence with a terminal-success status so the periodic schedule advances (LastExecutedAt /
+    // ExecutionCount). When materialization is skipped (overlap suppression) the occurrence is still
+    // completed as Skipped so the schedule keeps progressing.
+    private async Task MaterializeChainAndCompleteOccurrenceAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken)
+    {
+        bool materialized;
+        try
+        {
+            materialized = await _internalTickerManager.MaterializePeriodicChainAsync(context, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Materialization failure must not stall the periodic schedule. Mark the occurrence Failed
+            // and let the next interval try again.
+            context.SetProperty(x => x.Status, TickerStatus.Failed)
+                .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
+                .SetProperty(x => x.ExceptionDetails, SerializeException(ex));
+            _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, 0);
+
+            // Route through the same exception hook as ordinary execution failures so alerting /
+            // dead-letter integrations observe periodic chain-materialization failures too.
+            if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
+                await handler.HandleExceptionAsync(ex, context.TickerId, context.Type);
+
+            await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+            return;
+        }
+
+        if (materialized)
+        {
+            _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, 0, true);
+            context.SetProperty(x => x.Status, isDue ? TickerStatus.DueDone : TickerStatus.Done)
+                .SetProperty(x => x.ExecutedAt, _clock.UtcNow);
+        }
+        else
+        {
+            // Overlap suppression: prior chain still running. Skip this fire but advance the schedule.
+            _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName,
+                "Previous chain still running (ChainOverlapBehavior.Skip)");
+            context.SetProperty(x => x.Status, TickerStatus.Skipped)
+                .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
+                .SetProperty(x => x.ExceptionDetails, "Previous chain still running");
+        }
+
+        await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
     }
 
     private async Task RunContextFunctionAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken, bool isChild = false)

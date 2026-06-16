@@ -203,6 +203,44 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
         return Push("cron_occurrence.updated", "cron-occurrences", payload);
     }
 
+    // ── Periodic tickers + occurrences ──
+    // Mirror the cron pattern: scope.changed nudges the dashboard to re-fetch, occurrence updates
+    // carry minimal state. The Hub re-fetches authoritative data on resume, so dropping payload
+    // detail here is fine.
+
+    public Task AddPeriodicTickerNotifyAsync(object periodicTicker)
+        => Push("scope.changed", "periodic-tickers", null);
+
+    public Task UpdatePeriodicTickerNotifyAsync(object periodicTicker)
+        => Push("scope.changed", "periodic-tickers", null);
+
+    public Task RemovePeriodicTickerNotifyAsync(Guid id)
+        => Push("scope.changed", "periodic-tickers", new { id });
+
+    public Task AddPeriodicOccurrenceAsync(Guid groupId, object occurrence)
+    {
+        var occurrenceId = TryGetOccurrenceId(occurrence);
+        if (occurrenceId.HasValue)
+            EnqueueSchedulerLine(occurrenceId.Value, (int)TickerType.PeriodicTickerOccurrence, string.Empty, 2, "Periodic occurrence enqueued");
+        return Push("scope.changed", "periodic-occurrences", new { periodicTickerId = groupId });
+    }
+
+    public Task UpdatePeriodicOccurrenceAsync(Guid groupId, object occurrence)
+        => Push("scope.changed", "periodic-occurrences", new { periodicTickerId = groupId });
+
+    public Task UpdatePeriodicOccurrenceFromInternalFunctionContext<TPeriodicTickerEntity>(InternalFunctionContext ctx)
+        where TPeriodicTickerEntity : PeriodicTickerEntity, new()
+    {
+        var payload = new
+        {
+            id = ctx.TickerId,
+            periodicTickerId = ctx.ParentId,
+            status = (int)ctx.Status,
+            elapsedMs = ctx.ElapsedTime
+        };
+        return Push("periodic_occurrence.updated", "periodic-occurrences", payload);
+    }
+
     /// <summary>
     /// Emits "scheduler" log lines for status transitions seen on the ticker context.
     /// Called by <see cref="WorkerStream.SchedulerWorkerServiceImpl{TT,TC}"/> when the

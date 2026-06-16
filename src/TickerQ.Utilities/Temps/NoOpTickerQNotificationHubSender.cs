@@ -91,5 +91,18 @@ namespace TickerQ.Utilities.Temps
         {
             return Task.CompletedTask;
         }
+
+        public Task AddPeriodicTickerNotifyAsync(object periodicTicker) => Task.CompletedTask;
+
+        public Task UpdatePeriodicTickerNotifyAsync(object periodicTicker) => Task.CompletedTask;
+
+        public Task RemovePeriodicTickerNotifyAsync(Guid id) => Task.CompletedTask;
+
+        public Task AddPeriodicOccurrenceAsync(Guid groupId, object occurrence) => Task.CompletedTask;
+
+        public Task UpdatePeriodicOccurrenceAsync(Guid groupId, object occurrence) => Task.CompletedTask;
+
+        public Task UpdatePeriodicOccurrenceFromInternalFunctionContext<TPeriodicTickerEntity>(InternalFunctionContext internalFunctionContext) where TPeriodicTickerEntity : PeriodicTickerEntity, new()
+            => Task.CompletedTask;
     }
 }

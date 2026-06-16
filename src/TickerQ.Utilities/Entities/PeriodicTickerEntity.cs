@@ -1,0 +1,85 @@
+using System;
+using TickerQ.Utilities.Entities.BaseEntity;
+using TickerQ.Utilities.Enums;
+
+namespace TickerQ.Utilities.Entities
+{
+    /// <summary>
+    /// A ticker that executes periodically based on a TimeSpan interval.
+    /// Unlike CronTicker which uses cron expressions, PeriodicTicker uses a simple interval.
+    /// </summary>
+    public class PeriodicTickerEntity : BaseTickerEntity
+    {
+        /// <summary>
+        /// The interval between executions.
+        /// </summary>
+        public virtual TimeSpan Interval { get; set; }
+        
+        /// <summary>
+        /// The serialized request payload for the ticker function.
+        /// </summary>
+        public virtual byte[] Request { get; set; }
+        
+        /// <summary>
+        /// Number of retry attempts if execution fails.
+        /// </summary>
+        public virtual int Retries { get; set; }
+        
+        /// <summary>
+        /// Intervals (in seconds) between retry attempts.
+        /// </summary>
+        public virtual int[] RetryIntervals { get; set; }
+        
+        /// <summary>
+        /// Whether the ticker is active and should be scheduled.
+        /// </summary>
+        public virtual bool IsActive { get; set; } = true;
+        
+        /// <summary>
+        /// Optional: The time when this periodic ticker should start.
+        /// If null, starts immediately after creation.
+        /// </summary>
+        public virtual DateTime? StartTime { get; set; }
+        
+        /// <summary>
+        /// Optional: The time when this periodic ticker should stop.
+        /// If null, runs indefinitely.
+        /// </summary>
+        public virtual DateTime? EndTime { get; set; }
+        
+        /// <summary>
+        /// The last time this ticker was executed.
+        /// Used to calculate the next execution time.
+        /// </summary>
+        public virtual DateTime? LastExecutedAt { get; internal set; }
+
+        /// <summary>
+        /// The last time an occurrence of this ticker was <em>started</em> (materialized by the
+        /// scheduler), as opposed to <see cref="LastExecutedAt"/> which only advances when an
+        /// occurrence reaches a terminal status. The next execution is computed from the later of the
+        /// two so that a long-running occurrence (one that stays in progress longer than
+        /// <see cref="Interval"/>) does not cause the scheduler to refire a fresh occurrence on every
+        /// pass while the previous one is still running.
+        /// </summary>
+        public virtual DateTime? LastStartedAt { get; internal set; }
+
+        /// <summary>
+        /// Total number of times this ticker has been executed.
+        /// </summary>
+        public virtual long ExecutionCount { get; internal set; }
+
+        /// <summary>
+        /// Optional job-chain template. When set, every fire materializes a fresh TimeTicker chain whose
+        /// root is this periodic ticker's own work (Function/Request/Retries/RetryIntervals) and whose
+        /// descendants are these steps. The occurrence itself does NOT execute the function directly —
+        /// the materialized chain root does. When null/empty the periodic ticker behaves as before.
+        /// </summary>
+        public virtual PeriodicChainStep[] ChainTemplate { get; set; }
+
+        /// <summary>
+        /// Controls behavior when this periodic ticker fires again while a previously materialized chain
+        /// is still running. Defaults to <see cref="ChainOverlapBehavior.Allow"/>.
+        /// </summary>
+        public virtual ChainOverlapBehavior ChainOverlapBehavior { get; set; } = ChainOverlapBehavior.Allow;
+    }
+}

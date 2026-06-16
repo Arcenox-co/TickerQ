@@ -37,6 +37,17 @@ namespace TickerQ.Utilities.Models
         public RunCondition RunCondition { get; set; }
         public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 
+        // Periodic job-chaining: when a PeriodicTickerOccurrence carries a template, the occurrence
+        // materializes a fresh TimeTicker chain instead of running its own function directly.
+        [JsonIgnore]
+        public Entities.PeriodicChainStep[] PeriodicChainTemplate { get; set; }
+
+        // The root request payload of the originating periodic ticker (becomes the chain root's Request).
+        public byte[] RootRequest { get; set; }
+
+        // How to handle a fire that overlaps a still-running materialized chain.
+        public ChainOverlapBehavior ChainOverlapBehavior { get; set; }
+
         [DynamicDependency(DynamicallyAccessedMemberTypes.PublicProperties, typeof(InternalFunctionContext))]
         public InternalFunctionContext SetProperty<T>(Expression<Func<InternalFunctionContext, T>> property, T value)
         {

@@ -105,5 +105,14 @@ namespace TickerQ.SourceGenerator.Validation
             DiagnosticSeverity.Error,
             true
         );
+
+        public static readonly DiagnosticDescriptor InvalidPeriodicInterval = new DiagnosticDescriptor(
+            "TQ012",
+            "Invalid periodic interval",
+            "The periodic interval '{0}' in function '{1}' is not a valid TimeSpan (expected e.g. \"00:05:00\" or \"0.00:05:00\")",
+            "TickerQ.SourceGenerator",
+            DiagnosticSeverity.Error,
+            true
+        );
     }
 }

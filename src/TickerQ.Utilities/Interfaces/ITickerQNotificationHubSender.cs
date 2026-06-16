@@ -26,5 +26,14 @@ namespace TickerQ.Utilities.Interfaces
         Task UpdateTimeTickerFromInternalFunctionContext<TTimeTickerEntity>(InternalFunctionContext internalFunctionContext) where TTimeTickerEntity : TimeTickerEntity<TTimeTickerEntity>, new();
         Task UpdateCronOccurrenceFromInternalFunctionContext<TCronTickerEntity>(InternalFunctionContext internalFunctionContext) where TCronTickerEntity : CronTickerEntity, new();
         Task CanceledTickerNotifyAsync(Guid id);
+
+        // Periodic ticker notifications (added with Periodic feature). Implementations may no-op
+        // when periodic dashboard support is not wired (e.g. NoOp sender, dashboards on older versions).
+        Task AddPeriodicTickerNotifyAsync(object periodicTicker);
+        Task UpdatePeriodicTickerNotifyAsync(object periodicTicker);
+        Task RemovePeriodicTickerNotifyAsync(Guid id);
+        Task AddPeriodicOccurrenceAsync(Guid groupId, object occurrence);
+        Task UpdatePeriodicOccurrenceAsync(Guid groupId, object occurrence);
+        Task UpdatePeriodicOccurrenceFromInternalFunctionContext<TPeriodicTickerEntity>(InternalFunctionContext internalFunctionContext) where TPeriodicTickerEntity : PeriodicTickerEntity, new();
     }
 }

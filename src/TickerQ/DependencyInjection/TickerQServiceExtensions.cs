@@ -41,9 +41,25 @@ namespace TickerQ.DependencyInjection
 
             // Configure whether ticker request payloads should use GZip compression
             TickerHelper.UseGZipCompression = optionInstance.RequestGZipCompressionEnabled;
+
+            // Apply global fluent-chain-builder limits (breadth/depth guards).
+            TickerChainConfig.MaxChildrenPerNode = optionInstance.MaxChainChildrenPerNode;
+            TickerChainConfig.MaxDepth = optionInstance.MaxChainDepth;
+
             services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
-            services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();
+            
+            // Register internal ticker manager based on whether Periodic is enabled
+            if (optionInstance.PeriodicEnabled)
+            {
+                // Register Periodic support with the specified entity type
+                RegisterPeriodicServices<TTimeTicker, TCronTicker>(services, optionInstance.PeriodicTickerType);
+            }
+            else
+            {
+                services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();
+            }
+            
             services.AddSingleton<ITickerQRedisContext, NoOpTickerQRedisContext>();
             services.AddSingleton<ITickerQNotificationHubSender, NoOpTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
@@ -159,6 +175,25 @@ namespace TickerQ.DependencyInjection
             }
 
             return host;
+        }
+        
+        private static void RegisterPeriodicServices<TTimeTicker, TCronTicker>(IServiceCollection services, Type periodicTickerType)
+            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+            where TCronTicker : CronTickerEntity, new()
+        {
+            // Use reflection to register generic services with the specified periodic ticker type
+            var persistenceProviderInterface = typeof(IPeriodicTickerPersistenceProvider<>).MakeGenericType(periodicTickerType);
+            var persistenceProviderImpl = typeof(PeriodicTickerInMemoryPersistenceProvider<>).MakeGenericType(periodicTickerType);
+            services.AddSingleton(persistenceProviderInterface, persistenceProviderImpl);
+            
+            var managerInterface = typeof(IPeriodicTickerManager<>).MakeGenericType(periodicTickerType);
+            var managerImpl = typeof(PeriodicTickerManager<>).MakeGenericType(periodicTickerType);
+            services.AddSingleton(managerInterface, managerImpl);
+            
+            // Register InternalTickerManagerWithPeriodic
+            var internalManagerType = typeof(InternalTickerManagerWithPeriodic<,,>)
+                .MakeGenericType(typeof(TTimeTicker), typeof(TCronTicker), periodicTickerType);
+            services.AddSingleton(typeof(IInternalTickerManager), internalManagerType);
         }
     }
 }

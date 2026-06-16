@@ -41,6 +41,7 @@ namespace TickerQ.Dashboard.Infrastructure;
 [JsonSerializable(typeof(IList<CronOccurrenceTickerGraphData>))]
 // Hub notification DTOs
 [JsonSerializable(typeof(CronOccurrenceUpdateNotification))]
+[JsonSerializable(typeof(PeriodicOccurrenceUpdateNotification))]
 // Entity types (base classes for serialization)
 [JsonSerializable(typeof(BaseTickerEntity))]
 [JsonSerializable(typeof(TimeTickerEntity))]
@@ -49,10 +50,16 @@ namespace TickerQ.Dashboard.Infrastructure;
 [JsonSerializable(typeof(CronTickerEntity[]))]
 [JsonSerializable(typeof(CronTickerOccurrenceEntity<CronTickerEntity>))]
 [JsonSerializable(typeof(CronTickerOccurrenceEntity<CronTickerEntity>[]))]
+[JsonSerializable(typeof(PeriodicTickerEntity))]
+[JsonSerializable(typeof(PeriodicTickerEntity[]))]
+[JsonSerializable(typeof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>))]
+[JsonSerializable(typeof(PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>[]))]
 // Pagination results
 [JsonSerializable(typeof(PaginationResult<TimeTickerEntity>))]
 [JsonSerializable(typeof(PaginationResult<CronTickerEntity>))]
 [JsonSerializable(typeof(PaginationResult<CronTickerOccurrenceEntity<CronTickerEntity>>))]
+[JsonSerializable(typeof(PaginationResult<PeriodicTickerEntity>))]
+[JsonSerializable(typeof(PaginationResult<PeriodicTickerOccurrenceEntity<PeriodicTickerEntity>>))]
 // Tuple types used in graph data
 [JsonSerializable(typeof(Tuple<int, int>))]
 [JsonSerializable(typeof(Tuple<int, int>[]))]

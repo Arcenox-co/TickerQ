@@ -10,11 +10,11 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <EmbeddedResource Include="Scripts\*.lua" />
+        <EmbeddedResource Include="Scripts\*.lua"/>
     </ItemGroup>
 
     <ItemGroup>
-      <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="$(DotNetVersion)" />
-      <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+        <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="$(DotNetVersion)"/>
+        <PackageReference Include="TickerQ.Utilities" Version="$(Version)"/>
     </ItemGroup>
 </Project>

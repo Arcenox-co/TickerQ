@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
@@ -7,6 +9,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using TickerQ.Provider;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 
 namespace TickerQ.BackgroundServices;
@@ -75,6 +79,13 @@ internal sealed class TickerQInitializerHostedService : IHostedService
         // duplicate executions at startup (see #776).
         await SkipStaleCronOccurrencesAsync(_serviceProvider, cancellationToken);
 
+        // Seed periodic tickers declared via [TickerFunction(PeriodicInterval = "...")]
+        if (options?.PeriodicEnabled == true && options.PeriodicTickerType != null
+            && TickerFunctionProvider.TickerFunctionPeriodicIntervals.Count > 0)
+        {
+            await SeedDefinedPeriodicTickersAsync(_serviceProvider, options.PeriodicTickerType, cancellationToken);
+        }
+
         if (_executionContext.ExternalProviderApplicationAction != null)
         {
             _executionContext.ExternalProviderApplicationAction(_serviceProvider);
@@ -103,5 +114,47 @@ internal sealed class TickerQInitializerHostedService : IHostedService
 
         var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
         await internalTickerManager.SkipStaleCronOccurrencesAsync(schedulerOptions.StaleCronOccurrenceThreshold, cancellationToken);
+    }
+
+    private static Task SeedDefinedPeriodicTickersAsync(IServiceProvider serviceProvider, Type periodicTickerType, CancellationToken cancellationToken)
+    {
+        var generic = typeof(TickerQInitializerHostedService)
+            .GetMethod(nameof(SeedPeriodicTickersGenericAsync), BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(periodicTickerType);
+
+        return (Task)generic.Invoke(null, new object[] { serviceProvider, cancellationToken })!;
+    }
+
+    private static async Task SeedPeriodicTickersGenericAsync<TPeriodicTicker>(IServiceProvider serviceProvider, CancellationToken cancellationToken)
+        where TPeriodicTicker : PeriodicTickerEntity, new()
+    {
+        var intervals = TickerFunctionProvider.TickerFunctionPeriodicIntervals;
+        if (intervals.Count == 0)
+            return;
+
+        var provider = serviceProvider.GetService<IPeriodicTickerPersistenceProvider<TPeriodicTicker>>();
+        if (provider == null)
+            return;
+
+        var existing = await provider.GetPeriodicTickers(_ => true, cancellationToken).ConfigureAwait(false);
+        var existingFunctions = new HashSet<string>(existing.Select(t => t.Function), StringComparer.Ordinal);
+
+        var toInsert = new List<TPeriodicTicker>();
+        foreach (var kv in intervals)
+        {
+            if (existingFunctions.Contains(kv.Key))
+                continue;
+
+            toInsert.Add(new TPeriodicTicker
+            {
+                Function = kv.Key,
+                Interval = kv.Value,
+                IsActive = true,
+                InitIdentifier = $"TQ_SYSTEM_{kv.Key}_{kv.Value.Ticks}"
+            });
+        }
+
+        if (toInsert.Count > 0)
+            await provider.InsertPeriodicTickers(toInsert.ToArray(), cancellationToken).ConfigureAwait(false);
     }
 }

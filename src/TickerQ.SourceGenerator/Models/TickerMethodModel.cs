@@ -8,6 +8,13 @@ namespace TickerQ.SourceGenerator.Models
         public int TaskPriority { get; set; }
         public int MaxConcurrency { get; set; }
 
+        /// <summary>
+        /// Optional periodic interval (string parsable as <c>System.TimeSpan</c>).
+        /// Set when the user supplies <c>PeriodicInterval = "..."</c> on the
+        /// <c>[TickerFunction]</c> attribute.
+        /// </summary>
+        public string PeriodicInterval { get; set; }
+
         // Method info
         public string MethodName { get; set; }
         public string ClassName { get; set; }

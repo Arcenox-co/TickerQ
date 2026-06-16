@@ -56,10 +56,27 @@ namespace TickerQ.Utilities
         bool ITickerOptionsSeeding.SeedDefinedCronTickers => SeedDefinedCronTickers;
         Func<IServiceProvider, System.Threading.Tasks.Task> ITickerOptionsSeeding.TimeSeederAction => TimeSeederAction;
         Func<IServiceProvider, System.Threading.Tasks.Task> ITickerOptionsSeeding.CronSeederAction => CronSeederAction;
+        bool ITickerOptionsSeeding.PeriodicEnabled => PeriodicEnabled;
+        Type ITickerOptionsSeeding.PeriodicTickerType => PeriodicTickerType;
 
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
         internal Type TickerExceptionHandlerType { get; private set; }
+        
+        /// <summary>
+        /// Internal flag indicating periodic ticker support is enabled.
+        /// </summary>
+        internal bool PeriodicEnabled { get; private set; }
+        
+        /// <summary>
+        /// The periodic ticker entity type when periodic support is enabled.
+        /// </summary>
+        internal Type PeriodicTickerType { get; private set; }
+        
+        /// <summary>
+        /// Action to register periodic ticker services.
+        /// </summary>
+        internal Action<IServiceCollection> PeriodicServiceAction { get; private set; }
         
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureScheduler(Action<SchedulerOptionsBuilder> schedulerOptionsBuilder)
         {
@@ -215,6 +232,58 @@ namespace TickerQ.Utilities
         
         internal void UseDashboardApplication(Action<object> action)
             => _tickerExecutionContext.DashboardApplicationAction = action;
+        
+        /// <summary>
+        /// Enables PeriodicTicker support with the default PeriodicTickerEntity type.
+        /// Periodic tickers execute at fixed intervals (like every 5 minutes).
+        /// </summary>
+        /// <returns>The TickerOptionsBuilder for method chaining</returns>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> EnablePeriodic()
+            => EnablePeriodic<PeriodicTickerEntity>();
+
+        /// <summary>
+        /// Enables PeriodicTicker support with a custom entity type.
+        /// Periodic tickers execute at fixed intervals (like every 5 minutes).
+        /// </summary>
+        /// <typeparam name="TPeriodicTicker">The periodic ticker entity type.</typeparam>
+        /// <returns>The TickerOptionsBuilder for method chaining</returns>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> EnablePeriodic<TPeriodicTicker>()
+            where TPeriodicTicker : PeriodicTickerEntity, new()
+        {
+            PeriodicEnabled = true;
+            PeriodicTickerType = typeof(TPeriodicTicker);
+            return this;
+        }
+
+        /// <summary>
+        /// Maximum number of children allowed under a single node in fluent chain builders. Default: 5.
+        /// </summary>
+        internal int MaxChainChildrenPerNode { get; set; } = TickerChainConfig.MaxChildrenPerNode;
+
+        /// <summary>
+        /// Maximum nesting depth below the root in fluent chain builders
+        /// (child = level 1, grandchild = level 2). Default: 2.
+        /// </summary>
+        internal int MaxChainDepth { get; set; } = TickerChainConfig.MaxDepth;
+
+        /// <summary>
+        /// Configures the global limits used by the fluent chain builders
+        /// (<see cref="Managers.FluentChainTickerBuilder{TTimeTicker}"/> and the periodic chain builder).
+        /// The execution engine supports arbitrary depth/branching; these limits only guard the builders.
+        /// </summary>
+        /// <param name="maxChildrenPerNode">Maximum children allowed under one node (breadth).</param>
+        /// <param name="maxDepth">Maximum nesting depth below the root (child = 1, grandchild = 2, ...).</param>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SetChainLimits(int maxChildrenPerNode, int maxDepth)
+        {
+            if (maxChildrenPerNode < 1)
+                throw new ArgumentOutOfRangeException(nameof(maxChildrenPerNode), "Must be at least 1.");
+            if (maxDepth < 1)
+                throw new ArgumentOutOfRangeException(nameof(maxDepth), "Must be at least 1.");
+
+            MaxChainChildrenPerNode = maxChildrenPerNode;
+            MaxChainDepth = maxDepth;
+            return this;
+        }
     }
 
     public class SchedulerOptionsBuilder
@@ -239,6 +308,21 @@ namespace TickerQ.Utilities
         /// </para>
         /// </summary>
         public TimeSpan StaleCronOccurrenceThreshold { get; set; } = TimeSpan.Zero;
+
+        /// <summary>
+        /// How long a periodic occurrence (or materialized chain node) may sit non-terminal —
+        /// specifically <c>InProgress</c> — before it is treated as abandoned for the purpose of
+        /// <see cref="Enums.ChainOverlapBehavior.Skip"/> overlap suppression.
+        /// <para>
+        /// Without this, an occurrence stuck <c>InProgress</c> (a node that crashed or hung after
+        /// acquiring it) would keep its periodic ticker permanently in the "still running" set, so a
+        /// <c>Skip</c> ticker would never fire again until a dead-node release. Once an occurrence has
+        /// not been touched for longer than this threshold it stops suppressing new fires, and the
+        /// fallback reaper resets it. Must be comfortably larger than the longest legitimate run.
+        /// </para>
+        /// </summary>
+        public TimeSpan PeriodicOverlapStaleThreshold { get; set; } = TimeSpan.FromMinutes(10);
+
         public TimeZoneInfo SchedulerTimeZone = TimeZoneInfo.Local;
     }
 }

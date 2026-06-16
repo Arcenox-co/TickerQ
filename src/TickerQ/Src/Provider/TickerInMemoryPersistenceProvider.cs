@@ -1218,9 +1218,10 @@ namespace TickerQ.Provider
                 CreatedAt = ticker.CreatedAt,
                 UpdatedAt = ticker.UpdatedAt,
                 Description = ticker.Description,
+                OriginPeriodicTickerId = ticker.OriginPeriodicTickerId,
                 Children = new List<TTimeTicker>()
             };
-            
+
             return cloned;
         }
         

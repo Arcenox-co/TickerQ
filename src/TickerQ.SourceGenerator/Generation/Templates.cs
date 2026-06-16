@@ -31,12 +31,18 @@ namespace {{NAMESPACE}}
             };
             global::TickerQ.Utilities.TickerFunctionProvider.RegisterFunctions(tickerFunctionDelegateDict, {{METHOD_COUNT}});
             RegisterRequestTypes();
+            RegisterPeriodicIntervals();
         }
 
 {{CONSTRUCTOR_METHODS}}
         private static void RegisterRequestTypes()
         {
 {{REQUEST_TYPE_REGISTRATIONS}}
+        }
+
+        private static void RegisterPeriodicIntervals()
+        {
+{{PERIODIC_INTERVAL_REGISTRATIONS}}
         }
     }
 }";
@@ -108,6 +114,20 @@ namespace {{NAMESPACE}}
         /// Single request type entry
         /// </summary>
         internal const string RequestTypeEntry = @"                [""{{FUNCTION_NAME}}""] = (typeof({{REQUEST_TYPE}}).FullName, typeof({{REQUEST_TYPE}})),";
+
+        /// <summary>
+        /// Periodic intervals registration block
+        /// </summary>
+        internal const string PeriodicIntervalRegistration = @"            var periodicIntervals = new global::System.Collections.Generic.Dictionary<string, global::System.TimeSpan>({{COUNT}})
+            {
+{{ENTRIES}}
+            };
+            global::TickerQ.Utilities.TickerFunctionProvider.RegisterPeriodicIntervals(periodicIntervals, {{COUNT}});";
+
+        /// <summary>
+        /// Single periodic interval entry
+        /// </summary>
+        internal const string PeriodicIntervalEntry = @"                [""{{FUNCTION_NAME}}""] = {{INTERVAL_EXPR}},";
 
         /// <summary>
         /// TickerQRequestJsonContext.g.cs — generated JsonSerializerContext for all request types (AOT)
