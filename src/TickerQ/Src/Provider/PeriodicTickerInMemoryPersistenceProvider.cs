@@ -23,12 +23,16 @@ namespace TickerQ.Provider
 
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
+        private readonly TimeSpan _overlapStaleThreshold;
 
         public PeriodicTickerInMemoryPersistenceProvider(IServiceProvider serviceProvider)
         {
             _clock = serviceProvider.GetService<ITickerClock>() ?? new TickerSystemClock();
             var optionsBuilder = serviceProvider.GetService<SchedulerOptionsBuilder>();
             _lockHolder = optionsBuilder?.NodeIdentifier ?? Environment.MachineName;
+            _overlapStaleThreshold = optionsBuilder?.PeriodicOverlapStaleThreshold > TimeSpan.Zero
+                ? optionsBuilder.PeriodicOverlapStaleThreshold
+                : TimeSpan.FromMinutes(10);
         }
 
         #region Core Methods
@@ -63,11 +67,21 @@ namespace TickerQ.Provider
             if (ids == null || ids.Length == 0)
                 return Task.FromResult(result);
 
+            // An InProgress occurrence only suppresses while fresh; once untouched past the stale
+            // threshold it is assumed abandoned (crashed/hung node) and no longer blocks a Skip ticker.
+            // Idle/Queued always count (pending, not running).
+            var staleCutoff = _clock.UtcNow - _overlapStaleThreshold;
+
             var idSet = new HashSet<Guid>(ids);
             foreach (var occurrence in PeriodicOccurrences.Values)
             {
                 if (!idSet.Contains(occurrence.PeriodicTickerId)) continue;
-                if (occurrence.Status is TickerStatus.Idle or TickerStatus.Queued or TickerStatus.InProgress)
+
+                var counts = occurrence.Status is TickerStatus.Idle or TickerStatus.Queued
+                    || (occurrence.Status == TickerStatus.InProgress
+                        && (occurrence.LockedAt == null || occurrence.LockedAt > staleCutoff));
+
+                if (counts)
                     result.Add(occurrence.PeriodicTickerId);
             }
 
@@ -145,6 +159,22 @@ namespace TickerQ.Provider
         {
             var now = _clock.UtcNow;
             var fallbackThreshold = now.AddSeconds(-1);
+            var staleCutoff = now - _overlapStaleThreshold;
+
+            // Recover occurrences abandoned in InProgress (crashed/hung node after acquiring): release to
+            // Idle so they stop suppressing Skip tickers and normal scheduling can re-acquire them.
+            foreach (var occurrence in PeriodicOccurrences.Values)
+            {
+                if (occurrence.Status != TickerStatus.InProgress) continue;
+                if (occurrence.LockedAt == null || occurrence.LockedAt > staleCutoff) continue;
+
+                var released = CloneOccurrence(occurrence);
+                released.LockHolder = null;
+                released.LockedAt = null;
+                released.Status = TickerStatus.Idle;
+                released.UpdatedAt = now;
+                PeriodicOccurrences.TryUpdate(occurrence.Id, released, occurrence);
+            }
 
             var timedOutOccurrences = PeriodicOccurrences.Values
                 .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)

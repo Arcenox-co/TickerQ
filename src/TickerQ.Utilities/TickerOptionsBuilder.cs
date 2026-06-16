@@ -308,6 +308,21 @@ namespace TickerQ.Utilities
         /// </para>
         /// </summary>
         public TimeSpan StaleCronOccurrenceThreshold { get; set; } = TimeSpan.Zero;
+
+        /// <summary>
+        /// How long a periodic occurrence (or materialized chain node) may sit non-terminal —
+        /// specifically <c>InProgress</c> — before it is treated as abandoned for the purpose of
+        /// <see cref="Enums.ChainOverlapBehavior.Skip"/> overlap suppression.
+        /// <para>
+        /// Without this, an occurrence stuck <c>InProgress</c> (a node that crashed or hung after
+        /// acquiring it) would keep its periodic ticker permanently in the "still running" set, so a
+        /// <c>Skip</c> ticker would never fire again until a dead-node release. Once an occurrence has
+        /// not been touched for longer than this threshold it stops suppressing new fires, and the
+        /// fallback reaper resets it. Must be comfortably larger than the longest legitimate run.
+        /// </para>
+        /// </summary>
+        public TimeSpan PeriodicOverlapStaleThreshold { get; set; } = TimeSpan.FromMinutes(10);
+
         public TimeZoneInfo SchedulerTimeZone = TimeZoneInfo.Local;
     }
 }

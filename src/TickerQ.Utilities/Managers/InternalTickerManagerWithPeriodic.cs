@@ -5,6 +5,7 @@ using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
+using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
@@ -29,6 +30,7 @@ namespace TickerQ.Utilities.Managers
     {
         private readonly IPeriodicTickerPersistenceProvider<TPeriodicTicker> _periodicProvider;
         private readonly IServiceProvider _serviceProvider;
+        private readonly TimeSpan _overlapStaleThreshold;
 
         public InternalTickerManagerWithPeriodic(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
@@ -40,6 +42,11 @@ namespace TickerQ.Utilities.Managers
         {
             _periodicProvider = periodicProvider ?? throw new ArgumentNullException(nameof(periodicProvider));
             _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+
+            var options = serviceProvider.GetService<SchedulerOptionsBuilder>();
+            _overlapStaleThreshold = options?.PeriodicOverlapStaleThreshold > TimeSpan.Zero
+                ? options.PeriodicOverlapStaleThreshold
+                : TimeSpan.FromMinutes(10);
         }
 
         // ---------------------------------------------------------------------
@@ -504,13 +511,42 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<bool> IsPreviousChainRunningAsync(Guid periodicTickerId, CancellationToken cancellationToken)
         {
-            // DB-backed: any chain node stamped with this periodic id that is not yet terminal means the
+            // DB-backed: a chain node stamped with this periodic id that is still "live" means the
             // previous chain is still running. Works across nodes and survives process restarts.
-            var tickers = await PersistenceProvider
-                .GetTimeTickers(t => t.OriginPeriodicTickerId == periodicTickerId, cancellationToken)
+            //
+            // The predicate is filtered to live nodes only (not the full origin history) so the query is
+            // bounded and short-circuits via Any():
+            //   - terminal nodes (Done/DueDone/Failed/Cancelled/Skipped) never count;
+            //   - an InProgress node only counts while fresh — once it has not been touched for longer
+            //     than the stale threshold it is assumed abandoned (crashed/hung node) and ignored,
+            //     otherwise one orphaned node would suppress every future chain forever.
+            var staleCutoff = Clock.UtcNow - _overlapStaleThreshold;
+
+            // Predicate filters to live nodes so the real-provider query is bounded (not the full origin
+            // history). The in-memory IsChainNodeLive re-check is kept as a guard so correctness does not
+            // rely on the provider honoring the full predicate.
+            var nodes = await PersistenceProvider
+                .GetTimeTickers(t => t.OriginPeriodicTickerId == periodicTickerId
+                    && t.Status != TickerStatus.Done
+                    && t.Status != TickerStatus.DueDone
+                    && t.Status != TickerStatus.Failed
+                    && t.Status != TickerStatus.Cancelled
+                    && t.Status != TickerStatus.Skipped
+                    && (t.Status != TickerStatus.InProgress || t.LockedAt == null || t.LockedAt > staleCutoff),
+                    cancellationToken)
                 .ConfigureAwait(false);
 
-            return tickers.Any(t => !IsTerminalStatus(t.Status));
+            return nodes.Any(t => IsChainNodeLive(t, staleCutoff));
+        }
+
+        // A chain node still counts as "running" unless it is terminal, or it is an InProgress node that
+        // has not been touched since the stale cutoff (assumed abandoned by a crashed/hung node).
+        private static bool IsChainNodeLive(TimeTickerEntity<TTimeTicker> node, DateTime staleCutoff)
+        {
+            if (IsTerminalStatus(node.Status)) return false;
+            if (node.Status == TickerStatus.InProgress && node.LockedAt != null && node.LockedAt <= staleCutoff)
+                return false;
+            return true;
         }
 
         private static bool IsTerminalStatus(TickerStatus status)

@@ -28,6 +28,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         private readonly IServiceProvider _serviceProvider;
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
+        private readonly TimeSpan _overlapStaleThreshold;
 
         public TickerEfCorePeriodicPersistenceProvider(
             IServiceProvider serviceProvider,
@@ -37,6 +38,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             _serviceProvider = serviceProvider;
             _clock = clock;
             _lockHolder = optionsBuilder.NodeIdentifier;
+            _overlapStaleThreshold = optionsBuilder.PeriodicOverlapStaleThreshold > TimeSpan.Zero
+                ? optionsBuilder.PeriodicOverlapStaleThreshold
+                : TimeSpan.FromMinutes(10);
         }
 
         private Task<DbContextLease<TDbContext>> CreateDbContextAsync(CancellationToken cancellationToken)
@@ -106,6 +110,11 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 return new HashSet<Guid>();
 
             var idList = ids.ToList();
+            // An InProgress occurrence only counts as "still running" while it is fresh. Once it has not
+            // been touched for longer than the stale threshold it is assumed abandoned (crashed/hung node)
+            // and no longer suppresses new fires — otherwise a stuck InProgress would block a Skip ticker
+            // forever. Idle/Queued always count (they are pending, not running).
+            var staleCutoff = _clock.UtcNow - _overlapStaleThreshold;
 
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
@@ -115,7 +124,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .Where(x => idList.Contains(x.PeriodicTickerId))
                 .Where(x => x.Status == TickerStatus.Idle
                             || x.Status == TickerStatus.Queued
-                            || x.Status == TickerStatus.InProgress)
+                            || (x.Status == TickerStatus.InProgress
+                                && (x.LockedAt == null || x.LockedAt > staleCutoff)))
                 .Select(x => x.PeriodicTickerId)
                 .Distinct()
                 .ToArrayAsync(cancellationToken)
@@ -232,10 +242,24 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             var now = _clock.UtcNow;
             var fallbackThreshold = now.AddSeconds(-1);
+            var staleCutoff = now - _overlapStaleThreshold;
 
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
             var occSet = dbContext.Set<PeriodicTickerOccurrenceEntity<TPeriodicTicker>>();
+
+            // Recover occurrences abandoned in InProgress (node crashed/hung after acquiring). Release them
+            // back to Idle so normal scheduling re-acquires — and so they stop suppressing Skip tickers.
+            // Released, not re-run directly, to avoid double-running a job that might still be alive.
+            await occSet
+                .Where(x => x.Status == TickerStatus.InProgress
+                            && x.LockedAt != null && x.LockedAt <= staleCutoff)
+                .ExecuteUpdateAsync(setter => setter
+                    .SetProperty(x => x.LockHolder, _ => (string)null)
+                    .SetProperty(x => x.LockedAt, _ => (DateTime?)null)
+                    .SetProperty(x => x.Status, TickerStatus.Idle)
+                    .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                .ConfigureAwait(false);
 
             var rows = await occSet
                 .AsNoTracking()

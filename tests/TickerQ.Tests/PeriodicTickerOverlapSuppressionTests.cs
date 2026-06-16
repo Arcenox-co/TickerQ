@@ -3,8 +3,10 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Provider;
+using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 using Xunit;
 
@@ -142,5 +144,103 @@ public class PeriodicTickerOverlapSuppressionTests
         Assert.Equal("edited", stored.Description);
         Assert.Equal(executedAt, stored.LastExecutedAt);
         Assert.Equal(1, stored.ExecutionCount);
+    }
+
+    // ---- S1: a stale InProgress occurrence must stop suppressing a Skip ticker ----
+
+    private sealed class MutableClock : ITickerClock
+    {
+        public DateTime UtcNow { get; set; }
+    }
+
+    private static (PeriodicTickerInMemoryPersistenceProvider<PeriodicTickerEntity> Provider, MutableClock Clock)
+        CreateProviderWithClock(TimeSpan staleThreshold)
+    {
+        var clock = new MutableClock { UtcNow = new DateTime(2026, 6, 15, 12, 0, 0, DateTimeKind.Utc) };
+        var services = new ServiceCollection();
+        services.AddSingleton<ITickerClock>(clock);
+        services.AddSingleton(new SchedulerOptionsBuilder { PeriodicOverlapStaleThreshold = staleThreshold });
+        return (new PeriodicTickerInMemoryPersistenceProvider<PeriodicTickerEntity>(services.BuildServiceProvider()), clock);
+    }
+
+    // Drives an occurrence into InProgress (locked at the current clock time) via the provider API.
+    private static async Task<Guid> CreateInProgressOccurrence(
+        PeriodicTickerInMemoryPersistenceProvider<PeriodicTickerEntity> provider,
+        PeriodicTickerEntity ticker,
+        DateTime executionTime)
+    {
+        Guid occId = Guid.Empty;
+        await foreach (var occ in provider.QueuePeriodicTickerOccurrences(
+            (executionTime, new[] { new InternalManagerContext(ticker.Id) { FunctionName = ticker.Function, Interval = ticker.Interval } }),
+            default))
+        {
+            occId = occ.Id;
+        }
+
+        await provider.UpdatePeriodicTickerOccurrencesWithUnifiedContext(
+            new[] { occId },
+            new InternalFunctionContext().SetProperty(x => x.Status, TickerStatus.InProgress),
+            default);
+
+        return occId;
+    }
+
+    [Fact]
+    public async Task FreshInProgress_StillSuppresses_Skip()
+    {
+        var (provider, clock) = CreateProviderWithClock(TimeSpan.FromMinutes(10));
+        var ticker = NewTicker(ChainOverlapBehavior.Skip);
+        await provider.InsertPeriodicTickers(new[] { ticker }, default);
+
+        await CreateInProgressOccurrence(provider, ticker, clock.UtcNow);
+
+        // Only a little time passes — the occurrence is still legitimately running.
+        clock.UtcNow = clock.UtcNow.AddSeconds(30);
+
+        var unfinished = await provider.GetPeriodicTickerIdsWithUnfinishedOccurrence(new[] { ticker.Id }, default);
+        Assert.Contains(ticker.Id, unfinished);
+    }
+
+    [Fact]
+    public async Task StaleInProgress_NoLongerSuppresses_Skip()
+    {
+        var (provider, clock) = CreateProviderWithClock(TimeSpan.FromMinutes(10));
+        var ticker = NewTicker(ChainOverlapBehavior.Skip);
+        await provider.InsertPeriodicTickers(new[] { ticker }, default);
+
+        await CreateInProgressOccurrence(provider, ticker, clock.UtcNow);
+
+        // The owning node crashed/hung: the occurrence sits InProgress untouched well past the threshold.
+        clock.UtcNow = clock.UtcNow.AddMinutes(20);
+
+        var unfinished = await provider.GetPeriodicTickerIdsWithUnfinishedOccurrence(new[] { ticker.Id }, default);
+        Assert.DoesNotContain(ticker.Id, unfinished);
+    }
+
+    [Fact]
+    public async Task Reaper_RecoversStaleInProgress_BreakingPermanentSuppression()
+    {
+        var (provider, clock) = CreateProviderWithClock(TimeSpan.FromMinutes(10));
+        var ticker = NewTicker(ChainOverlapBehavior.Skip);
+        await provider.InsertPeriodicTickers(new[] { ticker }, default);
+
+        var occId = await CreateInProgressOccurrence(provider, ticker, clock.UtcNow.AddMinutes(-1));
+
+        // The owning node hung: occurrence sits InProgress untouched past the threshold, so it stops
+        // suppressing the Skip ticker.
+        clock.UtcNow = clock.UtcNow.AddMinutes(20);
+        Assert.DoesNotContain(ticker.Id,
+            await provider.GetPeriodicTickerIdsWithUnfinishedOccurrence(new[] { ticker.Id }, default));
+
+        // The fallback reaper recovers it (releases the stale lock and re-acquires with a fresh one) so
+        // the occurrence is no longer an orphan with a stale LockedAt. This is what breaks the permanent
+        // suppression on a real stand without needing a process restart / dead-node release.
+        await foreach (var _ in provider.QueueTimedOutPeriodicTickerOccurrences(default)) { }
+
+        var recovered = await provider.GetAllPeriodicTickerOccurrences(o => o.Id == occId, default);
+        Assert.Single(recovered);
+        Assert.NotNull(recovered[0].LockedAt);
+        Assert.True(recovered[0].LockedAt >= clock.UtcNow.AddMinutes(-10),
+            "reaper must refresh the stale lock so the occurrence is no longer treated as abandoned");
     }
 }
