@@ -21,6 +21,7 @@ namespace TickerQ.Tests;
 /// emulating the scheduler loop (queue → run → complete → advance clock → repeat), and asserts the
 /// schedule keeps progressing across multiple intervals.
 /// </summary>
+[Collection("PeriodicInMemoryStaticState")]
 public class PeriodicSchedulerProgressionTests
 {
     private sealed class MutableClock : ITickerClock
@@ -207,6 +208,64 @@ public class PeriodicSchedulerProgressionTests
 
         Assert.True(fastStored.ExecutionCount >= 3, $"fast periodic stalled: {fastStored.ExecutionCount} runs");
         Assert.True(slowStored.ExecutionCount >= 1, $"slow periodic stalled: {slowStored.ExecutionCount} runs");
+    }
+
+    [Fact]
+    public async Task SubSecondInterval_IsHonored_NotFiredAsFastAsPossible()
+    {
+        // A 200ms periodic should fire ~5x/sec. Faithfully mirror the scheduler loop: each turn fires the
+        // previously-queued batch (executed after the sleep), advances the clock by the planner's
+        // timeRemaining (clamped to a tiny floor like MinPollingInterval would, but here just >0), then
+        // re-plans. Over a simulated ~2s window the periodic must fire roughly interval-paced, NOT on
+        // every loop turn. The co-firing window compared at whole-second granularity, so a sub-second
+        // periodic fired the moment its next fell in the current second → "as fast as possible".
+        var start = new DateTime(2026, 6, 15, 12, 0, 0, 0, DateTimeKind.Utc);
+        var clock = new MutableClock { UtcNow = start };
+        var provider = NewProvider();
+        var manager = BuildManager(clock, provider);
+
+        var ticker = new PeriodicTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = "Poll",
+            Interval = TimeSpan.FromMilliseconds(200),
+            IsActive = true
+        };
+        await provider.InsertPeriodicTickers(new[] { ticker }, default);
+
+        var fireCount = 0;
+        InternalFunctionContext[] pending = Array.Empty<InternalFunctionContext>();
+        var deadline = start.AddSeconds(2);
+
+        // Guard against an infinite-fast loop: cap iterations. If the interval is ignored the periodic
+        // fires on (almost) every turn, so a low cap with a high fire count exposes the bug.
+        for (var i = 0; i < 1000 && clock.UtcNow < deadline; i++)
+        {
+            foreach (var fn in pending.Where(f => f.Type == TickerType.PeriodicTickerOccurrence))
+            {
+                fireCount++;
+                await manager.UpdateTickerAsync(new InternalFunctionContext
+                {
+                    TickerId = fn.TickerId,
+                    ParentId = fn.ParentId,
+                    Type = TickerType.PeriodicTickerOccurrence,
+                    ExecutedAt = clock.UtcNow
+                }.SetProperty(x => x.Status, TickerStatus.Done));
+            }
+
+            var (timeRemaining, functions) = await manager.GetNextTickers();
+            pending = functions ?? Array.Empty<InternalFunctionContext>();
+
+            // Sleep as the real loop would; floor at 1ms so the simulation makes progress.
+            var sleep = timeRemaining == Timeout.InfiniteTimeSpan || timeRemaining > TimeSpan.FromDays(1)
+                ? TimeSpan.FromMilliseconds(1)
+                : (timeRemaining < TimeSpan.FromMilliseconds(1) ? TimeSpan.FromMilliseconds(1) : timeRemaining);
+            clock.UtcNow = clock.UtcNow.Add(sleep);
+        }
+
+        // ~2s at 200ms ⇒ ~10 fires. Allow generous slack but reject "as fast as possible" (which would be
+        // dozens-to-hundreds given the 1ms floor).
+        Assert.InRange(fireCount, 5, 20);
     }
 
     /// <summary>

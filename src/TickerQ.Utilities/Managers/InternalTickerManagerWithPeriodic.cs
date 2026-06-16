@@ -82,14 +82,19 @@ namespace TickerQ.Utilities.Managers
             if (timeTickerTime.HasValue && timeTickerTime.Value < earliest) earliest = timeTickerTime.Value;
             if (periodicTime.HasValue && periodicTime.Value < earliest) earliest = periodicTime.Value;
 
-            // Co-firing window: fire any source whose earliest entry is in the
-            // same wall-clock second as the global minimum. Matches the
-            // existing time/cron logic in the base implementation.
+            // Co-firing window. Cron/time tickers are second-resolution, so they co-fire within the same
+            // wall-clock second as the global minimum (matches the base implementation). Periodic tickers
+            // can have sub-second intervals, so they are matched at full precision within a tight tolerance
+            // of `earliest`: whole-second granularity would fire a sub-second periodic the moment its
+            // `next` fell anywhere in the current second (e.g. a 200ms interval at the top of the second
+            // would be materialized immediately every pass), collapsing the interval into "as fast as
+            // possible". Tying inclusion to actual due-ness keeps `timeRemaining` pacing the interval.
             var earliestSecond = TruncateToSecond(earliest);
 
             bool includeCron = cronTime.HasValue && TruncateToSecond(cronTime.Value) == earliestSecond;
             bool includeTime = timeTickerTime.HasValue && TruncateToSecond(timeTickerTime.Value) == earliestSecond;
-            bool includePeriodic = periodicTime.HasValue && TruncateToSecond(periodicTime.Value) == earliestSecond;
+            bool includePeriodic = periodicTime.HasValue
+                && periodicTime.Value - earliest <= PeriodicCoFiringTolerance;
 
             if (!includeCron && !includeTime && !includePeriodic)
                 return (Timeout.InfiniteTimeSpan, []);
@@ -132,6 +137,11 @@ namespace TickerQ.Utilities.Managers
 
             return (timeRemaining, merged);
         }
+
+        // How close to `earliest` a periodic's next-execution must be to co-fire in the same planning
+        // pass. Small enough that a sub-second interval is paced by `timeRemaining` rather than fired on
+        // every pass, but large enough to batch periodics that are genuinely due together.
+        private static readonly TimeSpan PeriodicCoFiringTolerance = TimeSpan.FromMilliseconds(50);
 
         // Helper kept private to avoid changing the protected surface of the base type.
         private static DateTime TruncateToSecond(DateTime dt)

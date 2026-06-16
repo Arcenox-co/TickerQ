@@ -145,7 +145,12 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                     ? TimeSpan.Zero
                     : _minPollingInterval;
 
-                sleepDuration = timeRemaining <= minInterval
+                // MinPollingInterval is a tight-loop guard for the "due now / nothing scheduled" case
+                // (timeRemaining ~ 0), NOT a rounding-up of genuine waits. Rounding every short wait up to
+                // the floor would cap sub-second periodic intervals (e.g. 200ms) at the floor (default 1s),
+                // turning ~5/sec into ~1/sec. Honor a real positive wait; only fall back to the floor when
+                // there is effectively nothing to wait for.
+                sleepDuration = timeRemaining <= TimeSpan.Zero
                     ? minInterval
                     : timeRemaining;
                 _executionContext.SetNextPlannedOccurrence(DateTime.UtcNow.Add(sleepDuration));

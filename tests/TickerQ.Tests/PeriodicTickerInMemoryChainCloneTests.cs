@@ -13,6 +13,7 @@ namespace TickerQ.Tests;
 /// (UpdatePeriodicTickerAfterExecution). The clone must preserve the chain template, otherwise
 /// chaining would silently stop after the first fire.
 /// </summary>
+[Collection("PeriodicInMemoryStaticState")]
 public class PeriodicTickerInMemoryChainCloneTests
 {
     private static PeriodicTickerInMemoryPersistenceProvider<PeriodicTickerEntity> CreateProvider()

@@ -13,10 +13,20 @@ using Xunit;
 namespace TickerQ.Tests;
 
 /// <summary>
+/// Serializes tests that drive the in-memory periodic provider, whose backing dictionaries are static
+/// (process-wide). Several of these tests use a controllable clock and assert on global occurrence state;
+/// running them in parallel with each other lets one test's clock/occurrences contaminate another's
+/// staleness math. Tests in this collection run sequentially.
+/// </summary>
+[CollectionDefinition("PeriodicInMemoryStaticState", DisableParallelization = true)]
+public sealed class PeriodicInMemoryStaticStateCollection { }
+
+/// <summary>
 /// Regression tests for the long-running-occurrence refire bug (ScheduledCalculations): the in-memory
 /// provider must anchor the next interval on the occurrence START (LastStartedAt) and must expose
 /// unfinished-occurrence state so the scheduler can suppress overlapping fires for Skip tickers.
 /// </summary>
+[Collection("PeriodicInMemoryStaticState")]
 public class PeriodicTickerOverlapSuppressionTests
 {
     private static PeriodicTickerInMemoryPersistenceProvider<PeriodicTickerEntity> CreateProvider()
