@@ -16,7 +16,8 @@ namespace TickerQ.Dashboard.Hubs
         private readonly Timer _timeTickerUpdateTimer;
         private int _hasPendingTimeTickerUpdate;
         private static readonly TimeSpan TimeTickerUpdateDebounce = TimeSpan.FromMilliseconds(100);
-        
+        private static readonly JsonSerializerOptions CamelCaseOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
         public TickerQNotificationHubSender(IHubContext<TickerQNotificationHub> hubContext)
         {
             _hubContext = hubContext ?? throw new ArgumentNullException(nameof(hubContext));
@@ -95,14 +96,21 @@ namespace TickerQ.Dashboard.Hubs
 
         public async Task AddCronOccurrenceAsync(Guid groupId, object occurrence)
         {
-            var json = JsonSerializer.SerializeToElement((CronTickerOccurrenceEntity<CronTickerEntity>)occurrence, DashboardJsonSerializerContext.Default.CronTickerOccurrenceEntityCronTickerEntity);
+            var json = SerializeOccurrence(occurrence);
             await _hubContext.Clients.Group(groupId.ToString()).SendAsync("AddCronOccurrenceNotification", json);
         }
 
         public async Task UpdateCronOccurrenceAsync(Guid groupId, object occurrence)
         {
-            var json = JsonSerializer.SerializeToElement((CronTickerOccurrenceEntity<CronTickerEntity>)occurrence, DashboardJsonSerializerContext.Default.CronTickerOccurrenceEntityCronTickerEntity);
+            var json = SerializeOccurrence(occurrence);
             await _hubContext.Clients.Group(groupId.ToString()).SendAsync("UpdateCronOccurrenceNotification", json);
+        }
+
+        private static JsonElement SerializeOccurrence(object occurrence) 
+        {
+            if (occurrence is CronTickerOccurrenceEntity<CronTickerEntity> typed) 
+                return JsonSerializer.SerializeToElement(typed, DashboardJsonSerializerContext.Default.CronTickerOccurrenceEntityCronTickerEntity); 
+            return JsonSerializer.SerializeToElement(occurrence, CamelCaseOptions);
         }
 
         public Task UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(InternalFunctionContext internalFunctionContext)

@@ -2,8 +2,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 
@@ -35,7 +35,7 @@ namespace TickerQ.Utilities
         /// Defaults to true.
         /// </summary>
         internal bool SeedDefinedCronTickers { get; set; } = true;
-        
+
         /// <summary>
         /// Controls whether background services (job processors) should be registered.
         /// Defaults to true. Set to false to only register managers for queuing jobs.
@@ -60,7 +60,7 @@ namespace TickerQ.Utilities
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
         internal Type TickerExceptionHandlerType { get; private set; }
-        
+
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureScheduler(Action<SchedulerOptionsBuilder> schedulerOptionsBuilder)
         {
             schedulerOptionsBuilder?.Invoke(_schedulerOptions);
@@ -77,13 +77,12 @@ namespace TickerQ.Utilities
             set => _schedulerOptions.MinPollingInterval = value;
         }
 
-              
         /// <summary>
         /// JsonSerializerOptions specifically for serializing/deserializing ticker requests.
         /// If not set, default JsonSerializerOptions will be used.
         /// </summary>
         internal JsonSerializerOptions RequestJsonSerializerOptions { get; set; }
-        
+
         /// <summary>
         /// Configures a JsonSerializerContext for AOT-compatible ticker request serialization/deserialization.
         /// Use this when publishing with Native AOT or when trimming is enabled.
@@ -146,15 +145,29 @@ namespace TickerQ.Utilities
             SeedDefinedCronTickers = false;
             return this;
         }
-        
+
         /// <summary>
-        /// Disables background services registration. 
+        /// Disables background services registration.
         /// Use this when you only want to queue jobs without processing them in this application.
         /// Only the managers (ITimeTickerManager, ICronTickerManager) will be available for queuing jobs.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> DisableBackgroundServices()
         {
             RegisterBackgroundServices = false;
+            return this;
+        }
+
+        /// <summary>
+        /// Creates an ActivitySource named "TickerQ" with activity tracing for TickerQ jobs.
+        /// Also includes standard logging through ILogger.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> EnableActivitySource()
+        {
+            ExternalProviderConfigServiceAction += services =>
+            {
+              // Replace any existing instrumentation with OpenTelemetry version
+              services.AddSingleton<ITickerQInstrumentation, ActivitySourceInstrumentation>();
+            };
             return this;
         }
 
@@ -203,16 +216,16 @@ namespace TickerQ.Utilities
             UseTickerSeeder(cronSeeder);
             return this;
         }
-        
+
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> SetExceptionHandler<THandler>() where THandler : ITickerExceptionHandler
         {
             TickerExceptionHandlerType = typeof(THandler);
             return this;
         }
-        
+
         internal void UseExternalProviderApplication(Action<IServiceProvider> action)
             => _tickerExecutionContext.ExternalProviderApplicationAction = action;
-        
+
         internal void UseDashboardApplication(Action<object> action)
             => _tickerExecutionContext.DashboardApplicationAction = action;
     }

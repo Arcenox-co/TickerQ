@@ -154,5 +154,5 @@ builder.Logging.AddNLog();
 ## Requirements
 
 - .NET 8.0 or later
-- OpenTelemetry 1.7.0 or later
+- OpenTelemetry 1.15.3 or later
 - TickerQ.Utilities (automatically included)
