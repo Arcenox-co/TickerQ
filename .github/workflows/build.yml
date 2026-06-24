@@ -26,7 +26,7 @@ jobs:
         id: check
         run: |
           VERSION="${{ steps.get-version.outputs.version }}"
-          PACKAGE_IDS=(tickerq tickerq.dashboard tickerq.utilities tickerq.entityframeworkcore tickerq.instrumentation.opentelemetry tickerq.caching.stackexchangeredis tickerq.sdk tickerq.remoteexecutor)
+          PACKAGE_IDS=(tickerq tickerq.dashboard tickerq.utilities tickerq.entityframeworkcore tickerq.instrumentation.opentelemetry tickerq.caching.stackexchangeredis tickerq.mongodb tickerq.sdk tickerq.remoteexecutor)
           MISSING=0
 
           for ID in "${PACKAGE_IDS[@]}"; do
@@ -99,6 +99,7 @@ jobs:
           dotnet restore src/TickerQ.Dashboard/TickerQ.Dashboard.csproj
           dotnet restore src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj
           dotnet restore src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj
+          dotnet restore src/TickerQ.MongoDB/TickerQ.MongoDB.csproj
           dotnet restore hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj
           dotnet restore hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj
           dotnet restore tests/TickerQ.Tests/TickerQ.Tests.csproj
@@ -115,6 +116,7 @@ jobs:
           dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release
           dotnet build src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj --configuration Release
           dotnet build src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release
+          dotnet build src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release
           dotnet build hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release
           dotnet build hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release
           dotnet build tests/TickerQ.Tests/TickerQ.Tests.csproj --configuration Release
@@ -134,6 +136,7 @@ jobs:
           dotnet pack src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs
           dotnet pack src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj --configuration Release --output ./nupkgs
           dotnet pack src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release --output ./nupkgs
+          dotnet pack src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release --output ./nupkgs
           dotnet pack hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release --output ./nupkgs
           dotnet pack hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release --output ./nupkgs
 

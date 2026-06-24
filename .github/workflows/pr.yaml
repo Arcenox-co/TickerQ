@@ -66,12 +66,15 @@ jobs:
           dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release
           dotnet build src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj --configuration Release
           dotnet build src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release
+          dotnet build src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release
           dotnet build tests/TickerQ.Tests/TickerQ.Tests.csproj --configuration Release
           dotnet build tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj --configuration Release
           dotnet build tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj --configuration Release
+          dotnet build tests/TickerQ.MongoDB.Tests/TickerQ.MongoDB.Tests.csproj --configuration Release
 
       - name: Run tests
         run: |
           dotnet test tests/TickerQ.Tests/ --configuration Release --no-build
           dotnet test tests/TickerQ.EntityFrameworkCore.Tests/ --configuration Release --no-build
           dotnet test tests/TickerQ.Caching.StackExchangeRedis.Tests/ --configuration Release --no-build
+          dotnet test tests/TickerQ.MongoDB.Tests/ --configuration Release --no-build
