@@ -11,5 +11,6 @@
 [assembly: InternalsVisibleTo("TickerQ.Caching.StackExchangeRedis")]
 [assembly: InternalsVisibleTo("TickerQ.EntityFrameworkCore.Tests")]
 [assembly: InternalsVisibleTo("TickerQ.Caching.StackExchangeRedis.Tests")]
+[assembly: InternalsVisibleTo("TickerQ.MongoDB.Tests")]
 // To be testable using NSubsitute
 [assembly: InternalsVisibleTo("DynamicProxyGenAssembly2")]
