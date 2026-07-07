@@ -13,6 +13,13 @@ declare global {
         enabled: boolean;
         sessionTimeout: number;
       };
+      headerButtons?: Array<{
+        label: string;
+        icon?: string;
+        href: string;
+        openInNewTab?: boolean;
+        tooltip?: string;
+      }>;
     };
   }
 }

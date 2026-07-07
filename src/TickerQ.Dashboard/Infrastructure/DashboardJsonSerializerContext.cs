@@ -25,6 +25,8 @@ namespace TickerQ.Dashboard.Infrastructure;
 [JsonSerializable(typeof(NextTickerResponse))]
 [JsonSerializable(typeof(HostStatusResponse))]
 [JsonSerializable(typeof(FrontendConfigResponse))]
+[JsonSerializable(typeof(HeaderButtonResponse))]
+[JsonSerializable(typeof(HeaderButtonResponse[]))]
 // Tuple responses for statistics
 [JsonSerializable(typeof(TupleResponse<int, int>))]
 [JsonSerializable(typeof(TupleResponse<int, int>[]))]

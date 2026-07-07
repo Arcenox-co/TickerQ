@@ -15,6 +15,9 @@ const navigationLinks = [
   { icon: 'mdi-calendar-sync', text: 'Cron Tickers', path: '/cron-tickers' },
 ]
 
+const customHeaderButtons = ref(window.TickerQConfig?.headerButtons ?? [])
+const singleHeaderButton = computed(() => customHeaderButtons.value[0])
+
 // Reactive state
 const tickerHostStatus = ref(false)
 const currentMachine = ref('Loading...')
@@ -141,6 +144,8 @@ const loadInitialData = async () => {
 
 // Initialize connection on mount
 onMounted(async () => {
+  customHeaderButtons.value = window.TickerQConfig?.headerButtons ?? []
+
   // Wait for next tick to ensure Pinia stores are fully initialized
   await nextTick()
 
@@ -355,30 +360,82 @@ const handleForceUIUpdate = () => {
             <div class="header-divider"></div>
           </div>
 
-          <div class="header-right">
-            <div class="navigation-links">
-              <v-btn
-                v-for="link in navigationLinks"
-                :key="link.path"
-                :text="link.text"
-                :to="link.path"
-                variant="text"
-                class="nav-link"
-                :prepend-icon="link.icon"
-              ></v-btn>
-            </div>
+            <div class="header-right">
+              <div class="navigation-links">
+                <v-btn
+                  v-for="link in navigationLinks"
+                  :key="link.path"
+                  :text="link.text"
+                  :to="link.path"
+                  variant="text"
+                  class="nav-link"
+                  :prepend-icon="link.icon"
+                ></v-btn>
+              </div>
 
-            <!-- Auth Header Component -->
-            <div class="auth-container">
-              <AuthHeader
-                :show-login-form="true"
-                :show-user-info="true"
-                :show-logout="true"
-                @login="handleAuthLogin"
-                @logout="handleAuthLogout"
-              />
+              <!-- Custom header buttons -->
+              <div v-if="customHeaderButtons.length > 0" class="custom-header-buttons">
+
+                <template v-if="customHeaderButtons.length === 1">
+                  <v-tooltip :text="singleHeaderButton.tooltip" :disabled="!singleHeaderButton.tooltip" location="bottom">
+                    <template #activator="{ props: tooltipProps }">
+                      <v-btn
+                        v-bind="tooltipProps"
+                        :href="singleHeaderButton.href"
+                        :target="singleHeaderButton.openInNewTab ? '_blank' : '_self'"
+                        :rel="singleHeaderButton.openInNewTab ? 'noopener noreferrer' : undefined"
+                        :prepend-icon="singleHeaderButton.icon"
+                        variant="text"
+                        size="small"
+                        class="nav-link custom-header-btn"
+                      >{{ singleHeaderButton.label }}</v-btn>
+                    </template>
+                  </v-tooltip>
+                </template>
+
+                <!-- Multiple buttons: dropdown menu -->
+                <v-menu v-else location="bottom end" :close-on-content-click="true">
+                  <template #activator="{ props: menuProps }">
+                    <v-tooltip text="More links" location="bottom">
+                      <template #activator="{ props: tooltipProps }">
+                        <v-btn
+                          v-bind="{ ...menuProps, ...tooltipProps }"
+                          icon="mdi-dots-horizontal"
+                          variant="text"
+                          size="small"
+                          class="nav-link custom-header-menu-btn"
+                          aria-label="More links"
+                        />
+                      </template>
+                    </v-tooltip>
+                  </template>
+                  <v-list density="compact" nav>
+                    <v-list-item
+                      v-for="(btn, index) in customHeaderButtons"
+                      :key="`${btn.href}|${btn.label}|${index}`"
+                      :href="btn.href"
+                      :target="btn.openInNewTab ? '_blank' : '_self'"
+                      :rel="btn.openInNewTab ? 'noopener noreferrer' : undefined"
+                      :prepend-icon="btn.icon"
+                      :title="btn.label"
+                      :subtitle="btn.tooltip || undefined"
+                    />
+                  </v-list>
+                </v-menu>
+
+              </div>
+
+              <!-- Auth Header Component -->
+              <div class="auth-container">
+                <AuthHeader
+                  :show-login-form="true"
+                  :show-user-info="true"
+                  :show-logout="true"
+                  @login="handleAuthLogin"
+                  @logout="handleAuthLogout"
+                />
+              </div>
             </div>
-          </div>
         </div>
       </div>
     </v-app-bar>
@@ -675,6 +732,14 @@ const handleForceUIUpdate = () => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.custom-header-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .nav-link {

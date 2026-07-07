@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
@@ -23,6 +24,8 @@ public class DashboardOptionsBuilder
     public Action<IApplicationBuilder> PostDashboardMiddleware { get; set; }
     
     internal JsonSerializerOptions DashboardJsonOptions { get; set; }
+
+    internal List<DashboardHeaderButton> HeaderButtons { get; } = new();
 
     /// <summary>Tracks whether dashboard middleware has been applied to prevent double registration.</summary>
     internal bool MiddlewareApplied { get; set; }
@@ -87,6 +90,43 @@ public class DashboardOptionsBuilder
         return this;
     }
     
+    /// <summary>Add a custom button to the dashboard header</summary>
+    public DashboardOptionsBuilder AddHeaderButton(Action<DashboardHeaderButton> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+
+        var button = new DashboardHeaderButton();
+        configure(button);
+
+        if (string.IsNullOrWhiteSpace(button.Label))
+            throw new ArgumentException("Header button must have a non-empty Label.", nameof(configure));
+
+        if (string.IsNullOrWhiteSpace(button.Href))
+            throw new ArgumentException("Header button must have a non-empty Href.", nameof(configure));
+
+        if (button.Href.StartsWith("//"))
+            throw new ArgumentException(
+                $"Header button '{button.Label}' uses a protocol-relative URL which is not allowed. Use an explicit https:// URL or a root-relative path.",
+                nameof(configure));
+
+        if (Uri.TryCreate(button.Href, UriKind.Absolute, out var uri))
+        {
+            if (uri.Scheme is not ("http" or "https" or "mailto" or "tel"))
+                throw new ArgumentException(
+                    $"Header button '{button.Label}' has an unsafe URL scheme '{uri.Scheme}'. Allowed schemes: http, https, mailto, tel, or a relative path starting with '/' or './'.",
+                    nameof(configure));
+        }
+        else if (!button.Href.StartsWith('/') && !button.Href.StartsWith("./"))
+        {
+            throw new ArgumentException(
+                $"Header button '{button.Label}' has an invalid relative URL. Relative paths must start with '/' or './'.",
+                nameof(configure));
+        }
+
+        HeaderButtons.Add(button);
+        return this;
+    }
+
     /// <summary>Validate the authentication configuration</summary>
     internal void Validate()
     {

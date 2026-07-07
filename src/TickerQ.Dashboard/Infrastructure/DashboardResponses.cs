@@ -74,4 +74,14 @@ internal class FrontendConfigResponse
     public string BasePath { get; set; }
     public string BackendDomain { get; set; }
     public AuthInfoResponse Auth { get; set; }
+    public HeaderButtonResponse[] HeaderButtons { get; set; } = [];
+}
+
+internal class HeaderButtonResponse
+{
+    public required string Label { get; set; }
+    public string? Icon { get; set; }
+    public required string Href { get; set; }
+    public bool OpenInNewTab { get; set; }
+    public string? Tooltip { get; set; }
 }

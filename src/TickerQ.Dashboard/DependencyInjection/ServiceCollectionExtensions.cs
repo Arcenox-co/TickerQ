@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Builder;
@@ -214,7 +215,17 @@ namespace TickerQ.Dashboard.DependencyInjection
                     Mode = config.Auth.Mode.ToString().ToLower(),
                     Enabled = config.Auth.IsEnabled,
                     SessionTimeout = config.Auth.SessionTimeoutMinutes
-                }
+                },
+                HeaderButtons = config.HeaderButtons
+                    .Select(b => new HeaderButtonResponse
+                    {
+                        Label = b.Label,
+                        Icon = b.Icon,
+                        Href = b.Href,
+                        OpenInNewTab = b.OpenInNewTab,
+                        Tooltip = b.Tooltip
+                    })
+                    .ToArray()
             };
 
             var frontendJsonOptions = new JsonSerializerOptions
