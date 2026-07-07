@@ -1,42 +1,80 @@
-import { TickerQSdkHttpClient } from '../client/TickerQSdkHttpClient';
 import type { InternalFunctionContext } from '../models/InternalFunctionContext';
 import type { TimeTickerEntity } from '../models/TimeTickerEntity';
 import type { CronTickerEntity } from '../models/CronTickerEntity';
+import type { WorkerStreamClient } from '../worker/WorkerStreamClient';
+import { qualifyFunctionName } from '../utils/FunctionName';
+import { TickerSdkOptions } from '../TickerSdkOptions';
 
-const TIME_TICKERS_PATH = 'time-tickers';
-const CRON_TICKERS_PATH = 'cron-tickers';
+type TickerWithRequest = { function: string; request?: unknown };
+
+function encodeRequestPayload(request: unknown): string | null {
+    if (request == null) return null;
+    if (Buffer.isBuffer(request)) return request.toString('base64');
+    if (request instanceof Uint8Array) return Buffer.from(request).toString('base64');
+
+    if (typeof request === 'string') {
+        return Buffer.from(request, 'utf8').toString('base64');
+    }
+
+    return Buffer.from(JSON.stringify(request), 'utf8').toString('base64');
+}
 
 /**
- * Remote persistence provider that communicates with the TickerQ Scheduler via HTTP.
+ * Remote persistence provider that communicates with the TickerQ Scheduler via worker stream.
  *
  * Only CRUD operations are implemented. Query/queue operations throw NotSupportedError.
  */
 export class TickerQRemotePersistenceProvider {
-    private readonly client: TickerQSdkHttpClient;
+    private readonly options: TickerSdkOptions;
+    private readonly stream: WorkerStreamClient;
 
-    constructor(client: TickerQSdkHttpClient) {
-        this.client = client;
+    constructor(options: TickerSdkOptions, stream: WorkerStreamClient) {
+        this.options = options;
+        this.stream = stream;
     }
 
     // ─── Time Ticker CRUD ───────────────────────────────────────────────
 
     async addTimeTickers(tickers: TimeTickerEntity[], signal?: AbortSignal): Promise<number> {
-        await this.client.postAsync(`/${TIME_TICKERS_PATH}`, tickers, signal);
-        return tickers.length;
+        const entities = this.qualifyTickers(tickers);
+        const requestId = this.stream.newRequestId();
+        return this.awaitOperation(requestId, {
+            addTimeTickers: {
+                requestId,
+                entitiesJson: Buffer.from(JSON.stringify(entities), 'utf8'),
+            },
+        }, signal);
     }
 
     async updateTimeTickers(tickers: TimeTickerEntity[], signal?: AbortSignal): Promise<number> {
-        await this.client.putAsync(`/${TIME_TICKERS_PATH}`, tickers, signal);
-        return tickers.length;
+        const entities = this.qualifyTickers(tickers);
+        const requestId = this.stream.newRequestId();
+        return this.awaitOperation(requestId, {
+            updateTimeTickers: {
+                requestId,
+                entitiesJson: Buffer.from(JSON.stringify(entities), 'utf8'),
+            },
+        }, signal);
     }
 
     async removeTimeTickers(tickerIds: string[], signal?: AbortSignal): Promise<number> {
-        await this.client.postAsync(`/${TIME_TICKERS_PATH}/delete`, tickerIds, signal);
-        return tickerIds.length;
+        const requestId = this.stream.newRequestId();
+        return this.awaitOperation(requestId, {
+            removeTimeTickers: {
+                requestId,
+                ids: tickerIds,
+            },
+        }, signal);
     }
 
     async updateTimeTicker(functionContext: InternalFunctionContext, signal?: AbortSignal): Promise<void> {
-        await this.client.putAsyncOrThrow(`/${TIME_TICKERS_PATH}/context`, functionContext, signal);
+        const requestId = this.stream.newRequestId();
+        await this.awaitOperation(requestId, {
+            updateTimeTicker: {
+                requestId,
+                context: this.stream.mapFunctionContext(functionContext),
+            },
+        }, signal);
     }
 
     async updateTimeTickersWithUnifiedContext(
@@ -44,42 +82,104 @@ export class TickerQRemotePersistenceProvider {
         functionContext: InternalFunctionContext,
         signal?: AbortSignal,
     ): Promise<void> {
-        await this.client.postAsync(
-            `/${TIME_TICKERS_PATH}/unified-context`,
-            { ids: timeTickerIds, context: functionContext },
-            signal,
-        );
+        const requestId = this.stream.newRequestId();
+        await this.awaitOperation(requestId, {
+            updateTimeTickersUnified: {
+                requestId,
+                ids: timeTickerIds,
+                context: this.stream.mapFunctionContext(functionContext),
+            },
+        }, signal);
     }
 
     async getTimeTickerRequest(id: string, signal?: AbortSignal): Promise<Buffer | null> {
-        return this.client.getBytesAsync(`/${TIME_TICKERS_PATH}/request/${id}`, signal);
+        const requestId = this.stream.newRequestId();
+        return this.awaitBytes(requestId, {
+            getTimeTickerRequest: {
+                requestId,
+                tickerId: id,
+            },
+        }, signal);
     }
 
     // ─── Cron Ticker CRUD ───────────────────────────────────────────────
 
     async insertCronTickers(tickers: CronTickerEntity[], signal?: AbortSignal): Promise<number> {
-        await this.client.postAsync(`/${CRON_TICKERS_PATH}`, tickers, signal);
-        return tickers.length;
+        const entities = this.qualifyTickers(tickers);
+        const requestId = this.stream.newRequestId();
+        return this.awaitOperation(requestId, {
+            insertCronTickers: {
+                requestId,
+                entitiesJson: Buffer.from(JSON.stringify(entities), 'utf8'),
+            },
+        }, signal);
     }
 
     async updateCronTickers(tickers: CronTickerEntity[], signal?: AbortSignal): Promise<number> {
-        await this.client.putAsync(`/${CRON_TICKERS_PATH}`, tickers, signal);
-        return tickers.length;
+        const entities = this.qualifyTickers(tickers);
+        const requestId = this.stream.newRequestId();
+        return this.awaitOperation(requestId, {
+            updateCronTickers: {
+                requestId,
+                entitiesJson: Buffer.from(JSON.stringify(entities), 'utf8'),
+            },
+        }, signal);
     }
 
     async removeCronTickers(cronTickerIds: string[], signal?: AbortSignal): Promise<number> {
-        await this.client.postAsync(`/${CRON_TICKERS_PATH}/delete`, cronTickerIds, signal);
-        return cronTickerIds.length;
+        const requestId = this.stream.newRequestId();
+        return this.awaitOperation(requestId, {
+            removeCronTickers: {
+                requestId,
+                ids: cronTickerIds,
+            },
+        }, signal);
     }
 
     // ─── Cron Ticker Occurrence ─────────────────────────────────────────
 
     async updateCronTickerOccurrence(functionContext: InternalFunctionContext, signal?: AbortSignal): Promise<void> {
-        await this.client.putAsyncOrThrow('/cron-ticker-occurrences/context', functionContext, signal);
+        const requestId = this.stream.newRequestId();
+        await this.awaitOperation(requestId, {
+            updateCronOccurrence: {
+                requestId,
+                context: this.stream.mapFunctionContext(functionContext),
+            },
+        }, signal);
     }
 
     async getCronTickerOccurrenceRequest(tickerId: string, signal?: AbortSignal): Promise<Buffer | null> {
-        return this.client.getBytesAsync(`/cron-ticker-occurrences/request/${tickerId}`, signal);
+        const requestId = this.stream.newRequestId();
+        return this.awaitBytes(requestId, {
+            getCronOccurrenceRequest: {
+                requestId,
+                tickerId,
+            },
+        }, signal);
+    }
+
+    private qualifyTickers<T extends TickerWithRequest>(tickers: T[]): T[] {
+        return tickers.map((ticker) => ({
+            ...ticker,
+            function: qualifyFunctionName(ticker.function, this.options.nodeName),
+            request: encodeRequestPayload(ticker.request),
+        }));
+    }
+
+    private async awaitOperation(requestId: string, event: Record<string, unknown>, signal?: AbortSignal): Promise<number> {
+        const result = await this.stream.sendAndAwaitOperation(requestId, event, this.options.timeoutMs, signal);
+        if (!result.success) {
+            throw new Error(result.error || 'TickerQ Scheduler reported operation failure.');
+        }
+        return result.affected ?? 0;
+    }
+
+    private async awaitBytes(requestId: string, event: Record<string, unknown>, signal?: AbortSignal): Promise<Buffer | null> {
+        const result = await this.stream.sendAndAwaitBytes(requestId, event, this.options.timeoutMs, signal);
+        if (!result.success) {
+            throw new Error(result.error || 'TickerQ Scheduler reported bytes operation failure.');
+        }
+        return result.found ? Buffer.from(result.payload ?? []) : null;
     }
 
     // ─── Not Supported (server-side only) ───────────────────────────────

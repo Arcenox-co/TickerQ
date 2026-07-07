@@ -1,52 +1,53 @@
 export const TICKERQ_SDK_CONSTANTS = {
-    HubBaseUrl: 'https://hub.tickerq.net/',
-    HubHostname: 'hub.tickerq.net',
+    HubGrpcBaseUrl: 'https://grpc.hub.tickerq.net/',
+    SdkVersion: '1.0.0',
+    SdkType: 'nodejs',
 } as const;
 
+export interface TickerSdkLogCaptureOptions {
+    enabled: boolean;
+    minLevel: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'critical';
+}
+
 export class TickerSdkOptions {
-    /** Scheduler URL — updated after sync with Hub. */
+    /** Scheduler worker-stream URL — set after sync with Hub. */
     apiUri: string | null = null;
 
-    /** Fixed Hub URL. */
-    readonly hubUri: string = TICKERQ_SDK_CONSTANTS.HubBaseUrl;
+    /** Fixed Hub gRPC URL. */
+    readonly hubControlUri: string = TICKERQ_SDK_CONSTANTS.HubGrpcBaseUrl;
 
-    /** HMAC-SHA256 webhook signature key — set after Hub sync. */
+    /** HMAC-SHA256 worker-stream signature key — set after Hub sync. */
     webhookSignature: string | null = null;
 
-    /** Public URL where the Hub sends execution callbacks. */
-    callbackUri: string | null = null;
-
-    /** Hub API key for authentication. */
+    /** Single Hub-issued SDK token. */
     apiKey: string | null = null;
 
-    /** Hub API secret for authentication. */
-    apiSecret: string | null = null;
-
     /** Identifier for this application node. */
-    nodeName: string | null = null;
+    nodeName: string = process.env.COMPUTERNAME
+        ?? process.env.HOSTNAME
+        ?? 'tickerq-node';
 
-    /** HTTP request timeout in milliseconds (default: 30000). */
+    /** gRPC operation timeout in milliseconds (default: 30000). */
     timeoutMs: number = 30_000;
 
-    /** Allow self-signed SSL certificates (dev/local Scheduler). Default: false. */
+    /** Allow self-signed SSL certificates for local scheduler worker streams. */
     allowSelfSignedCerts: boolean = false;
+
+    /** Per-execution log forwarding settings. */
+    logCapture: TickerSdkLogCaptureOptions = {
+        enabled: true,
+        minLevel: 'info',
+    };
 
     setApiKey(apiKey: string): this {
         this.apiKey = apiKey;
         return this;
     }
 
-    setApiSecret(apiSecret: string): this {
-        this.apiSecret = apiSecret;
-        return this;
-    }
-
-    setCallbackUri(callbackUri: string): this {
-        this.callbackUri = callbackUri;
-        return this;
-    }
-
     setNodeName(nodeName: string): this {
+        if (!nodeName || !nodeName.trim()) {
+            throw new Error('TickerQ SDK: NodeName cannot be empty.');
+        }
         this.nodeName = nodeName;
         return this;
     }
@@ -61,18 +62,14 @@ export class TickerSdkOptions {
         return this;
     }
 
+    setLogCapture(options: Partial<TickerSdkLogCaptureOptions>): this {
+        this.logCapture = { ...this.logCapture, ...options };
+        return this;
+    }
+
     validate(): void {
         if (!this.apiKey) {
-            throw new Error('TickerQ SDK: ApiKey is required. Call setApiKey().');
-        }
-        if (!this.apiSecret) {
-            throw new Error('TickerQ SDK: ApiSecret is required. Call setApiSecret().');
-        }
-        if (!this.callbackUri) {
-            throw new Error('TickerQ SDK: CallbackUri is required. Call setCallbackUri().');
-        }
-        if (!this.nodeName) {
-            throw new Error('TickerQ SDK: NodeName is required. Call setNodeName().');
+            throw new Error('TickerQ SDK: ApiKey is required. Call setApiKey() with the Hub-issued tq_sdk_* token.');
         }
     }
 }

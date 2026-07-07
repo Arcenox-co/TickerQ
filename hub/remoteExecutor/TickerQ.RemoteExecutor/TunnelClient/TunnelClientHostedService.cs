@@ -83,11 +83,22 @@ public sealed class TunnelClientHostedService : BackgroundService
                 _logger.LogWarning(ex, "Tunnel client error; reconnecting in {Delay}", delay);
             }
 
-            try { await Task.Delay(delay, stoppingToken).ConfigureAwait(false); }
+            // Jitter only the sleep (the `delay` base still doubles below) so multiple
+            // scheduler instances that lost the tunnel together (e.g. a Hub restart)
+            // don't reconnect in lockstep and stampede the Hub.
+            try { await Task.Delay(ApplyReconnectJitter(delay), stoppingToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
 
             delay = TimeSpan.FromSeconds(Math.Min(30, delay.TotalSeconds * 2));
         }
+    }
+
+    // Uniform ±20% spread around the base delay; never negative. Random.Shared is
+    // thread-safe and fine here (jitter doesn't need a cryptographic RNG).
+    private static TimeSpan ApplyReconnectJitter(TimeSpan delay)
+    {
+        var factor = 1.0 + ((Random.Shared.NextDouble() * 2.0) - 1.0) * 0.2;
+        return TimeSpan.FromMilliseconds(Math.Max(0, delay.TotalMilliseconds * factor));
     }
 
     private async Task RunOnceAsync(CancellationToken stoppingToken)
@@ -333,8 +344,6 @@ public sealed class TunnelClientHostedService : BackgroundService
             KeepAlivePingTimeout = TimeSpan.FromSeconds(30),
             PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5)
         };
-        // Trust local dev certs when the hub is on loopback.
-        handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
         return handler;
     }
 

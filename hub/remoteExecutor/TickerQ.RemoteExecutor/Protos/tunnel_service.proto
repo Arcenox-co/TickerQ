@@ -27,6 +27,7 @@ message NotificationEvent {
   bytes payload_json = 3;         // typed delta DTO (JSON); empty for pure hints
   int64 sequence = 4;             // monotonic per scheduler instance, for ordering / dedupe
   int64 emitted_at_unix_ms = 5;
+  string source_id = 6;           // stable scheduler instance id; pairs with sequence
 }
 
 message SdkConnectionsReport {

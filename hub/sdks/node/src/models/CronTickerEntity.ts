@@ -1,3 +1,5 @@
+import type { TickerRequestPayload } from './TimeTickerEntity';
+
 export interface CronTickerEntity {
     id: string;
     function: string;
@@ -6,7 +8,7 @@ export interface CronTickerEntity {
     createdAt: string;
     updatedAt: string;
     expression: string;
-    request: string | null;
+    request: TickerRequestPayload;
     retries: number;
     retryIntervals: number[] | null;
     isEnabled: boolean;

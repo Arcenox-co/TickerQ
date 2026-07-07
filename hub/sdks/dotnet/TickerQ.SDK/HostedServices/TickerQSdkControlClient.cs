@@ -63,10 +63,21 @@ internal sealed class TickerQSdkControlClient : BackgroundService
                 _logger.LogWarning(ex, "SDK control stream error; reconnecting in {Delay}", delay);
             }
 
-            try { await Task.Delay(delay, stoppingToken).ConfigureAwait(false); }
+            // Jitter only the sleep (the `delay` base still doubles below) so a fleet
+            // of SDKs whose control streams dropped together (e.g. a Hub restart)
+            // doesn't reconnect in lockstep and stampede the Hub.
+            try { await Task.Delay(ApplyReconnectJitter(delay), stoppingToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
             delay = TimeSpan.FromSeconds(Math.Min(30, delay.TotalSeconds * 2));
         }
+    }
+
+    // Uniform ±20% spread around the base delay; never negative. Random.Shared is
+    // thread-safe and fine here (jitter doesn't need a cryptographic RNG).
+    private static TimeSpan ApplyReconnectJitter(TimeSpan delay)
+    {
+        var factor = 1.0 + ((Random.Shared.NextDouble() * 2.0) - 1.0) * 0.2;
+        return TimeSpan.FromMilliseconds(Math.Max(0, delay.TotalMilliseconds * factor));
     }
 
     private async Task RunOnceAsync(Uri hubUri, CancellationToken stoppingToken)
@@ -79,7 +90,6 @@ internal sealed class TickerQSdkControlClient : BackgroundService
             KeepAlivePingTimeout = TimeSpan.FromSeconds(30),
             PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5)
         };
-        handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
 
         _channel = GrpcChannel.ForAddress(hubUri, new GrpcChannelOptions
         {

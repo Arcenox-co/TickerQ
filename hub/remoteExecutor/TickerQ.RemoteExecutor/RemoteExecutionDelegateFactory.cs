@@ -125,21 +125,36 @@ internal static class RemoteExecutionDelegateFactory
 
             var payload = await loader.LoadPayloadAsync(context.Id, context.Type, ct).ConfigureAwait(false);
 
-            Console.WriteLine($"[DBG-DLG] Dispatching {context.FunctionName} ({context.Id}): retries={context.Retries} intervals=[{(context.RetryIntervals == null ? "null" : string.Join(",", context.RetryIntervals))}]");
-
             var execute = new ExecuteFunction
             {
                 TickerId = context.Id.ToString(),
                 FunctionName = context.FunctionName ?? string.Empty,
                 Type = (int)context.Type,
                 RetryCount = context.RetryCount,
-                IsDue = false,
+                IsDue = context.IsDue,
                 ScheduledFor = Timestamp.FromDateTime(DateTime.SpecifyKind(context.ScheduledFor, DateTimeKind.Utc)),
                 RequestPayload = payload != null ? ByteString.CopyFrom(payload) : ByteString.Empty,
-                Retries = context.Retries,
+                // Retry policy is owned by THIS scheduler, not the SDK. The
+                // scheduler's TickerExecutionTaskHandler loops the user's retry
+                // budget and re-dispatches with an incremented RetryCount, applying
+                // the configured retry interval before each dispatch. So the SDK is
+                // told to execute exactly the current attempt, exactly once:
+                //
+                //   * Retries == RetryCount collapses the SDK's own execution loop to
+                //     a single iteration — both the .NET handler's
+                //     `for attempt = RetryCount..Retries` loop and the Node SDK's
+                //     `retries - retryCount + 1` loop resolve to one run.
+                //   * A single zero retry-interval (below) stops the SDK from
+                //     re-waiting a delay the scheduler has already applied before
+                //     dispatching this attempt.
+                //
+                // Without this the user's retry budget would be honoured on BOTH
+                // sides and compound (≈ Retries² executions with doubled delays).
+                // RetryCount is still the real attempt number, so user code and the
+                // dashboard see the correct value.
+                Retries = context.RetryCount,
             };
-            if (context.RetryIntervals is { Length: > 0 })
-                execute.RetryIntervalsSeconds.AddRange(context.RetryIntervals);
+            execute.RetryIntervalsSeconds.Add(0);
 
             var dispatchStart = DateTimeOffset.UtcNow;
             ExecutionResult result;

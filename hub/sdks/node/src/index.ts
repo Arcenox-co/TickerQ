@@ -1,5 +1,5 @@
 // ─── Main SDK Entry Point ───────────────────────────────────────────────
-export { TickerQSdk } from './TickerQSdk';
+export { TickerQSdk, createTickerSdk, type CreateTickerSdkOptions } from './TickerQSdk';
 
 // ─── Configuration ──────────────────────────────────────────────────────
 export { TickerSdkOptions, TICKERQ_SDK_CONSTANTS } from './TickerSdkOptions';
@@ -32,9 +32,10 @@ export {
 } from './infrastructure/TickerFunctionProvider';
 export { TickerFunctionBuilder, type FunctionOptions } from './infrastructure/TickerFunctionBuilder';
 export { TickerQFunctionSyncService } from './infrastructure/TickerQFunctionSyncService';
+export { TickerQSdkControlClient } from './control/TickerQSdkControlClient';
 
-// ─── Client ─────────────────────────────────────────────────────────────
-export { TickerQSdkHttpClient, type TickerQLogger } from './client/TickerQSdkHttpClient';
+// ─── Logging ─────────────────────────────────────────────────────────────
+export type { TickerQLogger } from './logging/TickerQLogger';
 
 // ─── Persistence ────────────────────────────────────────────────────────
 export { TickerQRemotePersistenceProvider } from './persistence/TickerQRemotePersistenceProvider';
@@ -42,9 +43,7 @@ export { TickerQRemotePersistenceProvider } from './persistence/TickerQRemotePer
 // ─── Worker / Task Scheduler ────────────────────────────────────────────
 export { TickerQTaskScheduler } from './worker/TickerQTaskScheduler';
 export { TickerFunctionConcurrencyGate, Semaphore } from './worker/TickerFunctionConcurrencyGate';
-
-// ─── Middleware / Endpoints ─────────────────────────────────────────────
-export { SdkExecutionEndpoint } from './middleware/SdkExecutionEndpoint';
+export { WorkerStreamClient, type WorkerExecuteFunction } from './worker/WorkerStreamClient';
 
 // ─── Utilities ──────────────────────────────────────────────────────────
-export { generateSignature, validateSignature } from './utils/TickerQSignature';
+export { toBareFunctionName, qualifyFunctionName } from './utils/FunctionName';

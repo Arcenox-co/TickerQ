@@ -1,0 +1,208 @@
+syntax = "proto3";
+package tickerq.worker.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service SchedulerWorkerService {
+  rpc OpenWorkerStream(stream WorkerEvent) returns (stream SchedulerCommand);
+}
+
+message WorkerEvent {
+  oneof payload {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    ExecutionResult execution_result = 10;
+    CommandAck ack = 11;
+    AddTimeTickersRequest add_time_tickers = 20;
+    UpdateTimeTickersRequest update_time_tickers = 21;
+    RemoveTimeTickersRequest remove_time_tickers = 22;
+    InsertCronTickersRequest insert_cron_tickers = 23;
+    UpdateCronTickersRequest update_cron_tickers = 24;
+    RemoveCronTickersRequest remove_cron_tickers = 25;
+    UpdateTimeTickerRequest update_time_ticker = 30;
+    UpdateCronTickerOccurrenceRequest update_cron_occurrence = 31;
+    UpdateTimeTickersUnifiedRequest update_time_tickers_unified = 32;
+    GetTimeTickerRequestRequest get_time_ticker_request = 33;
+    GetCronTickerOccurrenceRequestRequest get_cron_occurrence_request = 34;
+    LogLine log_line = 35;
+  }
+}
+
+message SchedulerCommand {
+  oneof payload {
+    HelloAck hello_ack = 1;
+    Heartbeat heartbeat = 2;
+    Disconnect disconnect = 3;
+    ExecuteFunction execute_function = 10;
+    TriggerResync trigger_resync = 11;
+    RemoveFunction remove_function = 12;
+    CancelExecution cancel_execution = 13;
+    OperationResult operation_result = 90;
+    BytesResult bytes_result = 91;
+  }
+}
+
+message Hello {
+  string api_key = 1;
+  string node_name = 2;
+  string sdk_version = 3;
+  int32 max_concurrency = 4;
+  string nonce = 5;
+  int64 unix_seconds = 6;
+  string hmac_signature = 7;
+}
+
+message HelloAck {
+  string worker_id = 1;
+  string environment_id = 2;
+  string application_id = 3;
+  string node_id = 4;
+}
+
+message Heartbeat {
+  int64 unix_ms = 1;
+}
+
+message Disconnect {
+  string reason = 1;
+}
+
+message ExecuteFunction {
+  string request_id = 1;
+  string ticker_id = 2;
+  string function_name = 3;
+  int32 type = 4;
+  int32 retry_count = 5;
+  bool is_due = 6;
+  google.protobuf.Timestamp scheduled_for = 7;
+  bytes request_payload = 8;
+  int32 retries = 9;
+  repeated int32 retry_intervals_seconds = 10;
+}
+
+message ExecutionResult {
+  string request_id = 1;
+  bool success = 2;
+  string error = 3;
+  bool cancelled = 4;
+}
+
+message TriggerResync {
+  string request_id = 1;
+}
+
+message RemoveFunction {
+  string request_id = 1;
+  string function_name = 2;
+}
+
+message CancelExecution {
+  string request_id = 1;
+  string ticker_id = 2;
+}
+
+message CommandAck {
+  string request_id = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+message AddTimeTickersRequest {
+  string request_id = 1;
+  bytes entities_json = 2;
+}
+
+message UpdateTimeTickersRequest {
+  string request_id = 1;
+  bytes entities_json = 2;
+}
+
+message RemoveTimeTickersRequest {
+  string request_id = 1;
+  repeated string ids = 2;
+}
+
+message InsertCronTickersRequest {
+  string request_id = 1;
+  bytes entities_json = 2;
+}
+
+message UpdateCronTickersRequest {
+  string request_id = 1;
+  bytes entities_json = 2;
+}
+
+message RemoveCronTickersRequest {
+  string request_id = 1;
+  repeated string ids = 2;
+}
+
+message UpdateTimeTickerRequest {
+  string request_id = 1;
+  FunctionContext context = 2;
+}
+
+message UpdateCronTickerOccurrenceRequest {
+  string request_id = 1;
+  FunctionContext context = 2;
+}
+
+message UpdateTimeTickersUnifiedRequest {
+  string request_id = 1;
+  repeated string ids = 2;
+  FunctionContext context = 3;
+}
+
+message GetTimeTickerRequestRequest {
+  string request_id = 1;
+  string ticker_id = 2;
+}
+
+message GetCronTickerOccurrenceRequestRequest {
+  string request_id = 1;
+  string ticker_id = 2;
+}
+
+message OperationResult {
+  string request_id = 1;
+  bool success = 2;
+  int32 affected = 3;
+  string error = 4;
+}
+
+message BytesResult {
+  string request_id = 1;
+  bool success = 2;
+  bool found = 3;
+  bytes payload = 4;
+  string error = 5;
+}
+
+message LogLine {
+  string ticker_id = 1;
+  int32 ticker_type = 2;
+  int64 unix_ms = 3;
+  int32 level = 4;
+  string source = 5;
+  string message = 6;
+  string category = 7;
+  string function_name = 8;
+}
+
+message FunctionContext {
+  string function_name = 1;
+  string ticker_id = 2;
+  optional string parent_id = 3;
+  int32 type = 4;
+  int32 retries = 5;
+  int32 retry_count = 6;
+  int32 status = 7;
+  int64 elapsed_time_ms = 8;
+  string exception_details = 9;
+  google.protobuf.Timestamp executed_at = 10;
+  repeated int32 retry_intervals = 11;
+  bool release_lock = 12;
+  google.protobuf.Timestamp execution_time = 13;
+  int32 run_condition = 14;
+  repeated string parameters_to_update = 15;
+}

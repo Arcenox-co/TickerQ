@@ -170,11 +170,23 @@ internal sealed class WorkerStreamHostedService : BackgroundService
                 _logger.LogWarning(ex, "Worker stream error; reconnecting in {Backoff}", backoff);
             }
 
-            try { await Task.Delay(backoff, stoppingToken).ConfigureAwait(false); }
+            // Jitter only the sleep, not the `backoff` value that keeps doubling
+            // below, so a fleet of SDK workers that all dropped at once (e.g. a
+            // Hub/scheduler restart) doesn't reconnect in lockstep and stampede the
+            // scheduler, while the base delay still grows deterministically.
+            try { await Task.Delay(ApplyReconnectJitter(backoff), stoppingToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
 
             backoff = TimeSpan.FromSeconds(Math.Min(ReconnectMax.TotalSeconds, backoff.TotalSeconds * 2));
         }
+    }
+
+    // Uniform ±20% spread around the base delay; never negative. Random.Shared is
+    // thread-safe and fine here (jitter doesn't need a cryptographic RNG).
+    private static TimeSpan ApplyReconnectJitter(TimeSpan delay)
+    {
+        var factor = 1.0 + ((Random.Shared.NextDouble() * 2.0) - 1.0) * 0.2;
+        return TimeSpan.FromMilliseconds(Math.Max(0, delay.TotalMilliseconds * factor));
     }
 
     private async Task RunOnceAsync(CancellationToken stoppingToken)
@@ -428,9 +440,9 @@ internal sealed class WorkerStreamHostedService : BackgroundService
             await using var scope = _serviceProvider.CreateAsyncScope();
             var taskHandler = scope.ServiceProvider.GetRequiredService<ITickerExecutionTaskHandler>();
 
-            _logger.LogInformation(
-                "[DBG] ExecuteFunction running: ticker={TickerId} retries={Retries} intervals=[{Intervals}]",
-                tickerId, req.Retries, string.Join(",", req.RetryIntervalsSeconds));
+            _logger.LogDebug(
+                "ExecuteFunction running: ticker={TickerId} retryCount={RetryCount} intervals=[{Intervals}]",
+                tickerId, req.RetryCount, string.Join(",", req.RetryIntervalsSeconds));
 
             var function = new InternalFunctionContext
             {
@@ -438,8 +450,19 @@ internal sealed class WorkerStreamHostedService : BackgroundService
                 TickerId = tickerId,
                 ParentId = null,
                 Type = (TickerType)req.Type,
-                Retries = req.Retries,
+                // Retries are owned by the scheduler in the worker-stream model: it
+                // re-dispatches a fresh ExecuteFunction with an incremented RetryCount
+                // (and has already waited the retry interval) for each attempt. Capping
+                // the shared TickerExecutionTaskHandler loop to the current attempt
+                // (Retries == RetryCount ⇒ a single iteration) makes this SDK execute
+                // exactly once per dispatch. Without it the user's retry budget would be
+                // honoured here AND by the scheduler and compound (≈ Retries² runs).
+                // (`Retries` is never persisted by the execution-update path, so this
+                // local cap can't corrupt the stored ticker configuration.)
+                Retries = req.RetryCount,
                 RetryCount = req.RetryCount,
+                // The scheduler dispatches a zero interval (it owns the inter-attempt
+                // delay), so this only guards the WaitForRetry path for attempt > 0.
                 RetryIntervals = req.RetryIntervalsSeconds.Count > 0
                     ? req.RetryIntervalsSeconds.ToArray()
                     : null,

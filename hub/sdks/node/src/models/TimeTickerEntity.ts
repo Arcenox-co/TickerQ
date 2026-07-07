@@ -1,5 +1,7 @@
 import { TickerStatus, RunCondition } from '../enums';
 
+export type TickerRequestPayload = string | Buffer | Uint8Array | Record<string, unknown> | unknown[] | null;
+
 export interface TimeTickerEntity {
     id: string;
     function: string;
@@ -9,7 +11,7 @@ export interface TimeTickerEntity {
     updatedAt: string;
     status: TickerStatus;
     lockHolder: string | null;
-    request: string | null;
+    request: TickerRequestPayload;
     executionTime: string | null;
     lockedAt: string | null;
     executedAt: string | null;
