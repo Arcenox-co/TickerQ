@@ -234,91 +234,79 @@ public static class DashboardEndpoints
         endpoints.MapHub<TickerQNotificationHub>($"/ticker-notification-hub")
             .AllowAnonymous();
 
-        // Opt-in diagnostic (set TICKERQ_DIAG_ENDPOINTS=1). Runs RequestDelegateFactory metadata inference
-        // on every dashboard handler so any failure surfaces here — with the offending handler named —
-        // instead of as an opaque "same key" ArgumentException deep in host startup. No-op unless enabled.
+        // Opt-in diagnostic (set TICKERQ_DIAG_ENDPOINTS=1). Reproduces the EXACT failing path from host
+        // startup — GroupEndpointDataSource.GetGroupedEndpoints → inner RouteEndpointDataSource builds each
+        // RouteEndpoint with the GROUP conventions applied (incl. RequireAuthorization) — one route at a
+        // time, so the offending route's RawText is printed instead of an opaque "same key" crash.
+        // A plain per-handler InferMetadata (without the grouped RouteGroupContext + conventions) does NOT
+        // hit this path, which is why earlier diagnostics found nothing. No-op unless enabled.
         if (Environment.GetEnvironmentVariable("TICKERQ_DIAG_ENDPOINTS") == "1")
         {
-            // (1) Per-handler inference sweep — cheap, may catch a bad signature directly.
-            try
-            {
-                DiagnoseHandlerMethods<TTimeTicker, TCronTicker>(config, endpoints.ServiceProvider);
-                Console.WriteLine("[TQ-DIAG] handler metadata inference sweep complete.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[TQ-DIAG] diagnostic sweep itself failed: {ex.GetType().Name}: {ex.Message}");
-            }
-
-            // (2) Eagerly materialize the /api group's endpoints — this is the exact operation that fails
-            // during host startup (GroupEndpointDataSource.get_Endpoints). Doing it here, wrapped, lets us
-            // capture the failure with the full stack up front rather than as an opaque startup crash.
-            try
-            {
-                var total = 0;
-                foreach (var ds in ((IEndpointRouteBuilder)apiGroup).DataSources)
-                    total += ds.Endpoints.Count;
-                Console.WriteLine($"[TQ-DIAG] /api group materialized {total} endpoints OK");
-            }
-            catch (Exception ex)
-            {
-                var inner = ex;
-                while (inner.InnerException != null) inner = inner.InnerException;
-                Console.WriteLine($"[TQ-DIAG] *** /api group materialization FAILED: {inner.GetType().FullName}: {inner.Message}");
-                Console.WriteLine(inner.StackTrace);
-            }
+            DiagnoseGroupedMaterialization(apiGroup, endpoints.ServiceProvider);
         }
 
     }
 
-    private static void DiagnoseHandlerMethods<TTimeTicker, TCronTicker>(DashboardOptionsBuilder config, IServiceProvider serviceProvider)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
+    // Faithfully replicates GroupEndpointDataSource.GetGroupedEndpoints per-entry (see RouteGroupBuilder in
+    // dotnet/aspnetcore) to pinpoint which grouped route trips RequestDelegateFactory at build time.
+    private static void DiagnoseGroupedMaterialization(RouteGroupBuilder apiGroup, IServiceProvider services)
     {
-        // Enumerate the endpoint handler methods on both endpoint classes and run RequestDelegateFactory
-        // metadata inference on each closed generic — no dependence on internal routing fields. This names
-        // the exact handler whose signature RDF rejects on the current runtime.
-        var targets = new System.Collections.Generic.List<(string label, Type type, Type[] typeArgs)>
+        try
         {
-            ("DashboardEndpoints", typeof(DashboardEndpoints), new[] { typeof(TTimeTicker), typeof(TCronTicker) }),
-        };
-        if (config.PeriodicEnabled && config.PeriodicTickerType != null)
-        {
-            var periodicType = typeof(DashboardEndpoints).Assembly.GetType("TickerQ.Dashboard.Endpoints.PeriodicDashboardEndpoints");
-            if (periodicType != null)
-                targets.Add(("PeriodicDashboardEndpoints", periodicType, new[] { config.PeriodicTickerType }));
-        }
+            const System.Reflection.BindingFlags NP = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
 
-        foreach (var (label, type, typeArgs) in targets)
-        {
-            foreach (var m in type.GetMethods(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static))
+            // Group conventions (RequireAuthorization etc.) live on RouteGroupBuilder._conventions.
+            var conventions = (System.Collections.Generic.List<Action<Microsoft.AspNetCore.Builder.EndpointBuilder>>)
+                typeof(RouteGroupBuilder).GetField("_conventions", NP)!.GetValue(apiGroup)!;
+            var finallyConventions = (System.Collections.Generic.List<Action<Microsoft.AspNetCore.Builder.EndpointBuilder>>)
+                typeof(RouteGroupBuilder).GetField("_finallyConventions", NP)!.GetValue(apiGroup)!;
+
+            // The group's inner data source is the RouteEndpointDataSource that holds the mapped routes.
+            var innerDs = ((IEndpointRouteBuilder)apiGroup).DataSources.FirstOrDefault(d => d.GetType().Name == "RouteEndpointDataSource");
+            if (innerDs == null)
             {
-                var ps = m.GetParameters();
-                if (m.ReturnType != typeof(Task)) continue;
-                // Endpoint handlers take exactly (HttpContext). Helpers like WriteJson<T>(ctx, value, opts)
-                // are not mapped — exclude them so they aren't reported as false positives.
-                if (ps.Length != 1 || ps[0].ParameterType != typeof(HttpContext)) continue;
+                Console.WriteLine("[TQ-DIAG] could not locate inner RouteEndpointDataSource on the /api group.");
+                return;
+            }
 
-                System.Reflection.MethodInfo closed = m;
-                if (m.IsGenericMethodDefinition)
-                {
-                    var count = m.GetGenericArguments().Length;
-                    if (typeArgs.Length < count) continue; // e.g. WriteJson<T>
-                    try { closed = m.MakeGenericMethod(typeArgs.Take(count).ToArray()); } catch { continue; }
-                }
+            var prefix = Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.Parse("/api");
+            var entries = (System.Collections.IEnumerable)innerDs.GetType().GetField("_routeEntries", NP)!.GetValue(innerDs)!;
+            var createBuilder = innerDs.GetType().GetMethod("CreateRouteEndpointBuilder", NP)!;
 
+            int ok = 0, i = 0;
+            foreach (var entry in entries)
+            {
+                string raw = "(unknown)";
                 try
                 {
-                    var del = closed.CreateDelegate(System.Linq.Expressions.Expression.GetDelegateType(
-                        closed.GetParameters().Select(p => p.ParameterType).Append(closed.ReturnType).ToArray()));
-                    RequestDelegateFactory.InferMetadata(del.Method, new RequestDelegateFactoryOptions { ServiceProvider = serviceProvider });
+                    var pattern = entry.GetType().GetProperty("RoutePattern")!.GetValue(entry);
+                    raw = (string)(pattern?.GetType().GetProperty("RawText")?.GetValue(pattern) ?? "(null)");
+
+                    // CreateRouteEndpointBuilder(entry, groupPrefix, groupConventions, groupFinallyConventions)
+                    var builder = createBuilder.Invoke(innerDs, new object[] { entry, prefix, conventions, finallyConventions });
+                    builder!.GetType().GetMethod("Build")!.Invoke(builder, null);
+                    ok++;
                 }
                 catch (Exception ex)
                 {
-                    var sig = string.Join(", ", closed.GetParameters().Select(p => $"{p.ParameterType.Name} '{p.Name}'"));
-                    Console.WriteLine($"[TQ-DIAG] *** OFFENDING HANDLER {label}.{m.Name}({sig}) -> {ex.GetType().Name}: {ex.Message}");
+                    var inner = ex;
+                    while (inner.InnerException != null) inner = inner.InnerException;
+                    var handlerName = "(unknown)";
+                    try
+                    {
+                        var del = (Delegate)entry.GetType().GetProperty("RouteHandler")!.GetValue(entry)!;
+                        handlerName = $"{del.Method.DeclaringType?.Name}.{del.Method.Name}";
+                    }
+                    catch { }
+                    Console.WriteLine($"[TQ-DIAG] *** OFFENDING GROUPED ROUTE #{i} '{raw}' handler={handlerName} -> {inner.GetType().FullName}: {inner.Message}");
                 }
+                i++;
             }
+            Console.WriteLine($"[TQ-DIAG] grouped materialization: {ok}/{i} routes built OK (with group conventions applied).");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TQ-DIAG] grouped-materialization diagnostic could not run: {ex.GetType().Name}: {ex.Message}");
         }
     }
     #region Endpoint Handlers
