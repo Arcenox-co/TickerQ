@@ -29,6 +29,12 @@ const router = createRouter({
       component: () => import('../views/TimeTicker.vue'),
       meta: { requiresAuth: true }
     },
+    {
+      path: '/periodic-tickers',
+      name: 'PeriodicTicker',
+      component: () => import('../views/PeriodicTicker.vue'),
+      meta: { requiresAuth: true }
+    },
   ],
 })
 

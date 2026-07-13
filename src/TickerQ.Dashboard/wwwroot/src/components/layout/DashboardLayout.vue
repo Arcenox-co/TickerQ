@@ -13,6 +13,7 @@ const navigationLinks = [
   { icon: 'mdi-view-dashboard', text: 'Dashboard', path: '/' },
   { icon: 'mdi-alarm', text: 'Time Tickers', path: '/time-tickers' },
   { icon: 'mdi-calendar-sync', text: 'Cron Tickers', path: '/cron-tickers' },
+  { icon: 'mdi-timer-sync-outline', text: 'Periodic Tickers', path: '/periodic-tickers' },
 ]
 
 // Reactive state

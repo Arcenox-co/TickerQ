@@ -6,6 +6,11 @@ export const methodName = {
   onReceiveDeleteCronTicker: "RemoveCronTickerNotification",
   onReceiveUpdateCronTickerOccurrence: "UpdateCronOccurrenceNotification",
   onReceiveAddCronTickerOccurrence: "AddCronOccurrenceNotification",
+  onReceiveAddPeriodicTicker: "AddPeriodicTickerNotification",
+  onReceiveUpdatePeriodicTicker: "UpdatePeriodicTickerNotification",
+  onReceiveDeletePeriodicTicker: "RemovePeriodicTickerNotification",
+  onReceiveUpdatePeriodicTickerOccurrence: "UpdatePeriodicOccurrenceNotification",
+  onReceiveAddPeriodicTickerOccurrence: "AddPeriodicOccurrenceNotification",
   onReceiveAddTimeTicker: "AddTimeTickerNotification",
   onReceiveAddTimeTickersBatch: "AddTimeTickersBatchNotification",
   onReceiveUpdateTimeTicker: "UpdateTimeTickerNotification",
@@ -57,6 +62,36 @@ class TickerNotificationHub extends BaseHub {
 
   onReceiveAddCronTickerOccurrence<T>(callback: (response: T) => void): void {
     this.onReceiveMessageAsSingle<T>(methodName.onReceiveAddCronTickerOccurrence, (responseFromHub: any) => {
+      callback(responseFromHub);
+    });
+  }
+
+  onReceiveAddPeriodicTicker<T>(callback: (response: T) => void): void {
+    this.onReceiveMessageAsSingle<T>(methodName.onReceiveAddPeriodicTicker, (responseFromHub: any) => {
+      callback(responseFromHub);
+    });
+  }
+
+  onReceiveUpdatePeriodicTicker<T>(callback: (response: T) => void): void {
+    this.onReceiveMessageAsSingle<T>(methodName.onReceiveUpdatePeriodicTicker, (responseFromHub: any) => {
+      callback(responseFromHub);
+    });
+  }
+
+  onReceiveDeletePeriodicTicker<T>(callback: (response: T) => void): void {
+    this.onReceiveMessageAsSingle<T>(methodName.onReceiveDeletePeriodicTicker, (responseFromHub: any) => {
+      callback(responseFromHub);
+    });
+  }
+
+  onReceiveUpdatePeriodicTickerOccurrence<T>(callback: (response: T) => void): void {
+    this.onReceiveMessageAsSingle<T>(methodName.onReceiveUpdatePeriodicTickerOccurrence, (responseFromHub: any) => {
+      callback(responseFromHub);
+    });
+  }
+
+  onReceiveAddPeriodicTickerOccurrence<T>(callback: (response: T) => void): void {
+    this.onReceiveMessageAsSingle<T>(methodName.onReceiveAddPeriodicTickerOccurrence, (responseFromHub: any) => {
       callback(responseFromHub);
     });
   }
