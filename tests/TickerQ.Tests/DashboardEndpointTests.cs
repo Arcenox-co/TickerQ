@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using TickerQ.Dashboard;
@@ -560,6 +561,47 @@ public class DashboardEndpointTests
         Assert.Equal(60, config.SessionTimeoutMinutes);
         Assert.Null(config.HostAuthorizationPolicy);
         Assert.False(config.IsEnabled);
+    }
+
+    #endregion
+
+    #region Endpoint metadata build (.NET 10 RequestDelegateFactory regression)
+
+    /// <summary>
+    /// Regression: on .NET 10 the /auth/challenge GET handler used to take an implicit
+    /// DashboardOptionsBuilder parameter. RequestDelegateFactory infers a GET parameter's binding source
+    /// at endpoint-build time; if the type isn't resolvable as a service it is inferred as a body
+    /// parameter (illegal on GET), and with a stripped parameter name the name-keyed TrackedParameters
+    /// dictionary throws "An item with the same key has already been added" during MapGroup materialization
+    /// — the whole dashboard fails to start. The handler now takes a single HttpContext, so metadata
+    /// inference must succeed even when DashboardOptionsBuilder is NOT registered as a service.
+    /// This meaningfully guards the regression when the suite runs on net10.0.
+    /// </summary>
+    [Fact]
+    public void MapDashboardEndpoints_MaterializesWithoutOptionsBuilderService()
+    {
+        var config = new DashboardOptionsBuilder();
+
+        var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+        builder.Services.AddRouting();
+        builder.Services.AddSignalR();
+        builder.Services.AddCors(o => o.AddPolicy("TickerQ_Dashboard_CORS", p => p.AllowAnyOrigin()));
+        // NOTE: DashboardOptionsBuilder is intentionally NOT registered as a service.
+        var app = builder.Build();
+
+        TickerQ.Dashboard.Endpoints.DashboardEndpoints
+            .MapDashboardEndpoints<TimeTickerEntity, CronTickerEntity>(app, config);
+
+        // Forcing each data source to materialize its endpoints runs the RequestDelegateFactory metadata
+        // inference that used to throw during MapGroup build. It must not throw.
+        var routeBuilder = (Microsoft.AspNetCore.Routing.IEndpointRouteBuilder)app;
+        var ex = Record.Exception(() =>
+        {
+            foreach (var ds in routeBuilder.DataSources)
+                _ = ds.Endpoints;
+        });
+
+        Assert.Null(ex);
     }
 
     #endregion

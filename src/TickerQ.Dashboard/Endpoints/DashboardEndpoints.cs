@@ -44,8 +44,18 @@ public static class DashboardEndpoints
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous(), config);
 
-        WithGroupNameIfSet(endpoints.MapGet("/auth/challenge", (DashboardOptionsBuilder dashboardOptions) => 
-            dashboardOptions.Auth.Mode == AuthMode.Host ? Results.Challenge() : Results.Unauthorized())
+        // Resolve DashboardOptionsBuilder from HttpContext (like every other handler) rather than as an
+        // implicit handler parameter. On .NET 10, RequestDelegateFactory infers the binding source of a
+        // GET lambda parameter: if DashboardOptionsBuilder isn't resolvable as a service at build time it
+        // is inferred as a body parameter (illegal on GET), and if the parameter name is stripped (e.g. by
+        // an assembly obfuscator applied downstream) the name-keyed TrackedParameters dictionary throws
+        // "An item with the same key has already been added. Key: " at endpoint build. A single
+        // HttpContext parameter sidesteps inference entirely.
+        WithGroupNameIfSet(endpoints.MapGet("/auth/challenge", (HttpContext httpContext) =>
+        {
+            var dashboardOptions = httpContext.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
+            return dashboardOptions.Auth.Mode == AuthMode.Host ? Results.Challenge() : Results.Unauthorized();
+        })
             .ExcludeFromDescription()
             .AllowAnonymous(), config);
             
