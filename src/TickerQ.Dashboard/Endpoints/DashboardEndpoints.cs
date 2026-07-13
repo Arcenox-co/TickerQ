@@ -234,6 +234,92 @@ public static class DashboardEndpoints
         endpoints.MapHub<TickerQNotificationHub>($"/ticker-notification-hub")
             .AllowAnonymous();
 
+        // Opt-in diagnostic (set TICKERQ_DIAG_ENDPOINTS=1). Runs RequestDelegateFactory metadata inference
+        // on every dashboard handler so any failure surfaces here — with the offending handler named —
+        // instead of as an opaque "same key" ArgumentException deep in host startup. No-op unless enabled.
+        if (Environment.GetEnvironmentVariable("TICKERQ_DIAG_ENDPOINTS") == "1")
+        {
+            // (1) Per-handler inference sweep — cheap, may catch a bad signature directly.
+            try
+            {
+                DiagnoseHandlerMethods<TTimeTicker, TCronTicker>(config, endpoints.ServiceProvider);
+                Console.WriteLine("[TQ-DIAG] handler metadata inference sweep complete.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[TQ-DIAG] diagnostic sweep itself failed: {ex.GetType().Name}: {ex.Message}");
+            }
+
+            // (2) Eagerly materialize the /api group's endpoints — this is the exact operation that fails
+            // during host startup (GroupEndpointDataSource.get_Endpoints). Doing it here, wrapped, lets us
+            // capture the failure with the full stack up front rather than as an opaque startup crash.
+            try
+            {
+                var total = 0;
+                foreach (var ds in ((IEndpointRouteBuilder)apiGroup).DataSources)
+                    total += ds.Endpoints.Count;
+                Console.WriteLine($"[TQ-DIAG] /api group materialized {total} endpoints OK");
+            }
+            catch (Exception ex)
+            {
+                var inner = ex;
+                while (inner.InnerException != null) inner = inner.InnerException;
+                Console.WriteLine($"[TQ-DIAG] *** /api group materialization FAILED: {inner.GetType().FullName}: {inner.Message}");
+                Console.WriteLine(inner.StackTrace);
+            }
+        }
+
+    }
+
+    private static void DiagnoseHandlerMethods<TTimeTicker, TCronTicker>(DashboardOptionsBuilder config, IServiceProvider serviceProvider)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        // Enumerate the endpoint handler methods on both endpoint classes and run RequestDelegateFactory
+        // metadata inference on each closed generic — no dependence on internal routing fields. This names
+        // the exact handler whose signature RDF rejects on the current runtime.
+        var targets = new System.Collections.Generic.List<(string label, Type type, Type[] typeArgs)>
+        {
+            ("DashboardEndpoints", typeof(DashboardEndpoints), new[] { typeof(TTimeTicker), typeof(TCronTicker) }),
+        };
+        if (config.PeriodicEnabled && config.PeriodicTickerType != null)
+        {
+            var periodicType = typeof(DashboardEndpoints).Assembly.GetType("TickerQ.Dashboard.Endpoints.PeriodicDashboardEndpoints");
+            if (periodicType != null)
+                targets.Add(("PeriodicDashboardEndpoints", periodicType, new[] { config.PeriodicTickerType }));
+        }
+
+        foreach (var (label, type, typeArgs) in targets)
+        {
+            foreach (var m in type.GetMethods(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static))
+            {
+                var ps = m.GetParameters();
+                if (m.ReturnType != typeof(Task)) continue;
+                // Endpoint handlers take exactly (HttpContext). Helpers like WriteJson<T>(ctx, value, opts)
+                // are not mapped — exclude them so they aren't reported as false positives.
+                if (ps.Length != 1 || ps[0].ParameterType != typeof(HttpContext)) continue;
+
+                System.Reflection.MethodInfo closed = m;
+                if (m.IsGenericMethodDefinition)
+                {
+                    var count = m.GetGenericArguments().Length;
+                    if (typeArgs.Length < count) continue; // e.g. WriteJson<T>
+                    try { closed = m.MakeGenericMethod(typeArgs.Take(count).ToArray()); } catch { continue; }
+                }
+
+                try
+                {
+                    var del = closed.CreateDelegate(System.Linq.Expressions.Expression.GetDelegateType(
+                        closed.GetParameters().Select(p => p.ParameterType).Append(closed.ReturnType).ToArray()));
+                    RequestDelegateFactory.InferMetadata(del.Method, new RequestDelegateFactoryOptions { ServiceProvider = serviceProvider });
+                }
+                catch (Exception ex)
+                {
+                    var sig = string.Join(", ", closed.GetParameters().Select(p => $"{p.ParameterType.Name} '{p.Name}'"));
+                    Console.WriteLine($"[TQ-DIAG] *** OFFENDING HANDLER {label}.{m.Name}({sig}) -> {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
     }
     #region Endpoint Handlers
 
