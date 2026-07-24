@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<PackageId>TickerQ.MongoDB</PackageId>
+		<Authors>Arcenox; Alex Brown</Authors>
+		<Description>MongoDB persistence provider for TickerQ. Uses the official MongoDB.Driver — no EF Core, no ODM.</Description>
+		<PackageTags>$(PackageTags);mongodb;mongo</PackageTags>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<None Include="README.md" Pack="true" PackagePath="" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="MongoDB.Driver" Version="3.9.0" />
+		<PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+	</ItemGroup>
+</Project>

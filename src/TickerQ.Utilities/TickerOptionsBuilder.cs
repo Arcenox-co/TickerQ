@@ -4,6 +4,7 @@ using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 
@@ -155,6 +156,19 @@ namespace TickerQ.Utilities
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> DisableBackgroundServices()
         {
             RegisterBackgroundServices = false;
+            return this;
+        }
+
+        /// <summary>
+        /// Creates an ActivitySource named "TickerQ" with activity tracing for TickerQ jobs.
+        /// Also includes standard logging through ILogger.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> EnableActivitySource()
+        {
+            ExternalProviderConfigServiceAction += services =>
+            {
+                services.AddSingleton<ITickerQInstrumentation, ActivitySourceInstrumentation>();
+            };
             return this;
         }
 
