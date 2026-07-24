@@ -1,6 +1,7 @@
 using System;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Dashboard.DependencyInjection;
 using TickerQ.Utilities.Entities;
 
@@ -25,6 +26,8 @@ internal class DashboardStartupFilter<TTimeTicker, TCronTicker> : IStartupFilter
             if (!_config.MiddlewareApplied)
             {
                 _config.MiddlewareApplied = true;
+                // Late-bind the JWT issuer onto the scheme before any request hits AuthMiddleware.
+                app.ApplicationServices.GetService<IJwtBearerSchemeBinder>()?.Bind();
                 app.UseDashboardWithEndpoints<TTimeTicker, TCronTicker>(_config);
             }
 

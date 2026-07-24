@@ -93,6 +93,25 @@ namespace TickerQ.Utilities
             ParentIdIndex.Clear();
         }
 
+        /// <summary>Number of ticker executions currently in flight on this node.</summary>
+        internal static int ActiveCount => TickerCancellationTokens.Count;
+
+        /// <summary>
+        /// Snapshot of currently executing tickers whose DB rows this node lock-holds,
+        /// split by type for the lease renewal loop. Chain children are excluded —
+        /// they execute under their root's lock and carry no lease of their own.
+        /// </summary>
+        internal static void SnapshotRunningForLeaseRenewal(List<Guid> timeTickerIds, List<Guid> cronOccurrenceIds)
+        {
+            foreach (var kvp in TickerCancellationTokens)
+            {
+                if (kvp.Value.Type == TickerType.CronTickerOccurrence)
+                    cronOccurrenceIds.Add(kvp.Key);
+                else if (kvp.Value.ParentId == Guid.Empty)
+                    timeTickerIds.Add(kvp.Key);
+            }
+        }
+
         public static bool RequestTickerCancellationById(Guid tickerId)
         {
             // Cancel while the entry is still tracked so IsParentRunning remains accurate

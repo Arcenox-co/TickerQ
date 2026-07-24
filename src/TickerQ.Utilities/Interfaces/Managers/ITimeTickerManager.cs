@@ -11,6 +11,16 @@ namespace TickerQ.Utilities.Interfaces.Managers
     public interface ITimeTickerManager<TTimeTicker> where TTimeTicker : TimeTickerEntity<TTimeTicker>
     {
         Task<TickerResult<TTimeTicker>> AddAsync(TTimeTicker entity, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Idempotent add keyed by <paramref name="initIdentifier"/>: creates the
+        /// ticker only if no time ticker with that identifier exists yet, otherwise
+        /// returns the existing one untouched. Made for startup seeding
+        /// (<c>UseTickerSeeder</c>) so re-running the seeder on every app start
+        /// doesn't create duplicate one-off tickers. Best-effort check-then-insert —
+        /// concurrent first-time seeding from multiple nodes can still race.
+        /// </summary>
+        Task<TickerResult<TTimeTicker>> AddOnceAsync(string initIdentifier, TTimeTicker entity, CancellationToken cancellationToken = default);
         Task<TickerResult<TTimeTicker>> UpdateAsync(TTimeTicker timeTicker, CancellationToken cancellationToken = default);
         Task<TickerResult<TTimeTicker>> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 

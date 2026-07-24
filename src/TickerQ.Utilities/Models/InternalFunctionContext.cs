@@ -34,6 +34,11 @@ namespace TickerQ.Utilities.Models
         public int[] RetryIntervals { get; set; }
         public bool ReleaseLock { get; set; }
         public DateTime ExecutionTime { get; set; }
+        /// <summary>
+        /// Per-attempt execution timeout carried from the ticker row (cron template
+        /// for occurrences). Null inherits the global default; &lt;= 0 disables.
+        /// </summary>
+        public int? TimeoutSeconds { get; set; }
         public RunCondition RunCondition { get; set; }
         public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 

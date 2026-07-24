@@ -77,55 +77,68 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
-            return await dbContext.Set<TTimeTicker>()
+            var context = dbContext.Set<TTimeTicker>();
+            var entity = await context
                 .AsNoTracking()
                 .Include(x => x.Children)
+                .ThenInclude(x => x.Children)
                 .FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (entity != null)
+                await ExtendReadChainsBeyondGrandchildrenAsync(context, new[] { entity }, cancellationToken).ConfigureAwait(false);
+            return entity;
         }
 
         public async Task<TTimeTicker[]> GetTimeTickers(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken)
         {
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
+            var context = dbContext.Set<TTimeTicker>();
 
-            var baseQuery = dbContext.Set<TTimeTicker>()
+            var baseQuery = context
                 .Include(x => x.Children)
                 .ThenInclude(x => x.Children)
                 .AsNoTracking();
-            
+
             if (predicate != null)
                 baseQuery = baseQuery.Where(predicate);
-            
-            return await baseQuery
+
+            var result = await baseQuery
                 .Where(x => x.ParentId == null)
                 .OrderByDescending(x => x.ExecutionTime)
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
+
+            await ExtendReadChainsBeyondGrandchildrenAsync(context, result, cancellationToken).ConfigureAwait(false);
+            return result;
         }
         
         public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(
-            Expression<Func<TTimeTicker, bool>> predicate, 
-            int pageNumber, 
-            int pageSize, 
+            Expression<Func<TTimeTicker, bool>> predicate,
+            int pageNumber,
+            int pageSize,
             CancellationToken cancellationToken)
         {
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
+            var context = dbContext.Set<TTimeTicker>();
 
-            var baseQuery = dbContext.Set<TTimeTicker>()
+            var baseQuery = context
                 .Include(x => x.Children)
                 .ThenInclude(x => x.Children)
                 .AsNoTracking();
-            
+
             if (predicate != null)
                 baseQuery = baseQuery.Where(predicate);
-            
+
             baseQuery = baseQuery
                 .Where(x => x.ParentId == null)
                 .OrderByDescending(x => x.ExecutionTime);
-            
-            return await baseQuery.ToPaginatedListAsync(pageNumber, pageSize, cancellationToken).ConfigureAwait(false);
+
+            var paginated = await baseQuery.ToPaginatedListAsync(pageNumber, pageSize, cancellationToken).ConfigureAwait(false);
+            await ExtendReadChainsBeyondGrandchildrenAsync(context, paginated.Items, cancellationToken).ConfigureAwait(false);
+            return paginated;
         }
 
         public async Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken)
@@ -153,20 +166,41 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
+            var context = dbContext.Set<TTimeTicker>();
 
-            // Load the entities to be deleted (including children for cascade delete)
-            var idList = timeTickerIds.ToList();
-            var tickersToDelete = await dbContext.Set<TTimeTicker>()
-                .Include(x => x.Children)
-                .ThenInclude(x => x.Children) // Include grandchildren if needed
-                .Where(x => idList.Contains(x.Id))
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false);
-            
-            // Remove using Entity Framework (respects cascade delete configuration)
-            dbContext.Set<TTimeTicker>().RemoveRange(tickersToDelete);
-            
-            return await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            // Self-referencing FK is OnDelete(NoAction), so we must delete descendants
+            // before their parents. BFS the tree to collect ids per depth tier, then
+            // ExecuteDeleteAsync per level starting from the deepest. Works on every
+            // provider (SQL Server / PostgreSQL / MySQL / SQLite) — no tracking,
+            // no cartesian load, no EF cascade reliance.
+            var levels = new List<List<Guid>> { timeTickerIds.ToList() };
+            var frontier = levels[0];
+            while (frontier.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var childIds = await context.AsNoTracking()
+                    .Where(x => x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                    .Select(x => x.Id)
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (childIds.Count == 0)
+                    break;
+                levels.Add(childIds);
+                frontier = childIds;
+            }
+
+            var total = 0;
+            for (var i = levels.Count - 1; i >= 0; i--)
+            {
+                var levelIds = levels[i];
+                if (levelIds.Count == 0)
+                    continue;
+                total += await context
+                    .Where(x => levelIds.Contains(x.Id))
+                    .ExecuteDeleteAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            return total;
         }
         #endregion
 
@@ -338,6 +372,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .ExecuteUpdateAsync(setter => setter
                     .SetProperty(x => x.LockHolder, _lockHolder)
                     .SetProperty(x => x.LockedAt, now)
+                    .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
                     .SetProperty(x => x.Status, TickerStatus.InProgress)
                     .SetProperty(x => x.UpdatedAt, now), cancellationToken)
                 .ConfigureAwait(false);

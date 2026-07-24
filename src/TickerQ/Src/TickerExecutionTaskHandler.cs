@@ -11,6 +11,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -28,13 +29,45 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     private readonly ITickerClock _clock;
     private readonly ITickerQInstrumentation _tickerQInstrumentation;
     private readonly IInternalTickerManager _internalTickerManager;
+    private readonly SchedulerOptionsBuilder _schedulerOptions;
+    private readonly ITickerQFailureNotifier _failureNotifier;
 
-    public TickerExecutionTaskHandler(IServiceProvider serviceProvider, ITickerClock clock, ITickerQInstrumentation tickerQInstrumentation, IInternalTickerManager internalTickerManager)
+    public TickerExecutionTaskHandler(IServiceProvider serviceProvider, ITickerClock clock, ITickerQInstrumentation tickerQInstrumentation, IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerQFailureNotifier failureNotifier)
     {
         _serviceProvider = serviceProvider;
         _clock = clock;
         _tickerQInstrumentation = tickerQInstrumentation;
         _internalTickerManager = internalTickerManager;
+        _schedulerOptions = schedulerOptions;
+        _failureNotifier = failureNotifier;
+    }
+
+    private void NotifyFailure(InternalFunctionContext context, string kind, string reason)
+        => _failureNotifier.Notify(new TickerFailureEvent
+        {
+            Kind = kind,
+            TickerId = context.TickerId,
+            Function = context.FunctionName,
+            TickerType = context.Type.ToString(),
+            Reason = reason,
+            RetryCount = context.RetryCount,
+            Retries = context.Retries,
+            OccurredAtUtc = _clock.UtcNow,
+            Node = _schedulerOptions.NodeIdentifier,
+        });
+
+    /// <summary>
+    /// Effective per-attempt timeout for a ticker: its own TimeoutSeconds wins
+    /// (&lt;= 0 disables explicitly), otherwise the global default applies.
+    /// </summary>
+    private TimeSpan? GetEffectiveTimeout(InternalFunctionContext context)
+    {
+        if (context.TimeoutSeconds is { } seconds)
+            return seconds > 0 ? TimeSpan.FromSeconds(seconds) : (TimeSpan?)null;
+
+        return _schedulerOptions.DefaultExecutionTimeout is { } fallback && fallback > TimeSpan.Zero
+            ? fallback
+            : (TimeSpan?)null;
     }
 
     public async Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
@@ -138,7 +171,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         context.SetProperty(x => x.Status, TickerStatus.InProgress);
 
         if (isChild)
-            await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
 
         var stopWatch = new Stopwatch();
         // Total wall-clock from first attempt start through the final outcome,
@@ -187,13 +220,16 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         Exception lastException = null;
         var success = false;
 
+        var effectiveTimeout = GetEffectiveTimeout(context);
+
         for (var attempt = context.RetryCount; attempt <= context.Retries; attempt++)
         {
             tickerFunctionContext.RetryCount = attempt;
-            
+
             // Update activity with current attempt information
             jobActivity?.SetTag("tickerq.job.current_attempt", attempt + 1);
 
+            CancellationTokenSource attemptCts = null;
             try
             {
                 if (await WaitForRetry(context, cancellationToken, attempt, cancellationTokenSource)) break;
@@ -224,11 +260,63 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 // Create service scope - will be disposed automatically via await using
                 await using var scope = _serviceProvider.CreateAsyncScope();
                 tickerFunctionContext.SetServiceScope(scope);
-                await context.CachedDelegate(cancellationTokenSource.Token, scope.ServiceProvider, tickerFunctionContext);
+
+                // Per-attempt cancellation: linked to the job's CTS (user cancel /
+                // shutdown) and additionally fired by the execution timeout.
+                attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationTokenSource.Token);
+                if (effectiveTimeout is { } timeout)
+                    attemptCts.CancelAfter(timeout);
+
+                // Ambient log scope: ILogger calls flowing on the function body's async
+                // stack land in the in-memory log store the dashboard's log tail reads.
+                using (TickerExecutionLogScope.Push(context.TickerId, context.FunctionName))
+                {
+                    var execTask = context.CachedDelegate(attemptCts.Token, scope.ServiceProvider, tickerFunctionContext);
+
+                    if (effectiveTimeout is { } t)
+                    {
+                        // The token fires at the timeout; cooperative functions surface
+                        // their own OperationCanceledException within the grace window.
+                        // Functions that ignore cancellation are abandoned after the
+                        // grace — their task keeps running unobserved, but the ticker's
+                        // outcome is recorded and nothing will overwrite it (the
+                        // executor owns all status writes and moves on here).
+                        var grace = TimeSpan.FromSeconds(5);
+                        using var abandonDelayCts = new CancellationTokenSource();
+                        var winner = await Task.WhenAny(execTask, Task.Delay(t + grace, abandonDelayCts.Token));
+                        if (winner != execTask)
+                        {
+                            // Observe the abandoned task's eventual exception so it
+                            // never surfaces as UnobservedTaskException.
+                            _ = execTask.ContinueWith(static tsk => _ = tsk.Exception,
+                                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+                            throw new TickerExecutionTimeoutException(
+                                $"Exceeded execution timeout of {t.TotalSeconds:0}s; the function ignored cancellation and may still be running on this node.");
+                        }
+                        abandonDelayCts.Cancel();
+                    }
+
+                    await execTask;
+                }
 
                 success = true;
                 context.RetryCount = attempt;
                 break;
+            }
+            catch (TickerExecutionTimeoutException ex)
+            {
+                await HandleExecutionTimeoutAsync(context, jobActivity, ex.Message, stopWatch, cancellationToken);
+                return;
+            }
+            catch (OperationCanceledException) when (attemptCts is { IsCancellationRequested: true } &&
+                                                     !cancellationTokenSource.IsCancellationRequested)
+            {
+                // Only the CancelAfter could have fired the attempt token without the
+                // parent — the function honored cancellation within the grace window.
+                await HandleExecutionTimeoutAsync(context, jobActivity,
+                    $"Exceeded execution timeout of {effectiveTimeout?.TotalSeconds ?? 0:0}s.",
+                    stopWatch, cancellationToken);
+                return;
             }
             catch (TaskCanceledException ex)
             {
@@ -247,7 +335,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
                     await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type);
 
-                await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+                await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
                 
                 // Clean up and exit early on cancellation
                 TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
@@ -276,7 +364,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 // Log job skipped
                 _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
 
-                await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+                await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
 
                 // Clean up and exit early on termination
                 TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
@@ -298,7 +386,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 jobActivity?.SetTag("tickerq.job.skip_reason", ex.Message);
                 _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
 
-                await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+                await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
 
                 TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
                 return;
@@ -321,9 +409,13 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     _tickerQInstrumentation.LogJobAttemptFailed(
                         context.TickerId, context.FunctionName, attempt, context.Retries, stopWatch.ElapsedMilliseconds, ex);
 
-                await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+                await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
 
                 context.ResetUpdateProps();
+            }
+            finally
+            {
+                attemptCts?.Dispose();
             }
         }
 
@@ -347,7 +439,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             // Log job completed successfully
             _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, totalStopWatch.ElapsedMilliseconds, true);
 
-            await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
         }
         else if (lastException != null)
         {
@@ -363,12 +455,56 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, lastException, context.RetryCount);
             _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, totalStopWatch.ElapsedMilliseconds, false);
 
-            await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+            NotifyFailure(context, "failed", lastException.Message);
+
+            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
         }
 
 
         // Clean up: RemoveTickerCancellationToken handles disposal of the CTS
         TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
+    }
+
+    /// <summary>
+    /// Terminal outcome for a timed-out execution: Cancelled with the timeout
+    /// reason persisted. Timeouts don't consume the retry budget — a job that
+    /// hung once is likely to hang again; opt into re-runs explicitly.
+    /// </summary>
+    private async Task HandleExecutionTimeoutAsync(InternalFunctionContext context, Activity jobActivity,
+        string reason, Stopwatch stopWatch, CancellationToken cancellationToken)
+    {
+        _ = cancellationToken; // deliberately unused — see CancellationToken.None below
+
+        try
+        {
+            context.SetProperty(x => x.Status, TickerStatus.Cancelled)
+                .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
+                .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
+                .SetProperty(x => x.ExceptionDetails, reason);
+
+            jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
+            jobActivity?.SetTag("tickerq.job.cancellation_reason", reason);
+
+            _tickerQInstrumentation.LogJobCancelled(context.TickerId, context.FunctionName, reason);
+
+            NotifyFailure(context, "timeout_cancelled", reason);
+
+            if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
+                await handler.HandleCanceledExceptionAsync(new TaskCanceledException(reason), context.TickerId, context.Type);
+
+            // The terminal write must land even if the surrounding execution's token
+            // is already cancelled — a timed-out job that never gets its Cancelled row
+            // stays InProgress and keeps its lease renewed forever.
+            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, context.RetryCount);
+        }
+        finally
+        {
+            TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
+        }
     }
 
     private async Task<bool> WaitForRetry(InternalFunctionContext context, CancellationToken cancellationToken,
@@ -382,7 +518,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
         context.SetProperty(x => x.RetryCount, attempt);
 
-        await _internalTickerManager.UpdateTickerAsync(context, cancellationToken);
+        await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
 
         context.ResetUpdateProps();
 

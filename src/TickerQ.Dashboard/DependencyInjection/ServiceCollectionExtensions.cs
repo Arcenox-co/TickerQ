@@ -1,14 +1,18 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Text;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using TickerQ.Dashboard.Authentication;
 using TickerQ.Dashboard.Endpoints;
 using TickerQ.Dashboard.Infrastructure;
+using TickerQ.Dashboard.Infrastructure.Metrics;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Text.RegularExpressions;
@@ -19,6 +23,21 @@ namespace TickerQ.Dashboard.DependencyInjection
 {
     internal static class ServiceCollectionExtensions
     {
+        /// <summary>
+        /// SignalR hub route inside the dashboard branch. Advertised to the
+        /// SPA via the runtime config (realtime.hubPath) so both sides always
+        /// agree — never hardcode this in the frontend.
+        /// </summary>
+        internal const string NotificationHubPath = "/tickerq-notification-hub";
+
+        private static readonly Lazy<string> PackageVersion = new(() =>
+        {
+            var informational = typeof(ServiceCollectionExtensions).Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
+            var metadataIdx = informational.IndexOf('+');
+            return metadataIdx > 0 ? informational[..metadataIdx] : informational;
+        });
+
         internal static void AddDashboardService<TTimeTicker, TCronTicker>(this IServiceCollection services, DashboardOptionsBuilder config)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
@@ -27,7 +46,11 @@ namespace TickerQ.Dashboard.DependencyInjection
             {
                 PropertyNameCaseInsensitive = true,
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                Converters = { new StringToByteArrayConverter() },
+                Converters =
+                {
+                    new StringToByteArrayConverter(),
+                    new System.Text.Json.Serialization.JsonStringEnumConverter(),
+                },
                 TypeInfoResolverChain = { DashboardJsonSerializerContext.Default }
             };
             
@@ -58,27 +81,16 @@ namespace TickerQ.Dashboard.DependencyInjection
             // Validate and normalize base path
             var basePath = NormalizeBasePath(config.BasePath);
 
-            // Extract inline preload script from embedded index.html at startup.
-            // Serving it as an external file allows CSP script-src 'self' without 'unsafe-inline'.
-            string preloadScript = null;
+            // Load the embedded index.html template. The SPA fallback serves it with a
+            // <base href> injected so the bundle's relative "./assets/..." URLs resolve
+            // under the configured mount path (see InjectExternalScripts).
             string htmlTemplate = null;
             var indexFile = embeddedFileProvider.GetFileInfo("index.html");
             if (indexFile.Exists)
             {
                 using var stream = indexFile.CreateReadStream();
                 using var reader = new StreamReader(stream);
-                var rawHtml = reader.ReadToEnd();
-
-                var scriptMatch = Regex.Match(rawHtml, @"<script>\s*([\s\S]*?)\s*</script>");
-                if (scriptMatch.Success)
-                {
-                    preloadScript = scriptMatch.Groups[1].Value;
-                    htmlTemplate = rawHtml.Remove(scriptMatch.Index, scriptMatch.Length);
-                }
-                else
-                {
-                    htmlTemplate = rawHtml;
-                }
+                htmlTemplate = reader.ReadToEnd();
             }
 
             // Map a branch for the basePath with PathBase-aware routing.
@@ -88,8 +100,74 @@ namespace TickerQ.Dashboard.DependencyInjection
             // This also handles the normal case where SetBasePath() contains only the dashboard segment.
             app.MapPathBaseAware(basePath, dashboardApp =>
             {
+                // Reverse-proxy support (opt-in via EnableForwardedHeaders):
+                // honour X-Forwarded-Proto/Host/For inside this branch so
+                // redirects, cookies and absolute URLs use the public scheme
+                // and host. Trust-any-proxy is acceptable here precisely
+                // because the customer opted in explicitly.
+                if (config.UseForwardedHeaders)
+                {
+                    var forwardedOptions = new ForwardedHeadersOptions
+                    {
+                        ForwardedHeaders = ForwardedHeaders.XForwardedFor
+                                           | ForwardedHeaders.XForwardedProto
+                                           | ForwardedHeaders.XForwardedHost,
+                    };
+                    forwardedOptions.KnownNetworks.Clear();
+                    forwardedOptions.KnownProxies.Clear();
+                    dashboardApp.UseForwardedHeaders(forwardedOptions);
+                }
+
                 // Execute pre-dashboard middleware
                 config.PreDashboardMiddleware?.Invoke(dashboardApp);
+
+                // Canonical trailing slash: redirect "{basePath}" → "{basePath}/".
+                // MapPathBaseAware moves the matched prefix into PathBase, so a request to
+                // the bare base path arrives here with an empty Request.Path. Redirecting
+                // guarantees the SPA document has a directory for relative asset URLs to
+                // resolve against, matching how Swagger UI behaves under a route prefix.
+                dashboardApp.Use(async (context, next) =>
+                {
+                    if (context.Request.Path == PathString.Empty)
+                    {
+                        context.Response.Redirect(context.Request.PathBase.Value + "/" + context.Request.QueryString);
+                        return;
+                    }
+
+                    await next();
+                });
+
+                // Host-mode login round-trip: when the customer configured a
+                // login page (WithHostAuthentication(policy, "/account/login")),
+                // unauthenticated browser NAVIGATIONS bounce there with a
+                // returnUrl instead of loading a dashboard that can only 401.
+                // Fetch/XHR and non-browser clients still get plain 401s from
+                // AuthMiddleware, and authenticated-but-unauthorized users are
+                // NOT redirected (that would loop — they're already signed in).
+                if (!string.IsNullOrEmpty(config.Auth.HostLoginRedirectPath))
+                {
+                    var loginPath = config.Auth.HostLoginRedirectPath;
+                    dashboardApp.Use(async (context, next) =>
+                    {
+                        var fetchMode = context.Request.Headers["Sec-Fetch-Mode"].ToString();
+                        var isNavigation =
+                            string.Equals(fetchMode, "navigate", StringComparison.OrdinalIgnoreCase)
+                            || (string.IsNullOrEmpty(fetchMode) &&
+                                context.Request.Headers.Accept.ToString().Contains("text/html", StringComparison.OrdinalIgnoreCase));
+
+                        if (isNavigation
+                            && HttpMethods.IsGet(context.Request.Method)
+                            && context.User.Identity?.IsAuthenticated != true)
+                        {
+                            var returnUrl = context.Request.PathBase.Add(context.Request.Path) + context.Request.QueryString;
+                            var separator = loginPath.Contains('?') ? '&' : '?';
+                            context.Response.Redirect($"{loginPath}{separator}returnUrl={Uri.EscapeDataString(returnUrl)}");
+                            return;
+                        }
+
+                        await next();
+                    });
+                }
 
                 // CRITICAL: Serve static files FIRST, before any authentication
                 // This ensures static assets (JS, CSS, images) are served without auth challenges
@@ -107,30 +185,61 @@ namespace TickerQ.Dashboard.DependencyInjection
                     }
                 });
 
-                // Serve dashboard config and preload scripts as external files (before auth).
-                // This eliminates inline scripts so the dashboard works with CSP script-src 'self'.
+                // Serve the runtime config as an external script (before auth). Keeping it
+                // out-of-line lets the dashboard run under CSP script-src 'self'.
+                // Cached for 60s with an ETag derived from the payload, so config
+                // changes propagate within a minute without a per-request body.
                 dashboardApp.Use(async (context, next) =>
                 {
-                    var path = context.Request.Path.Value;
-
-                    if (string.Equals(path, "/__tickerq-config.js", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(context.Request.Path.Value, "/__tickerq-config.js", StringComparison.OrdinalIgnoreCase))
                     {
                         var configJs = GenerateConfigJs(context, basePath, config);
+                        var etag = "\"" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(configJs)))[..16] + "\"";
+
+                        // "private": the payload can differ per user (per-user
+                        // read-only), so shared proxy caches must not serve it
+                        // across users.
+                        context.Response.Headers.ETag = etag;
+                        context.Response.Headers.CacheControl = "private, max-age=60";
+
+                        if (context.Request.Headers.IfNoneMatch.ToString().Contains(etag, StringComparison.Ordinal))
+                        {
+                            context.Response.StatusCode = StatusCodes.Status304NotModified;
+                            return;
+                        }
+
                         context.Response.ContentType = "application/javascript; charset=utf-8";
-                        context.Response.Headers.CacheControl = "no-cache";
                         await context.Response.WriteAsync(configJs);
                         return;
                     }
 
-                    if (string.Equals(path, "/__tickerq-preload.js", StringComparison.OrdinalIgnoreCase) && preloadScript != null)
+                    await next();
+                });
+
+                // Request metrics for the dashboard API. Wraps everything after
+                // static files so latency includes auth + endpoint execution.
+                dashboardApp.Use(async (context, next) =>
+                {
+                    if (!context.Request.Path.StartsWithSegments("/api"))
                     {
-                        context.Response.ContentType = "application/javascript; charset=utf-8";
-                        context.Response.Headers.CacheControl = "public,max-age=3600";
-                        await context.Response.WriteAsync(preloadScript);
+                        await next();
                         return;
                     }
 
-                    await next();
+                    var startTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+                    try
+                    {
+                        await next();
+                    }
+                    finally
+                    {
+                        var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds;
+                        context.RequestServices.GetService<ITickerQDashboardMetrics>()?.RequestCompleted(
+                            context.Request.Method,
+                            context.Request.Path.Value ?? string.Empty,
+                            context.Response.StatusCode,
+                            elapsed);
+                    }
                 });
 
                 // Set up routing and CORS
@@ -160,6 +269,8 @@ namespace TickerQ.Dashboard.DependencyInjection
                 dashboardApp.UseEndpoints(endpoints =>
                 {
                     endpoints.MapDashboardEndpoints<TTimeTicker, TCronTicker>(config);
+                    endpoints.MapHub<Hubs.TickerQNotificationHub>(NotificationHubPath)
+                        .RequireCors("TickerQ_Dashboard_CORS");
                 });
 
                 // Execute post-dashboard middleware
@@ -195,7 +306,7 @@ namespace TickerQ.Dashboard.DependencyInjection
 
         /// <summary>
         /// Generates the runtime config JavaScript served as an external file.
-        /// Sets window.TickerQConfig and window.__dynamic_base__ for Vite dynamic base.
+        /// Sets window.TickerQConfig, which the SPA reads at startup (base path, auth mode).
         /// </summary>
         private static string GenerateConfigJs(HttpContext httpContext, string basePath, DashboardOptionsBuilder config)
         {
@@ -209,11 +320,31 @@ namespace TickerQ.Dashboard.DependencyInjection
             {
                 BasePath = frontendBasePath,
                 BackendDomain = config.BackendDomain,
+                Version = PackageVersion.Value,
+                Title = config.Title,
+                LogoUrl = config.LogoUrl,
+                // Per-request: with the predicate overload this differs per
+                // user (viewers get true), driving the SPA's read-only UI.
+                ReadOnly = config.IsReadOnlyFor(httpContext),
+                Timezone = config.DashboardTimeZone?.Id,
+                Realtime = new RealtimeConfigResponse
+                {
+                    Enabled = true,
+                    HubPath = NotificationHubPath.TrimStart('/'),
+                },
+                Assistant = new AssistantConfigResponse
+                {
+                    Enabled = config.Assistant?.IsEnabled == true,
+                    Model = config.Assistant?.ModelName ?? "",
+                    History = config.Assistant?.IsEnabled == true
+                              && httpContext.RequestServices.GetService<TickerQ.Utilities.Interfaces.IAssistantHistoryStore>() != null,
+                },
                 Auth = new AuthInfoResponse
                 {
                     Mode = config.Auth.Mode.ToString().ToLower(),
                     Enabled = config.Auth.IsEnabled,
-                    SessionTimeout = config.Auth.SessionTimeoutMinutes
+                    SessionTimeout = config.Auth.SessionTimeoutMinutes,
+                    LoginRedirect = config.Auth.HostLoginRedirectPath,
                 }
             };
 
@@ -225,12 +356,13 @@ namespace TickerQ.Dashboard.DependencyInjection
             };
             var json = JsonSerializer.Serialize(envConfig, frontendJsonOptions.GetTypeInfo(typeof(FrontendConfigResponse)));
 
-            return $"(function(){{try{{window.TickerQConfig={json};window.__dynamic_base__=window.TickerQConfig.basePath;}}catch(e){{console.error('TickerQ config failed:',e);}}}})();";
+            return $"(function(){{try{{window.TickerQConfig={json};}}catch(e){{console.error('TickerQ config failed:',e);}}}})();";
         }
 
         /// <summary>
-        /// Injects base tag and external script references into the HTML template.
-        /// Config must load before preload since the preload script uses window.__dynamic_base__.
+        /// Injects a &lt;base&gt; tag and the runtime-config script into the HTML template.
+        /// The &lt;base href&gt; makes the bundle's relative "./assets/..." URLs resolve under
+        /// the configured mount path regardless of the current route depth.
         /// </summary>
         private static string InjectExternalScripts(string htmlTemplate, HttpContext httpContext, string basePath)
         {
@@ -244,8 +376,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             var frontendBasePath = CombinePathBase(pathBase, basePath);
 
             var injection = $@"<base href=""{frontendBasePath}/"" />" +
-                            @"<script src=""__tickerq-config.js""></script>" +
-                            @"<script src=""__tickerq-preload.js""></script>";
+                            @"<script src=""__tickerq-config.js""></script>";
 
             var headOpen = Regex.Match(htmlTemplate, "(?is)<head\\b[^>]*>");
             if (headOpen.Success)

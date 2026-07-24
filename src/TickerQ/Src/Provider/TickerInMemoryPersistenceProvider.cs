@@ -1079,7 +1079,9 @@ namespace TickerQ.Provider
             return results;
         }
 
-        // Matches EF Core's MappingExtensions.ForQueueTimeTickers but uses an in-memory children index
+        // Matches EF Core's MappingExtensions.ForQueueTimeTickers but uses an in-memory
+        // children index. Walks the chain recursively to unbounded depth (matching the
+        // probe-and-extend behavior in the EF provider) so deep chains aren't truncated.
         private static TimeTickerEntity ForQueueTimeTickers(TTimeTicker ticker)
         {
             var root = new TimeTickerEntity
@@ -1091,63 +1093,72 @@ namespace TickerQ.Provider
                 UpdatedAt = ticker.UpdatedAt,
                 ParentId = ticker.ParentId,
                 ExecutionTime = ticker.ExecutionTime,
-                Children = new List<TimeTickerEntity>()
+                Children = BuildQueueDescendants(ticker.Id),
             };
 
-            if (ChildrenIndex.TryGetValue(ticker.Id, out var directChildren) && !directChildren.IsEmpty)
+            return root;
+        }
+
+        // Recursive descendants walker for the queue projection. Mirrors the EF
+        // provider's probe-and-extend semantics: unbounded depth, only includes
+        // chain children (ExecutionTime == null) for the direct-children layer.
+        private static List<TimeTickerEntity> BuildQueueDescendants(Guid parentId)
+        {
+            if (!ChildrenIndex.TryGetValue(parentId, out var directChildren) || directChildren.IsEmpty)
+                return new List<TimeTickerEntity>();
+
+            var children = new List<TimeTickerEntity>(directChildren.Count);
+            foreach (var childId in directChildren.Keys)
             {
-                // Pre-size children collection to avoid repeated growth
-                var children = new List<TimeTickerEntity>(directChildren.Count);
+                if (!TimeTickers.TryGetValue(childId, out var ch))
+                    continue;
 
-                foreach (var childId in directChildren.Keys)
+                // Only chain children with null ExecutionTime, matching the EF
+                // .Include(x => x.Children.Where(y => y.ExecutionTime == null)) filter
+                // on the direct-children layer.
+                if (ch.ExecutionTime != null)
+                    continue;
+
+                children.Add(new TimeTickerEntity
                 {
-                    if (!TimeTickers.TryGetValue(childId, out var ch))
-                        continue;
-
-                    // Only children with null ExecutionTime, matching EF mapping
-                    if (ch.ExecutionTime != null)
-                        continue;
-
-                    var childEntity = new TimeTickerEntity
-                    {
-                        Id = ch.Id,
-                        Function = ch.Function,
-                        Retries = ch.Retries,
-                        RetryIntervals = ch.RetryIntervals,
-                        RunCondition = ch.RunCondition,
-                        Children = new List<TimeTickerEntity>()
-                    };
-
-                    if (ChildrenIndex.TryGetValue(ch.Id, out var grandChildren) && !grandChildren.IsEmpty)
-                    {
-                        // Pre-size grandchildren collection
-                        var grandChildList = new List<TimeTickerEntity>(grandChildren.Count);
-
-                        foreach (var grandChildId in grandChildren.Keys)
-                        {
-                            if (!TimeTickers.TryGetValue(grandChildId, out var gch))
-                                continue;
-
-                            grandChildList.Add(new TimeTickerEntity
-                            {
-                                Id = gch.Id,
-                                Function = gch.Function,
-                                Retries = gch.Retries,
-                                RetryIntervals = gch.RetryIntervals,
-                                RunCondition = gch.RunCondition
-                            });
-                        }
-
-                        childEntity.Children = grandChildList;
-                    }
-
-                    children.Add(childEntity);
-                }
-
-                root.Children = children;
+                    Id = ch.Id,
+                    Function = ch.Function,
+                    Retries = ch.Retries,
+                    RetryIntervals = ch.RetryIntervals,
+                    RunCondition = ch.RunCondition,
+                    ParentId = ch.ParentId,
+                    Children = BuildQueueDescendantsAtAnyDepth(ch.Id),
+                });
             }
 
-            return root;
+            return children;
+        }
+
+        // Same as BuildQueueDescendants but without the ExecutionTime filter — once
+        // we're past the direct-children layer, every descendant is a chain node.
+        private static List<TimeTickerEntity> BuildQueueDescendantsAtAnyDepth(Guid parentId)
+        {
+            if (!ChildrenIndex.TryGetValue(parentId, out var directChildren) || directChildren.IsEmpty)
+                return new List<TimeTickerEntity>();
+
+            var children = new List<TimeTickerEntity>(directChildren.Count);
+            foreach (var childId in directChildren.Keys)
+            {
+                if (!TimeTickers.TryGetValue(childId, out var ch))
+                    continue;
+
+                children.Add(new TimeTickerEntity
+                {
+                    Id = ch.Id,
+                    Function = ch.Function,
+                    Retries = ch.Retries,
+                    RetryIntervals = ch.RetryIntervals,
+                    RunCondition = ch.RunCondition,
+                    ParentId = ch.ParentId,
+                    Children = BuildQueueDescendantsAtAnyDepth(ch.Id),
+                });
+            }
+            return children;
         }
 
         private static void AddChildIndex(Guid parentId, Guid childId)
@@ -1218,6 +1229,10 @@ namespace TickerQ.Provider
                 CreatedAt = ticker.CreatedAt,
                 UpdatedAt = ticker.UpdatedAt,
                 Description = ticker.Description,
+                LeaseUntil = ticker.LeaseUntil,
+                OnStale = ticker.OnStale,
+                StaleRestartCount = ticker.StaleRestartCount,
+                TimeoutSeconds = ticker.TimeoutSeconds,
                 Children = new List<TTimeTicker>()
             };
             
@@ -1241,7 +1256,9 @@ namespace TickerQ.Provider
                 ElapsedTime = occurrence.ElapsedTime,
                 ExecutedAt = occurrence.ExecutedAt,
                 CreatedAt = occurrence.CreatedAt,
-                UpdatedAt = occurrence.UpdatedAt
+                UpdatedAt = occurrence.UpdatedAt,
+                LeaseUntil = occurrence.LeaseUntil,
+                StaleRestartCount = occurrence.StaleRestartCount
             };
         }
 

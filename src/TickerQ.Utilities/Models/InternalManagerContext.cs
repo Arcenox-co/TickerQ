@@ -9,6 +9,7 @@ public class InternalManagerContext(Guid id)
     public string Expression { get; set; }
     public int Retries { get; set; }
     public int[] RetryIntervals { get; set; }
+    public int? TimeoutSeconds { get; set; }
     public NextCronOccurrence NextCronOccurrence { get; set; }
 }
 

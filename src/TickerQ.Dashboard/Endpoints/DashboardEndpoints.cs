@@ -1,21 +1,23 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using TickerQ.Dashboard.Assistant;
 using TickerQ.Dashboard.Authentication;
-using TickerQ.Dashboard.Hubs;
+using TickerQ.Dashboard.Authentication.Endpoints;
 using TickerQ.Dashboard.Infrastructure;
 using TickerQ.Utilities;
+using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Exceptions;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 
@@ -29,201 +31,131 @@ public static class DashboardEndpoints
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        // New authentication endpoints
+        // Auth endpoints (kept) — these are public + scoped outside the /api group.
         WithGroupNameIfSet(endpoints.MapGet("/api/auth/info", GetAuthInfo)
             .WithName("GetAuthInfo")
-            .WithSummary("Get authentication configuration")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous(), config);
 
         WithGroupNameIfSet(endpoints.MapPost("/api/auth/validate", ValidateAuth)
             .WithName("ValidateAuth")
-            .WithSummary("Validate authentication credentials")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous(), config);
 
-        WithGroupNameIfSet(endpoints.MapGet("/auth/challenge", (DashboardOptionsBuilder dashboardOptions) => 
+        WithGroupNameIfSet(endpoints.MapGet("/auth/challenge", (DashboardOptionsBuilder dashboardOptions) =>
             dashboardOptions.Auth.Mode == AuthMode.Host ? Results.Challenge() : Results.Unauthorized())
             .ExcludeFromDescription()
             .AllowAnonymous(), config);
-            
+
+        // Login / refresh / logout — only registered when a credential-issuing scheme is configured.
+        endpoints.MapAuthEndpoints(config.Auth);
+
         var apiGroup = endpoints.MapGroup("/api").WithTags("TickerQ Dashboard").RequireCors("TickerQ_Dashboard_CORS");
         WithGroupNameIfSet(apiGroup, config);
 
         // Apply authentication if configured
         if (config.Auth.Mode == AuthMode.Host)
         {
-            // For host authentication, use configured policy or default authorization
             if (!string.IsNullOrEmpty(config.Auth.HostAuthorizationPolicy))
-            {
                 apiGroup.RequireAuthorization(config.Auth.HostAuthorizationPolicy);
-            }
             else
-            {
                 apiGroup.RequireAuthorization();
-            }
         }
-        // For other auth modes (Basic, Bearer, Custom), authentication is handled by AuthMiddleware
-        // API endpoints are automatically protected when auth is enabled
 
-        // Options endpoint
-        apiGroup.MapGet("/options", GetOptions<TTimeTicker, TCronTicker>)
-            .WithName("GetOptions")
-            .WithSummary("Get dashboard options and status");
+        // Options (kept): React app reads these on boot for basePath/concurrency/tz.
+        apiGroup.MapGet("/options", GetOptions);
 
-        // Time Tickers endpoints
-        apiGroup.MapGet("/time-tickers", GetTimeTickers<TTimeTicker, TCronTicker>)
-            .WithName("GetTimeTickers")
-            .WithSummary("Get all time tickers");
+        // AI assistant chat (read-only) — mapped only when configured. Sits
+        // under /api so AuthMiddleware gates it; not under the write group.
+        apiGroup.MapAssistantEndpoints<TTimeTicker, TCronTicker>(config);
 
-        apiGroup.MapGet("/time-tickers/paginated", GetTimeTickersPaginated<TTimeTicker, TCronTicker>)
-            .WithName("GetTimeTickersPaginated")
-            .WithSummary("Get paginated time tickers");
+        // ===== Reads — mirror DashboardService proto RPCs =====
+        var d = apiGroup.MapGroup("/dashboard");
 
-        apiGroup.MapGet("/time-tickers/graph-data-range", GetTimeTickersGraphDataRange<TTimeTicker, TCronTicker>)
-            .WithName("GetTimeTickersGraphDataRange")
-            .WithSummary("Get time tickers graph data for specific date range");
+        d.MapPost("/time-tickers/query", QueryTimeTickers<TTimeTicker, TCronTicker>);
+        d.MapGet("/time-tickers/{id:guid}", GetTimeTickerById<TTimeTicker, TCronTicker>);
+        d.MapGet("/time-tickers/{id:guid}/children", GetTimeTickerChildren<TTimeTicker, TCronTicker>);
+        d.MapGet("/time-tickers/{id:guid}/request", GetTimeTickerRequest<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapGet("/time-tickers/graph-data", GetTimeTickersGraphData<TTimeTicker, TCronTicker>)
-            .WithName("GetTimeTickersGraphData")
-            .WithSummary("Get time tickers graph data");
+        d.MapPost("/cron-tickers/query", QueryCronTickers<TTimeTicker, TCronTicker>);
+        d.MapGet("/cron-tickers/{id:guid}", GetCronTickerById<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapPost("/time-ticker/add", CreateChainJobs<TTimeTicker, TCronTicker>)
-            .WithName("CreateChainJobs")
-            .WithSummary("Create chain jobs");
+        d.MapPost("/cron-occurrences/{cronTickerId:guid}/query", QueryCronOccurrences<TTimeTicker, TCronTicker>);
+        d.MapGet("/cron-occurrences/{id:guid}", GetCronOccurrenceById<TTimeTicker, TCronTicker>);
+        d.MapGet("/cron-occurrences/{id:guid}/request", GetCronOccurrenceRequest<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapPut("/time-ticker/update", UpdateTimeTicker<TTimeTicker, TCronTicker>)
-            .WithName("UpdateTimeTicker")
-            .WithSummary("Update time ticker");
+        d.MapPost("/executions/query", QueryExecutions<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapDelete("/time-ticker/delete", DeleteTimeTicker<TTimeTicker, TCronTicker>)
-            .WithName("DeleteTimeTicker")
-            .WithSummary("Delete time ticker");
+        d.MapGet("/stats/overall-statuses", GetOverallStatuses<TTimeTicker, TCronTicker>);
+        d.MapGet("/stats/node-jobs", GetNodeJobs<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapDelete("/time-ticker/delete-batch", DeleteTimeTickersBatch<TTimeTicker, TCronTicker>)
-            .WithName("DeleteTimeTickersBatch")
-            .WithSummary("Delete multiple time tickers");
+        d.MapGet("/overview/upcoming", GetUpcomingTickers<TTimeTicker, TCronTicker>);
+        d.MapGet("/overview/recent-activity", GetRecentActivity<TTimeTicker, TCronTicker>);
 
-        // Cron Tickers endpoints
-        apiGroup.MapGet("/cron-tickers", GetCronTickers<TTimeTicker, TCronTicker>)
-            .WithName("GetCronTickers")
-            .WithSummary("Get all cron tickers");
+        d.MapGet("/nodes", GetNodes<TTimeTicker, TCronTicker>);
+        d.MapGet("/nodes/{nodeName}/functions", GetNodeFunctions<TTimeTicker, TCronTicker>);
+        d.MapGet("/functions", GetAllFunctions<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapGet("/cron-tickers/paginated", GetCronTickersPaginated<TTimeTicker, TCronTicker>)
-            .WithName("GetCronTickersPaginated")
-            .WithSummary("Get paginated cron tickers");
+        d.MapGet("/host/status", GetHostStatus<TTimeTicker, TCronTicker>);
+        d.MapGet("/host/next-ticker", GetNextTicker<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapGet("/cron-tickers/graph-data-range", GetCronTickersGraphDataRange<TTimeTicker, TCronTicker>)
-            .WithName("GetCronTickersGraphDataRange")
-            .WithSummary("Get cron tickers graph data for specific date range");
+        d.MapGet("/graphs/time-tickers", GetTimeTickersGraph<TTimeTicker, TCronTicker>);
+        d.MapGet("/graphs/cron-tickers", GetCronTickersGraph<TTimeTicker, TCronTicker>);
+        d.MapGet("/graphs/cron-tickers/{cronTickerId:guid}", GetCronTickerGraphById<TTimeTicker, TCronTicker>);
+        d.MapGet("/graphs/cron-occurrences/{cronTickerId:guid}", GetCronOccurrencesGraph<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapGet("/cron-tickers/graph-data-range-id", GetCronTickersByIdGraphDataRange<TTimeTicker, TCronTicker>)
-            .WithName("GetCronTickersByIdGraphDataRange")
-            .WithSummary("Get cron ticker graph data by ID for specific date range");
+        d.MapGet("/log-tail/{tickerId:guid}", GetTickerLogTail);
 
-        apiGroup.MapGet("/cron-tickers/graph-data", GetCronTickersGraphData<TTimeTicker, TCronTicker>)
-            .WithName("GetCronTickersGraphData")
-            .WithSummary("Get cron tickers graph data");
+        // ===== Writes — mirror DashboardOperationService proto RPCs =====
+        // Registered on their own sub-group so read-only mode can reject the
+        // whole set with 403. The SPA hides the affordances; this guard makes
+        // the guarantee hold for hand-crafted requests too. Evaluated per
+        // request so the predicate overload (role-based viewers) works.
+        var w = d.MapGroup(string.Empty);
+        if (config.ReadOnly || config.ReadOnlyPredicate != null)
+        {
+            w.AddEndpointFilter(async (invocationContext, next) =>
+            {
+                if (config.IsReadOnlyFor(invocationContext.HttpContext))
+                    return Results.Text("Dashboard is running in read-only mode.", statusCode: StatusCodes.Status403Forbidden);
+                return await next(invocationContext);
+            });
+        }
 
-        apiGroup.MapGet("/cron-ticker-occurrences/{cronTickerId}", GetCronTickerOccurrences<TTimeTicker, TCronTicker>)
-            .WithName("GetCronTickerOccurrences")
-            .WithSummary("Get cron ticker occurrences");
+        w.MapPost("/host/start", StartHost<TTimeTicker, TCronTicker>);
+        w.MapPost("/host/stop", StopHost<TTimeTicker, TCronTicker>);
+        w.MapPost("/host/restart", RestartHost<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapGet("/cron-ticker-occurrences/{cronTickerId}/paginated", GetCronTickerOccurrencesPaginated<TTimeTicker, TCronTicker>)
-            .WithName("GetCronTickerOccurrencesPaginated")
-            .WithSummary("Get paginated cron ticker occurrences");
+        w.MapPost("/tickers/{id:guid}/cancel", CancelTicker<TTimeTicker, TCronTicker>);
+        w.MapPost("/tickers/bulk-cancel", BulkCancelTickers<TTimeTicker, TCronTicker>);
+        w.MapPost("/time-tickers/bulk-delete", BulkDeleteTimeTickers<TTimeTicker, TCronTicker>);
+        w.MapPost("/cron-tickers/bulk-delete", BulkDeleteCronTickers<TTimeTicker, TCronTicker>);
+        w.MapPost("/executions/bulk-retry", BulkRetryExecutions<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapGet("/cron-ticker-occurrences/{cronTickerId}/graph-data", GetCronTickerOccurrencesGraphData<TTimeTicker, TCronTicker>)
-            .WithName("GetCronTickerOccurrencesGraphData")
-            .WithSummary("Get cron ticker occurrences graph data");
+        w.MapPost("/time-tickers", AddTimeTicker<TTimeTicker, TCronTicker>);
+        w.MapDelete("/time-tickers/{id:guid}", DeleteTimeTicker<TTimeTicker, TCronTicker>);
+        w.MapPost("/time-tickers/{id:guid}/run", RunTimeTickerOnDemand<TTimeTicker, TCronTicker>);
+        w.MapPost("/time-tickers/{id:guid}/duplicate", DuplicateTimeTicker<TTimeTicker, TCronTicker>);
+        w.MapPatch("/time-tickers/{id:guid}", UpdateTimeTicker<TTimeTicker, TCronTicker>);
+        w.MapPost("/time-tickers/chain", AddTimeTickerChain<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapPost("/cron-ticker/add", AddCronTicker<TTimeTicker, TCronTicker>)
-            .WithName("AddCronTicker")
-            .WithSummary("Add cron ticker");
+        w.MapPost("/cron-tickers", AddCronTicker<TTimeTicker, TCronTicker>);
+        w.MapPatch("/cron-tickers/{id:guid}", UpdateCronTicker<TTimeTicker, TCronTicker>);
+        w.MapPost("/cron-tickers/{id:guid}/toggle", ToggleCronTicker<TTimeTicker, TCronTicker>);
+        w.MapPost("/cron-tickers/{id:guid}/run", RunCronTickerOnDemand<TTimeTicker, TCronTicker>);
+        w.MapDelete("/cron-tickers/{id:guid}", DeleteCronTicker<TTimeTicker, TCronTicker>);
 
-        apiGroup.MapPut("/cron-ticker/update", UpdateCronTicker<TTimeTicker, TCronTicker>)
-            .WithName("UpdateCronTicker")
-            .WithSummary("Update cron ticker");
-
-        apiGroup.MapPut("/cron-ticker/toggle", ToggleCronTicker<TTimeTicker, TCronTicker>)
-            .WithName("ToggleCronTicker")
-            .WithSummary("Toggle cron ticker enabled/disabled");
-
-        apiGroup.MapPost("/cron-ticker/run", RunCronTickerOnDemand<TTimeTicker, TCronTicker>)
-            .WithName("RunCronTickerOnDemand")
-            .WithSummary("Run cron ticker on demand");
-
-        apiGroup.MapDelete("/cron-ticker/delete", DeleteCronTicker<TTimeTicker, TCronTicker>)
-            .WithName("DeleteCronTicker")
-            .WithSummary("Delete cron ticker");
-
-        apiGroup.MapDelete("/cron-ticker-occurrence/delete", DeleteCronTickerOccurrence<TTimeTicker, TCronTicker>)
-            .WithName("DeleteCronTickerOccurrence")
-            .WithSummary("Delete cron ticker occurrence");
-
-        // Ticker operations
-        apiGroup.MapPost("/ticker/cancel", CancelTicker<TTimeTicker, TCronTicker>)
-            .WithName("CancelTicker")
-            .WithSummary("Cancel ticker by ID");
-
-        apiGroup.MapGet("/ticker-request/{id}", GetTickerRequest<TTimeTicker, TCronTicker>)
-            .WithName("GetTickerRequest")
-            .WithSummary("Get ticker request by ID");
-
-        apiGroup.MapGet("/ticker-functions", GetTickerFunctions<TTimeTicker, TCronTicker>)
-            .WithName("GetTickerFunctions")
-            .WithSummary("Get available ticker functions");
-
-        // Host operations
-        apiGroup.MapGet("/ticker-host/next-ticker", GetNextTicker<TTimeTicker, TCronTicker>)
-            .WithName("GetNextTicker")
-            .WithSummary("Get next planned ticker");
-
-        apiGroup.MapPost("/ticker-host/stop", StopTickerHost<TTimeTicker, TCronTicker>)
-            .WithName("StopTickerHost")
-            .WithSummary("Stop ticker host");
-
-        apiGroup.MapPost("/ticker-host/start", StartTickerHost<TTimeTicker, TCronTicker>)
-            .WithName("StartTickerHost")
-            .WithSummary("Start ticker host");
-
-        apiGroup.MapPost("/ticker-host/restart", RestartTickerHost<TTimeTicker, TCronTicker>)
-            .WithName("RestartTickerHost")
-            .WithSummary("Restart ticker host");
-
-        apiGroup.MapGet("/ticker-host/status", GetTickerHostStatus<TTimeTicker, TCronTicker>)
-            .WithName("GetTickerHostStatus")
-            .WithSummary("Get ticker host status");
-
-        // Statistics endpoints
-        apiGroup.MapGet("/ticker/statuses/get-last-week", GetLastWeekJobStatus<TTimeTicker, TCronTicker>)
-            .WithName("GetLastWeekJobStatus")
-            .WithSummary("Get last week job statuses");
-
-        apiGroup.MapGet("/ticker/statuses/get", GetJobStatuses<TTimeTicker, TCronTicker>)
-            .WithName("GetJobStatuses")
-            .WithSummary("Get overall job statuses");
-
-        apiGroup.MapGet("/ticker/machine/jobs", GetMachineJobs<TTimeTicker, TCronTicker>)
-            .WithName("GetMachineJobs")
-            .WithSummary("Get machine jobs");
-
-        // SignalR Hub - authentication handled in hub OnConnectedAsync
-        endpoints.MapHub<TickerQNotificationHub>($"/ticker-notification-hub")
-            .AllowAnonymous();
-
+        w.MapDelete("/cron-occurrences/{id:guid}", DeleteCronOccurrence<TTimeTicker, TCronTicker>);
     }
-    #region Endpoint Handlers
+
+    // ===== Helpers =====
 
     private static IEndpointConventionBuilder WithGroupNameIfSet(IEndpointConventionBuilder builder, DashboardOptionsBuilder config)
     {
         if (!string.IsNullOrWhiteSpace(config.GroupName))
-        {
             builder.WithGroupName(config.GroupName);
-        }
-
         return builder;
     }
 
@@ -232,640 +164,792 @@ public static class DashboardEndpoints
         return Results.Json(value, options.GetTypeInfo(typeof(T))).ExecuteAsync(context);
     }
 
+    /// <summary>
+    /// Surface a failed <see cref="Utilities.Models.TickerResult{T}"/> to the
+    /// client: validation errors are the caller's fault (400), anything else
+    /// is a server fault (500) — both carry the message so the UI can show it.
+    /// </summary>
+    private static Task WriteTickerError(HttpContext context, Exception? exception)
+    {
+        context.Response.StatusCode = exception is TickerValidatorException ? 400 : 500;
+        return WriteJson(context, new ErrorResponseBody
+        {
+            Error = exception?.Message ?? "The operation failed.",
+        }, Json(context));
+    }
+
+    private static async Task<T?> ReadJsonAsync<T>(HttpContext context, JsonSerializerOptions options) where T : class
+    {
+        try
+        {
+            var typeInfo = options.GetTypeInfo(typeof(T));
+            return await JsonSerializer.DeserializeAsync(context.Request.Body, typeInfo, context.RequestAborted) as T;
+        }
+        catch (JsonException)
+        {
+            // Malformed body (e.g. a request payload that isn't valid JSON) —
+            // callers treat null as a 400, not a 500.
+            return null;
+        }
+    }
+
+    private static ITickerDashboardDataService<TTimeTicker, TCronTicker> DataService<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+        => c.RequestServices.GetRequiredService<ITickerDashboardDataService<TTimeTicker, TCronTicker>>();
+
+    private static JsonSerializerOptions Json(HttpContext c)
+        => c.RequestServices.GetRequiredService<DashboardOptionsBuilder>().DashboardJsonOptions;
+
+    // ===== Auth =====
+
     private static async Task GetAuthInfo(HttpContext context)
     {
         var authService = context.RequestServices.GetRequiredService<IAuthService>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
+        var config = context.RequestServices.GetRequiredService<AuthConfig>();
+        var info = authService.GetAuthInfo();
 
-        var authInfo = authService.GetAuthInfo();
+        var schemeNames = config.Schemes
+            .Select(s => s.LegacyMode.ToString().ToLowerInvariant())
+            .ToArray();
+        var loginAvailable = config.Schemes
+            .Any(s => s.LegacyMode is AuthMode.Jwt or AuthMode.Cookie);
 
-        var response = new AuthInfoResponse
+        await WriteJson(context, new AuthInfoResponse
         {
-            Mode = authInfo.Mode.ToString().ToLower(),
-            Enabled = authInfo.IsEnabled,
-            SessionTimeout = authInfo.SessionTimeoutMinutes
-        };
-
-        await WriteJson(context, response, dashboardOptions.DashboardJsonOptions);
+            Mode = info.Mode.ToString().ToLower(),
+            Enabled = info.IsEnabled,
+            SessionTimeout = info.SessionTimeoutMinutes,
+            Schemes = schemeNames,
+            LoginAvailable = loginAvailable,
+            LoginRedirect = config.HostLoginRedirectPath,
+        }, Json(context));
     }
 
     private static async Task ValidateAuth(HttpContext context)
     {
         var authService = context.RequestServices.GetRequiredService<IAuthService>();
         var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-
-        var authResult = await authService.AuthenticateAsync(context);
-
-        if (authResult.IsAuthenticated)
+        var result = await authService.AuthenticateAsync(context);
+        if (result.IsAuthenticated)
         {
             await WriteJson(context, new AuthValidateResponse
             {
                 Authenticated = true,
-                Username = authResult.Username,
-                Message = "Authentication successful"
+                Username = result.Username,
+                Message = "Authentication successful",
             }, dashboardOptions.DashboardJsonOptions);
             return;
         }
-
         if (dashboardOptions.Auth.Mode == AuthMode.Host)
         {
             await context.ChallengeAsync();
             return;
         }
-
         context.Response.StatusCode = 401;
     }
 
+    // ===== Options =====
 
-    private static async Task GetOptions<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
+    private static async Task GetOptions(HttpContext context)
     {
         var executionContext = context.RequestServices.GetRequiredService<TickerExecutionContext>();
         var schedulerOptions = context.RequestServices.GetRequiredService<SchedulerOptionsBuilder>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-
         await WriteJson(context, new DashboardOptionsResponse
         {
             MaxConcurrency = schedulerOptions.MaxConcurrency,
             IdleWorkerTimeOut = schedulerOptions.IdleWorkerTimeOut,
             CurrentMachine = schedulerOptions.NodeIdentifier,
             LastHostExceptionMessage = executionContext.LastHostExceptionMessage,
-            SchedulerTimeZone = ToIanaTimeZoneId(schedulerOptions.SchedulerTimeZone)
-        }, dashboardOptions.DashboardJsonOptions);
+            SchedulerTimeZone = ToIanaTimeZoneId(schedulerOptions.SchedulerTimeZone),
+        }, Json(context));
     }
 
-    private static async Task GetTimeTickers<TTimeTicker, TCronTicker>(HttpContext context)
+    // ===== Reads =====
+
+    private static async Task QueryTimeTickers<TTimeTicker, TCronTicker>(HttpContext c)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        var result = await repository.GetTimeTickersAsync(cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
+        var filter = await ReadJsonAsync<TimeTickerQueryFilter>(c, Json(c)) ?? new TimeTickerQueryFilter();
+        var result = await DataService<TTimeTicker, TCronTicker>(c).GetTimeTickersFlatAsync(filter, c.RequestAborted);
+        await WriteJson(c, result, Json(c));
     }
 
-    private static async Task GetTimeTickersPaginated<TTimeTicker, TCronTicker>(HttpContext context)
+    private static async Task GetTimeTickerById<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
+        var dto = await DataService<TTimeTicker, TCronTicker>(c).GetTimeTickerByIdAsync(id, c.RequestAborted);
+        if (dto == null) { c.Response.StatusCode = 404; return; }
+        await WriteJson(c, dto, Json(c));
+    }
 
-        int.TryParse(context.Request.Query["pageNumber"].ToString(), out var pageNumber);
-        if (pageNumber < 1) pageNumber = 1;
-        int.TryParse(context.Request.Query["pageSize"].ToString(), out var pageSize);
-        if (pageSize < 1) pageSize = 20;
+    private static async Task GetTimeTickerChildren<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var children = await DataService<TTimeTicker, TCronTicker>(c).GetTimeTickerChildrenAsync(id, c.RequestAborted);
+        await WriteJson(c, children, Json(c));
+    }
 
-        TickerStatus? status = Enum.TryParse<TickerStatus>(context.Request.Query["status"].ToString(), ignoreCase: true, out var parsedStatus)
-            ? parsedStatus
+    private static async Task GetTimeTickerRequest<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var bytes = await DataService<TTimeTicker, TCronTicker>(c).GetTimeTickerRequestAsync(id, c.RequestAborted);
+        await WriteJson(c, new TickerRequestPayloadResponse { Payload = bytes }, Json(c));
+    }
+
+    private static async Task QueryCronTickers<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var filter = await ReadJsonAsync<CronTickerQueryFilter>(c, Json(c)) ?? new CronTickerQueryFilter();
+        var result = await DataService<TTimeTicker, TCronTicker>(c).GetCronTickersFlatAsync(filter, c.RequestAborted);
+        await WriteJson(c, result, Json(c));
+    }
+
+    private static async Task GetCronTickerById<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var dto = await DataService<TTimeTicker, TCronTicker>(c).GetCronTickerByIdAsync(id, c.RequestAborted);
+        if (dto == null) { c.Response.StatusCode = 404; return; }
+        await WriteJson(c, dto, Json(c));
+    }
+
+    private static async Task QueryCronOccurrences<TTimeTicker, TCronTicker>(HttpContext c, Guid cronTickerId)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var filter = await ReadJsonAsync<CronOccurrenceQueryFilter>(c, Json(c)) ?? new CronOccurrenceQueryFilter();
+        var result = await DataService<TTimeTicker, TCronTicker>(c).GetCronOccurrencesFlatAsync(cronTickerId, filter, c.RequestAborted);
+        await WriteJson(c, result, Json(c));
+    }
+
+    private static async Task GetCronOccurrenceById<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var dto = await DataService<TTimeTicker, TCronTicker>(c).GetCronOccurrenceByIdAsync(id, c.RequestAborted);
+        if (dto == null) { c.Response.StatusCode = 404; return; }
+        await WriteJson(c, dto, Json(c));
+    }
+
+    private static async Task GetCronOccurrenceRequest<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var bytes = await DataService<TTimeTicker, TCronTicker>(c).GetCronOccurrenceRequestAsync(id, c.RequestAborted);
+        await WriteJson(c, new TickerRequestPayloadResponse { Payload = bytes }, Json(c));
+    }
+
+    private static async Task QueryExecutions<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var filter = await ReadJsonAsync<ExecutionQueryFilter>(c, Json(c)) ?? new ExecutionQueryFilter();
+        var result = await DataService<TTimeTicker, TCronTicker>(c).GetExecutionsFlatAsync(filter, c.RequestAborted);
+        await WriteJson(c, result, Json(c));
+    }
+
+    private static async Task GetOverallStatuses<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetOverallStatusesAsync(c.RequestAborted);
+        IList<StatusCountResponseBody> body = data
+            .Select(x => new StatusCountResponseBody { Status = x.Status, Count = x.Count })
+            .ToList();
+        await WriteJson(c, body, Json(c));
+    }
+
+    private static async Task GetNodeJobs<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetNodeJobsAsync(c.RequestAborted);
+        IList<NodeJobCountResponseBody> body = data
+            .Select(x => new NodeJobCountResponseBody { NodeName = x.NodeName ?? string.Empty, JobCount = x.JobCount })
+            .ToList();
+        await WriteJson(c, body, Json(c));
+    }
+
+    private static async Task GetUpcomingTickers<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var count = int.TryParse(c.Request.Query["count"], out var n) ? n : 10;
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetUpcomingTickersAsync(count, c.RequestAborted);
+        await WriteJson(c, data, Json(c));
+    }
+
+    private static async Task GetRecentActivity<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var count = int.TryParse(c.Request.Query["count"], out var n) ? n : 10;
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetRecentActivityAsync(count, c.RequestAborted);
+        await WriteJson(c, data, Json(c));
+    }
+
+    private static async Task GetNodes<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetNodesAsync(c.RequestAborted);
+        await WriteJson(c, data, Json(c));
+    }
+
+    private static async Task GetNodeFunctions<TTimeTicker, TCronTicker>(HttpContext c, string nodeName)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetNodeFunctionsAsync(nodeName, c.RequestAborted);
+        await WriteJson(c, data, Json(c));
+    }
+
+    private static async Task GetAllFunctions<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetAllFunctionsAsync(c.RequestAborted);
+        await WriteJson(c, data, Json(c));
+    }
+
+    private static async Task GetHostStatus<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var dto = await DataService<TTimeTicker, TCronTicker>(c).GetHostStatusAsync(c.RequestAborted);
+        await WriteJson(c, dto, Json(c));
+    }
+
+    private static async Task GetNextTicker<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var dto = await DataService<TTimeTicker, TCronTicker>(c).GetNextTickerAsync(c.RequestAborted);
+        await WriteJson(c, dto, Json(c));
+    }
+
+    private static async Task GetTimeTickersGraph<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var (past, future) = ParseGraphRange(c);
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetTimeTickersGraphAsync(past, future, c.RequestAborted);
+        await WriteJson(c, data, Json(c));
+    }
+
+    private static async Task GetCronTickersGraph<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var (past, future) = ParseGraphRange(c);
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetCronTickersGraphAsync(past, future, c.RequestAborted);
+        await WriteJson(c, data, Json(c));
+    }
+
+    private static async Task GetCronTickerGraphById<TTimeTicker, TCronTicker>(HttpContext c, Guid cronTickerId)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var (past, future) = ParseGraphRange(c);
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetCronTickerGraphByIdAsync(cronTickerId, past, future, c.RequestAborted);
+        await WriteJson(c, data, Json(c));
+    }
+
+    private static async Task GetCronOccurrencesGraph<TTimeTicker, TCronTicker>(HttpContext c, Guid cronTickerId)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var data = await DataService<TTimeTicker, TCronTicker>(c).GetCronOccurrencesGraphAsync(cronTickerId, c.RequestAborted);
+        await WriteJson(c, data, Json(c));
+    }
+
+    private static (int Past, int Future) ParseGraphRange(HttpContext c)
+    {
+        var past = int.TryParse(c.Request.Query["pastDays"], out var p) ? p : 7;
+        var future = int.TryParse(c.Request.Query["futureDays"], out var f) ? f : 0;
+        return (past, future);
+    }
+
+    // Log tail — served from the in-process capture store (ILogger lines emitted
+    // inside a ticker execution, kept in bounded per-ticker buffers for ~30 min).
+    // The store is registered by AddTickerQ; tolerate its absence so the panel
+    // renders the "no logs" state instead of 500.
+    private static Task GetTickerLogTail(HttpContext c, Guid tickerId)
+    {
+        var body = new TickerLogTailResponseBody();
+
+        if (c.RequestServices.GetService<ITickerExecutionLogStore>() is { } store)
+        {
+            foreach (var line in store.GetTail(tickerId))
+            {
+                body.Lines.Add(new TickerLogLineResponse
+                {
+                    UnixMs = line.UnixMs,
+                    Level = line.Level,
+                    Source = string.Empty,
+                    Message = line.Message,
+                    Category = line.Category,
+                    FunctionName = line.FunctionName,
+                });
+            }
+        }
+
+        return WriteJson(c, body, Json(c));
+    }
+
+    // ===== Writes =====
+
+    private static async Task StartHost<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        await DataService<TTimeTicker, TCronTicker>(c).StartHostAsync(c.RequestAborted);
+        c.Response.StatusCode = 204;
+    }
+
+    private static async Task StopHost<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        await DataService<TTimeTicker, TCronTicker>(c).StopHostAsync(c.RequestAborted);
+        c.Response.StatusCode = 204;
+    }
+
+    private static Task RestartHost<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        DataService<TTimeTicker, TCronTicker>(c).RestartHost();
+        c.Response.StatusCode = 204;
+        return Task.CompletedTask;
+    }
+
+    private static Task CancelTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var ok = DataService<TTimeTicker, TCronTicker>(c).CancelTicker(id);
+        c.Response.StatusCode = ok ? 204 : 404;
+        return Task.CompletedTask;
+    }
+
+    private static async Task AddTimeTicker<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<AddTimeTickerRequest>(c, Json(c));
+        if (body == null || string.IsNullOrWhiteSpace(body.Function))
+        {
+            c.Response.StatusCode = 400;
+            return;
+        }
+
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+        var entity = new TTimeTicker
+        {
+            Function = body.Function,
+            ExecutionTime = body.ExecutionTime,
+            Description = body.Description,
+            Retries = body.Retries ?? 0,
+            Request = body.Request,
+            RetryIntervals = body.RetryIntervalsSeconds,
+            OnStale = body.OnStale ?? StaleAction.Restart,
+            TimeoutSeconds = body.TimeoutSeconds is > 0 ? body.TimeoutSeconds : null,
+        };
+
+        var result = await manager.AddAsync(entity, c.RequestAborted);
+        if (!result.IsSucceeded || result.Result == null)
+        {
+            await WriteTickerError(c, result.Exception);
+            return;
+        }
+        await WriteJson(c, new AddTickerResponseBody { Id = result.Result.Id.ToString() }, Json(c));
+    }
+
+    private static async Task DeleteTimeTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+        var result = await manager.DeleteAsync(id, c.RequestAborted);
+        c.Response.StatusCode = result.IsSucceeded ? 204 : 404;
+    }
+
+    // ===== Bulk operations (multi-select on the dashboard tables) =====
+
+    private static async Task BulkDeleteTimeTickers<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<BulkIdsRequest>(c, Json(c));
+        if (body == null || body.Ids.Count == 0) { c.Response.StatusCode = 400; return; }
+
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+        var result = await manager.DeleteBatchAsync(body.Ids, c.RequestAborted);
+        await WriteJson(c, new BulkActionResponseBody { Affected = result.AffectedRows }, Json(c));
+    }
+
+    private static async Task BulkDeleteCronTickers<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<BulkIdsRequest>(c, Json(c));
+        if (body == null || body.Ids.Count == 0) { c.Response.StatusCode = 400; return; }
+
+        var manager = c.RequestServices.GetRequiredService<ICronTickerManager<TCronTicker>>();
+        var result = await manager.DeleteBatchAsync(body.Ids, c.RequestAborted);
+        await WriteJson(c, new BulkActionResponseBody { Affected = result.AffectedRows }, Json(c));
+    }
+
+    private static async Task BulkCancelTickers<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<BulkIdsRequest>(c, Json(c));
+        if (body == null || body.Ids.Count == 0) { c.Response.StatusCode = 400; return; }
+
+        var dataService = DataService<TTimeTicker, TCronTicker>(c);
+        var cancelled = 0;
+        foreach (var id in body.Ids)
+        {
+            if (dataService.CancelTicker(id))
+                cancelled++;
+        }
+
+        await WriteJson(c, new BulkActionResponseBody { Affected = cancelled }, Json(c));
+    }
+
+    private static async Task BulkRetryExecutions<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<BulkRetryRequest>(c, Json(c));
+        if (body == null || body.Items.Count == 0) { c.Response.StatusCode = 400; return; }
+
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+        var dataService = DataService<TTimeTicker, TCronTicker>(c);
+        var affected = 0;
+
+        // Time executions re-run the ticker itself; cron occurrences re-run the
+        // parent schedule — deduped so selecting five failed occurrences of the
+        // same cron triggers one on-demand run, not five.
+        var cronIdsTriggered = new HashSet<Guid>();
+
+        foreach (var item in body.Items)
+        {
+            if (string.Equals(item.Type, "TimeTicker", StringComparison.OrdinalIgnoreCase))
+            {
+                var entity = await persistence.GetTimeTickerById(item.Id, c.RequestAborted);
+                if (entity == null) continue;
+
+                entity.ExecutionTime = DateTime.UtcNow;
+                var result = await manager.UpdateAsync(entity, c.RequestAborted);
+                if (result.IsSucceeded) affected++;
+            }
+            else if (item.CronTickerId is { } cronId && cronIdsTriggered.Add(cronId))
+            {
+                await dataService.RunCronTickerOnDemandAsync(cronId, c.RequestAborted);
+                affected++;
+            }
+        }
+
+        await WriteJson(c, new BulkActionResponseBody { Affected = affected }, Json(c));
+    }
+
+    private static async Task RunTimeTickerOnDemand<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+
+        var entity = await persistence.GetTimeTickerById(id, c.RequestAborted);
+        if (entity == null) { c.Response.StatusCode = 404; return; }
+
+        entity.ExecutionTime = DateTime.UtcNow;
+        var result = await manager.UpdateAsync(entity, c.RequestAborted);
+        if (!result.IsSucceeded) { await WriteTickerError(c, result.Exception); return; }
+        c.Response.StatusCode = 204;
+    }
+
+    private static async Task UpdateTimeTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<UpdateTimeTickerRequest>(c, Json(c));
+        if (body == null) { c.Response.StatusCode = 400; return; }
+
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+
+        var entity = await persistence.GetTimeTickerById(id, c.RequestAborted);
+        if (entity == null) { c.Response.StatusCode = 404; return; }
+
+        // Match the gRPC operation service: only edit while Idle/Queued.
+        if (entity.Status != TickerStatus.Idle && entity.Status != TickerStatus.Queued)
+        {
+            c.Response.StatusCode = 409;
+            return;
+        }
+
+        if (body.ExecutionTime.HasValue)            entity.ExecutionTime  = body.ExecutionTime.Value;
+        if (body.Description != null)               entity.Description    = body.Description;
+        if (body.Retries.HasValue)                  entity.Retries        = body.Retries.Value;
+        if (body.RetryIntervalsSeconds != null)     entity.RetryIntervals = body.RetryIntervalsSeconds.Length > 0 ? body.RetryIntervalsSeconds : null;
+        if (body.Request != null)                   entity.Request        = body.Request.Length > 0 ? body.Request : null;
+        if (!string.IsNullOrWhiteSpace(body.Function)) entity.Function    = body.Function;
+        if (body.RunCondition.HasValue)             entity.RunCondition   = body.RunCondition.Value;
+        if (body.OnStale.HasValue)                  entity.OnStale        = body.OnStale.Value;
+        if (body.TimeoutSeconds.HasValue)           entity.TimeoutSeconds = body.TimeoutSeconds.Value > 0 ? body.TimeoutSeconds.Value : null;
+
+        var result = await manager.UpdateAsync(entity, c.RequestAborted);
+        if (!result.IsSucceeded) { await WriteTickerError(c, result.Exception); return; }
+        c.Response.StatusCode = 204;
+    }
+
+    private static async Task AddTimeTickerChain<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<AddTimeTickerChainRequest>(c, Json(c));
+        if (body == null || body.Root == null)
+        {
+            c.Response.StatusCode = 400;
+            return;
+        }
+
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+        var rootEntity = BuildChainEntity<TTimeTicker>(body.Root, isRoot: true, parentId: null);
+        rootEntity.ExecutionTime = body.ExecutionTime;
+
+        var createdCount = 1 + CountDescendants(rootEntity);
+        var result = await manager.AddAsync(rootEntity, c.RequestAborted);
+        if (!result.IsSucceeded || result.Result == null)
+        {
+            await WriteTickerError(c, result.Exception);
+            return;
+        }
+
+        await WriteJson(c, new AddTimeTickerChainResponseBody
+        {
+            RootId = result.Result.Id.ToString(),
+            CreatedCount = createdCount,
+        }, Json(c));
+    }
+
+    private static async Task DuplicateTimeTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = c.Request.ContentLength is > 0
+            ? await ReadJsonAsync<DuplicateTimeTickerRequest>(c, Json(c))
             : null;
-        var search = context.Request.Query["search"].ToString();
 
-        var result = await repository.GetTimeTickersPaginatedAsync(pageNumber, pageSize, status, search, cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
 
-    private static async Task GetTimeTickersGraphDataRange<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
+        var copy = await CloneSubtreeAsync(persistence, id, c.RequestAborted);
+        if (copy == null) { c.Response.StatusCode = 404; return; }
 
-        if (!int.TryParse(context.Request.Query["pastDays"].ToString(), out var pastDays))
-            pastDays = -3;
-        if (!int.TryParse(context.Request.Query["futureDays"].ToString(), out var futureDays))
-            futureDays = 3;
+        copy.ExecutionTime = body?.ExecutionTime ?? DateTime.UtcNow;
 
-        var result = await repository.GetTimeTickersGraphSpecificDataAsync(pastDays, futureDays, cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetTimeTickersGraphData<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        var result = await repository.GetTimeTickerFullDataAsync(cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task CreateChainJobs<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var timeTickerManager = context.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-        var timeZoneId = context.Request.Query["timeZoneId"].ToString();
-
-        // Read the raw JSON from request body
-        using var reader = new StreamReader(context.Request.Body);
-        var jsonString = await reader.ReadToEndAsync(cancellationToken);
-
-        // Use Dashboard-specific JSON options
-        var chainRoot = (TTimeTicker)JsonSerializer.Deserialize(jsonString, dashboardOptions.DashboardJsonOptions.GetTypeInfo(typeof(TTimeTicker)));
-
-        if (chainRoot?.ExecutionTime is DateTime executionTime && !string.IsNullOrEmpty(timeZoneId))
+        var added = await manager.AddAsync(copy, c.RequestAborted);
+        if (!added.IsSucceeded || added.Result == null)
         {
-            var tz = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
-            var unspecified = DateTime.SpecifyKind(executionTime, DateTimeKind.Unspecified);
-            var utc = TimeZoneInfo.ConvertTimeToUtc(unspecified, tz);
-            chainRoot.ExecutionTime = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+            await WriteTickerError(c, added.Exception);
+            return;
+        }
+        await WriteJson(c, new AddTickerResponseBody { Id = added.Result.Id.ToString() }, Json(c));
+    }
+
+    private static async Task AddCronTicker<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<AddCronTickerRequest>(c, Json(c));
+        if (body == null || string.IsNullOrWhiteSpace(body.Function) || string.IsNullOrWhiteSpace(body.Expression))
+        {
+            c.Response.StatusCode = 400;
+            return;
         }
 
-        var result = await timeTickerManager.AddAsync(chainRoot, cancellationToken);
-
-        await WriteJson(context, new ActionResponseWithId
+        var manager = c.RequestServices.GetRequiredService<ICronTickerManager<TCronTicker>>();
+        var entity = new TCronTicker
         {
-            Success = result.IsSucceeded,
-            Message = result.IsSucceeded ? "Chain jobs created successfully" : "Failed to create chain jobs",
-            TickerId = result.Result?.Id
-        }, dashboardOptions.DashboardJsonOptions);
+            Function = body.Function,
+            Expression = body.Expression,
+            Description = body.Description,
+            Retries = body.Retries ?? 0,
+            Request = body.Request,
+            RetryIntervals = body.RetryIntervalsSeconds,
+            IsEnabled = body.IsEnabled ?? true,
+            OnStale = body.OnStale ?? StaleAction.Restart,
+            TimeoutSeconds = body.TimeoutSeconds is > 0 ? body.TimeoutSeconds : null,
+        };
+
+        var result = await manager.AddAsync(entity, c.RequestAborted);
+        if (!result.IsSucceeded || result.Result == null)
+        {
+            await WriteTickerError(c, result.Exception);
+            return;
+        }
+        await WriteJson(c, new AddTickerResponseBody { Id = result.Result.Id.ToString() }, Json(c));
     }
 
-    private static async Task UpdateTimeTicker<TTimeTicker, TCronTicker>(HttpContext context)
+    private static async Task UpdateCronTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        var timeTickerManager = context.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-        var id = Guid.Parse(context.Request.Query["id"].ToString());
-        var timeZoneId = context.Request.Query["timeZoneId"].ToString();
+        var body = await ReadJsonAsync<UpdateCronTickerRequestApi>(c, Json(c));
+        if (body == null) { c.Response.StatusCode = 400; return; }
 
-        // Read the raw JSON from request body
-        using var reader = new StreamReader(context.Request.Body);
-        var jsonString = await reader.ReadToEndAsync(cancellationToken);
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var manager = c.RequestServices.GetRequiredService<ICronTickerManager<TCronTicker>>();
 
-        // Use Dashboard-specific JSON options
-        var timeTicker = (TTimeTicker)JsonSerializer.Deserialize(jsonString, dashboardOptions.DashboardJsonOptions.GetTypeInfo(typeof(TTimeTicker)));
+        var entity = await persistence.GetCronTickerById(id, c.RequestAborted);
+        if (entity == null) { c.Response.StatusCode = 404; return; }
 
-        // Ensure the ID matches
-        timeTicker.Id = id;
+        if (!string.IsNullOrWhiteSpace(body.Function))     entity.Function       = body.Function;
+        if (!string.IsNullOrWhiteSpace(body.Expression))   entity.Expression     = body.Expression;
+        if (body.Description != null)                      entity.Description    = body.Description;
+        if (body.Retries.HasValue)                         entity.Retries        = body.Retries.Value;
+        if (body.RetryIntervalsSeconds != null)            entity.RetryIntervals = body.RetryIntervalsSeconds.Length > 0 ? body.RetryIntervalsSeconds : null;
+        if (body.Request != null)                          entity.Request        = body.Request.Length > 0 ? body.Request : null;
+        if (body.IsEnabled.HasValue)                       entity.IsEnabled      = body.IsEnabled.Value;
+        if (body.OnStale.HasValue)                         entity.OnStale        = body.OnStale.Value;
+        if (body.TimeoutSeconds.HasValue)                  entity.TimeoutSeconds = body.TimeoutSeconds.Value > 0 ? body.TimeoutSeconds.Value : null;
 
-        if (timeTicker.ExecutionTime is DateTime executionTime && !string.IsNullOrEmpty(timeZoneId))
+        var result = await manager.UpdateAsync(entity, c.RequestAborted);
+        if (!result.IsSucceeded) { await WriteTickerError(c, result.Exception); return; }
+        c.Response.StatusCode = 204;
+    }
+
+    private static async Task ToggleCronTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<ToggleCronTickerBody>(c, Json(c));
+        if (body == null) { c.Response.StatusCode = 400; return; }
+        var ok = await DataService<TTimeTicker, TCronTicker>(c).ToggleCronTickerAsync(id, body.IsEnabled, c.RequestAborted);
+        c.Response.StatusCode = ok ? 204 : 404;
+    }
+
+    private static async Task RunCronTickerOnDemand<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        await DataService<TTimeTicker, TCronTicker>(c).RunCronTickerOnDemandAsync(id, c.RequestAborted);
+        c.Response.StatusCode = 204;
+    }
+
+    private static async Task DeleteCronTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var manager = c.RequestServices.GetRequiredService<ICronTickerManager<TCronTicker>>();
+        var result = await manager.DeleteAsync(id, c.RequestAborted);
+        c.Response.StatusCode = result.IsSucceeded ? 204 : 404;
+    }
+
+    private static async Task DeleteCronOccurrence<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var removed = await persistence.RemoveCronTickerOccurrences(new[] { id }, c.RequestAborted);
+        c.Response.StatusCode = removed > 0 ? 204 : 404;
+    }
+
+    // ===== Chain helpers (ported from DashboardOperationGrpcService) =====
+
+    private static TTimeTicker BuildChainEntity<TTimeTicker>(TimeTickerNodeRequest node, bool isRoot, Guid? parentId)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+    {
+        var entity = new TTimeTicker
         {
-            var tz = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
-            var unspecified = DateTime.SpecifyKind(executionTime, DateTimeKind.Unspecified);
-            var utc = TimeZoneInfo.ConvertTimeToUtc(unspecified, tz);
-            timeTicker.ExecutionTime = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+            Id = Guid.NewGuid(),
+            Function = node.Function,
+            Description = node.Description,
+            Retries = node.Retries ?? 0,
+            Request = node.Request,
+            RetryIntervals = node.RetryIntervalsSeconds,
+            OnStale = node.OnStale ?? StaleAction.Restart,
+            TimeoutSeconds = node.TimeoutSeconds is > 0 ? node.TimeoutSeconds : null,
+        };
+
+        if (!isRoot)
+        {
+            entity.ParentId = parentId;
+            if (node.RunCondition.HasValue)
+                entity.RunCondition = node.RunCondition.Value;
         }
 
-        var result = await timeTickerManager.UpdateAsync(timeTicker, cancellationToken);
-
-        await WriteJson(context, new ActionResponse
+        if (node.Children != null)
         {
-            Success = result.IsSucceeded,
-            Message = result.IsSucceeded ? "Time ticker updated successfully" : "Failed to update time ticker"
-        }, dashboardOptions.DashboardJsonOptions);
+            foreach (var child in node.Children)
+            {
+                var childEntity = BuildChainEntity<TTimeTicker>(child, isRoot: false, parentId: entity.Id);
+                entity.Children.Add(childEntity);
+            }
+        }
+        return entity;
     }
 
-    private static async Task DeleteTimeTicker<TTimeTicker, TCronTicker>(HttpContext context)
+    private static int CountDescendants<TTimeTicker>(TTimeTicker entity)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+    {
+        var count = entity.Children.Count;
+        foreach (var child in entity.Children)
+            count += CountDescendants(child);
+        return count;
+    }
+
+    private static async Task<TTimeTicker?> CloneSubtreeAsync<TTimeTicker, TCronTicker>(
+        ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistence, Guid sourceId, System.Threading.CancellationToken ct)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        var timeTickerManager = context.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-        var id = Guid.Parse(context.Request.Query["id"].ToString());
+        var src = await persistence.GetTimeTickerById(sourceId, ct);
+        if (src == null) return null;
 
-        var result = await timeTickerManager.DeleteAsync(id, cancellationToken);
-
-        await WriteJson(context, new ActionResponse
+        var copy = new TTimeTicker
         {
-            Success = result.IsSucceeded,
-            Message = result.IsSucceeded ? "Time ticker deleted successfully" : "Failed to delete time ticker"
-        }, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task DeleteTimeTickersBatch<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var timeTickerManager = context.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        // Read body as Guid[]
-        using var reader = new StreamReader(context.Request.Body);
-        var jsonString = await reader.ReadToEndAsync(cancellationToken);
-        var ids = (Guid[])JsonSerializer.Deserialize(jsonString, dashboardOptions.DashboardJsonOptions.GetTypeInfo(typeof(Guid[])));
-
-        var idList = ids is { Length: > 0 } ? new List<Guid>(ids) : new List<Guid>();
-        var result = await timeTickerManager.DeleteBatchAsync(idList, cancellationToken);
-
-        await WriteJson(context, new ActionResponse
-        {
-            Success = result.IsSucceeded,
-            Message = result.IsSucceeded ? "Time tickers deleted successfully" : "Failed to delete time tickers"
-        }, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetCronTickers<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        var result = await repository.GetCronTickersAsync(cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetCronTickersPaginated<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        int.TryParse(context.Request.Query["pageNumber"].ToString(), out var pageNumber);
-        if (pageNumber < 1) pageNumber = 1;
-        int.TryParse(context.Request.Query["pageSize"].ToString(), out var pageSize);
-        if (pageSize < 1) pageSize = 20;
-
-        var result = await repository.GetCronTickersPaginatedAsync(pageNumber, pageSize, cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetCronTickersGraphDataRange<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        if (!int.TryParse(context.Request.Query["pastDays"].ToString(), out var pastDays))
-            pastDays = -3;
-        if (!int.TryParse(context.Request.Query["futureDays"].ToString(), out var futureDays))
-            futureDays = 3;
-
-        var result = await repository.GetCronTickersGraphSpecificDataAsync(pastDays, futureDays, cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetCronTickersByIdGraphDataRange<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        var id = Guid.Parse(context.Request.Query["id"].ToString());
-        if (!int.TryParse(context.Request.Query["pastDays"].ToString(), out var pastDays))
-            pastDays = -3;
-        if (!int.TryParse(context.Request.Query["futureDays"].ToString(), out var futureDays))
-            futureDays = 3;
-
-        var result = await repository.GetCronTickersGraphSpecificDataByIdAsync(id, pastDays, futureDays, cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetCronTickersGraphData<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        var result = await repository.GetCronTickerFullDataAsync(cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetCronTickerOccurrences<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-        var cronTickerId = Guid.Parse(context.Request.RouteValues["cronTickerId"]?.ToString()!);
-
-        var result = await repository.GetCronTickersOccurrencesAsync(cronTickerId, cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetCronTickerOccurrencesPaginated<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-        var cronTickerId = Guid.Parse(context.Request.RouteValues["cronTickerId"]?.ToString()!);
-
-        int.TryParse(context.Request.Query["pageNumber"].ToString(), out var pageNumber);
-        if (pageNumber < 1) pageNumber = 1;
-        int.TryParse(context.Request.Query["pageSize"].ToString(), out var pageSize);
-        if (pageSize < 1) pageSize = 20;
-
-        var result = await repository.GetCronTickersOccurrencesPaginatedAsync(cronTickerId, pageNumber, pageSize, cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetCronTickerOccurrencesGraphData<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-        var cronTickerId = Guid.Parse(context.Request.RouteValues["cronTickerId"]?.ToString()!);
-
-        var result = await repository.GetCronTickersOccurrencesGraphDataAsync(cronTickerId, cancellationToken);
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task AddCronTicker<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var cronTickerManager = context.RequestServices.GetRequiredService<ICronTickerManager<TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        // Read the raw JSON from request body
-        using var reader = new StreamReader(context.Request.Body);
-        var jsonString = await reader.ReadToEndAsync(cancellationToken);
-
-        // Use Dashboard-specific JSON options
-        var cronTicker = (TCronTicker)JsonSerializer.Deserialize(jsonString, dashboardOptions.DashboardJsonOptions.GetTypeInfo(typeof(TCronTicker)));
-
-        var result = await cronTickerManager.AddAsync(cronTicker, cancellationToken);
-
-        await WriteJson(context, new ActionResponseWithId
-        {
-            Success = result.IsSucceeded,
-            Message = result.IsSucceeded ? "Cron ticker added successfully" : "Failed to add cron ticker",
-            TickerId = result.Result?.Id
-        }, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task UpdateCronTicker<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var cronTickerManager = context.RequestServices.GetRequiredService<ICronTickerManager<TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-        var id = Guid.Parse(context.Request.Query["id"].ToString());
-
-        // Read the raw JSON from request body
-        using var reader = new StreamReader(context.Request.Body);
-        var jsonString = await reader.ReadToEndAsync(cancellationToken);
-
-        // Use Dashboard-specific JSON options
-        var cronTicker = (TCronTicker)JsonSerializer.Deserialize(jsonString, dashboardOptions.DashboardJsonOptions.GetTypeInfo(typeof(TCronTicker)));
-
-        // Ensure the ID matches
-        cronTicker.Id = id;
-
-        var result = await cronTickerManager.UpdateAsync(cronTicker, cancellationToken);
-
-        await WriteJson(context, new ActionResponse
-        {
-            Success = result.IsSucceeded,
-            Message = result.IsSucceeded ? "Cron ticker updated successfully" : "Failed to update cron ticker"
-        }, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task ToggleCronTicker<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-        var id = Guid.Parse(context.Request.Query["id"].ToString());
-        bool.TryParse(context.Request.Query["isEnabled"].ToString(), out var isEnabled);
-
-        var success = await repository.ToggleCronTickerAsync(id, isEnabled, cancellationToken);
-
-        await WriteJson(context, new ActionResponse
-        {
-            Success = success,
-            Message = success ? $"Cron ticker {(isEnabled ? "enabled" : "disabled")} successfully" : "Failed to toggle cron ticker"
-        }, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task RunCronTickerOnDemand<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var cancellationToken = context.RequestAborted;
-        var id = Guid.Parse(context.Request.Query["id"].ToString());
-
-        await repository.AddOnDemandCronTickerOccurrenceAsync(id, cancellationToken);
-        context.Response.StatusCode = 200;
-    }
-
-    private static async Task DeleteCronTicker<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var cronTickerManager = context.RequestServices.GetRequiredService<ICronTickerManager<TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-        var id = Guid.Parse(context.Request.Query["id"].ToString());
-
-        var result = await cronTickerManager.DeleteAsync(id, cancellationToken);
-
-        await WriteJson(context, new ActionResponse
-        {
-            Success = result.IsSucceeded,
-            Message = result.IsSucceeded ? "Cron ticker deleted successfully" : "Failed to delete cron ticker"
-        }, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task DeleteCronTickerOccurrence<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var cancellationToken = context.RequestAborted;
-        var id = Guid.Parse(context.Request.Query["id"].ToString());
-
-        await repository.DeleteCronTickerOccurrenceByIdAsync(id, cancellationToken);
-        context.Response.StatusCode = 200;
-    }
-
-    private static Task CancelTicker<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var id = Guid.Parse(context.Request.Query["id"].ToString());
-
-        if (repository.CancelTickerById(id))
-            context.Response.StatusCode = 200;
-        else
-            context.Response.StatusCode = 400;
-
-        return Task.CompletedTask;
-    }
-
-    private static async Task GetTickerRequest<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-        var tickerId = Guid.Parse(context.Request.RouteValues["id"]?.ToString()!);
-        Enum.TryParse<TickerType>(context.Request.Query["tickerType"].ToString(), out var tickerType);
-
-        var resultData = await repository.GetTickerRequestByIdAsync(tickerId, tickerType, cancellationToken);
-
-        var response = new TickerRequestResponse
-        {
-            Result = resultData.Item1,
-            MatchType = resultData.Item2,
+            Id = Guid.NewGuid(),
+            Function = src.Function,
+            Description = src.Description,
+            Retries = src.Retries,
+            RetryIntervals = src.RetryIntervals,
+            Request = src.Request,
+            RunCondition = src.RunCondition,
+            OnStale = src.OnStale,
+            TimeoutSeconds = src.TimeoutSeconds,
         };
-        await WriteJson(context, response, dashboardOptions.DashboardJsonOptions);
-    }
 
-    private static async Task GetTickerFunctions<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-
-        var result = repository.GetTickerFunctions().Select(x => new TickerFunctionResponse
+        foreach (var child in src.Children)
         {
-            FunctionName = x.Item1,
-            FunctionRequestNamespace = x.Item2.Item1,
-            FunctionRequestType = x.Item2.Item2,
-            Priority = (int)x.Item2.Item3,
-        }).ToArray();
-
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
+            var childCopy = await CloneSubtreeAsync(persistence, child.Id, ct);
+            if (childCopy == null) continue;
+            childCopy.ParentId = copy.Id;
+            copy.Children.Add(childCopy);
+        }
+        return copy;
     }
 
-    private static async Task GetNextTicker<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var executionContext = context.RequestServices.GetRequiredService<TickerExecutionContext>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-
-        var result = new NextTickerResponse
-        {
-            NextOccurrence = executionContext.GetNextPlannedOccurrence()
-        };
-        await WriteJson(context, result, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task StopTickerHost<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var scheduler = context.RequestServices.GetRequiredService<ITickerQHostScheduler>();
-
-        await scheduler.StopAsync();
-        context.Response.StatusCode = 200;
-    }
-
-    private static async Task StartTickerHost<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var scheduler = context.RequestServices.GetRequiredService<ITickerQHostScheduler>();
-
-        await scheduler.StartAsync();
-        context.Response.StatusCode = 200;
-    }
-
-    private static Task RestartTickerHost<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var scheduler = context.RequestServices.GetRequiredService<ITickerQHostScheduler>();
-
-        scheduler.Restart();
-        context.Response.StatusCode = 200;
-        return Task.CompletedTask;
-    }
-
-    private static async Task GetTickerHostStatus<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var scheduler = context.RequestServices.GetRequiredService<ITickerQHostScheduler>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-
-        await WriteJson(context, new HostStatusResponse { IsRunning = scheduler.IsRunning }, dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetLastWeekJobStatus<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        var jobStatuses = await repository.GetLastWeekJobStatusesAsync(cancellationToken);
-        await WriteJson(context, jobStatuses.Select(x => new TupleResponse<int, int> { Item1 = x.Item1, Item2 = x.Item2 }).ToArray(), dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetJobStatuses<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        var jobStatuses = await repository.GetOverallJobStatusesAsync(cancellationToken);
-        await WriteJson(context, jobStatuses.Select(x => new TupleResponse<TickerStatus, int> { Item1 = x.Item1, Item2 = x.Item2 }).ToArray(), dashboardOptions.DashboardJsonOptions);
-    }
-
-    private static async Task GetMachineJobs<TTimeTicker, TCronTicker>(HttpContext context)
-        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-        where TCronTicker : CronTickerEntity, new()
-    {
-        var repository = context.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
-        var dashboardOptions = context.RequestServices.GetRequiredService<DashboardOptionsBuilder>();
-        var cancellationToken = context.RequestAborted;
-
-        var machineJobs = await repository.GetMachineJobsAsync(cancellationToken);
-        await WriteJson(context, machineJobs.Select(x => new TupleResponse<string, int> { Item1 = x.Item1, Item2 = x.Item2 }).ToArray(), dashboardOptions.DashboardJsonOptions);
-    }
+    // ===== Time zone helper (kept from original) =====
 
     internal static string? ToIanaTimeZoneId(TimeZoneInfo? timeZone)
     {
-        if (timeZone == null)
-            return null;
-
+        if (timeZone == null) return null;
         var id = timeZone.Id;
-
-        // Already an IANA id (contains '/')
-        if (id.Contains('/') || id == "UTC")
-            return id;
-
-        // Convert Windows timezone id to IANA
-        if (TimeZoneInfo.TryConvertWindowsIdToIanaId(id, out var ianaId))
-            return ianaId;
-
-        // Fallback: return the original id
+        if (id.Contains('/') || id == "UTC") return id;
+        if (TimeZoneInfo.TryConvertWindowsIdToIanaId(id, out var ianaId)) return ianaId;
         return id;
     }
-
-    #endregion
 }

@@ -209,6 +209,26 @@ namespace TickerQ.Utilities
             TickerExceptionHandlerType = typeof(THandler);
             return this;
         }
+
+        internal Models.FailureWebhookOptions FailureWebhook { get; set; }
+
+        /// <summary>
+        /// POST a JSON event to <paramref name="url"/> whenever a job fails
+        /// terminally (retries exhausted), exceeds its execution timeout, or the
+        /// stale watchdog recovers jobs from a dead node. Delivery is async and
+        /// buffered — it never blocks execution — with a couple of send retries.
+        /// For Slack/email/custom sinks, register your own
+        /// <see cref="Interfaces.ITickerQFailureNotifier"/> instead.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> NotifyFailuresViaWebhook(
+            string url, System.Collections.Generic.IDictionary<string, string> headers = null)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                throw new ArgumentException("Webhook URL must be provided.", nameof(url));
+
+            FailureWebhook = new Models.FailureWebhookOptions { Url = url, Headers = headers };
+            return this;
+        }
         
         internal void UseExternalProviderApplication(Action<IServiceProvider> action)
             => _tickerExecutionContext.ExternalProviderApplicationAction = action;
@@ -240,5 +260,47 @@ namespace TickerQ.Utilities
         /// </summary>
         public TimeSpan StaleCronOccurrenceThreshold { get; set; } = TimeSpan.Zero;
         public TimeZoneInfo SchedulerTimeZone = TimeZoneInfo.Local;
+
+        /// <summary>
+        /// Runtime stale-job recovery: while a ticker executes, the owning node
+        /// renews a lease on the row; if the node dies (crash, OOM, eviction) the
+        /// lease expires and a watchdog applies the ticker's <c>OnStale</c> action
+        /// (Restart by default, Cancel opt-in per job). Disable to keep the
+        /// previous behavior where a dead node leaves rows InProgress forever.
+        /// </summary>
+        public bool StaleJobRecoveryEnabled { get; set; } = true;
+
+        /// <summary>
+        /// How long a lease lasts from each renewal. Must be comfortably larger
+        /// than <see cref="LeaseRenewalInterval"/> (3× or more) so a transient DB
+        /// hiccup or GC pause doesn't get a live job treated as stale.
+        /// </summary>
+        public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromSeconds(45);
+
+        /// <summary>How often the running node renews leases for its active jobs.</summary>
+        public TimeSpan LeaseRenewalInterval { get; set; } = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// Poison-job guard: after this many stale Restarts the ticker is Cancelled
+        /// instead, so a job that kills its host can't crash-loop the cluster.
+        /// </summary>
+        public int MaxStaleRestarts { get; set; } = 3;
+
+        /// <summary>
+        /// Global per-attempt execution timeout applied to every ticker that doesn't
+        /// set its own <c>TimeoutSeconds</c>. Null (default) means no timeout.
+        /// Exceeding it cancels the execution (Cancelled with a timeout reason);
+        /// functions that don't honor their CancellationToken are abandoned and
+        /// logged — their thread keeps running until it finishes on its own.
+        /// </summary>
+        public TimeSpan? DefaultExecutionTimeout { get; set; }
+
+        /// <summary>
+        /// On graceful shutdown, how long to wait for in-flight ticker executions
+        /// to finish before letting the host exit. Zero disables draining (jobs are
+        /// abandoned and later healed by stale-job recovery). Bounded additionally
+        /// by the host's own shutdown timeout (<c>HostOptions.ShutdownTimeout</c>).
+        /// </summary>
+        public TimeSpan ShutdownDrainTimeout { get; set; } = TimeSpan.FromSeconds(30);
     }
 }

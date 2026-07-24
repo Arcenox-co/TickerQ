@@ -19,6 +19,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Function = e.Function,
                 RetryIntervals = e.RetryIntervals,
                 Retries = e.Retries,
+                TimeoutSeconds = e.TimeoutSeconds,
                 IsEnabled = e.IsEnabled
             };
 
@@ -30,6 +31,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Function = e.Function,
                 Retries = e.Retries,
                 RetryIntervals = e.RetryIntervals,
+                TimeoutSeconds = e.TimeoutSeconds,
                 UpdatedAt = e.UpdatedAt,
                 ParentId = e.ParentId,
                 ExecutionTime = e.ExecutionTime,
@@ -39,12 +41,14 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     Function = ch.Function,
                     Retries = ch.Retries,
                     RetryIntervals = ch.RetryIntervals,
+                    TimeoutSeconds = ch.TimeoutSeconds,
                     RunCondition = ch.RunCondition,
                     Children = ch.Children.Select(gch => new TimeTickerEntity
                     {
                         Function = gch.Function,
                         Retries = gch.Retries,
                         RetryIntervals = gch.RetryIntervals,
+                        TimeoutSeconds = gch.TimeoutSeconds,
                         Id = gch.Id,
                         RunCondition = gch.RunCondition
                     }).ToArray()
@@ -66,7 +70,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     Id = e.CronTicker.Id,
                     Function = e.CronTicker.Function,
                     RetryIntervals = e.CronTicker.RetryIntervals,
-                    Retries = e.CronTicker.Retries
+                    Retries = e.CronTicker.Retries,
+                    TimeoutSeconds = e.CronTicker.TimeoutSeconds
                 }
             };
 
@@ -86,16 +91,26 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     Function = e.CronTicker.Function,
                     Expression = e.CronTicker.Expression,
                     RetryIntervals = e.CronTicker.RetryIntervals,
-                    Retries = e.CronTicker.Retries
+                    Retries = e.CronTicker.Retries,
+                    TimeoutSeconds = e.CronTicker.TimeoutSeconds
                 }
             };
 
         internal static void UpdateCronTickerOccurrence<TCronTicker>(
             this UpdateSettersBuilder<CronTickerOccurrenceEntity<TCronTicker>> setters,
-            InternalFunctionContext functionContext)
+            InternalFunctionContext functionContext, DateTime? leaseUntil = null)
             where TCronTicker : CronTickerEntity, new()
         {
             var propsToUpdate = functionContext.GetPropsToUpdate();
+
+            // LEASE — stamp on the InProgress transition so a node dying before the
+            // first renewal still leaves a detectable (expired) lease behind.
+            if (leaseUntil != null &&
+                propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
+                functionContext.Status == TickerStatus.InProgress)
+            {
+                setters.SetProperty(x => x.LeaseUntil, leaseUntil);
+            }
 
             // STATUS / SKIPPED
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
@@ -140,7 +155,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 setters
                     .SetProperty(x => x.LockHolder, (string)null)
-                    .SetProperty(x => x.LockedAt, (DateTime?)null);
+                    .SetProperty(x => x.LockedAt, (DateTime?)null)
+                    .SetProperty(x => x.LeaseUntil, (DateTime?)null);
             }
 
             // EXECUTION TIME
@@ -151,10 +167,19 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         internal static void UpdateTimeTicker<TTimeTicker>(this UpdateSettersBuilder<TTimeTicker> setters,
-            InternalFunctionContext functionContext, DateTime updatedAt)
+            InternalFunctionContext functionContext, DateTime updatedAt, DateTime? leaseUntil = null)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         {
             var propsToUpdate = functionContext.GetPropsToUpdate();
+
+            // LEASE — stamp on the InProgress transition so a node dying before the
+            // first renewal still leaves a detectable (expired) lease behind.
+            if (leaseUntil != null &&
+                propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
+                functionContext.Status == TickerStatus.InProgress)
+            {
+                setters.SetProperty(x => x.LeaseUntil, leaseUntil);
+            }
 
             // STATUS / SKIPPED
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
@@ -199,7 +224,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 setters
                     .SetProperty(x => x.LockHolder, (string)null)
-                    .SetProperty(x => x.LockedAt, (DateTime?)null);
+                    .SetProperty(x => x.LockedAt, (DateTime?)null)
+                    .SetProperty(x => x.LeaseUntil, (DateTime?)null);
             }
 
             // UPDATED_AT ALWAYS

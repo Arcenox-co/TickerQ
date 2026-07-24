@@ -49,6 +49,23 @@ namespace TickerQ.Utilities.Managers
         Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddAsync(TTimeTicker entity, CancellationToken cancellationToken)
             => AddTimeTickerAsync(entity, cancellationToken);
 
+        async Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddOnceAsync(string initIdentifier, TTimeTicker entity, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(initIdentifier))
+                return new TickerResult<TTimeTicker>(
+                    new TickerValidatorException("AddOnceAsync requires a non-empty initIdentifier."));
+
+            var existing = await _persistenceProvider
+                .GetTimeTickers(x => x.InitIdentifier == initIdentifier, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (existing is { Length: > 0 })
+                return new TickerResult<TTimeTicker>(existing[0]);
+
+            entity.InitIdentifier = initIdentifier;
+            return await AddTimeTickerAsync(entity, cancellationToken).ConfigureAwait(false);
+        }
+
         Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.UpdateAsync(TCronTicker cronTicker, CancellationToken cancellationToken)
             => UpdateCronTickerAsync(cronTicker, cancellationToken);
 
@@ -148,7 +165,10 @@ namespace TickerQ.Utilities.Managers
                     {
                         var contexts = BuildImmediateContextsFromNonGeneric(acquired);
                         CacheFunctionReferences(contexts.AsSpan());
-                        await _dispatcher.DispatchAsync(contexts, cancellationToken).ConfigureAwait(false);
+                        // CancellationToken.None on purpose: the caller's token is often an HTTP
+                        // request's — the dispatched job (and its terminal status write)
+                        // must outlive the request that scheduled it.
+                        await _dispatcher.DispatchAsync(contexts, CancellationToken.None).ConfigureAwait(false);
                     }
                 }
                 else
@@ -188,7 +208,7 @@ namespace TickerQ.Utilities.Managers
 
                 _tickerQHostScheduler.RestartIfNeeded(nextOccurrence);
 
-                await _notificationHubSender.AddCronTickerNotifyAsync(entity);
+                await _notificationHubSender.AddCronTickerNotifyAsync(entity.Id);
 
                 return new TickerResult<TCronTicker>(entity);
             }
@@ -335,6 +355,7 @@ namespace TickerQ.Utilities.Managers
                 Type = Enums.TickerType.TimeTicker,
                 Retries = ticker.Retries,
                 RetryIntervals = ticker.RetryIntervals,
+                TimeoutSeconds = ticker.TimeoutSeconds,
                 ParentId = ticker.ParentId,
                 ExecutionTime = ticker.ExecutionTime ?? DateTime.UtcNow,
                 RunCondition = ticker.RunCondition ?? Enums.RunCondition.OnAnyCompletedStatus,
@@ -390,7 +411,10 @@ namespace TickerQ.Utilities.Managers
                     {
                         var contexts = BuildImmediateContextsFromNonGeneric(acquired);
                         CacheFunctionReferences(contexts.AsSpan());
-                        await _dispatcher.DispatchAsync(contexts, cancellationToken).ConfigureAwait(false);
+                        // CancellationToken.None on purpose: the caller's token is often an HTTP
+                        // request's — the dispatched job (and its terminal status write)
+                        // must outlive the request that scheduled it.
+                        await _dispatcher.DispatchAsync(contexts, CancellationToken.None).ConfigureAwait(false);
                     }
                 }
 
@@ -453,7 +477,7 @@ namespace TickerQ.Utilities.Managers
                     // Send notifications for all
                     foreach (var entity in validEntities)
                     {
-                        await _notificationHubSender.AddCronTickerNotifyAsync(entity);
+                        await _notificationHubSender.AddCronTickerNotifyAsync(entity.Id);
                     }
                 }
 

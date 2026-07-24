@@ -19,15 +19,18 @@ namespace TickerQ.Utilities.Managers
         private readonly ITickerPersistenceProvider<TTimeTicker, TCronTicker> _persistenceProvider;
         private readonly ITickerClock _clock;
         private readonly ITickerQNotificationHubSender _notificationHubSender;
+        private readonly SchedulerOptionsBuilder _schedulerOptions;
 
         public InternalTickerManager(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerClock clock,
-            ITickerQNotificationHubSender notificationHubSender)
+            ITickerQNotificationHubSender notificationHubSender,
+            SchedulerOptionsBuilder schedulerOptions)
         {
             _persistenceProvider = persistenceProvider;
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _notificationHubSender = notificationHubSender;
+            _schedulerOptions = schedulerOptions;
         }
         
         public async Task<(TimeSpan TimeRemaining, InternalFunctionContext[] Functions)> GetNextTickers(CancellationToken cancellationToken = default)
@@ -137,6 +140,7 @@ namespace TickerQ.Utilities.Managers
                     Type = TickerType.TimeTicker,
                     Retries = updatedTimeTicker.Retries,
                     RetryIntervals = updatedTimeTicker.RetryIntervals,
+                    TimeoutSeconds = updatedTimeTicker.TimeoutSeconds,
                     ParentId = updatedTimeTicker.ParentId,
                     ExecutionTime = updatedTimeTicker.ExecutionTime ?? _clock.UtcNow,
                     TimeTickerChildren = updatedTimeTicker.Children.Select(ch => new InternalFunctionContext
@@ -146,6 +150,7 @@ namespace TickerQ.Utilities.Managers
                         Type = TickerType.TimeTicker,
                         Retries = ch.Retries,
                         RetryIntervals = ch.RetryIntervals,
+                        TimeoutSeconds = ch.TimeoutSeconds,
                         ParentId = ch.ParentId,
                         RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus,
                         TimeTickerChildren = ch.Children.Select(gch => new InternalFunctionContext
@@ -155,13 +160,14 @@ namespace TickerQ.Utilities.Managers
                             Type = TickerType.TimeTicker,
                             Retries = gch.Retries,
                             RetryIntervals = gch.RetryIntervals,
+                            TimeoutSeconds = gch.TimeoutSeconds,
                             ParentId = gch.ParentId,
                             RunCondition = gch.RunCondition ?? RunCondition.OnAnyCompletedStatus
                         }).ToList()
                     }).ToList()
                 });
 
-                await _notificationHubSender.UpdateTimeTickerNotifyAsync(updatedTimeTicker);
+                await _notificationHubSender.UpdateTimeTickerNotifyAsync(updatedTimeTicker.Id);
             }
 
             return results.ToArray();
@@ -181,13 +187,14 @@ namespace TickerQ.Utilities.Managers
                     Type = TickerType.CronTickerOccurrence,
                     Retries = occurrence.CronTicker.Retries,
                     RetryIntervals = occurrence.CronTicker.RetryIntervals,
+                    TimeoutSeconds = occurrence.CronTicker.TimeoutSeconds,
                     ExecutionTime = occurrence.ExecutionTime
                 });
                 
                 if (occurrence.CreatedAt == occurrence.UpdatedAt && _notificationHubSender != null)
-                    await _notificationHubSender.AddCronOccurrenceAsync(occurrence.CronTickerId, occurrence).ConfigureAwait(false);
+                    await _notificationHubSender.AddCronOccurrenceAsync(occurrence.CronTickerId, occurrence.Id).ConfigureAwait(false);
                 else if(_notificationHubSender != null)
-                    await _notificationHubSender.UpdateCronOccurrenceAsync(occurrence.CronTickerId, occurrence).ConfigureAwait(false);
+                    await _notificationHubSender.UpdateCronOccurrenceAsync(occurrence.CronTickerId, occurrence.Id).ConfigureAwait(false);
             }
             
             return results.ToArray();
@@ -234,8 +241,9 @@ namespace TickerQ.Utilities.Managers
                         Expression = cronTicker.Expression,
                         Retries = cronTicker.Retries,
                         RetryIntervals = cronTicker.RetryIntervals,
+                        TimeoutSeconds = cronTicker.TimeoutSeconds,
                     };
-                    
+
                     ties = null;
                 }
                 else if (n == min)
@@ -247,6 +255,7 @@ namespace TickerQ.Utilities.Managers
                         Expression = cronTicker.Expression,
                         Retries = cronTicker.Retries,
                         RetryIntervals = cronTicker.RetryIntervals,
+                        TimeoutSeconds = cronTicker.TimeoutSeconds,
                     });
                 }
             }
@@ -261,6 +270,7 @@ namespace TickerQ.Utilities.Managers
                     Expression = earliestStored.CronTicker.Expression,
                     Retries = earliestStored.CronTicker.Retries,
                     RetryIntervals = earliestStored.CronTicker.RetryIntervals,
+                    TimeoutSeconds = earliestStored.CronTicker.TimeoutSeconds,
                     NextCronOccurrence = new NextCronOccurrence(earliestStored.Id, earliestStored.CreatedAt)
                 };
 
@@ -421,6 +431,7 @@ namespace TickerQ.Utilities.Managers
                     Type = TickerType.TimeTicker,
                     Retries = timedOutTimeTicker.Retries,
                     RetryIntervals = timedOutTimeTicker.RetryIntervals,
+                    TimeoutSeconds = timedOutTimeTicker.TimeoutSeconds,
                     ParentId = timedOutTimeTicker.ParentId,
                     ExecutionTime = timedOutTimeTicker.ExecutionTime ?? _clock.UtcNow,
                     TimeTickerChildren = timedOutTimeTicker.Children.Select(ch => new InternalFunctionContext
@@ -430,6 +441,7 @@ namespace TickerQ.Utilities.Managers
                         Type = TickerType.TimeTicker,
                         Retries = ch.Retries,
                         RetryIntervals = ch.RetryIntervals,
+                        TimeoutSeconds = ch.TimeoutSeconds,
                         ParentId = ch.ParentId,
                         RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus,
                         TimeTickerChildren = ch.Children.Select(gch => new InternalFunctionContext
@@ -439,13 +451,14 @@ namespace TickerQ.Utilities.Managers
                             Type = TickerType.TimeTicker,
                             Retries = gch.Retries,
                             RetryIntervals = gch.RetryIntervals,
+                            TimeoutSeconds = gch.TimeoutSeconds,
                             ParentId = gch.ParentId,
                             RunCondition = gch.RunCondition ?? RunCondition.OnAnyCompletedStatus
                         }).ToList()
                     }).ToList()
                 });
 
-                await _notificationHubSender.UpdateTimeTickerNotifyAsync(timedOutTimeTicker).ConfigureAwait(false);
+                await _notificationHubSender.UpdateTimeTickerNotifyAsync(timedOutTimeTicker.Id).ConfigureAwait(false);
             }
 
             await foreach (var timedOutCronTicker in _persistenceProvider.QueueTimedOutCronTickerOccurrences(cancellationToken).ConfigureAwait(false))
@@ -457,6 +470,7 @@ namespace TickerQ.Utilities.Managers
                     Type = TickerType.CronTickerOccurrence,
                     Retries = timedOutCronTicker.CronTicker.Retries,
                     RetryIntervals = timedOutCronTicker.CronTicker.RetryIntervals,
+                    TimeoutSeconds = timedOutCronTicker.CronTicker.TimeoutSeconds,
                     ParentId = timedOutCronTicker.CronTickerId,
                     ExecutionTime = timedOutCronTicker.ExecutionTime
                 };
@@ -485,10 +499,41 @@ namespace TickerQ.Utilities.Managers
         public async Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default)
         {
             var cronOccurrence = _persistenceProvider.ReleaseDeadNodeOccurrenceResources(instanceIdentifier, cancellationToken);
-            
+
             var timeTickers = _persistenceProvider.ReleaseDeadNodeTimeTickerResources(instanceIdentifier, cancellationToken);
-            
+
             await Task.WhenAll(cronOccurrence, timeTickers).ConfigureAwait(false);
         }
+
+        public async Task<int> RenewActiveTickerLeasesAsync(Guid[] timeTickerIds, Guid[] occurrenceIds, CancellationToken cancellationToken = default)
+        {
+            var leaseUntil = _clock.UtcNow.Add(_schedulerOptions.LeaseDuration);
+            var renewed = 0;
+
+            if (timeTickerIds is { Length: > 0 })
+                renewed += await _persistenceProvider.RenewTimeTickerLeases(timeTickerIds, leaseUntil, cancellationToken).ConfigureAwait(false);
+
+            if (occurrenceIds is { Length: > 0 })
+                renewed += await _persistenceProvider.RenewCronTickerOccurrenceLeases(occurrenceIds, leaseUntil, cancellationToken).ConfigureAwait(false);
+
+            return renewed;
+        }
+
+        public async Task<Guid[]> GetLostLeaseTickerIdsAsync(Guid[] timeTickerIds, Guid[] occurrenceIds, CancellationToken cancellationToken = default)
+        {
+            var held = await _persistenceProvider.GetStillHeldTickerIds(timeTickerIds, occurrenceIds, cancellationToken).ConfigureAwait(false);
+            var heldSet = new HashSet<Guid>(held);
+
+            var lost = new List<Guid>();
+            if (timeTickerIds != null)
+                lost.AddRange(timeTickerIds.Where(id => !heldSet.Contains(id)));
+            if (occurrenceIds != null)
+                lost.AddRange(occurrenceIds.Where(id => !heldSet.Contains(id)));
+
+            return lost.ToArray();
+        }
+
+        public async Task<StaleTickerRecoveryResult> RecoverStaleTickersAsync(CancellationToken cancellationToken = default)
+            => await _persistenceProvider.RecoverStaleTickers(_schedulerOptions.MaxStaleRestarts, cancellationToken).ConfigureAwait(false);
     }
 }

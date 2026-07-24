@@ -52,6 +52,11 @@ internal sealed class TickerQInitializerHostedService : IHostedService
         TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(_configuration);
         TickerFunctionProvider.Build();
 
+        // Persistence bootstrap (e.g. EF Core AutoMigrateDatabase) runs before any
+        // seeding or scheduling query touches the store.
+        foreach (var bootstrapper in _serviceProvider.GetServices<Utilities.Interfaces.ITickerQPersistenceBootstrapper>())
+            await bootstrapper.BootstrapAsync(cancellationToken);
+
         var options = _executionContext.OptionsSeeding;
 
         if (options == null || options.SeedDefinedCronTickers)

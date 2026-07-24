@@ -2,6 +2,7 @@ using System;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using TickerQ.BackgroundServices;
 using TickerQ.Dispatcher;
 using TickerQ.Provider;
@@ -57,6 +58,13 @@ namespace TickerQ.DependencyInjection
             // Only register background services if enabled (default is true)
             if (optionInstance.RegisterBackgroundServices)
             {
+                // Registered BEFORE the scheduler service on purpose: hosted services
+                // stop in reverse registration order, so the lease renewal loop stays
+                // alive while the scheduler's StopAsync drains in-flight executions —
+                // a long drain must not let running jobs go stale mid-shutdown.
+                if (schedulerOptionsBuilder.StaleJobRecoveryEnabled)
+                    services.AddHostedService<TickerQStaleJobRecoveryBackgroundService>();
+
                 services.AddSingleton<TickerQSchedulerBackgroundService>();
                 services.AddSingleton<ITickerQHostScheduler>(provider =>
                     provider.GetRequiredService<TickerQSchedulerBackgroundService>());
@@ -82,6 +90,10 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerFunctionConcurrencyGate, TickerFunctionConcurrencyGate>();
             services.AddSingleton<ITickerExecutionTaskHandler, TickerExecutionTaskHandler>();
             services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
+            // In-process function log capture: ILogger lines emitted inside a ticker
+            // execution land in a bounded in-memory store the dashboard's log tail reads.
+            services.AddSingleton<ITickerExecutionLogStore, InMemoryTickerExecutionLogStore>();
+            services.TryAddEnumerable(ServiceDescriptor.Singleton<ILoggerProvider, TickerExecutionLoggerProvider>());
             services.AddSingleton<ITickerDashboardDataService<TTimeTicker, TCronTicker>, TickerDashboardDataService<TTimeTicker, TCronTicker>>();
 
             optionInstance.ExternalProviderConfigServiceAction?.Invoke(services);
@@ -94,6 +106,16 @@ namespace TickerQ.DependencyInjection
 
             if (optionInstance.TickerExceptionHandlerType != null)
                 services.AddSingleton(typeof(ITickerExceptionHandler), optionInstance.TickerExceptionHandlerType);
+
+            // Failure notifications: built-in webhook when configured, else no-op.
+            // TryAdd lets users register their own ITickerQFailureNotifier beforehand.
+            if (optionInstance.FailureWebhook != null)
+            {
+                services.AddSingleton(new WebhookFailureNotifier(optionInstance.FailureWebhook));
+                services.TryAddSingleton<ITickerQFailureNotifier>(sp => sp.GetRequiredService<WebhookFailureNotifier>());
+                services.AddHostedService<TickerQWebhookNotifierBackgroundService>();
+            }
+            services.TryAddSingleton<ITickerQFailureNotifier, NoOpTickerQFailureNotifier>();
 
             services.AddSingleton(_ => optionInstance);
             services.AddSingleton(_ => tickerExecutionContext);
@@ -141,7 +163,7 @@ namespace TickerQ.DependencyInjection
                         tickerExecutionContext.LastHostExceptionMessage = (string)value;
                     }
                     else if (type == CoreNotifyActionType.NotifyNextOccurence)
-                        notificationHubSender.UpdateNextOccurrence(value is DateTime dt ? (DateTime?)dt : null);
+                        notificationHubSender.UpdateNextOccurrence(value is DateTime dt ? dt : null);
                     else if (type == CoreNotifyActionType.NotifyHostStatus)
                         notificationHubSender.UpdateHostStatus(value is bool b && b);
                     else if (type == CoreNotifyActionType.NotifyThreadCount)

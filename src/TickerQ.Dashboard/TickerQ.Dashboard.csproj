@@ -24,7 +24,15 @@
         <FrameworkReference Include="Microsoft.AspNetCore.App" />
     </ItemGroup>
     <ItemGroup>
-        <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+        <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
+    </ItemGroup>
+
+    <!-- AI assistant (optional feature). The tool-invocation loop is
+         reflection-based, so it is not trim/AOT-clean; the warnings are scoped
+         to the assistant code paths and only matter when a customer both
+         AOT-compiles AND wires up AddAssistant(...). -->
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.AI" Version="10.5.1" />
     </ItemGroup>
 
     <!-- Prevent static web asset discovery -->

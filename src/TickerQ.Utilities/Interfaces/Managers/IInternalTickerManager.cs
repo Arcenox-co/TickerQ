@@ -21,5 +21,11 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         Task UpdateSkipTimeTickersWithUnifiedContextAsync(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
         Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default);
+        /// <summary>Renews leases for this node's running tickers; returns the renewed count.</summary>
+        Task<int> RenewActiveTickerLeasesAsync(Guid[] timeTickerIds, Guid[] occurrenceIds, CancellationToken cancellationToken = default);
+        /// <summary>Of the given running ids, returns those this node no longer holds (lease was lost).</summary>
+        Task<Guid[]> GetLostLeaseTickerIdsAsync(Guid[] timeTickerIds, Guid[] occurrenceIds, CancellationToken cancellationToken = default);
+        /// <summary>One watchdog sweep: applies OnStale to expired-lease InProgress tickers.</summary>
+        Task<StaleTickerRecoveryResult> RecoverStaleTickersAsync(CancellationToken cancellationToken = default);
     }
 }

@@ -18,18 +18,29 @@ namespace TickerQ.EntityFrameworkCore.Customizer
         public override void Customize(ModelBuilder builder, DbContext context)
         {
             string schema;
+            AssistantHistoryOptions assistantHistory;
             try
             {
-                schema = context.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>()?.Schema ?? Constants.DefaultSchema;
+                var optionBuilder = context.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>();
+                schema = optionBuilder?.Schema ?? Constants.DefaultSchema;
+                assistantHistory = optionBuilder?.AssistantHistory ?? AssistantHistoryOptions.Current;
             }
             catch (InvalidOperationException)
             {
                 schema = Constants.DefaultSchema;
+                assistantHistory = AssistantHistoryOptions.Current;
             }
 
             builder.ApplyConfiguration(new TimeTickerConfigurations<TTimeTicker>(schema));
             builder.ApplyConfiguration(new CronTickerConfigurations<TCronTicker>(schema));
             builder.ApplyConfiguration(new CronTickerOccurrenceConfigurations<TCronTicker>(schema));
+
+            // Opt-in assistant chat history tables (AddAssistantHistory()).
+            if (assistantHistory != null)
+            {
+                builder.ApplyConfiguration(new AssistantConversationConfigurations(schema));
+                builder.ApplyConfiguration(new AssistantMessageConfigurations(schema));
+            }
 
             base.Customize(builder, context);
         }

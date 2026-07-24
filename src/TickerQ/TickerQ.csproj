@@ -14,7 +14,7 @@
     </ItemGroup>
 
    <ItemGroup>
-       <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+       <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
    </ItemGroup>
 
     <Target Name="CopyAnalyzer" AfterTargets="Build">

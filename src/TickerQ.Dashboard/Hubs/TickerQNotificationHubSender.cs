@@ -10,56 +10,55 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Dashboard.Hubs
 {
+    /// <summary>
+    /// Pushes "something changed" hints (id-only) over SignalR. Clients use the
+    /// hint to invalidate their React Query cache and refetch via REST — the
+    /// authoritative shape. We never broadcast full entity bytes here: lists are
+    /// server-paginated/sorted, so clients can't apply a pushed row locally
+    /// without re-running the same query anyway.
+    /// </summary>
     internal class TickerQNotificationHubSender : ITickerQNotificationHubSender
     {
         private readonly IHubContext<TickerQNotificationHub> _hubContext;
         private readonly Timer _timeTickerUpdateTimer;
         private int _hasPendingTimeTickerUpdate;
         private static readonly TimeSpan TimeTickerUpdateDebounce = TimeSpan.FromMilliseconds(100);
-        
+
         public TickerQNotificationHubSender(IHubContext<TickerQNotificationHub> hubContext)
         {
             _hubContext = hubContext ?? throw new ArgumentNullException(nameof(hubContext));
             _timeTickerUpdateTimer = new Timer(TimeTickerUpdateCallback, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         }
 
-        public async Task AddCronTickerNotifyAsync(object cronTicker)
-        {
-            var json = JsonSerializer.SerializeToElement((CronTickerEntity)cronTicker, DashboardJsonSerializerContext.Default.CronTickerEntity);
-            await _hubContext.Clients.All.SendAsync("AddCronTickerNotification", json);
-        }
+        public Task AddCronTickerNotifyAsync(Guid id)
+            => _hubContext.Clients.All.SendAsync("AddCronTickerNotification", id);
 
-        public async Task UpdateCronTickerNotifyAsync(object cronTicker)
-        {
-            var json = JsonSerializer.SerializeToElement((CronTickerEntity)cronTicker, DashboardJsonSerializerContext.Default.CronTickerEntity);
-            await _hubContext.Clients.All.SendAsync("UpdateCronTickerNotification", json);
-        }
+        public Task UpdateCronTickerNotifyAsync(Guid id)
+            => _hubContext.Clients.All.SendAsync("UpdateCronTickerNotification", id);
 
-        public async Task RemoveCronTickerNotifyAsync(Guid id)
-        {
-            await _hubContext.Clients.All.SendAsync("RemoveCronTickerNotification", id);
-        }
+        public Task RemoveCronTickerNotifyAsync(Guid id)
+            => _hubContext.Clients.All.SendAsync("RemoveCronTickerNotification", id);
 
-        public async Task AddTimeTickerNotifyAsync(Guid id)
-        {
-            await _hubContext.Clients.All.SendAsync("AddTimeTickerNotification", id);
-        }
-        
-        public async Task AddTimeTickersBatchNotifyAsync()
-        {
-            await _hubContext.Clients.All.SendAsync("AddTimeTickersBatchNotification");
-        }
+        public Task AddTimeTickerNotifyAsync(Guid id)
+            => _hubContext.Clients.All.SendAsync("AddTimeTickerNotification", id);
 
-        public async Task UpdateTimeTickerNotifyAsync(object timeTicker)
-        {
-            var json = JsonSerializer.SerializeToElement((TimeTickerEntity)timeTicker, DashboardJsonSerializerContext.Default.TimeTickerEntity);
-            await _hubContext.Clients.All.SendAsync("UpdateTimeTickerNotification", json);
-        }
+        public Task AddTimeTickersBatchNotifyAsync()
+            => _hubContext.Clients.All.SendAsync("AddTimeTickersBatchNotification");
 
-        public async Task RemoveTimeTickerNotifyAsync(Guid id)
-        {
-            await _hubContext.Clients.All.SendAsync("RemoveTimeTickerNotification", id);
-        }
+        public Task UpdateTimeTickerNotifyAsync(Guid id)
+            => _hubContext.Clients.All.SendAsync("UpdateTimeTickerNotification", id);
+
+        public Task RemoveTimeTickerNotifyAsync(Guid id)
+            => _hubContext.Clients.All.SendAsync("RemoveTimeTickerNotification", id);
+
+        public Task CanceledTickerNotifyAsync(Guid id)
+            => _hubContext.Clients.All.SendAsync("CanceledTickerNotification", id);
+
+        public Task AddCronOccurrenceAsync(Guid groupId, Guid occurrenceId)
+            => _hubContext.Clients.Group(groupId.ToString()).SendAsync("AddCronOccurrenceNotification", occurrenceId);
+
+        public Task UpdateCronOccurrenceAsync(Guid groupId, Guid occurrenceId)
+            => _hubContext.Clients.Group(groupId.ToString()).SendAsync("UpdateCronOccurrenceNotification", occurrenceId);
 
         public void UpdateActiveThreads(string activeThreads)
         {
@@ -88,27 +87,15 @@ namespace TickerQ.Dashboard.Hubs
             _ = _hubContext.Clients.All.SendAsync("UpdateHostExceptionNotification", json);
         }
 
-        public async Task UpdateNodeHeartBeatAsync(JsonElement nodeHeartBeat)
-        {
-            await _hubContext.Clients.All.SendAsync("UpdateNodeHeartBeat", nodeHeartBeat);
-        }
-
-        public async Task AddCronOccurrenceAsync(Guid groupId, object occurrence)
-        {
-            var json = JsonSerializer.SerializeToElement((CronTickerOccurrenceEntity<CronTickerEntity>)occurrence, DashboardJsonSerializerContext.Default.CronTickerOccurrenceEntityCronTickerEntity);
-            await _hubContext.Clients.Group(groupId.ToString()).SendAsync("AddCronOccurrenceNotification", json);
-        }
-
-        public async Task UpdateCronOccurrenceAsync(Guid groupId, object occurrence)
-        {
-            var json = JsonSerializer.SerializeToElement((CronTickerOccurrenceEntity<CronTickerEntity>)occurrence, DashboardJsonSerializerContext.Default.CronTickerOccurrenceEntityCronTickerEntity);
-            await _hubContext.Clients.Group(groupId.ToString()).SendAsync("UpdateCronOccurrenceNotification", json);
-        }
+        public Task UpdateNodeHeartBeatAsync(JsonElement nodeHeartBeat)
+            => _hubContext.Clients.All.SendAsync("UpdateNodeHeartBeat", nodeHeartBeat);
 
         public Task UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(InternalFunctionContext internalFunctionContext)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         {
-            // Debounce high-frequency updates into a single notification
+            // Debounce high-frequency status transitions (queued → in-progress →
+            // done) into one zero-payload broadcast every 100ms. The dashboard
+            // refetches the whole list once instead of being hammered.
             if (Interlocked.Exchange(ref _hasPendingTimeTickerUpdate, 1) == 0)
             {
                 _timeTickerUpdateTimer.Change(TimeTickerUpdateDebounce, Timeout.InfiniteTimeSpan);
@@ -117,7 +104,7 @@ namespace TickerQ.Dashboard.Hubs
             return Task.CompletedTask;
         }
 
-        private void TimeTickerUpdateCallback(object _)
+        private void TimeTickerUpdateCallback(object? _)
         {
             if (Interlocked.Exchange(ref _hasPendingTimeTickerUpdate, 0) == 0)
                 return;
@@ -128,28 +115,17 @@ namespace TickerQ.Dashboard.Hubs
         public Task UpdateCronOccurrenceFromInternalFunctionContext<TCronTicker>(InternalFunctionContext internalFunctionContext)
             where TCronTicker : CronTickerEntity, new()
         {
-            var updatePayload = new CronOccurrenceUpdateNotification
-            {
-                Id = internalFunctionContext.TickerId,
-                Status = internalFunctionContext.Status,
-                CronTickerId = internalFunctionContext.ParentId,
-                ExecutedAt = internalFunctionContext.ExecutedAt,
-                ElapsedTime = internalFunctionContext.ElapsedTime,
-                RetryCount = internalFunctionContext.RetryCount,
-                ExceptionMessage = internalFunctionContext.ExceptionDetails
-            };
+            // Status-transition hint for a cron occurrence. Group-scoped — only
+            // the cron-detail page subscribed via JoinGroup(cronTickerId) sees
+            // it. Skip silently if we don't know which cron this belongs to:
+            // there are no subscribers to "" and the dashboard polling
+            // fallbacks will catch it.
+            if (internalFunctionContext.ParentId is not { } parentId)
+                return Task.CompletedTask;
 
-            var json = JsonSerializer.SerializeToElement(updatePayload, DashboardJsonSerializerContext.Default.CronOccurrenceUpdateNotification);
-            _ = _hubContext.Clients
-                .Group(internalFunctionContext.ParentId?.ToString() ?? string.Empty)
-                .SendAsync("UpdateCronOccurrenceNotification", json);
-
-            return Task.CompletedTask;
-        }
-
-        public async Task CanceledTickerNotifyAsync(Guid id)
-        {
-            await _hubContext.Clients.All.SendAsync("CanceledTickerNotification", id);
+            return _hubContext.Clients
+                .Group(parentId.ToString())
+                .SendAsync("UpdateCronOccurrenceNotification", internalFunctionContext.TickerId);
         }
     }
 }

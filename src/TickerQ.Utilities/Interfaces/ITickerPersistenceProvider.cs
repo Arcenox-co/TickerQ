@@ -40,6 +40,32 @@ namespace TickerQ.Utilities.Interfaces
         Task ReleaseDeadNodeOccurrenceResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default) => Task.FromResult(0);
         #endregion
+
+        #region Stale_Job_Recovery
+        // Default implementations keep external providers (e.g. Redis) compiling;
+        // they opt in by overriding. Renewals return the number of rows actually
+        // renewed so the caller can detect lost leases (fewer than requested).
+        Task<int> RenewTimeTickerLeases(Guid[] timeTickerIds, DateTime leaseUntil, CancellationToken cancellationToken = default)
+            => Task.FromResult(timeTickerIds?.Length ?? 0);
+        Task<int> RenewCronTickerOccurrenceLeases(Guid[] occurrenceIds, DateTime leaseUntil, CancellationToken cancellationToken = default)
+            => Task.FromResult(occurrenceIds?.Length ?? 0);
+        /// <summary>Of the given ids, returns those still held (InProgress + locked) by this node.</summary>
+        Task<Guid[]> GetStillHeldTickerIds(Guid[] timeTickerIds, Guid[] occurrenceIds, CancellationToken cancellationToken = default)
+        {
+            var all = new List<Guid>((timeTickerIds?.Length ?? 0) + (occurrenceIds?.Length ?? 0));
+            if (timeTickerIds != null) all.AddRange(timeTickerIds);
+            if (occurrenceIds != null) all.AddRange(occurrenceIds);
+            return Task.FromResult(all.ToArray());
+        }
+        /// <summary>
+        /// Applies the OnStale policy to InProgress tickers whose lease expired:
+        /// Restart (bounded by <paramref name="maxStaleRestarts"/>) resets them to
+        /// Idle for re-acquisition; Cancel (or exhausted restarts) marks them
+        /// Cancelled with a stale reason.
+        /// </summary>
+        Task<StaleTickerRecoveryResult> RecoverStaleTickers(int maxStaleRestarts, CancellationToken cancellationToken = default)
+            => Task.FromResult(new StaleTickerRecoveryResult());
+        #endregion
         
         #region Queryable
         ITickerQueryable<TTimeTicker> TimeTickersQuery();

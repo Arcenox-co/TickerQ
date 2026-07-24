@@ -20,6 +20,7 @@ public abstract class TickerQBaseLoggerInstrumentation
 
     public virtual void LogJobEnqueued(string jobType, string functionName, Guid jobId, string enqueuedFrom = null)
     {
+        TickerQMetrics.JobsEnqueued.Add(1, TickerQMetrics.FunctionTag(functionName));
         _logger.LogInformation("TickerQ Job enqueued: {JobType} - {Function} ({JobId}) from {EnqueuedFrom}",
             jobType, functionName, jobId, enqueuedFrom ?? "Unknown");
     }
@@ -32,12 +33,17 @@ public abstract class TickerQBaseLoggerInstrumentation
 
     public virtual void LogJobCompleted(Guid jobId, string functionName, long executionTimeMs, bool success)
     {
+        TickerQMetrics.JobsCompleted.Add(1, TickerQMetrics.FunctionTag(functionName),
+            new System.Collections.Generic.KeyValuePair<string, object>("tickerq.success", success));
+        TickerQMetrics.JobDuration.Record(executionTimeMs, TickerQMetrics.FunctionTag(functionName),
+            new System.Collections.Generic.KeyValuePair<string, object>("tickerq.success", success));
         _logger.LogInformation("TickerQ Job completed: {Function} ({JobId}) in {ExecutionTime}ms - Success: {Success}",
             functionName, jobId, executionTimeMs, success);
     }
 
     public virtual void LogJobFailed(Guid jobId, string functionName, Exception exception, int retryCount)
     {
+        TickerQMetrics.JobsFailed.Add(1, TickerQMetrics.FunctionTag(functionName));
         _logger.LogError(exception, "TickerQ Job failed: {Function} ({JobId}) - Retry {RetryCount} - {Error}",
             functionName, jobId, retryCount, exception.Message);
     }
@@ -61,18 +67,21 @@ public abstract class TickerQBaseLoggerInstrumentation
 
     public virtual void LogJobRetryScheduled(Guid jobId, string functionName, int nextAttempt, int maxRetries, int intervalSeconds)
     {
+        TickerQMetrics.JobsRetried.Add(1, TickerQMetrics.FunctionTag(functionName));
         _logger.LogWarning("Retrying in {IntervalSeconds}s (retry {NextAttempt} of {MaxRetries})…",
             intervalSeconds, nextAttempt, maxRetries);
     }
 
     public virtual void LogJobCancelled(Guid jobId, string functionName, string reason)
     {
+        TickerQMetrics.JobsCancelled.Add(1, TickerQMetrics.FunctionTag(functionName));
         _logger.LogWarning("TickerQ Job cancelled: {Function} ({JobId}) - {Reason}",
             functionName, jobId, reason);
     }
 
     public virtual void LogJobSkipped(Guid jobId, string functionName, string reason)
     {
+        TickerQMetrics.JobsSkipped.Add(1, TickerQMetrics.FunctionTag(functionName));
         _logger.LogInformation("TickerQ Job skipped: {Function} ({JobId}) - {Reason}", functionName, jobId, reason);
     }
     

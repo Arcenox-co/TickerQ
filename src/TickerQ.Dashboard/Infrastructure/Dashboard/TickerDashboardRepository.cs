@@ -449,6 +449,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     Type = TickerType.CronTickerOccurrence,
                     Retries = occurrence.CronTicker.Retries,
                     RetryIntervals = occurrence.CronTicker.RetryIntervals,
+                    TimeoutSeconds = occurrence.CronTicker.TimeoutSeconds,
                     ExecutionTime = occurrence.ExecutionTime
                 };
 
@@ -460,12 +461,14 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
                 }
 
-                await _dispatcher.DispatchAsync([context], cancellationToken).ConfigureAwait(false);
+                // CancellationToken.None on purpose: the job must outlive the HTTP request
+                // that triggered it (see TickerManager immediate dispatch).
+                await _dispatcher.DispatchAsync([context], System.Threading.CancellationToken.None).ConfigureAwait(false);
             }
 
             // Notify dashboard about the new occurrence (prefer the acquired version if available)
             if (_notificationHubSender != null)
-                await _notificationHubSender.AddCronOccurrenceAsync(id, acquiredOccurrence ?? onDemandOccurrence);
+                await _notificationHubSender.AddCronOccurrenceAsync(id, (acquiredOccurrence ?? onDemandOccurrence).Id);
         }
 
         public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetCronTickersOccurrencesAsync(Guid cronTickerId, CancellationToken cancellationToken)
@@ -607,7 +610,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             if (affectedRows > 0)
             {
                 _tickerQHostScheduler.Restart();
-                await _notificationHubSender.UpdateCronTickerNotifyAsync(cronTicker);
+                await _notificationHubSender.UpdateCronTickerNotifyAsync(cronTicker.Id);
             }
 
             return affectedRows > 0;

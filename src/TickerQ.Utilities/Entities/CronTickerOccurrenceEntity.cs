@@ -19,5 +19,14 @@ namespace TickerQ.Utilities.Entities
         public virtual int RetryCount { get; set; }
         public virtual DateTime CreatedAt { get; set; }
         public virtual DateTime UpdatedAt { get; set; }
+        /// <summary>
+        /// Lease expiry for the node currently executing this occurrence. Stamped
+        /// when the occurrence goes InProgress and renewed periodically by the
+        /// running node; an InProgress occurrence whose lease is in the past is
+        /// considered stale. The stale action for occurrences comes from the
+        /// parent <see cref="CronTickerEntity.OnStale"/>.
+        /// </summary>
+        public virtual DateTime? LeaseUntil { get; set; }
+        public virtual int StaleRestartCount { get; set; }
     }
 }

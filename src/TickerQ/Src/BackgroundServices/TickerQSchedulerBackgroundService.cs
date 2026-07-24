@@ -3,6 +3,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
@@ -32,16 +34,22 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         ITickerQTaskScheduler taskScheduler,
         IInternalTickerManager  internalTickerManager,
         SchedulerOptionsBuilder schedulerOptions,
-        ITickerFunctionConcurrencyGate concurrencyGate)
+        ITickerFunctionConcurrencyGate concurrencyGate,
+        ILogger<TickerQSchedulerBackgroundService> logger = null)
     {
         _executionContext = executionContext;
         _taskHandler = taskHandler;
         _taskScheduler = taskScheduler;
         _internalTickerManager = internalTickerManager ?? throw new ArgumentNullException(nameof(internalTickerManager));
         _concurrencyGate = concurrencyGate;
+        _schedulerOptions = schedulerOptions;
+        _logger = logger ?? NullLogger<TickerQSchedulerBackgroundService>.Instance;
         _minPollingInterval = ResolveMinPollingInterval(schedulerOptions);
         _restartThrottle = new RestartThrottleManager(() => _schedulerLoopCancellationTokenSource?.Cancel());
     }
+
+    private readonly SchedulerOptionsBuilder _schedulerOptions;
+    private readonly ILogger<TickerQSchedulerBackgroundService> _logger;
     
     public override Task StartAsync(CancellationToken ct)
     {
@@ -216,6 +224,45 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     {
         _taskScheduler.Freeze();
         Interlocked.Exchange(ref _started, 0);
+
+        // Graceful drain: give in-flight executions (and anything already queued
+        // on the worker pool) a bounded chance to finish before the host exits,
+        // so routine deploys don't rely on stale-job recovery to heal abandoned
+        // rows. Bounded by both ShutdownDrainTimeout and the host's own shutdown
+        // token (HostOptions.ShutdownTimeout).
+        var drainTimeout = _schedulerOptions.ShutdownDrainTimeout;
+        if (drainTimeout > TimeSpan.Zero &&
+            (TickerCancellationTokenManager.ActiveCount > 0 || _taskScheduler.TotalQueuedTasks > 0))
+        {
+            _logger.LogInformation(
+                "Shutdown: draining {Active} in-flight and {Queued} queued ticker(s) for up to {Timeout}s…",
+                TickerCancellationTokenManager.ActiveCount, _taskScheduler.TotalQueuedTasks, drainTimeout.TotalSeconds);
+
+            var deadline = DateTime.UtcNow + drainTimeout;
+            while (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
+            {
+                if (TickerCancellationTokenManager.ActiveCount == 0 && _taskScheduler.TotalQueuedTasks == 0)
+                    break;
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(200), cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+
+            var remaining = TickerCancellationTokenManager.ActiveCount;
+            if (remaining > 0)
+                _logger.LogWarning(
+                    "Shutdown: drain window elapsed with {Remaining} ticker(s) still running — they will be abandoned and healed by stale-job recovery",
+                    remaining);
+            else
+                _logger.LogInformation("Shutdown: all in-flight tickers finished");
+        }
+
         await base.StopAsync(cancellationToken);
     }
 

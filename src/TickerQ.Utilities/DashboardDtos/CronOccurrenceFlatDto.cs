@@ -16,5 +16,9 @@ namespace TickerQ.Utilities.DashboardDtos
         public string SkippedReason { get; set; }
         public DateTime? ExecutedAt { get; set; }
         public DateTime CreatedAt { get; set; }
+        /// <summary>The instance/replica that claimed this occurrence (entity's LockHolder). Null until claimed.</summary>
+        public string LockHolder { get; set; }
+        /// <summary>When the occurrence was claimed (LockHolder set). Null until claimed.</summary>
+        public DateTime? LockedAt { get; set; }
     }
 }
