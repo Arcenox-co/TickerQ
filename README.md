@@ -106,6 +106,20 @@ public class MyService(ITimeTickerManager<TimeTickerEntity> manager)
 
 > **Note:** All packages are versioned together. Always update all packages to the same version.
 
+## Operating TickerQ safely
+
+Running TickerQ across multiple nodes, or exposing the dashboard beyond localhost, has
+contracts worth understanding before you deploy:
+
+- **[Reliability & execution contracts](docs/reliability.md)** — at-least-once execution and
+  lease fencing, `NodeIdentifier` vs. `ExecutionOwnerId`, provider reliability capabilities,
+  cooperative timeout semantics, graceful drain, and run-now/bulk-retry.
+- **[Dashboard security & deployment hardening](docs/security.md)** — explicit CORS
+  allow-lists, trusted forwarded proxies, the anonymous-dashboard opt-in, JWT signing keys,
+  and sliding token-renewal semantics.
+- **[Observability](docs/observability.md)** — OpenTelemetry setup and safe tags, plus the
+  bounded failure-webhook drop metric and reason sanitizer.
+
 ## TickerQ Hub
 
 Centralized scheduling across applications — [hub.tickerq.net](https://hub.tickerq.net)
