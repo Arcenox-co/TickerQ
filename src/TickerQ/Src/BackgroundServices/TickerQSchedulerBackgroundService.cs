@@ -24,7 +24,9 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private readonly ITickerQTaskScheduler  _taskScheduler;
     private readonly ITickerExecutionTaskHandler  _taskHandler;
     private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
+    private readonly SemaphoreSlim _acquisitionPublicationGate = new(1, 1);
     private int _started;
+    private int _stopping;
     public bool SkipFirstRun;
     public bool IsRunning => _started == 1;
 
@@ -61,6 +63,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             return Task.CompletedTask;
         }
         
+        Interlocked.Exchange(ref _stopping, 0);
         _taskScheduler.Resume();
         return Interlocked.CompareExchange(ref _started, 1, 0) != 0 
             ? Task.CompletedTask : base.StartAsync(ct);
@@ -111,12 +114,25 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         {
             if (_executionContext.Functions.Length != 0)
             {
-                var acquired = await _internalTickerManager.SetTickersInProgress(_executionContext.Functions, cancellationToken);
+                await _acquisitionPublicationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (Volatile.Read(ref _stopping) != 0)
+                        return;
 
-                foreach (var function in acquired.OrderBy(x => x.CachedPriority))
-                    QueueAcquiredExecution(function, stoppingToken);
+                    var acquired = await _internalTickerManager
+                        .SetTickersInProgress(_executionContext.Functions, cancellationToken)
+                        .ConfigureAwait(false);
 
-                _executionContext.SetFunctions(null);
+                    foreach (var function in acquired.OrderBy(x => x.CachedPriority))
+                        await QueueAcquiredExecution(function, stoppingToken).ConfigureAwait(false);
+
+                    _executionContext.SetFunctions(null);
+                }
+                finally
+                {
+                    _acquisitionPublicationGate.Release();
+                }
             }
             
             var (timeRemaining, functions) =
@@ -159,7 +175,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     /// queues its execution. The registration is visible from this point until the queued delegate's
     /// finally unregisters it; a queue-publication failure unregisters here instead so nothing leaks.
     /// </summary>
-    private void QueueAcquiredExecution(InternalFunctionContext function, CancellationToken stoppingToken)
+    private async Task QueueAcquiredExecution(InternalFunctionContext function, CancellationToken stoppingToken)
     {
         var semaphore = _concurrencyGate.GetSemaphoreOrNull(function.FunctionName, function.CachedMaxConcurrency);
         var registeredSource = TickerCancellationTokenManager.TryRegisterAcquired(function, isDue: false, stoppingToken);
@@ -170,10 +186,9 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         if (!lifecycle.IsQueued)
             return;
 
-        ValueTask publication;
         try
         {
-            publication = _taskScheduler.QueueAsync(async _ =>
+            await _taskScheduler.QueueAsync(async _ =>
             {
                 if (!lifecycle.TryBeginExecution())
                     return;
@@ -201,35 +216,12 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
                     lifecycle.CompleteExecution();
                 }
-            }, function.CachedPriority, CancellationToken.None);
+            }, function.CachedPriority, CancellationToken.None).ConfigureAwait(false);
         }
         catch
         {
             lifecycle.AbandonIfQueued();
             throw;
-        }
-
-        ObserveQueuePublication(publication, lifecycle);
-    }
-
-    private static void ObserveQueuePublication(ValueTask publication, AcquiredExecutionLifecycle lifecycle)
-    {
-        if (publication.IsCompletedSuccessfully)
-            return;
-
-        _ = AwaitQueuePublicationAsync(publication, lifecycle);
-    }
-
-    private static async Task AwaitQueuePublicationAsync(
-        ValueTask publication, AcquiredExecutionLifecycle lifecycle)
-    {
-        try
-        {
-            await publication.ConfigureAwait(false);
-        }
-        catch
-        {
-            lifecycle.AbandonIfQueued();
         }
     }
 
@@ -332,7 +324,16 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        _taskScheduler.Freeze();
+        Interlocked.Exchange(ref _stopping, 1);
+        await _acquisitionPublicationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _taskScheduler.Freeze();
+        }
+        finally
+        {
+            _acquisitionPublicationGate.Release();
+        }
         Interlocked.Exchange(ref _started, 0);
 
         // Graceful drain: give in-flight executions (and anything already queued
@@ -387,6 +388,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     public override void Dispose()
     {
         _restartThrottle.Dispose();
+        _acquisitionPublicationGate.Dispose();
         base.Dispose();
     }
 }

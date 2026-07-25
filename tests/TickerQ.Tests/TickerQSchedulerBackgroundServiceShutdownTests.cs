@@ -306,6 +306,74 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
         }
     }
 
+    [Fact]
+    public async Task StopAsync_Does_Not_Freeze_During_Acquisition_Publication_Window()
+    {
+        var context = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            Type = TickerType.TimeTicker,
+            FunctionName = "acquisition-window"
+        };
+        _executionContext.SetFunctions([context]);
+
+        var acquisitionCommitted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var returnAcquisition = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _internalManager.SetTickersInProgress(Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                acquisitionCommitted.TrySetResult(true);
+                await returnAcquisition.Task;
+                return [context];
+            });
+
+        var frozen = 0;
+        _taskScheduler.When(x => x.Freeze()).Do(_ => Interlocked.Exchange(ref frozen, 1));
+        _taskScheduler.QueueAsync(
+                Arg.Any<Func<CancellationToken, Task>>(),
+                Arg.Any<TickerTaskPriority>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => Volatile.Read(ref frozen) == 0
+                ? new ValueTask(call.Arg<Func<CancellationToken, Task>>()(CancellationToken.None))
+                : ValueTask.FromException(new InvalidOperationException("Scheduler is frozen")));
+
+        var options = new SchedulerOptionsBuilder
+        {
+            MinPollingInterval = TimeSpan.FromMilliseconds(50),
+            ShutdownDrainTimeout = TimeSpan.FromSeconds(5)
+        };
+        var service = new TickerQSchedulerBackgroundService(
+            _executionContext, _taskHandler, _taskScheduler, _internalManager, options,
+            new TickerFunctionConcurrencyGate());
+
+        await service.StartAsync(CancellationToken.None);
+        Assert.True(await acquisitionCommitted.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        var stopTask = service.StopAsync(CancellationToken.None);
+        try
+        {
+            await Task.Delay(250);
+            Assert.Equal(0, Volatile.Read(ref frozen));
+            Assert.False(stopTask.IsCompleted);
+
+            returnAcquisition.TrySetResult(true);
+            await stopTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await _taskScheduler.Received(1).QueueAsync(
+                Arg.Any<Func<CancellationToken, Task>>(),
+                context.CachedPriority,
+                CancellationToken.None);
+            _taskScheduler.Received(1).Freeze();
+        }
+        finally
+        {
+            returnAcquisition.TrySetResult(true);
+            if (!stopTask.IsCompleted)
+                await stopTask.WaitAsync(TimeSpan.FromSeconds(5));
+            service.Dispose();
+        }
+    }
+
     private static async Task<bool> WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
