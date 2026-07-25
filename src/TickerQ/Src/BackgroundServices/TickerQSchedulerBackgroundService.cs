@@ -10,6 +10,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.BackgroundServices;
 
@@ -110,28 +111,11 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         {
             if (_executionContext.Functions.Length != 0)
             {
-                await _internalTickerManager.SetTickersInProgress(_executionContext.Functions, cancellationToken);
+                var acquired = await _internalTickerManager.SetTickersInProgress(_executionContext.Functions, cancellationToken);
 
-                foreach (var function in _executionContext.Functions.OrderBy(x => x.CachedPriority))
-                {
-                    var semaphore = _concurrencyGate.GetSemaphoreOrNull(function.FunctionName, function.CachedMaxConcurrency);
+                foreach (var function in acquired.OrderBy(x => x.CachedPriority))
+                    QueueAcquiredExecution(function, stoppingToken);
 
-                    _ = _taskScheduler.QueueAsync(async ct =>
-                    {
-                        if (semaphore != null)
-                            await semaphore.WaitAsync(ct).ConfigureAwait(false);
-
-                        try
-                        {
-                            await _taskHandler.ExecuteTaskAsync(function, false, ct).ConfigureAwait(false);
-                        }
-                        finally
-                        {
-                            semaphore?.Release();
-                        }
-                    }, function.CachedPriority, stoppingToken);
-                }
-                
                 _executionContext.SetFunctions(null);
             }
             
@@ -166,6 +150,132 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             }
 
             await Task.Delay(sleepDuration, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Registers an acquired root ticker with the cancellation manager immediately (so lease renewal
+    /// keeps its DB row alive while it waits in the queue and on its concurrency semaphore) and then
+    /// queues its execution. The registration is visible from this point until the queued delegate's
+    /// finally unregisters it; a queue-publication failure unregisters here instead so nothing leaks.
+    /// </summary>
+    private void QueueAcquiredExecution(InternalFunctionContext function, CancellationToken stoppingToken)
+    {
+        var semaphore = _concurrencyGate.GetSemaphoreOrNull(function.FunctionName, function.CachedMaxConcurrency);
+        var registeredSource = TickerCancellationTokenManager.TryRegisterAcquired(function, isDue: false, stoppingToken);
+        if (registeredSource == null)
+            return;
+
+        var lifecycle = new AcquiredExecutionLifecycle(function.TickerId, registeredSource, stoppingToken);
+        if (!lifecycle.IsQueued)
+            return;
+
+        ValueTask publication;
+        try
+        {
+            publication = _taskScheduler.QueueAsync(async _ =>
+            {
+                if (!lifecycle.TryBeginExecution())
+                    return;
+
+                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    stoppingToken, registeredSource.Token);
+
+                var acquiredSemaphore = false;
+                try
+                {
+                    if (semaphore != null)
+                    {
+                        await semaphore.WaitAsync(waitCts.Token).ConfigureAwait(false);
+                        acquiredSemaphore = true;
+                    }
+
+                    await _taskHandler
+                        .ExecuteRegisteredTaskAsync(function, false, registeredSource, waitCts.Token)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    if (acquiredSemaphore)
+                        semaphore.Release();
+
+                    lifecycle.CompleteExecution();
+                }
+            }, function.CachedPriority, CancellationToken.None);
+        }
+        catch
+        {
+            lifecycle.AbandonIfQueued();
+            throw;
+        }
+
+        ObserveQueuePublication(publication, lifecycle);
+    }
+
+    private static void ObserveQueuePublication(ValueTask publication, AcquiredExecutionLifecycle lifecycle)
+    {
+        if (publication.IsCompletedSuccessfully)
+            return;
+
+        _ = AwaitQueuePublicationAsync(publication, lifecycle);
+    }
+
+    private static async Task AwaitQueuePublicationAsync(
+        ValueTask publication, AcquiredExecutionLifecycle lifecycle)
+    {
+        try
+        {
+            await publication.ConfigureAwait(false);
+        }
+        catch
+        {
+            lifecycle.AbandonIfQueued();
+        }
+    }
+
+    private sealed class AcquiredExecutionLifecycle
+    {
+        private readonly Guid _tickerId;
+        private readonly CancellationTokenSource _source;
+        private readonly CancellationTokenRegistration _stoppingRegistration;
+        private int _state; // 0 = queued, 1 = executing, 2 = completed
+
+        internal AcquiredExecutionLifecycle(
+            Guid tickerId, CancellationTokenSource source, CancellationToken stoppingToken)
+        {
+            _tickerId = tickerId;
+            _source = source;
+            _stoppingRegistration = stoppingToken.UnsafeRegister(
+                static state => ((AcquiredExecutionLifecycle)state).RemoveIfQueued(), this);
+        }
+
+        internal bool IsQueued => Volatile.Read(ref _state) == 0;
+
+        internal bool TryBeginExecution()
+            => Interlocked.CompareExchange(ref _state, 1, 0) == 0;
+
+        internal void CompleteExecution()
+        {
+            if (Interlocked.CompareExchange(ref _state, 2, 1) != 1)
+                return;
+
+            _stoppingRegistration.Dispose();
+            TickerCancellationTokenManager.RemoveTickerCancellationToken(_tickerId, _source);
+        }
+
+        internal void AbandonIfQueued()
+        {
+            if (Interlocked.CompareExchange(ref _state, 2, 0) != 0)
+                return;
+
+            _stoppingRegistration.Dispose();
+            TickerCancellationTokenManager.RemoveTickerCancellationToken(_tickerId, _source);
+        }
+
+        private void RemoveIfQueued()
+        {
+            if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+                TickerCancellationTokenManager.RemoveTickerCancellationToken(_tickerId, _source);
         }
     }
 
@@ -232,21 +342,27 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         // token (HostOptions.ShutdownTimeout).
         var drainTimeout = _schedulerOptions.ShutdownDrainTimeout;
         if (drainTimeout > TimeSpan.Zero &&
-            (TickerCancellationTokenManager.ActiveCount > 0 || _taskScheduler.TotalQueuedTasks > 0))
+            (TickerCancellationTokenManager.ActiveCount > 0 ||
+             _taskScheduler.TotalQueuedTasks > 0 ||
+             _taskScheduler.ActiveExecutionCount > 0))
         {
             _logger.LogInformation(
-                "Shutdown: draining {Active} in-flight and {Queued} queued ticker(s) for up to {Timeout}s…",
-                TickerCancellationTokenManager.ActiveCount, _taskScheduler.TotalQueuedTasks, drainTimeout.TotalSeconds);
+                "Shutdown: draining {Active} in-flight and {Queued} queued ticker(s) (acquired window: {Acquired}) for up to {Timeout}s…",
+                _taskScheduler.ActiveExecutionCount, _taskScheduler.TotalQueuedTasks,
+                TickerCancellationTokenManager.ActiveCount, drainTimeout.TotalSeconds);
 
             var deadline = DateTime.UtcNow + drainTimeout;
             while (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
             {
-                if (TickerCancellationTokenManager.ActiveCount == 0 && _taskScheduler.TotalQueuedTasks == 0)
+                if (TickerCancellationTokenManager.ActiveCount == 0 &&
+                    _taskScheduler.TotalQueuedTasks == 0 &&
+                    _taskScheduler.ActiveExecutionCount == 0)
                     break;
 
                 try
                 {
-                    await Task.Delay(TimeSpan.FromMilliseconds(200), cancellationToken);
+                    await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken)
+                        .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -254,11 +370,13 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 }
             }
 
-            var remaining = TickerCancellationTokenManager.ActiveCount;
-            if (remaining > 0)
+            var acquired = TickerCancellationTokenManager.ActiveCount;
+            var queued = _taskScheduler.TotalQueuedTasks;
+            var active = _taskScheduler.ActiveExecutionCount;
+            if (acquired > 0 || queued > 0 || active > 0)
                 _logger.LogWarning(
-                    "Shutdown: drain window elapsed with {Remaining} ticker(s) still running — they will be abandoned and healed by stale-job recovery",
-                    remaining);
+                    "Shutdown: drain window elapsed with {Active} executing, {Queued} queued, and {Acquired} acquired/prequeue ticker(s) — they will be abandoned and healed by stale-job recovery",
+                    active, queued, acquired);
             else
                 _logger.LogInformation("Shutdown: all in-flight tickers finished");
         }

@@ -15,10 +15,18 @@ obj['LockHolder'] = cjson.null
 obj['lockHolder'] = nil
 obj['LockedAt'] = cjson.null
 obj['lockedAt'] = nil
+obj['LeaseUntil'] = cjson.null
+obj['leaseUntil'] = nil
+obj['AcquisitionToken'] = cjson.null
+obj['acquisitionToken'] = nil
 obj['Status'] = tonumber(ARGV[3])
 obj['status'] = nil
 obj['UpdatedAt'] = ARGV[2]
 obj['updatedAt'] = nil
 local updated = cjson.encode(obj)
+-- cjson encodes an empty Lua table as '{}', turning empty JSON arrays ('[]') into objects.
+-- Restore the array-typed fields so C# deserialization does not fail on re-encode.
+updated = updated:gsub('"Children":{}', '"Children":[]')
+updated = updated:gsub('"RetryIntervals":{}', '"RetryIntervals":[]')
 redis.call('SET', KEYS[1], updated)
 return updated

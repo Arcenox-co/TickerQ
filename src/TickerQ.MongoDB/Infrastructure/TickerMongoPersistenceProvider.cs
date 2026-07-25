@@ -35,7 +35,7 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             _context = context;
             _clock = clock;
-            _lockHolder = optionsBuilder.NodeIdentifier;
+            _lockHolder = optionsBuilder.ExecutionOwnerId;
             _schedulerOptions = optionsBuilder;
         }
 
@@ -64,11 +64,19 @@ namespace TickerQ.MongoDB.Infrastructure
             foreach (var ticker in timeTickers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var acquisitionToken = Guid.NewGuid();
 
-                var filter = fb.And(fb.Eq(x => x.Id, ticker.Id), fb.Eq(x => x.UpdatedAt, ticker.UpdatedAt));
+                // Fence the queue CAS on both the observed timestamp and generation. A clock can
+                // legitimately return the same value for two writes (or Mongo can truncate it),
+                // so UpdatedAt alone permits the same stale snapshot to acquire twice.
+                var filter = fb.And(
+                    fb.Eq(x => x.Id, ticker.Id),
+                    fb.Eq(x => x.UpdatedAt, ticker.UpdatedAt),
+                    fb.Eq(x => x.AcquisitionToken, ticker.AcquisitionToken));
                 var update = Builders<TTimeTicker>.Update
                     .Set(x => x.LockHolder, _lockHolder)
                     .Set(x => x.LockedAt, now)
+                    .Set(x => x.AcquisitionToken, acquisitionToken)
                     .Set(x => x.UpdatedAt, now)
                     .Set(x => x.Status, TickerStatus.Queued);
 
@@ -79,6 +87,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 ticker.UpdatedAt = now;
                 ticker.LockHolder = _lockHolder;
                 ticker.LockedAt = now;
+                ticker.AcquisitionToken = acquisitionToken;
                 ticker.Status = TickerStatus.Queued;
                 yield return ticker;
             }
@@ -103,6 +112,7 @@ namespace TickerQ.MongoDB.Infrastructure
             foreach (var candidate in candidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var acquisitionToken = Guid.NewGuid();
 
                 var filter = fb.And(
                     fb.Eq(x => x.Id, candidate.Id),
@@ -112,6 +122,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockHolder, _lockHolder)
                     .Set(x => x.LockedAt, now)
                     .Set(x => x.LeaseUntil, NextLeaseUntil(now))
+                    .Set(x => x.AcquisitionToken, acquisitionToken)
                     .Set(x => x.UpdatedAt, now)
                     .Set(x => x.Status, TickerStatus.InProgress);
 
@@ -119,6 +130,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 if (result.ModifiedCount <= 0)
                     continue;
 
+                candidate.AcquisitionToken = acquisitionToken;
                 yield return BuildQueuedEntity(candidate, byParent);
             }
         }
@@ -138,6 +150,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 .Set(x => x.LockHolder, (string)null)
                 .Set(x => x.LockedAt, (DateTime?)null)
                 .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
                 .Set(x => x.Status, TickerStatus.Idle)
                 .Set(x => x.UpdatedAt, now);
 
@@ -191,7 +204,13 @@ namespace TickerQ.MongoDB.Infrastructure
             var update = MongoUpdateBuilders.BuildTimeTickerUpdate<TTimeTicker>(functionContext, now, NextLeaseUntil(now));
             var filter = Builders<TTimeTicker>.Filter.Eq(x => x.Id, functionContext.TickerId);
             if (IsFencedTerminalWrite(functionContext) && functionContext.ParentId == null)
-                filter &= Builders<TTimeTicker>.Filter.Eq(x => x.LockHolder, _lockHolder);
+            {
+                var fb = Builders<TTimeTicker>.Filter;
+                filter &= functionContext.AcquisitionToken.HasValue
+                    ? fb.And(fb.Eq(x => x.LockHolder, _lockHolder),
+                             fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
+                    : fb.Where(_ => false);
+            }
 
             var result = await _context.TimeTickers
                 .UpdateOneAsync(
@@ -225,17 +244,43 @@ namespace TickerQ.MongoDB.Infrastructure
                 .ConfigureAwait(false);
         }
 
+        public async Task<Guid[]> TransitionQueuedTimeTickersToInProgressAsync(
+            IReadOnlyCollection<AcquisitionLease> leases, CancellationToken cancellationToken = default)
+        {
+            var now = _clock.UtcNow;
+            var fb = Builders<TTimeTicker>.Filter;
+            var update = Builders<TTimeTicker>.Update
+                .Set(x => x.Status, TickerStatus.InProgress)
+                .Set(x => x.LeaseUntil, NextLeaseUntil(now))
+                .Set(x => x.UpdatedAt, now);
+            var winners = new List<Guid>(leases.Count);
+            foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
+            {
+                var filter = fb.And(
+                    fb.Eq(x => x.Id, lease.TickerId),
+                    fb.Eq(x => x.Status, TickerStatus.Queued),
+                    fb.Eq(x => x.LockHolder, _lockHolder),
+                    fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken));
+                var result = await _context.TimeTickers.UpdateOneAsync(
+                    filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (result.ModifiedCount == 1) winners.Add(lease.TickerId);
+            }
+            return winners.ToArray();
+        }
+
         public async Task<TimeTickerEntity[]> AcquireImmediateTimeTickersAsync(Guid[] ids, CancellationToken cancellationToken = default)
         {
             if (ids == null || ids.Length == 0) return Array.Empty<TimeTickerEntity>();
 
             var now = _clock.UtcNow;
+            var acquisitionToken = Guid.NewGuid();
             var coll = _context.TimeTickers;
             var fb = Builders<TTimeTicker>.Filter;
             var update = Builders<TTimeTicker>.Update
                 .Set(x => x.LockHolder, _lockHolder)
                 .Set(x => x.LockedAt, now)
                 .Set(x => x.LeaseUntil, NextLeaseUntil(now))
+                .Set(x => x.AcquisitionToken, acquisitionToken)
                 .Set(x => x.Status, TickerStatus.InProgress)
                 .Set(x => x.UpdatedAt, now);
             var options = new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After };
@@ -256,6 +301,46 @@ namespace TickerQ.MongoDB.Infrastructure
             return rows.Select(r => BuildQueuedEntity(r, byParent)).ToArray();
         }
 
+        public async Task<TimeTickerEntity> AcquireTimeTickerOnDemandAsync(
+            Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
+        {
+            var now = _clock.UtcNow;
+            var token = Guid.NewGuid();
+            var fb = Builders<TTimeTicker>.Filter;
+            var eligible = fb.Or(
+                fb.Eq(x => x.Status, TickerStatus.Idle),
+                fb.And(fb.Eq(x => x.Status, TickerStatus.Queued),
+                    fb.Or(fb.Eq(x => x.LockHolder, null), fb.Eq(x => x.LockHolder, _lockHolder))),
+                fb.In(x => x.Status, new[]
+                {
+                    TickerStatus.Done, TickerStatus.DueDone, TickerStatus.Failed,
+                    TickerStatus.Cancelled, TickerStatus.Skipped
+                }));
+            var filter = fb.And(fb.Eq(x => x.Id, id), eligible);
+            var update = Builders<TTimeTicker>.Update
+                .Set(x => x.ExecutionTime, executionTime)
+                .Set(x => x.Status, TickerStatus.InProgress)
+                .Set(x => x.LockHolder, _lockHolder)
+                .Set(x => x.LockedAt, now)
+                .Set(x => x.LeaseUntil, NextLeaseUntil(now))
+                .Set(x => x.AcquisitionToken, token)
+                .Set(x => x.RetryCount, 0)
+                .Set(x => x.ExceptionMessage, (string)null)
+                .Set(x => x.SkippedReason, (string)null)
+                .Set(x => x.ExecutedAt, (DateTime?)null)
+                .Set(x => x.ElapsedTime, 0L)
+                .Set(x => x.StaleRestartCount, 0)
+                .Set(x => x.UpdatedAt, now);
+            var row = await _context.TimeTickers.FindOneAndUpdateAsync(
+                filter, update,
+                new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After },
+                cancellationToken).ConfigureAwait(false);
+            if (row == null) return null;
+
+            var byParent = await LoadChildrenLookup([row.Id], cancellationToken).ConfigureAwait(false);
+            return BuildQueuedEntity(row, byParent);
+        }
+
         public async Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
@@ -267,6 +352,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
                     .Set(x => x.Status, TickerStatus.Idle)
                     .Set(x => x.UpdatedAt, now),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -278,6 +364,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
                     .Set(x => x.Status, TickerStatus.Idle)
                     .Set(x => x.UpdatedAt, now),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -418,6 +505,7 @@ namespace TickerQ.MongoDB.Infrastructure
             foreach (var item in cronTickerOccurrences.Items)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var acquisitionToken = Guid.NewGuid();
 
                 if (item.NextCronOccurrence is null)
                 {
@@ -432,6 +520,7 @@ namespace TickerQ.MongoDB.Infrastructure
                         ExecutionTime = executionTime,
                         CronTickerId = item.Id,
                         LockedAt = now,
+                        AcquisitionToken = acquisitionToken,
                         CreatedAt = now,
                         UpdatedAt = now
                     };
@@ -472,6 +561,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     var update = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
                         .Set(x => x.LockHolder, _lockHolder)
                         .Set(x => x.LockedAt, now)
+                        .Set(x => x.AcquisitionToken, acquisitionToken)
                         .Set(x => x.UpdatedAt, now)
                         .Set(x => x.Status, TickerStatus.Queued);
 
@@ -486,6 +576,7 @@ namespace TickerQ.MongoDB.Infrastructure
                         Status = TickerStatus.Queued,
                         LockHolder = _lockHolder,
                         LockedAt = now,
+                        AcquisitionToken = acquisitionToken,
                         UpdatedAt = now,
                         CreatedAt = item.NextCronOccurrence.CreatedAt,
                         CronTicker = new TCronTicker
@@ -523,6 +614,7 @@ namespace TickerQ.MongoDB.Infrastructure
             foreach (var occ in candidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var acquisitionToken = Guid.NewGuid();
 
                 var filter = fb.And(
                     fb.Eq(x => x.Id, occ.Id),
@@ -532,12 +624,14 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockHolder, _lockHolder)
                     .Set(x => x.LockedAt, now)
                     .Set(x => x.LeaseUntil, NextLeaseUntil(now))
+                    .Set(x => x.AcquisitionToken, acquisitionToken)
                     .Set(x => x.UpdatedAt, now)
                     .Set(x => x.Status, TickerStatus.InProgress);
 
                 var result = await coll.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
                 if (result.ModifiedCount <= 0) continue;
 
+                occ.AcquisitionToken = acquisitionToken;
                 if (cronById.TryGetValue(occ.CronTickerId, out var cron))
                 {
                     occ.CronTicker = new TCronTicker
@@ -559,7 +653,13 @@ namespace TickerQ.MongoDB.Infrastructure
             var update = MongoUpdateBuilders.BuildCronOccurrenceUpdate<TCronTicker>(functionContext, now, NextLeaseUntil(now));
             var filter = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(x => x.Id, functionContext.TickerId);
             if (IsFencedTerminalWrite(functionContext))
-                filter &= Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(x => x.LockHolder, _lockHolder);
+            {
+                var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+                filter &= functionContext.AcquisitionToken.HasValue
+                    ? fb.And(fb.Eq(x => x.LockHolder, _lockHolder),
+                             fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
+                    : fb.Where(_ => false);
+            }
 
             await _context.CronTickerOccurrences
                 .UpdateOneAsync(
@@ -584,6 +684,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 .Set(x => x.LockHolder, (string)null)
                 .Set(x => x.LockedAt, (DateTime?)null)
                 .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
                 .Set(x => x.Status, TickerStatus.Idle)
                 .Set(x => x.UpdatedAt, now);
 
@@ -618,6 +719,30 @@ namespace TickerQ.MongoDB.Infrastructure
                 .ConfigureAwait(false);
         }
 
+        public async Task<Guid[]> TransitionQueuedCronOccurrencesToInProgressAsync(
+            IReadOnlyCollection<AcquisitionLease> leases, CancellationToken cancellationToken = default)
+        {
+            var now = _clock.UtcNow;
+            var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+            var update = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
+                .Set(x => x.Status, TickerStatus.InProgress)
+                .Set(x => x.LeaseUntil, NextLeaseUntil(now))
+                .Set(x => x.UpdatedAt, now);
+            var winners = new List<Guid>(leases.Count);
+            foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
+            {
+                var filter = fb.And(
+                    fb.Eq(x => x.Id, lease.TickerId),
+                    fb.Eq(x => x.Status, TickerStatus.Queued),
+                    fb.Eq(x => x.LockHolder, _lockHolder),
+                    fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken));
+                var result = await _context.CronTickerOccurrences.UpdateOneAsync(
+                    filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (result.ModifiedCount == 1) winners.Add(lease.TickerId);
+            }
+            return winners.ToArray();
+        }
+
         public async Task ReleaseDeadNodeOccurrenceResources(string instanceIdentifier, CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
@@ -629,6 +754,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
                     .Set(x => x.Status, TickerStatus.Idle)
                     .Set(x => x.UpdatedAt, now),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -640,6 +766,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
                     .Set(x => x.Status, TickerStatus.Idle)
                     .Set(x => x.UpdatedAt, now),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -669,6 +796,9 @@ namespace TickerQ.MongoDB.Infrastructure
         // Stale-job recovery
         // ===================================================================
 
+        // MongoDB fully implements lease renewal and the stale-job watchdog below.
+        public bool SupportsLeaseBasedRecovery => true;
+
         public async Task<int> RenewTimeTickerLeases(Guid[] timeTickerIds, DateTime leaseUntil, CancellationToken cancellationToken = default)
         {
             if (timeTickerIds == null || timeTickerIds.Length == 0) return 0;
@@ -695,6 +825,86 @@ namespace TickerQ.MongoDB.Infrastructure
                 .UpdateManyAsync(filter, Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update.Set(x => x.LeaseUntil, leaseUntil), cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
             return (int)result.MatchedCount;
+        }
+
+        public async Task<int> RenewTimeTickerLeases(
+            IReadOnlyCollection<AcquisitionLease> leases, DateTime leaseUntil,
+            CancellationToken cancellationToken = default)
+        {
+            if (leases == null || leases.Count == 0) return 0;
+            var renewed = 0;
+            var fb = Builders<TTimeTicker>.Filter;
+            foreach (var lease in leases)
+            {
+                if (!lease.AcquisitionToken.HasValue) continue;
+                var filter = fb.And(
+                    fb.Eq(x => x.Id, lease.TickerId),
+                    fb.Eq(x => x.LockHolder, _lockHolder),
+                    fb.Eq(x => x.Status, TickerStatus.InProgress),
+                    fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken));
+                var result = await _context.TimeTickers.UpdateOneAsync(
+                    filter, Builders<TTimeTicker>.Update.Set(x => x.LeaseUntil, leaseUntil),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                renewed += (int)result.MatchedCount;
+            }
+            return renewed;
+        }
+
+        public async Task<int> RenewCronTickerOccurrenceLeases(
+            IReadOnlyCollection<AcquisitionLease> leases, DateTime leaseUntil,
+            CancellationToken cancellationToken = default)
+        {
+            if (leases == null || leases.Count == 0) return 0;
+            var renewed = 0;
+            var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+            foreach (var lease in leases)
+            {
+                if (!lease.AcquisitionToken.HasValue) continue;
+                var filter = fb.And(
+                    fb.Eq(x => x.Id, lease.TickerId),
+                    fb.Eq(x => x.LockHolder, _lockHolder),
+                    fb.Eq(x => x.Status, TickerStatus.InProgress),
+                    fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken));
+                var result = await _context.CronTickerOccurrences.UpdateOneAsync(
+                    filter, Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update.Set(x => x.LeaseUntil, leaseUntil),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                renewed += (int)result.MatchedCount;
+            }
+            return renewed;
+        }
+
+        public async Task<Guid[]> GetStillHeldTickerIds(
+            IReadOnlyCollection<AcquisitionLease> timeTickerLeases,
+            IReadOnlyCollection<AcquisitionLease> occurrenceLeases,
+            CancellationToken cancellationToken = default)
+        {
+            var held = new List<Guid>();
+            var timeFb = Builders<TTimeTicker>.Filter;
+            foreach (var lease in timeTickerLeases ?? Array.Empty<AcquisitionLease>())
+            {
+                if (!lease.AcquisitionToken.HasValue) continue;
+                var filter = timeFb.And(
+                    timeFb.Eq(x => x.Id, lease.TickerId),
+                    timeFb.Eq(x => x.LockHolder, _lockHolder),
+                    timeFb.Eq(x => x.Status, TickerStatus.InProgress),
+                    timeFb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken));
+                if (await _context.TimeTickers.Find(filter).AnyAsync(cancellationToken).ConfigureAwait(false))
+                    held.Add(lease.TickerId);
+            }
+
+            var cronFb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+            foreach (var lease in occurrenceLeases ?? Array.Empty<AcquisitionLease>())
+            {
+                if (!lease.AcquisitionToken.HasValue) continue;
+                var filter = cronFb.And(
+                    cronFb.Eq(x => x.Id, lease.TickerId),
+                    cronFb.Eq(x => x.LockHolder, _lockHolder),
+                    cronFb.Eq(x => x.Status, TickerStatus.InProgress),
+                    cronFb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken));
+                if (await _context.CronTickerOccurrences.Find(filter).AnyAsync(cancellationToken).ConfigureAwait(false))
+                    held.Add(lease.TickerId);
+            }
+            return held.ToArray();
         }
 
         public async Task<Guid[]> GetStillHeldTickerIds(Guid[] timeTickerIds, Guid[] occurrenceIds, CancellationToken cancellationToken = default)
@@ -733,6 +943,41 @@ namespace TickerQ.MongoDB.Infrastructure
                 "Stale: the node executing this ticker stopped renewing its lease (presumed dead).";
             var result = new StaleTickerRecoveryResult();
 
+            var staleLockCutoff = now.Subtract(_schedulerOptions.QueuedLockTimeout);
+            var timeQueuedFilters = Builders<TTimeTicker>.Filter;
+            var staleQueuedTime = timeQueuedFilters.And(
+                timeQueuedFilters.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
+                timeQueuedFilters.Ne(x => x.LockHolder, null),
+                timeQueuedFilters.Ne(x => x.LockedAt, null),
+                timeQueuedFilters.Lt(x => x.LockedAt, staleLockCutoff));
+            await _context.TimeTickers.UpdateManyAsync(
+                staleQueuedTime,
+                Builders<TTimeTicker>.Update
+                    .Set(x => x.Status, TickerStatus.Idle)
+                    .Set(x => x.LockHolder, (string)null)
+                    .Set(x => x.LockedAt, (DateTime?)null)
+                    .Set(x => x.LeaseUntil, (DateTime?)null)
+                    .Set(x => x.AcquisitionToken, (Guid?)null)
+                    .Set(x => x.UpdatedAt, now),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            var cronQueuedFilters = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+            var staleQueuedCron = cronQueuedFilters.And(
+                cronQueuedFilters.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
+                cronQueuedFilters.Ne(x => x.LockHolder, null),
+                cronQueuedFilters.Ne(x => x.LockedAt, null),
+                cronQueuedFilters.Lt(x => x.LockedAt, staleLockCutoff));
+            await _context.CronTickerOccurrences.UpdateManyAsync(
+                staleQueuedCron,
+                Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
+                    .Set(x => x.Status, TickerStatus.Idle)
+                    .Set(x => x.LockHolder, (string)null)
+                    .Set(x => x.LockedAt, (DateTime?)null)
+                    .Set(x => x.LeaseUntil, (DateTime?)null)
+                    .Set(x => x.AcquisitionToken, (Guid?)null)
+                    .Set(x => x.UpdatedAt, now),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
             var timeFilters = Builders<TTimeTicker>.Filter;
             var staleTime = timeFilters.And(
                 timeFilters.Eq(x => x.Status, TickerStatus.InProgress),
@@ -750,6 +995,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
                     .Inc(x => x.StaleRestartCount, 1)
                     .Set(x => x.UpdatedAt, now),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -764,6 +1010,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
                     .Set(x => x.UpdatedAt, now),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             result.CancelledTimeTickers = (int)cancelTimeResult.ModifiedCount;
@@ -803,6 +1050,7 @@ namespace TickerQ.MongoDB.Infrastructure
                         .Set(x => x.LockHolder, (string)null)
                         .Set(x => x.LockedAt, (DateTime?)null)
                         .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
                         .Inc(x => x.StaleRestartCount, 1)
                         .Set(x => x.UpdatedAt, now),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -818,6 +1066,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
                     .Set(x => x.UpdatedAt, now),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             result.CancelledCronOccurrences = (int)cancelOccurrenceResult.ModifiedCount;
@@ -1056,12 +1305,14 @@ namespace TickerQ.MongoDB.Infrastructure
                 return Array.Empty<CronTickerOccurrenceEntity<TCronTicker>>();
 
             var now = _clock.UtcNow;
+            var acquisitionToken = Guid.NewGuid();
             var coll = _context.CronTickerOccurrences;
             var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
             var update = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
                 .Set(x => x.LockHolder, _lockHolder)
                 .Set(x => x.LockedAt, now)
                 .Set(x => x.LeaseUntil, NextLeaseUntil(now))
+                .Set(x => x.AcquisitionToken, acquisitionToken)
                 .Set(x => x.Status, TickerStatus.InProgress)
                 .Set(x => x.UpdatedAt, now);
             var options = new FindOneAndUpdateOptions<CronTickerOccurrenceEntity<TCronTicker>>
@@ -1120,41 +1371,118 @@ namespace TickerQ.MongoDB.Infrastructure
         // Private helpers
         // ===================================================================
 
-        private async Task<Dictionary<Guid, List<TTimeTicker>>> LoadChildrenLookup(Guid[] parentIds, CancellationToken ct)
+        /// <summary>
+        /// Breadth-first hydrate the whole child-definition subtree for the given
+        /// roots. Child definitions are the <c>ExecutionTime == null</c> rows chained
+        /// under a root by <see cref="TimeTickerEntity{T}.ParentId"/>; a chain can go
+        /// root → child → grandchild → deeper. We fetch one batch per depth tier
+        /// (<c>WHERE ParentId IN frontier</c>) rather than a query per node, and guard
+        /// with a visited set so malformed cyclic data cannot loop forever even though
+        /// the schema should prevent a cycle.
+        /// </summary>
+        private async Task<Dictionary<Guid, List<TTimeTicker>>> LoadChildrenLookup(Guid[] rootIds, CancellationToken ct)
         {
-            if (parentIds.Length == 0) return new Dictionary<Guid, List<TTimeTicker>>();
+            if (rootIds.Length == 0) return new Dictionary<Guid, List<TTimeTicker>>();
             var fb = Builders<TTimeTicker>.Filter;
-            var rows = await _context.TimeTickers
-                .Find(fb.And(
-                    fb.In(x => x.ParentId, parentIds.Select(p => (Guid?)p)),
-                    fb.Eq(x => x.ExecutionTime, null)))
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
-            return rows
+            var descendants = new List<TTimeTicker>();
+            var visited = new HashSet<Guid>(rootIds);
+            var frontier = rootIds.ToList();
+
+            while (frontier.Count > 0)
+            {
+                ct.ThrowIfCancellationRequested();
+                var rows = await _context.TimeTickers
+                    .Find(fb.And(
+                        fb.In(x => x.ParentId, frontier.Select(p => (Guid?)p)),
+                        fb.Eq(x => x.ExecutionTime, null)))
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
+
+                var next = new List<Guid>(rows.Count);
+                foreach (var row in rows)
+                {
+                    // Cycle guard: a row already placed cannot re-enqueue its subtree.
+                    if (!visited.Add(row.Id)) continue;
+                    descendants.Add(row);
+                    next.Add(row.Id);
+                }
+                frontier = next;
+            }
+
+            return BuildChildLookup(descendants);
+        }
+
+        /// <summary>Groups already-fetched child-definition rows by their parent id.</summary>
+        internal static Dictionary<Guid, List<TTimeTicker>> BuildChildLookup(IEnumerable<TTimeTicker> descendants)
+            => descendants
                 .Where(r => r.ParentId.HasValue)
                 .GroupBy(r => r.ParentId.Value)
                 .ToDictionary(g => g.Key, g => g.ToList());
+
+        internal static TimeTickerEntity BuildQueuedEntity(TTimeTicker ticker, Dictionary<Guid, List<TTimeTicker>> byParent)
+        {
+            // Attach the raw child + grandchild layers so the compiled projection
+            // (root → child → grandchild) captures them, then stitch any deeper layers
+            // onto the projected tree — the same probe-and-extend contract the EF
+            // provider uses so nested chains are never silently truncated.
+            AttachRawChildren(ticker, byParent, depth: 2, new HashSet<Guid>());
+            var projected = ProjectTimeTicker(ticker);
+            ExtendProjectedChainsBeyondGrandchildren(projected, byParent);
+            return projected;
         }
 
-        private TimeTickerEntity BuildQueuedEntity(TTimeTicker ticker, Dictionary<Guid, List<TTimeTicker>> byParent)
+        /// <summary>Attaches up to <paramref name="depth"/> raw child levels onto <paramref name="node"/>.</summary>
+        private static void AttachRawChildren(TTimeTicker node, Dictionary<Guid, List<TTimeTicker>> byParent, int depth, HashSet<Guid> visited)
         {
-            // The ForQueueTimeTickers projection expects nested .Children with grandchildren.
-            // Since we already filter children to ExecutionTime == null, attach them in-memory
-            // then invoke the compiled projection to produce the shape the scheduler expects.
-            if (byParent.TryGetValue(ticker.Id, out var directChildren))
+            if (depth <= 0 || !visited.Add(node.Id) || !byParent.TryGetValue(node.Id, out var children))
             {
-                ticker.Children = directChildren;
-                // Mongo-side we don't fetch grandchildren in LoadChildrenLookup (they'd cascade widely).
-                // Grandchildren are rare in practice and only needed for deeply-nested time tickers;
-                // when needed the dashboard goes through ITickerQueryable.WithRelated(ChildrenDeep).
-                foreach (var ch in directChildren)
-                    ch.Children = new List<TTimeTicker>();
+                node.Children = new List<TTimeTicker>();
+                return;
             }
-            else
+            node.Children = children;
+            foreach (var child in children)
+                AttachRawChildren(child, byParent, depth - 1, visited);
+        }
+
+        /// <summary>
+        /// The compiled projection stops at grandchildren; walk from there and
+        /// BFS-attach any deeper child definitions from the same lookup. The visited
+        /// set guards against cyclic data re-entering the walk.
+        /// </summary>
+        private static void ExtendProjectedChainsBeyondGrandchildren(TimeTickerEntity root, Dictionary<Guid, List<TTimeTicker>> byParent)
+        {
+            var visited = new HashSet<Guid>();
+            var frontier = new List<TimeTickerEntity>();
+            foreach (var child in root.Children)
+                foreach (var grandchild in child.Children)
+                    frontier.Add(grandchild);
+
+            while (frontier.Count > 0)
             {
-                ticker.Children = new List<TTimeTicker>();
+                var next = new List<TimeTickerEntity>();
+                foreach (var node in frontier)
+                {
+                    if (!visited.Add(node.Id)) continue;
+                    if (!byParent.TryGetValue(node.Id, out var children) || children.Count == 0)
+                        continue;
+
+                    var mapped = children
+                        .Select(c => new TimeTickerEntity
+                        {
+                            Id = c.Id,
+                            Function = c.Function,
+                            Retries = c.Retries,
+                            RetryIntervals = c.RetryIntervals,
+                            TimeoutSeconds = c.TimeoutSeconds,
+                            RunCondition = c.RunCondition,
+                            ParentId = c.ParentId,
+                        })
+                        .ToList();
+                    node.Children = mapped;
+                    next.AddRange(mapped);
+                }
+                frontier = next;
             }
-            return ProjectTimeTicker(ticker);
         }
 
         private async Task<Dictionary<Guid, TCronTicker>> LoadCronTickers(Guid[] ids, CancellationToken ct)

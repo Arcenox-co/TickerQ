@@ -56,6 +56,19 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             Node = _schedulerOptions.NodeIdentifier,
         });
 
+    private void TryNotifyFailure(InternalFunctionContext context, string kind, string reason)
+    {
+        try
+        {
+            NotifyFailure(context, kind, reason);
+        }
+        catch (Exception ex)
+        {
+            _tickerQInstrumentation.LogJobFailed(
+                context.TickerId, context.FunctionName, ex, context.RetryCount);
+        }
+    }
+
     /// <summary>
     /// Effective per-attempt timeout for a ticker: its own TimeoutSeconds wins
     /// (&lt;= 0 disables explicitly), otherwise the global default applies.
@@ -70,11 +83,16 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             : (TimeSpan?)null;
     }
 
-    public async Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
+    public Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
+        => ExecuteRegisteredTaskAsync(context, isDue, registeredSource: null, cancellationToken);
+
+    public async Task ExecuteRegisteredTaskAsync(InternalFunctionContext context, bool isDue,
+        CancellationTokenSource registeredSource, CancellationToken cancellationToken = default)
     {
         if (context.Type == TickerType.CronTickerOccurrence)
         {
-            await RunContextFunctionAsync(context, isDue, cancellationToken);
+            // Root occurrence: reuse the acquisition-time registration if the caller supplied one.
+            await RunContextFunctionAsync(context, isDue, cancellationToken, preRegisteredSource: registeredSource);
             return;
         }
 
@@ -87,8 +105,10 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
         var hasChildren = context.TimeTickerChildren.Count > 0;
 
-        // Add parent task
-        tasksToRunNow[tasksToRunNowCount++] = RunContextFunctionAsync(context, isDue, cancellationToken);
+        // Add parent (root) task — reuses the acquisition-time registration when supplied; children
+        // below always self-register (preRegisteredSource stays null for them).
+        tasksToRunNow[tasksToRunNowCount++] =
+            RunContextFunctionAsync(context, isDue, cancellationToken, preRegisteredSource: registeredSource);
 
         if (hasChildren)
         {
@@ -157,7 +177,46 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         }
     }
 
-    private async Task RunContextFunctionAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken, bool isChild = false)
+    private async Task RunContextFunctionAsync(
+        InternalFunctionContext context,
+        bool isDue,
+        CancellationToken cancellationToken,
+        bool isChild = false,
+        CancellationTokenSource preRegisteredSource = null)
+    {
+        if (preRegisteredSource != null)
+        {
+            // Root registered at acquisition time by the scheduler: reuse its source and leave
+            // removal/disposal to the owner (the scheduler delegate's finally) — running it here too
+            // would double-remove and risk disposing the source out from under the owner.
+            await RunContextFunctionCoreAsync(
+                context, isDue, cancellationToken, preRegisteredSource, isChild).ConfigureAwait(false);
+            return;
+        }
+
+        // Legacy/direct call (and every child): self-register atomically and own the single cleanup.
+        var cancellationTokenSource =
+            TickerCancellationTokenManager.TryRegisterAcquired(context, isDue, cancellationToken);
+        if (cancellationTokenSource == null)
+            return; // an entry for this id is already tracked — the existing owner runs and cleans up
+
+        try
+        {
+            await RunContextFunctionCoreAsync(
+                context, isDue, cancellationToken, cancellationTokenSource, isChild).ConfigureAwait(false);
+        }
+        finally
+        {
+            TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId, cancellationTokenSource);
+        }
+    }
+
+    private async Task RunContextFunctionCoreAsync(
+        InternalFunctionContext context,
+        bool isDue,
+        CancellationToken cancellationToken,
+        CancellationTokenSource cancellationTokenSource,
+        bool isChild)
     {
         var typeName = TickerTypeNamesLower.GetValueOrDefault(context.Type, context.Type.ToString().ToLowerInvariant());
 
@@ -179,11 +238,6 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         // dashboard's Duration column reflects the user's lived time, not just
         // the last attempt's CPU time.
         var totalStopWatch = Stopwatch.StartNew();
-        var cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-        // IMPORTANT: Register the ticker FIRST, before creating the SkipIfAlreadyRunningAction callback
-        // This ensures the current occurrence is properly tracked when the callback checks for siblings
-        TickerCancellationTokenManager.AddTickerCancellationToken(cancellationTokenSource, context, isDue);
 
         var tickerFunctionContext = new TickerFunctionContext
         {
@@ -272,31 +326,51 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 using (TickerExecutionLogScope.Push(context.TickerId, context.FunctionName))
                 {
                     var execTask = context.CachedDelegate(attemptCts.Token, scope.ServiceProvider, tickerFunctionContext);
+                    var timeoutPending = false;
 
                     if (effectiveTimeout is { } t)
                     {
-                        // The token fires at the timeout; cooperative functions surface
-                        // their own OperationCanceledException within the grace window.
-                        // Functions that ignore cancellation are abandoned after the
-                        // grace — their task keeps running unobserved, but the ticker's
-                        // outcome is recorded and nothing will overwrite it (the
-                        // executor owns all status writes and moves on here).
-                        var grace = TimeSpan.FromSeconds(5);
-                        using var abandonDelayCts = new CancellationTokenSource();
-                        var winner = await Task.WhenAny(execTask, Task.Delay(t + grace, abandonDelayCts.Token));
+                        // Fire cooperative cancellation at timeout. If the delegate is still running
+                        // after grace, report the critical pending state but retain its registration,
+                        // renewable lease, and DI scope until the delegate actually exits.
+                        var grace = _schedulerOptions.TimeoutGracePeriod < TimeSpan.Zero
+                            ? TimeSpan.Zero
+                            : _schedulerOptions.TimeoutGracePeriod;
+                        using var graceDelayCts = new CancellationTokenSource();
+                        var winner = await Task.WhenAny(execTask, Task.Delay(t + grace, graceDelayCts.Token));
                         if (winner != execTask)
                         {
-                            // Observe the abandoned task's eventual exception so it
-                            // never surfaces as UnobservedTaskException.
-                            _ = execTask.ContinueWith(static tsk => _ = tsk.Exception,
-                                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
-                            throw new TickerExecutionTimeoutException(
-                                $"Exceeded execution timeout of {t.TotalSeconds:0}s; the function ignored cancellation and may still be running on this node.");
+                            timeoutPending = true;
+                            _tickerQInstrumentation.LogJobTimeoutPending(
+                                context.TickerId, context.FunctionName, t, grace);
+                            jobActivity?.SetTag("tickerq.job.timeout_pending", true);
                         }
-                        abandonDelayCts.Cancel();
+                        else
+                        {
+                            graceDelayCts.Cancel();
+                        }
                     }
 
-                    await execTask;
+                    var timeoutElapsed = effectiveTimeout != null &&
+                                         attemptCts.IsCancellationRequested &&
+                                         !cancellationTokenSource.IsCancellationRequested;
+
+                    try
+                    {
+                        await execTask;
+                    }
+                    catch (Exception) when (timeoutPending || timeoutElapsed)
+                    {
+                        // The delegate has now exited. Its eventual exception is observed, but timeout
+                        // remains the authoritative terminal outcome and must not consume retry budget.
+                    }
+
+                    if (timeoutPending || timeoutElapsed)
+                    {
+                        throw new TickerExecutionTimeoutException(
+                            $"Exceeded execution timeout of {effectiveTimeout.Value.TotalSeconds:0.###}s; " +
+                            "the function has now exited after timeout cancellation.");
+                    }
                 }
 
                 success = true;
@@ -325,9 +399,8 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
                     .SetProperty(x => x.ExceptionDetails, SerializeException(ex));
                 
-                // Add cancellation tags to activity
+                // Record only the non-sensitive terminal status on the activity.
                 jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
-                jobActivity?.SetTag("tickerq.job.cancellation_reason", "Task was cancelled");
                 
                 // Log job cancelled
                 _tickerQInstrumentation.LogJobCancelled(context.TickerId, context.FunctionName, "Task was cancelled");
@@ -337,8 +410,6 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
                 await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
                 
-                // Clean up and exit early on cancellation
-                TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
                 return;
             }
             catch (TerminateExecutionException ex)
@@ -350,12 +421,12 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 if (ex.InnerException != null)
                 {
                     context.SetProperty(x => x.ExceptionDetails, ex.InnerException.Message);
-                    jobActivity?.SetTag("tickerq.job.skip_reason", ex.InnerException.Message);
+
                 }
                 else
                 {
                     context.SetProperty(x => x.ExceptionDetails, ex.Message);
-                    jobActivity?.SetTag("tickerq.job.skip_reason", ex.Message);
+
                 }
 
                 // Add skip tags to activity
@@ -366,8 +437,6 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
                 await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
 
-                // Clean up and exit early on termination
-                TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
                 return;
             }
             catch (SdkOfflineSkipException ex)
@@ -383,12 +452,10 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     .SetProperty(x => x.ExceptionDetails, ex.Message);
 
                 jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
-                jobActivity?.SetTag("tickerq.job.skip_reason", ex.Message);
+
                 _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
 
                 await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
-
-                TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
                 return;
             }
             catch (Exception ex)
@@ -435,6 +502,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             // Add success tags to activity
             jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
             jobActivity?.SetTag("tickerq.job.final_retry_count", context.RetryCount);
+            jobActivity?.SetStatus(ActivityStatusCode.Ok);
             
             // Log job completed successfully
             _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, totalStopWatch.ElapsedMilliseconds, true);
@@ -450,19 +518,16 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
             jobActivity?.SetTag("tickerq.job.final_retry_count", context.RetryCount);
             jobActivity?.SetTag("tickerq.job.error_type", lastException.GetType().Name);
+            jobActivity?.SetStatus(ActivityStatusCode.Error);
             
             // Log job failed
             _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, lastException, context.RetryCount);
             _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, totalStopWatch.ElapsedMilliseconds, false);
 
-            NotifyFailure(context, "failed", lastException.Message);
-
             await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+
+            TryNotifyFailure(context, "failed", lastException.Message);
         }
-
-
-        // Clean up: RemoveTickerCancellationToken handles disposal of the CTS
-        TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
     }
 
     /// <summary>
@@ -483,27 +548,35 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 .SetProperty(x => x.ExceptionDetails, reason);
 
             jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
-            jobActivity?.SetTag("tickerq.job.cancellation_reason", reason);
+            jobActivity?.SetStatus(ActivityStatusCode.Error);
 
             _tickerQInstrumentation.LogJobCancelled(context.TickerId, context.FunctionName, reason);
-
-            NotifyFailure(context, "timeout_cancelled", reason);
-
-            if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
-                await handler.HandleCanceledExceptionAsync(new TaskCanceledException(reason), context.TickerId, context.Type);
 
             // The terminal write must land even if the surrounding execution's token
             // is already cancelled — a timed-out job that never gets its Cancelled row
             // stays InProgress and keeps its lease renewed forever.
             await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+
+            // Notifications and user hooks are best-effort side effects. Neither may prevent
+            // the authoritative terminal row from being persisted, nor suppress the other.
+            TryNotifyFailure(context, "timeout_cancelled", reason);
+
+            if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
+            {
+                try
+                {
+                    await handler.HandleCanceledExceptionAsync(
+                        new TaskCanceledException(reason), context.TickerId, context.Type);
+                }
+                catch (Exception ex)
+                {
+                    _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, context.RetryCount);
+                }
+            }
         }
         catch (Exception ex)
         {
             _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, context.RetryCount);
-        }
-        finally
-        {
-            TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId);
         }
     }
 

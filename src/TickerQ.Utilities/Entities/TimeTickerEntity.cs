@@ -43,11 +43,18 @@ namespace TickerQ.Utilities.Entities
         /// InProgress ticker whose lease is in the past is considered stale (node dead).
         /// </summary>
         [JsonInclude]
-        public virtual DateTime? LeaseUntil { get; internal set; }
+        public virtual DateTime? LeaseUntil { get; set; }
+        /// <summary>
+        /// Unique marker for the immediate-acquisition invocation that most recently
+        /// transitioned this ticker to InProgress. Used to disambiguate commit outcomes
+        /// when a retrying relational provider reports a transient commit failure.
+        /// </summary>
+        [JsonInclude]
+        public virtual Guid? AcquisitionToken { get; set; }
         /// <summary>What the stale-job watchdog does with this ticker if it goes stale.</summary>
         public virtual StaleAction OnStale { get; set; }
         [JsonInclude]
-        public virtual int StaleRestartCount { get; internal set; }
+        public virtual int StaleRestartCount { get; set; }
         /// <summary>
         /// Max execution time per attempt, in seconds. Exceeding it cancels the
         /// execution and lands the ticker on Cancelled with a timeout reason.

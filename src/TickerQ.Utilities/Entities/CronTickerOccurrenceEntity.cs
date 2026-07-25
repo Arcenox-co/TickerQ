@@ -28,5 +28,14 @@ namespace TickerQ.Utilities.Entities
         /// </summary>
         public virtual DateTime? LeaseUntil { get; set; }
         public virtual int StaleRestartCount { get; set; }
+        /// <summary>
+        /// Nullable marker for the current InProgress generation of this occurrence. A
+        /// fresh value is minted on every transition to InProgress and cleared whenever the
+        /// row is released to Idle, stale-restarted/cancelled, dead-node recovered, or
+        /// terminally completed. Terminal writes and lease renewals are fenced on
+        /// <see cref="LockHolder"/> + this token so a stale owner from an earlier generation
+        /// cannot write after the row was re-acquired (same-node ABA).
+        /// </summary>
+        public virtual Guid? AcquisitionToken { get; set; }
     }
 }

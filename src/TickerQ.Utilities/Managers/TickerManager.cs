@@ -357,6 +357,7 @@ namespace TickerQ.Utilities.Managers
                 RetryIntervals = ticker.RetryIntervals,
                 TimeoutSeconds = ticker.TimeoutSeconds,
                 ParentId = ticker.ParentId,
+                AcquisitionToken = ticker.AcquisitionToken,
                 ExecutionTime = ticker.ExecutionTime ?? DateTime.UtcNow,
                 RunCondition = ticker.RunCondition ?? Enums.RunCondition.OnAnyCompletedStatus,
                 TimeTickerChildren = ticker.Children.Select(BuildContextFromNonGeneric).ToList()

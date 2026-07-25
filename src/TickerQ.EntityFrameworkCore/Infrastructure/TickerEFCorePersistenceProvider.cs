@@ -360,6 +360,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
             var now = _clock.UtcNow;
+            var acquisitionToken = Guid.NewGuid();
             var idList = occurrenceIds.ToList();
 
             // Only acquire occurrences that are acquirable (Idle/Queued and not locked by another node)
@@ -373,6 +374,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     .SetProperty(x => x.LockHolder, _lockHolder)
                     .SetProperty(x => x.LockedAt, now)
                     .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
+                    .SetProperty(x => x.AcquisitionToken, acquisitionToken)
                     .SetProperty(x => x.Status, TickerStatus.InProgress)
                     .SetProperty(x => x.UpdatedAt, now), cancellationToken)
                 .ConfigureAwait(false);
@@ -383,7 +385,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             // Return acquired occurrences with CronTicker populated
             return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                 .AsNoTracking()
-                .Where(x => idList.Contains(x.Id) && x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
+                .Where(x => idList.Contains(x.Id) && x.LockHolder == _lockHolder &&
+                            x.Status == TickerStatus.InProgress && x.AcquisitionToken == acquisitionToken)
                 .Include(x => x.CronTicker)
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);

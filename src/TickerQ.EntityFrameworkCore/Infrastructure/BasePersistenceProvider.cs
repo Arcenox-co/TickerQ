@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -27,7 +29,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         _clock = clock;
         RedisContext = redisContext;
         _serviceProvider = serviceProvider;
-        _lockHolder = optionsBuilder.NodeIdentifier;
+        _lockHolder = optionsBuilder.ExecutionOwnerId;
         _schedulerOptions = optionsBuilder;
     }
 
@@ -62,6 +64,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         foreach (var timeTicker in timeTickers)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var acquisitionToken = Guid.NewGuid();
                 
             var updatedTicker = await context
                 .Where(x => x.Id == timeTicker.Id)
@@ -69,6 +72,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .ExecuteUpdateAsync(prop => prop
                     .SetProperty(x => x.LockHolder, _lockHolder)
                     .SetProperty(x => x.LockedAt, now)
+                    .SetProperty(x => x.AcquisitionToken, acquisitionToken)
                     .SetProperty(x => x.UpdatedAt, now)
                     .SetProperty(x => x.Status, TickerStatus.Queued), cancellationToken);
 
@@ -78,6 +82,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             timeTicker.UpdatedAt = now;
             timeTicker.LockHolder = _lockHolder;
             timeTicker.LockedAt = now;
+            timeTicker.AcquisitionToken = acquisitionToken;
             timeTicker.Status = TickerStatus.Queued;
                 
             yield return timeTicker;
@@ -110,6 +115,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         foreach (var timeTicker in timeTickersToUpdate)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var acquisitionToken = Guid.NewGuid();
 
             var affected = await context
                 .Where(x => x.Id == timeTicker.Id && x.UpdatedAt <= timeTicker.UpdatedAt)
@@ -117,12 +123,14 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     .SetProperty(x => x.LockHolder, _lockHolder)
                     .SetProperty(x => x.LockedAt, now)
                     .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
+                    .SetProperty(x => x.AcquisitionToken, acquisitionToken)
                     .SetProperty(x => x.UpdatedAt, now)
                     .SetProperty(x => x.Status, TickerStatus.InProgress), cancellationToken).ConfigureAwait(false);
                 
             if(affected <= 0)
                 continue;
 
+            timeTicker.AcquisitionToken = acquisitionToken;
             yield return timeTicker;
         }
     }
@@ -143,6 +151,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LockHolder, _ => null)
                 .SetProperty(x => x.LockedAt, _ => null)
+                .SetProperty(x => x.LeaseUntil, _ => null)
+                .SetProperty(x => x.AcquisitionToken, _ => null)
                 .SetProperty(x => x.Status, _ => TickerStatus.Idle)
                 .SetProperty(x => x.UpdatedAt, _ => now), cancellationToken).ConfigureAwait(false);;
     }
@@ -161,7 +171,10 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         // Only root tickers carry a lock — chain children execute under their
         // root's lock and are written unfenced, as before.
         if (IsFencedTerminalWrite(functionContexts) && functionContexts.ParentId == null)
-            query = query.Where(x => x.LockHolder == _lockHolder);
+            query = functionContexts.AcquisitionToken.HasValue
+                ? query.Where(x => x.LockHolder == _lockHolder &&
+                                   x.AcquisitionToken == functionContexts.AcquisitionToken)
+                : query.Where(_ => false);
 
         return await query
             .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(functionContexts, now, NextLeaseUntil(now)), cancellationToken).ConfigureAwait(false);
@@ -185,6 +198,28 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         await dbContext.Set<TTimeTicker>()
             .Where(x => idList.Contains(x.Id))
             .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(functionContext, now, NextLeaseUntil(now)), cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Guid[]> TransitionQueuedTimeTickersToInProgressAsync(
+        IReadOnlyCollection<AcquisitionLease> leases, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var context = session.Context.Set<TTimeTicker>();
+        var now = _clock.UtcNow;
+        var winners = new List<Guid>(leases.Count);
+        foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
+        {
+            var affected = await context
+                .Where(x => x.Id == lease.TickerId && x.Status == TickerStatus.Queued &&
+                            x.LockHolder == _lockHolder && x.AcquisitionToken == lease.AcquisitionToken)
+                .ExecuteUpdateAsync(setter => setter
+                    .SetProperty(x => x.Status, TickerStatus.InProgress)
+                    .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
+                    .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                .ConfigureAwait(false);
+            if (affected == 1) winners.Add(lease.TickerId);
+        }
+        return winners.ToArray();
     }
         
     public async Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken)
@@ -296,6 +331,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     Function = e.Function,
                     Retries = e.Retries,
                     RetryIntervals = e.RetryIntervals,
+                    TimeoutSeconds = e.TimeoutSeconds,
                     RunCondition = e.RunCondition,
                     ParentId = e.ParentId,
                 })
@@ -408,6 +444,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LockHolder, _ => null)
                 .SetProperty(x => x.LockedAt, _ => null)
+                .SetProperty(x => x.LeaseUntil, _ => null)
+                .SetProperty(x => x.AcquisitionToken, _ => null)
                 .SetProperty(x => x.Status, TickerStatus.Idle)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
@@ -417,6 +455,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LockHolder, _ => null)
                 .SetProperty(x => x.LockedAt, _ => null)
+                .SetProperty(x => x.LeaseUntil, _ => null)
+                .SetProperty(x => x.AcquisitionToken, _ => null)
                 .SetProperty(x => x.Status, TickerStatus.Idle)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
@@ -430,32 +470,134 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var dbContext = session.Context;
+        var requestedIds = ids.Distinct().ToArray();
         var now = _clock.UtcNow;
-        var idList = ids.ToList();
+        var acquisitionToken = Guid.NewGuid();
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        Guid[] lastAcquiredIds = [];
 
-        // Acquire and mark InProgress in a single update
-        var affected = await dbContext.Set<TTimeTicker>()
-            .Where(x => idList.Contains(x.Id))
-            .WhereCanAcquire(_lockHolder)
-            .ExecuteUpdateAsync(setter => setter
-                .SetProperty(x => x.LockHolder, _lockHolder)
-                .SetProperty(x => x.LockedAt, now)
-                .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
-                .SetProperty(x => x.Status, TickerStatus.InProgress)
-                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
-            .ConfigureAwait(false);
+        return await strategy.ExecuteInTransactionAsync(
+            operation: async _ =>
+            {
+                var acquiredIds = new List<Guid>(requestedIds.Length);
 
-        if (affected == 0)
-            return [];
+                foreach (var id in requestedIds)
+                {
+                    var affected = await dbContext.Set<TTimeTicker>()
+                        .Where(x => x.Id == id)
+                        .WhereCanAcquire(_lockHolder)
+                        .ExecuteUpdateAsync(setter => setter
+                            .SetProperty(x => x.LockHolder, _lockHolder)
+                            .SetProperty(x => x.LockedAt, now)
+                            .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
+                            .SetProperty(x => x.AcquisitionToken, acquisitionToken)
+                            .SetProperty(x => x.Status, TickerStatus.InProgress)
+                            .SetProperty(x => x.UpdatedAt, now),
+                            cancellationToken)
+                        .ConfigureAwait(false);
 
-        // Return the acquired tickers for immediate execution, with children
-        return await dbContext.Set<TTimeTicker>()
-            .AsNoTracking()
-            .Where(x => idList.Contains(x.Id) && x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
-            .Include(x => x.Children.Where(y => y.ExecutionTime == null))
-            .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
-            .ToArrayAsync(cancellationToken)
-            .ConfigureAwait(false);
+                    if (affected == 1)
+                        acquiredIds.Add(id);
+                }
+
+                lastAcquiredIds = acquiredIds.ToArray();
+                if (lastAcquiredIds.Length == 0)
+                    return [];
+
+                var acquired = await dbContext.Set<TTimeTicker>()
+                    .AsNoTracking()
+                    .Where(x => lastAcquiredIds.Contains(x.Id))
+                    .Include(x => x.Children.Where(y => y.ExecutionTime == null))
+                    .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
+                    .ToArrayAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                await ExtendQueueChainsBeyondGrandchildrenAsync(
+                        dbContext.Set<TTimeTicker>(), acquired, cancellationToken)
+                    .ConfigureAwait(false);
+
+                cancellationToken.ThrowIfCancellationRequested();
+                return acquired;
+            },
+            verifySucceeded: async _ =>
+            {
+                if (lastAcquiredIds.Length == 0)
+                    return true;
+
+                var committedCount = await dbContext.Set<TTimeTicker>()
+                    .AsNoTracking()
+                    .CountAsync(x => lastAcquiredIds.Contains(x.Id)
+                                     && x.Status == TickerStatus.InProgress
+                                     && x.LockHolder == _lockHolder
+                                     && x.AcquisitionToken == acquisitionToken,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+                return committedCount == lastAcquiredIds.Length;
+            },
+            isolationLevel: IsolationLevel.Unspecified,
+            cancellationToken: CancellationToken.None).ConfigureAwait(false);
+    }
+    public async Task<TimeTickerEntity> AcquireTimeTickerOnDemandAsync(
+        Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var dbContext = session.Context;
+        var now = _clock.UtcNow;
+        var acquisitionToken = Guid.NewGuid();
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        var acquired = false;
+
+        return await strategy.ExecuteInTransactionAsync(
+            operation: async _ =>
+            {
+                var affected = await dbContext.Set<TTimeTicker>()
+                    .Where(x => x.Id == id)
+                    .Where(x => x.Status == TickerStatus.Idle ||
+                                (x.Status == TickerStatus.Queued &&
+                                 (x.LockHolder == null || x.LockHolder == _lockHolder)) ||
+                                x.Status == TickerStatus.Done ||
+                                x.Status == TickerStatus.DueDone ||
+                                x.Status == TickerStatus.Failed ||
+                                x.Status == TickerStatus.Cancelled ||
+                                x.Status == TickerStatus.Skipped)
+                    .ExecuteUpdateAsync(setter => setter
+                        .SetProperty(x => x.ExecutionTime, executionTime)
+                        .SetProperty(x => x.Status, TickerStatus.InProgress)
+                        .SetProperty(x => x.LockHolder, _lockHolder)
+                        .SetProperty(x => x.LockedAt, now)
+                        .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
+                        .SetProperty(x => x.AcquisitionToken, acquisitionToken)
+                        .SetProperty(x => x.RetryCount, 0)
+                        .SetProperty(x => x.ExceptionMessage, (string)null)
+                        .SetProperty(x => x.SkippedReason, (string)null)
+                        .SetProperty(x => x.ExecutedAt, (DateTime?)null)
+                        .SetProperty(x => x.ElapsedTime, 0L)
+                        .SetProperty(x => x.StaleRestartCount, 0)
+                        .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                    .ConfigureAwait(false);
+
+                acquired = affected == 1;
+                if (!acquired)
+                    return null;
+
+                var result = await dbContext.Set<TTimeTicker>()
+                    .AsNoTracking()
+                    .Where(x => x.Id == id && x.AcquisitionToken == acquisitionToken)
+                    .Include(x => x.Children.Where(y => y.ExecutionTime == null))
+                    .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
+                    .SingleAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                await ExtendQueueChainsBeyondGrandchildrenAsync(
+                    dbContext.Set<TTimeTicker>(), [result], cancellationToken).ConfigureAwait(false);
+                return result;
+            },
+            verifySucceeded: async _ => !acquired || await dbContext.Set<TTimeTicker>()
+                .AsNoTracking()
+                .AnyAsync(x => x.Id == id && x.Status == TickerStatus.InProgress &&
+                               x.LockHolder == _lockHolder && x.AcquisitionToken == acquisitionToken,
+                    CancellationToken.None).ConfigureAwait(false),
+            isolationLevel: IsolationLevel.Unspecified,
+            cancellationToken: CancellationToken.None).ConfigureAwait(false);
     }
         
     #region Core_Cron_Ticker_Methods
@@ -594,7 +736,10 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         // Fencing: see UpdateTimeTicker. Occurrences are always lock-held by the
         // executing node, so every terminal write is fenced.
         if (IsFencedTerminalWrite(functionContext))
-            query = query.Where(x => x.LockHolder == _lockHolder);
+            query = functionContext.AcquisitionToken.HasValue
+                ? query.Where(x => x.LockHolder == _lockHolder &&
+                                   x.AcquisitionToken == functionContext.AcquisitionToken)
+                : query.Where(_ => false);
 
         await query
             .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext, NextLeaseUntil(now)), cancellationToken)
@@ -621,6 +766,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         foreach (var cronTickerOccurrence in cronTickersToUpdate)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var acquisitionToken = Guid.NewGuid();
 
             var affected = await context
                 .Where(x => x.Id == cronTickerOccurrence.Id && x.UpdatedAt == cronTickerOccurrence.UpdatedAt)
@@ -628,6 +774,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     .SetProperty(x => x.LockHolder, _lockHolder)
                     .SetProperty(x => x.LockedAt, now)
                     .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
+                    .SetProperty(x => x.AcquisitionToken, acquisitionToken)
                     .SetProperty(x => x.UpdatedAt,  now)
                     .SetProperty(x => x.Status, TickerStatus.InProgress), cancellationToken)
                 .ConfigureAwait(false);
@@ -635,6 +782,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             if(affected <= 0)
                 continue;
 
+            cronTickerOccurrence.AcquisitionToken = acquisitionToken;
             yield return cronTickerOccurrence;
         }
     }
@@ -650,6 +798,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LockHolder, _ => null)
                 .SetProperty(x => x.LockedAt, _ => null)
+                .SetProperty(x => x.LeaseUntil, _ => null)
+                .SetProperty(x => x.AcquisitionToken, _ => null)
                 .SetProperty(x => x.Status, TickerStatus.Idle)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
@@ -659,6 +809,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LockHolder, _ => null)
                 .SetProperty(x => x.LockedAt, _ => null)
+                .SetProperty(x => x.LeaseUntil, _ => null)
+                .SetProperty(x => x.AcquisitionToken, _ => null)
                 .SetProperty(x => x.Status, TickerStatus.Idle)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
@@ -680,6 +832,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LockHolder, _ => null)
                 .SetProperty(x => x.LockedAt, _ => null)
+                .SetProperty(x => x.LeaseUntil, _ => null)
+                .SetProperty(x => x.AcquisitionToken, _ => null)
                 .SetProperty(x => x.Status, TickerStatus.Idle)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
@@ -697,6 +851,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         foreach (var item in cronTickerOccurrences.Items)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var acquisitionToken = Guid.NewGuid();
 
             if (item.NextCronOccurrence is null)
             {
@@ -708,6 +863,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     ExecutionTime = executionTime,
                     CronTickerId = item.Id,
                     LockedAt = now,
+                    AcquisitionToken = acquisitionToken,
                     CreatedAt = now,
                     UpdatedAt = now
                 };
@@ -741,6 +897,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     .ExecuteUpdateAsync(prop => prop
                             .SetProperty(y => y.LockHolder, _lockHolder)
                             .SetProperty(y => y.LockedAt, now)
+                            .SetProperty(y => y.AcquisitionToken, acquisitionToken)
                             .SetProperty(y => y.UpdatedAt, now)
                             .SetProperty(y => y.Status, TickerStatus.Queued),
                         cancellationToken)
@@ -757,6 +914,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     Status = TickerStatus.Queued,
                     LockHolder = _lockHolder,
                     LockedAt = now,
+                    AcquisitionToken = acquisitionToken,
                     UpdatedAt = now,
                     CreatedAt = item.NextCronOccurrence.CreatedAt,
                     CronTicker = new TCronTicker
@@ -817,6 +975,28 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(functionContext, NextLeaseUntil(now)), cancellationToken)
             .ConfigureAwait(false);
     }
+
+    public async Task<Guid[]> TransitionQueuedCronOccurrencesToInProgressAsync(
+        IReadOnlyCollection<AcquisitionLease> leases, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var context = session.Context.Set<CronTickerOccurrenceEntity<TCronTicker>>();
+        var now = _clock.UtcNow;
+        var winners = new List<Guid>(leases.Count);
+        foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
+        {
+            var affected = await context
+                .Where(x => x.Id == lease.TickerId && x.Status == TickerStatus.Queued &&
+                            x.LockHolder == _lockHolder && x.AcquisitionToken == lease.AcquisitionToken)
+                .ExecuteUpdateAsync(setter => setter
+                    .SetProperty(x => x.Status, TickerStatus.InProgress)
+                    .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
+                    .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                .ConfigureAwait(false);
+            if (affected == 1) winners.Add(lease.TickerId);
+        }
+        return winners.ToArray();
+    }
     
     public async Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
     {
@@ -842,6 +1022,9 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     #endregion
 
     #region Stale_Job_Recovery
+
+    // EF Core fully implements lease renewal and the stale-job watchdog below.
+    public bool SupportsLeaseBasedRecovery => true;
 
     public async Task<int> RenewTimeTickerLeases(Guid[] timeTickerIds, DateTime leaseUntil, CancellationToken cancellationToken = default)
     {
@@ -873,6 +1056,92 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LeaseUntil, leaseUntil), cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    public async Task<int> RenewTimeTickerLeases(
+        IReadOnlyCollection<AcquisitionLease> leases, DateTime leaseUntil,
+        CancellationToken cancellationToken = default)
+    {
+        if (leases == null || leases.Count == 0)
+            return 0;
+
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var dbContext = session.Context;
+        var renewed = 0;
+        foreach (var lease in leases)
+        {
+            if (!lease.AcquisitionToken.HasValue)
+                continue;
+
+            renewed += await dbContext.Set<TTimeTicker>()
+                .Where(x => x.Id == lease.TickerId && x.LockHolder == _lockHolder &&
+                            x.Status == TickerStatus.InProgress &&
+                            x.AcquisitionToken == lease.AcquisitionToken)
+                .ExecuteUpdateAsync(setter => setter.SetProperty(x => x.LeaseUntil, leaseUntil), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return renewed;
+    }
+
+    public async Task<int> RenewCronTickerOccurrenceLeases(
+        IReadOnlyCollection<AcquisitionLease> leases, DateTime leaseUntil,
+        CancellationToken cancellationToken = default)
+    {
+        if (leases == null || leases.Count == 0)
+            return 0;
+
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var dbContext = session.Context;
+        var renewed = 0;
+        foreach (var lease in leases)
+        {
+            if (!lease.AcquisitionToken.HasValue)
+                continue;
+
+            renewed += await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                .Where(x => x.Id == lease.TickerId && x.LockHolder == _lockHolder &&
+                            x.Status == TickerStatus.InProgress &&
+                            x.AcquisitionToken == lease.AcquisitionToken)
+                .ExecuteUpdateAsync(setter => setter.SetProperty(x => x.LeaseUntil, leaseUntil), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return renewed;
+    }
+
+    public async Task<Guid[]> GetStillHeldTickerIds(
+        IReadOnlyCollection<AcquisitionLease> timeTickerLeases,
+        IReadOnlyCollection<AcquisitionLease> occurrenceLeases,
+        CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var dbContext = session.Context;
+        var held = new List<Guid>();
+
+        foreach (var lease in timeTickerLeases ?? Array.Empty<AcquisitionLease>())
+        {
+            if (!lease.AcquisitionToken.HasValue)
+                continue;
+            if (await dbContext.Set<TTimeTicker>().AsNoTracking().AnyAsync(
+                    x => x.Id == lease.TickerId && x.LockHolder == _lockHolder &&
+                         x.Status == TickerStatus.InProgress && x.AcquisitionToken == lease.AcquisitionToken,
+                    cancellationToken).ConfigureAwait(false))
+                held.Add(lease.TickerId);
+        }
+
+        foreach (var lease in occurrenceLeases ?? Array.Empty<AcquisitionLease>())
+        {
+            if (!lease.AcquisitionToken.HasValue)
+                continue;
+            if (await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking().AnyAsync(
+                    x => x.Id == lease.TickerId && x.LockHolder == _lockHolder &&
+                         x.Status == TickerStatus.InProgress && x.AcquisitionToken == lease.AcquisitionToken,
+                    cancellationToken).ConfigureAwait(false))
+                held.Add(lease.TickerId);
+        }
+
+        return held.ToArray();
     }
 
     public async Task<Guid[]> GetStillHeldTickerIds(Guid[] timeTickerIds, Guid[] occurrenceIds, CancellationToken cancellationToken = default)
@@ -913,6 +1182,31 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         const string staleReason =
             "Stale: the node executing this ticker stopped renewing its lease (presumed dead).";
 
+        var staleLockCutoff = now.Subtract(_schedulerOptions.QueuedLockTimeout);
+        await dbContext.Set<TTimeTicker>()
+            .Where(x => (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
+                        x.LockHolder != null && x.LockedAt != null && x.LockedAt < staleLockCutoff)
+            .ExecuteUpdateAsync(setter => setter
+                .SetProperty(x => x.Status, TickerStatus.Idle)
+                .SetProperty(x => x.LockHolder, (string)null)
+                .SetProperty(x => x.LockedAt, (DateTime?)null)
+                .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                .SetProperty(x => x.AcquisitionToken, (Guid?)null)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+            .ConfigureAwait(false);
+
+        await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+            .Where(x => (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
+                        x.LockHolder != null && x.LockedAt != null && x.LockedAt < staleLockCutoff)
+            .ExecuteUpdateAsync(setter => setter
+                .SetProperty(x => x.Status, TickerStatus.Idle)
+                .SetProperty(x => x.LockHolder, (string)null)
+                .SetProperty(x => x.LockedAt, (DateTime?)null)
+                .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                .SetProperty(x => x.AcquisitionToken, (Guid?)null)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+            .ConfigureAwait(false);
+
         // Restart pass first: expired-lease InProgress rows whose policy allows it
         // go back to Idle for any node to re-acquire (fallback picks them up since
         // their ExecutionTime is in the past). The subsequent Cancel pass then only
@@ -925,6 +1219,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .SetProperty(x => x.LockHolder, (string)null)
                 .SetProperty(x => x.LockedAt, (DateTime?)null)
                 .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                .SetProperty(x => x.AcquisitionToken, (Guid?)null)
                 .SetProperty(x => x.StaleRestartCount, x => x.StaleRestartCount + 1)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
@@ -938,6 +1233,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .SetProperty(x => x.LockHolder, (string)null)
                 .SetProperty(x => x.LockedAt, (DateTime?)null)
                 .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                .SetProperty(x => x.AcquisitionToken, (Guid?)null)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
 
@@ -950,6 +1246,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .SetProperty(x => x.LockHolder, (string)null)
                 .SetProperty(x => x.LockedAt, (DateTime?)null)
                 .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                .SetProperty(x => x.AcquisitionToken, (Guid?)null)
                 .SetProperty(x => x.StaleRestartCount, x => x.StaleRestartCount + 1)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
@@ -963,6 +1260,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .SetProperty(x => x.LockHolder, (string)null)
                 .SetProperty(x => x.LockedAt, (DateTime?)null)
                 .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                .SetProperty(x => x.AcquisitionToken, (Guid?)null)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
 

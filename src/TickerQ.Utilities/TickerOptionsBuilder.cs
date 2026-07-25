@@ -235,12 +235,20 @@ namespace TickerQ.Utilities
         /// <see cref="Interfaces.ITickerQFailureNotifier"/> instead.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> NotifyFailuresViaWebhook(
-            string url, System.Collections.Generic.IDictionary<string, string> headers = null)
+            string url, System.Collections.Generic.IDictionary<string, string> headers = null,
+            Func<string, string> reasonSanitizer = null)
         {
             if (string.IsNullOrWhiteSpace(url))
                 throw new ArgumentException("Webhook URL must be provided.", nameof(url));
 
-            FailureWebhook = new Models.FailureWebhookOptions { Url = url, Headers = headers };
+            var options = new Models.FailureWebhookOptions
+            {
+                Url = url,
+                Headers = headers
+            };
+            if (reasonSanitizer != null)
+                options.ReasonSanitizer = reasonSanitizer;
+            FailureWebhook = options;
             return this;
         }
         
@@ -253,7 +261,16 @@ namespace TickerQ.Utilities
 
     public class SchedulerOptionsBuilder
     {
+        private readonly string _executionOwnerNonce = Guid.NewGuid().ToString("N");
+
+        /// <summary>Human-readable logical node label used by dashboards, metrics, and heartbeat providers.</summary>
         public string NodeIdentifier { get; set; } = Environment.MachineName;
+
+        /// <summary>
+        /// Process-instance-unique persistence owner used for LockHolder fencing. Two scheduler
+        /// processes may intentionally share NodeIdentifier, but must never share row ownership.
+        /// </summary>
+        public string ExecutionOwnerId => $"{NodeIdentifier}:{Environment.ProcessId}:{_executionOwnerNonce}";
         public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
         public TimeSpan IdleWorkerTimeOut { get; set; } = TimeSpan.FromMinutes(1);
         public TimeSpan FallbackIntervalChecker { get; set; } = TimeSpan.FromSeconds(30);
@@ -295,6 +312,13 @@ namespace TickerQ.Utilities
         public TimeSpan LeaseRenewalInterval { get; set; } = TimeSpan.FromSeconds(15);
 
         /// <summary>
+        /// Maximum age of the short persisted Queued handoff lock before recovery resets it to Idle.
+        /// Normal accepted work transitions to InProgress immediately; this protects the crash window
+        /// between queue acquisition and that transition without releasing a live sibling on startup.
+        /// </summary>
+        public TimeSpan QueuedLockTimeout { get; set; } = TimeSpan.FromMinutes(2);
+
+        /// <summary>
         /// Poison-job guard: after this many stale Restarts the ticker is Cancelled
         /// instead, so a job that kills its host can't crash-loop the cluster.
         /// </summary>
@@ -308,6 +332,13 @@ namespace TickerQ.Utilities
         /// logged — their thread keeps running until it finishes on its own.
         /// </summary>
         public TimeSpan? DefaultExecutionTimeout { get; set; }
+
+        /// <summary>
+        /// Grace after cooperative timeout cancellation before a still-running delegate is logged
+        /// as timeout-pending. The delegate remains tracked, leased, and scoped until it actually exits.
+        /// In-process delegates cannot be terminated safely.
+        /// </summary>
+        public TimeSpan TimeoutGracePeriod { get; set; } = TimeSpan.FromSeconds(5);
 
         /// <summary>
         /// On graceful shutdown, how long to wait for in-flight ticker executions

@@ -236,8 +236,12 @@ internal static class DashboardProtoMapper
         var p = new GraphBucketProto { Date = dto.Date.ToProto() };
         if (dto.Counts != null)
         {
-            foreach (var (status, count) in dto.Counts)
-                p.Counts.Add(new StatusCountProto { Status = status.ToProto(), Count = count });
+            foreach (var bucketCount in dto.Counts)
+                p.Counts.Add(new StatusCountProto
+                {
+                    Status = bucketCount.Status.ToProto(),
+                    Count = bucketCount.Count
+                });
         }
         return p;
     }

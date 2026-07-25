@@ -32,6 +32,17 @@ namespace TickerQ.Utilities.Infrastructure
                 UpdatedAt = e.UpdatedAt,
                 ParentId = e.ParentId,
                 ExecutionTime = e.ExecutionTime,
+                Status = e.Status,
+                LockHolder = e.LockHolder,
+                LockedAt = e.LockedAt,
+                LeaseUntil = e.LeaseUntil,
+                AcquisitionToken = e.AcquisitionToken,
+                RetryCount = e.RetryCount,
+                ExceptionMessage = e.ExceptionMessage,
+                SkippedReason = e.SkippedReason,
+                StaleRestartCount = e.StaleRestartCount,
+                ExecutedAt = e.ExecutedAt,
+                ElapsedTime = e.ElapsedTime,
                 Children = e.Children.Select(ch => new TimeTickerEntity
                 {
                     Id = ch.Id,
@@ -40,6 +51,7 @@ namespace TickerQ.Utilities.Infrastructure
                     RetryIntervals = ch.RetryIntervals,
                     TimeoutSeconds = ch.TimeoutSeconds,
                     RunCondition = ch.RunCondition,
+                    ParentId = ch.ParentId,
                     Children = ch.Children.Select(gch => new TimeTickerEntity
                     {
                         Function = gch.Function,
@@ -47,7 +59,8 @@ namespace TickerQ.Utilities.Infrastructure
                         RetryIntervals = gch.RetryIntervals,
                         TimeoutSeconds = gch.TimeoutSeconds,
                         Id = gch.Id,
-                        RunCondition = gch.RunCondition
+                        RunCondition = gch.RunCondition,
+                        ParentId = gch.ParentId
                     }).ToArray()
                 }).ToArray()
             };
@@ -62,6 +75,7 @@ namespace TickerQ.Utilities.Infrastructure
                 UpdatedAt = e.UpdatedAt,
                 CronTickerId = e.CronTickerId,
                 ExecutionTime = e.ExecutionTime,
+                AcquisitionToken = e.AcquisitionToken,
                 CronTicker = new TCronTicker
                 {
                     Id = e.CronTicker.Id,
@@ -82,6 +96,7 @@ namespace TickerQ.Utilities.Infrastructure
                 CreatedAt = e.CreatedAt,
                 CronTickerId = e.CronTickerId,
                 ExecutionTime = e.ExecutionTime,
+                AcquisitionToken = e.AcquisitionToken,
                 CronTicker = new TCronTicker
                 {
                     Id = e.CronTicker.Id,

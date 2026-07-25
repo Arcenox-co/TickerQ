@@ -16,8 +16,7 @@ namespace TickerQ.MongoDB.Tests;
 /// </summary>
 public class MongoTestFixture : IAsyncLifetime
 {
-    public MongoDbContainer Container { get; } = new MongoDbBuilder()
-        .WithImage("mongo:7")
+    public MongoDbContainer Container { get; } = new MongoDbBuilder("mongo:7")
         .Build();
 
     public IMongoClient Client { get; private set; } = null!;
@@ -29,6 +28,12 @@ public class MongoTestFixture : IAsyncLifetime
     public ITickerClock Clock { get; private set; } = null!;
     public DateTime FixedNow { get; } = new(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc);
     public const string NodeId = "test-node-1";
+
+    /// <summary>The scheduler options the provider was constructed with.</summary>
+    public SchedulerOptionsBuilder Options { get; private set; } = null!;
+
+    /// <summary>The execution owner id the provider stamps as <c>LockHolder</c> when it acquires a row.</summary>
+    public string OwnerId => Options.ExecutionOwnerId;
 
     private ITickerMongoContext<TimeTickerEntity, CronTickerEntity> _context = null!;
 
@@ -45,8 +50,8 @@ public class MongoTestFixture : IAsyncLifetime
         Clock = Substitute.For<ITickerClock>();
         Clock.UtcNow.Returns(FixedNow);
 
-        var options = new SchedulerOptionsBuilder { NodeIdentifier = NodeId };
-        Provider = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(_context, Clock, options);
+        Options = new SchedulerOptionsBuilder { NodeIdentifier = NodeId };
+        Provider = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(_context, Clock, Options);
 
         var provisioner = new TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity>(_context);
         await provisioner.StartAsync(CancellationToken.None);

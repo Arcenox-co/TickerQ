@@ -111,7 +111,9 @@ namespace TickerQ.DependencyInjection
             // TryAdd lets users register their own ITickerQFailureNotifier beforehand.
             if (optionInstance.FailureWebhook != null)
             {
-                services.AddSingleton(new WebhookFailureNotifier(optionInstance.FailureWebhook));
+                services.AddSingleton(sp => new WebhookFailureNotifier(
+                    optionInstance.FailureWebhook,
+                    sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<WebhookFailureNotifier>>()));
                 services.TryAddSingleton<ITickerQFailureNotifier>(sp => sp.GetRequiredService<WebhookFailureNotifier>());
                 services.AddHostedService<TickerQWebhookNotifierBackgroundService>();
             }

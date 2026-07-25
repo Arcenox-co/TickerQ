@@ -43,6 +43,12 @@ public class InternalTickerManagerTests
             .Returns(Task.FromResult<CronTickerOccurrenceEntity<FakeCronTicker>>(null));
         _persistence.GetEarliestTimeTickers(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(Array.Empty<TimeTickerEntity>()));
+        _persistence.TransitionQueuedTimeTickersToInProgressAsync(
+                Arg.Any<IReadOnlyCollection<AcquisitionLease>>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.Arg<IReadOnlyCollection<AcquisitionLease>>().Select(x => x.TickerId).ToArray());
+        _persistence.TransitionQueuedCronOccurrencesToInProgressAsync(
+                Arg.Any<IReadOnlyCollection<AcquisitionLease>>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.Arg<IReadOnlyCollection<AcquisitionLease>>().Select(x => x.TickerId).ToArray());
 
         _notificationHub.UpdateTimeTickerNotifyAsync(Arg.Any<Guid>()).Returns(Task.CompletedTask);
         _notificationHub.AddCronOccurrenceAsync(Arg.Any<Guid>(), Arg.Any<Guid>()).Returns(Task.CompletedTask);
@@ -459,6 +465,64 @@ public class InternalTickerManagerTests
     }
 
     [Fact]
+    public async Task GetNextTickers_DeepTimeTickerChain_PreservesEveryExecutionContext()
+    {
+        var rootId = Guid.NewGuid();
+        var childId = Guid.NewGuid();
+        var grandchildId = Guid.NewGuid();
+        var greatGrandchildId = Guid.NewGuid();
+        var executionTime = _now.AddMinutes(5);
+        var root = new TimeTickerEntity
+        {
+            Id = rootId,
+            Function = "Root",
+            ExecutionTime = executionTime,
+            Children =
+            [
+                new TimeTickerEntity
+                {
+                    Id = childId,
+                    Function = "Child",
+                    ParentId = rootId,
+                    Children =
+                    [
+                        new TimeTickerEntity
+                        {
+                            Id = grandchildId,
+                            Function = "Grandchild",
+                            ParentId = childId,
+                            Children =
+                            [
+                                new TimeTickerEntity
+                                {
+                                    Id = greatGrandchildId,
+                                    Function = "GreatGrandchild",
+                                    ParentId = grandchildId,
+                                    Children = []
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        };
+
+        _persistence.GetEarliestTimeTickers(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<TimeTickerEntity[]>([root]));
+        _persistence.QueueTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>())
+            .Returns(ToAsyncEnumerable(new[] { root }));
+
+        var (_, functions) = await _manager.GetNextTickers(CancellationToken.None);
+
+        var rootContext = Assert.Single(functions);
+        var childContext = Assert.Single(rootContext.TimeTickerChildren);
+        var grandchildContext = Assert.Single(childContext.TimeTickerChildren);
+        var greatGrandchildContext = Assert.Single(grandchildContext.TimeTickerChildren);
+        Assert.Equal(greatGrandchildId, greatGrandchildContext.TickerId);
+        Assert.Equal(grandchildId, greatGrandchildContext.ParentId);
+    }
+
+    [Fact]
     public async Task GetNextTickers_CronOccurrencesAvailable_QueuesAndReturnsThem()
     {
         var origTz = CronScheduleCache.TimeZoneInfo;
@@ -660,33 +724,68 @@ public class InternalTickerManagerTests
     // ====================================================================
 
     [Fact]
+    public async Task SetTickersInProgress_DispatchesOnlyRowsWhoseQueuedGenerationStillWins()
+    {
+        var winnerId = Guid.NewGuid();
+        var loserId = Guid.NewGuid();
+        var winnerToken = Guid.NewGuid();
+        var loserToken = Guid.NewGuid();
+        var resources = new[]
+        {
+            new InternalFunctionContext
+            {
+                TickerId = winnerId,
+                Type = TickerType.TimeTicker,
+                Status = TickerStatus.Queued,
+                AcquisitionToken = winnerToken,
+            },
+            new InternalFunctionContext
+            {
+                TickerId = loserId,
+                Type = TickerType.TimeTicker,
+                Status = TickerStatus.Queued,
+                AcquisitionToken = loserToken,
+            },
+        };
+        _persistence.TransitionQueuedTimeTickersToInProgressAsync(
+                Arg.Any<IReadOnlyCollection<AcquisitionLease>>(), Arg.Any<CancellationToken>())
+            .Returns([winnerId]);
+
+        var winners = await _manager.SetTickersInProgress(resources, CancellationToken.None);
+
+        Assert.Single(winners);
+        Assert.Same(resources[0], winners[0]);
+        Assert.Equal(TickerStatus.InProgress, winners[0].Status);
+        Assert.Equal(TickerStatus.Queued, resources[1].Status);
+        await _notificationHub.Received(1).UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(resources[0]);
+        await _notificationHub.DidNotReceive().UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(resources[1]);
+    }
+
+    [Fact]
     public async Task SetTickersInProgress_SetsStatusToInProgress_OnPersistenceProvider()
     {
         var timeTickerId = Guid.NewGuid();
+        var acquisitionToken = Guid.NewGuid();
         var resources = new[]
         {
             new InternalFunctionContext
             {
                 TickerId = timeTickerId,
                 Type = TickerType.TimeTicker,
-                FunctionName = "Func1"
+                FunctionName = "Func1",
+                AcquisitionToken = acquisitionToken,
             }
         };
 
-        _persistence.UpdateTimeTickersWithUnifiedContext(
-                Arg.Any<Guid[]>(),
-                Arg.Any<InternalFunctionContext>(),
-                Arg.Any<CancellationToken>())
-            .Returns(Task.CompletedTask);
-
         await _manager.SetTickersInProgress(resources, CancellationToken.None);
 
-        await _persistence.Received(1).UpdateTimeTickersWithUnifiedContext(
-            Arg.Is<Guid[]>(ids => ids.Length == 1 && ids[0] == timeTickerId),
-            Arg.Is<InternalFunctionContext>(ctx => ctx.Status == TickerStatus.InProgress),
+        await _persistence.Received(1).TransitionQueuedTimeTickersToInProgressAsync(
+            Arg.Is<IReadOnlyCollection<AcquisitionLease>>(leases =>
+                leases.Count == 1 && leases.Single().TickerId == timeTickerId &&
+                leases.Single().AcquisitionToken == acquisitionToken),
             Arg.Any<CancellationToken>());
-
         Assert.Equal(TickerStatus.InProgress, resources[0].Status);
+        Assert.Equal(acquisitionToken, resources[0].AcquisitionToken);
     }
 
     [Fact]
@@ -694,41 +793,36 @@ public class InternalTickerManagerTests
     {
         var timeTickerId = Guid.NewGuid();
         var cronOccurrenceId = Guid.NewGuid();
+        var timeToken = Guid.NewGuid();
+        var cronToken = Guid.NewGuid();
         var resources = new[]
         {
             new InternalFunctionContext
             {
                 TickerId = timeTickerId,
                 Type = TickerType.TimeTicker,
-                FunctionName = "TimeFunc"
+                FunctionName = "TimeFunc",
+                AcquisitionToken = timeToken,
             },
             new InternalFunctionContext
             {
                 TickerId = cronOccurrenceId,
                 Type = TickerType.CronTickerOccurrence,
-                FunctionName = "CronFunc"
+                FunctionName = "CronFunc",
+                AcquisitionToken = cronToken,
             }
         };
 
-        _persistence.UpdateTimeTickersWithUnifiedContext(
-                Arg.Any<Guid[]>(), Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
-            .Returns(Task.CompletedTask);
-        _persistence.UpdateCronTickerOccurrencesWithUnifiedContext(
-                Arg.Any<Guid[]>(), Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
-            .Returns(Task.CompletedTask);
-
         await _manager.SetTickersInProgress(resources, CancellationToken.None);
 
-        // Both persistence calls should have been made (the WhenAll branch)
-        await _persistence.Received(1).UpdateTimeTickersWithUnifiedContext(
-            Arg.Is<Guid[]>(ids => ids.Length == 1 && ids[0] == timeTickerId),
-            Arg.Any<InternalFunctionContext>(),
+        await _persistence.Received(1).TransitionQueuedTimeTickersToInProgressAsync(
+            Arg.Is<IReadOnlyCollection<AcquisitionLease>>(x =>
+                x.Single().TickerId == timeTickerId && x.Single().AcquisitionToken == timeToken),
             Arg.Any<CancellationToken>());
-        await _persistence.Received(1).UpdateCronTickerOccurrencesWithUnifiedContext(
-            Arg.Is<Guid[]>(ids => ids.Length == 1 && ids[0] == cronOccurrenceId),
-            Arg.Any<InternalFunctionContext>(),
+        await _persistence.Received(1).TransitionQueuedCronOccurrencesToInProgressAsync(
+            Arg.Is<IReadOnlyCollection<AcquisitionLease>>(x =>
+                x.Single().TickerId == cronOccurrenceId && x.Single().AcquisitionToken == cronToken),
             Arg.Any<CancellationToken>());
-
         Assert.All(resources, r => Assert.Equal(TickerStatus.InProgress, r.Status));
     }
 
@@ -736,28 +830,26 @@ public class InternalTickerManagerTests
     public async Task SetTickersInProgress_OnlyCronOccurrences_CallsCronUpdateOnly()
     {
         var cronId = Guid.NewGuid();
+        var acquisitionToken = Guid.NewGuid();
         var resources = new[]
         {
             new InternalFunctionContext
             {
                 TickerId = cronId,
                 Type = TickerType.CronTickerOccurrence,
-                FunctionName = "CronFunc"
+                FunctionName = "CronFunc",
+                AcquisitionToken = acquisitionToken,
             }
         };
 
-        _persistence.UpdateCronTickerOccurrencesWithUnifiedContext(
-                Arg.Any<Guid[]>(), Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
-            .Returns(Task.CompletedTask);
-
         await _manager.SetTickersInProgress(resources, CancellationToken.None);
 
-        await _persistence.Received(1).UpdateCronTickerOccurrencesWithUnifiedContext(
-            Arg.Is<Guid[]>(ids => ids.Length == 1 && ids[0] == cronId),
-            Arg.Any<InternalFunctionContext>(),
+        await _persistence.Received(1).TransitionQueuedCronOccurrencesToInProgressAsync(
+            Arg.Is<IReadOnlyCollection<AcquisitionLease>>(x =>
+                x.Single().TickerId == cronId && x.Single().AcquisitionToken == acquisitionToken),
             Arg.Any<CancellationToken>());
-        await _persistence.DidNotReceive().UpdateTimeTickersWithUnifiedContext(
-            Arg.Any<Guid[]>(), Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>());
+        await _persistence.DidNotReceive().TransitionQueuedTimeTickersToInProgressAsync(
+            Arg.Any<IReadOnlyCollection<AcquisitionLease>>(), Arg.Any<CancellationToken>());
     }
 
     // ====================================================================
@@ -923,6 +1015,18 @@ public class InternalTickerManagerTests
         var parentId = Guid.NewGuid();
         var childId = Guid.NewGuid();
         var grandchildId = Guid.NewGuid();
+        var greatGrandchildId = Guid.NewGuid();
+
+        var greatGrandchild = new TimeTickerEntity
+        {
+            Id = greatGrandchildId,
+            Function = "GreatGrandchildFunc",
+            ParentId = grandchildId,
+            Retries = 0,
+            RetryIntervals = Array.Empty<int>(),
+            RunCondition = RunCondition.OnAnyCompletedStatus,
+            Children = new List<TimeTickerEntity>()
+        };
 
         var grandchild = new TimeTickerEntity
         {
@@ -932,7 +1036,7 @@ public class InternalTickerManagerTests
             Retries = 0,
             RetryIntervals = Array.Empty<int>(),
             RunCondition = RunCondition.OnAnyCompletedStatus,
-            Children = new List<TimeTickerEntity>()
+            Children = new List<TimeTickerEntity> { greatGrandchild }
         };
 
         var child = new TimeTickerEntity
@@ -979,6 +1083,10 @@ public class InternalTickerManagerTests
         Assert.Equal(grandchildId, grandchildResult.TickerId);
         Assert.Equal("GrandchildFunc", grandchildResult.FunctionName);
         Assert.Equal(childId, grandchildResult.ParentId);
+        var greatGrandchildResult = Assert.Single(grandchildResult.TimeTickerChildren);
+        Assert.Equal(greatGrandchildId, greatGrandchildResult.TickerId);
+        Assert.Equal("GreatGrandchildFunc", greatGrandchildResult.FunctionName);
+        Assert.Equal(grandchildId, greatGrandchildResult.ParentId);
     }
 
     [Fact]

@@ -13,6 +13,16 @@ namespace TickerQ.Tests;
 [Collection("TickerCancellationTokenState")]
 public class TickerExecutionTaskHandlerTests : IDisposable
 {
+    private sealed class ScopedProbe : IDisposable
+    {
+        public bool IsDisposed { get; private set; }
+        public void ThrowIfDisposed()
+        {
+            if (IsDisposed) throw new ObjectDisposedException(nameof(ScopedProbe));
+        }
+        public void Dispose() => IsDisposed = true;
+    }
+
     public void Dispose()
     {
         TickerCancellationTokenManager.CleanUpTickerCancellationTokens();
@@ -71,6 +81,55 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         await _internalManager.Received(1).UpdateTickerAsync(
             Arg.Is<InternalFunctionContext>(c => c.TickerId == context.TickerId),
             Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_Unregisters_When_Terminal_Persistence_Throws()
+    {
+        var context = CreateContext(ct: (_, _, _) => Task.CompletedTask);
+        _internalManager.UpdateTickerAsync(
+                Arg.Is<InternalFunctionContext>(candidate => candidate.TickerId == context.TickerId),
+                Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new InvalidOperationException("terminal persistence failed"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _handler.ExecuteTaskAsync(context, isDue: false));
+
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+        Assert.False(TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId));
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_WithPreRegisteredSource_ReusesIt_NoDuplicate_AndRequestCancelHitsSameSource()
+    {
+        var delegateStarted = new TaskCompletionSource();
+        var context = CreateContext(ct: async (token, _, _) =>
+        {
+            delegateStarted.SetResult();
+            await Task.Delay(Timeout.Infinite, token); // cancelled via the shared registered source
+        });
+
+        // Acquisition-time registration owned by the caller (mirrors the scheduler).
+        var registered = TickerCancellationTokenManager.TryRegisterAcquired(context, isDue: false);
+        Assert.NotNull(registered);
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+
+        var execTask = _handler.ExecuteRegisteredTaskAsync(context, isDue: false, registered, CancellationToken.None);
+        await delegateStarted.Task;
+
+        // Reused the supplied source — no second registration was created.
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+
+        // Request-cancel by id fires the SAME source the running delegate observes.
+        Assert.True(TickerCancellationTokenManager.RequestTickerCancellationById(context.TickerId));
+
+        await execTask;
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
+
+        // The handler did not remove the pre-registered source — the caller still owns it.
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+        Assert.True(TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId, registered));
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
     }
 
     [Fact]
@@ -526,6 +585,172 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     #endregion
 
     #region Instrumentation
+
+    [Fact]
+    public async Task NonCooperativeTimeout_RemainsTrackedScopedAndUnpersisted_UntilDelegateActuallyExits()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var timeoutPending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        instrumentation.When(x => x.LogJobTimeoutPending(
+                Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<TimeSpan>()))
+            .Do(_ => timeoutPending.TrySetResult());
+
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        services.AddScoped<ScopedProbe>();
+        await using var serviceProvider = services.BuildServiceProvider();
+        var options = new SchedulerOptionsBuilder
+        {
+            DefaultExecutionTimeout = TimeSpan.FromMilliseconds(30),
+            TimeoutGracePeriod = TimeSpan.FromMilliseconds(30)
+        };
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager, options,
+            Substitute.For<ITickerQFailureNotifier>());
+
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ScopedProbe capturedProbe = null;
+        var context = CreateContext(type: TickerType.TimeTicker, ct: async (_, sp, _) =>
+        {
+            capturedProbe = sp.GetRequiredService<ScopedProbe>();
+            capturedProbe.ThrowIfDisposed();
+            await release.Task; // deliberately ignores cancellation
+            capturedProbe.ThrowIfDisposed();
+        });
+        context.AcquisitionToken = Guid.NewGuid();
+
+        var execution = handler.ExecuteTaskAsync(context, isDue: false);
+        await timeoutPending.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(execution.IsCompleted);
+        Assert.NotNull(capturedProbe);
+        Assert.False(capturedProbe.IsDisposed);
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+        var timeLeases = new List<AcquisitionLease>();
+        var cronLeases = new List<AcquisitionLease>();
+        TickerCancellationTokenManager.SnapshotRunningForLeaseRenewal(timeLeases, cronLeases);
+        Assert.Contains(timeLeases, lease =>
+            lease.TickerId == context.TickerId && lease.AcquisitionToken == context.AcquisitionToken);
+        await manager.DidNotReceive().UpdateTickerAsync(
+            Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>());
+
+        release.SetResult();
+        await execution.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(capturedProbe.IsDisposed);
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
+        Assert.Equal(0, context.RetryCount);
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+        await manager.Received(1).UpdateTickerAsync(
+            Arg.Is<InternalFunctionContext>(candidate =>
+                candidate.TickerId == context.TickerId && candidate.Status == TickerStatus.Cancelled),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task FailureNotifierThrows_TerminalFailurePersistenceStillOccursExactlyOnce()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var terminalWrites = 0;
+        manager.When(x => x.UpdateTickerAsync(
+                Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>()))
+            .Do(call =>
+            {
+                if (call.ArgAt<InternalFunctionContext>(0).Status == TickerStatus.Failed)
+                    terminalWrites++;
+            });
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var notifier = Substitute.For<ITickerQFailureNotifier>();
+        notifier.When(x => x.Notify(Arg.Any<TickerFailureEvent>()))
+            .Do(_ => throw new InvalidOperationException("notifier failed"));
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        await using var serviceProvider = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager,
+            new SchedulerOptionsBuilder(), notifier);
+        var context = CreateContext(ct: (_, _, _) =>
+            throw new InvalidOperationException("delegate failed"));
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Equal(1, terminalWrites);
+    }
+
+    [Fact]
+    public async Task FaultAfterTimeoutWithinGrace_RemainsAuthoritativeTimeoutAndDoesNotRetry()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        await using var serviceProvider = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager,
+            new SchedulerOptionsBuilder
+            {
+                DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
+                TimeoutGracePeriod = TimeSpan.FromMilliseconds(200),
+            }, Substitute.For<ITickerQFailureNotifier>());
+        var attempts = 0;
+        var context = CreateContext(ct: async (_, _, _) =>
+        {
+            attempts++;
+            await Task.Delay(60);
+            throw new InvalidOperationException("fault after deadline");
+        });
+        context.Retries = 1;
+        context.RetryIntervals = [0];
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(1, attempts);
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
+        Assert.Contains("Exceeded execution timeout", context.ExceptionDetails);
+        await manager.Received(1).UpdateTickerAsync(
+            Arg.Is<InternalFunctionContext>(x => x.Status == TickerStatus.Cancelled),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TimeoutHooksThrow_TerminalPersistenceStillOccurs()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var exceptionHandler = Substitute.For<ITickerExceptionHandler>();
+        exceptionHandler.HandleCanceledExceptionAsync(
+                Arg.Any<Exception>(), Arg.Any<Guid>(), Arg.Any<TickerType>())
+            .Returns<Task>(_ => throw new InvalidOperationException("hook failed"));
+        var notifier = Substitute.For<ITickerQFailureNotifier>();
+        notifier.When(x => x.Notify(Arg.Any<TickerFailureEvent>()))
+            .Do(_ => throw new InvalidOperationException("notifier failed"));
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        services.AddSingleton(exceptionHandler);
+        await using var serviceProvider = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager,
+            new SchedulerOptionsBuilder
+            {
+                DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
+                TimeoutGracePeriod = TimeSpan.FromMilliseconds(50),
+            }, notifier);
+        var context = CreateContext(ct: async (token, _, _) =>
+            await Task.Delay(Timeout.InfiniteTimeSpan, token));
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
+        await manager.Received(1).UpdateTickerAsync(
+            Arg.Is<InternalFunctionContext>(x => x.Status == TickerStatus.Cancelled),
+            Arg.Any<CancellationToken>());
+    }
 
     [Fact]
     public async Task ExecuteTaskAsync_LogsJobEnqueued_OnExecution()

@@ -1,6 +1,7 @@
 -- KEYS[1] = ticker key
 -- ARGV[1] = lockHolder, ARGV[2] = now (ISO), ARGV[3] = targetStatus (int)
--- ARGV[4] = expectedUpdatedAt (ISO or empty), ARGV[5] = statusIdle, ARGV[6] = statusQueued
+-- ARGV[4] = expectedUpdatedAt (ISO or empty), ARGV[5] = statusIdle,
+-- ARGV[6] = statusQueued, ARGV[7] = fresh acquisition token, ARGV[8] = leaseUntil or empty
 -- Returns: updated JSON on success, nil on failure
 local json = redis.call('GET', KEYS[1])
 if not json then return nil end
@@ -24,6 +25,16 @@ obj['UpdatedAt'] = ARGV[2]
 obj['updatedAt'] = nil
 obj['Status'] = tonumber(ARGV[3])
 obj['status'] = nil
+obj['AcquisitionToken'] = ARGV[7]
+obj['acquisitionToken'] = nil
+if ARGV[8] ~= '' then
+    obj['LeaseUntil'] = ARGV[8]
+    obj['leaseUntil'] = nil
+end
 local updated = cjson.encode(obj)
+-- cjson encodes an empty Lua table as '{}', turning empty JSON arrays ('[]') into objects.
+-- Restore the array-typed fields so C# deserialization does not fail on re-encode.
+updated = updated:gsub('"Children":{}', '"Children":[]')
+updated = updated:gsub('"RetryIntervals":{}', '"RetryIntervals":[]')
 redis.call('SET', KEYS[1], updated)
 return updated

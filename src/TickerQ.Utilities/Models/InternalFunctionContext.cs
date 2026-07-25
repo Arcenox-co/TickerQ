@@ -39,6 +39,13 @@ namespace TickerQ.Utilities.Models
         /// for occurrences). Null inherits the global default; &lt;= 0 disables.
         /// </summary>
         public int? TimeoutSeconds { get; set; }
+        /// <summary>
+        /// Current InProgress generation of the root row this context executes under. Set at
+        /// acquisition (minted fresh on every transition to InProgress) and carried through
+        /// execution so the terminal write and lease renewal can be fenced on it. Null for
+        /// chain children (they run under their root's lock and carry no generation).
+        /// </summary>
+        public Guid? AcquisitionToken { get; set; }
         public RunCondition RunCondition { get; set; }
         public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 

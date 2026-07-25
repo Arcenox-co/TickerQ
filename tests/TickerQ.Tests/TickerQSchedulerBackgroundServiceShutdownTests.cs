@@ -3,13 +3,16 @@ using System.Threading;
 using System.Threading.Tasks;
 using NSubstitute;
 using TickerQ.BackgroundServices;
+using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
 
+[Collection("TickerCancellationTokenState")]
 public class TickerQSchedulerBackgroundServiceShutdownTests
 {
     private readonly TickerExecutionContext _executionContext;
@@ -209,5 +212,109 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
         _taskScheduler.Received(1).Freeze();
 
         service.Dispose();
+    }
+
+    [Fact]
+    public async Task StopAsync_Waits_For_Concrete_Scheduler_Execution_To_Drain()
+    {
+        // Regression: the drain must gate on the scheduler's own queued + in-flight counters,
+        // not on TickerCancellationTokenManager.ActiveCount. We use a REAL scheduler with a
+        // REAL execution that blocks AFTER being dequeued: TotalQueuedTasks returns to 0 and
+        // ActiveExecutionCount stays 1 while it runs, and the execution is never registered
+        // with the acquired-ticket manager (ActiveCount == 0). Gating on ActiveCount would let
+        // StopAsync return with the work still in flight; gating on ActiveExecutionCount must not.
+        await using var scheduler = new TickerQTaskScheduler(maxConcurrency: 2);
+
+        var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await scheduler.QueueAsync(async _ =>
+        {
+            started.TrySetResult(true);
+            await release.Task;
+        }, TickerTaskPriority.Normal, CancellationToken.None);
+
+        // Wait until the item is dequeued and actively executing (queue drained to 0).
+        Assert.True(await started.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(await WaitForConditionAsync(
+            () => scheduler.ActiveExecutionCount == 1 && scheduler.TotalQueuedTasks == 0,
+            TimeSpan.FromSeconds(5)));
+
+        var options = new SchedulerOptionsBuilder
+        {
+            MinPollingInterval = TimeSpan.FromMilliseconds(50),
+            ShutdownDrainTimeout = TimeSpan.FromSeconds(10)
+        };
+        var service = new TickerQSchedulerBackgroundService(
+            _executionContext, _taskHandler, scheduler, _internalManager, options,
+            new TickerFunctionConcurrencyGate());
+
+        // Act: StopAsync must block in the drain window while the execution is in flight.
+        var stopTask = service.StopAsync(CancellationToken.None);
+
+        await Task.Delay(500);
+        Assert.False(stopTask.IsCompleted,
+            "StopAsync returned while a concrete scheduler execution was still in flight");
+        Assert.Equal(1, scheduler.ActiveExecutionCount);
+
+        // Release the execution; StopAsync should now complete as the scheduler drains to zero.
+        release.TrySetResult(true);
+        await stopTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(await WaitForConditionAsync(
+            () => scheduler.ActiveExecutionCount == 0, TimeSpan.FromSeconds(5)));
+
+        service.Dispose();
+    }
+
+    [Fact]
+    public async Task StopAsync_Waits_For_Acquired_Prequeue_Window_To_Close()
+    {
+        var options = new SchedulerOptionsBuilder
+        {
+            MinPollingInterval = TimeSpan.FromMilliseconds(50),
+            ShutdownDrainTimeout = TimeSpan.FromSeconds(5)
+        };
+        var service = new TickerQSchedulerBackgroundService(
+            _executionContext, _taskHandler, _taskScheduler, _internalManager, options,
+            new TickerFunctionConcurrencyGate());
+        var context = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            Type = TickerType.TimeTicker
+        };
+        var baselineActive = TickerCancellationTokenManager.ActiveCount;
+        var registered = TickerCancellationTokenManager.TryRegisterAcquired(context, isDue: false);
+        Assert.NotNull(registered);
+        Assert.Equal(baselineActive + 1, TickerCancellationTokenManager.ActiveCount);
+
+        try
+        {
+            var stopTask = service.StopAsync(CancellationToken.None);
+
+            await Task.Delay(250);
+            Assert.False(stopTask.IsCompleted,
+                "StopAsync returned while an acquired ticker had not yet reached the scheduler queue");
+
+            TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId, registered);
+            await stopTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId, registered);
+            service.Dispose();
+        }
+    }
+
+    private static async Task<bool> WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+                return true;
+            await Task.Delay(20);
+        }
+        return condition();
     }
 }

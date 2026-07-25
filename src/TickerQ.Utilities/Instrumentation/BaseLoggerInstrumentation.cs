@@ -72,6 +72,14 @@ public abstract class TickerQBaseLoggerInstrumentation
             intervalSeconds, nextAttempt, maxRetries);
     }
 
+    public virtual void LogJobTimeoutPending(Guid jobId, string functionName, TimeSpan timeout, TimeSpan grace)
+    {
+        _logger.LogCritical(
+            "TickerQ job {Function} ({JobId}) exceeded timeout {Timeout} and grace {Grace}; " +
+            "the delegate ignored cancellation and remains owned, scoped, and lease-renewed until it exits",
+            functionName, jobId, timeout, grace);
+    }
+
     public virtual void LogJobCancelled(Guid jobId, string functionName, string reason)
     {
         TickerQMetrics.JobsCancelled.Add(1, TickerQMetrics.FunctionTag(functionName));

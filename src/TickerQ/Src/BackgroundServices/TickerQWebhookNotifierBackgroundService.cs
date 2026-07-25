@@ -21,27 +21,59 @@ namespace TickerQ.BackgroundServices;
 /// </summary>
 internal sealed class WebhookFailureNotifier : ITickerQFailureNotifier
 {
-    private const int Capacity = 1000;
+    internal const int Capacity = 1000;
 
     internal readonly FailureWebhookOptions Options;
+    private readonly ILogger<WebhookFailureNotifier> _logger;
+    private readonly Channel<TickerFailureEvent> _channel;
+    private long _droppedCount;
 
-    private readonly Channel<TickerFailureEvent> _channel = Channel.CreateBounded<TickerFailureEvent>(
-        new BoundedChannelOptions(Capacity)
-        {
-            FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = true,
-            SingleWriter = false,
-        });
-
-    public WebhookFailureNotifier(FailureWebhookOptions options)
+    public WebhookFailureNotifier(
+        FailureWebhookOptions options,
+        ILogger<WebhookFailureNotifier> logger)
     {
         Options = options;
+        _logger = logger;
+        _channel = Channel.CreateBounded<TickerFailureEvent>(
+            new BoundedChannelOptions(Capacity)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = false,
+            },
+            _ => RecordDrop());
     }
 
+    internal long DroppedCount => Interlocked.Read(ref _droppedCount);
     internal ChannelReader<TickerFailureEvent> Reader => _channel.Reader;
 
     public void Notify(TickerFailureEvent failureEvent)
-        => _channel.Writer.TryWrite(failureEvent);
+    {
+        var sanitize = Options.ReasonSanitizer ?? FailureWebhookOptions.DefaultReasonSanitizer;
+        var queued = new TickerFailureEvent
+        {
+            Kind = failureEvent.Kind,
+            TickerId = failureEvent.TickerId,
+            Function = failureEvent.Function,
+            TickerType = failureEvent.TickerType,
+            Reason = sanitize(failureEvent.Reason),
+            RetryCount = failureEvent.RetryCount,
+            Retries = failureEvent.Retries,
+            OccurredAtUtc = failureEvent.OccurredAtUtc,
+            Node = failureEvent.Node,
+        };
+
+        _channel.Writer.TryWrite(queued);
+    }
+
+    private void RecordDrop()
+    {
+        var count = Interlocked.Increment(ref _droppedCount);
+        if (count == 1 || (count & (count - 1)) == 0)
+            _logger.LogWarning(
+                "TickerQ failure webhook queue dropped {DroppedCount} events due to capacity {Capacity}",
+                count, Capacity);
+    }
 }
 
 internal sealed class TickerQWebhookNotifierBackgroundService : BackgroundService

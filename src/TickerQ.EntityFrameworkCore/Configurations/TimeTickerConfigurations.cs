@@ -17,6 +17,9 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
             builder.Property(x => x.LockHolder)
                 .IsRequired(false);
+
+            builder.Property(x => x.AcquisitionToken)
+                .IsRequired(false);
             
             builder.Property(x => x.ExecutionTime)
                 .IsRequired(false);

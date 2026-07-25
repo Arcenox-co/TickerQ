@@ -31,12 +31,11 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
     public TickerInMemoryPersistenceProviderTimeTickerTests()
     {
         _now = new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc);
-        _nodeId = "test-node-1";
-
         _clock = Substitute.For<ITickerClock>();
         _clock.UtcNow.Returns(_now);
 
-        var optionsBuilder = new SchedulerOptionsBuilder { NodeIdentifier = _nodeId };
+        var optionsBuilder = new SchedulerOptionsBuilder { NodeIdentifier = "test-node-1" };
+        _nodeId = optionsBuilder.ExecutionOwnerId;
 
         var services = new ServiceCollection();
         services.AddSingleton(_clock);
@@ -103,6 +102,83 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
     }
 
     #endregion
+
+    [Fact]
+    public async Task AcquireTimeTickerOnDemand_ReturnsGenerationAndTimeoutsForEntireChain()
+    {
+        var root = CreateTicker();
+        root.TimeoutSeconds = 17;
+        var child = CreateTicker(parentId: root.Id, useDefaultExecutionTime: false);
+        child.TimeoutSeconds = 18;
+        var grandchild = CreateTicker(parentId: child.Id, useDefaultExecutionTime: false);
+        grandchild.TimeoutSeconds = 19;
+        await InsertAndTrack(root);
+        await InsertAndTrack(child);
+        await InsertAndTrack(grandchild);
+
+        var acquired = await _provider.AcquireTimeTickerOnDemandAsync(
+            root.Id, _now, CancellationToken.None);
+
+        Assert.NotNull(acquired.AcquisitionToken);
+        Assert.Equal(17, acquired.TimeoutSeconds);
+        var acquiredChild = Assert.Single(acquired.Children);
+        Assert.Equal(18, acquiredChild.TimeoutSeconds);
+        var acquiredGrandchild = Assert.Single(acquiredChild.Children);
+        Assert.Equal(19, acquiredGrandchild.TimeoutSeconds);
+    }
+
+    [Fact]
+    public async Task QueueTimedOutTimeTickers_ReturnsPersistedAcquisitionGeneration()
+    {
+        var ticker = CreateTicker(executionTime: _now.AddMinutes(-5));
+        ticker = await InsertAndTrack(ticker);
+
+        var acquired = Assert.Single(
+            await CollectAsync(_provider.QueueTimedOutTimeTickers(CancellationToken.None)),
+            candidate => candidate.Id == ticker.Id);
+        var persisted = await _provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+
+        Assert.NotNull(acquired.AcquisitionToken);
+        Assert.Equal(persisted.AcquisitionToken, acquired.AcquisitionToken);
+    }
+
+    [Fact]
+    public async Task GenerationFence_PreservesWinningTokenAndRejectsStaleTerminalWrite()
+    {
+        var ticker = await InsertAndTrack(CreateTicker());
+        var queued = Assert.Single(await CollectAsync(_provider.QueueTimeTickers(
+            [new TimeTickerEntity { Id = ticker.Id, UpdatedAt = ticker.UpdatedAt }], CancellationToken.None)));
+        Assert.NotNull(queued.AcquisitionToken);
+
+        var transitioned = await _provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(ticker.Id, queued.AcquisitionToken)], CancellationToken.None);
+        Assert.Equal(ticker.Id, Assert.Single(transitioned));
+
+        var persistedWinner = await _provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.InProgress, persistedWinner.Status);
+        Assert.Equal(queued.AcquisitionToken, persistedWinner.AcquisitionToken);
+
+        var staleCompletion = new InternalFunctionContext()
+            .SetProperty(x => x.TickerId, ticker.Id)
+            .SetProperty(x => x.Type, TickerType.TimeTicker)
+            .SetProperty(x => x.AcquisitionToken, Guid.NewGuid())
+            .SetProperty(x => x.Status, TickerStatus.Done);
+
+        Assert.Equal(0, await _provider.UpdateTimeTicker(staleCompletion, CancellationToken.None));
+        var persisted = await _provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+        Assert.Equal(queued.AcquisitionToken, persisted.AcquisitionToken);
+
+        var winningCompletion = new InternalFunctionContext()
+            .SetProperty(x => x.TickerId, ticker.Id)
+            .SetProperty(x => x.Type, TickerType.TimeTicker)
+            .SetProperty(x => x.AcquisitionToken, queued.AcquisitionToken)
+            .SetProperty(x => x.Status, TickerStatus.Done);
+        Assert.Equal(1, await _provider.UpdateTimeTicker(winningCompletion, CancellationToken.None));
+        var completed = await _provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+        Assert.Null(completed.AcquisitionToken);
+        Assert.Null(completed.LeaseUntil);
+    }
 
     #region InsertTimeTickers (AddTimeTickers)
 

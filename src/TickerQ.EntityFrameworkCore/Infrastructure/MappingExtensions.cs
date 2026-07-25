@@ -35,6 +35,17 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 UpdatedAt = e.UpdatedAt,
                 ParentId = e.ParentId,
                 ExecutionTime = e.ExecutionTime,
+                Status = e.Status,
+                LockHolder = e.LockHolder,
+                LockedAt = e.LockedAt,
+                LeaseUntil = e.LeaseUntil,
+                AcquisitionToken = e.AcquisitionToken,
+                RetryCount = e.RetryCount,
+                ExceptionMessage = e.ExceptionMessage,
+                SkippedReason = e.SkippedReason,
+                StaleRestartCount = e.StaleRestartCount,
+                ExecutedAt = e.ExecutedAt,
+                ElapsedTime = e.ElapsedTime,
                 Children = e.Children.Select(ch => new TimeTickerEntity
                 {
                     Id = ch.Id,
@@ -42,6 +53,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     Retries = ch.Retries,
                     RetryIntervals = ch.RetryIntervals,
                     TimeoutSeconds = ch.TimeoutSeconds,
+                    ParentId = ch.ParentId,
                     RunCondition = ch.RunCondition,
                     Children = ch.Children.Select(gch => new TimeTickerEntity
                     {
@@ -49,6 +61,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         Retries = gch.Retries,
                         RetryIntervals = gch.RetryIntervals,
                         TimeoutSeconds = gch.TimeoutSeconds,
+                        ParentId = gch.ParentId,
                         Id = gch.Id,
                         RunCondition = gch.RunCondition
                     }).ToArray()
@@ -65,6 +78,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 UpdatedAt = e.UpdatedAt,
                 CronTickerId = e.CronTickerId,
                 ExecutionTime = e.ExecutionTime,
+                AcquisitionToken = e.AcquisitionToken,
                 CronTicker = new TCronTicker
                 {
                     Id = e.CronTicker.Id,
@@ -85,6 +99,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 CreatedAt = e.CreatedAt,
                 CronTickerId = e.CronTickerId,
                 ExecutionTime = e.ExecutionTime,
+                AcquisitionToken = e.AcquisitionToken,
                 CronTicker = new TCronTicker
                 {
                     Id = e.CronTicker.Id,
@@ -112,17 +127,23 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 setters.SetProperty(x => x.LeaseUntil, leaseUntil);
             }
 
-            // STATUS / SKIPPED
-            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
-                functionContext.Status != TickerStatus.Skipped)
+            // ACQUISITION TOKEN (generation) — mint a fresh generation on the InProgress
+            // transition (the caller supplies it on the context), and clear it on any
+            // terminal write or lock release so the next acquisition starts a new generation
+            // and a stale owner's fenced write/renewal can no longer match.
+            ApplyAcquisitionToken(propsToUpdate, functionContext,
+                (setter, token) => setter.SetProperty(x => x.AcquisitionToken, token), setters);
+
+            // STATUS / SKIPPED — touch status/skipped reason ONLY when Status is part of the
+            // update, and write SkippedReason ONLY for the Skipped transition. A status-free
+            // write (e.g. a retry-count bump) must leave Status and SkippedReason untouched
+            // rather than resetting them to the context's defaults.
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)))
             {
                 setters.SetProperty(x => x.Status, functionContext.Status);
-            }
-            else
-            {
-                setters
-                    .SetProperty(x => x.Status, functionContext.Status)
-                    .SetProperty(x => x.SkippedReason, functionContext.ExceptionDetails);
+
+                if (functionContext.Status == TickerStatus.Skipped)
+                    setters.SetProperty(x => x.SkippedReason, functionContext.ExceptionDetails);
             }
 
             // EXECUTED_AT
@@ -166,6 +187,38 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             }
         }
 
+        /// <summary>
+        /// True when the context writes a terminal status — the writes after which a row's
+        /// acquisition generation must be cleared (it is no longer InProgress under any owner).
+        /// </summary>
+        internal static bool WritesTerminalStatus(InternalFunctionContext functionContext, System.Collections.Generic.HashSet<string> propsToUpdate)
+            => propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
+               functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                   or TickerStatus.Cancelled or TickerStatus.Skipped;
+
+        /// <summary>
+        /// Shared stamp/clear decision for the acquisition generation token, applied by both
+        /// the time-ticker and cron-occurrence setters (and mirrored by the Mongo builders).
+        /// </summary>
+        private static void ApplyAcquisitionToken<TSetter>(
+            System.Collections.Generic.HashSet<string> propsToUpdate,
+            InternalFunctionContext functionContext,
+            Action<TSetter, Guid?> apply,
+            TSetter setter)
+        {
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.AcquisitionToken)) &&
+                propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
+                functionContext.Status == TickerStatus.InProgress)
+            {
+                apply(setter, functionContext.AcquisitionToken);
+            }
+            else if (WritesTerminalStatus(functionContext, propsToUpdate) ||
+                     propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
+            {
+                apply(setter, null);
+            }
+        }
+
         internal static void UpdateTimeTicker<TTimeTicker>(this UpdateSettersBuilder<TTimeTicker> setters,
             InternalFunctionContext functionContext, DateTime updatedAt, DateTime? leaseUntil = null)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
@@ -181,17 +234,21 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 setters.SetProperty(x => x.LeaseUntil, leaseUntil);
             }
 
-            // STATUS / SKIPPED
-            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
-                functionContext.Status != TickerStatus.Skipped)
+            // ACQUISITION TOKEN (generation) — stamp on the InProgress transition, clear on
+            // any terminal write or lock release. See UpdateCronTickerOccurrence for rationale.
+            ApplyAcquisitionToken(propsToUpdate, functionContext,
+                (setter, token) => setter.SetProperty(x => x.AcquisitionToken, token), setters);
+
+            // STATUS / SKIPPED — touch status/skipped reason ONLY when Status is part of the
+            // update, and write SkippedReason ONLY for the Skipped transition. A status-free
+            // write (e.g. a retry-count bump) must leave Status and SkippedReason untouched
+            // rather than resetting them to the context's defaults.
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.Status)))
             {
                 setters.SetProperty(x => x.Status, functionContext.Status);
-            }
-            else
-            {
-                setters
-                    .SetProperty(x => x.Status, functionContext.Status)
-                    .SetProperty(x => x.SkippedReason, functionContext.ExceptionDetails);
+
+                if (functionContext.Status == TickerStatus.Skipped)
+                    setters.SetProperty(x => x.SkippedReason, functionContext.ExceptionDetails);
             }
 
             // EXECUTED_AT

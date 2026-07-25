@@ -21,7 +21,10 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             
             builder.Property(x => x.LockHolder)
                 .IsRequired(false);
-            
+
+            builder.Property(x => x.AcquisitionToken)
+                .IsRequired(false);
+
             builder.HasIndex("CronTickerId")
                 .HasDatabaseName("IX_CronTickerOccurrence_CronTickerId");
 

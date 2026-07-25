@@ -11,6 +11,7 @@ namespace TickerQ.Utilities
     {
         private static readonly ConcurrentDictionary<Guid, TickerCancellationTokenDetails>  TickerCancellationTokens = new();
         private static readonly ConcurrentDictionary<Guid, ConcurrentHashSet<Guid>> ParentIdIndex = new();
+        private static readonly object[] ParentIndexLocks = CreateParentIndexLocks();
 
         internal static void AddTickerCancellationToken(CancellationTokenSource cancellationSource, InternalFunctionContext context, bool isDue)
         {
@@ -20,20 +21,55 @@ namespace TickerQ.Utilities
                 Type = context.Type,
                 CancellationSource = cancellationSource,
                 IsDue = isDue,
-                ParentId = context.ParentId ?? Guid.Empty
+                ParentId = context.ParentId ?? Guid.Empty,
+                AcquisitionToken = context.AcquisitionToken
             };
-            
-            TickerCancellationTokens.TryAdd(context.TickerId, details);
-            
-            // Add to parent index for fast lookup if parentId exists
+
+            if (!TickerCancellationTokens.TryAdd(context.TickerId, details))
+                return;
+
             if (context.ParentId.HasValue && context.ParentId.Value != Guid.Empty)
-            {
-                ParentIdIndex.AddOrUpdate(context.ParentId.Value,
-                    key => { var set = new ConcurrentHashSet<Guid>(); set.Add(context.TickerId); return set; },
-                    (key, existing) => { existing.Add(context.TickerId); return existing; });
-            }
+                AddToParentIndex(context.ParentId.Value, context.TickerId);
         }
-        
+
+        /// <summary>
+        /// Acquisition-time registration: creates a single <see cref="CancellationTokenSource"/>
+        /// linked to <paramref name="linkedTokens"/>, atomically registers it under the ticker id,
+        /// and returns it so the caller owns its removal/disposal. Returns <c>null</c> (disposing the
+        /// source it created) if an entry already exists for this id — a fail-safe against duplicate
+        /// registration so the existing owner keeps sole ownership.
+        /// </summary>
+        internal static CancellationTokenSource TryRegisterAcquired(
+            InternalFunctionContext context, bool isDue, params CancellationToken[] linkedTokens)
+        {
+            var cancellationSource = linkedTokens is { Length: > 0 }
+                ? CancellationTokenSource.CreateLinkedTokenSource(linkedTokens)
+                : new CancellationTokenSource();
+
+            var details = new TickerCancellationTokenDetails
+            {
+                FunctionName = context.FunctionName,
+                Type = context.Type,
+                CancellationSource = cancellationSource,
+                IsDue = isDue,
+                ParentId = context.ParentId ?? Guid.Empty,
+                AcquisitionToken = context.AcquisitionToken
+            };
+
+            // Atomic register: the id occupies the dictionary for the whole execution, so a second
+            // acquisition of the same id fails here rather than racing a second CTS into flight.
+            if (!TickerCancellationTokens.TryAdd(context.TickerId, details))
+            {
+                cancellationSource.Dispose();
+                return null;
+            }
+
+            if (context.ParentId.HasValue && context.ParentId.Value != Guid.Empty)
+                AddToParentIndex(context.ParentId.Value, context.TickerId);
+
+            return cancellationSource;
+        }
+
         internal static bool RemoveTickerCancellationToken(Guid tickerId)
         {
             var removed = TickerCancellationTokens.TryRemove(tickerId, out var details);
@@ -53,8 +89,45 @@ namespace TickerQ.Utilities
                 // Remove from parent index if it exists
                 if (details.ParentId != Guid.Empty)
                 {
-                    RemoveFromParentIndex(details.ParentId, tickerId);
+                    RemoveFromParentIndex(details.ParentId, tickerId, details);
                 }
+            }
+
+            return removed;
+        }
+
+        /// <summary>
+        /// Owner-side removal: removes the entry only while it still holds <paramref name="ownedSource"/>,
+        /// then disposes that source exactly once. The value comparison prevents ABA — a stale owner can
+        /// never remove/dispose an entry that was re-registered under the same id with a different source.
+        /// </summary>
+        internal static bool RemoveTickerCancellationToken(Guid tickerId, CancellationTokenSource ownedSource)
+        {
+            if (ownedSource == null)
+                return RemoveTickerCancellationToken(tickerId);
+
+            if (!TickerCancellationTokens.TryGetValue(tickerId, out var details)
+                || !ReferenceEquals(details.CancellationSource, ownedSource))
+                return false;
+
+            // Atomic compare-and-remove on the exact key/value pair (reference equality on the
+            // details), so only this owner's registration is removed even under concurrent churn.
+            var removed = ((ICollection<KeyValuePair<Guid, TickerCancellationTokenDetails>>)TickerCancellationTokens)
+                .Remove(new KeyValuePair<Guid, TickerCancellationTokenDetails>(tickerId, details));
+
+            if (removed)
+            {
+                try
+                {
+                    details.CancellationSource?.Dispose();
+                }
+                catch
+                {
+                    // Ignore disposal errors
+                }
+
+                if (details.ParentId != Guid.Empty)
+                    RemoveFromParentIndex(details.ParentId, tickerId, details);
             }
 
             return removed;
@@ -97,9 +170,12 @@ namespace TickerQ.Utilities
         internal static int ActiveCount => TickerCancellationTokens.Count;
 
         /// <summary>
-        /// Snapshot of currently executing tickers whose DB rows this node lock-holds,
-        /// split by type for the lease renewal loop. Chain children are excluded —
-        /// they execute under their root's lock and carry no lease of their own.
+        /// Snapshot of currently executing tickers whose DB rows this node lock-holds, split by
+        /// type for the lease renewal loop. Each entry carries the <see cref="AcquisitionLease"/>
+        /// generation captured at registration so renewal can fence on id + token (a row this node
+        /// re-acquired under a newer generation, or one another node recovered, must not be renewed
+        /// under a stale snapshot). Chain children are excluded — they execute under their root's
+        /// lock and carry no lease of their own.
         /// </summary>
         internal static void SnapshotRunningForLeaseRenewal(List<Guid> timeTickerIds, List<Guid> cronOccurrenceIds)
         {
@@ -112,61 +188,83 @@ namespace TickerQ.Utilities
             }
         }
 
+        /// <summary>
+        /// Generation-aware snapshot used by the reliability lease-renewal loop.
+        /// </summary>
+        internal static void SnapshotRunningForLeaseRenewal(List<AcquisitionLease> timeTickerLeases, List<AcquisitionLease> cronOccurrenceLeases)
+        {
+            foreach (var kvp in TickerCancellationTokens)
+            {
+                if (kvp.Value.Type == TickerType.CronTickerOccurrence)
+                    cronOccurrenceLeases.Add(new AcquisitionLease(kvp.Key, kvp.Value.AcquisitionToken));
+                else if (kvp.Value.ParentId == Guid.Empty)
+                    timeTickerLeases.Add(new AcquisitionLease(kvp.Key, kvp.Value.AcquisitionToken));
+            }
+        }
+
         public static bool RequestTickerCancellationById(Guid tickerId)
         {
-            // Cancel while the entry is still tracked so IsParentRunning remains accurate
+            // Signal only — never remove or dispose here. The owner (the finally in the execution
+            // handler / scheduler delegate) performs removal and disposal exactly once. Disposing
+            // the source here as well would race the still-running execution that holds the linked
+            // token (disposed-source race) and, once the id is re-registered, could remove the wrong
+            // registration (ABA). The entry stays tracked until the owner observes cancellation and
+            // cleans up, which keeps IsParentRunning / lease renewal accurate in the meantime.
             if (!TickerCancellationTokens.TryGetValue(tickerId, out var details))
                 return false;
 
-            // Signal cancellation while the entry is still tracked
             try
             {
                 details.CancellationSource?.Cancel();
             }
             catch (ObjectDisposedException)
             {
-                // Already disposed by another thread - safe to ignore
-            }
-
-            // Now remove and dispose
-            if (TickerCancellationTokens.TryRemove(tickerId, out var removed))
-            {
-                try
-                {
-                    removed.CancellationSource?.Dispose();
-                }
-                catch
-                {
-                    // Ignore disposal errors
-                }
-
-                if (removed.ParentId != Guid.Empty)
-                {
-                    RemoveFromParentIndex(removed.ParentId, tickerId);
-                }
+                // Owner disposed it concurrently — the execution is already ending, safe to ignore.
             }
 
             return true;
         }
-        
-        /// <summary>
-        /// Atomically removes a ticker from the parent index, cleaning up the set if empty.
-        /// Uses TryRemove with value comparison to avoid TOCTOU races.
-        /// </summary>
-        private static void RemoveFromParentIndex(Guid parentId, Guid tickerId)
+
+        private static void AddToParentIndex(Guid parentId, Guid tickerId)
         {
-            if (!ParentIdIndex.TryGetValue(parentId, out var set))
-                return;
-
-            set.Remove(tickerId);
-
-            // Only remove the set from the dictionary if it's still empty.
-            // Use the ICollection<KVP> remove overload for atomic check-and-remove.
-            if (set.IsEmpty)
+            lock (GetParentIndexLock(parentId))
             {
-                ((ICollection<KeyValuePair<Guid, ConcurrentHashSet<Guid>>>)ParentIdIndex)
-                    .Remove(new KeyValuePair<Guid, ConcurrentHashSet<Guid>>(parentId, set));
+                var set = ParentIdIndex.GetOrAdd(parentId, static _ => new ConcurrentHashSet<Guid>());
+                set.Add(tickerId);
             }
+        }
+
+        private static void RemoveFromParentIndex(
+            Guid parentId, Guid tickerId, TickerCancellationTokenDetails removedDetails)
+        {
+            lock (GetParentIndexLock(parentId))
+            {
+                if (TickerCancellationTokens.TryGetValue(tickerId, out var current)
+                    && current.ParentId == parentId
+                    && !ReferenceEquals(current, removedDetails))
+                    return;
+
+                if (!ParentIdIndex.TryGetValue(parentId, out var set))
+                    return;
+
+                set.Remove(tickerId);
+                if (set.IsEmpty)
+                {
+                    ((ICollection<KeyValuePair<Guid, ConcurrentHashSet<Guid>>>)ParentIdIndex)
+                        .Remove(new KeyValuePair<Guid, ConcurrentHashSet<Guid>>(parentId, set));
+                }
+            }
+        }
+
+        private static object GetParentIndexLock(Guid parentId)
+            => ParentIndexLocks[(int)((uint)parentId.GetHashCode() % ParentIndexLocks.Length)];
+
+        private static object[] CreateParentIndexLocks()
+        {
+            var locks = new object[64];
+            for (var i = 0; i < locks.Length; i++)
+                locks[i] = new object();
+            return locks;
         }
 
         /// <summary>
@@ -203,6 +301,12 @@ namespace TickerQ.Utilities
         public bool IsDue { get; set; }
         public CancellationTokenSource CancellationSource { get; set; }
         public Guid ParentId { get; set; }
+        /// <summary>
+        /// InProgress generation this execution was acquired under, used to fence lease renewal
+        /// (see <see cref="TickerCancellationTokenManager.SnapshotRunningForLeaseRenewal"/>).
+        /// Null for executions acquired by a provider that does not mint generation tokens.
+        /// </summary>
+        public Guid? AcquisitionToken { get; set; }
     }
     
     /// <summary>

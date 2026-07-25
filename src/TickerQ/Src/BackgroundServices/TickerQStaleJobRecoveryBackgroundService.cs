@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.BackgroundServices;
 
@@ -42,6 +43,16 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!_internalTickerManager.SupportsLeaseBasedRecovery)
+        {
+            // Fail closed: providers that have not implemented the full lease/recovery
+            // contract would otherwise report fake renewal success and never surface lost
+            // leases. Skip both loops entirely and warn once at startup instead of spinning.
+            _logger.LogWarning(
+                "Persistence provider does not support lease-based stale-job recovery; lease renewal and the stale-job watchdog are disabled for this node");
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -66,24 +77,24 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
 
     private async Task RenewLeasesAsync(CancellationToken ct)
     {
-        var timeTickerIds = new List<Guid>();
-        var occurrenceIds = new List<Guid>();
-        TickerCancellationTokenManager.SnapshotRunningForLeaseRenewal(timeTickerIds, occurrenceIds);
+        var timeTickerLeases = new List<AcquisitionLease>();
+        var occurrenceLeases = new List<AcquisitionLease>();
+        TickerCancellationTokenManager.SnapshotRunningForLeaseRenewal(timeTickerLeases, occurrenceLeases);
 
-        if (timeTickerIds.Count == 0 && occurrenceIds.Count == 0)
+        if (timeTickerLeases.Count == 0 && occurrenceLeases.Count == 0)
             return;
 
-        var timeIds = timeTickerIds.ToArray();
-        var occIds = occurrenceIds.ToArray();
-
-        var renewed = await _internalTickerManager.RenewActiveTickerLeasesAsync(timeIds, occIds, ct);
-        if (renewed >= timeIds.Length + occIds.Length)
+        // Generation-aware renewal: rows are matched on id + AcquisitionToken, so a row this
+        // node re-acquired under a newer generation (same-node ABA) or one another node recovered
+        // is not renewed under this stale snapshot — it falls into the lost set below instead.
+        var renewed = await _internalTickerManager.RenewActiveTickerLeasesAsync(timeTickerLeases, occurrenceLeases, ct);
+        if (renewed >= timeTickerLeases.Count + occurrenceLeases.Count)
             return;
 
         // Short renewal: either a job finished between snapshot and update (benign —
         // the id is gone from the token manager by now) or we lost the lease. Cancel
         // whatever is genuinely still running locally without a row backing it.
-        var lost = await _internalTickerManager.GetLostLeaseTickerIdsAsync(timeIds, occIds, ct);
+        var lost = await _internalTickerManager.GetLostLeaseTickerIdsAsync(timeTickerLeases, occurrenceLeases, ct);
         foreach (var id in lost)
         {
             if (TickerCancellationTokenManager.RequestTickerCancellationById(id))

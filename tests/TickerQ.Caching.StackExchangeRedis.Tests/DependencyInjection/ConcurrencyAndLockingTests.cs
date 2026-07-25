@@ -123,7 +123,7 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
 
         Assert.Single(results);
         Assert.Equal(TickerStatus.Queued, results[0].Status);
-        Assert.Equal(Node1, results[0].LockHolder);
+        Assert.StartsWith(Node1 + ":", results[0].LockHolder);
         Assert.Equal(_now, results[0].LockedAt);
     }
 
@@ -160,7 +160,7 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
         var results2 = await CollectAsync(_providerNode1.QueueTimeTickers([toQueue2]));
 
         Assert.Single(results2);
-        Assert.Equal(Node1, results2[0].LockHolder);
+        Assert.StartsWith(Node1 + ":", results2[0].LockHolder);
     }
 
     [Fact]
@@ -236,7 +236,7 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
         // Verify still locked by Node1
         var retrieved = await _providerNode1.GetTimeTickerById(ticker.Id);
         Assert.Equal(TickerStatus.Queued, retrieved.Status);
-        Assert.Equal(Node1, retrieved.LockHolder);
+        Assert.StartsWith(Node1 + ":", retrieved.LockHolder);
     }
 
     // =========================================================================
@@ -319,7 +319,8 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
         if (totalAcquired == 1)
         {
             Assert.NotNull(retrieved.LockHolder);
-            Assert.True(retrieved.LockHolder == Node1 || retrieved.LockHolder == Node2);
+            Assert.True(retrieved.LockHolder.StartsWith(Node1 + ":") ||
+                        retrieved.LockHolder.StartsWith(Node2 + ":"));
         }
     }
 
@@ -392,7 +393,7 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
         var acquired = await _providerNode1.AcquireImmediateCronOccurrencesAsync([occurrence.Id]);
         Assert.Single(acquired);
         Assert.Equal(TickerStatus.InProgress, acquired[0].Status);
-        Assert.Equal(Node1, acquired[0].LockHolder);
+        Assert.StartsWith(Node1 + ":", acquired[0].LockHolder);
 
         // Node2 cannot acquire the same occurrence (InProgress + different lock holder)
         var acquired2 = await _providerNode2.AcquireImmediateCronOccurrencesAsync([occurrence.Id]);
@@ -402,7 +403,7 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
         var all = await _providerNode1.GetAllCronTickerOccurrences(o => o.Id == occurrence.Id);
         Assert.Single(all);
         Assert.Equal(TickerStatus.InProgress, all[0].Status);
-        Assert.Equal(Node1, all[0].LockHolder);
+        Assert.StartsWith(Node1 + ":", all[0].LockHolder);
     }
 
     [Fact]
@@ -441,7 +442,7 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
         // Verify recovered — Node1 can now acquire it
         var acquired = await _providerNode1.AcquireImmediateCronOccurrencesAsync([occurrence.Id]);
         Assert.Single(acquired);
-        Assert.Equal(Node1, acquired[0].LockHolder);
+        Assert.StartsWith(Node1 + ":", acquired[0].LockHolder);
     }
 
     // =========================================================================

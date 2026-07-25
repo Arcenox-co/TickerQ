@@ -40,13 +40,19 @@ namespace TickerQ.Provider
 
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
+        private readonly TimeSpan _leaseDuration;
 
         public TickerInMemoryPersistenceProvider(IServiceProvider serviceProvider)
         {
             _clock = serviceProvider.GetService<ITickerClock>() ?? new TickerSystemClock();
             var optionsBuilder = serviceProvider.GetService<SchedulerOptionsBuilder>();
-            _lockHolder = optionsBuilder?.NodeIdentifier ?? Environment.MachineName;
+            _lockHolder = optionsBuilder?.ExecutionOwnerId ?? $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
+            _leaseDuration = optionsBuilder?.LeaseDuration ?? TimeSpan.FromMinutes(1);
         }
+
+        // In-memory persistence has no lease/stale-recovery contract, so it opts out
+        // explicitly and inherits the compatibility-safe (fail-closed) interface defaults.
+        public bool SupportsLeaseBasedRecovery => false;
 
         #region Time Ticker Methods
 
@@ -67,6 +73,7 @@ namespace TickerQ.Provider
                         var updatedTicker = CloneTicker(existingTicker);
                         updatedTicker.LockHolder = _lockHolder;
                         updatedTicker.LockedAt = now;
+                        updatedTicker.AcquisitionToken = Guid.NewGuid();
                         updatedTicker.UpdatedAt = now;
                         updatedTicker.Status = TickerStatus.Queued;
                         
@@ -75,6 +82,7 @@ namespace TickerQ.Provider
                             timeTicker.UpdatedAt = now;
                             timeTicker.LockHolder = _lockHolder;
                             timeTicker.LockedAt = now;
+                            timeTicker.AcquisitionToken = updatedTicker.AcquisitionToken;
                             timeTicker.Status = TickerStatus.Queued;
                             
                             yield return timeTicker;
@@ -113,13 +121,14 @@ namespace TickerQ.Provider
                         var updatedTicker = CloneTicker(existingTicker);
                         updatedTicker.LockHolder = _lockHolder;
                         updatedTicker.LockedAt = now;
+                        updatedTicker.AcquisitionToken = Guid.NewGuid();
                         updatedTicker.UpdatedAt = now;
                         updatedTicker.Status = TickerStatus.InProgress;
 
                         if (TimeTickers.TryUpdate(ticker.Id, updatedTicker, existingTicker))
                         {
                             // Only build the full hierarchy for successfully acquired tickers
-                            yield return ForQueueTimeTickers(ticker);
+                            yield return ForQueueTimeTickers(updatedTicker);
                         }
                     }
                 }
@@ -203,6 +212,11 @@ namespace TickerQ.Provider
         {
             if (TimeTickers.TryGetValue(functionContext.TickerId, out var ticker))
             {
+                if (IsFencedTerminalWrite(functionContext) && functionContext.ParentId == null &&
+                    (!functionContext.AcquisitionToken.HasValue || ticker.LockHolder != _lockHolder ||
+                     ticker.AcquisitionToken != functionContext.AcquisitionToken))
+                    return Task.FromResult(0);
+
                 var updatedTicker = CloneTicker(ticker);
                 ApplyFunctionContextToTicker(updatedTicker, functionContext);
                 
@@ -239,6 +253,30 @@ namespace TickerQ.Provider
             return Task.CompletedTask;
         }
 
+        public Task<Guid[]> TransitionQueuedTimeTickersToInProgressAsync(
+            IReadOnlyCollection<AcquisitionLease> leases, CancellationToken cancellationToken = default)
+        {
+            var winners = new List<Guid>(leases.Count);
+            var now = _clock.UtcNow;
+            foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
+            {
+                while (TimeTickers.TryGetValue(lease.TickerId, out var current))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (current.Status != TickerStatus.Queued || current.LockHolder != _lockHolder ||
+                        current.AcquisitionToken != lease.AcquisitionToken)
+                        break;
+                    var updated = CloneTicker(current);
+                    updated.Status = TickerStatus.InProgress;
+                    updated.UpdatedAt = now;
+                    if (!TimeTickers.TryUpdate(lease.TickerId, updated, current)) continue;
+                    winners.Add(lease.TickerId);
+                    break;
+                }
+            }
+            return Task.FromResult(winners.ToArray());
+        }
+
         public Task<TimeTickerEntity[]> AcquireImmediateTimeTickersAsync(Guid[] ids, CancellationToken cancellationToken = default)
         {
             if (ids == null || ids.Length == 0)
@@ -260,6 +298,7 @@ namespace TickerQ.Provider
                 var updatedTicker = CloneTicker(ticker);
                 updatedTicker.LockHolder = _lockHolder;
                 updatedTicker.LockedAt = now;
+                updatedTicker.AcquisitionToken = Guid.NewGuid();
                 updatedTicker.Status = TickerStatus.InProgress;
                 updatedTicker.UpdatedAt = now;
 
@@ -270,6 +309,41 @@ namespace TickerQ.Provider
             }
 
             return Task.FromResult(acquired.ToArray());
+        }
+
+        public Task<TimeTickerEntity> AcquireTimeTickerOnDemandAsync(
+            Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
+        {
+            while (TimeTickers.TryGetValue(id, out var ticker))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var eligible = ticker.Status == TickerStatus.Idle ||
+                               (ticker.Status == TickerStatus.Queued &&
+                                (ticker.LockHolder == null || ticker.LockHolder == _lockHolder)) ||
+                               ticker.Status is TickerStatus.Done or TickerStatus.DueDone or
+                                   TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped;
+                if (!eligible)
+                    return Task.FromResult<TimeTickerEntity>(null);
+
+                var now = _clock.UtcNow;
+                var updated = CloneTicker(ticker);
+                updated.ExecutionTime = executionTime;
+                updated.Status = TickerStatus.InProgress;
+                updated.LockHolder = _lockHolder;
+                updated.LockedAt = now;
+                updated.AcquisitionToken = Guid.NewGuid();
+                updated.RetryCount = 0;
+                updated.ExceptionMessage = null;
+                updated.SkippedReason = null;
+                updated.ExecutedAt = null;
+                updated.ElapsedTime = 0;
+                updated.StaleRestartCount = 0;
+                updated.UpdatedAt = now;
+                if (TimeTickers.TryUpdate(id, updated, ticker))
+                    return Task.FromResult<TimeTickerEntity>(ForQueueTimeTickers(updated));
+            }
+
+            return Task.FromResult<TimeTickerEntity>(null);
         }
 
         public Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default)
@@ -705,6 +779,7 @@ namespace TickerQ.Provider
                     var updatedOccurrence = CloneCronOccurrence(existingOccurrence);
                     updatedOccurrence.LockHolder = _lockHolder;
                     updatedOccurrence.LockedAt = now;
+                    updatedOccurrence.AcquisitionToken = Guid.NewGuid();
                     updatedOccurrence.UpdatedAt = now;
                     updatedOccurrence.Status = TickerStatus.Queued;
                     
@@ -729,6 +804,7 @@ namespace TickerQ.Provider
                         Status = TickerStatus.Queued,
                         LockHolder = _lockHolder,
                         LockedAt = now,
+                        AcquisitionToken = Guid.NewGuid(),
                         CreatedAt = context.NextCronOccurrence?.CreatedAt ?? now,
                         UpdatedAt = now,
                         RetryCount = 0
@@ -772,6 +848,7 @@ namespace TickerQ.Provider
                         var updatedOccurrence = CloneCronOccurrence(existingOccurrence);
                         updatedOccurrence.LockHolder = _lockHolder;
                         updatedOccurrence.LockedAt = now;
+                        updatedOccurrence.AcquisitionToken = Guid.NewGuid();
                         updatedOccurrence.UpdatedAt = now;
                         updatedOccurrence.Status = TickerStatus.InProgress;
 
@@ -788,6 +865,11 @@ namespace TickerQ.Provider
         {
             if (CronOccurrences.TryGetValue(functionContext.TickerId, out var occurrence))
             {
+                if (IsFencedTerminalWrite(functionContext) &&
+                    (!functionContext.AcquisitionToken.HasValue || occurrence.LockHolder != _lockHolder ||
+                     occurrence.AcquisitionToken != functionContext.AcquisitionToken))
+                    return Task.CompletedTask;
+
                 var updatedOccurrence = CloneCronOccurrence(occurrence);
                 ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
                 
@@ -852,6 +934,30 @@ namespace TickerQ.Provider
             }
             
             return Task.CompletedTask;
+        }
+
+        public Task<Guid[]> TransitionQueuedCronOccurrencesToInProgressAsync(
+            IReadOnlyCollection<AcquisitionLease> leases, CancellationToken cancellationToken = default)
+        {
+            var winners = new List<Guid>(leases.Count);
+            var now = _clock.UtcNow;
+            foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
+            {
+                while (CronOccurrences.TryGetValue(lease.TickerId, out var current))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (current.Status != TickerStatus.Queued || current.LockHolder != _lockHolder ||
+                        current.AcquisitionToken != lease.AcquisitionToken)
+                        break;
+                    var updated = CloneCronOccurrence(current);
+                    updated.Status = TickerStatus.InProgress;
+                    updated.UpdatedAt = now;
+                    if (!CronOccurrences.TryUpdate(lease.TickerId, updated, current)) continue;
+                    winners.Add(lease.TickerId);
+                    break;
+                }
+            }
+            return Task.FromResult(winners.ToArray());
         }
 
         public Task ReleaseDeadNodeOccurrenceResources(string instanceIdentifier, CancellationToken cancellationToken = default)
@@ -1003,6 +1109,8 @@ namespace TickerQ.Provider
                 var updated = CloneCronOccurrence(occurrence);
                 updated.LockHolder = _lockHolder;
                 updated.LockedAt = now;
+                updated.LeaseUntil = now.Add(_leaseDuration);
+                updated.AcquisitionToken = Guid.NewGuid();
                 updated.Status = TickerStatus.InProgress;
                 updated.UpdatedAt = now;
 
@@ -1090,9 +1198,11 @@ namespace TickerQ.Provider
                 Function = ticker.Function,
                 Retries = ticker.Retries,
                 RetryIntervals = ticker.RetryIntervals,
+                TimeoutSeconds = ticker.TimeoutSeconds,
                 UpdatedAt = ticker.UpdatedAt,
                 ParentId = ticker.ParentId,
                 ExecutionTime = ticker.ExecutionTime,
+                AcquisitionToken = ticker.AcquisitionToken,
                 Children = BuildQueueDescendants(ticker.Id),
             };
 
@@ -1125,6 +1235,7 @@ namespace TickerQ.Provider
                     Function = ch.Function,
                     Retries = ch.Retries,
                     RetryIntervals = ch.RetryIntervals,
+                    TimeoutSeconds = ch.TimeoutSeconds,
                     RunCondition = ch.RunCondition,
                     ParentId = ch.ParentId,
                     Children = BuildQueueDescendantsAtAnyDepth(ch.Id),
@@ -1153,6 +1264,7 @@ namespace TickerQ.Provider
                     Function = ch.Function,
                     Retries = ch.Retries,
                     RetryIntervals = ch.RetryIntervals,
+                    TimeoutSeconds = ch.TimeoutSeconds,
                     RunCondition = ch.RunCondition,
                     ParentId = ch.ParentId,
                     Children = BuildQueueDescendantsAtAnyDepth(ch.Id),
@@ -1188,6 +1300,11 @@ namespace TickerQ.Provider
 
             return children.Keys.ToArray();
         }
+
+        private static bool IsFencedTerminalWrite(InternalFunctionContext context)
+            => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+               context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                   or TickerStatus.Cancelled or TickerStatus.Skipped;
 
         private bool CanAcquire(TTimeTicker ticker)
         {
@@ -1230,6 +1347,7 @@ namespace TickerQ.Provider
                 UpdatedAt = ticker.UpdatedAt,
                 Description = ticker.Description,
                 LeaseUntil = ticker.LeaseUntil,
+                AcquisitionToken = ticker.AcquisitionToken,
                 OnStale = ticker.OnStale,
                 StaleRestartCount = ticker.StaleRestartCount,
                 TimeoutSeconds = ticker.TimeoutSeconds,
@@ -1258,6 +1376,7 @@ namespace TickerQ.Provider
                 CreatedAt = occurrence.CreatedAt,
                 UpdatedAt = occurrence.UpdatedAt,
                 LeaseUntil = occurrence.LeaseUntil,
+                AcquisitionToken = occurrence.AcquisitionToken,
                 StaleRestartCount = occurrence.StaleRestartCount
             };
         }
@@ -1311,6 +1430,12 @@ namespace TickerQ.Provider
                 ticker.LockedAt = null;
             }
 
+            if (IsFencedTerminalWrite(context))
+            {
+                ticker.LeaseUntil = null;
+                ticker.AcquisitionToken = null;
+            }
+
             // UPDATED_AT ALWAYS
             ticker.UpdatedAt = _clock.UtcNow;
         }
@@ -1361,6 +1486,12 @@ namespace TickerQ.Provider
             {
                 occurrence.LockHolder = null;
                 occurrence.LockedAt = null;
+            }
+
+            if (IsFencedTerminalWrite(context))
+            {
+                occurrence.LeaseUntil = null;
+                occurrence.AcquisitionToken = null;
             }
 
             // UPDATED_AT ALWAYS

@@ -6,7 +6,7 @@ using TickerQ.Utilities.Models;
 namespace TickerQ.MongoDB.Tests;
 
 [Collection("Mongo")]
-public class MongoPersistenceProviderTests : IClassFixture<MongoTestFixture>, IAsyncLifetime
+public class MongoPersistenceProviderTests : IAsyncLifetime
 {
     private readonly MongoTestFixture _f;
 
@@ -116,7 +116,8 @@ public class MongoPersistenceProviderTests : IClassFixture<MongoTestFixture>, IA
     {
         var ticker = NewTimeTicker();
         await _f.Provider.AddTimeTickers([ticker], CancellationToken.None);
-        Assert.Single(await _f.Provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None));
+        var acquired = Assert.Single(
+            await _f.Provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None));
 
         var ctx = new InternalFunctionContext
         {
@@ -124,6 +125,7 @@ public class MongoPersistenceProviderTests : IClassFixture<MongoTestFixture>, IA
             FunctionName = "test-fn",
             Type = TickerType.TimeTicker,
             ExecutedAt = _f.FixedNow,
+            AcquisitionToken = acquired.AcquisitionToken,
         }
         .SetProperty(c => c.Status, TickerStatus.Done)
         .SetProperty(c => c.ExecutedAt, _f.FixedNow)
@@ -243,6 +245,62 @@ public class MongoPersistenceProviderTests : IClassFixture<MongoTestFixture>, IA
 
         var afterRenew = await _f.Provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
         Assert.Equal(renewedUntil, afterRenew!.LeaseUntil);
+    }
+
+    [Fact]
+    public async Task TransitionQueuedTimeTicker_RejectsStaleGenerationAndReturnsExactWinner()
+    {
+        var ticker = NewTimeTicker();
+        var currentToken = Guid.NewGuid();
+        await _f.Provider.AddTimeTickers([ticker], CancellationToken.None);
+        await _f.TimeTickers.UpdateOneAsync(
+            Builders<TimeTickerEntity>.Filter.Eq(x => x.Id, ticker.Id),
+            Builders<TimeTickerEntity>.Update
+                .Set(x => x.Status, TickerStatus.Queued)
+                .Set(x => x.LockHolder, _f.OwnerId)
+                .Set(x => x.LockedAt, _f.FixedNow)
+                .Set(x => x.AcquisitionToken, currentToken));
+
+        var staleWinners = await _f.Provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(ticker.Id, Guid.NewGuid())], CancellationToken.None);
+        Assert.Empty(staleWinners);
+
+        var winners = await _f.Provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(ticker.Id, currentToken)], CancellationToken.None);
+        Assert.Equal(ticker.Id, Assert.Single(winners));
+
+        var after = await _f.Provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.InProgress, after!.Status);
+        Assert.Equal(currentToken, after.AcquisitionToken);
+    }
+
+    [Fact]
+    public async Task AcquireTimeTickerOnDemand_ConcurrentTerminalCallsProduceOneFreshWinner()
+    {
+        var ticker = NewTimeTicker();
+        var staleToken = Guid.NewGuid();
+        ticker.Status = TickerStatus.Failed;
+        ticker.AcquisitionToken = staleToken;
+        ticker.LockHolder = "old-node";
+        ticker.LockedAt = _f.FixedNow.AddMinutes(-2);
+        ticker.LeaseUntil = _f.FixedNow.AddMinutes(-1);
+        ticker.ExecutedAt = _f.FixedNow.AddMinutes(-1);
+        ticker.ExceptionMessage = "old failure";
+        ticker.RetryCount = 3;
+        await _f.Provider.AddTimeTickers([ticker], CancellationToken.None);
+
+        var calls = await Task.WhenAll(
+            _f.Provider.AcquireTimeTickerOnDemandAsync(ticker.Id, _f.FixedNow, CancellationToken.None),
+            _f.Provider.AcquireTimeTickerOnDemandAsync(ticker.Id, _f.FixedNow, CancellationToken.None));
+
+        var winner = Assert.Single(calls, x => x is not null)!;
+        Assert.Equal(TickerStatus.InProgress, winner.Status);
+        Assert.NotNull(winner.AcquisitionToken);
+        Assert.NotEqual(staleToken, winner.AcquisitionToken);
+        Assert.Null(winner.ExceptionMessage);
+        Assert.Null(winner.ExecutedAt);
+        Assert.Equal(0, winner.RetryCount);
+        Assert.Equal(_f.OwnerId, winner.LockHolder);
     }
 
     [Fact]

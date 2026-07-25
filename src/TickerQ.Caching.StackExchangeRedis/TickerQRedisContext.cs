@@ -32,7 +32,8 @@ internal class TickerQRedisContext : ITickerQRedisContext
     public async Task NotifyNodeAliveAsync()
     {
         var node = _schedulerOptions.NodeIdentifier;
-        var key  = $"hb:{node}";
+        var owner = _schedulerOptions.ExecutionOwnerId;
+        var key  = $"hb:{owner}";
 
         var payload = new NodeHeartbeatPayload
         {
@@ -51,7 +52,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
                 AbsoluteExpirationRelativeToNow = ttl
             });
 
-        await AddNodeToRegistryAsync(node);
+        await AddNodeToRegistryAsync(owner);
     }
     
     public async Task<string[]> GetDeadNodesAsync()

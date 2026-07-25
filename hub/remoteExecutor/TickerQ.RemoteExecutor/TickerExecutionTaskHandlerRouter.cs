@@ -58,6 +58,33 @@ internal sealed class TickerExecutionTaskHandlerRouter : ITickerExecutionTaskHan
         return _remoteHandler.ExecuteTaskAsync(context, isDue, cancellationToken);
     }
 
+    public Task ExecuteRegisteredTaskAsync(
+        InternalFunctionContext context,
+        bool isDue,
+        CancellationTokenSource registeredSource,
+        CancellationToken cancellationToken = default)
+    {
+        if (context == null)
+            throw new ArgumentNullException(nameof(context));
+        if (registeredSource == null)
+            throw new ArgumentNullException(nameof(registeredSource));
+
+        var isQualifiedRemote = !string.IsNullOrEmpty(context.FunctionName)
+                                && context.FunctionName.Contains('@');
+        if (!isQualifiedRemote)
+        {
+            var localHandler = ResolveLocalHandler();
+            if (localHandler != null)
+            {
+                return localHandler.ExecuteRegisteredTaskAsync(
+                    context, isDue, registeredSource, cancellationToken);
+            }
+        }
+
+        return ((ITickerExecutionTaskHandler)_remoteHandler).ExecuteRegisteredTaskAsync(
+            context, isDue, registeredSource, cancellationToken);
+    }
+
     private ITickerExecutionTaskHandler? ResolveLocalHandler()
     {
         if (_localHandler != null)

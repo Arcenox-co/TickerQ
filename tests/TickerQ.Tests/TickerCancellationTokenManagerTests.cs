@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Reflection;
 using System.Threading;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
@@ -117,6 +120,37 @@ public class TickerCancellationTokenManagerTests : IDisposable
         TickerCancellationTokenManager.RequestTickerCancellationById(tickerId);
 
         Assert.True(wasTrackedDuringCancel, "the entry should still be in the dictionary when Cancel fires");
+    }
+
+    [Fact]
+    public void DelayedRemoval_DoesNotEraseReplacementParentMembership()
+    {
+        var parentId = Guid.NewGuid();
+        var tickerId = Guid.NewGuid();
+        var context = MakeContext(tickerId, parentId);
+        var sourceA = TickerCancellationTokenManager.TryRegisterAcquired(context, isDue: false);
+        Assert.NotNull(sourceA);
+
+        var entriesField = typeof(TickerCancellationTokenManager).GetField(
+            "TickerCancellationTokens", BindingFlags.Static | BindingFlags.NonPublic);
+        var entries = Assert.IsType<ConcurrentDictionary<Guid, TickerCancellationTokenDetails>>(
+            entriesField?.GetValue(null));
+        var detailsA = entries[tickerId];
+
+        Assert.True(((ICollection<KeyValuePair<Guid, TickerCancellationTokenDetails>>)entries)
+            .Remove(new KeyValuePair<Guid, TickerCancellationTokenDetails>(tickerId, detailsA)));
+
+        var sourceB = TickerCancellationTokenManager.TryRegisterAcquired(context, isDue: false);
+        Assert.NotNull(sourceB);
+
+        var delayedRemoval = typeof(TickerCancellationTokenManager).GetMethod(
+            "RemoveFromParentIndex", BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(delayedRemoval);
+        delayedRemoval!.Invoke(null, new object[] { parentId, tickerId, detailsA });
+
+        Assert.True(TickerCancellationTokenManager.IsParentRunning(parentId));
+        Assert.True(TickerCancellationTokenManager.RemoveTickerCancellationToken(tickerId, sourceB!));
+        sourceA!.Dispose();
     }
 
     private static InternalFunctionContext MakeContext(Guid tickerId, Guid? parentId = null)
