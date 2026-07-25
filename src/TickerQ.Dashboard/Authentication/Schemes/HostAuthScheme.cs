@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -21,7 +22,14 @@ internal sealed class HostAuthScheme : AuthSchemeBase
 
     public override async Task<AuthResult> TryAuthenticateAsync(HttpContext context)
     {
-        if (context.User.Identity?.IsAuthenticated != true)
+        // A ClaimsPrincipal may carry several identities (e.g. host stacks a
+        // secondary scheme on top of a primary one). Authenticate against any
+        // identity that is actually authenticated rather than only the primary
+        // one exposed via context.User.Identity.
+        var authenticatedIdentity = context.User.Identities
+            .FirstOrDefault(identity => identity.IsAuthenticated);
+
+        if (authenticatedIdentity is null)
             return AuthResult.Failure("Host authentication required");
 
         if (!string.IsNullOrEmpty(AuthorizationPolicy))
@@ -32,6 +40,9 @@ internal sealed class HostAuthScheme : AuthSchemeBase
                 return AuthResult.Failure("Host authorization policy not satisfied");
         }
 
-        return AuthResult.Success(context.User.Identity.Name ?? "host-user");
+        // Derive the username from the authenticated identity, never from an
+        // unauthenticated one, falling back to a generic host user when the
+        // authenticated identity carries no name.
+        return AuthResult.Success(authenticatedIdentity.Name ?? "host-user");
     }
 }
