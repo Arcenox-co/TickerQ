@@ -1,85 +1,79 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace TickerQ.Dashboard.Authentication.Endpoints;
 
 /// <summary>
-/// Fixed-window in-memory brake on <c>/api/auth/login</c>: after
-/// <see cref="MaxFailures"/> failed attempts from one client IP the endpoint
-/// answers 429 until the window rolls over. A successful login clears the
-/// counter. In-memory by design — each instance enforces the limit
-/// independently, which is acceptable for a brute-force brake (N instances
-/// just means an N× attempt budget), and avoids dragging a distributed cache
-/// into the dashboard package.
+/// Bounded fixed-window in-memory brute-force brake. Callers use independent
+/// buckets for both client IP and normalized username so address rotation does
+/// not bypass account protection.
 /// </summary>
 internal static class LoginRateLimiter
 {
     internal const int MaxFailures = 5;
     internal static readonly TimeSpan Window = TimeSpan.FromMinutes(5);
+    internal const int Capacity = 10_000;
 
-    // Prune when the map grows past this to keep memory bounded under
-    // spoofed-IP floods.
-    private const int PruneThreshold = 10_000;
-
+    private sealed record Entry(int Count, DateTime WindowStart);
     private static readonly ConcurrentDictionary<string, Entry> Failures = new();
 
-    private sealed class Entry
-    {
-        public int Count;
-        public DateTime WindowStart;
-    }
-
-    public static bool IsBlocked(string clientKey, out TimeSpan retryAfter)
+    public static bool IsBlocked(string key, out TimeSpan retryAfter)
     {
         retryAfter = TimeSpan.Zero;
-        if (!Failures.TryGetValue(clientKey, out var entry)) return false;
+        if (!Failures.TryGetValue(key, out var entry)) return false;
 
         var now = DateTime.UtcNow;
         if (now - entry.WindowStart >= Window)
         {
-            Failures.TryRemove(clientKey, out _);
+            Failures.TryRemove(new KeyValuePair<string, Entry>(key, entry));
             return false;
         }
 
         if (entry.Count < MaxFailures) return false;
-
         retryAfter = entry.WindowStart + Window - now;
         return true;
     }
 
-    public static void RecordFailure(string clientKey)
+    public static void RecordFailure(string key)
     {
         var now = DateTime.UtcNow;
         Failures.AddOrUpdate(
-            clientKey,
-            _ => new Entry { Count = 1, WindowStart = now },
-            (_, entry) =>
-            {
-                if (now - entry.WindowStart >= Window)
-                {
-                    entry.Count = 1;
-                    entry.WindowStart = now;
-                }
-                else
-                {
-                    entry.Count++;
-                }
-                return entry;
-            });
+            key,
+            _ => new Entry(1, now),
+            (_, entry) => now - entry.WindowStart >= Window
+                ? new Entry(1, now)
+                : entry with { Count = entry.Count + 1 });
 
-        if (Failures.Count > PruneThreshold)
-            Prune(now);
+        if (Failures.Count > Capacity)
+            PruneAndBound(now);
     }
 
-    public static void RecordSuccess(string clientKey)
-        => Failures.TryRemove(clientKey, out _);
+    public static void RecordSuccess(string key) => Failures.TryRemove(key, out _);
 
-    private static void Prune(DateTime now)
+    public static string AccountKey(string username)
     {
-        foreach (var kvp in Failures)
-        {
-            if (now - kvp.Value.WindowStart >= Window)
-                Failures.TryRemove(kvp.Key, out _);
-        }
+        var normalized = (username ?? string.Empty).Trim().ToUpperInvariant();
+        return "user:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)));
     }
+
+    private static void PruneAndBound(DateTime now)
+    {
+        foreach (var pair in Failures)
+        {
+            if (now - pair.Value.WindowStart >= Window)
+                Failures.TryRemove(new KeyValuePair<string, Entry>(pair.Key, pair.Value));
+        }
+
+        var excess = Failures.Count - Capacity;
+        if (excess <= 0) return;
+        foreach (var pair in Failures.OrderBy(x => x.Value.WindowStart).Take(excess))
+            Failures.TryRemove(new KeyValuePair<string, Entry>(pair.Key, pair.Value));
+    }
+
+    internal static int CurrentCount => Failures.Count;
+    internal static void ResetForTests() => Failures.Clear();
 }

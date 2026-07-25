@@ -66,9 +66,8 @@ public class AuthConfig
     /// <summary>
     /// JWT options when a <see cref="Schemes.JwtBearerScheme"/> is registered.
     /// Populated by <see cref="AuthSchemeBuilder.AddJwtBearer"/> and consumed
-    /// by the service-extension wiring (which materializes the
-    /// <see cref="Jwt.JwtTokenIssuer"/> using either the explicit signing key
-    /// or a DataProtection-derived one).
+    /// by the service-extension wiring (which requires an explicit signing key
+    /// unless ephemeral development signing was explicitly enabled).
     /// </summary>
     internal JwtBearerOptions? JwtBearerOptions { get; set; }
 

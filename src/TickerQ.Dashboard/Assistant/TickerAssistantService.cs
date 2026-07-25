@@ -20,7 +20,8 @@ internal sealed class TickerAssistantService : IDisposable
         Options = options;
         var inner = options.ChatClientFactory!(sp);
         _client = new ChatClientBuilder(inner)
-            .UseFunctionInvocation()
+            .UseFunctionInvocation(configure: invoking =>
+                invoking.MaximumIterationsPerRequest = options.MaxToolIterations)
             .Build();
     }
 

@@ -108,10 +108,8 @@ public sealed class AuthSchemeBuilder
     /// <param name="configure">
     /// Required. At minimum, register at least one user via
     /// <see cref="JwtBearerOptions.AddUser"/> — otherwise nobody can log in.
-    /// Leaving <see cref="JwtBearerOptions.SigningKey"/> unset auto-generates
-    /// a key persisted via ASP.NET Core DataProtection (survives restarts on
-    /// the same machine; in distributed setups configure DataProtection's
-    /// key store yourself or set <c>SigningKey</c> explicitly).
+    /// Configure <see cref="JwtBearerOptions.SigningKey"/> explicitly for stable
+    /// restart and multi-instance validation. Ephemeral signing is development-only opt-in.
     /// </param>
     public AuthSchemeBuilder AddJwtBearer(Action<JwtBearerOptions> configure)
     {
@@ -147,10 +145,8 @@ public sealed class AuthSchemeBuilder
 public sealed class JwtBearerOptions
 {
     /// <summary>
-    /// HS256 signing secret as raw bytes (at least 32 bytes). If null, the
-    /// dashboard derives a stable key via <c>IDataProtectionProvider</c> on
-    /// startup. Set this explicitly in distributed deployments so multiple
-    /// instances accept each other's tokens.
+    /// HS256 signing secret as raw bytes (at least 32 bytes). Required unless
+    /// ephemeral development signing is explicitly enabled.
     /// </summary>
     public byte[]? SigningKey { get; set; }
 
@@ -190,9 +186,9 @@ public sealed class JwtBearerOptions
 public sealed class CookieAuthOptions
 {
     /// <summary>
-    /// HS256 signing secret as raw bytes (at least 32 bytes). If null, the
-    /// dashboard derives a stable key via <c>IDataProtectionProvider</c>
-    /// (same path as JwtBearer). Set explicitly in distributed setups.
+    /// HS256 signing secret as raw bytes (at least 32 bytes). Required unless
+    /// ephemeral development signing is explicitly enabled. Set the same key
+    /// on every instance in distributed deployments.
     /// </summary>
     public byte[]? SigningKey { get; set; }
 

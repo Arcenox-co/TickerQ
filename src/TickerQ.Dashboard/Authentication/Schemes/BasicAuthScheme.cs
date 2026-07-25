@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
@@ -58,7 +59,10 @@ internal sealed class BasicAuthScheme : AuthSchemeBase
                     : AuthResult.Failure("Invalid credentials");
             }
 
-            if (b64 != Credentials)
+            var suppliedBytes = Encoding.ASCII.GetBytes(b64);
+            var expectedBytes = Encoding.ASCII.GetBytes(Credentials!);
+            if (suppliedBytes.Length != expectedBytes.Length ||
+                !CryptographicOperations.FixedTimeEquals(suppliedBytes, expectedBytes))
                 return AuthResult.Failure("Invalid credentials");
 
             var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(b64));
@@ -100,7 +104,12 @@ internal sealed class BasicAuthScheme : AuthSchemeBase
     {
         var header = context.Request.Headers.Authorization.FirstOrDefault();
         if (!string.IsNullOrEmpty(header)) return header;
-        // SignalR's WebSocket upgrade can't carry custom headers — fall back to query string.
+        // SignalR's WebSocket upgrade can't carry custom headers. Restrict query credentials
+        // to the actual dashboard hub upgrade boundary so reusable Basic credentials never
+        // leak through ordinary endpoint URLs, access logs, history, or referrers.
+        if (!context.WebSockets.IsWebSocketRequest ||
+            !context.Request.Path.Equals("/tickerq-notification-hub", StringComparison.OrdinalIgnoreCase))
+            return null;
         var queryToken = context.Request.Query["access_token"].FirstOrDefault();
         return string.IsNullOrEmpty(queryToken) ? null : queryToken;
     }

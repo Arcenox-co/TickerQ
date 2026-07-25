@@ -103,8 +103,8 @@ namespace TickerQ.Dashboard.DependencyInjection
                 // Reverse-proxy support (opt-in via EnableForwardedHeaders):
                 // honour X-Forwarded-Proto/Host/For inside this branch so
                 // redirects, cookies and absolute URLs use the public scheme
-                // and host. Trust-any-proxy is acceptable here precisely
-                // because the customer opted in explicitly.
+                // and host. Headers are accepted only from the explicitly
+                // configured trusted proxies and networks below.
                 if (config.UseForwardedHeaders)
                 {
                     var forwardedOptions = new ForwardedHeadersOptions
@@ -113,8 +113,12 @@ namespace TickerQ.Dashboard.DependencyInjection
                                            | ForwardedHeaders.XForwardedProto
                                            | ForwardedHeaders.XForwardedHost,
                     };
-                    forwardedOptions.KnownNetworks.Clear();
                     forwardedOptions.KnownProxies.Clear();
+                    forwardedOptions.KnownIPNetworks.Clear();
+                    foreach (var proxy in config.TrustedForwardedProxies)
+                        forwardedOptions.KnownProxies.Add(proxy);
+                    foreach (var network in config.TrustedForwardedNetworks)
+                        forwardedOptions.KnownIPNetworks.Add(network);
                     dashboardApp.UseForwardedHeaders(forwardedOptions);
                 }
 

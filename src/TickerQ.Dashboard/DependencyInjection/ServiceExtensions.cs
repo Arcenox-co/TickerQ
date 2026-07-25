@@ -11,9 +11,9 @@ using TickerQ.Utilities.Interfaces;
 using System;
 using System.Linq;
 using System.Security.Cryptography;
-using System.Text;
+
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.DataProtection;
+
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -23,28 +23,28 @@ namespace TickerQ.Dashboard.DependencyInjection
 {
     public static class ServiceExtensions
     {
-        public static TickerOptionsBuilder<TTimeTicker, TCronTicker> AddDashboard<TTimeTicker, TCronTicker>(this TickerOptionsBuilder<TTimeTicker, TCronTicker> tickerConfiguration, Action<DashboardOptionsBuilder> configureDashboard = null)
-            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
-            where TCronTicker : CronTickerEntity, new()
+        internal static void ConfigureDefaultCorsPolicy(DashboardOptionsBuilder config)
         {
-            var dashboardConfig = new DashboardOptionsBuilder();
-
-            // Default CORS is same-origin: browsers don't apply CORS to
-            // same-origin requests, so an empty policy changes nothing for the
-            // standard embedded-dashboard setup while refusing credentialed
-            // cross-origin calls from arbitrary websites. Split-origin setups
-            // (SetBackendDomain) get the permissive legacy policy; customers
-            // who need something in between call SetCorsPolicy themselves.
-            dashboardConfig.CorsPolicyBuilder = cors =>
+            // Same-origin needs no CORS response. Credentialed split-origin access is exact-match only.
+            config.CorsPolicyBuilder = cors =>
             {
-                if (!string.IsNullOrEmpty(dashboardConfig.BackendDomain))
-                    cors.SetIsOriginAllowed(_ => true)
+                if (config.AllowedOrigins.Count > 0)
+                    cors.WithOrigins(config.AllowedOrigins.ToArray())
                         .AllowAnyHeader()
                         .AllowAnyMethod()
                         .AllowCredentials();
                 else
                     cors.SetIsOriginAllowed(_ => false);
             };
+        }
+
+        public static TickerOptionsBuilder<TTimeTicker, TCronTicker> AddDashboard<TTimeTicker, TCronTicker>(this TickerOptionsBuilder<TTimeTicker, TCronTicker> tickerConfiguration, Action<DashboardOptionsBuilder> configureDashboard = null)
+            where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+            where TCronTicker : CronTickerEntity, new()
+        {
+            var dashboardConfig = new DashboardOptionsBuilder();
+
+            ConfigureDefaultCorsPolicy(dashboardConfig);
 
             configureDashboard?.Invoke(dashboardConfig);
             
@@ -80,7 +80,6 @@ namespace TickerQ.Dashboard.DependencyInjection
                 // lifetime wins; cookie-only setups use the cookie's lifetime.
                 if (dashboardConfig.Auth.JwtBearerOptions != null || dashboardConfig.Auth.CookieAuthOptions != null)
                 {
-                    services.AddDataProtection();
                     services.AddSingleton(sp => BuildJwtIssuer(sp, dashboardConfig.Auth));
 
                     // Late-bind the issuer onto every credential-using scheme so
@@ -151,7 +150,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             var cookie = config.CookieAuthOptions;
 
             var allowEphemeral = (bearer?.AllowEphemeralSigningKey ?? false) || (cookie?.AllowEphemeralSigningKey ?? false);
-            var key = bearer?.SigningKey ?? cookie?.SigningKey ?? DeriveSigningKey(sp, allowEphemeral);
+            var key = bearer?.SigningKey ?? cookie?.SigningKey ?? CreateEphemeralSigningKey(sp, allowEphemeral);
             var issuer = bearer?.Issuer ?? cookie?.Issuer ?? "tickerq-dashboard";
             var audience = bearer?.Audience ?? cookie?.Audience ?? "tickerq-api";
             var lifetime = bearer?.AccessTokenLifetime ?? cookie?.SessionLifetime ?? TimeSpan.FromHours(1);
@@ -159,38 +158,15 @@ namespace TickerQ.Dashboard.DependencyInjection
             return new JwtTokenIssuer(key, issuer, audience, lifetime);
         }
 
-        /// <summary>
-        /// Auto-derive a stable 32-byte HS256 key from <see cref="IDataProtectionProvider"/>.
-        /// </summary>
-        /// <remarks>
-        /// Calls <c>protector.Protect("v1")</c> to obtain a per-machine encrypted
-        /// blob (ASP.NET Core's DataProtection keyring persists across restarts
-        /// in app-isolated storage by default), then SHA-256s it down to a
-        /// 256-bit secret. In distributed setups, either configure the
-        /// DataProtection key store to a shared location OR set
-        /// <see cref="JwtBearerOptions.SigningKey"/> explicitly so every node
-        /// signs with the same key.
-        /// </remarks>
-        private static byte[] DeriveSigningKey(IServiceProvider sp, bool allowEphemeral)
+        /// <summary>Create a random process-local key only behind explicit development opt-in.</summary>
+        private static byte[] CreateEphemeralSigningKey(IServiceProvider sp, bool allowEphemeral)
         {
-            var dp = sp.GetService<IDataProtectionProvider>();
-            if (dp != null)
-            {
-                var protector = dp.CreateProtector("TickerQ.Dashboard.JwtSigning.v1");
-                var blob = protector.Protect(Encoding.UTF8.GetBytes("tickerq-signing-key"));
-                return SHA256.HashData(blob);
-            }
-
-            // No DataProtection and no explicit key: an ephemeral key would
-            // silently invalidate every issued token on restart and reject
-            // tokens issued by other instances. Fail loudly unless the
-            // customer explicitly opted in (dev scenarios).
             if (!allowEphemeral)
                 throw new InvalidOperationException(
-                    "TickerQ Dashboard: cannot derive a stable JWT signing key because DataProtection is unavailable. " +
-                    "Set JwtBearerOptions.SigningKey / CookieAuthOptions.SigningKey explicitly (required for " +
-                    "multi-instance deployments), configure DataProtection with a persistent key store, or set " +
-                    "AllowEphemeralSigningKey = true to accept that all sessions are lost on every restart.");
+                    "TickerQ Dashboard credential authentication requires an explicit shared JWT signing key. " +
+                    "Set JwtBearerOptions.SigningKey / CookieAuthOptions.SigningKey (at least 32 bytes), or set " +
+                    "AllowEphemeralSigningKey = true only for development where restart logout and " +
+                    "cross-instance token rejection are acceptable.");
 
             sp.GetService<ILoggerFactory>()?
                 .CreateLogger("TickerQ.Dashboard.Authentication")

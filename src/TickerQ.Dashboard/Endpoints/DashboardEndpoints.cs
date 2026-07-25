@@ -198,6 +198,11 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
         => c.RequestServices.GetRequiredService<ITickerDashboardDataService<TTimeTicker, TCronTicker>>();
 
+    private static ITickerDashboardRepository<TTimeTicker, TCronTicker> Repository<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+        => c.RequestServices.GetRequiredService<ITickerDashboardRepository<TTimeTicker, TCronTicker>>();
+
     private static JsonSerializerOptions Json(HttpContext c)
         => c.RequestServices.GetRequiredService<DashboardOptionsBuilder>().DashboardJsonOptions;
 
@@ -632,30 +637,21 @@ public static class DashboardEndpoints
         var body = await ReadJsonAsync<BulkRetryRequest>(c, Json(c));
         if (body == null || body.Items.Count == 0) { c.Response.StatusCode = 400; return; }
 
-        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
-        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
-        var dataService = DataService<TTimeTicker, TCronTicker>(c);
+        var repository = Repository<TTimeTicker, TCronTicker>(c);
         var affected = 0;
 
-        // Time executions re-run the ticker itself; cron occurrences re-run the
-        // parent schedule — deduped so selecting five failed occurrences of the
-        // same cron triggers one on-demand run, not five.
+        // Avoid firing the same cron more than once if several of its occurrences are selected.
         var cronIdsTriggered = new HashSet<Guid>();
-
         foreach (var item in body.Items)
         {
             if (string.Equals(item.Type, "TimeTicker", StringComparison.OrdinalIgnoreCase))
             {
-                var entity = await persistence.GetTimeTickerById(item.Id, c.RequestAborted);
-                if (entity == null) continue;
-
-                entity.ExecutionTime = DateTime.UtcNow;
-                var result = await manager.UpdateAsync(entity, c.RequestAborted);
-                if (result.IsSucceeded) affected++;
+                if (await repository.RunTimeTickerOnDemandAsync(item.Id, c.RequestAborted))
+                    affected++;
             }
             else if (item.CronTickerId is { } cronId && cronIdsTriggered.Add(cronId))
             {
-                await dataService.RunCronTickerOnDemandAsync(cronId, c.RequestAborted);
+                await repository.AddOnDemandCronTickerOccurrenceAsync(cronId, c.RequestAborted);
                 affected++;
             }
         }
@@ -668,14 +664,15 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
-        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
-
         var entity = await persistence.GetTimeTickerById(id, c.RequestAborted);
         if (entity == null) { c.Response.StatusCode = 404; return; }
-
-        entity.ExecutionTime = DateTime.UtcNow;
-        var result = await manager.UpdateAsync(entity, c.RequestAborted);
-        if (!result.IsSucceeded) { await WriteTickerError(c, result.Exception); return; }
+        if (entity.Status == TickerStatus.InProgress) { c.Response.StatusCode = 409; return; }
+        if (!await Repository<TTimeTicker, TCronTicker>(c)
+                .RunTimeTickerOnDemandAsync(id, c.RequestAborted))
+        {
+            c.Response.StatusCode = 409;
+            return;
+        }
         c.Response.StatusCode = 204;
     }
 

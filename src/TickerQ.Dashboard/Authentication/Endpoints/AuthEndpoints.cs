@@ -36,8 +36,10 @@ internal static class AuthEndpoints
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous();
 
+        // Compatibility route name retained, but this is sliding access-token renewal:
+        // there is no durable refresh-token store, revocation, or server-side bearer logout.
         endpoints.MapPost("/api/auth/refresh", (Delegate)RefreshAsync)
-            .WithName("RefreshToken")
+            .WithName("RenewAccessToken")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous();
@@ -58,7 +60,7 @@ internal static class AuthEndpoints
 
         // Brute-force brake, keyed by client IP. Applied before touching the
         // user store so blocked clients cost nothing.
-        var clientKey = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var clientKey = "ip:" + (ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown");
         if (LoginRateLimiter.IsBlocked(clientKey, out var retryAfter))
         {
             ctx.RequestServices.GetService<Infrastructure.Metrics.ITickerQDashboardMetrics>()?.LoginThrottled();
@@ -70,13 +72,23 @@ internal static class AuthEndpoints
         if (body == null || string.IsNullOrEmpty(body.Username) || string.IsNullOrEmpty(body.Password))
             return Results.BadRequest(new { error = "Username and password are required." });
 
+        var accountKey = LoginRateLimiter.AccountKey(body.Username);
+        if (LoginRateLimiter.IsBlocked(accountKey, out var accountRetryAfter))
+        {
+            ctx.RequestServices.GetService<Infrastructure.Metrics.ITickerQDashboardMetrics>()?.LoginThrottled();
+            ctx.Response.Headers.RetryAfter = ((int)Math.Ceiling(accountRetryAfter.TotalSeconds)).ToString();
+            return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+        }
+
         if (!users.Validate(body.Username, body.Password))
         {
             LoginRateLimiter.RecordFailure(clientKey);
+            LoginRateLimiter.RecordFailure(accountKey);
             return Results.Unauthorized();
         }
 
         LoginRateLimiter.RecordSuccess(clientKey);
+        LoginRateLimiter.RecordSuccess(accountKey);
         var token = issuer.IssueAccessToken(body.Username);
         SetAuthCookieIfConfigured(ctx, config, token);
 
@@ -94,6 +106,9 @@ internal static class AuthEndpoints
 
     private static async Task<IResult> RefreshAsync(HttpContext ctx)
     {
+        ctx.Response.Headers.CacheControl = "no-store";
+        ctx.Response.Headers.Pragma = "no-cache";
+        ctx.Response.Headers["X-TickerQ-Session-Semantics"] = "sliding-access-token";
         var config = ctx.RequestServices.GetRequiredService<AuthConfig>();
         var (issuer, _, lifetimeSeconds) = ResolveIssuer(config);
         if (issuer == null)

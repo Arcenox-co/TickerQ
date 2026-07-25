@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -23,6 +26,11 @@ public class DashboardOptionsBuilder
     internal Func<HttpContext, bool>? ReadOnlyPredicate { get; set; }
     internal TimeZoneInfo DashboardTimeZone { get; set; }
     internal bool UseForwardedHeaders { get; set; }
+    internal List<IPAddress> TrustedForwardedProxies { get; } = [];
+    internal List<System.Net.IPNetwork> TrustedForwardedNetworks { get; } = [];
+    internal List<string> AllowedOrigins { get; } = [];
+    internal bool CustomCorsPolicyConfigured { get; set; }
+    internal bool AnonymousDashboardAcknowledged { get; set; }
     internal AssistantOptionsBuilder? Assistant { get; set; }
 
     /// <summary>
@@ -48,7 +56,30 @@ public class DashboardOptionsBuilder
     internal bool MiddlewareApplied { get; set; }
 
     public void SetCorsPolicy(Action<CorsPolicyBuilder> corsPolicyBuilder)
-        => CorsPolicyBuilder = corsPolicyBuilder;
+    {
+        CorsPolicyBuilder = corsPolicyBuilder ?? throw new ArgumentNullException(nameof(corsPolicyBuilder));
+        CustomCorsPolicyConfigured = true;
+    }
+
+    /// <summary>Allow exact browser origins for credentialed split-origin dashboard access.</summary>
+    public DashboardOptionsBuilder AllowOrigins(params string[] origins)
+    {
+        if (origins == null || origins.Length == 0)
+            throw new ArgumentException("At least one origin is required.", nameof(origins));
+
+        foreach (var origin in origins)
+        {
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+                uri.AbsolutePath != "/" || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+                throw new ArgumentException($"'{origin}' is not a valid HTTP(S) origin.", nameof(origins));
+
+            var normalized = uri.GetLeftPart(UriPartial.Authority);
+            if (!AllowedOrigins.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+                AllowedOrigins.Add(normalized);
+        }
+        return this;
+    }
 
     public void SetBasePath(string basePath)
         => BasePath = basePath;
@@ -123,6 +154,22 @@ public class DashboardOptionsBuilder
         return this;
     }
 
+    /// <summary>Trust forwarded headers only from this explicit reverse-proxy address.</summary>
+    public DashboardOptionsBuilder TrustForwardedProxy(IPAddress proxy)
+    {
+        TrustedForwardedProxies.Add(proxy ?? throw new ArgumentNullException(nameof(proxy)));
+        UseForwardedHeaders = true;
+        return this;
+    }
+
+    /// <summary>Trust forwarded headers only from this explicit reverse-proxy network.</summary>
+    public DashboardOptionsBuilder TrustForwardedNetwork(System.Net.IPNetwork network)
+    {
+        TrustedForwardedNetworks.Add(network);
+        UseForwardedHeaders = true;
+        return this;
+    }
+
     /// <summary>
     /// Enable the AI assistant. The operator supplies a chat client
     /// (Anthropic, OpenAI, Azure, local Ollama, …) whose key stays on the
@@ -141,8 +188,12 @@ public class DashboardOptionsBuilder
     public DashboardOptionsBuilder WithNoAuth()
     {
         Auth.Mode = AuthMode.None;
+        AnonymousDashboardAcknowledged = true;
         return this;
     }
+
+    /// <summary>Explicitly acknowledge that all dashboard data and mutations are public.</summary>
+    public DashboardOptionsBuilder AllowAnonymousDashboard() => WithNoAuth();
 
     /// <summary>Enable Basic Authentication with username/password</summary>
     public DashboardOptionsBuilder WithBasicAuth(string username, string password)
@@ -242,5 +293,15 @@ public class DashboardOptionsBuilder
     internal void Validate()
     {
         Auth.Validate();
+        if (!Auth.IsEnabled && !AnonymousDashboardAcknowledged)
+            throw new InvalidOperationException(
+                "TickerQ Dashboard authentication is not configured. Call AllowAnonymousDashboard() " +
+                "to explicitly acknowledge public exposure, or configure an authentication scheme.");
+        if (!string.IsNullOrEmpty(BackendDomain) && AllowedOrigins.Count == 0 && !CustomCorsPolicyConfigured)
+            throw new InvalidOperationException(
+                "SetBackendDomain does not grant cross-origin trust. Call AllowOrigins() with exact browser origins.");
+        if (UseForwardedHeaders && TrustedForwardedProxies.Count == 0 && TrustedForwardedNetworks.Count == 0)
+            throw new InvalidOperationException(
+                "EnableForwardedHeaders requires at least one TrustForwardedProxy() or TrustForwardedNetwork().");
     }
 }

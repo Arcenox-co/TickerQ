@@ -416,6 +416,46 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             );
         }
         
+        public async Task<bool> RunTimeTickerOnDemandAsync(Guid id, CancellationToken cancellationToken = default)
+        {
+            var acquired = await _persistenceProvider
+                .AcquireTimeTickerOnDemandAsync(id, DateTime.UtcNow, cancellationToken)
+                .ConfigureAwait(false);
+            if (acquired == null)
+                return false;
+
+            var context = BuildOnDemandTimeContext(acquired);
+            await _dispatcher.DispatchAsync([context], CancellationToken.None).ConfigureAwait(false);
+            if (_notificationHubSender != null)
+                await _notificationHubSender.UpdateTimeTickerNotifyAsync(id).ConfigureAwait(false);
+            return true;
+        }
+
+        private static InternalFunctionContext BuildOnDemandTimeContext(TimeTickerEntity ticker)
+        {
+            var context = new InternalFunctionContext
+            {
+                FunctionName = ticker.Function,
+                TickerId = ticker.Id,
+                Type = TickerType.TimeTicker,
+                Retries = ticker.Retries,
+                RetryIntervals = ticker.RetryIntervals,
+                TimeoutSeconds = ticker.TimeoutSeconds,
+                ParentId = ticker.ParentId,
+                AcquisitionToken = ticker.AcquisitionToken,
+                ExecutionTime = ticker.ExecutionTime ?? DateTime.UtcNow,
+                RunCondition = ticker.RunCondition ?? RunCondition.OnAnyCompletedStatus,
+                TimeTickerChildren = ticker.Children?.Select(BuildOnDemandTimeContext).ToList() ?? []
+            };
+            if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
+            {
+                context.CachedDelegate = tickerItem.Delegate;
+                context.CachedPriority = tickerItem.Priority;
+                context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
+            }
+            return context;
+        }
+
         public async Task AddOnDemandCronTickerOccurrenceAsync(Guid id, CancellationToken cancellationToken)
         {
             var now = DateTime.UtcNow;
@@ -450,6 +490,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     Retries = occurrence.CronTicker.Retries,
                     RetryIntervals = occurrence.CronTicker.RetryIntervals,
                     TimeoutSeconds = occurrence.CronTicker.TimeoutSeconds,
+                    AcquisitionToken = occurrence.AcquisitionToken,
                     ExecutionTime = occurrence.ExecutionTime
                 };
 

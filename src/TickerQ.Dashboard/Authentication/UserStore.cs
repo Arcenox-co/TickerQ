@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -29,7 +29,9 @@ public sealed class InMemoryUserStore : IUserStore
     private const int SaltBytes = 16;
     private const int HashBytes = 32;
 
-    private readonly Dictionary<string, HashedCredential> _users = new(StringComparer.Ordinal);
+    private static readonly byte[] DummySalt = new byte[SaltBytes];
+    private static readonly byte[] DummyHash = Pbkdf2("tickerq-dummy-password", DummySalt);
+    private readonly ConcurrentDictionary<string, HashedCredential> _users = new(StringComparer.Ordinal);
 
     /// <summary>Register a user. Password is hashed immediately and not retained.</summary>
     public void AddUser(string username, string password)
@@ -44,9 +46,13 @@ public sealed class InMemoryUserStore : IUserStore
 
     public bool Validate(string username, string password)
     {
-        if (!_users.TryGetValue(username, out var cred)) return false;
+        var found = _users.TryGetValue(username, out var cred);
+        if (!found)
+            cred = new HashedCredential(DummySalt, DummyHash);
+
         var candidate = Pbkdf2(password, cred.Salt);
-        return CryptographicOperations.FixedTimeEquals(candidate, cred.Hash);
+        var matches = CryptographicOperations.FixedTimeEquals(candidate, cred.Hash);
+        return found & matches;
     }
 
     private static byte[] Pbkdf2(string password, byte[] salt)
