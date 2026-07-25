@@ -36,7 +36,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         _serviceProvider = services.BuildServiceProvider();
 
-        _handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, _internalManager);
+        _handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
     }
 
     #region Success Path
@@ -129,7 +129,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager);
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
 
@@ -150,7 +150,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager);
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
         context.Retries = 2;
@@ -210,7 +210,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager);
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var context = CreateContext(ct: (_, _, _) => throw new TaskCanceledException("cancelled"));
 

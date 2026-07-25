@@ -44,9 +44,9 @@ public class InternalTickerManagerTests
         _persistence.GetEarliestTimeTickers(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(Array.Empty<TimeTickerEntity>()));
 
-        _notificationHub.UpdateTimeTickerNotifyAsync(Arg.Any<object>()).Returns(Task.CompletedTask);
-        _notificationHub.AddCronOccurrenceAsync(Arg.Any<Guid>(), Arg.Any<object>()).Returns(Task.CompletedTask);
-        _notificationHub.UpdateCronOccurrenceAsync(Arg.Any<Guid>(), Arg.Any<object>()).Returns(Task.CompletedTask);
+        _notificationHub.UpdateTimeTickerNotifyAsync(Arg.Any<Guid>()).Returns(Task.CompletedTask);
+        _notificationHub.AddCronOccurrenceAsync(Arg.Any<Guid>(), Arg.Any<Guid>()).Returns(Task.CompletedTask);
+        _notificationHub.UpdateCronOccurrenceAsync(Arg.Any<Guid>(), Arg.Any<Guid>()).Returns(Task.CompletedTask);
         _notificationHub.UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(Arg.Any<InternalFunctionContext>()).Returns(Task.CompletedTask);
         _notificationHub.UpdateCronOccurrenceFromInternalFunctionContext<FakeCronTicker>(Arg.Any<InternalFunctionContext>()).Returns(Task.CompletedTask);
 
@@ -59,7 +59,7 @@ public class InternalTickerManagerTests
             managerType,
             BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
             binder: null,
-            args: new object[] { _persistence, _clock, _notificationHub },
+            args: new object[] { _persistence, _clock, _notificationHub, new SchedulerOptionsBuilder() },
             culture: null)!;
     }
 
@@ -1001,7 +1001,7 @@ public class InternalTickerManagerTests
 
         await _manager.RunTimedOutTickers(CancellationToken.None);
 
-        await _notificationHub.Received(1).UpdateTimeTickerNotifyAsync(timedOutTimeTicker);
+        await _notificationHub.Received(1).UpdateTimeTickerNotifyAsync(timedOutTimeTicker.Id);
     }
 
     [Fact]

@@ -35,7 +35,7 @@ public class RetryExhaustionTests : IDisposable
         services.AddSingleton(_instrumentation);
         _serviceProvider = services.BuildServiceProvider();
 
-        _handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, _internalManager);
+        _handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
     }
 
     #region All retries exhausted - status becomes Failed
@@ -92,7 +92,7 @@ public class RetryExhaustionTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager);
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var context = CreateContext(
             ct: (_, _, _) => throw new InvalidOperationException("boom"),
@@ -119,7 +119,7 @@ public class RetryExhaustionTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager);
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var context = CreateContext(
             ct: (_, _, _) => throw new InvalidOperationException("boom"),
@@ -291,7 +291,7 @@ public class RetryExhaustionTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager);
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var attemptCount = 0;
         var context = CreateContext(
@@ -366,7 +366,7 @@ public class RetryExhaustionTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, internalManager);
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var attemptCount = 0;
         var cts = new CancellationTokenSource();

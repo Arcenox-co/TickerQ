@@ -99,7 +99,7 @@ public class RetryBehaviorTests : IDisposable
         services.AddSingleton(instrumentation);
         var serviceProvider = services.BuildServiceProvider();
 
-        var handler = new TickerExecutionTaskHandler(serviceProvider, clock, instrumentation, internalManager);
+        var handler = new TickerExecutionTaskHandler(serviceProvider, clock, instrumentation, internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var attempts = new List<Attempt>();
 

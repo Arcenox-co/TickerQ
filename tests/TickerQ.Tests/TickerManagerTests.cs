@@ -266,7 +266,7 @@ public class TickerManagerTests : IDisposable
             .InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>())
             .Returns(1);
         _notificationHubSender
-            .AddCronTickerNotifyAsync(Arg.Any<object>())
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>())
             .Returns(Task.CompletedTask);
 
         var result = await _cronTickerManager.AddAsync(entity, CancellationToken.None);
@@ -322,7 +322,7 @@ public class TickerManagerTests : IDisposable
             .InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>())
             .Returns(1);
         _notificationHubSender
-            .AddCronTickerNotifyAsync(Arg.Any<object>())
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>())
             .Returns(Task.CompletedTask);
 
         await _cronTickerManager.AddAsync(entity, CancellationToken.None);
@@ -344,13 +344,13 @@ public class TickerManagerTests : IDisposable
             .InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>())
             .Returns(1);
         _notificationHubSender
-            .AddCronTickerNotifyAsync(Arg.Any<object>())
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>())
             .Returns(Task.CompletedTask);
 
         await _cronTickerManager.AddAsync(entity, CancellationToken.None);
 
         await _notificationHubSender.Received(1)
-            .AddCronTickerNotifyAsync(Arg.Any<object>());
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>());
     }
 
     [Fact]
@@ -366,7 +366,7 @@ public class TickerManagerTests : IDisposable
             .InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>())
             .Returns(1);
         _notificationHubSender
-            .AddCronTickerNotifyAsync(Arg.Any<object>())
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>())
             .Returns(Task.CompletedTask);
 
         var result = await _cronTickerManager.AddAsync(entity, CancellationToken.None);
@@ -389,7 +389,7 @@ public class TickerManagerTests : IDisposable
             .InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>())
             .Returns(1);
         _notificationHubSender
-            .AddCronTickerNotifyAsync(Arg.Any<object>())
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>())
             .Returns(Task.CompletedTask);
 
         var result = await _cronTickerManager.AddAsync(entity, CancellationToken.None);
