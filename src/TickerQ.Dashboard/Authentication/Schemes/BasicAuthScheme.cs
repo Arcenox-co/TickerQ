@@ -101,16 +101,5 @@ internal sealed class BasicAuthScheme : AuthSchemeBase
     }
 
     private static string? ReadAuthorizationValue(HttpContext context)
-    {
-        var header = context.Request.Headers.Authorization.FirstOrDefault();
-        if (!string.IsNullOrEmpty(header)) return header;
-        // SignalR's WebSocket upgrade can't carry custom headers. Restrict query credentials
-        // to the actual dashboard hub upgrade boundary so reusable Basic credentials never
-        // leak through ordinary endpoint URLs, access logs, history, or referrers.
-        if (!context.WebSockets.IsWebSocketRequest ||
-            !context.Request.Path.Equals("/tickerq-notification-hub", StringComparison.OrdinalIgnoreCase))
-            return null;
-        var queryToken = context.Request.Query["access_token"].FirstOrDefault();
-        return string.IsNullOrEmpty(queryToken) ? null : queryToken;
-    }
+        => HubQueryCredentialReader.ReadAuthorizationOrHubQuery(context);
 }

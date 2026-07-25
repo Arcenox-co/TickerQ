@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
@@ -199,7 +200,7 @@ public class DashboardEndpointTests
     }
 
     [Fact]
-    public async Task AuthenticateAsync_ApiKeyMode_ViaQueryParameter_ReturnsSuccess()
+    public async Task AuthenticateAsync_ApiKeyMode_ViaHubWebSocketQueryParameter_ReturnsSuccess()
     {
         var config = new AuthConfig
         {
@@ -210,7 +211,11 @@ public class DashboardEndpointTests
         var svc = new AuthService(config, logger);
 
         var context = new DefaultHttpContext();
+        context.Request.Path = "/tickerq-notification-hub";
         context.Request.QueryString = new QueryString("?access_token=query-key");
+        var webSocketFeature = Substitute.For<IHttpWebSocketFeature>();
+        webSocketFeature.IsWebSocketRequest.Returns(true);
+        context.Features.Set(webSocketFeature);
 
         var result = await svc.AuthenticateAsync(context);
 

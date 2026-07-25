@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using TickerQ.Dashboard.Authentication.Jwt;
@@ -50,10 +49,5 @@ internal sealed class JwtBearerScheme : AuthSchemeBase
     }
 
     private static string? ReadAuthorizationValue(HttpContext context)
-    {
-        var header = context.Request.Headers.Authorization.FirstOrDefault();
-        if (!string.IsNullOrEmpty(header)) return header;
-        var queryToken = context.Request.Query["access_token"].FirstOrDefault();
-        return string.IsNullOrEmpty(queryToken) ? null : queryToken;
-    }
+        => HubQueryCredentialReader.ReadAuthorizationOrHubQuery(context);
 }

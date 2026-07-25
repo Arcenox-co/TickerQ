@@ -97,6 +97,67 @@ public class DashboardSecurityHardeningTests : IDisposable
         Assert.False((await scheme.TryAuthenticateAsync(WebSocketContext(path, expected))).IsAuthenticated);
     }
 
+    [Theory]
+    [InlineData("Jwt")]
+    [InlineData("ApiKey")]
+    [InlineData("Custom")]
+    public async Task QueryCredentialSchemes_RejectCredentialsOutsideWebSocketHubBoundary(string schemeName)
+    {
+        var (scheme, token) = CreateQueryCredentialScheme(schemeName);
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/tickerq/api/tickers";
+        context.Request.QueryString = new QueryString("?access_token=" + token);
+
+        Assert.False((await scheme.TryAuthenticateAsync(context)).IsAuthenticated);
+    }
+
+    [Theory]
+    [InlineData("Jwt")]
+    [InlineData("ApiKey")]
+    [InlineData("Custom")]
+    public async Task QueryCredentialSchemes_AcceptCredentialsOnlyOnExactWebSocketHubPath(string schemeName)
+    {
+        var (scheme, token) = CreateQueryCredentialScheme(schemeName);
+
+        Assert.True((await scheme.TryAuthenticateAsync(
+            WebSocketContext("/tickerq-notification-hub", token))).IsAuthenticated);
+    }
+
+    [Theory]
+    [InlineData("Jwt", "/tickerq-notification-hub-evil")]
+    [InlineData("Jwt", "/hubs/tickerq-notification-hub")]
+    [InlineData("ApiKey", "/tickerq-notification-hub-evil")]
+    [InlineData("Custom", "/hubs/tickerq-notification-hub")]
+    public async Task QueryCredentialSchemes_RejectCredentialsOnWebSocketNearMatchPaths(
+        string schemeName, string path)
+    {
+        var (scheme, token) = CreateQueryCredentialScheme(schemeName);
+
+        Assert.False((await scheme.TryAuthenticateAsync(WebSocketContext(path, token))).IsAuthenticated);
+    }
+
+    private static (IAuthScheme Scheme, string Token) CreateQueryCredentialScheme(string schemeName)
+    {
+        const string token = "query-secret";
+        return schemeName switch
+        {
+            "Jwt" => CreateJwtQueryScheme(),
+            "ApiKey" => (new ApiKeyAuthScheme { ApiKey = token }, token),
+            "Custom" => (new CustomAuthScheme { Validator = value => value == token }, token),
+            _ => throw new ArgumentOutOfRangeException(nameof(schemeName))
+        };
+    }
+
+    private static (IAuthScheme Scheme, string Token) CreateJwtQueryScheme()
+    {
+        var issuer = new JwtTokenIssuer(
+            Enumerable.Range(0, 32).Select(i => (byte)i).ToArray(),
+            "issuer", "audience", TimeSpan.FromMinutes(5));
+        var users = new InMemoryUserStore();
+        users.AddUser("admin", "password");
+        return (new JwtBearerScheme { Issuer = issuer, Users = users }, issuer.IssueAccessToken("admin"));
+    }
+
     private static DefaultHttpContext WebSocketContext(string path, string token)
     {
         var context = new DefaultHttpContext();
