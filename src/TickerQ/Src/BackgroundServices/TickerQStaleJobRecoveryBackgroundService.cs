@@ -95,12 +95,12 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
         // the id is gone from the token manager by now) or we lost the lease. Cancel
         // whatever is genuinely still running locally without a row backing it.
         var lost = await _internalTickerManager.GetLostLeaseTickerIdsAsync(timeTickerLeases, occurrenceLeases, ct);
-        foreach (var id in lost)
+        foreach (var key in lost)
         {
-            if (TickerCancellationTokenManager.RequestTickerCancellationById(id))
+            if (TickerCancellationTokenManager.RequestTickerCancellation(key))
                 _logger.LogWarning(
-                    "Ticker {TickerId} lost its lease (recovered by another node while this one was unresponsive); cancelling the local execution — its result would be discarded by fencing",
-                    id);
+                    "{TickerType} {TickerId} lost its lease (recovered by another node while this one was unresponsive); cancelling the local execution — its result would be discarded by fencing",
+                    key.Type, key.TickerId);
         }
     }
 

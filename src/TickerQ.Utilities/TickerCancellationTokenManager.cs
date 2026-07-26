@@ -9,8 +9,8 @@ namespace TickerQ.Utilities
 {
     public static class TickerCancellationTokenManager
     {
-        private static readonly ConcurrentDictionary<Guid, TickerCancellationTokenDetails>  TickerCancellationTokens = new();
-        private static readonly ConcurrentDictionary<Guid, ConcurrentHashSet<Guid>> ParentIdIndex = new();
+        private static readonly ConcurrentDictionary<TickerExecutionKey, TickerCancellationTokenDetails> TickerCancellationTokens = new();
+        private static readonly ConcurrentDictionary<TickerExecutionKey, ConcurrentHashSet<TickerExecutionKey>> ParentIdIndex = new();
         private static readonly object[] ParentIndexLocks = CreateParentIndexLocks();
 
         internal static void AddTickerCancellationToken(CancellationTokenSource cancellationSource, InternalFunctionContext context, bool isDue)
@@ -25,11 +25,12 @@ namespace TickerQ.Utilities
                 AcquisitionToken = context.AcquisitionToken
             };
 
-            if (!TickerCancellationTokens.TryAdd(context.TickerId, details))
+            var key = new TickerExecutionKey(context.Type, context.TickerId);
+            if (!TickerCancellationTokens.TryAdd(key, details))
                 return;
 
             if (context.ParentId.HasValue && context.ParentId.Value != Guid.Empty)
-                AddToParentIndex(context.ParentId.Value, context.TickerId);
+                AddToParentIndex(context.ParentId.Value, key, details);
         }
 
         /// <summary>
@@ -41,7 +42,13 @@ namespace TickerQ.Utilities
         /// </summary>
         internal static CancellationTokenSource TryRegisterAcquired(
             InternalFunctionContext context, bool isDue, params CancellationToken[] linkedTokens)
+            => TryRegisterAcquired(context, isDue, out _, linkedTokens);
+
+        internal static CancellationTokenSource TryRegisterAcquired(
+            InternalFunctionContext context, bool isDue, out bool generationConflict,
+            params CancellationToken[] linkedTokens)
         {
+            generationConflict = false;
             var cancellationSource = linkedTokens is { Length: > 0 }
                 ? CancellationTokenSource.CreateLinkedTokenSource(linkedTokens)
                 : new CancellationTokenSource();
@@ -56,81 +63,127 @@ namespace TickerQ.Utilities
                 AcquisitionToken = context.AcquisitionToken
             };
 
-            // Atomic register: the id occupies the dictionary for the whole execution, so a second
-            // acquisition of the same id fails here rather than racing a second CTS into flight.
-            if (!TickerCancellationTokens.TryAdd(context.TickerId, details))
+            var key = new TickerExecutionKey(context.Type, context.TickerId);
+            while (true)
             {
+                if (TickerCancellationTokens.TryAdd(key, details))
+                {
+                    if (context.ParentId.HasValue && context.ParentId.Value != Guid.Empty)
+                        AddToParentIndex(context.ParentId.Value, key, details);
+                    return cancellationSource;
+                }
+
+                if (!TickerCancellationTokens.TryGetValue(key, out var existing))
+                    continue;
+
+                // The same persisted generation is already owned locally.
+                if (existing.AcquisitionToken == context.AcquisitionToken)
+                {
+                    cancellationSource.Dispose();
+                    return null;
+                }
+
+                // Acquisition tokens are opaque GUIDs: inequality cannot prove recency. Fail closed
+                // and let the caller perform an exact, generation-fenced persistence release. A stale
+                // candidate's release is a no-op; a current candidate returns to Idle for retry after
+                // the watchdog cancels the genuinely lost local generation.
+                generationConflict = true;
                 cancellationSource.Dispose();
                 return null;
             }
-
-            if (context.ParentId.HasValue && context.ParentId.Value != Guid.Empty)
-                AddToParentIndex(context.ParentId.Value, context.TickerId);
-
-            return cancellationSource;
         }
 
         internal static bool RemoveTickerCancellationToken(Guid tickerId)
         {
-            var removed = TickerCancellationTokens.TryRemove(tickerId, out var details);
-            
-            if (removed && details != null)
+            var removedTime = RemoveTickerCancellationToken(
+                new TickerExecutionKey(TickerType.TimeTicker, tickerId));
+            var removedCron = RemoveTickerCancellationToken(
+                new TickerExecutionKey(TickerType.CronTickerOccurrence, tickerId));
+            return removedTime || removedCron;
+        }
+
+        private static bool RemoveTickerCancellationToken(TickerExecutionKey key)
+        {
+            var removed = TickerCancellationTokens.TryRemove(key, out var details);
+            if (!removed || details == null)
+                return false;
+
+            try
             {
-                // CRITICAL: Dispose CancellationTokenSource to prevent memory leak
-                try
-                {
-                    details.CancellationSource?.Dispose();
-                }
-                catch
-                {
-                    // Ignore disposal errors
-                }
-                
-                // Remove from parent index if it exists
-                if (details.ParentId != Guid.Empty)
-                {
-                    RemoveFromParentIndex(details.ParentId, tickerId, details);
-                }
+                details.CancellationSource?.Dispose();
+            }
+            catch
+            {
+                // Ignore disposal errors
             }
 
-            return removed;
+            if (details.ParentId != Guid.Empty)
+                RemoveFromParentIndex(details.ParentId, key, details);
+
+            return true;
         }
 
         /// <summary>
         /// Owner-side removal: removes the entry only while it still holds <paramref name="ownedSource"/>,
         /// then disposes that source exactly once. The value comparison prevents ABA — a stale owner can
-        /// never remove/dispose an entry that was re-registered under the same id with a different source.
+        /// never remove/dispose an entry that was re-registered under the same typed id with a different source.
         /// </summary>
         internal static bool RemoveTickerCancellationToken(Guid tickerId, CancellationTokenSource ownedSource)
         {
             if (ownedSource == null)
                 return RemoveTickerCancellationToken(tickerId);
 
-            if (!TickerCancellationTokens.TryGetValue(tickerId, out var details)
-                || !ReferenceEquals(details.CancellationSource, ownedSource))
-                return false;
+            foreach (var type in new[] { TickerType.TimeTicker, TickerType.CronTickerOccurrence })
+            {
+                var key = new TickerExecutionKey(type, tickerId);
+                if (TickerCancellationTokens.TryGetValue(key, out var details)
+                    && ReferenceEquals(details.CancellationSource, ownedSource)
+                    && RemoveTickerCancellationToken(key, ownedSource))
+                    return true;
+            }
 
-            // Atomic compare-and-remove on the exact key/value pair (reference equality on the
-            // details), so only this owner's registration is removed even under concurrent churn.
-            var removed = ((ICollection<KeyValuePair<Guid, TickerCancellationTokenDetails>>)TickerCancellationTokens)
-                .Remove(new KeyValuePair<Guid, TickerCancellationTokenDetails>(tickerId, details));
+            DisposeSource(ownedSource);
+            return false;
+        }
+
+        internal static bool RemoveTickerCancellationToken(
+            TickerExecutionKey key, CancellationTokenSource ownedSource)
+        {
+            if (!TickerCancellationTokens.TryGetValue(key, out var details)
+                || !ReferenceEquals(details.CancellationSource, ownedSource))
+            {
+                DisposeSource(ownedSource);
+                return false;
+            }
+
+            var removed = ((ICollection<KeyValuePair<TickerExecutionKey, TickerCancellationTokenDetails>>)TickerCancellationTokens)
+                .Remove(new KeyValuePair<TickerExecutionKey, TickerCancellationTokenDetails>(key, details));
 
             if (removed)
             {
-                try
-                {
-                    details.CancellationSource?.Dispose();
-                }
-                catch
-                {
-                    // Ignore disposal errors
-                }
+                DisposeSource(details.CancellationSource);
 
                 if (details.ParentId != Guid.Empty)
-                    RemoveFromParentIndex(details.ParentId, tickerId, details);
+                    RemoveFromParentIndex(details.ParentId, key, details);
+            }
+            else
+            {
+                DisposeSource(ownedSource);
             }
 
             return removed;
+        }
+
+        private static void DisposeSource(CancellationTokenSource source)
+        {
+            try
+            {
+                source?.Dispose();
+            }
+            catch
+            {
+                // Ignore disposal errors
+            }
         }
 
         internal static void CleanUpTickerCancellationTokens()
@@ -182,9 +235,9 @@ namespace TickerQ.Utilities
             foreach (var kvp in TickerCancellationTokens)
             {
                 if (kvp.Value.Type == TickerType.CronTickerOccurrence)
-                    cronOccurrenceIds.Add(kvp.Key);
+                    cronOccurrenceIds.Add(kvp.Key.TickerId);
                 else if (kvp.Value.ParentId == Guid.Empty)
-                    timeTickerIds.Add(kvp.Key);
+                    timeTickerIds.Add(kvp.Key.TickerId);
             }
         }
 
@@ -196,21 +249,27 @@ namespace TickerQ.Utilities
             foreach (var kvp in TickerCancellationTokens)
             {
                 if (kvp.Value.Type == TickerType.CronTickerOccurrence)
-                    cronOccurrenceLeases.Add(new AcquisitionLease(kvp.Key, kvp.Value.AcquisitionToken));
+                    cronOccurrenceLeases.Add(new AcquisitionLease(kvp.Key.TickerId, kvp.Value.AcquisitionToken));
                 else if (kvp.Value.ParentId == Guid.Empty)
-                    timeTickerLeases.Add(new AcquisitionLease(kvp.Key, kvp.Value.AcquisitionToken));
+                    timeTickerLeases.Add(new AcquisitionLease(kvp.Key.TickerId, kvp.Value.AcquisitionToken));
             }
         }
 
         public static bool RequestTickerCancellationById(Guid tickerId)
         {
-            // Signal only — never remove or dispose here. The owner (the finally in the execution
-            // handler / scheduler delegate) performs removal and disposal exactly once. Disposing
-            // the source here as well would race the still-running execution that holds the linked
-            // token (disposed-source race) and, once the id is re-registered, could remove the wrong
-            // registration (ABA). The entry stays tracked until the owner observes cancellation and
-            // cleans up, which keeps IsParentRunning / lease renewal accurate in the meantime.
-            if (!TickerCancellationTokens.TryGetValue(tickerId, out var details))
+            // ID-only callers cannot distinguish persistence namespaces, so cancel every matching
+            // local execution rather than arbitrarily selecting one.
+            var cancelledTime = RequestTickerCancellation(
+                new TickerExecutionKey(TickerType.TimeTicker, tickerId));
+            var cancelledCron = RequestTickerCancellation(
+                new TickerExecutionKey(TickerType.CronTickerOccurrence, tickerId));
+            return cancelledTime || cancelledCron;
+        }
+
+        internal static bool RequestTickerCancellation(TickerExecutionKey key)
+        {
+            // Signal only — never remove or dispose here. The owner performs cleanup.
+            if (!TickerCancellationTokens.TryGetValue(key, out var details))
                 return false;
 
             try
@@ -225,33 +284,59 @@ namespace TickerQ.Utilities
             return true;
         }
 
-        private static void AddToParentIndex(Guid parentId, Guid tickerId)
+        internal static bool RequestTickerCancellation(TickerExecutionLease lease)
+        {
+            var key = new TickerExecutionKey(lease.Type, lease.TickerId);
+            if (!TickerCancellationTokens.TryGetValue(key, out var details)
+                || details.AcquisitionToken != lease.AcquisitionToken)
+                return false;
+
+            try
+            {
+                details.CancellationSource?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
+            return true;
+        }
+
+        private static void AddToParentIndex(
+            Guid parentId, TickerExecutionKey key, TickerCancellationTokenDetails details)
         {
             lock (GetParentIndexLock(parentId))
             {
-                var set = ParentIdIndex.GetOrAdd(parentId, static _ => new ConcurrentHashSet<Guid>());
-                set.Add(tickerId);
+                if (!TickerCancellationTokens.TryGetValue(key, out var current)
+                    || !ReferenceEquals(current, details)
+                    || current.ParentId != parentId)
+                    return;
+
+                var parentKey = new TickerExecutionKey(key.Type, parentId);
+                var set = ParentIdIndex.GetOrAdd(parentKey, static _ => new ConcurrentHashSet<TickerExecutionKey>());
+                set.Add(key);
             }
         }
 
         private static void RemoveFromParentIndex(
-            Guid parentId, Guid tickerId, TickerCancellationTokenDetails removedDetails)
+            Guid parentId, TickerExecutionKey key, TickerCancellationTokenDetails removedDetails)
         {
             lock (GetParentIndexLock(parentId))
             {
-                if (TickerCancellationTokens.TryGetValue(tickerId, out var current)
+                var parentKey = new TickerExecutionKey(key.Type, parentId);
+                if (TickerCancellationTokens.TryGetValue(key, out var current)
                     && current.ParentId == parentId
                     && !ReferenceEquals(current, removedDetails))
                     return;
 
-                if (!ParentIdIndex.TryGetValue(parentId, out var set))
+                if (!ParentIdIndex.TryGetValue(parentKey, out var set))
                     return;
 
-                set.Remove(tickerId);
+                set.Remove(key);
                 if (set.IsEmpty)
                 {
-                    ((ICollection<KeyValuePair<Guid, ConcurrentHashSet<Guid>>>)ParentIdIndex)
-                        .Remove(new KeyValuePair<Guid, ConcurrentHashSet<Guid>>(parentId, set));
+                    ((ICollection<KeyValuePair<TickerExecutionKey, ConcurrentHashSet<TickerExecutionKey>>>)ParentIdIndex)
+                        .Remove(new KeyValuePair<TickerExecutionKey, ConcurrentHashSet<TickerExecutionKey>>(parentKey, set));
                 }
             }
         }
@@ -275,7 +360,8 @@ namespace TickerQ.Utilities
         /// <returns>True if any tickers are running for this parent ID</returns>
         public static bool IsParentRunning(Guid parentId)
         {
-            return ParentIdIndex.ContainsKey(parentId);
+            return ParentIdIndex.ContainsKey(new TickerExecutionKey(TickerType.TimeTicker, parentId))
+                || ParentIdIndex.ContainsKey(new TickerExecutionKey(TickerType.CronTickerOccurrence, parentId));
         }
         
         /// <summary>
@@ -287,10 +373,12 @@ namespace TickerQ.Utilities
         /// <returns>True if any other tickers are running for this parent ID</returns>
         public static bool IsParentRunningExcludingSelf(Guid parentId, Guid excludeTickerId)
         {
-            if (!ParentIdIndex.TryGetValue(parentId, out var tickerSet))
+            if (!ParentIdIndex.TryGetValue(
+                    new TickerExecutionKey(TickerType.CronTickerOccurrence, parentId), out var tickerSet))
                 return false;
             
-            return tickerSet.HasOtherItemsBesides(excludeTickerId);
+            return tickerSet.HasOtherItemsBesides(
+                new TickerExecutionKey(TickerType.CronTickerOccurrence, excludeTickerId));
         }
     }
 

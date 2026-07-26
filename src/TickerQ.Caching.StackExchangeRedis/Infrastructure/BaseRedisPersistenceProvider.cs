@@ -151,9 +151,10 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     }
 
     private static bool IsFencedTerminalWrite(InternalFunctionContext context)
-        => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
-           context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
-               or TickerStatus.Cancelled or TickerStatus.Skipped;
+        => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) ||
+           (context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+            context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                or TickerStatus.Cancelled or TickerStatus.Skipped);
     #endregion
 
     #region FunctionContext mapping

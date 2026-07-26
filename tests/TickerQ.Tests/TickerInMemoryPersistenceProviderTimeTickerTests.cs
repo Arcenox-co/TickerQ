@@ -1045,6 +1045,53 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ReleaseLockUpdate_WithStaleGeneration_DoesNotReleaseCurrentOwner()
+    {
+        var ticker = await InsertAndTrack(CreateTicker(status: TickerStatus.Idle));
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [ticker.Id], CancellationToken.None));
+        var currentToken = acquired.AcquisitionToken;
+        var release = new InternalFunctionContext
+        {
+            TickerId = ticker.Id,
+            Type = TickerType.TimeTicker,
+            AcquisitionToken = Guid.NewGuid()
+        }.SetProperty(x => x.Status, TickerStatus.Idle)
+         .SetProperty(x => x.ReleaseLock, true);
+
+        var affected = await _provider.UpdateTimeTicker(release, CancellationToken.None);
+        var stored = await _provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+
+        Assert.Equal(0, affected);
+        Assert.Equal(TickerStatus.InProgress, stored.Status);
+        Assert.Equal(currentToken, stored.AcquisitionToken);
+        Assert.Equal(_nodeId, stored.LockHolder);
+    }
+
+    [Fact]
+    public async Task ReleaseLockUpdate_WithMatchingGeneration_ReleasesToIdle()
+    {
+        var ticker = await InsertAndTrack(CreateTicker(status: TickerStatus.Idle));
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [ticker.Id], CancellationToken.None));
+        var release = new InternalFunctionContext
+        {
+            TickerId = ticker.Id,
+            Type = TickerType.TimeTicker,
+            AcquisitionToken = acquired.AcquisitionToken
+        }.SetProperty(x => x.Status, TickerStatus.Idle)
+         .SetProperty(x => x.ReleaseLock, true);
+
+        var affected = await _provider.UpdateTimeTicker(release, CancellationToken.None);
+        var stored = await _provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+
+        Assert.Equal(1, affected);
+        Assert.Equal(TickerStatus.Idle, stored.Status);
+        Assert.Null(stored.AcquisitionToken);
+        Assert.Null(stored.LockHolder);
+    }
+
+    [Fact]
     public async Task AcquireImmediateTimeTickersAsync_SkipsLockedTicker()
     {
         // Arrange: ticker locked by another node with InProgress status

@@ -305,8 +305,11 @@ namespace TickerQ.Utilities.Managers
                     timeResources.Select(x => new AcquisitionLease(x.TickerId, x.AcquisitionToken)).ToArray(), cancellationToken);
             await Task.WhenAll(cronTask, timeTask).ConfigureAwait(false);
 
-            var winningIds = new HashSet<Guid>(cronTask.Result.Concat(timeTask.Result));
-            var winners = resources.Where(x => winningIds.Contains(x.TickerId)).ToArray();
+            var winningCronIds = new HashSet<Guid>(cronTask.Result);
+            var winningTimeIds = new HashSet<Guid>(timeTask.Result);
+            var winners = resources.Where(x => x.Type == TickerType.CronTickerOccurrence
+                ? winningCronIds.Contains(x.TickerId)
+                : winningTimeIds.Contains(x.TickerId)).ToArray();
             foreach (var resource in winners)
             {
                 resource.Status = TickerStatus.InProgress;
@@ -330,20 +333,19 @@ namespace TickerQ.Utilities.Managers
                     );
                 return;
             }
-            
-            var cronTickerIds = resources.Length == 0 
-                ? [] 
-                : resources.Where(x => x.Type == TickerType.CronTickerOccurrence).Select(x => x.TickerId).ToArray();
-            
-            if(cronTickerIds.Length != 0)
-                await _persistenceProvider.ReleaseAcquiredCronTickerOccurrences(cronTickerIds, cancellationToken).ConfigureAwait(false);
-            
-            var timeTickerIds = resources.Length == 0
-                ? []
-                : resources.Where(x => x.Type == TickerType.TimeTicker).Select(x => x.TickerId).ToArray();
-            
-            if (timeTickerIds.Length != 0)
-                await _persistenceProvider.ReleaseAcquiredTimeTickers(timeTickerIds, cancellationToken).ConfigureAwait(false);
+            foreach (var resource in resources)
+            {
+                resource.ResetUpdateProps()
+                    .SetProperty(x => x.Status, TickerStatus.Idle)
+                    .SetProperty(x => x.ReleaseLock, true);
+
+                if (resource.Type == TickerType.CronTickerOccurrence)
+                    await _persistenceProvider.UpdateCronTickerOccurrence(resource, cancellationToken)
+                        .ConfigureAwait(false);
+                else
+                    await _persistenceProvider.UpdateTimeTicker(resource, cancellationToken)
+                        .ConfigureAwait(false);
+            }
         }
         
         public async Task UpdateTickerAsync(InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
@@ -506,16 +508,30 @@ namespace TickerQ.Utilities.Managers
             return renewed;
         }
 
-        public async Task<Guid[]> GetLostLeaseTickerIdsAsync(IReadOnlyCollection<AcquisitionLease> timeTickerLeases, IReadOnlyCollection<AcquisitionLease> occurrenceLeases, CancellationToken cancellationToken = default)
+        public async Task<TickerExecutionLease[]> GetLostLeaseTickerIdsAsync(
+            IReadOnlyCollection<AcquisitionLease> timeTickerLeases,
+            IReadOnlyCollection<AcquisitionLease> occurrenceLeases,
+            CancellationToken cancellationToken = default)
         {
-            var held = await _persistenceProvider.GetStillHeldTickerIds(timeTickerLeases, occurrenceLeases, cancellationToken).ConfigureAwait(false);
-            var heldSet = new HashSet<Guid>(held);
+            timeTickerLeases ??= Array.Empty<AcquisitionLease>();
+            occurrenceLeases ??= Array.Empty<AcquisitionLease>();
+            var heldTimeTask = _persistenceProvider.GetStillHeldTickerIds(
+                timeTickerLeases, Array.Empty<AcquisitionLease>(), cancellationToken);
+            var heldCronTask = _persistenceProvider.GetStillHeldTickerIds(
+                Array.Empty<AcquisitionLease>(), occurrenceLeases, cancellationToken);
+            await Task.WhenAll(heldTimeTask, heldCronTask).ConfigureAwait(false);
 
-            var lost = new List<Guid>();
-            if (timeTickerLeases != null)
-                lost.AddRange(timeTickerLeases.Where(l => !heldSet.Contains(l.TickerId)).Select(l => l.TickerId));
-            if (occurrenceLeases != null)
-                lost.AddRange(occurrenceLeases.Where(l => !heldSet.Contains(l.TickerId)).Select(l => l.TickerId));
+            var heldTime = new HashSet<Guid>(heldTimeTask.Result);
+            var heldCron = new HashSet<Guid>(heldCronTask.Result);
+            var lost = new List<TickerExecutionLease>();
+            lost.AddRange(timeTickerLeases
+                .Where(lease => !heldTime.Contains(lease.TickerId))
+                .Select(lease => new TickerExecutionLease(
+                    TickerType.TimeTicker, lease.TickerId, lease.AcquisitionToken)));
+            lost.AddRange(occurrenceLeases
+                .Where(lease => !heldCron.Contains(lease.TickerId))
+                .Select(lease => new TickerExecutionLease(
+                    TickerType.CronTickerOccurrence, lease.TickerId, lease.AcquisitionToken)));
 
             return lost.ToArray();
         }

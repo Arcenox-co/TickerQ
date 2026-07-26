@@ -762,6 +762,42 @@ public class InternalTickerManagerTests
     }
 
     [Fact]
+    public async Task SetTickersInProgress_DoesNotMergeSameGuidAcrossTickerTypes()
+    {
+        var sharedId = Guid.NewGuid();
+        var resources = new[]
+        {
+            new InternalFunctionContext
+            {
+                TickerId = sharedId,
+                Type = TickerType.TimeTicker,
+                Status = TickerStatus.Queued,
+                AcquisitionToken = Guid.NewGuid(),
+            },
+            new InternalFunctionContext
+            {
+                TickerId = sharedId,
+                Type = TickerType.CronTickerOccurrence,
+                Status = TickerStatus.Queued,
+                AcquisitionToken = Guid.NewGuid(),
+            },
+        };
+        _persistence.TransitionQueuedTimeTickersToInProgressAsync(
+                Arg.Any<IReadOnlyCollection<AcquisitionLease>>(), Arg.Any<CancellationToken>())
+            .Returns([sharedId]);
+        _persistence.TransitionQueuedCronOccurrencesToInProgressAsync(
+                Arg.Any<IReadOnlyCollection<AcquisitionLease>>(), Arg.Any<CancellationToken>())
+            .Returns([]);
+
+        var winners = await _manager.SetTickersInProgress(resources, CancellationToken.None);
+
+        Assert.Single(winners);
+        Assert.Same(resources[0], winners[0]);
+        Assert.Equal(TickerStatus.InProgress, resources[0].Status);
+        Assert.Equal(TickerStatus.Queued, resources[1].Status);
+    }
+
+    [Fact]
     public async Task SetTickersInProgress_SetsStatusToInProgress_OnPersistenceProvider()
     {
         var timeTickerId = Guid.NewGuid();
@@ -857,29 +893,38 @@ public class InternalTickerManagerTests
     // ====================================================================
 
     [Fact]
-    public async Task ReleaseAcquiredResources_CallsPersistenceProvider_ForBothTypes()
+    public async Task ReleaseAcquiredResources_UsesGenerationFencedUpdatesForBothTypes()
     {
         var timeTickerId = Guid.NewGuid();
         var cronOccurrenceId = Guid.NewGuid();
+        var timeToken = Guid.NewGuid();
+        var cronToken = Guid.NewGuid();
         var resources = new[]
         {
-            new InternalFunctionContext { TickerId = timeTickerId, Type = TickerType.TimeTicker },
-            new InternalFunctionContext { TickerId = cronOccurrenceId, Type = TickerType.CronTickerOccurrence }
+            new InternalFunctionContext { TickerId = timeTickerId, Type = TickerType.TimeTicker, AcquisitionToken = timeToken },
+            new InternalFunctionContext { TickerId = cronOccurrenceId, Type = TickerType.CronTickerOccurrence, AcquisitionToken = cronToken }
         };
-
-        _persistence.ReleaseAcquiredTimeTickers(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.CompletedTask);
-        _persistence.ReleaseAcquiredCronTickerOccurrences(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.CompletedTask);
 
         await _manager.ReleaseAcquiredResources(resources, CancellationToken.None);
 
-        await _persistence.Received(1).ReleaseAcquiredTimeTickers(
-            Arg.Is<Guid[]>(ids => ids.Length == 1 && ids[0] == timeTickerId),
+        await _persistence.Received(1).UpdateTimeTicker(
+            Arg.Is<InternalFunctionContext>(x => x.TickerId == timeTickerId
+                && x.AcquisitionToken == timeToken
+                && x.Status == TickerStatus.Idle
+                && x.ReleaseLock
+                && x.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status))
+                && x.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock))),
             Arg.Any<CancellationToken>());
-        await _persistence.Received(1).ReleaseAcquiredCronTickerOccurrences(
-            Arg.Is<Guid[]>(ids => ids.Length == 1 && ids[0] == cronOccurrenceId),
+        await _persistence.Received(1).UpdateCronTickerOccurrence(
+            Arg.Is<InternalFunctionContext>(x => x.TickerId == cronOccurrenceId
+                && x.AcquisitionToken == cronToken
+                && x.Status == TickerStatus.Idle
+                && x.ReleaseLock),
             Arg.Any<CancellationToken>());
+        await _persistence.DidNotReceive().ReleaseAcquiredTimeTickers(
+            Arg.Any<Guid[]>(), Arg.Any<CancellationToken>());
+        await _persistence.DidNotReceive().ReleaseAcquiredCronTickerOccurrences(
+            Arg.Any<Guid[]>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -917,26 +962,55 @@ public class InternalTickerManagerTests
     }
 
     [Fact]
-    public async Task ReleaseAcquiredResources_OnlyTimeTickers_CallsOnlyTimeTickerRelease()
+    public async Task ReleaseAcquiredResources_OnlyTimeTicker_UsesFencedUpdateOnly()
     {
         var timeTickerId = Guid.NewGuid();
+        var acquisitionToken = Guid.NewGuid();
         var resources = new[]
         {
-            new InternalFunctionContext { TickerId = timeTickerId, Type = TickerType.TimeTicker }
+            new InternalFunctionContext
+            {
+                TickerId = timeTickerId,
+                Type = TickerType.TimeTicker,
+                AcquisitionToken = acquisitionToken
+            }
         };
-
-        _persistence.ReleaseAcquiredTimeTickers(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.CompletedTask);
-        _persistence.ReleaseAcquiredCronTickerOccurrences(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
-            .Returns(Task.CompletedTask);
 
         await _manager.ReleaseAcquiredResources(resources, CancellationToken.None);
 
-        await _persistence.Received(1).ReleaseAcquiredTimeTickers(
-            Arg.Is<Guid[]>(ids => ids.Length == 1 && ids[0] == timeTickerId),
+        await _persistence.Received(1).UpdateTimeTicker(
+            Arg.Is<InternalFunctionContext>(x => x.TickerId == timeTickerId
+                && x.AcquisitionToken == acquisitionToken
+                && x.Status == TickerStatus.Idle
+                && x.ReleaseLock),
             Arg.Any<CancellationToken>());
-        await _persistence.DidNotReceive().ReleaseAcquiredCronTickerOccurrences(
+        await _persistence.DidNotReceive().UpdateCronTickerOccurrence(
+            Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>());
+        await _persistence.DidNotReceive().ReleaseAcquiredTimeTickers(
             Arg.Any<Guid[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetLostLeases_DoesNotMergeSameGuidAcrossTickerTypes()
+    {
+        var sharedId = Guid.NewGuid();
+        var timeLease = new AcquisitionLease(sharedId, Guid.NewGuid());
+        var cronLease = new AcquisitionLease(sharedId, Guid.NewGuid());
+        _persistence.GetStillHeldTickerIds(
+                Arg.Any<IReadOnlyCollection<AcquisitionLease>>(),
+                Arg.Any<IReadOnlyCollection<AcquisitionLease>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<IReadOnlyCollection<AcquisitionLease>>(0).Count > 0
+                ? new[] { sharedId }
+                : Array.Empty<Guid>());
+
+        var lost = await _manager.GetLostLeaseTickerIdsAsync(
+            new[] { timeLease }, new[] { cronLease }, CancellationToken.None);
+
+        var lostKey = Assert.Single(lost);
+        Assert.Equal(TickerType.CronTickerOccurrence, lostKey.Type);
+        Assert.Equal(sharedId, lostKey.TickerId);
+        Assert.Equal(cronLease.AcquisitionToken, lostKey.AcquisitionToken);
     }
 
     // ====================================================================

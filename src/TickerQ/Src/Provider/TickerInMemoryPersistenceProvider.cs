@@ -1301,10 +1301,11 @@ namespace TickerQ.Provider
             return children.Keys.ToArray();
         }
 
-        private static bool IsFencedTerminalWrite(InternalFunctionContext context)
-            => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
-               context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
-                   or TickerStatus.Cancelled or TickerStatus.Skipped;
+        private static bool IsFencedTerminalWrite(InternalFunctionContext functionContext)
+            => functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) ||
+               (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+                functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                    or TickerStatus.Cancelled or TickerStatus.Skipped);
 
         private bool CanAcquire(TTimeTicker ticker)
         {

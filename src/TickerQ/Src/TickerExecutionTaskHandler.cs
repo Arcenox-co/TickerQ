@@ -195,10 +195,15 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         }
 
         // Legacy/direct call (and every child): self-register atomically and own the single cleanup.
-        var cancellationTokenSource =
-            TickerCancellationTokenManager.TryRegisterAcquired(context, isDue, cancellationToken);
+        var cancellationTokenSource = TickerCancellationTokenManager.TryRegisterAcquired(
+            context, isDue, out var generationConflict, cancellationToken);
         if (cancellationTokenSource == null)
-            return; // an entry for this id is already tracked — the existing owner runs and cleans up
+        {
+            if (generationConflict)
+                await _internalTickerManager.ReleaseAcquiredResources([context], CancellationToken.None)
+                    .ConfigureAwait(false);
+            return; // duplicate generation stays with its existing owner; conflicts retry from persistence
+        }
 
         try
         {
@@ -207,7 +212,8 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         }
         finally
         {
-            TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId, cancellationTokenSource);
+            TickerCancellationTokenManager.RemoveTickerCancellationToken(
+                new TickerExecutionKey(context.Type, context.TickerId), cancellationTokenSource);
         }
     }
 

@@ -34,10 +34,9 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// </summary>
         Task<int> RenewActiveTickerLeasesAsync(IReadOnlyCollection<AcquisitionLease> timeTickerLeases, IReadOnlyCollection<AcquisitionLease> occurrenceLeases, CancellationToken cancellationToken = default);
         /// <summary>
-        /// Generation-aware lost-lease detection: of the given leases, returns the ids this node
-        /// no longer holds under the same generation (recovered/re-acquired elsewhere or same-node ABA).
+        /// Generation-aware lost-lease detection preserving the persistence namespace for each row.
         /// </summary>
-        Task<Guid[]> GetLostLeaseTickerIdsAsync(IReadOnlyCollection<AcquisitionLease> timeTickerLeases, IReadOnlyCollection<AcquisitionLease> occurrenceLeases, CancellationToken cancellationToken = default);
+        Task<TickerExecutionLease[]> GetLostLeaseTickerIdsAsync(IReadOnlyCollection<AcquisitionLease> timeTickerLeases, IReadOnlyCollection<AcquisitionLease> occurrenceLeases, CancellationToken cancellationToken = default);
         /// <summary>One watchdog sweep: applies OnStale to expired-lease InProgress tickers.</summary>
         Task<StaleTickerRecoveryResult> RecoverStaleTickersAsync(CancellationToken cancellationToken = default);
     }

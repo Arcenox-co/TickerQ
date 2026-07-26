@@ -185,9 +185,10 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     /// discarded if this node lost its lease while paused (fenced on LockHolder).
     /// </summary>
     protected static bool IsFencedTerminalWrite(InternalFunctionContext functionContext)
-        => functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
-           functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
-               or TickerStatus.Cancelled or TickerStatus.Skipped;
+        => functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) ||
+           (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+            functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                or TickerStatus.Cancelled or TickerStatus.Skipped);
         
     public async Task UpdateTimeTickersWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
     {

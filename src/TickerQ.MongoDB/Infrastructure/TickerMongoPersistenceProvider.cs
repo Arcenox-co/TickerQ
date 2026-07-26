@@ -45,9 +45,10 @@ namespace TickerQ.MongoDB.Infrastructure
                 : (DateTime?)null;
 
         private static bool IsFencedTerminalWrite(InternalFunctionContext functionContext)
-            => functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
-               functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
-                   or TickerStatus.Cancelled or TickerStatus.Skipped;
+            => functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) ||
+               (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+                functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                    or TickerStatus.Cancelled or TickerStatus.Skipped);
 
         // ===================================================================
         // Time Ticker — core scheduler methods
