@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Braces, FileJson, ListTree, Pencil, Plus, ShieldCheck, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -39,9 +39,11 @@ import {
   exceedsSchemaRenderDepth,
   initStructuredDraft,
   isRawPayloadJsonValid,
+  nextAvailableRowIdentity,
   parseStructuredInput,
-  removeInvalidArrayIndex,
-  renameInvalidDictionaryKey,
+  pruneInvalidRowIdentities,
+  removeArrayRowIdentity,
+  renameDictionaryRowIdentity,
   resolveRootObject,
   resolveSchemaNode,
   sameJsonValue,
@@ -204,8 +206,10 @@ function PayloadDialog({
   };
 
   const applyExternalValue = (next: string) => {
-    invalidPaths.current.clear();
-    onValidityChange?.(true);
+    if (rawMode) {
+      invalidPaths.current.clear();
+      onValidityChange?.(isRawPayloadJsonValid(next));
+    }
     onChange(next);
   };
 
@@ -637,10 +641,25 @@ function ArrayField({
   onValidityChange: (valid: boolean) => void;
   depth: number;
 }) {
-  const invalid = useRef<Set<number>>(new Set());
-  const report = (index: number, valid: boolean) => {
-    if (valid) invalid.current.delete(index);
-    else invalid.current.add(index);
+  const invalid = useRef<Set<string>>(new Set());
+  const nextIdentity = useRef(value.length);
+  const [identities, setIdentities] = useState(() => value.map((_, index) => `row-${index}`));
+  const visibleIdentities = useMemo(() => {
+    const next = identities.slice(0, value.length);
+    while (next.length < value.length) {
+      next.push(nextAvailableRowIdentity(`external-${next.length}`, next));
+    }
+    return next;
+  }, [identities, value.length]);
+  useEffect(() => {
+    const next = pruneInvalidRowIdentities(invalid.current, visibleIdentities);
+    if (next.size === invalid.current.size) return;
+    invalid.current = next;
+    onValidityChange(next.size === 0);
+  }, [onValidityChange, visibleIdentities]);
+  const report = (identity: string, valid: boolean) => {
+    if (valid) invalid.current.delete(identity);
+    else invalid.current.add(identity);
     onValidityChange(invalid.current.size === 0);
   };
 
@@ -651,12 +670,14 @@ function ArrayField({
   };
 
   const removeItem = (index: number) => {
-    invalid.current = removeInvalidArrayIndex(invalid.current, index);
+    invalid.current.delete(visibleIdentities[index]);
+    setIdentities(removeArrayRowIdentity(visibleIdentities, index));
     onValidityChange(invalid.current.size === 0);
     onChange(value.filter((_, i) => i !== index));
   };
 
   const addItem = () => {
+    setIdentities([...visibleIdentities, `row-${nextIdentity.current++}`]);
     onChange([...value, emptyValueForNode(root, items ?? {})]);
   };
 
@@ -664,7 +685,7 @@ function ArrayField({
     <div className="space-y-2">
       {value.length === 0 && <p className="text-[10px] text-muted-foreground">No items yet.</p>}
       {value.map((item, index) => (
-        <div key={index} className="flex items-start gap-1.5">
+        <div key={visibleIdentities[index]} className="flex items-start gap-1.5">
           <div className="min-w-0 flex-1">
             <SchemaNodeField
               root={root}
@@ -674,7 +695,7 @@ function ArrayField({
               required={false}
               value={item}
               onChange={(next) => setItem(index, next)}
-              onValidityChange={(valid) => report(index, valid)}
+              onValidityChange={(valid) => report(visibleIdentities[index], valid)}
               depth={depth + 1}
             />
           </div>
@@ -718,9 +739,28 @@ function DictionaryField({
   // (renaming key-by-key would otherwise thrash the map). Committed on blur.
   const entries = Object.entries(value);
   const invalid = useRef<Set<string>>(new Set());
-  const report = (key: string, valid: boolean) => {
-    if (valid) invalid.current.delete(key);
-    else invalid.current.add(key);
+  const nextIdentity = useRef(entries.length);
+  const [identities, setIdentities] = useState(
+    () => new Map(entries.map(([key], index) => [key, `row-${index}`])),
+  );
+  const visibleIdentities = useMemo(() => {
+    const next = new Map([...identities].filter(([key]) => key in value));
+    for (const key of Object.keys(value)) {
+      if (!next.has(key)) {
+        next.set(key, nextAvailableRowIdentity(`external-${key}`, next.values()));
+      }
+    }
+    return next;
+  }, [identities, value]);
+  useEffect(() => {
+    const next = pruneInvalidRowIdentities(invalid.current, visibleIdentities.values());
+    if (next.size === invalid.current.size) return;
+    invalid.current = next;
+    onValidityChange(next.size === 0);
+  }, [onValidityChange, visibleIdentities]);
+  const report = (identity: string, valid: boolean) => {
+    if (valid) invalid.current.delete(identity);
+    else invalid.current.add(identity);
     onValidityChange(invalid.current.size === 0);
   };
 
@@ -730,7 +770,7 @@ function DictionaryField({
 
   const renameKey = (from: string, to: string) => {
     if (from === to) return;
-    invalid.current = renameInvalidDictionaryKey(invalid.current, from, to);
+    setIdentities(renameDictionaryRowIdentity(visibleIdentities, from, to));
     onValidityChange(invalid.current.size === 0);
     const rebuilt: Record<string, unknown> = {};
     for (const [key, val] of entries) rebuilt[key === from ? to : key] = val;
@@ -738,7 +778,11 @@ function DictionaryField({
   };
 
   const removeKey = (key: string) => {
-    invalid.current.delete(key);
+    const identity = visibleIdentities.get(key);
+    if (identity) invalid.current.delete(identity);
+    const nextIdentities = new Map(visibleIdentities);
+    nextIdentities.delete(key);
+    setIdentities(nextIdentities);
     onValidityChange(invalid.current.size === 0);
     const rest = { ...value };
     delete rest[key];
@@ -749,6 +793,7 @@ function DictionaryField({
     let key = "key";
     let n = 1;
     while (key in value) key = `key${++n}`;
+    setIdentities(new Map(visibleIdentities).set(key, `row-${nextIdentity.current++}`));
     onChange({ ...value, [key]: values ? emptyValueForNode(root, values) : "" });
   };
 
@@ -756,7 +801,7 @@ function DictionaryField({
     <div className="space-y-2">
       {entries.length === 0 && <p className="text-[10px] text-muted-foreground">No entries yet.</p>}
       {entries.map(([key, val]) => (
-        <div key={key} className="flex items-start gap-1.5">
+        <div key={visibleIdentities.get(key)} className="flex items-start gap-1.5">
           <DictionaryKeyInput keyName={key} onCommit={(next) => renameKey(key, next)} taken={value} />
           <div className="min-w-0 flex-1">
             {values ? (
@@ -768,14 +813,14 @@ function DictionaryField({
                 required={false}
                 value={val}
                 onChange={(next) => setEntryValue(key, next)}
-                onValidityChange={(valid) => report(key, valid)}
+                onValidityChange={(valid) => report(visibleIdentities.get(key)!, valid)}
                 depth={depth + 1}
               />
             ) : (
               <RawSubtreeField
                 value={val}
                 onChange={(next) => setEntryValue(key, next)}
-                onValidityChange={(valid) => report(key, valid)}
+                onValidityChange={(valid) => report(visibleIdentities.get(key)!, valid)}
               />
             )}
           </div>
@@ -915,7 +960,15 @@ function RawSubtreeField({
 }) {
   const [draft, setDraft] = useState(() => initStructuredDraft(value));
   const [seenValue, setSeenValue] = useState(value);
+  const validityChange = useRef(onValidityChange);
   const errorId = useId();
+
+  useEffect(() => {
+    validityChange.current = onValidityChange;
+  }, [onValidityChange]);
+  useEffect(() => {
+    validityChange.current(!draft.error);
+  }, [draft.error]);
 
   if (!sameJsonValue(seenValue, value)) {
     setSeenValue(value);

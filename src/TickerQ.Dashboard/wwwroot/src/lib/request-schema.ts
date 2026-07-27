@@ -53,23 +53,35 @@ export function exceedsSchemaRenderDepth(depth: number): boolean {
   return depth >= MAX_SCHEMA_RENDER_DEPTH;
 }
 
-export function removeInvalidArrayIndex(invalid: ReadonlySet<number>, removedIndex: number): Set<number> {
-  const next = new Set<number>();
-  for (const index of invalid) {
-    if (index < removedIndex) next.add(index);
-    else if (index > removedIndex) next.add(index - 1);
-  }
+export function removeArrayRowIdentity<T>(identities: readonly T[], removedIndex: number): T[] {
+  return identities.filter((_, index) => index !== removedIndex);
+}
+
+export function renameDictionaryRowIdentity<T>(
+  identities: ReadonlyMap<string, T>,
+  from: string,
+  to: string,
+): Map<string, T> {
+  const next = new Map(identities);
+  const identity = next.get(from);
+  next.delete(from);
+  if (identity !== undefined) next.set(to, identity);
   return next;
 }
 
-export function renameInvalidDictionaryKey(
+export function nextAvailableRowIdentity(base: string, occupied: Iterable<string>): string {
+  const used = new Set(occupied);
+  let identity = base;
+  while (used.has(identity)) identity += "-next";
+  return identity;
+}
+
+export function pruneInvalidRowIdentities(
   invalid: ReadonlySet<string>,
-  from: string,
-  to: string,
+  active: Iterable<string>,
 ): Set<string> {
-  const next = new Set(invalid);
-  if (next.delete(from)) next.add(to);
-  return next;
+  const activeSet = new Set(active);
+  return new Set([...invalid].filter((identity) => activeSet.has(identity)));
 }
 
 function isObject(value: unknown): value is SchemaNode {

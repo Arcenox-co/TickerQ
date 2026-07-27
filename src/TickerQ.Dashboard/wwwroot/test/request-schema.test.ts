@@ -9,9 +9,11 @@ import {
   formatStructuredValue,
   initStructuredDraft,
   isRawPayloadJsonValid,
+  nextAvailableRowIdentity,
   parseStructuredInput,
-  removeInvalidArrayIndex,
-  renameInvalidDictionaryKey,
+  pruneInvalidRowIdentities,
+  removeArrayRowIdentity,
+  renameDictionaryRowIdentity,
   resolveLocalPointer,
   resolveRootObject,
   resolveSchemaNode,
@@ -33,17 +35,49 @@ test("raw payload validity recovers after replacing invalid structured text", ()
   assert.equal(isRawPayloadJsonValid(""), true);
 });
 
-test("removing an array item preserves and shifts other invalid indexes", () => {
-  assert.deepEqual([...removeInvalidArrayIndex(new Set([0, 2, 4]), 2)], [0, 3]);
-  assert.deepEqual([...removeInvalidArrayIndex(new Set([1, 3]), 0)], [0, 2]);
+test("array removal preserves the React identity of every surviving draft", () => {
+  const identities = ["first-draft", "invalid-draft", "last-draft"];
+  assert.deepEqual(removeArrayRowIdentity(identities, 0), ["invalid-draft", "last-draft"]);
 });
 
-test("renaming a dictionary key carries its invalid state", () => {
+test("dictionary rename preserves the React identity of the renamed draft", () => {
+  const identities = new Map([
+    ["old", "invalid-draft"],
+    ["other", "other-draft"],
+  ]);
   assert.deepEqual(
-    [...renameInvalidDictionaryKey(new Set(["old", "other"]), "old", "new")].sort(),
-    ["new", "other"],
+    [...renameDictionaryRowIdentity(identities, "old", "new")],
+    [
+      ["other", "other-draft"],
+      ["new", "invalid-draft"],
+    ],
   );
-  assert.deepEqual([...renameInvalidDictionaryKey(new Set(["other"]), "old", "new")], ["other"]);
+});
+
+test("removed row identities are pruned without clearing surviving invalid drafts", () => {
+  assert.deepEqual(
+    [...pruneInvalidRowIdentities(new Set(["removed", "surviving"]), ["surviving", "valid"])],
+    ["surviving"],
+  );
+});
+
+test("array identities remain unique after external growth, removal, and regrowth", () => {
+  let identities = ["row-0"];
+  while (identities.length < 3) {
+    identities.push(nextAvailableRowIdentity(`external-${identities.length}`, identities));
+  }
+  identities = removeArrayRowIdentity(identities, 1);
+  identities.push(nextAvailableRowIdentity(`external-${identities.length}`, identities));
+  assert.deepEqual(identities, ["row-0", "external-2", "external-2-next"]);
+  assert.equal(new Set(identities).size, identities.length);
+});
+
+test("dictionary identities remain unique after rename and external key reintroduction", () => {
+  let identities = new Map([["foo", "external-foo"]]);
+  identities = renameDictionaryRowIdentity(identities, "foo", "bar");
+  identities.set("foo", nextAvailableRowIdentity("external-foo", identities.values()));
+  assert.deepEqual([...identities.values()], ["external-foo", "external-foo-next"]);
+  assert.equal(new Set(identities.values()).size, identities.size);
 });
 
 // A JsonSchemaEmitter-shaped document: object-rooted, PascalCase props, numeric
@@ -340,7 +374,9 @@ test("syncStructuredDraft retains an in-progress '{' while the parent is unchang
   // User typed a lone "{" which does not parse; the parent value is still the
   // last valid object. The draft text must survive the re-render.
   const draft = { text: "{", error: "Enter valid JSON." };
-  assert.equal(syncStructuredDraft(draft, { city: "Berlin" }, { city: "Berlin" }).text, "{");
+  const next = syncStructuredDraft(draft, { city: "Berlin" }, { city: "Berlin" });
+  assert.equal(next.text, "{");
+  assert.equal(next.error, "Enter valid JSON.");
 });
 
 test("syncStructuredDraft keeps the draft when it still represents the parent value", () => {
@@ -350,7 +386,7 @@ test("syncStructuredDraft keeps the draft when it still represents the parent va
 });
 
 test("syncStructuredDraft resets when the parent value changes externally", () => {
-  const draft = initStructuredDraft({ a: 1 });
+  const draft = { text: "{", error: "Enter valid JSON." };
   const next = syncStructuredDraft(draft, { a: 1 }, { a: 2 });
   assert.equal(next.error, null);
   assert.deepEqual(parseStructuredInput(next.text), { status: "valid", value: { a: 2 } });
