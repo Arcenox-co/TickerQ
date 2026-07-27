@@ -1,4 +1,5 @@
 import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
+import { formatApiErrorMessage } from "@/lib/api-error-message";
 import { tokenStore } from "@/lib/auth/token-store";
 import { refresh as refreshToken } from "@/lib/auth/auth-api";
 import { fireUnauthenticated } from "@/lib/auth/auth-events";
@@ -47,7 +48,7 @@ class ApiError extends Error {
   readonly status: number;
   readonly statusText: string;
   constructor(status: number, statusText: string, body: string) {
-    super(`${status} ${statusText}${body ? ` — ${body}` : ""}`);
+    super(formatApiErrorMessage(status, statusText, body));
     this.name = "ApiError";
     this.status = status;
     this.statusText = statusText;
@@ -128,6 +129,14 @@ async function post<T>(path: string, body?: unknown, signal?: AbortSignal): Prom
 async function patch<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   return request<T>(path, {
     method: "PATCH",
+    body: body == null ? undefined : JSON.stringify(body),
+    signal,
+  });
+}
+
+async function put<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  return request<T>(path, {
+    method: "PUT",
     body: body == null ? undefined : JSON.stringify(body),
     signal,
   });
@@ -287,6 +296,8 @@ export const dashboardApi = {
     patch<void>(`/time-tickers/${id}`, body),
   addTimeTickerChain: (body: AddTimeTickerChainRequest) =>
     post<AddTimeTickerChainResponse>("/time-tickers/chain", body),
+  replaceTimeTickerChain: (rootId: string, body: AddTimeTickerChainRequest) =>
+    put<AddTimeTickerChainResponse>(`/time-tickers/chain/${rootId}`, body),
 
   addCronTicker: (body: AddCronTickerRequest) =>
     post<AddTickerResponse>("/cron-tickers", body),

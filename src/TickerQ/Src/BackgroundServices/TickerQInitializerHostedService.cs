@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -93,11 +94,39 @@ internal sealed class TickerQInitializerHostedService : IHostedService
     {
         var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
 
-        var functionsToSeed = TickerFunctionProvider.TickerFunctions
-            .Where(x => !string.IsNullOrEmpty(x.Value.cronExpression))
-            .Select(x => (x.Key, x.Value.cronExpression)).ToArray();
+        var descriptors = TickerFunctionProvider.TickerFunctionDescriptors;
 
-        await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed);
+        var functionsToSeed = new List<Utilities.Models.DefinedCronTickerSeed>();
+        foreach (var (function, value) in TickerFunctionProvider.TickerFunctions)
+        {
+            if (string.IsNullOrEmpty(value.cronExpression))
+                continue;
+
+            // Resolve the authoritative contract identity for this code-defined cron so seeded rows
+            // carry it and stay under execution-time drift enforcement (Build() has already run, so a
+            // descriptor exists for every executable function; request-less functions have Request == null).
+            int? contractVersion = null;
+            string fingerprint = null;
+            var canSeed = true;
+            if (descriptors.TryGetValue(function, out var descriptor))
+            {
+                var contract = descriptor.Request;
+
+                // Code-defined seeds have no payload. Required contracts cannot be satisfied, and an
+                // incomplete optional identity cannot participate in drift enforcement. Skip both
+                // rather than persist a row that is either invalid or only partially authoritative.
+                canSeed = contract is not { Required: true }
+                    && (contract == null || !string.IsNullOrWhiteSpace(contract.Fingerprint));
+
+                contractVersion = descriptor.ContractVersion;
+                fingerprint = contract?.Fingerprint;
+            }
+
+            functionsToSeed.Add(new Utilities.Models.DefinedCronTickerSeed(
+                function, value.cronExpression, contractVersion, fingerprint, canSeed));
+        }
+
+        await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed.ToArray());
     }
 
     private static async Task SkipStaleCronOccurrencesAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)

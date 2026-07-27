@@ -20,6 +20,13 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
             builder.Property(x => x.AcquisitionToken)
                 .IsRequired(false);
+
+            builder.Property(x => x.RequestContractVersion)
+                .IsRequired(false);
+
+            builder.Property(x => x.RequestContractFingerprint)
+                .HasMaxLength(128)
+                .IsRequired(false);
             
             builder.Property(x => x.ExecutionTime)
                 .IsRequired(false);

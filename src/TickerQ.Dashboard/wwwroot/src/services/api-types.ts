@@ -158,8 +158,26 @@ export interface NodeDto {
   activeJobs: number;
 }
 
+export interface FunctionRequestExampleDto {
+  key: string;
+  summary: string | null;
+  valueJson: string;
+}
+
+export interface FunctionRequestContractDto {
+  typeName: string;
+  mediaType: string;
+  required: boolean;
+  schemaDialect: string;
+  schemaJson: string | null;
+  fingerprint: string | null;
+  examples: FunctionRequestExampleDto[];
+}
+
 export interface FunctionInfoDto {
   functionName: string;
+  contractVersion: number;
+  requestContract: FunctionRequestContractDto | null;
   requestType: string | null;
   requestExample: string | null;
   priority: TickerTaskPriority;
@@ -312,6 +330,8 @@ export interface TimeTickerNode {
   request?: string | null;
   retryIntervalsSeconds?: number[] | null;
   runCondition?: RunCondition | null;
+  onStale?: StaleAction | null;
+  timeoutSeconds?: number | null;
   children?: TimeTickerNode[];
 }
 

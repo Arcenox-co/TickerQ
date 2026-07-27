@@ -3,6 +3,7 @@ import { CalendarClock, Check, CornerDownRight, Loader2, Pencil, Timer, Workflow
 import cronstrue from "cronstrue";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { encodeRequestPayload } from "@/lib/request-payload";
 import {
   useAddCronTicker,
   useAddTimeTicker,
@@ -10,7 +11,7 @@ import {
   useUpdateCronTicker,
 } from "@/services/hooks";
 import type { AssistantProposal, ProposalChainNode } from "@/services/assistant-api";
-import type { RunCondition, TimeTickerNode } from "@/services/api-types";
+import { proposalChainToTimeTickerNode } from "@/lib/assistant-proposal-payload";
 
 export type ProposalStatus = "pending" | "applied" | "dismissed";
 
@@ -31,17 +32,6 @@ function parseChain(json: string): ProposalChainNode | null {
   }
 }
 
-function toTimeTickerNode(node: ProposalChainNode, isRoot: boolean): TimeTickerNode {
-  return {
-    function: node.function,
-    description: node.description || null,
-    retries: node.retries ?? null,
-    request: node.requestJson || null,
-    retryIntervalsSeconds: null,
-    runCondition: isRoot ? null : ((node.runCondition ?? "OnSuccess") as RunCondition),
-    children: (node.children ?? []).map((c) => toTimeTickerNode(c, false)),
-  };
-}
 
 const KIND_META: Record<AssistantProposal["kind"], { title: string; icon: typeof Timer }> = {
   createTimeTicker: { title: "Create time ticker", icon: CalendarClock },
@@ -85,7 +75,7 @@ export function ProposalCard({
           description: proposal.description || null,
           retries: proposal.retries ?? null,
           retryIntervalsSeconds: null,
-          request: proposal.requestJson || null,
+          request: encodeRequestPayload(proposal.requestJson),
         });
         toast.success("Time ticker created", { description: proposal.function });
       } else if (proposal.kind === "createCronTicker") {
@@ -95,14 +85,14 @@ export function ProposalCard({
           description: proposal.description || null,
           retries: proposal.retries ?? null,
           retryIntervalsSeconds: null,
-          request: proposal.requestJson || null,
+          request: encodeRequestPayload(proposal.requestJson),
           isEnabled: proposal.isEnabled ?? true,
         });
         toast.success("Cron ticker created", { description: proposal.function });
       } else if (proposal.kind === "createChain" && chainRoot) {
         await addChain.mutateAsync({
           executionTime: proposal.executionTime,
-          root: toTimeTickerNode(chainRoot, true),
+          root: proposalChainToTimeTickerNode(chainRoot, true),
         });
         toast.success("Chain created", { description: chainRoot.function });
       } else if (proposal.kind === "updateCronTicker" && proposal.targetId) {

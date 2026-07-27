@@ -46,6 +46,7 @@ import type {
 import { TimeCell } from "@/components/cron/TimeCell";
 import { QueryErrorNotice } from "@/components/cron/QueryErrorNotice";
 import { isReadOnly } from "@/lib/runtime-config";
+import { encodeRequestPayload } from "@/lib/request-payload";
 
 const PAGE_SIZE = 25;
 
@@ -462,6 +463,7 @@ export default function CronTickersPage() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         functionOptions={distinctFunctions.map((fn) => ({ value: fn, label: fn }))}
+        functions={allFns ?? []}
         onSubmit={async (values) => {
           const res = await addMutation.mutateAsync({
             function: values.function,
@@ -469,7 +471,7 @@ export default function CronTickersPage() {
             description: values.description || null,
             retries: values.retries ?? null,
             retryIntervalsSeconds: parseIntervals(values.retryIntervalsSeconds),
-            request: values.requestJson || null,
+            request: encodeRequestPayload(values.requestJson),
             isEnabled: values.isEnabled,
             onStale: values.onStale,
             timeoutSeconds:

@@ -11,6 +11,15 @@ namespace TickerQ.SourceGenerator.Analysis
 {
     internal static class MethodAnalyzer
     {
+        private static readonly SymbolDisplayFormat GeneratedTypeFormat = new SymbolDisplayFormat(
+            globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Included,
+            typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+            genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters,
+            miscellaneousOptions:
+                SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers |
+                SymbolDisplayMiscellaneousOptions.ExpandNullable |
+                SymbolDisplayMiscellaneousOptions.ExpandValueTuple);
+
         /// <summary>
         /// Builds a TickerMethodModel from Roslyn syntax/semantic info.
         /// Returns null if the method doesn't have a valid TickerFunction attribute.
@@ -62,7 +71,7 @@ namespace TickerQ.SourceGenerator.Analysis
         {
             foreach (var parameter in methodDecl.ParameterList.Parameters)
             {
-                var typeSymbol = ModelExtensions.GetSymbolInfo(semanticModel, parameter.Type).Symbol;
+                var typeSymbol = semanticModel.GetTypeInfo(parameter.Type).Type;
                 var typeName = typeSymbol?.ToDisplayString() ?? parameter.Type.ToString();
 
                 if (typeName.Contains("CancellationToken"))
@@ -76,16 +85,12 @@ namespace TickerQ.SourceGenerator.Analysis
                     model.UsesGenericContext = true;
                     model.HasContext = true;
 
-                    var startIndex = typeName.IndexOf('<') + 1;
-                    var endIndex = typeName.LastIndexOf('>');
-                    if (startIndex > 0 && endIndex > startIndex)
+                    if (typeSymbol is INamedTypeSymbol namedContext && namedContext.TypeArguments.Length == 1)
                     {
-                        var rawRequestType = typeName.Substring(startIndex, endIndex - startIndex);
-                        model.GenericRequestTypeFullName = Global(rawRequestType);
-                        var simpleName = model.GenericRequestTypeFullName.Contains(".")
-                            ? model.GenericRequestTypeFullName.Substring(model.GenericRequestTypeFullName.LastIndexOf('.') + 1)
-                            : model.GenericRequestTypeFullName;
-                        model.GenericRequestTypeName = simpleName;
+                        var requestType = namedContext.TypeArguments[0];
+                        model.RequestType = requestType;
+                        model.GenericRequestTypeFullName = RenderTypeSyntax(requestType);
+                        model.GenericRequestTypeName = requestType.Name;
                     }
                 }
                 else if (typeName.Contains("TickerFunctionContext"))
@@ -93,6 +98,14 @@ namespace TickerQ.SourceGenerator.Analysis
                     model.HasContext = true;
                 }
             }
+        }
+
+        internal static string RenderTypeSyntax(ITypeSymbol typeSymbol)
+        {
+            // Runtime type syntax is used in typeof(...) as well as generic arguments.
+            // Omitting nullable-reference modifiers preserves the CLR type identity and keeps
+            // every occurrence legal inside typeof, including nested generic arguments/arrays.
+            return typeSymbol.ToDisplayString(GeneratedTypeFormat);
         }
 
         /// <summary>

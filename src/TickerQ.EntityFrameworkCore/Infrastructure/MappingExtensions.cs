@@ -17,6 +17,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Id = e.Id,
                 Expression = e.Expression,
                 Function = e.Function,
+                RequestContractVersion = e.RequestContractVersion,
+                RequestContractFingerprint = e.RequestContractFingerprint,
                 RetryIntervals = e.RetryIntervals,
                 Retries = e.Retries,
                 TimeoutSeconds = e.TimeoutSeconds,
@@ -29,6 +31,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 Id = e.Id,
                 Function = e.Function,
+                RequestContractVersion = e.RequestContractVersion,
+                RequestContractFingerprint = e.RequestContractFingerprint,
                 Retries = e.Retries,
                 RetryIntervals = e.RetryIntervals,
                 TimeoutSeconds = e.TimeoutSeconds,
@@ -50,6 +54,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 {
                     Id = ch.Id,
                     Function = ch.Function,
+                    RequestContractVersion = ch.RequestContractVersion,
+                    RequestContractFingerprint = ch.RequestContractFingerprint,
                     Retries = ch.Retries,
                     RetryIntervals = ch.RetryIntervals,
                     TimeoutSeconds = ch.TimeoutSeconds,
@@ -58,6 +64,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     Children = ch.Children.Select(gch => new TimeTickerEntity
                     {
                         Function = gch.Function,
+                        RequestContractVersion = gch.RequestContractVersion,
+                        RequestContractFingerprint = gch.RequestContractFingerprint,
                         Retries = gch.Retries,
                         RetryIntervals = gch.RetryIntervals,
                         TimeoutSeconds = gch.TimeoutSeconds,
@@ -83,6 +91,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 {
                     Id = e.CronTicker.Id,
                     Function = e.CronTicker.Function,
+                    RequestContractVersion = e.CronTicker.RequestContractVersion,
+                    RequestContractFingerprint = e.CronTicker.RequestContractFingerprint,
                     RetryIntervals = e.CronTicker.RetryIntervals,
                     Retries = e.CronTicker.Retries,
                     TimeoutSeconds = e.CronTicker.TimeoutSeconds
@@ -104,6 +114,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 {
                     Id = e.CronTicker.Id,
                     Function = e.CronTicker.Function,
+                    RequestContractVersion = e.CronTicker.RequestContractVersion,
+                    RequestContractFingerprint = e.CronTicker.RequestContractFingerprint,
                     Expression = e.CronTicker.Expression,
                     RetryIntervals = e.CronTicker.RetryIntervals,
                     Retries = e.CronTicker.Retries,

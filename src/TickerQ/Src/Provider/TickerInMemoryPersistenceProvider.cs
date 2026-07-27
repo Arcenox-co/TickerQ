@@ -348,30 +348,39 @@ namespace TickerQ.Provider
 
         public Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default)
         {
-            if (TimeTickers.TryGetValue(id, out var ticker))
+            return ReadGraph(() =>
             {
-                var result = BuildTickerHierarchy(ticker);
-                return Task.FromResult(result);
-            }
-            
-            return Task.FromResult<TTimeTicker>(null);
+                if (TimeTickers.TryGetValue(id, out var ticker))
+                {
+                    var result = BuildTickerHierarchy(ticker);
+                    return Task.FromResult(result);
+                }
+
+                return Task.FromResult<TTimeTicker>(null);
+            });
         }
 
         public Task<TTimeTicker[]> GetTimeTickers(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken = default)
         {
             var compiledPredicate = predicate?.Compile();
-            var query = TimeTickers.Values.AsEnumerable();
-            
-            if (compiledPredicate != null)
-                query = query.Where(compiledPredicate);
-                
-            // Match EF Core - only return root items (ParentId == null) with nested children
-            var results = query
-                .Where(x => x.ParentId == null)  // Only root items, matching EF Core
-                .OrderByDescending(x => x.ExecutionTime)  // Match EF Core's OrderByDescending(x => x.ExecutionTime)
-                .Select(BuildTickerHierarchy)
-                .ToArray();
-                
+
+            // Materialize the full projection under the read lock so a concurrent chain
+            // replacement cannot surface a partially swapped aggregate.
+            var results = ReadGraph(() =>
+            {
+                var query = TimeTickers.Values.AsEnumerable();
+
+                if (compiledPredicate != null)
+                    query = query.Where(compiledPredicate);
+
+                // Match EF Core - only return root items (ParentId == null) with nested children
+                return query
+                    .Where(x => x.ParentId == null)  // Only root items, matching EF Core
+                    .OrderByDescending(x => x.ExecutionTime)  // Match EF Core's OrderByDescending(x => x.ExecutionTime)
+                    .Select(BuildTickerHierarchy)
+                    .ToArray();
+            });
+
             return Task.FromResult(results);
         }
 
@@ -379,23 +388,31 @@ namespace TickerQ.Provider
             CancellationToken cancellationToken = default)
         {
             var compiledPredicate = predicate?.Compile();
-            var query = TimeTickers.Values.AsEnumerable();
-            
-            if (compiledPredicate != null)
-                query = query.Where(compiledPredicate);
-                
-            // Match EF Core - only count and paginate root items
-            query = query.Where(x => x.ParentId == null);
-            
-            var totalCount = query.Count();
-            
-            var items = query
-                .OrderByDescending(x => x.ExecutionTime)  // Match EF Core's OrderByDescending(x => x.ExecutionTime)
-                .Skip((pageNumber - 1) * pageSize)
-                .Take(pageSize)
-                .Select(BuildTickerHierarchy)
-                .ToArray();
-                
+
+            // Count and page under the read lock so the total and the materialized page
+            // reflect a single consistent graph snapshot, never a mid-replacement view.
+            var (items, totalCount) = ReadGraph(() =>
+            {
+                var query = TimeTickers.Values.AsEnumerable();
+
+                if (compiledPredicate != null)
+                    query = query.Where(compiledPredicate);
+
+                // Match EF Core - only count and paginate root items
+                query = query.Where(x => x.ParentId == null);
+
+                var count = query.Count();
+
+                var paged = query
+                    .OrderByDescending(x => x.ExecutionTime)  // Match EF Core's OrderByDescending(x => x.ExecutionTime)
+                    .Skip((pageNumber - 1) * pageSize)
+                    .Take(pageSize)
+                    .Select(BuildTickerHierarchy)
+                    .ToArray();
+
+                return (paged, count);
+            });
+
             return Task.FromResult(new PaginationResult<TTimeTicker>
             {
                 Items = items,
@@ -407,12 +424,20 @@ namespace TickerQ.Provider
 
         public Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
         {
-            var count = 0;
-            foreach (var ticker in tickers)
+            // Structural insert of whole aggregates: take the write lock so a graph
+            // reader (or a concurrent replacement/remove) never observes a partially
+            // added root/children set. Matches ReplaceTimeTickerChainAsync fencing.
+            var count = WriteGraph(() =>
             {
-                count += AddTickerWithChildren(ticker);
-            }
-            
+                var added = 0;
+                foreach (var ticker in tickers)
+                {
+                    added += AddTickerWithChildren(ticker);
+                }
+
+                return added;
+            });
+
             return Task.FromResult(count);
         }
         
@@ -454,12 +479,20 @@ namespace TickerQ.Provider
 
         public Task<int> UpdateTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
         {
-            var count = 0;
-            foreach (var ticker in tickers)
+            // Structural update can re-parent nodes and touch the children index, so it
+            // runs under the write lock — a graph reader must never see a half-reparented
+            // aggregate, and it must not interleave with a concurrent chain replacement.
+            var count = WriteGraph(() =>
             {
-                count += UpdateTickerWithChildren(ticker);
-            }
-            
+                var updated = 0;
+                foreach (var ticker in tickers)
+                {
+                    updated += UpdateTickerWithChildren(ticker);
+                }
+
+                return updated;
+            });
+
             return Task.FromResult(count);
         }
         
@@ -514,34 +547,179 @@ namespace TickerQ.Provider
 
         public Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default)
         {
-            var count = 0;
-            foreach (var id in tickerIds)
+            // Cascade removal touches multiple graph entries; hold the write lock so a
+            // reader never sees a parent gone while its children linger (torn aggregate)
+            // and so it cannot interleave with a concurrent chain replacement.
+            var count = WriteGraph(() =>
             {
-                // Remove ticker and all its children (cascade delete)
-                if (TimeTickers.TryRemove(id, out var removed))
+                var removedCount = 0;
+                foreach (var id in tickerIds)
                 {
-                    count++;
-                    
-                    // Clean children index
-                    if (removed.ParentId.HasValue)
-                        RemoveChildIndex(removed.ParentId.Value, removed.Id);
-                    
-                    // Remove children
-                    var childrenIds = GetChildrenIds(id);
-                        
-                    foreach (var childId in childrenIds)
+                    // Remove ticker and all its children (cascade delete)
+                    if (TimeTickers.TryRemove(id, out var removed))
                     {
-                        if (TimeTickers.TryRemove(childId, out var child))
+                        removedCount++;
+
+                        // Clean children index
+                        if (removed.ParentId.HasValue)
+                            RemoveChildIndex(removed.ParentId.Value, removed.Id);
+
+                        // Remove children
+                        var childrenIds = GetChildrenIds(id);
+
+                        foreach (var childId in childrenIds)
                         {
-                            count++;
-                            if (child.ParentId.HasValue)
-                                RemoveChildIndex(child.ParentId.Value, child.Id);
+                            if (TimeTickers.TryRemove(childId, out var child))
+                            {
+                                removedCount++;
+                                if (child.ParentId.HasValue)
+                                    RemoveChildIndex(child.ParentId.Value, child.Id);
+                            }
                         }
                     }
                 }
-            }
-            
+
+                return removedCount;
+            });
+
             return Task.FromResult(count);
+        }
+
+        // Guards the shared time-ticker graph (TimeTickers + ChildrenIndex) so that
+        // structural mutations (chain replacement, add/update/remove-with-children) are
+        // observed atomically by graph-traversing readers. A reader holding the read lock
+        // can never see a replacement's add-then-remove window (neither a doubled nor a
+        // torn aggregate); a structural writer takes the write lock for its whole span.
+        // The per-node CAS status writers keep operating lock-free on ConcurrentDictionary
+        // entries — they never restructure the parent/child graph — so they are unaffected.
+        private static readonly ReaderWriterLockSlim GraphLock = new(LockRecursionPolicy.NoRecursion);
+
+        // Runs a graph read under the shared read lock. Callees must be lock-free (they
+        // are: BuildTickerHierarchy / ForQueueTimeTickers and their private helpers).
+        private static T ReadGraph<T>(Func<T> read)
+        {
+            GraphLock.EnterReadLock();
+            try
+            {
+                return read();
+            }
+            finally
+            {
+                GraphLock.ExitReadLock();
+            }
+        }
+
+        // Runs a structural graph mutation under the exclusive write lock.
+        private static T WriteGraph<T>(Func<T> write)
+        {
+            GraphLock.EnterWriteLock();
+            try
+            {
+                return write();
+            }
+            finally
+            {
+                GraphLock.ExitWriteLock();
+            }
+        }
+
+        // Test-only seam. Invoked while the exclusive write lock is held, after the
+        // replacement aggregate has been fully inserted but before the original is
+        // removed — i.e. exactly the window in which the graph momentarily holds BOTH
+        // the old and new roots. A deterministic concurrency regression sets this to
+        // launch a reader and prove ReadGraph fences it out of the torn window. Null
+        // and zero-cost in production.
+        internal static Action GraphReplacementMidpointHook;
+
+        public Task<int> ReplaceTimeTickerChainAsync(Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
+        {
+            if (newRoot == null)
+                throw new ArgumentNullException(nameof(newRoot));
+
+            return WriteGraph(() =>
+            {
+                // Persist the COMPLETE replacement first. Fail closed on any id collision
+                // BEFORE removing anything, so the original aggregate is never lost.
+                var replacementIds = new HashSet<Guid>();
+                CollectChainIds(newRoot, replacementIds);
+                foreach (var id in replacementIds)
+                {
+                    if (TimeTickers.ContainsKey(id))
+                        throw new InvalidOperationException(
+                            $"Cannot replace chain: a ticker with id {id} already exists.");
+                }
+
+                var insertedIds = new List<Guid>(replacementIds.Count);
+                try
+                {
+                    AddReplacementWithChildren(newRoot, parentId: null, insertedIds);
+                }
+                catch
+                {
+                    // Remove only rows this replacement attempt inserted. The original graph
+                    // was not touched yet, so failure is fully atomic even under a racing add.
+                    for (var i = insertedIds.Count - 1; i >= 0; i--)
+                    {
+                        if (TimeTickers.TryRemove(insertedIds[i], out var removed) && removed.ParentId.HasValue)
+                            RemoveChildIndex(removed.ParentId.Value, removed.Id);
+                    }
+                    throw;
+                }
+
+                // Both aggregates are momentarily present here (write lock still held).
+                GraphReplacementMidpointHook?.Invoke();
+
+                // Only once the replacement is in place do we remove the original aggregate.
+                RemoveAggregateCascade(oldRootId);
+
+                return Task.FromResult(insertedIds.Count);
+            });
+        }
+
+        private static void CollectChainIds(TTimeTicker node, HashSet<Guid> ids)
+        {
+            if (!ids.Add(node.Id))
+                throw new InvalidOperationException(
+                    $"Cannot replace chain: replacement contains duplicate ticker id {node.Id}.");
+            if (node.Children == null)
+                return;
+            foreach (var child in node.Children)
+                if (child is TTimeTicker typedChild)
+                    CollectChainIds(typedChild, ids);
+        }
+
+        private static void AddReplacementWithChildren(
+            TTimeTicker ticker,
+            Guid? parentId,
+            List<Guid> insertedIds)
+        {
+            if (parentId.HasValue)
+                ticker.ParentId = parentId.Value;
+
+            if (!TimeTickers.TryAdd(ticker.Id, ticker))
+                throw new InvalidOperationException(
+                    $"Cannot replace chain: a ticker with id {ticker.Id} was added concurrently.");
+
+            insertedIds.Add(ticker.Id);
+            if (ticker.ParentId.HasValue)
+                AddChildIndex(ticker.ParentId.Value, ticker.Id);
+
+            if (ticker.Children == null)
+                return;
+
+            foreach (var child in ticker.Children)
+                if (child is TTimeTicker typedChild)
+                    AddReplacementWithChildren(typedChild, ticker.Id, insertedIds);
+        }
+
+        private static void RemoveAggregateCascade(Guid rootId)
+        {
+            // Depth-first so descendants at every level are removed, not just direct children.
+            foreach (var childId in GetChildrenIds(rootId))
+                RemoveAggregateCascade(childId);
+
+            if (TimeTickers.TryRemove(rootId, out var removed) && removed.ParentId.HasValue)
+                RemoveChildIndex(removed.ParentId.Value, removed.Id);
         }
 
         public Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default)
@@ -595,7 +773,7 @@ namespace TickerQ.Provider
 
         #region Cron Ticker Methods
 
-        public Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
+        public Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
 
@@ -608,31 +786,63 @@ namespace TickerQ.Provider
             // comment for the full rationale.
             var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys
                 .ToHashSet(StringComparer.Ordinal);
+            var blockedFunctions = cronTickers.Where(x => !x.CanSeed)
+                .Select(x => x.Function).ToHashSet(StringComparer.Ordinal);
 
             var snapshot = CronTickers.ToArray();
             foreach (var (id, ticker) in snapshot)
             {
                 if (!string.IsNullOrEmpty(ticker.InitIdentifier)
-                    && !allRegisteredFunctions.Contains(ticker.Function))
+                    && (!allRegisteredFunctions.Contains(ticker.Function)
+                        || blockedFunctions.Contains(ticker.Function)))
                     CronTickers.TryRemove(id, out _);
             }
 
-            foreach (var (function, expression) in cronTickers)
+            foreach (var seed in cronTickers)
             {
-                // Check if already exists (take snapshot for thread safety)
-                var exists = CronTickers.Values.ToArray().Any(x => x.Function == function && x.Expression == expression);
-                if (!exists)
+                if (!seed.CanSeed)
+                    continue;
+
+                // Match only a SEEDED row for this function (snapshot for thread safety):
+                // reconcile the seeded row's expression/contract-identity in place, and
+                // never touch a user/dashboard-created row that shares the function name
+                // but carries a null/non-seed InitIdentifier.
+                var existing = CronTickers.Values.ToArray()
+                    .FirstOrDefault(x => string.Equals(x.Function, seed.Function, StringComparison.Ordinal)
+                        && !string.IsNullOrEmpty(x.InitIdentifier));
+
+                if (existing != null)
+                {
+                    if (!string.Equals(existing.Expression, seed.Expression, StringComparison.Ordinal))
+                    {
+                        existing.Expression = seed.Expression;
+                        existing.UpdatedAt = now;
+                    }
+
+                    // Reconcile authoritative contract identity onto seeded rows only; legacy/dashboard
+                    // rows (no seed InitIdentifier) keep their own identity.
+                    if (!string.IsNullOrEmpty(existing.InitIdentifier)
+                        && !seed.MatchesIdentity(existing.RequestContractVersion, existing.RequestContractFingerprint))
+                    {
+                        existing.RequestContractVersion = seed.RequestContractVersion;
+                        existing.RequestContractFingerprint = seed.RequestContractFingerprint;
+                        existing.UpdatedAt = now;
+                    }
+                }
+                else
                 {
                     var id = Guid.NewGuid();
                     var cronTicker = new TCronTicker
                     {
                         Id = id,
-                        Function = function,
-                        Expression = expression,
+                        Function = seed.Function,
+                        Expression = seed.Expression,
                         InitIdentifier = $"MemoryTicker_Seeded_{id}",
                         CreatedAt = now,
                         UpdatedAt = now,
-                        Request = Array.Empty<byte>()
+                        Request = Array.Empty<byte>(),
+                        RequestContractVersion = seed.RequestContractVersion,
+                        RequestContractFingerprint = seed.RequestContractFingerprint
                     };
 
                     CronTickers.TryAdd(id, cronTicker);
@@ -1196,6 +1406,8 @@ namespace TickerQ.Provider
             {
                 Id = ticker.Id,
                 Function = ticker.Function,
+                RequestContractVersion = ticker.RequestContractVersion,
+                RequestContractFingerprint = ticker.RequestContractFingerprint,
                 Retries = ticker.Retries,
                 RetryIntervals = ticker.RetryIntervals,
                 TimeoutSeconds = ticker.TimeoutSeconds,
@@ -1233,6 +1445,8 @@ namespace TickerQ.Provider
                 {
                     Id = ch.Id,
                     Function = ch.Function,
+                    RequestContractVersion = ch.RequestContractVersion,
+                    RequestContractFingerprint = ch.RequestContractFingerprint,
                     Retries = ch.Retries,
                     RetryIntervals = ch.RetryIntervals,
                     TimeoutSeconds = ch.TimeoutSeconds,
@@ -1262,6 +1476,8 @@ namespace TickerQ.Provider
                 {
                     Id = ch.Id,
                     Function = ch.Function,
+                    RequestContractVersion = ch.RequestContractVersion,
+                    RequestContractFingerprint = ch.RequestContractFingerprint,
                     Retries = ch.Retries,
                     RetryIntervals = ch.RetryIntervals,
                     TimeoutSeconds = ch.TimeoutSeconds,
@@ -1329,6 +1545,8 @@ namespace TickerQ.Provider
             {
                 Id = ticker.Id,
                 Function = ticker.Function,
+                RequestContractVersion = ticker.RequestContractVersion,
+                RequestContractFingerprint = ticker.RequestContractFingerprint,
                 Status = ticker.Status,
                 Retries = ticker.Retries,
                 RetryCount = ticker.RetryCount,

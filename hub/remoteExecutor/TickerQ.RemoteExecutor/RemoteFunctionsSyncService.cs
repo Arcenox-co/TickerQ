@@ -5,6 +5,7 @@ using TickerQ.RemoteExecutor.Hub;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.RemoteExecutor;
 
@@ -25,7 +26,7 @@ public class RemoteFunctionsSyncService : BackgroundService
         new(StringComparer.OrdinalIgnoreCase);
 
     private readonly TickerQRemoteExecutionOptions _options;
-    private readonly IInternalTickerManager? _internalTickerManager;
+    private readonly Func<DefinedCronTickerSeed[], CancellationToken, Task>? _migrateDefinedCronTickers;
     private readonly ILogger<RemoteFunctionsSyncService>? _logger;
 
     public RemoteFunctionsSyncService(
@@ -34,7 +35,21 @@ public class RemoteFunctionsSyncService : BackgroundService
         ILogger<RemoteFunctionsSyncService>? logger = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _internalTickerManager = serviceProvider.GetService<IInternalTickerManager>();
+        var internalTickerManager = serviceProvider.GetService<IInternalTickerManager>();
+        _migrateDefinedCronTickers = internalTickerManager == null
+            ? null
+            : internalTickerManager.MigrateDefinedCronTickers;
+        _logger = logger;
+    }
+
+    internal RemoteFunctionsSyncService(
+        TickerQRemoteExecutionOptions options,
+        Func<DefinedCronTickerSeed[], CancellationToken, Task> migrateDefinedCronTickers,
+        ILogger<RemoteFunctionsSyncService>? logger = null)
+    {
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _migrateDefinedCronTickers = migrateDefinedCronTickers
+            ?? throw new ArgumentNullException(nameof(migrateDefinedCronTickers));
         _logger = logger;
     }
 
@@ -138,15 +153,19 @@ public class RemoteFunctionsSyncService : BackgroundService
         // Other exceptions are NOT caught and will propagate — fail fast on programming errors.
     }
 
-    private async Task RegisterFunctionsFromResponse(GetRegisteredFunctionsResponse response, CancellationToken cancellationToken)
+    internal async Task RegisterFunctionsFromResponse(GetRegisteredFunctionsResponse response, CancellationToken cancellationToken)
     {
-        // Build only the REMOTE slice from the Hub response. The merged frozen dict
-        // is composed by TickerFunctionProvider.MergeRemoteFunctions which keeps every
-        // local source-gen [TickerFunction] entry untouched and rewrites only the
-        // entries the RemoteFunctionRegistry currently flags as remote.
+        // Build only the REMOTE slice from the Hub response. The merged frozen registry is
+        // composed by TickerFunctionProvider.MergeRemoteSnapshot, which publishes the remote
+        // execution functions AND their canonical wire descriptors together as one snapshot,
+        // keeping every local source-gen [TickerFunction] entry untouched and rewriting only the
+        // qualified ("bare@node") remote keys.
         var remoteFunctionDict = new Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>();
+        var remoteDescriptorDict = new Dictionary<string, TickerFunctionDescriptor>();
+        // Legacy request-info mirror, kept as a compatibility adapter for non-atomic callers only.
         var remoteRequestInfoDict = new Dictionary<string, (string RequestType, string RequestExampleJson)>();
-        var cronPairs = new List<(string Name, string CronExpression)>();
+        var remoteRoutingDict = new Dictionary<string, string>();
+        var cronSeeds = new List<DefinedCronTickerSeed>();
 
         // Track every qualified key we register this round so we can reconcile the
         // RemoteFunctionRegistry afterwards: anything previously known but not in
@@ -258,7 +277,36 @@ public class RemoteFunctionsSyncService : BackgroundService
                 var cronExpression = function.NodeExpression ?? string.Empty;
 
                 remoteFunctionDict[qualifiedName] = (cronExpression, priority, functionDelegate, 0);
-                RemoteFunctionRegistry.MarkRemote(function.FunctionName, node.NodeName);
+                remoteRoutingDict[function.FunctionName] = node.NodeName;
+
+                // Canonical wire descriptor for this remote function. Request-less functions carry a
+                // null Request (absence is never encoded as empty metadata). Priority/cron are also
+                // reconciled inside MergeRemoteSnapshot from the matching execution entry.
+                var contractVersion = function.ContractVersion > 0
+                    ? function.ContractVersion
+                    : TickerRequestContractConstants.InitialContractVersion;
+                var requestContract = BuildRemoteRequestContract(
+                    qualifiedName,
+                    function.RequestContract,
+                    function.RequestType,
+                    function.RequestExampleJson);
+                var remoteDescriptor = new TickerFunctionDescriptor(
+                    qualifiedName,
+                    priority,
+                    cronExpression,
+                    contractVersion,
+                    requestContract);
+                if (function.RequestContract?.HasFingerprint == true
+                    && !string.Equals(
+                        function.RequestContract.Fingerprint,
+                        remoteDescriptor.Request?.Fingerprint,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Remote request-contract fingerprint mismatch for '{qualifiedName}'.");
+                }
+                remoteDescriptorDict[qualifiedName] = remoteDescriptor;
+
                 remoteRequestInfoDict[qualifiedName] = (
                     function.RequestType,
                     function.RequestExampleJson ?? string.Empty);
@@ -266,12 +314,24 @@ public class RemoteFunctionsSyncService : BackgroundService
 
                 if (node.AutoMigrateExpressions && !string.IsNullOrWhiteSpace(cronExpression))
                 {
-                    cronPairs.Add((qualifiedName, cronExpression));
+                    // Required contracts cannot be satisfied by an empty auto-seeded payload, but
+                    // persistence still needs an explicit blocked command to remove a former seed.
+                    cronSeeds.Add(new DefinedCronTickerSeed(
+                        qualifiedName,
+                        cronExpression,
+                        remoteDescriptor.ContractVersion,
+                        remoteDescriptor.Request?.Fingerprint,
+                        canSeed: remoteDescriptor.Request is not { Required: true }));
                 }
 
                 _logger?.LogDebug("Registered function {QualifiedName}", qualifiedName);
             }
         }
+
+        // Publish routing only after every descriptor has reconstructed successfully. A malformed
+        // response therefore cannot poison routing before the canonical snapshot is publishable.
+        foreach (var (functionName, nodeName) in remoteRoutingDict)
+            RemoteFunctionRegistry.MarkRemote(functionName, nodeName);
 
         // Reconcile: any function we previously registered as remote that did NOT appear
         // (and dispatchable) in the response was disabled, removed, or its owning SDK went
@@ -308,20 +368,72 @@ public class RemoteFunctionsSyncService : BackgroundService
             return atIdx > 0 && atIdx < key.Length - 1;
         }
 
-        TickerFunctionProvider.MergeRemoteFunctions(remoteFunctionDict, IsCurrentlyRemote);
+        // One coherent publication: remote execution functions AND their canonical descriptors are
+        // rewritten together in a single snapshot, so execution and wire-metadata readers never see
+        // a split generation. The legacy request-info mirror is refreshed afterwards purely as a
+        // compatibility adapter for non-atomic callers.
+        TickerFunctionProvider.MergeRemoteSnapshot(remoteFunctionDict, remoteDescriptorDict, IsCurrentlyRemote);
         TickerFunctionProvider.MergeRemoteRequestInfo(remoteRequestInfoDict, IsCurrentlyRemote);
         _logger?.LogInformation(
             "Merged {RemoteCount} remote functions (local source-gen entries preserved)",
             remoteFunctionDict.Count);
 
-        if (cronPairs.Count > 0 && _internalTickerManager != null)
+        if (_migrateDefinedCronTickers != null)
         {
-            await _internalTickerManager.MigrateDefinedCronTickers(
-                cronPairs.ToArray(),
+            await _migrateDefinedCronTickers(
+                cronSeeds.ToArray(),
                 cancellationToken)
                 .ConfigureAwait(false);
 
-            _logger?.LogInformation("Migrated {Count} cron tickers", cronPairs.Count);
+            _logger?.LogInformation("Migrated {Count} cron tickers", cronSeeds.Count);
         }
+    }
+
+    /// <summary>
+    /// Builds the canonical wire request contract for a remote function from the Hub's metadata.
+    /// Returns null for request-less functions (absence is never encoded as empty metadata).
+    /// <para>
+    /// Transport policy: request-bearing remote registrations MUST carry a canonical Draft 2020-12
+    /// full schema. A canonical contract without a schema, and a legacy (<c>request_type</c>-only)
+    /// descriptor with no canonical schema, are both rejected here — <b>before</b> the merge — so a
+    /// schema-less request-bearing descriptor can never reach publication. Request-less descriptors
+    /// (no canonical contract and no legacy request type) are the only ones that yield a null contract.
+    /// </para>
+    /// </summary>
+    private static TickerRequestContract? BuildRemoteRequestContract(
+        string qualifiedName,
+        TickerQ.RemoteExecutor.Hub.RequestContract? canonical,
+        string? legacyRequestType,
+        string? legacyRequestExampleJson)
+    {
+        if (canonical == null)
+        {
+            // No canonical contract on the wire. A legacy request-bearing descriptor (request_type set)
+            // without a canonical full schema is rejected; request-less descriptors are fine.
+            if (!string.IsNullOrWhiteSpace(legacyRequestType))
+                throw new InvalidOperationException(
+                    $"Remote function '{qualifiedName}' declares a legacy request type '{legacyRequestType}' " +
+                    "but carries no canonical request schema. Request-bearing remote registrations must supply " +
+                    "a full JSON Schema Draft 2020-12 contract.");
+            return null;
+        }
+
+        // Canonical contract present ⇒ request-bearing ⇒ a full schema is mandatory.
+        if (!canonical.HasSchemaJson || string.IsNullOrWhiteSpace(canonical.SchemaJson))
+            throw new InvalidOperationException(
+                $"Remote function '{qualifiedName}' has a request contract without a schema. Request-bearing " +
+                "remote registrations must supply a full JSON Schema Draft 2020-12 contract.");
+
+        var examples = canonical.Examples.Select(example =>
+            new TickerRequestExample(example.Key, example.HasSummary ? example.Summary : null, example.ValueJson))
+            .ToArray();
+        var request = new TickerRequestContract(
+            canonical.TypeName,
+            canonical.MediaType,
+            canonical.Required,
+            canonical.SchemaDialect,
+            canonical.SchemaJson,
+            examples: examples);
+        return request;
     }
 }

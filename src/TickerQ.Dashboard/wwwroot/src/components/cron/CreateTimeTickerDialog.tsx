@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -14,16 +15,24 @@ import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { TextField } from "@/components/form-fields/text-field";
 import { DateTimeField } from "@/components/form-fields/datetime-field";
-import { TextareaField } from "@/components/form-fields/textarea-field";
+
 import { NumberField } from "@/components/form-fields/number-field";
 import {
   SelectField,
   type SelectOption,
 } from "@/components/form-fields/select-field";
+import { ON_STALE_OPTIONS } from "@/lib/cron/ticker-form-options";
 import {
   describeRetryPolicy,
   parseIntervalsList,
 } from "@/lib/cron/status-config";
+import type { FunctionInfoDto } from "@/services/api-types";
+import {
+  initialPayloadForFunction,
+  RequestPayloadEditor,
+  validateRequestPayload,
+} from "@/components/cron/RequestPayloadEditor";
+import { createDraftState, selectFunction } from "@/lib/function-draft";
 
 const schema = z.object({
   function: z.string().trim().min(1, "Function is required"),
@@ -42,25 +51,19 @@ const schema = z.object({
   timeoutSeconds: z.number().int().min(0).max(86400).optional(),
 });
 
-// Labels stay short: the trigger renders the full option content, and these sit
-// in a half-width column next to the timeout field ("If the node dies mid-run"
-// label carries the context; Restart = re-run on another node, Cancel = never twice).
-export const ON_STALE_OPTIONS: SelectOption[] = [
-  { value: "Restart", label: "Restart" },
-  { value: "Cancel", label: "Cancel" },
-];
-
 type FormValues = z.infer<typeof schema>;
 
 export function CreateTimeTickerDialog({
   open,
   onOpenChange,
   functionOptions = [],
+  functions = [],
   onSubmit,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   functionOptions?: SelectOption[];
+  functions?: FunctionInfoDto[];
   onSubmit?: (values: FormValues) => Promise<void> | void;
 }) {
   const form = useForm<FormValues>({
@@ -79,13 +82,55 @@ export function CreateTimeTickerDialog({
 
   const retriesValue = form.watch("retries") ?? 0;
   const intervalsValue = form.watch("retryIntervalsSeconds") ?? "";
+  const selectedFunctionName = form.watch("function");
+  const requestJson = form.watch("requestJson") ?? "";
+  const selectedFunction = functions.find((item) => item.functionName === selectedFunctionName);
+  const draftBook = useRef(createDraftState());
+  const requestEditorValid = useRef(true);
+
+  useEffect(() => {
+    const selection = selectFunction(
+      draftBook.current,
+      selectedFunctionName ?? "",
+      form.getValues("requestJson") ?? "",
+      (name) => initialPayloadForFunction(functions.find((item) => item.functionName === name)),
+    );
+    draftBook.current = selection.state;
+    if (selection.changed) {
+      form.setValue("requestJson", selection.value);
+      form.clearErrors("requestJson");
+      requestEditorValid.current = true;
+    }
+  }, [form, functions, selectedFunctionName]);
+
+  function resetDraftSession() {
+    draftBook.current = createDraftState();
+    requestEditorValid.current = true;
+  }
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen) {
+      resetDraftSession();
+      form.reset();
+    }
+    onOpenChange(nextOpen);
+  }
 
   async function handleSubmit(values: FormValues) {
+    if (!requestEditorValid.current) {
+      form.setError("requestJson", { type: "validate", message: "Complete or correct the structured JSON field." });
+      return;
+    }
+    const requestError = validateRequestPayload(selectedFunction, values.requestJson ?? "");
+    if (requestError) {
+      form.setError("requestJson", { type: "validate", message: requestError });
+      return;
+    }
     try {
       await onSubmit?.(values);
       toast.success("Time ticker scheduled");
       form.reset();
-      onOpenChange(false);
+      handleOpenChange(false);
     } catch (err) {
       toast.error("Failed to create", {
         description: err instanceof Error ? err.message : "An error occurred",
@@ -94,7 +139,7 @@ export function CreateTimeTickerDialog({
   }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet open={open} onOpenChange={handleOpenChange}>
       <SheetContent
         side="right"
         className="w-[520px] sm:max-w-[520px] bg-surface-0 border-l border-border overflow-y-auto scrollbar-thin p-0 gap-0"
@@ -196,13 +241,13 @@ export function CreateTimeTickerDialog({
                   />
                 </div>
 
-                <TextareaField
-                  control={form.control}
-                  name="requestJson"
-                  label="Request payload (optional)"
-                  description="JSON, plain text, or any string the function expects."
-                  placeholder='{"key":"value"}'
-                  rows={4}
+                <RequestPayloadEditor
+                  key={selectedFunctionName}
+                  functionInfo={selectedFunction}
+                  value={requestJson}
+                  onChange={(value) => form.setValue("requestJson", value, { shouldDirty: true })}
+                  onValidityChange={(valid) => { requestEditorValid.current = valid; }}
+                  error={form.formState.errors.requestJson?.message}
                 />
               </div>
 
@@ -212,7 +257,7 @@ export function CreateTimeTickerDialog({
                   variant="outline"
                   size="sm"
                   className="h-8 text-xs rounded-lg"
-                  onClick={() => onOpenChange(false)}
+                  onClick={() => handleOpenChange(false)}
                 >
                   Cancel
                 </Button>

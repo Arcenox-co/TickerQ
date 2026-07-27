@@ -45,31 +45,30 @@ import {
   describeRetryPolicy,
   parseIntervalsList,
 } from "@/lib/cron/status-config";
-import { parseUtc } from "@/lib/cron/format";
 import { cn } from "@/lib/utils";
+import {
+  chainNodeToRequest,
+  tickersToChainNode,
+  type ChainNode,
+} from "@/lib/cron/chain-node";
+import { decodeRequestPayload } from "@/lib/request-payload";
 import {
   qk,
   useAddTimeTickerChain,
   useAllFunctions,
   useChainTickers,
-  useDeleteTimeTicker,
+  useReplaceTimeTickerChain,
 } from "@/services/hooks";
 import { dashboardApi } from "@/services/dashboard-api";
 import { isReadOnly } from "@/lib/runtime-config";
-import type { TimeTickerFlatDto, TimeTickerNode } from "@/services/api-types";
+import type { FunctionInfoDto, StaleAction } from "@/services/api-types";
+import {
+  initialPayloadForFunction,
+  RequestPayloadEditor,
+  validateRequestPayload,
+} from "@/components/cron/RequestPayloadEditor";
+import { createDraftState, selectFunction, type FunctionDraftState } from "@/lib/function-draft";
 
-export interface ChainNode {
-  id: string;
-  functionName: string;
-  runCondition: RunCondition;
-  retries: number;
-  retryIntervalsSeconds: string;
-  description: string;
-  requestJson: string;
-  active: boolean;
-  scheduledAt: string;
-  children: ChainNode[];
-}
 
 // Backend now supports unbounded chain depth (probe-and-extend in the EF Core
 // persistence layer walks descendants past the fast 2-level projection). Keeping
@@ -98,6 +97,9 @@ function makeSlot(active = false): ChainNode {
     retryIntervalsSeconds: "",
     description: "",
     requestJson: "",
+    requestValid: true,
+    onStale: "Restart",
+    timeoutSeconds: 0,
     active,
     scheduledAt: "",
     children: [],
@@ -119,65 +121,6 @@ function cloneTree(node: ChainNode): ChainNode {
   return { ...node, children: node.children.map(cloneTree) };
 }
 
-// ── Edit-mode helpers ──
-function safeAtob(b64: string): string {
-  try {
-    return decodeURIComponent(escape(atob(b64)));
-  } catch {
-    try {
-      return atob(b64);
-    } catch {
-      return b64;
-    }
-  }
-}
-
-function toDatetimeLocal(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const d = parseUtc(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
-    d.getHours()
-  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
-/**
- * Convert a flat chain (root + descendants returned by useChainTickers) into
- * the builder's ChainNode tree. Every node gets a new `edit-<id>` id so the
- * builder treats them as fresh — the existing chain is fully replaced on
- * submit (delete-then-create, matching the Hub).
- */
-function tickersToChainNode(
-  tickers: TimeTickerFlatDto[],
-  rootId: string,
-  payloadMap: Map<string, string>
-): ChainNode | null {
-  const byId = new Map(tickers.map((t) => [t.id, t]));
-  const childrenByParent = new Map<string, TimeTickerFlatDto[]>();
-  for (const t of tickers) {
-    if (t.parentId) {
-      const arr = childrenByParent.get(t.parentId) ?? [];
-      arr.push(t);
-      childrenByParent.set(t.parentId, arr);
-    }
-  }
-  const root = byId.get(rootId);
-  if (!root) return null;
-  const build = (t: TimeTickerFlatDto, isRoot: boolean): ChainNode => ({
-    id: `edit-${t.id}`,
-    functionName: t.functionName,
-    runCondition: t.runCondition ?? "OnAnyCompletedStatus",
-    retries: t.retries ?? 0,
-    retryIntervalsSeconds: "",
-    description: t.description ?? "",
-    requestJson: payloadMap.get(t.id) ?? "",
-    active: true,
-    scheduledAt: isRoot ? toDatetimeLocal(t.scheduledFor) : "",
-    children: (childrenByParent.get(t.id) ?? []).map((c) => build(c, false)),
-  });
-  return build(root, true);
-}
 
 interface Pos {
   id: string;
@@ -316,10 +259,12 @@ function ActiveNode({
   const conditionColor = !isRoot ? runConditionHsl(node.runCondition) : null;
   return (
     <div style={{ width: NODE_W }}>
-      <div
+      <button
+        type="button"
         onClick={onClick}
+        aria-label={`${isRoot ? "Edit root job" : "Edit job"}: ${node.functionName || "function not selected"}`}
         className={cn(
-          "w-full rounded-xl border bg-card p-3 cursor-pointer transition-all duration-200",
+          "w-full rounded-xl border bg-card p-3 text-left cursor-pointer transition-all duration-200",
           isRoot && "border-primary/40",
           isSelected && "ring-1 ring-primary/50"
         )}
@@ -333,12 +278,12 @@ function ActiveNode({
           </span>
         </div>
         {node.description.trim().length > 0 && (
-          <p
-            className="text-[10px] text-muted-foreground line-clamp-2 mb-1.5"
+          <span
+            className="block text-[10px] text-muted-foreground line-clamp-2 mb-1.5"
             title={node.description}
           >
             {node.description}
-          </p>
+          </span>
         )}
         <div className="flex items-center gap-1.5">
           {!isRoot && <RunConditionBadge condition={node.runCondition} />}
@@ -354,7 +299,7 @@ function ActiveNode({
             </span>
           )}
         </div>
-      </div>
+      </button>
     </div>
   );
 }
@@ -364,6 +309,7 @@ function NodeEditor({
   node,
   isRoot,
   functionNames,
+  functions,
   onUpdate,
   onDeactivate,
   onClose,
@@ -371,10 +317,13 @@ function NodeEditor({
   node: ChainNode;
   isRoot: boolean;
   functionNames: string[];
+  functions: FunctionInfoDto[];
   onUpdate: (updates: Partial<ChainNode>) => void;
   onDeactivate?: () => void;
   onClose: () => void;
 }) {
+  const draftBooks = useRef<Record<string, FunctionDraftState>>({});
+
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
       <SheetContent
@@ -398,9 +347,27 @@ function NodeEditor({
             {functionNames.length > 0 ? (
               <Select
                 value={node.functionName}
-                onValueChange={(v) => onUpdate({ functionName: v })}
+                onValueChange={(v) => {
+                  const functionInfo = functions.find((item) => item.functionName === v);
+                  const currentBook = draftBooks.current[node.id] ?? {
+                    ...createDraftState(),
+                    active: node.functionName,
+                  };
+                  const selection = selectFunction(
+                    currentBook,
+                    v,
+                    node.requestJson,
+                    () => initialPayloadForFunction(functionInfo),
+                  );
+                  draftBooks.current[node.id] = selection.state;
+                  onUpdate({
+                    functionName: v,
+                    requestJson: selection.value,
+                    requestValid: true,
+                  });
+                }}
               >
-                <SelectTrigger className="h-9 w-full bg-surface-0 border-border text-xs">
+                <SelectTrigger aria-label="Function" className="h-9 w-full bg-surface-0 border-border text-xs">
                   <SelectValue placeholder="Select function..." />
                 </SelectTrigger>
                 <SelectContent>
@@ -413,6 +380,7 @@ function NodeEditor({
               </Select>
             ) : (
               <Input
+                aria-label="Function"
                 value={node.functionName}
                 placeholder="FunctionName"
                 onChange={(e) => onUpdate({ functionName: e.target.value })}
@@ -432,7 +400,7 @@ function NodeEditor({
                   onUpdate({ runCondition: v as RunCondition })
                 }
               >
-                <SelectTrigger className="h-9 w-full bg-surface-0 border-border text-xs">
+                <SelectTrigger aria-label="Run condition" className="h-9 w-full bg-surface-0 border-border text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -456,6 +424,7 @@ function NodeEditor({
               Description
             </Label>
             <Input
+              aria-label="Description"
               type="text"
               value={node.description}
               onChange={(e) => onUpdate({ description: e.target.value })}
@@ -476,6 +445,7 @@ function NodeEditor({
                   Retries
                 </Label>
                 <Input
+                  aria-label="Retries"
                   type="number"
                   min={0}
                   max={100}
@@ -491,10 +461,9 @@ function NodeEditor({
                   Intervals (sec)
                 </Label>
                 <Input
+                  aria-label="Retry intervals in seconds"
                   type="text"
-                  value={
-                    node.retries > 0 ? node.retryIntervalsSeconds : ""
-                  }
+                  value={node.retryIntervalsSeconds}
                   onChange={(e) =>
                     onUpdate({ retryIntervalsSeconds: e.target.value })
                   }
@@ -513,6 +482,41 @@ function NodeEditor({
             </p>
           </div>
 
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                If stale
+              </Label>
+              <Select
+                value={node.onStale}
+                onValueChange={(value) => onUpdate({ onStale: value as StaleAction })}
+              >
+                <SelectTrigger aria-label="Stale action" className="h-9 w-full bg-surface-0 border-border text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Restart" className="text-xs">Restart</SelectItem>
+                  <SelectItem value="Cancel" className="text-xs">Cancel</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                Timeout (sec)
+              </Label>
+              <Input
+                aria-label="Timeout in seconds"
+                type="number"
+                min={0}
+                step={1}
+                value={node.timeoutSeconds}
+                onChange={(event) => onUpdate({ timeoutSeconds: Number(event.target.value) })}
+                className="h-9 bg-surface-0 border-border text-xs"
+              />
+              <p className="text-[10px] text-muted-foreground/60">0 inherits the scheduler default</p>
+            </div>
+          </div>
+
           {isRoot && (
             <div className="space-y-1.5">
               <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
@@ -520,6 +524,7 @@ function NodeEditor({
               </Label>
               <div className="relative">
                 <Input
+                  aria-label="Schedule"
                   type="datetime-local"
                   value={node.scheduledAt}
                   onFocus={() => {
@@ -547,20 +552,13 @@ function NodeEditor({
             </div>
           )}
 
-          <div className="space-y-1.5">
-            <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-              Request payload (optional)
-            </Label>
-            <textarea
-              value={node.requestJson}
-              onChange={(e) => onUpdate({ requestJson: e.target.value })}
-              placeholder='{"key": "value"}'
-              className="w-full h-20 rounded-lg border border-border bg-surface-0 px-3 py-2 text-xs font-mono resize-none focus:outline-none focus:ring-1 focus:ring-primary/50"
-            />
-            <p className="text-[10px] text-muted-foreground/60">
-              JSON, plain text, or any string the function expects.
-            </p>
-          </div>
+          <RequestPayloadEditor
+            key={`${node.id}:${node.functionName}`}
+            functionInfo={functions.find((item) => item.functionName === node.functionName)}
+            value={node.requestJson}
+            onChange={(requestJson) => onUpdate({ requestJson })}
+            onValidityChange={(requestValid) => onUpdate({ requestValid })}
+          />
         </div>
         {!isRoot && onDeactivate && (
           <div className="px-5 py-3 border-t border-border shrink-0">
@@ -610,11 +608,12 @@ function ChainBuilderPageInner() {
     [fns]
   );
   const chainMutation = useAddTimeTickerChain();
-  const deleteMutation = useDeleteTimeTicker();
+  const replaceChainMutation = useReplaceTimeTickerChain();
 
   // Edit-mode prefill: walk the existing chain (root + descendants) and fetch
   // each node's payload in parallel, then convert into the builder's editable
-  // tree. Submit becomes delete-then-create.
+  // tree. Editing fails closed until every request payload succeeds; submit uses
+  // the server-side atomic replace endpoint and never deletes the original first.
   const editChainQuery = useChainTickers(editId);
   const editTickers = editChainQuery.data;
   const payloadQueries = useQueries({
@@ -625,8 +624,18 @@ function ChainBuilderPageInner() {
       enabled: isEditing,
     })),
   });
-  const payloadsLoading = payloadQueries.some((q) => q.isLoading);
-  const allLoaded = isEditing && !!editTickers && !payloadsLoading;
+  const payloadsLoading = payloadQueries.some((q) => q.isLoading || q.isFetching);
+  const payloadsFailed = payloadQueries.some(
+    (q) => q.isError || (q.isSuccess && q.data == null)
+  );
+  const hydrationFailed = editChainQuery.isError || payloadsFailed;
+  const allLoaded =
+    isEditing &&
+    !!editTickers?.length &&
+    !payloadsLoading &&
+    !hydrationFailed &&
+    payloadQueries.length === editTickers.length &&
+    payloadQueries.every((q) => q.isSuccess && q.data != null);
 
   const [root, setRoot] = useState<ChainNode>(() => makeInitialTree());
   const [prefilled, setPrefilled] = useState(false);
@@ -636,7 +645,7 @@ function ChainBuilderPageInner() {
     const payloadMap = new Map<string, string>();
     editTickers.forEach((t, i) => {
       const raw = payloadQueries[i]?.data?.payload;
-      if (raw) payloadMap.set(t.id, safeAtob(raw));
+      if (raw) payloadMap.set(t.id, decodeRequestPayload(raw));
     });
     const tree = tickersToChainNode(editTickers, editId, payloadMap);
     if (tree) {
@@ -720,6 +729,8 @@ function ChainBuilderPageInner() {
     node.retryIntervalsSeconds = "";
     node.description = "";
     node.requestJson = "";
+    node.onStale = "Restart";
+    node.timeoutSeconds = 0;
     node.children = [];
     setRoot(newRoot);
     if (selectedId === id) setSelectedId(null);
@@ -785,13 +796,22 @@ function ChainBuilderPageInner() {
     if (n.active) {
       if (!n.functionName)
         return "Every active job needs a function selected";
+      if (!n.requestValid)
+        return `Complete or correct the structured JSON fields for "${n.functionName}"`;
       if (
-        n.retries > 0 &&
         n.retryIntervalsSeconds.trim().length > 0 &&
         parseIntervalsList(n.retryIntervalsSeconds) === null
       ) {
         return `Retry intervals for "${n.functionName}" must be comma-separated whole numbers between 1 and 3600`;
       }
+      if (!Number.isInteger(n.timeoutSeconds) || n.timeoutSeconds < 0) {
+        return `Timeout for "${n.functionName}" must be a whole number of seconds (0 or greater)`;
+      }
+      const requestError = validateRequestPayload(
+        (fns ?? []).find((item) => item.functionName === n.functionName),
+        n.requestJson
+      );
+      if (requestError) return `${n.functionName}: ${requestError}`;
     }
     for (const c of n.children) {
       const err = validateTree(c);
@@ -800,22 +820,12 @@ function ChainBuilderPageInner() {
     return null;
   }
 
-  function toNode(node: ChainNode): TimeTickerNode {
-    return {
-      function: node.functionName,
-      description: node.description || null,
-      retries: node.retries > 0 ? node.retries : null,
-      retryIntervalsSeconds:
-        node.retries > 0
-          ? parseIntervalsList(node.retryIntervalsSeconds)
-          : null,
-      request: node.requestJson || null,
-      runCondition: node.runCondition,
-      children: node.children.filter((c) => c.active).map(toNode),
-    };
-  }
 
   async function handleSubmit() {
+    if (isEditing && (!prefilled || hydrationFailed || !allLoaded)) {
+      toast.error("The complete original chain has not loaded. Retry before replacing it.");
+      return;
+    }
     const validationError = validateTree(root);
     if (validationError) {
       toast.error(validationError);
@@ -826,15 +836,13 @@ function ChainBuilderPageInner() {
       const executionTime = root.scheduledAt
         ? new Date(root.scheduledAt).toISOString()
         : new Date().toISOString();
-      // Edit = delete the original root (cascades to children) + recreate the
-      // new tree. Matches the Hub's chain-replace flow.
-      if (isEditing && editId) {
-        await deleteMutation.mutateAsync(editId);
-      }
-      const result = await chainMutation.mutateAsync({
+      const body = {
         executionTime,
-        root: toNode(root),
-      });
+        root: chainNodeToRequest(root),
+      };
+      const result = isEditing && editId
+        ? await replaceChainMutation.mutateAsync({ rootId: editId, body })
+        : await chainMutation.mutateAsync(body);
       const jobLabel = result.createdCount === 1 ? "job" : "jobs";
       toast.success(
         isEditing
@@ -869,8 +877,30 @@ function ChainBuilderPageInner() {
     <div className="relative flex flex-col h-[calc(100vh-44px-24px-24px)] -m-6">
       {isEditing && !prefilled && (
         <div className="absolute inset-0 z-50 bg-background/60 backdrop-blur-[1px] flex items-center justify-center">
-          <Loader2 className="h-4 w-4 animate-spin text-primary mr-2" />
-          <span className="text-sm text-muted-foreground">Loading chain…</span>
+          {hydrationFailed ? (
+            <div role="alert" className="max-w-sm rounded-lg border border-destructive/40 bg-background p-4 text-center shadow-lg">
+              <ShieldAlert className="mx-auto mb-2 h-5 w-5 text-destructive" />
+              <p className="text-sm font-medium">The complete chain payload could not be loaded.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Replacement is blocked so the original data cannot be erased.</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                onClick={() => {
+                  void editChainQuery.refetch();
+                  payloadQueries.forEach((query) => void query.refetch());
+                }}
+              >
+                Retry loading
+              </Button>
+            </div>
+          ) : (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin text-primary mr-2" />
+              <span className="text-sm text-muted-foreground">Loading complete chain…</span>
+            </>
+          )}
         </div>
       )}
       {/* Toolbar */}
@@ -931,7 +961,7 @@ function ChainBuilderPageInner() {
             size="sm"
             className="h-7 text-xs"
             onClick={handleSubmit}
-            disabled={!root.functionName || submitting}
+            disabled={!root.functionName || submitting || (isEditing && !prefilled)}
           >
             {submitting ? (
               <>
@@ -1115,6 +1145,7 @@ function ChainBuilderPageInner() {
           node={selectedNode}
           isRoot={isSelectedRoot}
           functionNames={functionNames}
+          functions={fns ?? []}
           onUpdate={(updates) => updateNode(selectedId!, updates)}
           onDeactivate={
             isSelectedRoot ? undefined : () => deactivateNode(selectedId!)

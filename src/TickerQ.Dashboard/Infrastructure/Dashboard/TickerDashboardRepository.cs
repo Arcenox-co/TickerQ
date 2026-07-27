@@ -436,6 +436,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             var context = new InternalFunctionContext
             {
                 FunctionName = ticker.Function,
+                RequestContractVersion = ticker.RequestContractVersion,
+                RequestContractFingerprint = ticker.RequestContractFingerprint,
                 TickerId = ticker.Id,
                 Type = TickerType.TimeTicker,
                 Retries = ticker.Retries,
@@ -485,6 +487,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 {
                     ParentId = occurrence.CronTickerId,
                     FunctionName = occurrence.CronTicker.Function,
+                    RequestContractVersion = occurrence.CronTicker.RequestContractVersion,
+                    RequestContractFingerprint = occurrence.CronTicker.RequestContractFingerprint,
                     TickerId = occurrence.Id,
                     Type = TickerType.CronTickerOccurrence,
                     Retries = occurrence.CronTicker.Retries,
@@ -715,27 +719,28 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
         public IEnumerable<(string, (string, string, TickerTaskPriority))> GetTickerFunctions()
         {
-            foreach (var tickerFunction in TickerFunctionProvider.TickerFunctions.Select(x => new { x.Key, x.Value.Priority }))
+            var descriptors = TickerFunctionProvider.TickerFunctionDescriptors;
+            var requestTypes = TickerFunctionProvider.TickerFunctionRequestTypes;
+
+            foreach (var (functionName, descriptor) in descriptors)
             {
-                if (TickerFunctionProvider.TickerFunctionRequestTypes.TryGetValue(tickerFunction.Key,
-                        out var functionTypeContext) &&
-                    functionTypeContext.Item2 != null)
+                var request = descriptor.Request;
+                var exampleJson = request?.Examples.FirstOrDefault()?.Value.GetRawText();
+
+                // Compatibility only: canonical descriptors define membership and metadata. Until
+                // local registration emits examples, retain the previous generated-example behavior
+                // from one captured runtime-type mirror without admitting legacy-only functions.
+                if (exampleJson == null && request != null &&
+                    requestTypes.TryGetValue(functionName, out var runtimeRequest) &&
+                    runtimeRequest.Item2 != null)
                 {
-                    JsonExampleGenerator.TryGenerateExampleJson(functionTypeContext.Item2, out var exampleJson);
-                    yield return (tickerFunction.Key, (functionTypeContext.Item1, exampleJson, tickerFunction.Priority));
+                    JsonExampleGenerator.TryGenerateExampleJson(runtimeRequest.Item2, out exampleJson);
                 }
-                else if (TickerFunctionProvider.TickerFunctionRequestInfos.TryGetValue(tickerFunction.Key,
-                             out var requestInfo))
-                {
-                    var exampleJson = string.IsNullOrWhiteSpace(requestInfo.RequestExampleJson)
-                        ? null
-                        : requestInfo.RequestExampleJson;
-                    yield return (tickerFunction.Key, (requestInfo.RequestType ?? string.Empty, exampleJson, tickerFunction.Priority));
-                }
-                else
-                {
-                    yield return (tickerFunction.Key, (string.Empty, null, tickerFunction.Priority));
-                }
+
+                yield return (functionName, (
+                    request?.TypeName ?? string.Empty,
+                    exampleJson!,
+                    descriptor.Priority));
             }
         }
     }

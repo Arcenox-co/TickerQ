@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
+
 using TickerQ.Exceptions;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
@@ -157,6 +158,110 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     #endregion
 
     #region Failure Path
+
+    [Fact]
+    public async Task ExecuteTaskAsync_ContractIdentityMismatch_FailsBeforeDelegateWithoutRetry()
+    {
+        var delegateCalls = 0;
+        var descriptor = new TickerFunctionDescriptor("TestFunction", contractVersion: 2);
+        var handler = new TickerExecutionTaskHandler(
+            _serviceProvider, _clock, _instrumentation, _internalManager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            _ => descriptor);
+        var context = CreateContext(ct: (_, _, _) =>
+        {
+            delegateCalls++;
+            return Task.CompletedTask;
+        });
+        context.Retries = 3;
+        context.RequestContractVersion = 1;
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(0, delegateCalls);
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Contains("contract drift", context.ExceptionDetails, StringComparison.OrdinalIgnoreCase);
+        await _internalManager.Received(1).UpdateTickerAsync(context, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_PersistedIdentityWithMissingDescriptor_FailsBeforeDelegateWithoutRetry()
+    {
+        var delegateCalls = 0;
+        var handler = new TickerExecutionTaskHandler(
+            _serviceProvider, _clock, _instrumentation, _internalManager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            _ => null);
+        var context = CreateContext(ct: (_, _, _) =>
+        {
+            delegateCalls++;
+            return Task.CompletedTask;
+        });
+        context.Retries = 3;
+        context.RequestContractVersion = 2;
+        context.RequestContractFingerprint = "persisted-fingerprint";
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(0, delegateCalls);
+        Assert.Equal(0, context.RetryCount);
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Contains("contract drift", context.ExceptionDetails, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("descriptor", context.ExceptionDetails, StringComparison.OrdinalIgnoreCase);
+        await _internalManager.Received(1).UpdateTickerAsync(context, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_ExactContractIdentity_ExecutesDelegate()
+    {
+        var delegateCalls = 0;
+        var descriptor = new TickerFunctionDescriptor("TestFunction", contractVersion: 2);
+        var handler = new TickerExecutionTaskHandler(
+            _serviceProvider, _clock, _instrumentation, _internalManager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            _ => descriptor);
+        var context = CreateContext(ct: (_, _, _) =>
+        {
+            delegateCalls++;
+            return Task.CompletedTask;
+        });
+        context.RequestContractVersion = 2;
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(1, delegateCalls);
+        Assert.Equal(TickerStatus.Done, context.Status);
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_FingerprintMismatchWithSameVersion_FailsBeforeDelegate()
+    {
+        var delegateCalls = 0;
+        var contract = new TickerRequestContract(
+            "Test.Request",
+            TickerRequestContractConstants.DefaultMediaType,
+            required: true,
+            TickerRequestContractConstants.SchemaDialect2020_12,
+            "{\"type\":\"object\",\"additionalProperties\":false}");
+        var descriptor = new TickerFunctionDescriptor("TestFunction", contractVersion: 2, request: contract);
+        var handler = new TickerExecutionTaskHandler(
+            _serviceProvider, _clock, _instrumentation, _internalManager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            _ => descriptor);
+        var context = CreateContext(ct: (_, _, _) =>
+        {
+            delegateCalls++;
+            return Task.CompletedTask;
+        });
+        context.RequestContractVersion = 2;
+        context.RequestContractFingerprint = "stale-fingerprint";
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(0, delegateCalls);
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Contains("fingerprint changed=True", context.ExceptionDetails, StringComparison.Ordinal);
+    }
 
     [Fact]
     public async Task ExecuteTaskAsync_SetsStatusFailed_WhenDelegateThrows()

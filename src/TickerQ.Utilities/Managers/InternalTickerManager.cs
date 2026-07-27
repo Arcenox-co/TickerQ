@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading;
@@ -132,6 +133,8 @@ namespace TickerQ.Utilities.Managers
             return new InternalFunctionContext
             {
                 FunctionName = ticker.Function,
+                RequestContractVersion = ticker.RequestContractVersion,
+                RequestContractFingerprint = ticker.RequestContractFingerprint,
                 TickerId = ticker.Id,
                 Type = TickerType.TimeTicker,
                 Retries = ticker.Retries,
@@ -172,6 +175,8 @@ namespace TickerQ.Utilities.Managers
                 {
                     ParentId = occurrence.CronTickerId,
                     FunctionName = occurrence.CronTicker.Function,
+                    RequestContractVersion = occurrence.CronTicker.RequestContractVersion,
+                    RequestContractFingerprint = occurrence.CronTicker.RequestContractFingerprint,
                     TickerId = occurrence.Id,
                     Type = TickerType.CronTickerOccurrence,
                     Retries = occurrence.CronTicker.Retries,
@@ -228,6 +233,8 @@ namespace TickerQ.Utilities.Managers
                     first = new InternalManagerContext(cronTicker.Id)
                     {
                         FunctionName = cronTicker.Function,
+                        RequestContractVersion = cronTicker.RequestContractVersion,
+                        RequestContractFingerprint = cronTicker.RequestContractFingerprint,
                         Expression = cronTicker.Expression,
                         Retries = cronTicker.Retries,
                         RetryIntervals = cronTicker.RetryIntervals,
@@ -242,6 +249,8 @@ namespace TickerQ.Utilities.Managers
                     ties.Add(new InternalManagerContext(cronTicker.Id)
                     {
                         FunctionName = cronTicker.Function,
+                        RequestContractVersion = cronTicker.RequestContractVersion,
+                        RequestContractFingerprint = cronTicker.RequestContractFingerprint,
                         Expression = cronTicker.Expression,
                         Retries = cronTicker.Retries,
                         RetryIntervals = cronTicker.RetryIntervals,
@@ -257,6 +266,8 @@ namespace TickerQ.Utilities.Managers
                 var storedItem = new InternalManagerContext(earliestStored.CronTickerId)
                 {
                     FunctionName = earliestStored.CronTicker.Function,
+                    RequestContractVersion = earliestStored.CronTicker.RequestContractVersion,
+                    RequestContractFingerprint = earliestStored.CronTicker.RequestContractFingerprint,
                     Expression = earliestStored.CronTicker.Expression,
                     Retries = earliestStored.CronTicker.Retries,
                     RetryIntervals = earliestStored.CronTicker.RetryIntervals,
@@ -384,6 +395,8 @@ namespace TickerQ.Utilities.Managers
             }
         }
 
+        [RequiresUnreferencedCode("Legacy request deserialization may use reflection metadata. Use the JsonTypeInfo overload for trimming/AOT.")]
+        [RequiresDynamicCode("Legacy request deserialization may require runtime JSON metadata. Use the JsonTypeInfo overload for Native AOT.")]
         public async Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, CancellationToken cancellationToken = default)
         {
             var request = type == TickerType.CronTickerOccurrence
@@ -431,6 +444,8 @@ namespace TickerQ.Utilities.Managers
                     TimeoutSeconds = timedOutCronTicker.CronTicker.TimeoutSeconds,
                     ParentId = timedOutCronTicker.CronTickerId,
                     AcquisitionToken = timedOutCronTicker.AcquisitionToken,
+                    RequestContractVersion = timedOutCronTicker.CronTicker.RequestContractVersion,
+                    RequestContractFingerprint = timedOutCronTicker.CronTicker.RequestContractFingerprint,
                     ExecutionTime = timedOutCronTicker.ExecutionTime
                 };
                 
@@ -441,8 +456,8 @@ namespace TickerQ.Utilities.Managers
             return results.ToArray();
         }
         
-        public async Task MigrateDefinedCronTickers((string, string)[] cronExpressions, CancellationToken cancellationToken = default)
-            => await _persistenceProvider.MigrateDefinedCronTickers(cronExpressions, cancellationToken).ConfigureAwait(false);
+        public async Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
+            => await _persistenceProvider.MigrateDefinedCronTickers(cronTickers, cancellationToken).ConfigureAwait(false);
 
         public async Task DeleteTicker(Guid tickerId, TickerType type, CancellationToken cancellationToken = default)
         {

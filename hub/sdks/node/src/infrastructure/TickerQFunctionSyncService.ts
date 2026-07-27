@@ -41,6 +41,8 @@ export class TickerQFunctionSyncService {
                 taskPriority: reg.priority,
                 requestType: requestInfo?.requestType ?? '',
                 requestExampleJson: requestInfo?.requestExampleJson ?? '',
+                contractVersion: requestInfo?.contractVersion ?? 1,
+                requestContract: requestInfo?.requestContract,
             };
 
             nodeFunctions.push(nodeFunction);

@@ -671,25 +671,39 @@ namespace TickerQ.Utilities.Infrastructure
 
         public Task<IList<FunctionInfoDto>> GetAllFunctionsAsync(CancellationToken cancellationToken = default)
         {
-            var functions = TickerFunctionProvider.TickerFunctions;
-            var infos = TickerFunctionProvider.TickerFunctionRequestInfos;
-
-            var result = functions.Select(kvp =>
+            var descriptors = TickerFunctionProvider.TickerFunctionDescriptors;
+            var result = descriptors.Values.Select(descriptor =>
             {
-                var name = kvp.Key;
-                string reqType = null, reqExample = null;
-                if (infos != null && infos.TryGetValue(name, out var info))
+                var request = descriptor.Request;
+                FunctionRequestContractDto requestDto = null;
+                if (request != null)
                 {
-                    reqType = info.RequestType;
-                    reqExample = info.RequestExampleJson;
+                    requestDto = new FunctionRequestContractDto
+                    {
+                        TypeName = request.TypeName,
+                        MediaType = request.MediaType,
+                        Required = request.Required,
+                        SchemaDialect = request.SchemaDialect,
+                        SchemaJson = request.Schema?.GetRawText(),
+                        Fingerprint = request.Fingerprint,
+                        Examples = request.Examples.Select(example => new FunctionRequestExampleDto
+                        {
+                            Key = example.Key,
+                            Summary = example.Summary,
+                            ValueJson = example.Value.GetRawText()
+                        }).ToList()
+                    };
                 }
+
                 return new FunctionInfoDto
                 {
-                    FunctionName = name,
-                    RequestType = reqType,
-                    RequestExample = reqExample,
-                    Priority = kvp.Value.Priority,
-                    CronExpression = kvp.Value.cronExpression
+                    FunctionName = descriptor.FunctionName,
+                    ContractVersion = descriptor.ContractVersion,
+                    RequestContract = requestDto,
+                    RequestType = request?.TypeName,
+                    RequestExample = request?.Examples.FirstOrDefault()?.Value.GetRawText(),
+                    Priority = descriptor.Priority,
+                    CronExpression = descriptor.CronExpression
                 };
             }).ToList();
 

@@ -1,20 +1,21 @@
 import { TickerTaskPriority } from '../enums';
 import type { TickerFunctionContext } from '../models/TickerFunctionContext';
-import { TickerFunctionProvider, type TickerFunctionHandler, type TickerFunctionHandlerNoRequest } from './TickerFunctionProvider';
+import {
+    TickerFunctionProvider,
+    type TickerFunctionHandler,
+    type TickerFunctionHandlerNoRequest,
+    type TickerRequestContractDefinition,
+    type TypedFunctionOptions,
+} from './TickerFunctionProvider';
 
-export interface FunctionOptions {
-    cronExpression?: string;
-    priority?: TickerTaskPriority;
-    maxConcurrency?: number;
-    requestType?: string;
-}
+export interface FunctionOptions extends TypedFunctionOptions {}
 
 /**
  * Fluent builder for registering a TickerQ function.
  *
  * ```ts
  * sdk.function('SendEmail', { priority: TickerTaskPriority.High })
- *     .withRequest({ to: '', subject: '', body: '' })
+ *     .withRequest({ to: '', subject: '', body: '' }, emailContract)
  *     .handle(async (ctx, signal) => {
  *         ctx.request.to; // fully typed
  *     });
@@ -40,16 +41,20 @@ export class TickerFunctionBuilder<TRequest = never> {
      *
      * ```ts
      * sdk.function('SendEmail')
-     *     .withRequest({ to: '', subject: '', body: '' })
+     *     .withRequest({ to: '', subject: '', body: '' }, emailContract)
      *     .handle(async (ctx, signal) => {
      *         ctx.request.to; // string
      *     });
      * ```
      */
-    withRequest<T>(requestDefault: T): TickerFunctionBuilder<T> {
+    withRequest<T>(
+        requestDefault: T,
+        requestContract: TickerRequestContractDefinition,
+    ): TickerFunctionBuilder<T> {
         const builder = this as unknown as TickerFunctionBuilder<T>;
         builder.requestDefault = requestDefault;
         builder.hasRequest = true;
+        builder.options.requestContract = requestContract;
         return builder;
     }
 
@@ -67,7 +72,7 @@ export class TickerFunctionBuilder<TRequest = never> {
                 this.functionName,
                 this.requestDefault,
                 handler as TickerFunctionHandler<any>,
-                this.options,
+                this.options as FunctionOptions & { requestContract: TickerRequestContractDefinition },
             );
         } else {
             TickerFunctionProvider.registerFunction(

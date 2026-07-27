@@ -244,6 +244,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         {
             Id = ticker.Id,
             Function = ticker.Function,
+            RequestContractVersion = ticker.RequestContractVersion,
+            RequestContractFingerprint = ticker.RequestContractFingerprint,
             Request = ticker.Request,
             CreatedAt = ticker.CreatedAt,
             Retries = ticker.Retries,
@@ -471,18 +473,22 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     #endregion
 
     #region Core_Cron_Ticker_Methods
-    public async Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
+    public async Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
     {
         var now = Clock.UtcNow;
         const string seedPrefix = "MemoryTicker_Seeded_";
 
         var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys
             .ToHashSet(StringComparer.Ordinal);
+        var blockedFunctions = cronTickers.Where(x => !x.CanSeed)
+            .Select(x => x.Function).ToHashSet(StringComparer.Ordinal);
 
         var existingList = await Serializer.LoadAllFromSetAsync<TCronTicker>(CronIdsKey, CronKey, cancellationToken).ConfigureAwait(false);
 
         var orphanedToDelete = existingList
-            .Where(c => !allRegisteredFunctions.Contains(c.Function))
+            .Where(c => !string.IsNullOrEmpty(c.InitIdentifier)
+                && (!allRegisteredFunctions.Contains(c.Function)
+                    || blockedFunctions.Contains(c.Function)))
             .Select(c => c.Id).ToArray();
 
         foreach (var id in orphanedToDelete)
@@ -492,18 +498,41 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             await Db.KeyDeleteAsync(CronKey(id)).ConfigureAwait(false);
         }
 
+        // Match only SEEDED rows (non-empty InitIdentifier). A user/dashboard-created
+        // row sharing a function name carries a null/non-seed identity and must never be
+        // matched, expression-overwritten, or identity-stamped by seed reconciliation.
         var orphanedSet = orphanedToDelete.ToHashSet();
         var existingByFunction = existingList
-            .Where(c => !orphanedSet.Contains(c.Id))
+            .Where(c => !orphanedSet.Contains(c.Id) && !string.IsNullOrEmpty(c.InitIdentifier))
             .ToDictionary(c => c.Function, c => c, StringComparer.Ordinal);
 
-        foreach (var (function, expression) in cronTickers)
+        foreach (var seed in cronTickers)
         {
-            if (existingByFunction.TryGetValue(function, out var cron))
+            if (!seed.CanSeed)
+                continue;
+
+            if (existingByFunction.TryGetValue(seed.Function, out var cron))
             {
-                if (!string.Equals(cron.Expression, expression, StringComparison.Ordinal))
+                var changed = false;
+
+                if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
                 {
-                    cron.Expression = expression;
+                    cron.Expression = seed.Expression;
+                    changed = true;
+                }
+
+                // Reconcile authoritative contract identity onto seeded rows only; legacy/dashboard
+                // rows (no seed InitIdentifier) keep their own identity.
+                if (!string.IsNullOrEmpty(cron.InitIdentifier)
+                    && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
+                {
+                    cron.RequestContractVersion = seed.RequestContractVersion;
+                    cron.RequestContractFingerprint = seed.RequestContractFingerprint;
+                    changed = true;
+                }
+
+                if (changed)
+                {
                     cron.UpdatedAt = now;
                     await Serializer.SetAsync(CronKey(cron.Id), cron).ConfigureAwait(false);
                 }
@@ -513,12 +542,14 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                 var entity = new TCronTicker
                 {
                     Id = Guid.NewGuid(),
-                    Function = function,
-                    Expression = expression,
-                    InitIdentifier = $"{seedPrefix}{function}",
+                    Function = seed.Function,
+                    Expression = seed.Expression,
+                    InitIdentifier = $"{seedPrefix}{seed.Function}",
                     CreatedAt = now,
                     UpdatedAt = now,
-                    Request = []
+                    Request = [],
+                    RequestContractVersion = seed.RequestContractVersion,
+                    RequestContractFingerprint = seed.RequestContractFingerprint
                 };
                 await Serializer.SetAsync(CronKey(entity.Id), entity).ConfigureAwait(false);
                 await IndexManager.AddCronIndexesAsync(entity).ConfigureAwait(false);
@@ -536,6 +567,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                 Id = c.Id,
                 Expression = c.Expression,
                 Function = c.Function,
+                RequestContractVersion = c.RequestContractVersion,
+                RequestContractFingerprint = c.RequestContractFingerprint,
                 RetryIntervals = c.RetryIntervals,
                 Retries = c.Retries
             })
@@ -603,6 +636,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                     {
                         Id = item.Id,
                         Function = item.FunctionName,
+                        RequestContractVersion = item.RequestContractVersion,
+                        RequestContractFingerprint = item.RequestContractFingerprint,
                         Expression = item.Expression,
                         Retries = item.Retries,
                         RetryIntervals = item.RetryIntervals
@@ -629,6 +664,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                     {
                         Id = item.Id,
                         Function = item.FunctionName,
+                        RequestContractVersion = item.RequestContractVersion,
+                        RequestContractFingerprint = item.RequestContractFingerprint,
                         Expression = item.Expression,
                         Retries = item.Retries,
                         RetryIntervals = item.RetryIntervals

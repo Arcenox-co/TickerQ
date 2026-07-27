@@ -11,6 +11,7 @@ using TickerQ.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
 
@@ -79,7 +80,7 @@ public class DesignTimeToolDetectionTests
         await initializer.StartAsync(CancellationToken.None);
 
         // MigrateDefinedCronTickers should have been called (even if with empty list)
-        await internalManager.Received(1).MigrateDefinedCronTickers(Arg.Any<(string, string)[]>());
+        await internalManager.Received(1).MigrateDefinedCronTickers(Arg.Any<DefinedCronTickerSeed[]>());
     }
 
     [Fact]

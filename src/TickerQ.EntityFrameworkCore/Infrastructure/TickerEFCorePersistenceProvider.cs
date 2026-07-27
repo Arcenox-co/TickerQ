@@ -202,6 +202,72 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             }
             return total;
         }
+
+        public async Task<int> ReplaceTimeTickerChainAsync(Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
+        {
+            if (newRoot == null)
+                throw new ArgumentNullException(nameof(newRoot));
+
+            using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            var dbContext = session.Context;
+            var set = dbContext.Set<TTimeTicker>();
+            var strategy = dbContext.Database.CreateExecutionStrategy();
+
+            // Single transaction: persist the COMPLETE replacement first, then remove the
+            // original. If the insert (validation/constraint) or the delete fails, the whole
+            // transaction rolls back and the original aggregate — every node and field —
+            // is left exactly as it was. This is the atomicity that a two-call
+            // delete-then-create (each with its own session + SaveChanges) cannot provide.
+            return await strategy.ExecuteInTransactionAsync(
+                operation: async _ =>
+                {
+                    // AddAsync walks the Children navigation and cascade-inserts the whole tree.
+                    await set.AddAsync(newRoot, cancellationToken).ConfigureAwait(false);
+                    var inserted = await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+                    // Self-referencing FK is OnDelete(NoAction): remove the original aggregate
+                    // deepest-first, same tiered BFS as RemoveTimeTickers, inside this transaction.
+                    var levels = new List<List<Guid>> { new() { oldRootId } };
+                    var frontier = levels[0];
+                    while (frontier.Count > 0)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var childIds = await set.AsNoTracking()
+                            .Where(x => x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                            .Select(x => x.Id)
+                            .ToListAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                        if (childIds.Count == 0)
+                            break;
+                        levels.Add(childIds);
+                        frontier = childIds;
+                    }
+
+                    for (var i = levels.Count - 1; i >= 0; i--)
+                    {
+                        var levelIds = levels[i];
+                        if (levelIds.Count == 0)
+                            continue;
+                        await set
+                            .Where(x => levelIds.Contains(x.Id))
+                            .ExecuteDeleteAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    return inserted;
+                },
+                verifySucceeded: async _ =>
+                {
+                    var newExists = await set.AsNoTracking()
+                        .AnyAsync(x => x.Id == newRoot.Id, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    var oldGone = !await set.AsNoTracking()
+                        .AnyAsync(x => x.Id == oldRootId, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    return newExists && oldGone;
+                },
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
         #endregion
 
         #region Cron_Ticker_Implementations

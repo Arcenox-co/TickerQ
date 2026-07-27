@@ -335,6 +335,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     TimeoutSeconds = e.TimeoutSeconds,
                     RunCondition = e.RunCondition,
                     ParentId = e.ParentId,
+                    RequestContractVersion = e.RequestContractVersion,
+                    RequestContractFingerprint = e.RequestContractFingerprint,
                 })
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -602,13 +604,14 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     }
         
     #region Core_Cron_Ticker_Methods
-    public async Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
+    public async Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
     {
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var dbContext = session.Context;
         var now = _clock.UtcNow;
 
-        var functions = cronTickers.Select(x => x.Function).ToList();
+        var functions = cronTickers.Where(x => x.CanSeed).Select(x => x.Function).ToList();
+        var blockedFunctions = cronTickers.Where(x => !x.CanSeed).Select(x => x.Function).ToList();
         var cronSet = dbContext.Set<TCronTicker>();
 
         // Build the complete list of registered function names to detect orphaned tickers.
@@ -630,7 +633,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         // away" doesn't apply to them.
         var orphanedCron = await cronSet
             .Where(c => !string.IsNullOrEmpty(c.InitIdentifier)
-                        && !allRegisteredFunctions.Contains(c.Function))
+                        && (!allRegisteredFunctions.Contains(c.Function)
+                            || blockedFunctions.Contains(c.Function)))
             .Select(c => c.Id)
             .ToArrayAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -652,9 +656,14 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
         var newFunctionSet = functions.ToHashSet(StringComparer.Ordinal);
 
-        // Load existing (remaining) cron tickers for the current function set
+        // Load existing SEEDED rows for the current function set. Matching is restricted
+        // to rows the code-defined-cron migration owns (non-empty InitIdentifier) so that
+        // a user/dashboard-created row that happens to share a function name — and which
+        // carries a null/non-seed identity — is never matched, never has its expression
+        // overwritten, and never has its contract identity stamped. Seeds reconcile only
+        // their own rows; a function with no seeded row falls through to the insert path.
         var existing = await cronSet
-            .Where(c => functions.Contains(c.Function))
+            .Where(c => functions.Contains(c.Function) && !string.IsNullOrEmpty(c.InitIdentifier))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -662,16 +671,35 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .GroupBy(c => c.Function)
             .ToDictionary(g => g.Key, g => g.First());
 
-        foreach (var (function, expression) in cronTickers)
+        foreach (var seed in cronTickers)
         {
-            if (existingByFunction.TryGetValue(function, out var cron))
+            if (!seed.CanSeed)
+                continue;
+
+            if (existingByFunction.TryGetValue(seed.Function, out var cron))
             {
+                var changed = false;
+
                 // Update expression if it changed
-                if (!string.Equals(cron.Expression, expression, StringComparison.Ordinal))
+                if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
                 {
-                    cron.Expression = expression;
-                    cron.UpdatedAt = now;
+                    cron.Expression = seed.Expression;
+                    changed = true;
                 }
+
+                // Reconcile the authoritative contract identity onto seeded rows only. Genuinely legacy
+                // rows (no seed InitIdentifier — e.g. dashboard-created) keep their own identity so they
+                // follow the legacy drift policy instead of code-defined reconciliation.
+                if (!string.IsNullOrEmpty(cron.InitIdentifier)
+                    && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
+                {
+                    cron.RequestContractVersion = seed.RequestContractVersion;
+                    cron.RequestContractFingerprint = seed.RequestContractFingerprint;
+                    changed = true;
+                }
+
+                if (changed)
+                    cron.UpdatedAt = now;
             }
             else
             {
@@ -679,12 +707,14 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 var entity = new TCronTicker
                 {
                     Id = Guid.NewGuid(),
-                    Function = function,
-                    Expression = expression,
-                    InitIdentifier = $"MemoryTicker_Seeded_{function}",
+                    Function = seed.Function,
+                    Expression = seed.Expression,
+                    InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
                     CreatedAt = now,
                     UpdatedAt = now,
-                    Request = Array.Empty<byte>()
+                    Request = Array.Empty<byte>(),
+                    RequestContractVersion = seed.RequestContractVersion,
+                    RequestContractFingerprint = seed.RequestContractFingerprint
                 };
                 await cronSet.AddAsync(entity, cancellationToken).ConfigureAwait(false);
             }
@@ -881,6 +911,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 {
                     Id = item.Id,
                     Function = item.FunctionName,
+                    RequestContractVersion = item.RequestContractVersion,
+                    RequestContractFingerprint = item.RequestContractFingerprint,
                     InitIdentifier = _lockHolder,
                     Expression = item.Expression,
                     Retries = item.Retries,
@@ -922,6 +954,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     {
                         Id = item.Id,
                         Function = item.FunctionName,
+                        RequestContractVersion = item.RequestContractVersion,
+                        RequestContractFingerprint = item.RequestContractFingerprint,
                         InitIdentifier = _lockHolder,
                         Expression = item.Expression,
                         Retries = item.Retries,

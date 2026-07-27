@@ -375,13 +375,15 @@ namespace TickerQ.MongoDB.Infrastructure
         // Cron Ticker — core methods
         // ===================================================================
 
-        public async Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
+        public async Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
             var cronSet = _context.CronTickers;
             var occSet = _context.CronTickerOccurrences;
 
             var registeredFunctions = TickerFunctionProvider.TickerFunctions.Keys.ToHashSet(StringComparer.Ordinal);
+            var blockedFunctions = cronTickers.Where(x => !x.CanSeed)
+                .Select(x => x.Function).ToHashSet(StringComparer.Ordinal);
 
             // Orphan cleanup is intentionally narrowed to *seeded* crons (those with a non-empty
             // InitIdentifier set by the code-defined-cron migration). Dashboard-created crons
@@ -398,7 +400,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 .ConfigureAwait(false);
 
             var orphanIds = orphans
-                .Where(o => !registeredFunctions.Contains(o.Function))
+                .Where(o => !registeredFunctions.Contains(o.Function)
+                    || blockedFunctions.Contains(o.Function))
                 .Select(o => o.Id)
                 .ToArray();
 
@@ -410,9 +413,16 @@ namespace TickerQ.MongoDB.Infrastructure
                 await cronSet.DeleteManyAsync(fb.In(x => x.Id, orphanIds), cancellationToken).ConfigureAwait(false);
             }
 
-            var functions = cronTickers.Select(x => x.Function).ToArray();
+            // Match only SEEDED rows (non-empty InitIdentifier). A user/dashboard-created
+            // row that shares a function name carries a null/non-seed identity and must
+            // never be matched, expression-overwritten, or identity-stamped by seed
+            // reconciliation. Seeds reconcile only their own rows.
+            var functions = cronTickers.Where(x => x.CanSeed).Select(x => x.Function).ToArray();
             var existing = await cronSet
-                .Find(fb.In(x => x.Function, functions))
+                .Find(fb.And(
+                    fb.In(x => x.Function, functions),
+                    fb.Ne(x => x.InitIdentifier, null),
+                    fb.Ne(x => x.InitIdentifier, string.Empty)))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -420,17 +430,36 @@ namespace TickerQ.MongoDB.Infrastructure
                 .GroupBy(c => c.Function)
                 .ToDictionary(g => g.Key, g => g.First());
 
-            foreach (var (function, expression) in cronTickers)
+            foreach (var seed in cronTickers)
             {
-                if (existingByFunction.TryGetValue(function, out var cron))
+                if (!seed.CanSeed)
+                    continue;
+
+                if (existingByFunction.TryGetValue(seed.Function, out var cron))
                 {
-                    if (!string.Equals(cron.Expression, expression, StringComparison.Ordinal))
+                    var expressionChanged = !string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal);
+
+                    // Reconcile authoritative contract identity onto seeded rows only; legacy/dashboard
+                    // rows (no seed InitIdentifier) keep their own identity.
+                    var identityChanged = !string.IsNullOrEmpty(cron.InitIdentifier)
+                        && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint);
+
+                    if (expressionChanged || identityChanged)
                     {
+                        var update = Builders<TCronTicker>.Update
+                            .Set(x => x.Expression, seed.Expression)
+                            .Set(x => x.UpdatedAt, now);
+
+                        if (identityChanged)
+                        {
+                            update = update
+                                .Set(x => x.RequestContractVersion, seed.RequestContractVersion)
+                                .Set(x => x.RequestContractFingerprint, seed.RequestContractFingerprint);
+                        }
+
                         await cronSet.UpdateOneAsync(
                             fb.Eq(x => x.Id, cron.Id),
-                            Builders<TCronTicker>.Update
-                                .Set(x => x.Expression, expression)
-                                .Set(x => x.UpdatedAt, now),
+                            update,
                             cancellationToken: cancellationToken).ConfigureAwait(false);
                     }
                 }
@@ -439,12 +468,14 @@ namespace TickerQ.MongoDB.Infrastructure
                     var entity = new TCronTicker
                     {
                         Id = Guid.NewGuid(),
-                        Function = function,
-                        Expression = expression,
-                        InitIdentifier = $"MemoryTicker_Seeded_{function}",
+                        Function = seed.Function,
+                        Expression = seed.Expression,
+                        InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
                         CreatedAt = now,
                         UpdatedAt = now,
-                        Request = Array.Empty<byte>()
+                        Request = Array.Empty<byte>(),
+                        RequestContractVersion = seed.RequestContractVersion,
+                        RequestContractFingerprint = seed.RequestContractFingerprint
                     };
                     await cronSet.InsertOneAsync(entity, cancellationToken: cancellationToken).ConfigureAwait(false);
                 }
@@ -543,6 +574,8 @@ namespace TickerQ.MongoDB.Infrastructure
                     {
                         Id = item.Id,
                         Function = item.FunctionName,
+                        RequestContractVersion = item.RequestContractVersion,
+                        RequestContractFingerprint = item.RequestContractFingerprint,
                         InitIdentifier = _lockHolder,
                         Expression = item.Expression,
                         Retries = item.Retries,
@@ -584,6 +617,8 @@ namespace TickerQ.MongoDB.Infrastructure
                         {
                             Id = item.Id,
                             Function = item.FunctionName,
+                            RequestContractVersion = item.RequestContractVersion,
+                            RequestContractFingerprint = item.RequestContractFingerprint,
                             InitIdentifier = _lockHolder,
                             Expression = item.Expression,
                             Retries = item.Retries,
@@ -639,6 +674,8 @@ namespace TickerQ.MongoDB.Infrastructure
                     {
                         Id = cron.Id,
                         Function = cron.Function,
+                        RequestContractVersion = cron.RequestContractVersion,
+                        RequestContractFingerprint = cron.RequestContractFingerprint,
                         RetryIntervals = cron.RetryIntervals,
                         Retries = cron.Retries,
                         TimeoutSeconds = cron.TimeoutSeconds
@@ -1472,6 +1509,8 @@ namespace TickerQ.MongoDB.Infrastructure
                         {
                             Id = c.Id,
                             Function = c.Function,
+                            RequestContractVersion = c.RequestContractVersion,
+                            RequestContractFingerprint = c.RequestContractFingerprint,
                             Retries = c.Retries,
                             RetryIntervals = c.RetryIntervals,
                             TimeoutSeconds = c.TimeoutSeconds,

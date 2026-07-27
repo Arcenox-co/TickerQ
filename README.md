@@ -92,6 +92,65 @@ public class MyService(ITimeTickerManager<TimeTickerEntity> manager)
 }
 ```
 
+## Typed request contracts
+
+TickerQ can generate a Draft 2020-12 JSON Schema and AOT-safe `JsonTypeInfo<T>` for typed function requests. The same immutable descriptor drives the Dashboard editor, Hub/SDK metadata, scheduling validation, and execution-time drift checks.
+
+```csharp
+using System.Text.Json.Serialization;
+using TickerQ.Utilities.Base;
+using TickerQ.Utilities.Interfaces;
+
+public record OrderCustomer(string Email, string? DisplayName = null);
+public record ProcessOrderRequest(
+    string OrderId,
+    decimal Amount,
+    OrderCustomer? Customer = null);
+
+public class ProcessOrderJob : ITickerFunction<ProcessOrderRequest>
+{
+    public Task ExecuteAsync(
+        TickerFunctionContext<ProcessOrderRequest> context,
+        CancellationToken cancellationToken = default)
+    {
+        Console.WriteLine($"Processing {context.Request?.OrderId}");
+        return Task.CompletedTask;
+    }
+}
+
+[JsonSerializable(typeof(ProcessOrderRequest))]
+[JsonSerializable(typeof(OrderCustomer))]
+internal partial class TickerRequestJsonContext : JsonSerializerContext;
+```
+
+Register the interface-based function after building the app:
+
+```csharp
+app.MapTicker<ProcessOrderJob>();
+```
+
+Schedule through the typed manager overload when possible:
+
+```csharp
+await manager.AddAsync<ProcessOrderJob, ProcessOrderRequest>(
+    DateTime.UtcNow.AddMinutes(1),
+    new ProcessOrderRequest(
+        "order-42",
+        125.50m,
+        new OrderCustomer("buyer@example.com")));
+```
+
+Important contract behavior:
+
+- Payloads are validated against the registered schema before any single or batch write. Invalid batches are rejected without partial persistence.
+- Contract version and deterministic `sha256:` schema fingerprint are copied into persisted time tickers, cron definitions, and cron occurrences.
+- Execution fails before invoking the function when persisted identity differs from the current descriptor. Drift failures are terminal and do not consume retry attempts.
+- Rows created by older TickerQ versions with both identity columns null remain executable. A partially populated identity is rejected.
+- Request-less functions expose no request contract and the Dashboard omits payload input.
+- Remote/AOT functions can validate from the transported schema even when the scheduler does not own a local CLR request type.
+
+See the runnable nested-request/AOT probe in `samples/TickerQ.Sample.Dashboard.ReflectionFree`.
+
 ## Packages
 
 | Package | Description |
