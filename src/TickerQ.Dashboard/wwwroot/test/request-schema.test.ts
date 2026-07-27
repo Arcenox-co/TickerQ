@@ -10,6 +10,8 @@ import {
   initStructuredDraft,
   isRawPayloadJsonValid,
   parseStructuredInput,
+  removeInvalidArrayIndex,
+  renameInvalidDictionaryKey,
   resolveLocalPointer,
   resolveRootObject,
   resolveSchemaNode,
@@ -29,6 +31,19 @@ test("raw payload validity recovers after replacing invalid structured text", ()
   assert.equal(isRawPayloadJsonValid("{"), false);
   assert.equal(isRawPayloadJsonValid('{"Name":"Ada"}'), true);
   assert.equal(isRawPayloadJsonValid(""), true);
+});
+
+test("removing an array item preserves and shifts other invalid indexes", () => {
+  assert.deepEqual([...removeInvalidArrayIndex(new Set([0, 2, 4]), 2)], [0, 3]);
+  assert.deepEqual([...removeInvalidArrayIndex(new Set([1, 3]), 0)], [0, 2]);
+});
+
+test("renaming a dictionary key carries its invalid state", () => {
+  assert.deepEqual(
+    [...renameInvalidDictionaryKey(new Set(["old", "other"]), "old", "new")].sort(),
+    ["new", "other"],
+  );
+  assert.deepEqual([...renameInvalidDictionaryKey(new Set(["other"]), "old", "new")], ["other"]);
 });
 
 // A JsonSchemaEmitter-shaped document: object-rooted, PascalCase props, numeric

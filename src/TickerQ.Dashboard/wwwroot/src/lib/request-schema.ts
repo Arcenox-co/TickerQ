@@ -53,6 +53,25 @@ export function exceedsSchemaRenderDepth(depth: number): boolean {
   return depth >= MAX_SCHEMA_RENDER_DEPTH;
 }
 
+export function removeInvalidArrayIndex(invalid: ReadonlySet<number>, removedIndex: number): Set<number> {
+  const next = new Set<number>();
+  for (const index of invalid) {
+    if (index < removedIndex) next.add(index);
+    else if (index > removedIndex) next.add(index - 1);
+  }
+  return next;
+}
+
+export function renameInvalidDictionaryKey(
+  invalid: ReadonlySet<string>,
+  from: string,
+  to: string,
+): Set<string> {
+  const next = new Set(invalid);
+  if (next.delete(from)) next.add(to);
+  return next;
+}
+
 function isObject(value: unknown): value is SchemaNode {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

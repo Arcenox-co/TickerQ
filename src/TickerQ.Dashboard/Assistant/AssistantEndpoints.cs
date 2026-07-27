@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
@@ -166,9 +167,20 @@ internal static class AssistantEndpoints
         }
         catch (Exception ex)
         {
-            // Surface a short, non-sensitive error to the panel.
-            await WriteEvent(ctx, "error", ex.Message);
+            await WriteStreamingFailure(ctx, ex);
         }
+    }
+
+    private static async Task WriteStreamingFailure(HttpContext ctx, Exception exception)
+    {
+        ctx.RequestServices.GetService<ILoggerFactory>()?
+            .CreateLogger("TickerQ.Dashboard.Assistant")
+            .LogError(exception, "Assistant stream failed. TraceId: {TraceIdentifier}", ctx.TraceIdentifier);
+
+        await WriteEvent(
+            ctx,
+            "error",
+            $"The assistant request failed unexpectedly. Reference: {ctx.TraceIdentifier}");
     }
 
     private static async Task WriteEvent(HttpContext ctx, string type, string data)

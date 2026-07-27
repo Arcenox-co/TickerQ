@@ -40,6 +40,8 @@ import {
   initStructuredDraft,
   isRawPayloadJsonValid,
   parseStructuredInput,
+  removeInvalidArrayIndex,
+  renameInvalidDictionaryKey,
   resolveRootObject,
   resolveSchemaNode,
   sameJsonValue,
@@ -649,8 +651,8 @@ function ArrayField({
   };
 
   const removeItem = (index: number) => {
-    invalid.current.clear();
-    onValidityChange(true);
+    invalid.current = removeInvalidArrayIndex(invalid.current, index);
+    onValidityChange(invalid.current.size === 0);
     onChange(value.filter((_, i) => i !== index));
   };
 
@@ -728,6 +730,8 @@ function DictionaryField({
 
   const renameKey = (from: string, to: string) => {
     if (from === to) return;
+    invalid.current = renameInvalidDictionaryKey(invalid.current, from, to);
+    onValidityChange(invalid.current.size === 0);
     const rebuilt: Record<string, unknown> = {};
     for (const [key, val] of entries) rebuilt[key === from ? to : key] = val;
     onChange(rebuilt);
