@@ -400,7 +400,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 if (hasMore && root.ExecutedAt.HasValue)
                     nextCursor = RetentionCursor.After(root.ExecutedAt.Value, root.Id);
 
-                totalDeleted += await DeleteChainIfFullyEligibleAsync(dbContext, set, root.Id, eligible, cancellationToken)
+                totalDeleted += await DeleteChainIfFullyEligibleAsync(
+                        dbContext, set, root.Id, cutoffs.MaxNodesPerChain, eligible, cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -419,29 +420,49 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         // the total deleted count is verified against the collected subtree size — if a node was reactivated
         // between the pre-check and the delete, the transaction rolls back and the chain is left fully intact.
         // A chain is therefore deleted whole or not at all; it is never partially erased.
+        //
+        // <paramref name="maxNodesPerChain"/> caps traversal: the BFS visits at most cap+1 nodes and stops
+        // the instant the subtree is known to exceed the cap, retaining the oversized chain WHOLE and
+        // building no delete/query predicate over an unbounded id set. This keeps every `IN (...)` collection
+        // (frontier and level filters) bounded by the cap so no provider is handed an oversized SQL IN list.
         private static async Task<int> DeleteChainIfFullyEligibleAsync(
-            TDbContext dbContext, DbSet<TTimeTicker> set, Guid rootId,
+            TDbContext dbContext, DbSet<TTimeTicker> set, Guid rootId, int maxNodesPerChain,
             Expression<Func<TTimeTicker, bool>> eligible, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Fail closed: a non-positive cap cannot even admit the root, so retain the chain whole rather
+            // than risk building an unbounded traversal.
+            if (maxNodesPerChain < 1)
+                return 0;
+
             // BFS the subtree, collecting ids per depth tier so deletion can proceed deepest-first
-            // (the self-referencing FK is OnDelete(NoAction)).
+            // (the self-referencing FK is OnDelete(NoAction)). Bounded to cap+1 nodes: as soon as the
+            // subtree is proven larger than the cap the whole chain is retained, before any delete runs.
             var levels = new List<List<Guid>> { new() { rootId } };
             var frontier = levels[0];
             var subtreeSize = 1;
             while (frontier.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                // Nodes we may still admit before reaching the cap; take one extra to detect overflow.
+                var remaining = maxNodesPerChain - subtreeSize;
                 var childIds = await set.AsNoTracking()
                     .Where(x => x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
                     .Select(x => x.Id)
+                    .Take(remaining + 1)
                     .ToListAsync(cancellationToken).ConfigureAwait(false);
                 if (childIds.Count == 0)
                     break;
-                levels.Add(childIds);
                 subtreeSize += childIds.Count;
+                if (subtreeSize > maxNodesPerChain)
+                    return 0; // oversized chain → retain whole; no delete/query predicate is built for it
+                levels.Add(childIds);
                 frontier = childIds;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             var allIds = levels.SelectMany(l => l).ToList();
 
             // Cheap pre-check outside any transaction: is EVERY node eligible? Short-circuits the common

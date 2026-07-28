@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using MongoDB.Driver;
+using MongoDB.Driver.Core.Clusters;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -26,7 +27,6 @@ namespace TickerQ.MongoDB.Infrastructure
         private readonly SchedulerOptionsBuilder _schedulerOptions;
 
         internal const string RetentionLockHolder = "__tickerq_retention__";
-        private static readonly TimeSpan RetentionClaimLease = TimeSpan.FromMinutes(5);
         private static readonly TickerStatus[] TerminalStatuses =
         {
             TickerStatus.Done, TickerStatus.DueDone, TickerStatus.Failed,
@@ -1217,7 +1217,11 @@ namespace TickerQ.MongoDB.Infrastructure
             if (cutoffs is null || !cutoffs.HasAny || batchSize <= 0)
                 return RetentionChainBatchResult.Empty;
 
+            cancellationToken.ThrowIfCancellationRequested();
             var now = _clock.UtcNow;
+
+            // Defensive migration cleanup: recover any expired retention claim a prior build may have left so
+            // those terminal rows are eligible again. The transactional delete below never leaves a claim.
             await RecoverExpiredRetentionClaimsAsync(now, cancellationToken).ConfigureAwait(false);
 
             var coll = _context.TimeTickers;
@@ -1241,54 +1245,36 @@ namespace TickerQ.MongoDB.Infrastructure
             if (roots.Count == 0)
                 return RetentionChainBatchResult.Empty;
 
+            // Time-chain deletion MUST be atomic across the whole chain. Each chain is re-read, re-checked for
+            // full eligibility, and deleted inside ONE Mongo transaction that rolls back on any mismatch — so a
+            // chain is removed whole or not at all, never partially. A standalone deployment cannot run
+            // transactions; rather than risk a non-atomic (partial) chain delete we FAIL CLOSED and delete no
+            // time chains this sweep. We never downgrade to a non-transactional chain delete.
+            var client = _context.Database.Client;
+
+            // Deterministic pre-check: the topology is known after the root query above, so refuse up front on
+            // a standalone rather than partially deleting. The NotSupportedException catch below is a defensive
+            // backstop for topologies that only reveal the limitation when the transaction actually runs.
+            if (client.Cluster.Description.Type == ClusterType.Standalone)
+                return RetentionChainBatchResult.Empty;
+
+            using var session = await client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
             var deleted = 0;
             foreach (var root in roots)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var descendants = await CollectDescendantIds(root.Id, cancellationToken).ConfigureAwait(false);
-                descendants.Add(root.Id);
-
-                var subtreeFilter = fb.In(x => x.Id, descendants);
-                var eligibleCount = await coll.CountDocumentsAsync(
-                    fb.And(subtreeFilter, eligible), cancellationToken: cancellationToken).ConfigureAwait(false);
-                if (eligibleCount != descendants.Count)
-                    continue;
-
-                var claimToken = Guid.NewGuid();
-                var claimUntil = now.Add(RetentionClaimLease);
-                var claim = await coll.UpdateManyAsync(
-                    fb.And(subtreeFilter, eligible),
-                    Builders<TTimeTicker>.Update
-                        .Set(x => x.AcquisitionToken, claimToken)
-                        .Set(x => x.LockHolder, RetentionLockHolder)
-                        .Set(x => x.LockedAt, now)
-                        .Set(x => x.LeaseUntil, claimUntil),
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
-
-                var claimedFilter = fb.And(
-                    subtreeFilter,
-                    fb.Eq(x => x.LockHolder, RetentionLockHolder),
-                    fb.Eq(x => x.AcquisitionToken, claimToken));
-                if (claim.ModifiedCount != descendants.Count)
-                {
-                    await ReleaseRetentionClaimAsync(claimedFilter, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                var claimStillHeld = true;
                 try
                 {
-                    var result = await coll.DeleteManyAsync(claimedFilter, cancellationToken).ConfigureAwait(false);
-                    if (result.DeletedCount != descendants.Count)
-                        throw new InvalidOperationException(
-                            "MongoDB retention claim was lost during chain deletion; the partial provider result cannot be treated as success.");
-                    deleted += (int)result.DeletedCount;
-                    claimStillHeld = false;
+                    deleted += await DeleteChainTransactionallyAsync(
+                        session, root.Id, cutoffs, now, eligible, cancellationToken).ConfigureAwait(false);
                 }
-                finally
+                catch (NotSupportedException)
                 {
-                    if (claimStillHeld)
-                        await ReleaseRetentionClaimAsync(claimedFilter, CancellationToken.None).ConfigureAwait(false);
+                    // Standalone topology: transactions are unsupported. Fail closed — retain every time
+                    // chain this sweep rather than deleting any chain non-atomically.
+                    return RetentionChainBatchResult.Empty;
                 }
             }
 
@@ -1299,17 +1285,109 @@ namespace TickerQ.MongoDB.Infrastructure
             return new RetentionChainBatchResult(deleted, hasMore, next);
         }
 
-        private async Task ReleaseRetentionClaimAsync(
-            FilterDefinition<TTimeTicker> claimedFilter, CancellationToken cancellationToken)
+        // Deletes the whole chain rooted at <paramref name="rootId"/> inside a single transaction iff EVERY
+        // node (root + descendants) is eligible and unowned. Traversal is bounded to
+        // <see cref="RetentionCutoffs.MaxNodesPerChain"/>: an oversized chain is retained WHOLE and no delete
+        // is issued for it, which also keeps every <c>$in</c> id list bounded by the cap. Any eligibility or
+        // count mismatch aborts the transaction and leaves the chain fully intact. Propagates
+        // <see cref="NotSupportedException"/> when the deployment cannot run transactions (standalone) so the
+        // caller fails closed.
+        private async Task<int> DeleteChainTransactionallyAsync(
+            IClientSessionHandle session, Guid rootId, RetentionCutoffs cutoffs, DateTime now,
+            FilterDefinition<TTimeTicker> eligible, CancellationToken cancellationToken)
         {
-            await _context.TimeTickers.UpdateManyAsync(
-                claimedFilter,
-                Builders<TTimeTicker>.Update
-                    .Set(x => x.LockHolder, (string)null)
-                    .Set(x => x.LockedAt, (DateTime?)null)
-                    .Set(x => x.LeaseUntil, (DateTime?)null)
-                    .Set(x => x.AcquisitionToken, (Guid?)null),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            var coll = _context.TimeTickers;
+            var fb = Builders<TTimeTicker>.Filter;
+
+            // Throws NotSupportedException on standalone deployments (no transaction support).
+            session.StartTransaction(new TransactionOptions(
+                readConcern: ReadConcern.Snapshot, writeConcern: WriteConcern.WMajority));
+
+            var committed = false;
+            try
+            {
+                // Re-read the chain under the transaction snapshot, bounded to the cap.
+                var chainIds = await CollectBoundedChainIds(
+                    session, rootId, cutoffs.MaxNodesPerChain, cancellationToken).ConfigureAwait(false);
+                if (chainIds is null)
+                {
+                    // Oversized chain (or non-positive cap): retain whole, delete nothing.
+                    await session.AbortTransactionAsync(cancellationToken).ConfigureAwait(false);
+                    return 0;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                var subtreeFilter = fb.In(x => x.Id, chainIds);
+
+                // Every node must still be eligible & unowned under the snapshot.
+                var eligibleCount = await coll.CountDocumentsAsync(
+                    session, fb.And(subtreeFilter, eligible),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (eligibleCount != chainIds.Count)
+                {
+                    await session.AbortTransactionAsync(cancellationToken).ConfigureAwait(false);
+                    return 0; // ineligible descendant / concurrent mutation → retain whole
+                }
+
+                var result = await coll.DeleteManyAsync(
+                    session, fb.And(subtreeFilter, eligible),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (result.DeletedCount != chainIds.Count)
+                {
+                    await session.AbortTransactionAsync(cancellationToken).ConfigureAwait(false);
+                    return 0; // concurrent delete/mutation → retain whole
+                }
+
+                await session.CommitTransactionAsync(cancellationToken).ConfigureAwait(false);
+                committed = true;
+                return (int)result.DeletedCount;
+            }
+            finally
+            {
+                if (!committed && session.IsInTransaction)
+                    await session.AbortTransactionAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        // BFS the chain (root + descendants) under <paramref name="session"/>, bounded to <paramref name="cap"/>
+        // nodes. Returns null when the chain exceeds the cap (retain whole) or the cap is non-positive (fail
+        // closed). Every <c>$in</c> frontier list and the returned id list are bounded by the cap, so no
+        // oversized filter is ever built. Cancellation is honored on every tier.
+        private async Task<List<Guid>> CollectBoundedChainIds(
+            IClientSessionHandle session, Guid rootId, int cap, CancellationToken cancellationToken)
+        {
+            if (cap < 1)
+                return null; // fail closed: cannot even admit the root
+
+            var fb = Builders<TTimeTicker>.Filter;
+            var all = new List<Guid> { rootId };
+            var visited = new HashSet<Guid> { rootId };
+            var frontier = new List<Guid> { rootId };
+
+            while (frontier.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var remaining = cap - all.Count;
+                var childIds = await _context.TimeTickers
+                    .Find(session, fb.In(x => x.ParentId, frontier.Select(p => (Guid?)p)))
+                    .Project(x => x.Id)
+                    .Limit(remaining + 1)
+                    .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+                var next = new List<Guid>(childIds.Count);
+                foreach (var childId in childIds)
+                {
+                    if (!visited.Add(childId))
+                        continue; // cycle guard
+                    all.Add(childId);
+                    if (all.Count > cap)
+                        return null; // oversized → retain whole
+                    next.Add(childId);
+                }
+                frontier = next;
+            }
+
+            return all;
         }
 
         public async Task<RetentionBatchResult> DeleteEligibleCronTickerOccurrencesAsync(

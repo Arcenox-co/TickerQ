@@ -276,7 +276,41 @@ public class EfCoreRetentionTests : IAsyncLifetime
             new RetentionCutoffs(Ago(7), null, null, null, maxNodesPerChain: 3), 100);
 
         Assert.Equal(0, result.Deleted);
-        Assert.Equal(4, await CountTimeRows());
+        Assert.Equal(4, await TimeCount());
+    }
+
+    [Fact]
+    public async Task ChainExactlyAtCap_IsDeletedWhole()
+    {
+        var root = Node(TickerStatus.Done, Ago(10));
+        var child = Node(TickerStatus.Done, Ago(10), root.Id);
+        var grandchild = Node(TickerStatus.Done, Ago(10), child.Id);
+        await Seed(root, child, grandchild);
+
+        var result = await Prune(
+            new RetentionCutoffs(Ago(7), null, null, null, maxNodesPerChain: 3), 100);
+
+        Assert.Equal(3, result.Deleted);
+        Assert.Equal(0, await TimeCount());
+    }
+
+    [Fact]
+    public async Task WideFanoutOversizedChain_IsRetainedWhole_WithoutOversizedInList()
+    {
+        // A shallow-but-wide chain: one root with many eligible children. The single level already
+        // exceeds the cap, so traversal must stop and retain the whole chain without ever building a
+        // delete predicate over the full child id set.
+        var root = Node(TickerStatus.Done, Ago(10));
+        var children = Enumerable.Range(0, 50)
+            .Select(_ => Node(TickerStatus.Done, Ago(10), root.Id))
+            .ToArray();
+        await Seed(new[] { root }.Concat(children).ToArray());
+
+        var result = await Prune(
+            new RetentionCutoffs(Ago(7), null, null, null, maxNodesPerChain: 10), 100);
+
+        Assert.Equal(0, result.Deleted);
+        Assert.Equal(51, await TimeCount());
     }
 
     [Fact]

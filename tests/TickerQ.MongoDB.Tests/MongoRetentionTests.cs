@@ -105,6 +105,85 @@ public sealed class MongoRetentionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Chain_RetainedWhole_WhenDeepDescendantIneligibleByWindow()
+    {
+        var root = Node(TickerStatus.Done, Ago(10));
+        var child = Node(TickerStatus.Done, Ago(10), root.Id);
+        var grandchild = Node(TickerStatus.Done, Ago(1), child.Id); // too recent → ineligible
+        await _fixture.TimeTickers.InsertManyAsync([root, child, grandchild]);
+
+        var result = await _fixture.Provider.DeleteEligibleTimeTickerChainsAsync(
+            Cutoffs(succeeded: Ago(7)), 10, RetentionCursor.Start, CancellationToken.None);
+
+        Assert.Equal(0, result.Deleted);
+        Assert.Equal(3, await _fixture.TimeTickers.CountDocumentsAsync(FilterDefinition<TimeTickerEntity>.Empty));
+    }
+
+    [Fact]
+    public async Task Chain_RetainedWhole_WhenDescendantIsOwned()
+    {
+        // A live acquisition token on a descendant means the aggregate is actively owned; the whole chain
+        // must be retained even though the root is terminal and old.
+        var root = Node(TickerStatus.Done, Ago(10));
+        var child = Node(TickerStatus.Done, Ago(10), root.Id, acquisitionToken: Guid.NewGuid());
+        await _fixture.TimeTickers.InsertManyAsync([root, child]);
+
+        var result = await _fixture.Provider.DeleteEligibleTimeTickerChainsAsync(
+            Cutoffs(succeeded: Ago(7)), 10, RetentionCursor.Start, CancellationToken.None);
+
+        Assert.Equal(0, result.Deleted);
+        Assert.Equal(2, await _fixture.TimeTickers.CountDocumentsAsync(FilterDefinition<TimeTickerEntity>.Empty));
+    }
+
+    [Fact]
+    public async Task OversizedChain_IsRetainedWhole()
+    {
+        var root = Node(TickerStatus.Done, Ago(10));
+        var child = Node(TickerStatus.Done, Ago(10), root.Id);
+        var grandchild = Node(TickerStatus.Done, Ago(10), child.Id);
+        var greatGrandchild = Node(TickerStatus.Done, Ago(10), grandchild.Id);
+        await _fixture.TimeTickers.InsertManyAsync([root, child, grandchild, greatGrandchild]);
+
+        var result = await _fixture.Provider.DeleteEligibleTimeTickerChainsAsync(
+            new RetentionCutoffs(Ago(7), null, null, null, maxNodesPerChain: 3),
+            10, RetentionCursor.Start, CancellationToken.None);
+
+        Assert.Equal(0, result.Deleted);
+        Assert.Equal(4, await _fixture.TimeTickers.CountDocumentsAsync(FilterDefinition<TimeTickerEntity>.Empty));
+    }
+
+    [Fact]
+    public async Task ChainExactlyAtCap_IsDeletedWhole()
+    {
+        var root = Node(TickerStatus.Done, Ago(10));
+        var child = Node(TickerStatus.Done, Ago(10), root.Id);
+        var grandchild = Node(TickerStatus.Done, Ago(10), child.Id);
+        await _fixture.TimeTickers.InsertManyAsync([root, child, grandchild]);
+
+        var result = await _fixture.Provider.DeleteEligibleTimeTickerChainsAsync(
+            new RetentionCutoffs(Ago(7), null, null, null, maxNodesPerChain: 3),
+            10, RetentionCursor.Start, CancellationToken.None);
+
+        Assert.Equal(3, result.Deleted);
+        Assert.Equal(0, await _fixture.TimeTickers.CountDocumentsAsync(FilterDefinition<TimeTickerEntity>.Empty));
+    }
+
+    [Fact]
+    public async Task Cancellation_IsHonored_DuringChainTraversal()
+    {
+        var root = Node(TickerStatus.Done, Ago(10));
+        var child = Node(TickerStatus.Done, Ago(10), root.Id);
+        await _fixture.TimeTickers.InsertManyAsync([root, child]);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            _fixture.Provider.DeleteEligibleTimeTickerChainsAsync(
+                Cutoffs(succeeded: Ago(7)), 10, RetentionCursor.Start, cts.Token));
+    }
+
+    [Fact]
     public async Task UnexpiredRetentionClaim_BlocksOnDemandAcquire_ExpiredClaimIsRecovered()
     {
         var claimed = Node(
