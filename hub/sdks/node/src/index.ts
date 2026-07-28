@@ -16,6 +16,8 @@ export type { SyncNodesAndFunctionsResult } from './models/SyncNodesAndFunctions
 export type { NodeFunction } from './models/NodeFunction';
 export type { Node } from './models/Node';
 export type { TickerFunctionContext } from './models/TickerFunctionContext';
+export type { ResultEnvelope } from './models/ResultEnvelope';
+export { RESULT_ENVELOPE_VERSION, MAX_RESULT_PAYLOAD_BYTES } from './models/ResultEnvelope';
 export type { InternalFunctionContext } from './models/InternalFunctionContext';
 export type { TimeTickerEntity } from './models/TimeTickerEntity';
 export type { CronTickerEntity } from './models/CronTickerEntity';
@@ -32,6 +34,9 @@ export {
     type TickerFunctionRequestContractInfo,
     type TickerFunctionRequestExampleInfo,
     type TickerRequestContractDefinition,
+    type TickerResultContractDefinition,
+    type TickerFunctionResultInfo,
+    type TickerFunctionResultContractInfo,
     type TickerRequestExampleDefinition,
     type TypedFunctionOptions,
 } from './infrastructure/TickerFunctionProvider';

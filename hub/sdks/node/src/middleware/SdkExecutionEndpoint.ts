@@ -7,22 +7,27 @@ import { TickerQTaskScheduler } from '../worker/TickerQTaskScheduler';
 import { TickerFunctionConcurrencyGate } from '../worker/TickerFunctionConcurrencyGate';
 import { TickerQRemotePersistenceProvider } from '../persistence/TickerQRemotePersistenceProvider';
 import { normalizeExecutionContext, type RemoteExecutionContext } from '../models/RemoteExecutionContext';
-import type { TickerFunctionContext } from '../models/TickerFunctionContext';
+import { createFunctionContext, type FunctionResultSink, type TickerFunctionContext } from '../models/TickerFunctionContext';
+import type { TickerFunctionResultContractInfo } from '../infrastructure/TickerFunctionProvider';
 import type { InternalFunctionContext } from '../models/InternalFunctionContext';
 import { TickerType, TickerStatus, TickerTaskPriority, RunCondition } from '../enums';
 import type { TickerQLogger } from '../client/TickerQSdkHttpClient';
 
-function buildFunctionContext(context: RemoteExecutionContext): TickerFunctionContext<unknown> {
-    return {
-        id: context.id,
-        parentId: context.parentId,
-        type: context.type,
-        retryCount: context.retryCount,
-        isDue: context.isDue,
-        scheduledFor: new Date(context.scheduledFor),
-        functionName: context.functionName,
-        request: TickerFunctionProvider.getRequestDefault(context.functionName),
-    };
+function buildFunctionContext(
+    context: RemoteExecutionContext,
+    resultContract?: TickerFunctionResultContractInfo,
+): TickerFunctionContext<unknown> & { readonly resultSink: FunctionResultSink } {
+    return createFunctionContext(
+        context,
+        TickerFunctionProvider.getRequestDefault(context.functionName),
+        resultContract
+            ? {
+                contractId: resultContract.fingerprint,
+                contractType: resultContract.typeName,
+                mediaType: resultContract.mediaType,
+            }
+            : undefined,
+    );
 }
 
 function buildInternalContext(
@@ -199,7 +204,7 @@ export class SdkExecutionEndpoint {
             return;
         }
 
-        const functionContext = buildFunctionContext(context);
+        const functionContext = buildFunctionContext(context, registration.resultContract);
 
         // Queue execution with priority and concurrency gate
         const semaphore = this.concurrencyGate.getSemaphore(
@@ -279,7 +284,7 @@ export class SdkExecutionEndpoint {
             return;
         }
 
-        const functionContext = buildFunctionContext(context);
+        const functionContext = buildFunctionContext(context, registration.resultContract);
 
         const semaphore = this.concurrencyGate.getSemaphore(
             context.functionName,
@@ -300,7 +305,7 @@ export class SdkExecutionEndpoint {
     private async executeAndReportStatus(
         context: RemoteExecutionContext,
         registration: { delegate: (ctx: any, signal: AbortSignal) => Promise<void>; priority: TickerTaskPriority; maxConcurrency: number },
-        functionContext: TickerFunctionContext<unknown>,
+        functionContext: TickerFunctionContext<unknown> & { readonly resultSink: FunctionResultSink },
         semaphore: { acquire: () => Promise<() => void> } | null,
         signal: AbortSignal,
     ): Promise<void> {
@@ -331,6 +336,10 @@ export class SdkExecutionEndpoint {
             internalCtx.elapsedTime = elapsed;
             internalCtx.executedAt = new Date().toISOString();
             internalCtx.parametersToUpdate = ['Status', 'ElapsedTime', 'ExecutedAt'];
+            if (functionContext.resultSink.resultEnvelope) {
+                internalCtx.resultEnvelope = functionContext.resultSink.resultEnvelope;
+                internalCtx.parametersToUpdate.push('ResultEnvelope');
+            }
 
             this.logger?.info(
                 `TickerQ [${typeName}] '${context.functionName}' status -> ${TickerStatus[internalCtx.status]} (${elapsed}ms)`,

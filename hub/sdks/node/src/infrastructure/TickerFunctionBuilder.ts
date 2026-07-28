@@ -5,6 +5,7 @@ import {
     type TickerFunctionHandler,
     type TickerFunctionHandlerNoRequest,
     type TickerRequestContractDefinition,
+    type TickerResultContractDefinition,
     type TypedFunctionOptions,
 } from './TickerFunctionProvider';
 
@@ -24,7 +25,7 @@ export interface FunctionOptions extends TypedFunctionOptions {}
  *     .handle(async (ctx, signal) => { });
  * ```
  */
-export class TickerFunctionBuilder<TRequest = never> {
+export class TickerFunctionBuilder<TRequest = never, TResult = unknown> {
     private readonly functionName: string;
     private readonly options: FunctionOptions;
     private requestDefault: unknown = undefined;
@@ -50,11 +51,24 @@ export class TickerFunctionBuilder<TRequest = never> {
     withRequest<T>(
         requestDefault: T,
         requestContract: TickerRequestContractDefinition,
-    ): TickerFunctionBuilder<T> {
-        const builder = this as unknown as TickerFunctionBuilder<T>;
+    ): TickerFunctionBuilder<T, TResult> {
+        const builder = this as unknown as TickerFunctionBuilder<T, TResult>;
         builder.requestDefault = requestDefault;
         builder.hasRequest = true;
         builder.options.requestContract = requestContract;
+        return builder;
+    }
+
+    /** Define the typed JSON result and canonical result contract published to the Hub. */
+    withResult<T>(
+        resultDefault: T,
+        resultContract: TickerResultContractDefinition,
+    ): TickerFunctionBuilder<TRequest, T> {
+        const builder = this as unknown as TickerFunctionBuilder<TRequest, T>;
+        builder.options.resultType = typeof resultDefault === 'object' && resultDefault !== null
+            ? resultDefault.constructor?.name ?? 'Object'
+            : typeof resultDefault;
+        builder.options.resultContract = resultContract;
         return builder;
     }
 
@@ -64,8 +78,8 @@ export class TickerFunctionBuilder<TRequest = never> {
      */
     handle(
         handler: [TRequest] extends [never]
-            ? TickerFunctionHandlerNoRequest
-            : TickerFunctionHandler<TRequest>,
+            ? TickerFunctionHandlerNoRequest<TResult>
+            : TickerFunctionHandler<TRequest, TResult>,
     ): void {
         if (this.hasRequest) {
             TickerFunctionProvider.registerFunction(

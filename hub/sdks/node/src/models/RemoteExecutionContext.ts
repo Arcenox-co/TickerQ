@@ -1,4 +1,5 @@
 import { TickerType } from '../enums';
+import { normalizeResultEnvelope, type ResultEnvelope } from './ResultEnvelope';
 
 /**
  * Raw execution context as sent by the TickerQ Scheduler/RemoteExecutor.
@@ -13,6 +14,8 @@ export interface RemoteExecutionContext {
     isDue: boolean;
     scheduledFor: string;
     functionName: string;
+    /** Result produced by the direct parent execution, when present. */
+    parentResult?: ResultEnvelope;
 }
 
 /**
@@ -23,6 +26,7 @@ export function normalizeExecutionContext(raw: Record<string, unknown>): RemoteE
     const get = (camel: string, pascal: string): unknown =>
         raw[camel] !== undefined ? raw[camel] : raw[pascal];
 
+    const rawParentResult = get('parentResult', 'ParentResult');
     return {
         id: (get('id', 'Id') as string) ?? '',
         parentId: (get('parentId', 'ParentId') as string | null | undefined) ?? null,
@@ -31,5 +35,8 @@ export function normalizeExecutionContext(raw: Record<string, unknown>): RemoteE
         isDue: (get('isDue', 'IsDue') as boolean) ?? false,
         scheduledFor: (get('scheduledFor', 'ScheduledFor') as string) ?? new Date().toISOString(),
         functionName: (get('functionName', 'FunctionName') as string) ?? '',
+        ...(rawParentResult === undefined || rawParentResult === null
+            ? {}
+            : { parentResult: normalizeResultEnvelope(rawParentResult) }),
     };
 }

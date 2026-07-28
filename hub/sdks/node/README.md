@@ -101,6 +101,30 @@ sdk.function('DatabaseCleanup', {
     });
 ```
 
+### Typed results and direct-parent results
+
+Use `withResult` to publish a canonical result contract and type `ctx.setResult`. Results are JSON-encoded,
+base64-wrapped in a versioned envelope, and included only in a final successful status update. `null` is an
+explicit present result; not calling `setResult` means no result. Each execution attempt has a fresh sink.
+
+```ts
+sdk.function('CreateReport')
+    .withResult(
+        { reportId: '' },
+        { schema: { type: 'object', required: ['reportId'], properties: {
+            reportId: { type: 'string' },
+        } } },
+    )
+    .handle(async (ctx) => {
+        const parent = ctx.getParentResult<{ sourceId: string }>();
+        if (ctx.hasParentResult) console.log(parent?.sourceId);
+        ctx.setResult({ reportId: 'report-1' });
+    });
+```
+
+Only the direct parent's result is exposed. Unknown envelope versions, invalid base64, non-JSON media types
+when deserializing, and decoded payloads over 1 MiB are rejected.
+
 ### With an object-wrapped scalar request
 
 Canonical request contracts require an object-root schema. Wrap scalar values in a named property:
@@ -125,6 +149,8 @@ sdk.function('ResizeImage')
 | `maxConcurrency` | `number` | `0` (unlimited) | Max parallel executions for this function |
 | `requestType` | `string` | auto-detected | Type name sent to Hub for documentation |
 | `requestContract` | `TickerRequestContractDefinition` | — | Authoritative JSON Schema, examples, media type, and contract version sent to Hub |
+| `resultType` | `string` | auto-detected | Result type name sent to Hub for documentation |
+| `resultContract` | `TickerResultContractDefinition` | — | Authoritative result JSON Schema metadata (normally set by `withResult`) |
 
 Browser-side validation is advisory. The scheduler validates the serialized payload again before
 any persistence write. Schema or version drift is checked again before invocation and does not
