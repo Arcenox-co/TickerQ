@@ -297,11 +297,11 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         // Fetch the direct parent's committed result (if any) before invoking the function so the
         // body can read it. Roots (no ParentId) and parents that published none yield null. A cron
         // occurrence's parent is the cron definition, which never publishes a result.
-        var parentResult = context.ParentId.HasValue
+        var parentResult = context.ParentResultEnvelope ?? (context.ParentId.HasValue
             ? await _internalTickerManager
                 .GetParentResultAsync(context.ParentId.Value, context.Type, CancellationToken.None)
                 .ConfigureAwait(false)
-            : null;
+            : null);
 
         var tickerFunctionContext = new TickerFunctionContext
         {

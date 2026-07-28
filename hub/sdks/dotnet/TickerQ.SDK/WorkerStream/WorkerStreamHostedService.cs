@@ -447,6 +447,7 @@ internal sealed class WorkerStreamHostedService : BackgroundService
                 ExecutionTime = req.ScheduledFor?.ToDateTime() ?? DateTime.UtcNow,
                 RunCondition = RunCondition.OnSuccess
             };
+            WorkerResultEnvelopeMapper.ApplyParentResult(req, function);
 
             if (TickerFunctionProvider.TickerFunctions.TryGetValue(function.FunctionName, out var item))
             {
@@ -469,23 +470,8 @@ internal sealed class WorkerStreamHostedService : BackgroundService
             }
             finally { semaphore?.Release(); }
 
-            // cancelled=true tells the scheduler to land the row as Cancelled
-            // instead of Failed (Success=false alone maps to Failed).
-            // ExecuteTaskAsync swallows user exceptions internally and writes the
-            // outcome onto function.Status — inspect it instead of relying on a
-            // thrown exception.
-            if (executionCts.IsCancellationRequested)
-            {
-                result = new ExecutionResult { RequestId = req.RequestId, Success = false, Cancelled = true, Error = "Cancelled by dashboard" };
-            }
-            else if (function.Status == TickerStatus.Failed)
-            {
-                result = new ExecutionResult { RequestId = req.RequestId, Success = false, Error = function.ExceptionDetails ?? "Function execution failed" };
-            }
-            else
-            {
-                result = new ExecutionResult { RequestId = req.RequestId, Success = true };
-            }
+            result = WorkerResultEnvelopeMapper.CreateExecutionResult(
+                req.RequestId, function, executionCts.IsCancellationRequested);
         }
         catch (OperationCanceledException) when (executionCts.IsCancellationRequested)
         {

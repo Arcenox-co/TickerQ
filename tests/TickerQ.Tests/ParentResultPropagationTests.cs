@@ -214,6 +214,30 @@ public sealed class ParentResultPropagationTests : IDisposable
     }
 
     [Fact]
+    public async Task PreloadedTransportParentResult_IsUsedWithoutProviderLookup()
+    {
+        var id = await AddOwnedTicker();
+        ResultPayload seen = null;
+        var ctx = await BuildOwnedContext(id, (_, _, c) =>
+        {
+            seen = c.GetParentResult(ResultJsonContext.Default.ResultPayload);
+            return Task.CompletedTask;
+        }, parentId: Guid.NewGuid());
+        ctx.ParentResultEnvelope = new TickerResultEnvelope(
+            JsonSerializer.SerializeToUtf8Bytes(
+                new ResultPayload { Value = 77, Label = "transport" },
+                ResultJsonContext.Default.ResultPayload),
+            TickerResultEnvelope.CurrentVersion,
+            "application/json");
+
+        await Run(ctx);
+
+        Assert.NotNull(seen);
+        Assert.Equal(77, seen.Value);
+        Assert.Equal("transport", seen.Label);
+    }
+
+    [Fact]
     public async Task Root_Has_No_ParentResult()
     {
         var id = await AddOwnedTicker();

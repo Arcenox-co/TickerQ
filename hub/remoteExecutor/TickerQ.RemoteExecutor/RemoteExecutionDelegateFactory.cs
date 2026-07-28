@@ -5,6 +5,7 @@ using TickerQ.RemoteExecutor.Logging;
 using TickerQ.RemoteExecutor.TunnelClient;
 using TickerQ.RemoteExecutor.WorkerStream;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Interfaces;
@@ -127,19 +128,7 @@ internal static class RemoteExecutionDelegateFactory
 
             Console.WriteLine($"[DBG-DLG] Dispatching {context.FunctionName} ({context.Id}): retries={context.Retries} intervals=[{(context.RetryIntervals == null ? "null" : string.Join(",", context.RetryIntervals))}]");
 
-            var execute = new ExecuteFunction
-            {
-                TickerId = context.Id.ToString(),
-                FunctionName = context.FunctionName ?? string.Empty,
-                Type = (int)context.Type,
-                RetryCount = context.RetryCount,
-                IsDue = false,
-                ScheduledFor = Timestamp.FromDateTime(DateTime.SpecifyKind(context.ScheduledFor, DateTimeKind.Utc)),
-                RequestPayload = payload != null ? ByteString.CopyFrom(payload) : ByteString.Empty,
-                Retries = context.Retries,
-            };
-            if (context.RetryIntervals is { Length: > 0 })
-                execute.RetryIntervalsSeconds.AddRange(context.RetryIntervals);
+            var execute = CreateExecuteFunction(context, payload);
 
             var dispatchStart = DateTimeOffset.UtcNow;
             ExecutionResult result;
@@ -192,18 +181,32 @@ internal static class RemoteExecutionDelegateFactory
                 });
             }
 
-            if (!result.Success)
-            {
-                // Cancellation must surface as TaskCanceledException so the
-                // scheduler's local task handler maps it to TickerStatus.Cancelled
-                // instead of Failed. Without this branch, every Success=false
-                // result lands as Failed even when the user clicked Cancel.
-                if (result.Cancelled)
-                    throw new TaskCanceledException(
-                        string.IsNullOrEmpty(result.Error) ? "Cancelled by dashboard" : result.Error);
-                throw new InvalidOperationException(
-                    string.IsNullOrEmpty(result.Error) ? "Worker reported execution failure" : result.Error);
-            }
+            // Cancellation dominates contradictory flags; only an unambiguously successful
+            // response may stage a result in Core's runtime-owned sink.
+            WorkerResultEnvelopeMapper.ValidateAndStageResult(result, context);
         };
+    }
+
+    internal static ExecuteFunction CreateExecuteFunction(TickerFunctionContext context, byte[]? payload)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var execute = new ExecuteFunction
+        {
+            TickerId = context.Id.ToString(),
+            FunctionName = context.FunctionName ?? string.Empty,
+            Type = (int)context.Type,
+            RetryCount = context.RetryCount,
+            IsDue = context.IsDue,
+            ScheduledFor = Timestamp.FromDateTime(
+                DateTime.SpecifyKind(context.ScheduledFor, DateTimeKind.Utc)),
+            RequestPayload = payload is not null ? ByteString.CopyFrom(payload) : ByteString.Empty,
+            Retries = context.Retries
+        };
+        if (context.RetryIntervals is { Length: > 0 })
+            execute.RetryIntervalsSeconds.AddRange(context.RetryIntervals);
+        WorkerResultEnvelopeMapper.SetParentResult(execute, context.ParentResultEnvelope);
+        if (context.ParentId.HasValue)
+            execute.ParentId = context.ParentId.Value.ToString();
+        return execute;
     }
 }

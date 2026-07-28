@@ -64,6 +64,13 @@ namespace TickerQ.Utilities.Models
         /// </summary>
         [JsonIgnore]
         public TickerResultEnvelope ResultEnvelope { get; set; }
+        /// <summary>
+        /// Direct parent's already-validated committed result supplied by an execution transport.
+        /// When present, the runtime consumes this snapshot instead of querying local persistence.
+        /// Execution-only and never serialized as part of the function context.
+        /// </summary>
+        [JsonIgnore]
+        public TickerResultEnvelope ParentResultEnvelope { get; set; }
         public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 
         [DynamicDependency(DynamicallyAccessedMemberTypes.PublicProperties, typeof(InternalFunctionContext))]
