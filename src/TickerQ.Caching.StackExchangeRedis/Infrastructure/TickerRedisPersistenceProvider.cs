@@ -294,7 +294,8 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
                 (int)TickerStatus.DueDone,
                 (int)TickerStatus.Failed,
                 (int)TickerStatus.Cancelled,
-                (int)TickerStatus.Skipped
+                (int)TickerStatus.Skipped,
+                Clock.UtcNow.ToUniversalTime().ToString("O")
             ]).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -308,10 +309,10 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         RetentionCutoffs cutoffs, int batchSize, RetentionCursor cursor,
         CancellationToken cancellationToken = default)
     {
-        await ReconcileRetentionIndexesAsync(batchSize, cancellationToken).ConfigureAwait(false);
+        var reconciliation = await ReconcileRetentionIndexesAsync(batchSize, cancellationToken).ConfigureAwait(false);
         var candidates = await GetRetentionCandidatesAsync(
             true, cutoffs, batchSize + 1, cancellationToken).ConfigureAwait(false);
-        var hasMore = candidates.Count > batchSize;
+        var hasMore = reconciliation.HasMore || candidates.Count > batchSize;
         var deleted = 0;
 
         foreach (var candidate in candidates.Take(batchSize))
@@ -357,10 +358,10 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     public async Task<RetentionBatchResult> DeleteEligibleCronTickerOccurrencesAsync(
         RetentionCutoffs cutoffs, int batchSize, CancellationToken cancellationToken = default)
     {
-        await ReconcileRetentionIndexesAsync(batchSize, cancellationToken).ConfigureAwait(false);
+        var reconciliation = await ReconcileRetentionIndexesAsync(batchSize, cancellationToken).ConfigureAwait(false);
         var candidates = await GetRetentionCandidatesAsync(
             false, cutoffs, batchSize + 1, cancellationToken).ConfigureAwait(false);
-        var hasMore = candidates.Count > batchSize;
+        var hasMore = reconciliation.HasMore || candidates.Count > batchSize;
         var deleted = 0;
 
         foreach (var candidate in candidates.Take(batchSize))
@@ -429,7 +430,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             cancellationToken.ThrowIfCancellationRequested();
             var entries = await Db.SortedSetRangeByScoreWithScoresAsync(
                 source.Key, double.NegativeInfinity, ToScore(source.Cutoff),
-                Exclude.Stop, Order.Ascending, 0, take).ConfigureAwait(false);
+                Exclude.None, Order.Ascending, 0, take).ConfigureAwait(false);
             foreach (var entry in entries)
             {
                 if (!Guid.TryParse(entry.Element.ToString(), out var id))
@@ -500,30 +501,49 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     private sealed record RetentionCandidate(
         Guid Id, DateTime ExecutedAt, DateTime Cutoff, int FirstStatus, int SecondStatus);
 
-    // One atomic SSCAN step repairs every retention sorted-set membership from the authoritative
-    // JSON document and checkpoints phase/cursor in Redis. A completed occurrence pass resets to
-    // the time stream, so repeated sweeps are idempotent and also repair later crashes/stale writes.
-    // Chained roots deliberately fail closed until Redis persists child rows independently.
+    // Bounded, resumable set scans repair known IDs and bounded keyspace scans recover JSON
+    // documents written before their authoritative ID/index updates. Four checkpointed phases make
+    // crash recovery idempotent without an unbounded KEYS operation.
     private const string ReconcileRetentionIndexesScript = """
         -- retention index reconciliation
-        local phase = redis.call('GET', KEYS[3]) or 'time'
+        local phase = redis.call('GET', KEYS[3]) or 'time_ids'
+        if phase == 'time' then phase = 'time_ids' end
+        if phase == 'occurrence' then phase = 'occurrence_ids' end
         local cursor = redis.call('GET', KEYS[4]) or '0'
-        local idsKey = phase == 'time' and KEYS[1] or KEYS[2]
-        local prefix = phase == 'time' and ARGV[2] or ARGV[3]
-        local firstIndex = phase == 'time' and 5 or 9
+        local isTime = string.sub(phase, 1, 4) == 'time'
+        local scanKeys = string.sub(phase, -5) == '_keys'
+        local idsKey = isTime and KEYS[1] or KEYS[2]
+        local prefix = isTime and ARGV[2] or ARGV[3]
+        local firstIndex = isTime and 5 or 9
         local maxRecords = tonumber(ARGV[1])
         local members = {}
         local nextCursor = cursor
+
         while #members < maxRecords and redis.call('LLEN', KEYS[13]) > 0 do
             table.insert(members, redis.call('LPOP', KEYS[13]))
         end
         if #members == 0 then
-            local scan = redis.call('SSCAN', idsKey, cursor, 'COUNT', maxRecords)
+            local scan
+            if scanKeys then
+                scan = redis.call('SCAN', cursor, 'MATCH', prefix .. '????????-????-????-????-????????????',
+                    'COUNT', maxRecords)
+            else
+                scan = redis.call('SSCAN', idsKey, cursor, 'COUNT', maxRecords)
+            end
             nextCursor = scan[1]
-            for index, id in ipairs(scan[2]) do
+            for index, value in ipairs(scan[2]) do
+                local id = scanKeys and string.sub(value, string.len(prefix) + 1) or value
                 if index <= maxRecords then table.insert(members, id)
                 else redis.call('RPUSH', KEYS[13], id) end
             end
+        end
+
+        local function normalizedDateTime(value)
+            local year, month, day, hour, minute, second, fraction = string.match(
+                value or '', '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)')
+            if not year then return nil end
+            fraction = string.sub((fraction or '') .. '0000000', 1, 7)
+            return year .. month .. day .. hour .. minute .. second .. fraction
         end
 
         local function dateTimeTicks(value)
@@ -545,6 +565,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
                 + second * 10000000 + tonumber(fraction)
         end
 
+        local now = normalizedDateTime(ARGV[9])
         for _, id in ipairs(members) do
             for index = firstIndex, firstIndex + 3 do
                 redis.call('ZREM', KEYS[index], id)
@@ -554,11 +575,14 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             if raw then
                 local ok, obj = pcall(cjson.decode, raw)
                 if ok then
+                    if scanKeys then redis.call('SADD', idsKey, id) end
+                    local lease = obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null
+                        and obj.LeaseUntil ~= '' and normalizedDateTime(obj.LeaseUntil) or nil
                     local eligible = obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null
                         and (obj.AcquisitionToken == nil or obj.AcquisitionToken == cjson.null or obj.AcquisitionToken == '')
-                        and (obj.LeaseUntil == nil or obj.LeaseUntil == cjson.null or obj.LeaseUntil == '')
-                    if phase == 'time' and obj.Children ~= nil and obj.Children ~= cjson.null
-                        and next(obj.Children) ~= nil then
+                        and (lease == nil or lease <= now)
+                    if isTime and ((obj.ParentId ~= nil and obj.ParentId ~= cjson.null and obj.ParentId ~= '')
+                        or (obj.Children ~= nil and obj.Children ~= cjson.null and next(obj.Children) ~= nil)) then
                         eligible = false
                     end
 
@@ -571,9 +595,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
                         elseif status == tonumber(ARGV[8]) then offset = 3 end
                         if offset ~= nil then
                             local ticks = dateTimeTicks(obj.ExecutedAt)
-                            if ticks ~= nil then
-                                redis.call('ZADD', KEYS[firstIndex + offset], ticks, id)
-                            end
+                            if ticks ~= nil then redis.call('ZADD', KEYS[firstIndex + offset], ticks, id) end
                         end
                     end
                 end
@@ -582,12 +604,10 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
 
         local completed = 0
         if nextCursor == '0' and redis.call('LLEN', KEYS[13]) == 0 then
-            if phase == 'time' then
-                phase = 'occurrence'
-            else
-                phase = 'time'
-                completed = 1
-            end
+            if phase == 'time_ids' then phase = 'time_keys'
+            elseif phase == 'time_keys' then phase = 'occurrence_ids'
+            elseif phase == 'occurrence_ids' then phase = 'occurrence_keys'
+            else phase = 'time_ids'; completed = 1 end
         end
         redis.call('SET', KEYS[3], phase)
         redis.call('SET', KEYS[4], nextCursor)
@@ -596,14 +616,26 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         """;
 
     private const string DeleteTimeTickerForRetentionScript = """
+        local function normalizedDateTime(value)
+            local year, month, day, hour, minute, second, fraction = string.match(
+                value or '', '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)')
+            if not year then return nil end
+            return year .. month .. day .. hour .. minute .. second
+                .. string.sub((fraction or '') .. '0000000', 1, 7)
+        end
         local raw = redis.call('GET', KEYS[1])
         if not raw then return 0 end
         local obj = cjson.decode(raw)
         local status = tonumber(obj.Status)
         if status ~= tonumber(ARGV[1]) and status ~= tonumber(ARGV[2]) then return 0 end
-        if obj.ExecutedAt == nil or obj.ExecutedAt == cjson.null or obj.ExecutedAt >= ARGV[3] then return 0 end
+        local executedAt = obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null
+            and normalizedDateTime(obj.ExecutedAt) or nil
+        if executedAt == nil or executedAt >= normalizedDateTime(ARGV[3]) then return 0 end
         if obj.AcquisitionToken ~= nil and obj.AcquisitionToken ~= cjson.null and obj.AcquisitionToken ~= '' then return 0 end
-        if obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null and obj.LeaseUntil ~= '' and obj.LeaseUntil > ARGV[4] then return 0 end
+        local leaseUntil = obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null
+            and obj.LeaseUntil ~= '' and normalizedDateTime(obj.LeaseUntil) or nil
+        if leaseUntil ~= nil and leaseUntil > normalizedDateTime(ARGV[4]) then return 0 end
+        if obj.ParentId ~= nil and obj.ParentId ~= cjson.null and obj.ParentId ~= '' then return 0 end
         if obj.Children ~= nil and obj.Children ~= cjson.null and next(obj.Children) ~= nil then return 0 end
         redis.call('DEL', KEYS[1])
         redis.call('SREM', KEYS[2], ARGV[5])
@@ -616,14 +648,25 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         """;
 
     private const string DeleteOccurrenceForRetentionScript = """
+        local function normalizedDateTime(value)
+            local year, month, day, hour, minute, second, fraction = string.match(
+                value or '', '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)')
+            if not year then return nil end
+            return year .. month .. day .. hour .. minute .. second
+                .. string.sub((fraction or '') .. '0000000', 1, 7)
+        end
         local raw = redis.call('GET', KEYS[1])
         if not raw then return 0 end
         local obj = cjson.decode(raw)
         local status = tonumber(obj.Status)
         if status ~= tonumber(ARGV[1]) and status ~= tonumber(ARGV[2]) then return 0 end
-        if obj.ExecutedAt == nil or obj.ExecutedAt == cjson.null or obj.ExecutedAt >= ARGV[3] then return 0 end
+        local executedAt = obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null
+            and normalizedDateTime(obj.ExecutedAt) or nil
+        if executedAt == nil or executedAt >= normalizedDateTime(ARGV[3]) then return 0 end
         if obj.AcquisitionToken ~= nil and obj.AcquisitionToken ~= cjson.null and obj.AcquisitionToken ~= '' then return 0 end
-        if obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null and obj.LeaseUntil ~= '' and obj.LeaseUntil > ARGV[4] then return 0 end
+        local leaseUntil = obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null
+            and obj.LeaseUntil ~= '' and normalizedDateTime(obj.LeaseUntil) or nil
+        if leaseUntil ~= nil and leaseUntil > normalizedDateTime(ARGV[4]) then return 0 end
         redis.call('DEL', KEYS[1])
         redis.call('SREM', KEYS[2], ARGV[5])
         redis.call('ZREM', KEYS[3], ARGV[5])

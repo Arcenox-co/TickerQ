@@ -334,6 +334,177 @@ public sealed class RedisRealScriptTests
         Assert.Equal(3, await _db.SortedSetLengthAsync(RedisKeyBuilder.TimeTickerRetentionSucceededKey));
     }
 
+    [Fact]
+    public async Task Retention_ChildShapedRowWithEmptyChildren_IsNeverIndexedReconciledOrDeleted_RealLua()
+    {
+        var childShaped = NewIdleTicker();
+        childShaped.Status = TickerStatus.Done;
+        childShaped.ExecutedAt = BaseNow.AddDays(-10);
+        childShaped.ParentId = Guid.NewGuid();
+        Assert.Empty(childShaped.Children);
+
+        await _provider.AddTimeTickers([childShaped], CancellationToken.None);
+        Assert.Null(await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.TimeTickerRetentionSucceededKey, childShaped.Id.ToString()));
+
+        // A stale index must not bypass the authoritative final-delete guard. Put reconciliation
+        // on the empty occurrence-key phase so this time row reaches the real delete Lua unchanged.
+        await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationPhaseKey, "occurrence_keys");
+        await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationCursorKey, "0");
+        await _db.SortedSetAddAsync(RedisKeyBuilder.TimeTickerRetentionSucceededKey,
+            childShaped.Id.ToString(), childShaped.ExecutedAt.Value.Ticks);
+        var deletion = await _provider.DeleteEligibleTimeTickerChainsAsync(
+            new RetentionCutoffs(BaseNow.AddDays(-7), null, null, null), 10,
+            RetentionCursor.Start, CancellationToken.None);
+        Assert.Equal(0, deletion.Deleted);
+        Assert.NotNull(await _provider.GetTimeTickerById(childShaped.Id, CancellationToken.None));
+
+        await _provider.ReconcileRetentionIndexesAsync(10, CancellationToken.None);
+        Assert.Null(await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.TimeTickerRetentionSucceededKey, childShaped.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task Retention_TokenFreeExpiredLeaseIsDeletedButLiveLeaseIsExcluded_ForTimeAndCron_RealLua()
+    {
+        var expiredTime = NewIdleTicker();
+        expiredTime.Status = TickerStatus.Done;
+        expiredTime.ExecutedAt = BaseNow.AddDays(-10);
+        expiredTime.LeaseUntil = BaseNow;
+        var liveTime = NewIdleTicker();
+        liveTime.Status = TickerStatus.Done;
+        liveTime.ExecutedAt = BaseNow.AddDays(-10);
+        liveTime.LeaseUntil = BaseNow.AddTicks(1);
+        await _provider.AddTimeTickers([expiredTime, liveTime], CancellationToken.None);
+
+        var cron = new CronTickerEntity { Id = Guid.NewGuid(), Function = "LeaseCron", Expression = "* * * * *", Request = [] };
+        await _provider.InsertCronTickers([cron], CancellationToken.None);
+        CronTickerOccurrenceEntity<CronTickerEntity> Occurrence(DateTime leaseUntil) => new()
+        {
+            Id = Guid.NewGuid(), CronTickerId = cron.Id, Status = TickerStatus.Failed,
+            ExecutionTime = BaseNow.AddDays(-10), ExecutedAt = BaseNow.AddDays(-10),
+            LeaseUntil = leaseUntil, CreatedAt = BaseNow.AddDays(-10), UpdatedAt = BaseNow.AddDays(-10)
+        };
+        var expiredOccurrence = Occurrence(BaseNow);
+        var liveOccurrence = Occurrence(BaseNow.AddTicks(1));
+        await _provider.InsertCronTickerOccurrences([expiredOccurrence, liveOccurrence], CancellationToken.None);
+
+        Assert.NotNull(await _db.SortedSetScoreAsync(RedisKeyBuilder.TimeTickerRetentionSucceededKey, expiredTime.Id.ToString()));
+        Assert.Null(await _db.SortedSetScoreAsync(RedisKeyBuilder.TimeTickerRetentionSucceededKey, liveTime.Id.ToString()));
+        Assert.NotNull(await _db.SortedSetScoreAsync(RedisKeyBuilder.CronOccurrenceRetentionFailedKey, expiredOccurrence.Id.ToString()));
+        Assert.Null(await _db.SortedSetScoreAsync(RedisKeyBuilder.CronOccurrenceRetentionFailedKey, liveOccurrence.Id.ToString()));
+
+        Assert.Equal(1, (await _provider.DeleteEligibleTimeTickerChainsAsync(
+            new RetentionCutoffs(BaseNow.AddDays(-7), null, null, null), 10,
+            RetentionCursor.Start, CancellationToken.None)).Deleted);
+        Assert.Equal(1, (await _provider.DeleteEligibleCronTickerOccurrencesAsync(
+            new RetentionCutoffs(null, BaseNow.AddDays(-7), null, null), 10,
+            CancellationToken.None)).Deleted);
+        Assert.Null(await _provider.GetTimeTickerById(expiredTime.Id, CancellationToken.None));
+        Assert.NotNull(await _provider.GetTimeTickerById(liveTime.Id, CancellationToken.None));
+        Assert.NotNull((await _provider.GetAllCronTickerOccurrences(x => x.Id == liveOccurrence.Id, CancellationToken.None)).SingleOrDefault());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1234567)]
+    public async Task Retention_StrictTickCutoff_DeletesCutoffMinusOneTickButRetainsEquality_RealLua(int fractionalTicks)
+    {
+        var cutoff = BaseNow.AddTicks(fractionalTicks);
+        var equal = NewIdleTicker();
+        equal.Status = TickerStatus.Done;
+        equal.ExecutedAt = cutoff;
+        var older = NewIdleTicker();
+        older.Status = TickerStatus.Done;
+        older.ExecutedAt = cutoff.AddTicks(-1);
+        await _provider.AddTimeTickers([equal, older], CancellationToken.None);
+
+        var cron = new CronTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "TickPrecisionCron", Expression = "* * * * *", Request = []
+        };
+        await _provider.InsertCronTickers([cron], CancellationToken.None);
+        CronTickerOccurrenceEntity<CronTickerEntity> Occurrence(DateTime executedAt) => new()
+        {
+            Id = Guid.NewGuid(), CronTickerId = cron.Id, Status = TickerStatus.Done,
+            ExecutionTime = executedAt, ExecutedAt = executedAt,
+            CreatedAt = BaseNow.AddDays(-10), UpdatedAt = BaseNow.AddDays(-10)
+        };
+        var equalOccurrence = Occurrence(cutoff);
+        var olderOccurrence = Occurrence(cutoff.AddTicks(-1));
+        await _provider.InsertCronTickerOccurrences([equalOccurrence, olderOccurrence], CancellationToken.None);
+
+        var result = await _provider.DeleteEligibleTimeTickerChainsAsync(
+            new RetentionCutoffs(cutoff, null, null, null), 10,
+            RetentionCursor.Start, CancellationToken.None);
+        var occurrenceResult = await _provider.DeleteEligibleCronTickerOccurrencesAsync(
+            new RetentionCutoffs(cutoff, null, null, null), 10, CancellationToken.None);
+
+        Assert.Equal(1, result.Deleted);
+        Assert.Equal(1, occurrenceResult.Deleted);
+        Assert.NotNull(await _provider.GetTimeTickerById(equal.Id, CancellationToken.None));
+        Assert.Null(await _provider.GetTimeTickerById(older.Id, CancellationToken.None));
+        var remainingOccurrences = await _provider.GetAllCronTickerOccurrences(
+            x => x.CronTickerId == cron.Id, CancellationToken.None);
+        Assert.Contains(remainingOccurrences, x => x.Id == equalOccurrence.Id);
+        Assert.DoesNotContain(remainingOccurrences, x => x.Id == olderOccurrence.Id);
+    }
+
+    [Fact]
+    public async Task Retention_ReconciliationHasMorePropagatesUntilMoreThanTwoBatchesAreRecoveredAndDeleted_RealLua()
+    {
+        var tickers = Enumerable.Range(0, 5).Select(i =>
+        {
+            var ticker = NewIdleTicker();
+            ticker.Status = TickerStatus.Done;
+            ticker.ExecutedAt = BaseNow.AddDays(-10).AddTicks(i);
+            return ticker;
+        }).ToArray();
+        await _provider.AddTimeTickers(tickers, CancellationToken.None);
+        await _db.KeyDeleteAsync(RedisKeyBuilder.TimeTickerRetentionSucceededKey);
+
+        var calls = 0;
+        var deleted = 0;
+        RetentionChainBatchResult batch;
+        do
+        {
+            batch = await _provider.DeleteEligibleTimeTickerChainsAsync(
+                new RetentionCutoffs(BaseNow.AddDays(-7), null, null, null), 1,
+                RetentionCursor.Start, CancellationToken.None);
+            calls++;
+            deleted += batch.Deleted;
+            Assert.True(calls < 30, "reconciliation/deletion must converge");
+        } while (batch.HasMore);
+
+        Assert.True(calls > 2);
+        Assert.Equal(tickers.Length, deleted);
+        foreach (var ticker in tickers)
+            Assert.Null(await _provider.GetTimeTickerById(ticker.Id, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Retention_JsonOnlyRowWithoutIdSetOrIndex_IsDiscoveredRepairedAndDeleted_RealLua()
+    {
+        var ticker = NewIdleTicker();
+        ticker.Status = TickerStatus.Done;
+        ticker.ExecutedAt = BaseNow.AddDays(-10);
+        await _provider.AddTimeTickers([ticker], CancellationToken.None);
+        await _db.SetRemoveAsync(RedisKeyBuilder.TimeTickerIdsKey, ticker.Id.ToString());
+        await _db.SortedSetRemoveAsync(RedisKeyBuilder.TimeTickerRetentionSucceededKey, ticker.Id.ToString());
+
+        var deleted = 0;
+        for (var i = 0; i < 30 && deleted == 0; i++)
+        {
+            var batch = await _provider.DeleteEligibleTimeTickerChainsAsync(
+                new RetentionCutoffs(BaseNow.AddDays(-7), null, null, null), 1,
+                RetentionCursor.Start, CancellationToken.None);
+            deleted += batch.Deleted;
+        }
+
+        Assert.Equal(1, deleted);
+        Assert.Null(await _provider.GetTimeTickerById(ticker.Id, CancellationToken.None));
+    }
+
     // -------------------------------------------------------------------------
     // 5. RecoverStale relies on lexicographic ordering of fixed-width timestamps
     //    (LeaseUntil / LockedAt). Trailing-zero trimming makes "...00Z" sort AFTER

@@ -1447,28 +1447,41 @@ namespace TickerQ.Provider
             return Task.FromResult(result);
         }
 
-        // Depth-first collect of a whole subtree, returning false as soon as ANY node is ineligible so the
-        // caller retains the entire chain. Node values are read fresh from the store (recheck at delete time).
+        // Collect a whole subtree with an EXPLICIT stack (never recursion) so an arbitrarily deep
+        // chain cannot overflow the call stack. Returns false as soon as ANY node is ineligible,
+        // missing, or the bound is exceeded so the caller retains the entire chain intact. A visited
+        // set guards against cycles / DAG re-entry (each node counted and collected at most once).
+        // Node values are read fresh from the store (recheck at delete time).
         private bool TryCollectEligibleSubtree(
-            Guid nodeId, RetentionCutoffs cutoffs, DateTime now, int maxNodes,
+            Guid rootId, RetentionCutoffs cutoffs, DateTime now, int maxNodes,
             List<TTimeTicker> collected, CancellationToken cancellationToken)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (collected.Count >= maxNodes)
-                return false;
+            var stack = new Stack<Guid>();
+            var visited = new HashSet<Guid>();
+            stack.Push(rootId);
 
-            if (!TimeTickers.TryGetValue(nodeId, out var node))
-                return false; // cannot verify → retain
+            while (stack.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
 
-            if (!IsTimeNodeEligibleForRetention(node, cutoffs, now))
-                return false;
+                var nodeId = stack.Pop();
+                if (!visited.Add(nodeId))
+                    continue; // already reached via another edge — do not re-collect or double count
 
-            collected.Add(node);
+                if (collected.Count >= maxNodes)
+                    return false; // bound exceeded → fail closed, retain whole chain
 
-            foreach (var childId in GetChildrenIds(nodeId))
-                if (!TryCollectEligibleSubtree(
-                        childId, cutoffs, now, maxNodes, collected, cancellationToken))
+                if (!TimeTickers.TryGetValue(nodeId, out var node))
+                    return false; // cannot verify → retain
+
+                if (!IsTimeNodeEligibleForRetention(node, cutoffs, now))
                     return false;
+
+                collected.Add(node);
+
+                foreach (var childId in GetChildrenIds(nodeId))
+                    stack.Push(childId);
+            }
 
             return true;
         }

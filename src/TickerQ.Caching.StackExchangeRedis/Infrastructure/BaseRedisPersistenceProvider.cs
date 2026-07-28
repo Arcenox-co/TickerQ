@@ -74,7 +74,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             jsonOptions.TypeInfoResolverChain.Insert(0, redisOptions.JsonSerializerContext);
 
         Serializer = new RedisSerializer(db, jsonOptions, logger ?? throw new ArgumentNullException(nameof(logger)));
-        IndexManager = new RedisIndexManager<TTimeTicker, TCronTicker>(db, LockHolder);
+        IndexManager = new RedisIndexManager<TTimeTicker, TCronTicker>(db, LockHolder, Clock);
     }
 
     public bool SupportsLeaseBasedRecovery => true;

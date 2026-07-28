@@ -497,4 +497,79 @@ public class TickerInMemoryRetentionTests
         Assert.Equal(1, second.Deleted);
         Assert.False(second.HasMore);
     }
+
+    // A near-10k-deep single chain must be traversed without overflowing the call stack.
+    // A recursive subtree walk overflows here (each level is a frame); an explicit
+    // stack/queue traversal collects and deletes the whole chain.
+    [Fact]
+    public async Task DeepChain_NearTenThousand_IsCollectedWithoutStackOverflow()
+    {
+        const int depth = 9_999;
+        var nodes = new List<RetTime>(depth + 1);
+        var root = Node(TickerStatus.Done, Ago(10));
+        nodes.Add(root);
+        var parentId = root.Id;
+        for (var i = 0; i < depth; i++)
+        {
+            var child = Node(TickerStatus.Done, Ago(10), parentId: parentId);
+            nodes.Add(child);
+            parentId = child.Id;
+        }
+        await _provider.AddTimeTickers(nodes.ToArray(), CancellationToken.None);
+
+        var cutoffs = new RetentionCutoffs(Ago(7), null, null, null, maxNodesPerChain: depth + 10);
+        var result = await Prune(cutoffs, batch: 10);
+
+        Assert.Equal(depth + 1, result.Deleted);
+        Assert.False(await Exists(root.Id));
+    }
+
+    // A chain strictly larger than MaxNodesPerChain must fail closed: the entire chain is
+    // retained (never a partial delete) once the bound is exceeded.
+    [Fact]
+    public async Task Chain_LargerThanMaxNodesPerChain_IsRetainedIntact()
+    {
+        var root = Node(TickerStatus.Done, Ago(10));
+        var nodes = new List<RetTime> { root };
+        var parentId = root.Id;
+        for (var i = 0; i < 9; i++)
+        {
+            var child = Node(TickerStatus.Done, Ago(10), parentId: parentId);
+            nodes.Add(child);
+            parentId = child.Id;
+        }
+        await _provider.AddTimeTickers(nodes.ToArray(), CancellationToken.None);
+
+        var cutoffs = new RetentionCutoffs(Ago(7), null, null, null, maxNodesPerChain: 5);
+        var result = await Prune(cutoffs, batch: 10);
+
+        Assert.Equal(0, result.Deleted);
+        foreach (var n in nodes)
+            Assert.True(await Exists(n.Id));
+    }
+
+    [Fact]
+    public async Task DeepChain_CancelledTraversal_ThrowsAndRetainsEveryNode()
+    {
+        var root = Node(TickerStatus.Done, Ago(10));
+        var nodes = new List<RetTime> { root };
+        var parentId = root.Id;
+        for (var i = 0; i < 1_000; i++)
+        {
+            var child = Node(TickerStatus.Done, Ago(10), parentId: parentId);
+            nodes.Add(child);
+            parentId = child.Id;
+        }
+        await _provider.AddTimeTickers(nodes.ToArray(), CancellationToken.None);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            _provider.DeleteEligibleTimeTickerChainsAsync(
+                new RetentionCutoffs(Ago(7), null, null, null, maxNodesPerChain: 2_000),
+                10, RetentionCursor.Start, cancellation.Token));
+
+        foreach (var node in nodes)
+            Assert.True(await Exists(node.Id));
+    }
 }

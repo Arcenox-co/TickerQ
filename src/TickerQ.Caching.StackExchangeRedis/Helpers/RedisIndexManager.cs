@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using StackExchange.Redis;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Interfaces;
 using static TickerQ.Caching.StackExchangeRedis.Helpers.RedisKeyBuilder;
 
 namespace TickerQ.Caching.StackExchangeRedis.Helpers;
@@ -15,11 +16,13 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
 {
     private readonly IDatabase _db;
     private readonly string _lockHolder;
+    private readonly ITickerClock _clock;
 
-    internal RedisIndexManager(IDatabase db, string lockHolder)
+    internal RedisIndexManager(IDatabase db, string lockHolder, ITickerClock clock)
     {
         _db = db;
         _lockHolder = lockHolder;
+        _clock = clock;
     }
 
     internal Task AddTimeTickerIndexesAsync(TTimeTicker ticker)
@@ -32,7 +35,7 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
             ticker.ExecutionTime.HasValue && CanAcquire(ticker.Status, ticker.LockHolder, _lockHolder)
                 ? batch.SortedSetAddAsync(TimeTickerPendingKey, id, ToScore(ticker.ExecutionTime.Value))
                 : batch.SortedSetRemoveAsync(TimeTickerPendingKey, id)
-        }.Cast<Task>().Concat(UpdateTimeRetentionIndexes(batch, ticker, id)).ToArray();
+        }.Cast<Task>().Concat(UpdateTimeRetentionIndexes(batch, ticker, id, _clock.UtcNow)).ToArray();
         batch.Execute();
         return Task.WhenAll(tasks);
     }
@@ -67,7 +70,7 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
             CanAcquire(occurrence.Status, occurrence.LockHolder, _lockHolder)
                 ? batch.SortedSetAddAsync(CronOccurrencePendingKey, id, ToScore(occurrence.ExecutionTime))
                 : batch.SortedSetRemoveAsync(CronOccurrencePendingKey, id)
-        }.Cast<Task>().Concat(UpdateOccurrenceRetentionIndexes(batch, occurrence, id)).ToArray();
+        }.Cast<Task>().Concat(UpdateOccurrenceRetentionIndexes(batch, occurrence, id, _clock.UtcNow)).ToArray();
         batch.Execute();
         return Task.WhenAll(tasks);
     }
@@ -98,13 +101,15 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
         await _db.KeyDeleteAsync(reverseKey).ConfigureAwait(false);
     }
 
-    private static Task[] UpdateTimeRetentionIndexes(IBatch batch, TTimeTicker ticker, RedisValue id)
+    private static Task[] UpdateTimeRetentionIndexes(
+        IBatch batch, TTimeTicker ticker, RedisValue id, DateTime now)
     {
         var tasks = RemoveTimeRetentionIndexes(batch, id);
         // A Redis time-ticker chain is one root JSON document. Child state is not yet
         // independently persisted, so chained roots fail closed and are never indexed.
-        if (ticker.Children is { Count: > 0 } || ticker.ExecutedAt is not { } executedAt ||
-            ticker.AcquisitionToken.HasValue || ticker.LeaseUntil.HasValue)
+        if (ticker.ParentId.HasValue || ticker.Children is { Count: > 0 } ||
+            ticker.ExecutedAt is not { } executedAt || ticker.AcquisitionToken.HasValue ||
+            ticker.LeaseUntil is { } leaseUntil && leaseUntil > now)
             return tasks;
 
         var key = TimeRetentionKey(ticker.Status);
@@ -114,11 +119,11 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
     }
 
     private static Task[] UpdateOccurrenceRetentionIndexes(
-        IBatch batch, CronTickerOccurrenceEntity<TCronTicker> occurrence, RedisValue id)
+        IBatch batch, CronTickerOccurrenceEntity<TCronTicker> occurrence, RedisValue id, DateTime now)
     {
         var tasks = RemoveOccurrenceRetentionIndexes(batch, id);
         if (occurrence.ExecutedAt is not { } executedAt || occurrence.AcquisitionToken.HasValue ||
-            occurrence.LeaseUntil.HasValue)
+            occurrence.LeaseUntil is { } leaseUntil && leaseUntil > now)
             return tasks;
 
         var key = OccurrenceRetentionKey(occurrence.Status);
