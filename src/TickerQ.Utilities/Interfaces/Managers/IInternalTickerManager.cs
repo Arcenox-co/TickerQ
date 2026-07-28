@@ -42,5 +42,25 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task<TickerExecutionLease[]> GetLostLeaseTickerIdsAsync(IReadOnlyCollection<AcquisitionLease> timeTickerLeases, IReadOnlyCollection<AcquisitionLease> occurrenceLeases, CancellationToken cancellationToken = default);
         /// <summary>One watchdog sweep: applies OnStale to expired-lease InProgress tickers.</summary>
         Task<StaleTickerRecoveryResult> RecoverStaleTickersAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>Whether the configured persistence provider supports built-in job retention.</summary>
+        bool SupportsRetention => false;
+
+        /// <summary>
+        /// One bounded time-chain retention batch starting after <paramref name="cursor"/>: deletes fully
+        /// eligible chains and returns rows removed, whether more candidates remain, and the keyset cursor
+        /// to resume from (wraps to <see cref="RetentionCursor.Start"/> at end of traversal). The cursor
+        /// advances past blocked chains so they cannot starve later eligible chains.
+        /// </summary>
+        Task<RetentionChainBatchResult> SweepTimeChainsAsync(
+            RetentionCutoffs cutoffs, int batchSize, RetentionCursor cursor, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// One bounded cron-occurrence retention batch: deletes up to <paramref name="batchSize"/> eligible
+        /// occurrences (progression is inherent — deleted rows do not reappear) and reports whether more
+        /// remain. Cron definitions are never deleted.
+        /// </summary>
+        Task<RetentionBatchResult> SweepCronOccurrencesAsync(
+            RetentionCutoffs cutoffs, int batchSize, CancellationToken cancellationToken = default);
     }
 }

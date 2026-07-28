@@ -131,6 +131,58 @@ namespace TickerQ.Utilities.Interfaces
             => Task.FromResult(new StaleTickerRecoveryResult());
         #endregion
         
+        #region Retention
+        /// <summary>
+        /// Whether this provider implements the built-in job-retention delete methods below with
+        /// semantically-correct, bounded, concurrency-safe behavior. Defaults to <c>false</c> so a
+        /// third-party provider that has not implemented retention fails closed: if retention is
+        /// explicitly configured against it, startup surfaces a clear error instead of silently
+        /// deleting nothing. Built-in providers (EF Core, MongoDB, Redis, in-memory) override to <c>true</c>.
+        /// </summary>
+        bool SupportsRetention => false;
+
+        /// <summary>
+        /// Examines up to <paramref name="batchSize"/> candidate root chains starting strictly after
+        /// <paramref name="cursor"/> (keyset ordering by <c>(ExecutedAt, Id)</c> ascending), deletes those
+        /// that are fully eligible, and returns the rows removed, whether more candidates remain, and the
+        /// keyset position to resume from.
+        /// <para>
+        /// A chain is deleted only when EVERY node in its arbitrary-depth subtree is individually
+        /// eligible: terminal status, <c>ExecutedAt</c> non-null and strictly older than the cutoff for
+        /// that node's status (<see cref="RetentionCutoffs.ForStatus"/>), and not actively owned (no live
+        /// <c>AcquisitionToken</c> generation and no still-live <c>LeaseUntil</c>; a stale <c>LockHolder</c>
+        /// left on a terminal row is NOT an active claim). If any node is ineligible — including a status
+        /// whose window is null — the WHOLE chain is retained. Deletion is all-or-nothing per chain and must
+        /// re-check eligibility at delete time so a concurrently reactivated chain is never partially erased.
+        /// </para>
+        /// <para>
+        /// The cursor advances past examined-but-retained (blocked) chains so they cannot starve later
+        /// eligible chains; when traversal reaches the end the returned
+        /// <see cref="RetentionChainBatchResult.NextCursor"/> is <see cref="RetentionCursor.Start"/> so a
+        /// later sweep wraps and reconsiders chains that became eligible behind the previous position. Cron
+        /// ticker definitions are never touched.
+        /// </para>
+        /// The default FAILS CLOSED: providers that do not support retention must not silently no-op.
+        /// </summary>
+        Task<RetentionChainBatchResult> DeleteEligibleTimeTickerChainsAsync(
+            RetentionCutoffs cutoffs, int batchSize, RetentionCursor cursor, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(
+                "This persistence provider does not support built-in job retention. " +
+                "Remove ConfigureJobRetention or use a provider that implements SupportsRetention.");
+
+        /// <summary>
+        /// Deletes up to <paramref name="batchSize"/> eligible historical cron-ticker occurrence rows and
+        /// returns the number removed plus whether more remain. Eligible = terminal status, <c>ExecutedAt</c>
+        /// non-null and older than the matching cutoff, and not active/locked/owned/leased. Cron ticker
+        /// <b>definitions</b> are never deleted. Eligibility is re-checked at delete time. Fails closed by default.
+        /// </summary>
+        Task<RetentionBatchResult> DeleteEligibleCronTickerOccurrencesAsync(
+            RetentionCutoffs cutoffs, int batchSize, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(
+                "This persistence provider does not support built-in job retention. " +
+                "Remove ConfigureJobRetention or use a provider that implements SupportsRetention.");
+        #endregion
+
         #region Queryable
         ITickerQueryable<TTimeTicker> TimeTickersQuery();
         ITickerQueryable<TCronTicker> CronTickersQuery();

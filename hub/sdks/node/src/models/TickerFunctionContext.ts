@@ -8,6 +8,7 @@ import { TickerType } from '../enums';
  */
 export interface TickerFunctionContext<TRequest = never> {
     id: string;
+    parentId: string | null;
     type: TickerType;
     retryCount: number;
     isDue: boolean;

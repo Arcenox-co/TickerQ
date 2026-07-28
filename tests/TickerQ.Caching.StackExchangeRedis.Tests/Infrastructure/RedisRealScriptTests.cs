@@ -213,6 +213,68 @@ public sealed class RedisRealScriptTests
         Assert.Equal(TickerStatus.Done, persisted!.Status);
     }
 
+    [Fact]
+    public async Task Retention_DeletesStandaloneButRetainsChainedRoot_RealLua()
+    {
+        var standalone = NewIdleTicker();
+        standalone.Status = TickerStatus.Done;
+        standalone.ExecutedAt = BaseNow.AddDays(-10);
+
+        var chained = NewIdleTicker();
+        chained.Status = TickerStatus.Done;
+        chained.ExecutedAt = BaseNow.AddDays(-10);
+        var child = NewIdleTicker();
+        child.Status = TickerStatus.Done;
+        child.ExecutedAt = BaseNow.AddDays(-10);
+        chained.Children.Add(child);
+
+        await _provider.AddTimeTickers([standalone, chained], CancellationToken.None);
+        var result = await _provider.DeleteEligibleTimeTickerChainsAsync(
+            new RetentionCutoffs(BaseNow.AddDays(-7), null, null, null),
+            10,
+            RetentionCursor.Start,
+            CancellationToken.None);
+
+        Assert.Equal(1, result.Deleted);
+        Assert.Null(await _provider.GetTimeTickerById(standalone.Id, CancellationToken.None));
+        Assert.NotNull(await _provider.GetTimeTickerById(chained.Id, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Retention_DeletesOccurrenceButPreservesCronDefinition_RealLua()
+    {
+        var cron = new CronTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = "RetentionCron",
+            Expression = "*/5 * * * *",
+            CreatedAt = BaseNow.AddDays(-20),
+            UpdatedAt = BaseNow.AddDays(-20),
+            Request = []
+        };
+        await _provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
+        {
+            Id = Guid.NewGuid(),
+            CronTickerId = cron.Id,
+            ExecutionTime = BaseNow.AddDays(-10),
+            Status = TickerStatus.Failed,
+            ExecutedAt = BaseNow.AddDays(-10),
+            CreatedAt = BaseNow.AddDays(-10),
+            UpdatedAt = BaseNow.AddDays(-10)
+        };
+        await _provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+
+        var result = await _provider.DeleteEligibleCronTickerOccurrencesAsync(
+            new RetentionCutoffs(null, BaseNow.AddDays(-7), null, null),
+            10,
+            CancellationToken.None);
+
+        Assert.Equal(1, result.Deleted);
+        Assert.NotNull(await _provider.GetCronTickerById(cron.Id, CancellationToken.None));
+        Assert.Empty(await _provider.GetAllCronTickerOccurrences(_ => true, CancellationToken.None));
+    }
+
     // -------------------------------------------------------------------------
     // 5. RecoverStale relies on lexicographic ordering of fixed-width timestamps
     //    (LeaseUntil / LockedAt). Trailing-zero trimming makes "...00Z" sort AFTER

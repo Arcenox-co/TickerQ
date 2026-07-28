@@ -38,6 +38,13 @@ namespace TickerQ.MongoDB.Indexes
                     new CreateIndexOptions { Name = "IX_TimeTicker_Status_ExecutionTime" }),
                 new CreateIndexModel<TTimeTicker>(keys.Ascending(x => x.ParentId),
                     new CreateIndexOptions { Name = "IX_TimeTicker_ParentId", Sparse = true }),
+                new CreateIndexModel<TTimeTicker>(
+                    keys.Ascending(x => x.ParentId).Ascending(x => x.Status)
+                        .Ascending(x => x.ExecutedAt).Ascending(x => x.Id),
+                    new CreateIndexOptions { Name = "IX_TimeTicker_Retention" }),
+                new CreateIndexModel<TTimeTicker>(
+                    keys.Ascending(x => x.LockHolder).Ascending(x => x.LeaseUntil),
+                    new CreateIndexOptions { Name = "IX_TimeTicker_RetentionClaim" }),
             };
             return _context.TimeTickers.Indexes.CreateManyAsync(models, ct);
         }
@@ -69,6 +76,9 @@ namespace TickerQ.MongoDB.Indexes
                 new CreateIndexModel<CronTickerOccurrenceEntity<TCronTicker>>(
                     keys.Ascending(x => x.Status).Ascending(x => x.ExecutionTime),
                     new CreateIndexOptions { Name = "IX_CronTickerOccurrence_Status_ExecutionTime" }),
+                new CreateIndexModel<CronTickerOccurrenceEntity<TCronTicker>>(
+                    keys.Ascending(x => x.Status).Ascending(x => x.ExecutedAt).Ascending(x => x.Id),
+                    new CreateIndexOptions { Name = "IX_CronTickerOccurrence_Retention" }),
                 new CreateIndexModel<CronTickerOccurrenceEntity<TCronTicker>>(
                     keys.Ascending(x => x.CronTickerId).Ascending(x => x.ExecutionTime),
                     new CreateIndexOptions { Name = "UQ_CronTickerId_ExecutionTime", Unique = true }),

@@ -1219,7 +1219,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
         var staleLockCutoff = now.Subtract(_schedulerOptions.QueuedLockTimeout);
         await dbContext.Set<TTimeTicker>()
-            .Where(x => (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
+            .Where(x => x.ParentId == null &&
+                        (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
                         x.LockHolder != null && x.LockedAt != null && x.LockedAt < staleLockCutoff)
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.Status, TickerStatus.Idle)
@@ -1247,7 +1248,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         // their ExecutionTime is in the past). The subsequent Cancel pass then only
         // sees leftovers — Cancel policy or exhausted restart budget.
         result.RestartedTimeTickers = await dbContext.Set<TTimeTicker>()
-            .Where(x => x.Status == TickerStatus.InProgress && x.LeaseUntil != null && x.LeaseUntil < now)
+            .Where(x => x.ParentId == null && x.Status == TickerStatus.InProgress &&
+                        x.LeaseUntil != null && x.LeaseUntil < now)
             .Where(x => x.OnStale == StaleAction.Restart && x.StaleRestartCount < maxStaleRestarts)
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.Status, TickerStatus.Idle)
@@ -1260,7 +1262,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ConfigureAwait(false);
 
         result.CancelledTimeTickers = await dbContext.Set<TTimeTicker>()
-            .Where(x => x.Status == TickerStatus.InProgress && x.LeaseUntil != null && x.LeaseUntil < now)
+            .Where(x => x.ParentId == null && x.Status == TickerStatus.InProgress &&
+                        x.LeaseUntil != null && x.LeaseUntil < now)
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.Status, TickerStatus.Cancelled)
                 .SetProperty(x => x.ExceptionMessage, staleReason)

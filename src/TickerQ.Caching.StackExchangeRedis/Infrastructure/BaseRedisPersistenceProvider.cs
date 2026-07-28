@@ -362,20 +362,79 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
     public async Task<int> UpdateTimeTicker(InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
     {
-        var ticker = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(functionContext.TickerId)).ConfigureAwait(false);
-        if (ticker == null) return 0;
+        if (functionContext.ParentId != null)
+            return await UpdateEmbeddedTimeTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
 
-        var fenced = IsFencedTerminalWrite(functionContext) && functionContext.ParentId == null;
-        if (fenced && !functionContext.AcquisitionToken.HasValue) return 0;
-        var expectedUpdatedAt = ticker.UpdatedAt;
-        var expectedStatus = fenced ? (int)ticker.Status : -1;
-        ApplyFunctionContextToTicker(ticker, functionContext);
-        var updated = await TryCasReplaceAsync(TimeTickerKey(ticker.Id), ticker, expectedUpdatedAt,
-            fenced ? LockHolder : "", fenced ? functionContext.AcquisitionToken : null, expectedStatus)
-            .ConfigureAwait(false);
-        if (updated == null) return 0;
-        await IndexManager.AddTimeTickerIndexesAsync(updated).ConfigureAwait(false);
-        return 1;
+        for (var attempt = 0; attempt < 64; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var ticker = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(functionContext.TickerId)).ConfigureAwait(false);
+            if (ticker == null) return 0;
+
+            var fenced = IsFencedTerminalWrite(functionContext);
+            if (fenced && !functionContext.AcquisitionToken.HasValue) return 0;
+            var expectedUpdatedAt = ticker.UpdatedAt;
+            var expectedStatus = fenced ? (int)ticker.Status : -1;
+            ApplyFunctionContextToTicker(ticker, functionContext);
+            ticker.UpdatedAt = NextAggregateUpdatedAt(expectedUpdatedAt);
+            var updated = await TryCasReplaceAsync(TimeTickerKey(ticker.Id), ticker, expectedUpdatedAt,
+                    fenced ? LockHolder : "", fenced ? functionContext.AcquisitionToken : null, expectedStatus)
+                .ConfigureAwait(false);
+            if (updated == null) continue;
+            await IndexManager.AddTimeTickerIndexesAsync(updated).ConfigureAwait(false);
+            return 1;
+        }
+
+        return 0;
+    }
+
+    private async Task<int> UpdateEmbeddedTimeTickerAsync(
+        InternalFunctionContext functionContext,
+        CancellationToken cancellationToken)
+    {
+        var rootId = functionContext.ChainRootId ?? functionContext.ParentId;
+        if (!rootId.HasValue) return 0;
+
+        for (var attempt = 0; attempt < 64; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var root = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(rootId.Value)).ConfigureAwait(false);
+            if (root == null) return 0;
+
+            var child = FindEmbeddedTimeTicker(root.Children, functionContext.TickerId);
+            if (child == null) return 0;
+
+            var expectedUpdatedAt = root.UpdatedAt;
+            ApplyFunctionContextToTicker(child, functionContext);
+            root.UpdatedAt = NextAggregateUpdatedAt(expectedUpdatedAt);
+            var updated = await TryCasReplaceAsync(TimeTickerKey(root.Id), root, expectedUpdatedAt)
+                .ConfigureAwait(false);
+            if (updated == null) continue;
+            await IndexManager.AddTimeTickerIndexesAsync(updated).ConfigureAwait(false);
+            return 1;
+        }
+
+        return 0;
+    }
+
+    private DateTime NextAggregateUpdatedAt(DateTime expectedUpdatedAt)
+    {
+        var now = Clock.UtcNow;
+        return now > expectedUpdatedAt ? now : expectedUpdatedAt.AddTicks(1);
+    }
+
+    private static TTimeTicker FindEmbeddedTimeTicker(
+        IEnumerable<TTimeTicker> children,
+        Guid tickerId)
+    {
+        foreach (var child in children)
+        {
+            if (child.Id == tickerId) return child;
+            var descendant = FindEmbeddedTimeTicker(child.Children, tickerId);
+            if (descendant != null) return descendant;
+        }
+
+        return null;
     }
 
     public async Task<byte[]> GetTimeTickerRequest(Guid id, CancellationToken cancellationToken)

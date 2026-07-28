@@ -375,20 +375,17 @@ namespace TickerQ.Utilities.Managers
         
         public async Task UpdateSkipTimeTickersWithUnifiedContextAsync(InternalFunctionContext[] resources, CancellationToken cancellationToken = default)
         {
-            var unifiedFunctionContext = new InternalFunctionContext()
-                .SetProperty(x => x.Status, TickerStatus.Skipped)
-                .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
-                .SetProperty(x => x.ExceptionDetails, "Rule RunCondition did not match!");
-            
-            if (resources.Length != 0)
-                await _persistenceProvider.UpdateTimeTickersWithUnifiedContext(resources.Select(x => x.TickerId).ToArray(), unifiedFunctionContext, cancellationToken).ConfigureAwait(false);
-            
+            var executedAt = _clock.UtcNow;
             foreach (var resource in resources)
             {
-                resource.ExecutedAt = _clock.UtcNow;
-                resource.Status = TickerStatus.Skipped;
-                resource.ExceptionDetails = "Rule RunCondition did not match!";
-                if(resource.Type == TickerType.TimeTicker)
+                cancellationToken.ThrowIfCancellationRequested();
+                resource
+                    .SetProperty(x => x.Status, TickerStatus.Skipped)
+                    .SetProperty(x => x.ExecutedAt, executedAt)
+                    .SetProperty(x => x.ExceptionDetails, "Rule RunCondition did not match!");
+                await _persistenceProvider.UpdateTimeTicker(resource, cancellationToken).ConfigureAwait(false);
+
+                if (resource.Type == TickerType.TimeTicker)
                     await _notificationHubSender.UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(resource).ConfigureAwait(false);
                 else
                     await _notificationHubSender.UpdateCronOccurrenceFromInternalFunctionContext<TCronTicker>(resource).ConfigureAwait(false);
@@ -553,5 +550,15 @@ namespace TickerQ.Utilities.Managers
 
         public async Task<StaleTickerRecoveryResult> RecoverStaleTickersAsync(CancellationToken cancellationToken = default)
             => await _persistenceProvider.RecoverStaleTickers(_schedulerOptions.MaxStaleRestarts, cancellationToken).ConfigureAwait(false);
+
+        public bool SupportsRetention => _persistenceProvider.SupportsRetention;
+
+        public Task<RetentionChainBatchResult> SweepTimeChainsAsync(
+            RetentionCutoffs cutoffs, int batchSize, RetentionCursor cursor, CancellationToken cancellationToken = default)
+            => _persistenceProvider.DeleteEligibleTimeTickerChainsAsync(cutoffs, batchSize, cursor, cancellationToken);
+
+        public Task<RetentionBatchResult> SweepCronOccurrencesAsync(
+            RetentionCutoffs cutoffs, int batchSize, CancellationToken cancellationToken = default)
+            => _persistenceProvider.DeleteEligibleCronTickerOccurrencesAsync(cutoffs, batchSize, cancellationToken);
     }
 }

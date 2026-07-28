@@ -7,6 +7,7 @@ import { TickerType } from '../enums';
  */
 export interface RemoteExecutionContext {
     id: string;
+    parentId: string | null;
     type: TickerType;
     retryCount: number;
     isDue: boolean;
@@ -24,6 +25,7 @@ export function normalizeExecutionContext(raw: Record<string, unknown>): RemoteE
 
     return {
         id: (get('id', 'Id') as string) ?? '',
+        parentId: (get('parentId', 'ParentId') as string | null | undefined) ?? null,
         type: (get('type', 'Type') as TickerType) ?? 0,
         retryCount: (get('retryCount', 'RetryCount') as number) ?? 0,
         isDue: (get('isDue', 'IsDue') as boolean) ?? false,

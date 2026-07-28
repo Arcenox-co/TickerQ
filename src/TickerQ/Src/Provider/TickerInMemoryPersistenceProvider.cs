@@ -54,6 +54,9 @@ namespace TickerQ.Provider
         // explicitly and inherits the compatibility-safe (fail-closed) interface defaults.
         public bool SupportsLeaseBasedRecovery => false;
 
+        // Built-in provider: implements job retention with whole-chain, all-or-nothing semantics.
+        public bool SupportsRetention => true;
+
         #region Time Ticker Methods
 
         public async IAsyncEnumerable<TimeTickerEntity> QueueTimeTickers(TimeTickerEntity[] timeTickers, [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -77,7 +80,7 @@ namespace TickerQ.Provider
                         updatedTicker.UpdatedAt = now;
                         updatedTicker.Status = TickerStatus.Queued;
                         
-                        if (TimeTickers.TryUpdate(timeTicker.Id, updatedTicker, existingTicker))
+                        if (TryUpdateTimeTicker(timeTicker.Id, updatedTicker, existingTicker))
                         {
                             timeTicker.UpdatedAt = now;
                             timeTicker.LockHolder = _lockHolder;
@@ -125,7 +128,7 @@ namespace TickerQ.Provider
                         updatedTicker.UpdatedAt = now;
                         updatedTicker.Status = TickerStatus.InProgress;
 
-                        if (TimeTickers.TryUpdate(ticker.Id, updatedTicker, existingTicker))
+                        if (TryUpdateTimeTicker(ticker.Id, updatedTicker, existingTicker))
                         {
                             // Only build the full hierarchy for successfully acquired tickers
                             yield return ForQueueTimeTickers(updatedTicker);
@@ -157,7 +160,7 @@ namespace TickerQ.Provider
                         updatedTicker.Status = TickerStatus.Idle;
                         updatedTicker.UpdatedAt = now;
 
-                        TimeTickers.TryUpdate(id, updatedTicker, ticker);
+                        TryUpdateTimeTicker(id, updatedTicker, ticker);
                     }
                 }
             }
@@ -220,7 +223,7 @@ namespace TickerQ.Provider
                 var updatedTicker = CloneTicker(ticker);
                 ApplyFunctionContextToTicker(updatedTicker, functionContext);
                 
-                if (TimeTickers.TryUpdate(functionContext.TickerId, updatedTicker, ticker))
+                if (TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker))
                     return Task.FromResult(1);
             }
             
@@ -246,7 +249,7 @@ namespace TickerQ.Provider
                 {
                     var updatedTicker = CloneTicker(ticker);
                     ApplyFunctionContextToTicker(updatedTicker, functionContext);
-                    TimeTickers.TryUpdate(id, updatedTicker, ticker);
+                    TryUpdateTimeTicker(id, updatedTicker, ticker);
                 }
             }
             
@@ -269,7 +272,7 @@ namespace TickerQ.Provider
                     var updated = CloneTicker(current);
                     updated.Status = TickerStatus.InProgress;
                     updated.UpdatedAt = now;
-                    if (!TimeTickers.TryUpdate(lease.TickerId, updated, current)) continue;
+                    if (!TryUpdateTimeTicker(lease.TickerId, updated, current)) continue;
                     winners.Add(lease.TickerId);
                     break;
                 }
@@ -302,7 +305,7 @@ namespace TickerQ.Provider
                 updatedTicker.Status = TickerStatus.InProgress;
                 updatedTicker.UpdatedAt = now;
 
-                if (TimeTickers.TryUpdate(id, updatedTicker, ticker))
+                if (TryUpdateTimeTicker(id, updatedTicker, ticker))
                 {
                     acquired.Add(ForQueueTimeTickers(updatedTicker));
                 }
@@ -339,7 +342,7 @@ namespace TickerQ.Provider
                 updated.ElapsedTime = 0;
                 updated.StaleRestartCount = 0;
                 updated.UpdatedAt = now;
-                if (TimeTickers.TryUpdate(id, updated, ticker))
+                if (TryUpdateTimeTicker(id, updated, ticker))
                     return Task.FromResult<TimeTickerEntity>(ForQueueTimeTickers(updated));
             }
 
@@ -509,7 +512,7 @@ namespace TickerQ.Provider
             // Update the ticker itself
             if (TimeTickers.TryGetValue(ticker.Id, out var existing))
             {
-                if (TimeTickers.TryUpdate(ticker.Id, ticker, existing))
+                if (TryUpdateTimeTicker(ticker.Id, ticker, existing))
                 {
                     // Maintain children index for parent changes
                     if (existing.ParentId != ticker.ParentId)
@@ -593,6 +596,47 @@ namespace TickerQ.Provider
         // The per-node CAS status writers keep operating lock-free on ConcurrentDictionary
         // entries — they never restructure the parent/child graph — so they are unaffected.
         private static readonly ReaderWriterLockSlim GraphLock = new(LockRecursionPolicy.NoRecursion);
+
+        // Test-only seam invoked while an eligibility-changing CAS holds the read lock.
+        // Retention's write lock cannot pass this point until the mutation completes.
+        internal static Action<Guid> EligibilityMutationLockHook;
+
+        private static bool TryUpdateTimeTicker(Guid id, TTimeTicker updated, TTimeTicker expected)
+        {
+            if (GraphLock.IsReadLockHeld || GraphLock.IsWriteLockHeld)
+                return TimeTickers.TryUpdate(id, updated, expected);
+
+            GraphLock.EnterReadLock();
+            try
+            {
+                EligibilityMutationLockHook?.Invoke(id);
+                return TimeTickers.TryUpdate(id, updated, expected);
+            }
+            finally
+            {
+                GraphLock.ExitReadLock();
+            }
+        }
+
+        private static bool TryUpdateCronOccurrence(
+            Guid id,
+            CronTickerOccurrenceEntity<TCronTicker> updated,
+            CronTickerOccurrenceEntity<TCronTicker> expected)
+        {
+            if (GraphLock.IsReadLockHeld || GraphLock.IsWriteLockHeld)
+                return CronOccurrences.TryUpdate(id, updated, expected);
+
+            GraphLock.EnterReadLock();
+            try
+            {
+                EligibilityMutationLockHook?.Invoke(id);
+                return CronOccurrences.TryUpdate(id, updated, expected);
+            }
+            finally
+            {
+                GraphLock.ExitReadLock();
+            }
+        }
 
         // Runs a graph read under the shared read lock. Callees must be lock-free (they
         // are: BuildTickerHierarchy / ForQueueTimeTickers and their private helpers).
@@ -744,7 +788,7 @@ namespace TickerQ.Provider
                 updatedTicker.Status = TickerStatus.Idle;
                 updatedTicker.UpdatedAt = now;
 
-                TimeTickers.TryUpdate(ticker.Id, updatedTicker, currentTicker);
+                TryUpdateTimeTicker(ticker.Id, updatedTicker, currentTicker);
             }
 
             // Phase 2: mark in-progress tickers for that node as skipped
@@ -763,7 +807,7 @@ namespace TickerQ.Provider
                 updatedTicker.ExecutedAt = now;
                 updatedTicker.UpdatedAt = now;
 
-                TimeTickers.TryUpdate(ticker.Id, updatedTicker, currentTicker);
+                TryUpdateTimeTicker(ticker.Id, updatedTicker, currentTicker);
             }
 
             return Task.CompletedTask;
@@ -993,7 +1037,7 @@ namespace TickerQ.Provider
                     updatedOccurrence.UpdatedAt = now;
                     updatedOccurrence.Status = TickerStatus.Queued;
                     
-                    if (CronOccurrences.TryUpdate(occurrenceId, updatedOccurrence, existingOccurrence))
+                    if (TryUpdateCronOccurrence(occurrenceId, updatedOccurrence, existingOccurrence))
                     {
                         yield return updatedOccurrence;
                     }
@@ -1062,7 +1106,7 @@ namespace TickerQ.Provider
                         updatedOccurrence.UpdatedAt = now;
                         updatedOccurrence.Status = TickerStatus.InProgress;
 
-                        if (CronOccurrences.TryUpdate(occurrence.Id, updatedOccurrence, existingOccurrence))
+                        if (TryUpdateCronOccurrence(occurrence.Id, updatedOccurrence, existingOccurrence))
                         {
                             yield return updatedOccurrence;
                         }
@@ -1083,7 +1127,7 @@ namespace TickerQ.Provider
                 var updatedOccurrence = CloneCronOccurrence(occurrence);
                 ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
                 
-                CronOccurrences.TryUpdate(functionContext.TickerId, updatedOccurrence, occurrence);
+                TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence);
             }
             
             return Task.CompletedTask;
@@ -1108,7 +1152,7 @@ namespace TickerQ.Provider
                         updatedOccurrence.Status = TickerStatus.Idle;
                         updatedOccurrence.UpdatedAt = now;
 
-                        CronOccurrences.TryUpdate(id, updatedOccurrence, occurrence);
+                        TryUpdateCronOccurrence(id, updatedOccurrence, occurrence);
                     }
                 }
             }
@@ -1139,7 +1183,7 @@ namespace TickerQ.Provider
                 {
                     var updatedOccurrence = CloneCronOccurrence(occurrence);
                     ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
-                    CronOccurrences.TryUpdate(id, updatedOccurrence, occurrence);
+                    TryUpdateCronOccurrence(id, updatedOccurrence, occurrence);
                 }
             }
             
@@ -1162,7 +1206,7 @@ namespace TickerQ.Provider
                     var updated = CloneCronOccurrence(current);
                     updated.Status = TickerStatus.InProgress;
                     updated.UpdatedAt = now;
-                    if (!CronOccurrences.TryUpdate(lease.TickerId, updated, current)) continue;
+                    if (!TryUpdateCronOccurrence(lease.TickerId, updated, current)) continue;
                     winners.Add(lease.TickerId);
                     break;
                 }
@@ -1192,7 +1236,7 @@ namespace TickerQ.Provider
                 updatedOccurrence.Status = TickerStatus.Idle;
                 updatedOccurrence.UpdatedAt = now;
 
-                CronOccurrences.TryUpdate(occurrence.Id, updatedOccurrence, currentOccurrence);
+                TryUpdateCronOccurrence(occurrence.Id, updatedOccurrence, currentOccurrence);
             }
 
             // Phase 2: mark in-progress occurrences for that node as skipped
@@ -1211,7 +1255,7 @@ namespace TickerQ.Provider
                 updatedOccurrence.ExecutedAt = now;
                 updatedOccurrence.UpdatedAt = now;
 
-                CronOccurrences.TryUpdate(occurrence.Id, updatedOccurrence, currentOccurrence);
+                TryUpdateCronOccurrence(occurrence.Id, updatedOccurrence, currentOccurrence);
             }
 
             return Task.CompletedTask;
@@ -1298,6 +1342,171 @@ namespace TickerQ.Provider
             return Task.FromResult(count);
         }
 
+        #region Retention
+
+        public Task<RetentionChainBatchResult> DeleteEligibleTimeTickerChainsAsync(
+            RetentionCutoffs cutoffs, int batchSize, RetentionCursor cursor, CancellationToken cancellationToken = default)
+        {
+            if (batchSize <= 0 || cutoffs is null || !cutoffs.HasAny)
+                return Task.FromResult(RetentionChainBatchResult.Empty);
+
+            var now = _clock.UtcNow;
+
+            // Hold the write lock for the whole examine-and-delete so each chain is judged and removed
+            // atomically with respect to structural mutations, and eligibility is (re)read from the current
+            // node values at the moment of deletion.
+            var result = WriteGraph(() =>
+            {
+                // Candidate ROOTS: no parent, root node itself eligible (a necessary condition for the whole
+                // chain), strictly after the keyset cursor, ordered by (ExecutedAt, Id). Bounded by Take:
+                // deletion work never exceeds batchSize chains, and one extra candidate detects HasMore.
+                var candidates = TimeTickers.Values
+                    .Where(t => t.ParentId == null
+                                && t.ExecutedAt.HasValue
+                                && IsTimeNodeEligibleForRetention(t, cutoffs, now)
+                                && cursor.IsBefore(t.ExecutedAt.Value, t.Id))
+                    .OrderBy(t => t.ExecutedAt!.Value)
+                    .ThenBy(t => t.Id)
+                    .Take(batchSize + 1)
+                    .ToList();
+
+                var hasMore = candidates.Count > batchSize;
+                var examineCount = Math.Min(candidates.Count, batchSize);
+
+                var deletedRows = 0;
+                var nextCursor = RetentionCursor.Start; // wrap by default (end of traversal)
+
+                for (var i = 0; i < examineCount; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var root = candidates[i];
+
+                    // Advance the cursor past every examined root — deleted OR retained — so a blocked chain
+                    // is never reselected on the next call and cannot starve later eligible chains.
+                    if (hasMore)
+                        nextCursor = RetentionCursor.After(root.ExecutedAt!.Value, root.Id);
+
+                    var subtree = new List<TTimeTicker>();
+                    if (!TryCollectEligibleSubtree(
+                            root.Id, cutoffs, now, cutoffs.MaxNodesPerChain, subtree, cancellationToken))
+                        continue; // any node ineligible → retain the whole chain, but the cursor still advanced
+
+                    foreach (var node in subtree)
+                    {
+                        if (TimeTickers.TryRemove(node.Id, out var removed) && removed.ParentId.HasValue)
+                            RemoveChildIndex(removed.ParentId.Value, removed.Id);
+                        deletedRows++;
+                    }
+                }
+
+                return new RetentionChainBatchResult(deletedRows, hasMore, nextCursor);
+            });
+
+            return Task.FromResult(result);
+        }
+
+        // Depth-first collect of a whole subtree, returning false as soon as ANY node is ineligible so the
+        // caller retains the entire chain. Node values are read fresh from the store (recheck at delete time).
+        private bool TryCollectEligibleSubtree(
+            Guid nodeId, RetentionCutoffs cutoffs, DateTime now, int maxNodes,
+            List<TTimeTicker> collected, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (collected.Count >= maxNodes)
+                return false;
+
+            if (!TimeTickers.TryGetValue(nodeId, out var node))
+                return false; // cannot verify → retain
+
+            if (!IsTimeNodeEligibleForRetention(node, cutoffs, now))
+                return false;
+
+            collected.Add(node);
+
+            foreach (var childId in GetChildrenIds(nodeId))
+                if (!TryCollectEligibleSubtree(
+                        childId, cutoffs, now, maxNodes, collected, cancellationToken))
+                    return false;
+
+            return true;
+        }
+
+        private static bool IsTimeNodeEligibleForRetention(TTimeTicker node, RetentionCutoffs cutoffs, DateTime now)
+        {
+            var cutoff = cutoffs.ForStatus(node.Status); // null when non-terminal or window unset
+            if (cutoff is null)
+                return false;
+            if (node.ExecutedAt is null || node.ExecutedAt.Value >= cutoff.Value)
+                return false;
+            return IsNotActivelyOwned(node.AcquisitionToken, node.LeaseUntil, now);
+        }
+
+        public Task<RetentionBatchResult> DeleteEligibleCronTickerOccurrencesAsync(
+            RetentionCutoffs cutoffs, int batchSize, CancellationToken cancellationToken = default)
+        {
+            if (batchSize <= 0 || cutoffs is null || !cutoffs.HasAny)
+                return Task.FromResult(RetentionBatchResult.Empty);
+
+            var result = WriteGraph(() =>
+            {
+                var now = _clock.UtcNow;
+                var deleted = 0;
+                var hasMore = false;
+
+                foreach (var occurrence in CronOccurrences.Values)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (!IsCronOccurrenceEligibleForRetention(occurrence, cutoffs, now))
+                        continue;
+
+                    if (deleted >= batchSize)
+                    {
+                        hasMore = true;
+                        break;
+                    }
+
+                    // Remove exactly the value that was rechecked. Even callers that do not
+                    // participate in GraphLock cannot cause a newer replacement to be removed.
+                    if (CronOccurrences.TryGetValue(occurrence.Id, out var current)
+                        && IsCronOccurrenceEligibleForRetention(current, cutoffs, now)
+                        && ((ICollection<KeyValuePair<Guid, CronTickerOccurrenceEntity<TCronTicker>>>)CronOccurrences)
+                            .Remove(new KeyValuePair<Guid, CronTickerOccurrenceEntity<TCronTicker>>(
+                                occurrence.Id, current)))
+                    {
+                        CronOccurrenceIndex.TryRemove((current.ExecutionTime, current.CronTickerId), out _);
+                        deleted++;
+                    }
+                }
+
+                return new RetentionBatchResult(deleted, hasMore);
+            });
+
+            return Task.FromResult(result);
+        }
+
+        private static bool IsCronOccurrenceEligibleForRetention(
+            CronTickerOccurrenceEntity<TCronTicker> occurrence, RetentionCutoffs cutoffs, DateTime now)
+        {
+            var cutoff = cutoffs.ForStatus(occurrence.Status);
+            if (cutoff is null)
+                return false;
+            if (occurrence.ExecutedAt is null || occurrence.ExecutedAt.Value >= cutoff.Value)
+                return false;
+            return IsNotActivelyOwned(occurrence.AcquisitionToken, occurrence.LeaseUntil, now);
+        }
+
+        // Guards against deleting actively-owned work. A terminal write clears AcquisitionToken (the
+        // authoritative live-generation marker) but deliberately leaves LockHolder and the last-renewed
+        // LeaseUntil in place — so LockHolder on a terminal row is stale bookkeeping, not an active claim,
+        // and requiring it to be null would make retention delete nothing. The real signals are: no live
+        // generation (AcquisitionToken == null) and no still-live lease (LeaseUntil in the past or absent).
+        private static bool IsNotActivelyOwned(Guid? acquisitionToken, DateTime? leaseUntil, DateTime now)
+            => !acquisitionToken.HasValue
+               && (!leaseUntil.HasValue || leaseUntil.Value <= now);
+
+        #endregion
+
         public Task<CronTickerOccurrenceEntity<TCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
         {
             if (occurrenceIds == null || occurrenceIds.Length == 0)
@@ -1324,7 +1533,7 @@ namespace TickerQ.Provider
                 updated.Status = TickerStatus.InProgress;
                 updated.UpdatedAt = now;
 
-                if (CronOccurrences.TryUpdate(id, updated, occurrence))
+                if (TryUpdateCronOccurrence(id, updated, occurrence))
                 {
                     acquired.Add(updated);
                 }
@@ -1359,7 +1568,7 @@ namespace TickerQ.Provider
                 updated.SkippedReason = "Missed: occurrence was pending when the application restarted";
                 updated.UpdatedAt = now;
 
-                if (CronOccurrences.TryUpdate(occurrence.Id, updated, current))
+                if (TryUpdateCronOccurrence(occurrence.Id, updated, current))
                     count++;
             }
 

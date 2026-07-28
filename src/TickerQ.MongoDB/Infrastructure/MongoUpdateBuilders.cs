@@ -21,9 +21,11 @@ namespace TickerQ.MongoDB.Infrastructure
             var defs = Builders<TTimeTicker>.Update;
             UpdateDefinition<TTimeTicker> u = null;
 
-            if (leaseUntil != null &&
-                props.Contains(nameof(InternalFunctionContext.Status)) &&
-                ctx.Status == TickerStatus.InProgress)
+            if (ClearsAcquisitionToken(props, ctx))
+                u = Combine(u, defs.Set(x => x.LeaseUntil, (DateTime?)null));
+            else if (ctx.ParentId == null && leaseUntil != null &&
+                     props.Contains(nameof(InternalFunctionContext.Status)) &&
+                     ctx.Status == TickerStatus.InProgress)
                 u = Combine(u, defs.Set(x => x.LeaseUntil, leaseUntil));
 
             // ACQUISITION TOKEN (generation) — stamp on the InProgress transition, clear on
@@ -85,9 +87,11 @@ namespace TickerQ.MongoDB.Infrastructure
             var defs = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update;
             UpdateDefinition<CronTickerOccurrenceEntity<TCronTicker>> u = null;
 
-            if (leaseUntil != null &&
-                props.Contains(nameof(InternalFunctionContext.Status)) &&
-                ctx.Status == TickerStatus.InProgress)
+            if (ClearsAcquisitionToken(props, ctx))
+                u = Combine(u, defs.Set(x => x.LeaseUntil, (DateTime?)null));
+            else if (leaseUntil != null &&
+                     props.Contains(nameof(InternalFunctionContext.Status)) &&
+                     ctx.Status == TickerStatus.InProgress)
                 u = Combine(u, defs.Set(x => x.LeaseUntil, leaseUntil));
 
             // ACQUISITION TOKEN (generation) — stamp on the InProgress transition, clear on

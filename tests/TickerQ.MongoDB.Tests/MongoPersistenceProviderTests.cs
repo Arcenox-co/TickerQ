@@ -335,6 +335,72 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UpdateTimeTicker_ChildInProgress_DoesNotCreateStandaloneLease()
+    {
+        var parent = NewTimeTicker();
+        var child = NewTimeTicker();
+        typeof(TimeTickerEntity).GetProperty(nameof(child.ParentId))!.SetValue(child, parent.Id);
+        await _f.Provider.AddTimeTickers([parent, child], CancellationToken.None);
+
+        var update = new InternalFunctionContext
+        {
+            TickerId = child.Id,
+            ParentId = parent.Id,
+            Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.InProgress);
+
+        Assert.Equal(1, await _f.Provider.UpdateTimeTicker(update, CancellationToken.None));
+        var persisted = await _f.Provider.GetTimeTickerById(child.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.InProgress, persisted!.Status);
+        Assert.Null(persisted.LeaseUntil);
+        Assert.Null(persisted.AcquisitionToken);
+        Assert.Null(persisted.LockHolder);
+    }
+
+    [Fact]
+    public async Task UpdateTimeTicker_ChildTerminalWrite_ClearsLegacyLease()
+    {
+        var parent = NewTimeTicker();
+        var child = NewTimeTicker(status: TickerStatus.InProgress);
+        typeof(TimeTickerEntity).GetProperty(nameof(child.ParentId))!.SetValue(child, parent.Id);
+        child.LeaseUntil = _f.FixedNow.AddMinutes(-1);
+        await _f.Provider.AddTimeTickers([parent, child], CancellationToken.None);
+
+        var update = new InternalFunctionContext
+        {
+            TickerId = child.Id,
+            ParentId = parent.Id,
+            Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.Done);
+
+        Assert.Equal(1, await _f.Provider.UpdateTimeTicker(update, CancellationToken.None));
+        var persisted = await _f.Provider.GetTimeTickerById(child.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Done, persisted!.Status);
+        Assert.Null(persisted.LeaseUntil);
+    }
+
+    [Fact]
+    public async Task RecoverStaleTickers_DoesNotRecoverChainChildrenIndependently()
+    {
+        var parent = NewTimeTicker();
+        var child = NewTimeTicker(status: TickerStatus.InProgress);
+        typeof(TimeTickerEntity).GetProperty(nameof(child.ParentId))!.SetValue(child, parent.Id);
+        child.OnStale = StaleAction.Restart;
+        child.LockHolder = "dead-node";
+        child.LockedAt = _f.FixedNow.AddMinutes(-2);
+        child.LeaseUntil = _f.FixedNow.AddSeconds(-1);
+        await _f.Provider.AddTimeTickers([parent, child], CancellationToken.None);
+
+        var result = await _f.Provider.RecoverStaleTickers(2, CancellationToken.None);
+
+        Assert.Equal(0, result.RestartedTimeTickers);
+        Assert.Equal(0, result.CancelledTimeTickers);
+        var persisted = await _f.Provider.GetTimeTickerById(child.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.InProgress, persisted!.Status);
+        Assert.Equal("dead-node", persisted.LockHolder);
+    }
+
+    [Fact]
     public async Task TerminalWrite_IsRejectedAfterLeaseOwnershipChanges()
     {
         var ticker = NewTimeTicker();

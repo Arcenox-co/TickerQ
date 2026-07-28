@@ -44,6 +44,7 @@ public class TickerRemoteExecutionTaskHandler : ITickerExecutionTaskHandler
         {
             RequestCancelOperationAction = null,
             Id = context.TickerId,
+            ParentId = context.ParentId,
             Type = context.Type,
             FunctionName = context.FunctionName,
             RetryCount = context.RetryCount,

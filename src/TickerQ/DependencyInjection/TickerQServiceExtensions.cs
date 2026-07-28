@@ -72,6 +72,13 @@ namespace TickerQ.DependencyInjection
                     provider.GetRequiredService<TickerQSchedulerBackgroundService>());
                 services.AddHostedService(provider => provider.GetRequiredService<TickerQFallbackBackgroundService>());
                 services.AddSingleton<TickerQFallbackBackgroundService>();
+
+                // Retention maintenance loop. Registered AFTER the scheduler on purpose: hosted services
+                // stop in reverse registration order, so retention stops FIRST — it must not be deleting
+                // rows while the scheduler drains in-flight executions on shutdown. Registered only when a
+                // retention window is configured; the provider-capability check happens at StartAsync.
+                if (optionInstance.JobRetention.IsEnabled)
+                    services.AddHostedService<TickerQRetentionBackgroundService>();
                 services.AddSingleton<ITickerQDispatcher, TickerQDispatcher>();
                 services.AddSingleton<ITickerQTaskScheduler>(sp =>
                 {
@@ -122,6 +129,11 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton(_ => optionInstance);
             services.AddSingleton(_ => tickerExecutionContext);
             services.AddSingleton(_ => schedulerOptionsBuilder);
+
+            // Validate once more here in case windows were set directly on the options object without
+            // going through ConfigureJobRetention, then expose the retention options for the sweeper.
+            optionInstance.JobRetention.Validate();
+            services.AddSingleton(optionInstance.JobRetention);
 
             // Register AFTER initializer and scheduler to ensure it runs last
             services.AddHostedService<TickerQStartupValidator>();

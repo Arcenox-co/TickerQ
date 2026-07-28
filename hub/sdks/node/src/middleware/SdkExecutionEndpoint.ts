@@ -15,6 +15,7 @@ import type { TickerQLogger } from '../client/TickerQSdkHttpClient';
 function buildFunctionContext(context: RemoteExecutionContext): TickerFunctionContext<unknown> {
     return {
         id: context.id,
+        parentId: context.parentId,
         type: context.type,
         retryCount: context.retryCount,
         isDue: context.isDue,
@@ -34,7 +35,7 @@ function buildInternalContext(
         cachedMaxConcurrency: registration.maxConcurrency,
         functionName: context.functionName,
         tickerId: context.id,
-        parentId: null,
+        parentId: context.parentId,
         type: context.type,
         retries: 0,
         retryCount: context.retryCount,

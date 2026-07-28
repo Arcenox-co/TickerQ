@@ -270,6 +270,231 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
         #endregion
 
+        #region Retention
+
+        // Built-in provider: implements bounded, provider-authoritative job retention.
+        public bool SupportsRetention => true;
+
+        // Eligibility for retention deletion (shared shape across time tickers and cron occurrences):
+        //   terminal status with a configured window AND ExecutedAt strictly older than that window's cutoff
+        //   AND not actively owned. A terminal write clears AcquisitionToken but deliberately leaves
+        //   LockHolder and the last-renewed LeaseUntil in place, so the authoritative "actively owned"
+        //   signals are AcquisitionToken (a live generation) and a still-live LeaseUntil (> now); a stale
+        //   LockHolder on a terminal row is NOT an active claim. A null cutoff (window unset) or a null
+        //   ExecutedAt yields a NULL comparison in SQL and is therefore excluded.
+        private static Expression<Func<TTimeTicker, bool>> TimeEligible(RetentionCutoffs c, DateTime now)
+        {
+            var succeeded = c.SucceededBefore;
+            var failed = c.FailedBefore;
+            var cancelled = c.CancelledBefore;
+            var skipped = c.SkippedBefore;
+            return x =>
+                (((x.Status == TickerStatus.Done || x.Status == TickerStatus.DueDone) && x.ExecutedAt < succeeded)
+                 || (x.Status == TickerStatus.Failed && x.ExecutedAt < failed)
+                 || (x.Status == TickerStatus.Cancelled && x.ExecutedAt < cancelled)
+                 || (x.Status == TickerStatus.Skipped && x.ExecutedAt < skipped))
+                && x.AcquisitionToken == null
+                && (x.LeaseUntil == null || x.LeaseUntil <= now);
+        }
+
+        private static Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> OccurrenceEligible(
+            RetentionCutoffs c, DateTime now)
+        {
+            var succeeded = c.SucceededBefore;
+            var failed = c.FailedBefore;
+            var cancelled = c.CancelledBefore;
+            var skipped = c.SkippedBefore;
+            return x =>
+                (((x.Status == TickerStatus.Done || x.Status == TickerStatus.DueDone) && x.ExecutedAt < succeeded)
+                 || (x.Status == TickerStatus.Failed && x.ExecutedAt < failed)
+                 || (x.Status == TickerStatus.Cancelled && x.ExecutedAt < cancelled)
+                 || (x.Status == TickerStatus.Skipped && x.ExecutedAt < skipped))
+                && x.AcquisitionToken == null
+                && (x.LeaseUntil == null || x.LeaseUntil <= now);
+        }
+
+        public async Task<RetentionBatchResult> DeleteEligibleCronTickerOccurrencesAsync(
+            RetentionCutoffs cutoffs, int batchSize, CancellationToken cancellationToken = default)
+        {
+            if (batchSize <= 0 || cutoffs is null || !cutoffs.HasAny)
+                return RetentionBatchResult.Empty;
+
+            var now = _clock.UtcNow;
+            var eligible = OccurrenceEligible(cutoffs, now);
+
+            using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            var set = session.Context.Set<CronTickerOccurrenceEntity<TCronTicker>>();
+
+            // Bounded candidate selection; take one extra to detect HasMore without a second scan.
+            var ids = await set.AsNoTracking()
+                .Where(eligible)
+                .OrderBy(x => x.ExecutedAt)
+                .Select(x => x.Id)
+                .Take(batchSize + 1)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+            var hasMore = ids.Count > batchSize;
+            if (hasMore)
+                ids.RemoveAt(ids.Count - 1);
+            if (ids.Count == 0)
+                return new RetentionBatchResult(0, false);
+
+            // Re-apply the eligibility predicate at delete time so a concurrently reactivated occurrence is
+            // skipped; a single ExecuteDelete statement is atomic. Cron DEFINITIONS are never referenced.
+            var deleted = await set
+                .Where(x => ids.Contains(x.Id))
+                .Where(eligible)
+                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+
+            return new RetentionBatchResult(deleted, hasMore);
+        }
+
+        public async Task<RetentionChainBatchResult> DeleteEligibleTimeTickerChainsAsync(
+            RetentionCutoffs cutoffs, int batchSize, RetentionCursor cursor, CancellationToken cancellationToken = default)
+        {
+            if (batchSize <= 0 || cutoffs is null || !cutoffs.HasAny)
+                return RetentionChainBatchResult.Empty;
+
+            var now = _clock.UtcNow;
+            var eligible = TimeEligible(cutoffs, now);
+
+            using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            var dbContext = session.Context;
+            var set = dbContext.Set<TTimeTicker>();
+
+            // Candidate ROOTS (ParentId == null) whose own node is eligible — a necessary condition for the
+            // whole chain to be deletable — strictly after the keyset cursor, ordered by (ExecutedAt, Id).
+            // Bounded by Take; one extra row detects HasMore.
+            IQueryable<TTimeTicker> query = set.AsNoTracking()
+                .Where(x => x.ParentId == null)
+                .Where(eligible);
+
+            if (cursor.HasValue)
+            {
+                var cExec = cursor.ExecutedAt;
+                var cId = cursor.Id;
+                query = query.Where(x =>
+                    x.ExecutedAt > cExec || (x.ExecutedAt == cExec && x.Id.CompareTo(cId) > 0));
+            }
+
+            var candidates = await query
+                .OrderBy(x => x.ExecutedAt)
+                .ThenBy(x => x.Id)
+                .Select(x => new RetentionRootKey { Id = x.Id, ExecutedAt = x.ExecutedAt })
+                .Take(batchSize + 1)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+            var hasMore = candidates.Count > batchSize;
+            var examineCount = Math.Min(candidates.Count, batchSize);
+
+            var totalDeleted = 0;
+            var nextCursor = RetentionCursor.Start; // wrap by default (end of traversal)
+
+            for (var i = 0; i < examineCount; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var root = candidates[i];
+
+                // Advance the cursor past every examined root — deleted OR retained — so a blocked chain is
+                // never reselected on the next call and cannot starve later eligible chains.
+                if (hasMore && root.ExecutedAt.HasValue)
+                    nextCursor = RetentionCursor.After(root.ExecutedAt.Value, root.Id);
+
+                totalDeleted += await DeleteChainIfFullyEligibleAsync(dbContext, set, root.Id, eligible, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return new RetentionChainBatchResult(totalDeleted, hasMore, nextCursor);
+        }
+
+        private sealed class RetentionRootKey
+        {
+            public Guid Id { get; init; }
+            public DateTime? ExecutedAt { get; init; }
+        }
+
+        // Deletes the arbitrary-depth chain rooted at <paramref name="rootId"/> only if EVERY node is
+        // eligible; otherwise the whole chain is retained. Concurrency behavior (bounded by the database's
+        // transaction semantics): the eligibility predicate is re-applied inside the delete transaction and
+        // the total deleted count is verified against the collected subtree size — if a node was reactivated
+        // between the pre-check and the delete, the transaction rolls back and the chain is left fully intact.
+        // A chain is therefore deleted whole or not at all; it is never partially erased.
+        private static async Task<int> DeleteChainIfFullyEligibleAsync(
+            TDbContext dbContext, DbSet<TTimeTicker> set, Guid rootId,
+            Expression<Func<TTimeTicker, bool>> eligible, CancellationToken cancellationToken)
+        {
+            // BFS the subtree, collecting ids per depth tier so deletion can proceed deepest-first
+            // (the self-referencing FK is OnDelete(NoAction)).
+            var levels = new List<List<Guid>> { new() { rootId } };
+            var frontier = levels[0];
+            var subtreeSize = 1;
+            while (frontier.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var childIds = await set.AsNoTracking()
+                    .Where(x => x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                    .Select(x => x.Id)
+                    .ToListAsync(cancellationToken).ConfigureAwait(false);
+                if (childIds.Count == 0)
+                    break;
+                levels.Add(childIds);
+                subtreeSize += childIds.Count;
+                frontier = childIds;
+            }
+
+            var allIds = levels.SelectMany(l => l).ToList();
+
+            // Cheap pre-check outside any transaction: is EVERY node eligible? Short-circuits the common
+            // "not fully eligible" case without opening a transaction that would only roll back.
+            var eligibleCount = await set.AsNoTracking()
+                .Where(x => allIds.Contains(x.Id))
+                .Where(eligible)
+                .CountAsync(cancellationToken).ConfigureAwait(false);
+            if (eligibleCount != subtreeSize)
+                return 0; // any node ineligible → retain the whole chain
+
+            var strategy = dbContext.Database.CreateExecutionStrategy();
+            try
+            {
+                return await strategy.ExecuteInTransactionAsync(
+                    operation: async _ =>
+                    {
+                        var deleted = 0;
+                        for (var i = levels.Count - 1; i >= 0; i--)
+                        {
+                            var levelIds = levels[i];
+                            if (levelIds.Count == 0)
+                                continue;
+                            deleted += await set
+                                .Where(x => levelIds.Contains(x.Id))
+                                .Where(eligible)
+                                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+                        }
+
+                        // All-or-nothing: a mismatch means a node was reactivated/removed concurrently.
+                        if (deleted != subtreeSize)
+                            throw new RetentionChainConcurrentlyModifiedException();
+
+                        return deleted;
+                    },
+                    verifySucceeded: async _ =>
+                        !await set.AsNoTracking().AnyAsync(x => x.Id == rootId, CancellationToken.None)
+                            .ConfigureAwait(false),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            catch (RetentionChainConcurrentlyModifiedException)
+            {
+                // The transaction rolled back; the chain is fully retained. Skip it this sweep.
+                return 0;
+            }
+        }
+
+        private sealed class RetentionChainConcurrentlyModifiedException : Exception
+        {
+        }
+
+        #endregion
+
         #region Cron_Ticker_Implementations
 
         public async Task<TCronTicker> GetCronTickerById(Guid id, CancellationToken cancellationToken)

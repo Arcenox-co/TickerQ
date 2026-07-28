@@ -34,6 +34,10 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.HasIndex("Status", "ExecutionTime")
                 .HasDatabaseName("IX_CronTickerOccurrence_Status_ExecutionTime");
 
+            // Index for retention sweeps: eligibility filters on terminal Status + ExecutedAt cutoff.
+            builder.HasIndex("Status", "ExecutedAt")
+                .HasDatabaseName("IX_CronTickerOccurrence_Status_ExecutedAt");
+
             builder.HasOne(x => x.CronTicker)
                 .WithMany()
                 .HasForeignKey(x => x.CronTickerId)

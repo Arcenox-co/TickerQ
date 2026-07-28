@@ -14,7 +14,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node test/canonicalContract.test.mjs && node test/registerFunctionPolicy.test.mjs",
+    "test": "npm run build && node test/canonicalContract.test.mjs && node test/registerFunctionPolicy.test.mjs && node test/parentContext.test.mjs",
     "watch": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"

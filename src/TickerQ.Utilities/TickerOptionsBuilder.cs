@@ -69,6 +69,24 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
+        /// Retention policy for historical terminal ticker records. Disabled by default; configure a
+        /// window via <see cref="ConfigureJobRetention"/> to opt in. Never null.
+        /// </summary>
+        public JobRetentionOptions JobRetention { get; } = new JobRetentionOptions();
+
+        /// <summary>
+        /// Enable and configure the built-in job-retention maintenance loop, which periodically deletes
+        /// historical terminal ticker records older than the per-status windows you set. Cron definitions
+        /// are never deleted. Retention stays disabled unless at least one window is configured.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureJobRetention(Action<JobRetentionOptions> configure)
+        {
+            configure?.Invoke(JobRetention);
+            JobRetention.Validate();
+            return this;
+        }
+
+        /// <summary>
         /// Gets or sets the minimum interval between database polls.
         /// Prevents tight loops when tasks are due or when the database is empty.
         /// </summary>

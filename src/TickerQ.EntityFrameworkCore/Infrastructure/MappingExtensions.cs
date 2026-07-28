@@ -130,11 +130,15 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             var propsToUpdate = functionContext.GetPropsToUpdate();
 
-            // LEASE — stamp on the InProgress transition so a node dying before the
-            // first renewal still leaves a detectable (expired) lease behind.
-            if (leaseUntil != null &&
-                propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
-                functionContext.Status == TickerStatus.InProgress)
+            // Terminal transitions always release the execution lease. Non-terminal root
+            // occurrences stamp a lease on InProgress so stale recovery can detect owner loss.
+            if (WritesTerminalStatus(functionContext, propsToUpdate))
+            {
+                setters.SetProperty(x => x.LeaseUntil, (DateTime?)null);
+            }
+            else if (leaseUntil != null &&
+                     propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
+                     functionContext.Status == TickerStatus.InProgress)
             {
                 setters.SetProperty(x => x.LeaseUntil, leaseUntil);
             }
@@ -237,11 +241,15 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             var propsToUpdate = functionContext.GetPropsToUpdate();
 
-            // LEASE — stamp on the InProgress transition so a node dying before the
-            // first renewal still leaves a detectable (expired) lease behind.
-            if (leaseUntil != null &&
-                propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
-                functionContext.Status == TickerStatus.InProgress)
+            // Chain children execute under the root aggregate lease and must never mint an
+            // independently recoverable lease. Every terminal transition clears legacy leases.
+            if (WritesTerminalStatus(functionContext, propsToUpdate))
+            {
+                setters.SetProperty(x => x.LeaseUntil, (DateTime?)null);
+            }
+            else if (functionContext.ParentId == null && leaseUntil != null &&
+                     propsToUpdate.Contains(nameof(InternalFunctionContext.Status)) &&
+                     functionContext.Status == TickerStatus.InProgress)
             {
                 setters.SetProperty(x => x.LeaseUntil, leaseUntil);
             }

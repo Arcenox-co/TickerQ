@@ -1905,4 +1905,79 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Equal(TickerStatus.Skipped, persisted.Status);
         Assert.Equal("cron overlap skip", persisted.SkippedReason);
     }
+
+    [Fact]
+    public async Task UpdateTimeTicker_ChildInProgress_DoesNotCreateStandaloneLease()
+    {
+        var parent = CreateTimeTicker();
+        var child = CreateTimeTicker(status: TickerStatus.Idle);
+        child.ParentId = parent.Id;
+        await SeedTimeTickers(parent, child);
+
+        var update = new InternalFunctionContext
+        {
+            TickerId = child.Id,
+            ParentId = child.ParentId,
+            Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.InProgress);
+
+        Assert.Equal(1, await _provider.UpdateTimeTicker(update, CancellationToken.None));
+
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id);
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+        Assert.Null(persisted.LeaseUntil);
+        Assert.Null(persisted.AcquisitionToken);
+        Assert.Null(persisted.LockHolder);
+    }
+
+    [Fact]
+    public async Task UpdateTimeTicker_ChildTerminalWrite_ClearsLegacyLease()
+    {
+        var parent = CreateTimeTicker();
+        var child = CreateTimeTicker(
+            status: TickerStatus.InProgress,
+            lockHolder: null,
+            lockedAt: null);
+        child.ParentId = parent.Id;
+        child.LeaseUntil = _fixedNow.AddMinutes(-1);
+        await SeedTimeTickers(parent, child);
+
+        var update = new InternalFunctionContext
+        {
+            TickerId = child.Id,
+            ParentId = child.ParentId,
+            Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.Done);
+
+        Assert.Equal(1, await _provider.UpdateTimeTicker(update, CancellationToken.None));
+
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id);
+        Assert.Equal(TickerStatus.Done, persisted.Status);
+        Assert.Null(persisted.LeaseUntil);
+    }
+
+    [Fact]
+    public async Task RecoverStaleTickers_DoesNotRecoverChainChildrenIndependently()
+    {
+        var parent = CreateTimeTicker();
+        var child = CreateTimeTicker(
+            status: TickerStatus.InProgress,
+            lockHolder: "dead-node",
+            lockedAt: _fixedNow.AddMinutes(-2));
+        child.ParentId = parent.Id;
+        child.LeaseUntil = _fixedNow.AddSeconds(-1);
+        child.OnStale = StaleAction.Restart;
+        await SeedTimeTickers(parent, child);
+
+        var result = await _provider.RecoverStaleTickers(2, CancellationToken.None);
+
+        Assert.Equal(0, result.RestartedTimeTickers);
+        Assert.Equal(0, result.CancelledTimeTickers);
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id);
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+        Assert.Equal("dead-node", persisted.LockHolder);
+    }
 }

@@ -106,11 +106,23 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
     public async Task ExecuteRegisteredTaskAsync(InternalFunctionContext context, bool isDue,
         CancellationTokenSource registeredSource, CancellationToken cancellationToken = default)
+        => await ExecuteTreeAsync(context, isDue, registeredSource, cancellationToken, isChild: false);
+
+    private async Task ExecuteTreeAsync(
+        InternalFunctionContext context,
+        bool isDue,
+        CancellationTokenSource registeredSource,
+        CancellationToken cancellationToken,
+        bool isChild,
+        Guid? chainRootId = null)
     {
+        context.ChainRootId = chainRootId ?? context.TickerId;
+
         if (context.Type == TickerType.CronTickerOccurrence)
         {
             // Root occurrence: reuse the acquisition-time registration if the caller supplied one.
-            await RunContextFunctionAsync(context, isDue, cancellationToken, preRegisteredSource: registeredSource);
+            await RunContextFunctionAsync(
+                context, isDue, cancellationToken, isChild, preRegisteredSource: registeredSource);
             return;
         }
 
@@ -126,7 +138,8 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         // Add parent (root) task — reuses the acquisition-time registration when supplied; children
         // below always self-register (preRegisteredSource stays null for them).
         tasksToRunNow[tasksToRunNowCount++] =
-            RunContextFunctionAsync(context, isDue, cancellationToken, preRegisteredSource: registeredSource);
+            RunContextFunctionAsync(
+                context, isDue, cancellationToken, isChild, preRegisteredSource: registeredSource);
 
         if (hasChildren)
         {
@@ -138,7 +151,8 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 if (child.CachedDelegate != null)
                 {
                     if (child.RunCondition == RunCondition.InProgress)
-                        tasksToRunNow[tasksToRunNowCount++] = SafeRecursiveExecution(child, isDue, cancellationToken);
+                        tasksToRunNow[tasksToRunNowCount++] = SafeRecursiveExecution(
+                            child, context.ChainRootId.Value, isDue, cancellationToken);
                     else
                     {
                         childrenToRunAfter[childrenToRunAfterCount++] = child;
@@ -166,7 +180,8 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 {
                     if (ShouldRunChild(child, context.Status))
                     {
-                        childrenToRunAfterTask[taskCount++] = SafeRecursiveExecution(child, isDue, cancellationToken);
+                        childrenToRunAfterTask[taskCount++] = SafeRecursiveExecution(
+                            child, context.ChainRootId.Value, isDue, cancellationToken);
                     }
                     else
                     {
@@ -176,10 +191,11 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                             $"Condition {child.RunCondition} not met (Parent status: {context.Status})"
                         );
                         child.ParentId = context.TickerId;
+                        child.ChainRootId = context.ChainRootId;
                         childrenToSkip.Add(child);
 
                         // Recursively gather all descendants to skip
-                        GatherDescendantsToSkip(child, childrenToSkip);
+                        GatherDescendantsToSkip(child, context.ChainRootId.Value, childrenToSkip);
                     }
                 }
             }
@@ -314,8 +330,14 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         var success = false;
 
         var effectiveTimeout = GetEffectiveTimeout(context);
+        // Qualified remote functions execute their retry policy inside the SDK. Core still
+        // forwards Retries/RetryIntervals through TickerFunctionContext, but must dispatch
+        // the remote delegate only once or both layers multiply the configured retries.
+        var usesRemoteRetryPolicy = !string.IsNullOrEmpty(context.FunctionName) &&
+                                    context.FunctionName.Contains('@');
+        var finalAttempt = usesRemoteRetryPolicy ? context.RetryCount : context.Retries;
 
-        for (var attempt = context.RetryCount; attempt <= context.Retries; attempt++)
+        for (var attempt = context.RetryCount; attempt <= finalAttempt; attempt++)
         {
             tickerFunctionContext.RetryCount = attempt;
 
@@ -325,7 +347,8 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             CancellationTokenSource attemptCts = null;
             try
             {
-                if (await WaitForRetry(context, cancellationToken, attempt, cancellationTokenSource)) break;
+                if (!usesRemoteRetryPolicy &&
+                    await WaitForRetry(context, cancellationToken, attempt, cancellationTokenSource)) break;
 
                 stopWatch.Restart();
 
@@ -511,7 +534,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 // by the post-loop block below as Error — guard with `attempt < Retries`
                 // so non-terminal attempts log as Warning instead and the final attempt
                 // isn't double-logged.
-                if (attempt < context.Retries)
+                if (attempt < finalAttempt)
                     _tickerQInstrumentation.LogJobAttemptFailed(
                         context.TickerId, context.FunctionName, attempt, context.Retries, stopWatch.ElapsedMilliseconds, ex);
 
@@ -723,25 +746,36 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         };
     }
 
-    private static void GatherDescendantsToSkip(InternalFunctionContext parent, List<InternalFunctionContext> skipList)
+    private static void GatherDescendantsToSkip(
+        InternalFunctionContext parent,
+        Guid chainRootId,
+        List<InternalFunctionContext> skipList)
     {
         if (parent.TimeTickerChildren == null || parent.TimeTickerChildren.Count == 0)
             return;
 
         foreach (var child in parent.TimeTickerChildren)
         {
+            child.ParentId = parent.TickerId;
+            child.ChainRootId = chainRootId;
             skipList.Add(child);
-            
+
             // Recursively gather grandchildren
-            GatherDescendantsToSkip(child, skipList);
+            GatherDescendantsToSkip(child, chainRootId, skipList);
         }
     }
 
-    private Task SafeRecursiveExecution(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
+    private Task SafeRecursiveExecution(
+        InternalFunctionContext context,
+        Guid chainRootId,
+        bool isDue,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            return ExecuteTaskAsync(context, isDue, cancellationToken);
+            return ExecuteTreeAsync(
+                context, isDue, registeredSource: null, cancellationToken, isChild: true,
+                chainRootId: chainRootId);
         }
         catch
         {

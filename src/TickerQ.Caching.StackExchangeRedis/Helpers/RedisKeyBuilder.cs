@@ -14,6 +14,14 @@ internal static class RedisKeyBuilder
     internal const string CronIdsKey = $"{Prefix}:cron:ids";
     internal const string CronOccurrenceIdsKey = $"{Prefix}:co:ids";
     internal const string CronOccurrencePendingKey = $"{Prefix}:co:pending";
+    internal const string TimeTickerRetentionSucceededKey = $"{Prefix}:tt:retention:succeeded";
+    internal const string TimeTickerRetentionFailedKey = $"{Prefix}:tt:retention:failed";
+    internal const string TimeTickerRetentionCancelledKey = $"{Prefix}:tt:retention:cancelled";
+    internal const string TimeTickerRetentionSkippedKey = $"{Prefix}:tt:retention:skipped";
+    internal const string CronOccurrenceRetentionSucceededKey = $"{Prefix}:co:retention:succeeded";
+    internal const string CronOccurrenceRetentionFailedKey = $"{Prefix}:co:retention:failed";
+    internal const string CronOccurrenceRetentionCancelledKey = $"{Prefix}:co:retention:cancelled";
+    internal const string CronOccurrenceRetentionSkippedKey = $"{Prefix}:co:retention:skipped";
 
     internal static string TimeTickerKey(Guid id) => $"{Prefix}:tt:{id}";
     internal static string CronKey(Guid id) => $"{Prefix}:cron:{id}";

@@ -84,6 +84,35 @@ public class PersistenceReliabilityCapabilityTests
         Assert.Equal(0, result.Total);
     }
 
+    // Retention seam: a provider that only implements the mandatory members must fail closed —
+    // it reports no retention support and its default delete methods refuse to run rather than
+    // silently no-op, so retention configured against an unsupported provider surfaces clearly.
+    [Fact]
+    public void Minimal_provider_does_not_support_retention()
+    {
+        Assert.False(MinimalProvider().SupportsRetention);
+    }
+
+    [Fact]
+    public async Task Minimal_provider_default_retention_time_delete_throws()
+    {
+        var provider = MinimalProvider();
+        var cutoffs = new RetentionCutoffs(DateTime.UtcNow, null, null, null);
+
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => provider.DeleteEligibleTimeTickerChainsAsync(cutoffs, batchSize: 100, RetentionCursor.Start));
+    }
+
+    [Fact]
+    public async Task Minimal_provider_default_retention_cron_delete_throws()
+    {
+        var provider = MinimalProvider();
+        var cutoffs = new RetentionCutoffs(DateTime.UtcNow, null, null, null);
+
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => provider.DeleteEligibleCronTickerOccurrencesAsync(cutoffs, batchSize: 100));
+    }
+
     // Captures warning-level log entries without pulling in a logging framework.
     private sealed class ListLogger<T> : ILogger<T>
     {

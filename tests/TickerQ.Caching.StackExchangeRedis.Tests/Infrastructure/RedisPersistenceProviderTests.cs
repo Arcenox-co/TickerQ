@@ -86,6 +86,66 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
     public Task DisposeAsync() => Task.CompletedTask;
 
+    [Fact]
+    public async Task RetentionIndex_TracksOnlyTerminalStandaloneTimeTickers()
+    {
+        var standalone = CreateTimeTicker(status: TickerStatus.Done);
+        standalone.ExecutedAt = _fixedNow.AddDays(-10);
+        var chained = CreateTimeTicker(status: TickerStatus.Done);
+        chained.ExecutedAt = _fixedNow.AddDays(-10);
+        chained.Children.Add(CreateTimeTicker(status: TickerStatus.Done));
+
+        await _provider.AddTimeTickers([standalone, chained], CancellationToken.None);
+
+        Assert.True(_sortedSets.TryGetValue($"{Prefix}:tt:retention:succeeded", out var indexed));
+        Assert.Contains(standalone.Id.ToString(), indexed!.Values);
+        Assert.DoesNotContain(chained.Id.ToString(), indexed.Values);
+    }
+
+    [Fact]
+    public async Task RetentionIndex_ReactivationRemovesTerminalCandidate()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Done);
+        ticker.ExecutedAt = _fixedNow.AddDays(-10);
+        await _provider.AddTimeTickers([ticker], CancellationToken.None);
+        Assert.Contains(ticker.Id.ToString(), _sortedSets[$"{Prefix}:tt:retention:succeeded"].Values);
+
+        await _provider.AcquireTimeTickerOnDemandAsync(ticker.Id, _fixedNow, CancellationToken.None);
+
+        Assert.False(_sortedSets.TryGetValue($"{Prefix}:tt:retention:succeeded", out var indexed) &&
+                     indexed.Values.Contains(ticker.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task UpdateTimeTicker_GrandchildMutatesEmbeddedRootAggregate()
+    {
+        var grandchild = CreateTimeTicker(status: TickerStatus.Idle);
+        var child = CreateTimeTicker(status: TickerStatus.Idle);
+        child.Children.Add(grandchild);
+        var root = CreateTimeTicker(status: TickerStatus.InProgress);
+        root.Children.Add(child);
+        child.ParentId = root.Id;
+        grandchild.ParentId = child.Id;
+        await _provider.AddTimeTickers([root], CancellationToken.None);
+
+        var update = new InternalFunctionContext
+        {
+            TickerId = grandchild.Id,
+            ParentId = child.Id,
+            ChainRootId = root.Id,
+            Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.InProgress);
+
+        Assert.Equal(1, await _provider.UpdateTimeTicker(update, CancellationToken.None));
+        var persisted = await _provider.GetTimeTickerById(root.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.InProgress, persisted!.Children.Single().Children.Single().Status);
+        Assert.Null(persisted.Children.Single().Children.Single().LeaseUntil);
+    }
+
+    [Fact]
+    public void SupportsRetention_IsTrue()
+        => Assert.True(_provider.SupportsRetention);
+
     #region IDatabase Mock Wiring
 
     private void SetupStringOperations()
@@ -224,6 +284,18 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
             });
 
         batch.SortedSetAddAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<double>(), Arg.Any<CommandFlags>())
+            .Returns(callInfo =>
+            {
+                var key = (string)callInfo.ArgAt<RedisKey>(0);
+                var member = (string)callInfo.ArgAt<RedisValue>(1);
+                var score = callInfo.ArgAt<double>(2);
+                if (!_sortedSets.ContainsKey(key)) _sortedSets[key] = new SortedList<double, string>();
+                _sortedSets[key][score] = member;
+                return true;
+            });
+
+        batch.SortedSetAddAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<double>(),
+                Arg.Any<SortedSetWhen>(), Arg.Any<CommandFlags>())
             .Returns(callInfo =>
             {
                 var key = (string)callInfo.ArgAt<RedisKey>(0);

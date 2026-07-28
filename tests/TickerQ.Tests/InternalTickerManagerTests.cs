@@ -1228,4 +1228,46 @@ public class InternalTickerManagerTests
         await _notificationHub.Received(1)
             .UpdateCronOccurrenceFromInternalFunctionContext<FakeCronTicker>(Arg.Any<InternalFunctionContext>());
     }
+
+    [Fact]
+    public async Task UpdateSkipTimeTickers_PersistsEachResourceWithGraphIdentity()
+    {
+        var rootId = Guid.NewGuid();
+        var child = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            ParentId = rootId,
+            ChainRootId = rootId,
+            Type = TickerType.TimeTicker
+        };
+        var grandchild = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            ParentId = child.TickerId,
+            ChainRootId = rootId,
+            Type = TickerType.TimeTicker
+        };
+        _persistence.UpdateTimeTicker(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
+            .Returns(1);
+
+        await _manager.UpdateSkipTimeTickersWithUnifiedContextAsync(
+            [child, grandchild], CancellationToken.None);
+
+        await _persistence.Received(1).UpdateTimeTicker(
+            Arg.Is<InternalFunctionContext>(x =>
+                ReferenceEquals(x, child) &&
+                x.ChainRootId == rootId &&
+                x.Status == TickerStatus.Skipped &&
+                x.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ExecutedAt))),
+            Arg.Any<CancellationToken>());
+        await _persistence.Received(1).UpdateTimeTicker(
+            Arg.Is<InternalFunctionContext>(x =>
+                ReferenceEquals(x, grandchild) &&
+                x.ChainRootId == rootId &&
+                x.Status == TickerStatus.Skipped &&
+                x.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ExceptionDetails))),
+            Arg.Any<CancellationToken>());
+        await _persistence.DidNotReceive().UpdateTimeTickersWithUnifiedContext(
+            Arg.Any<Guid[]>(), Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>());
+    }
 }

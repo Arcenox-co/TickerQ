@@ -25,6 +25,14 @@ namespace TickerQ.MongoDB.Infrastructure
         private readonly string _lockHolder;
         private readonly SchedulerOptionsBuilder _schedulerOptions;
 
+        internal const string RetentionLockHolder = "__tickerq_retention__";
+        private static readonly TimeSpan RetentionClaimLease = TimeSpan.FromMinutes(5);
+        private static readonly TickerStatus[] TerminalStatuses =
+        {
+            TickerStatus.Done, TickerStatus.DueDone, TickerStatus.Failed,
+            TickerStatus.Cancelled, TickerStatus.Skipped
+        };
+
         private static readonly Func<TTimeTicker, TimeTickerEntity> ProjectTimeTicker
             = MappingExtensions.ForQueueTimeTickers<TTimeTicker>().Compile();
 
@@ -203,7 +211,9 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             var now = _clock.UtcNow;
             var update = MongoUpdateBuilders.BuildTimeTickerUpdate<TTimeTicker>(functionContext, now, NextLeaseUntil(now));
-            var filter = Builders<TTimeTicker>.Filter.Eq(x => x.Id, functionContext.TickerId);
+            var filter = Builders<TTimeTicker>.Filter.And(
+                Builders<TTimeTicker>.Filter.Eq(x => x.Id, functionContext.TickerId),
+                Builders<TTimeTicker>.Filter.Ne(x => x.LockHolder, RetentionLockHolder));
             if (IsFencedTerminalWrite(functionContext) && functionContext.ParentId == null)
             {
                 var fb = Builders<TTimeTicker>.Filter;
@@ -239,7 +249,9 @@ namespace TickerQ.MongoDB.Infrastructure
             var update = MongoUpdateBuilders.BuildTimeTickerUpdate<TTimeTicker>(functionContext, now, NextLeaseUntil(now));
             await _context.TimeTickers
                 .UpdateManyAsync(
-                    Builders<TTimeTicker>.Filter.In(x => x.Id, timeTickerIds),
+                    Builders<TTimeTicker>.Filter.And(
+                        Builders<TTimeTicker>.Filter.In(x => x.Id, timeTickerIds),
+                        Builders<TTimeTicker>.Filter.Ne(x => x.LockHolder, RetentionLockHolder)),
                     update,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
@@ -308,15 +320,17 @@ namespace TickerQ.MongoDB.Infrastructure
             var now = _clock.UtcNow;
             var token = Guid.NewGuid();
             var fb = Builders<TTimeTicker>.Filter;
+            var terminal = fb.In(x => x.Status, TerminalStatuses);
+            var terminalOwnershipAvailable = fb.Or(
+                fb.Eq(x => x.AcquisitionToken, (Guid?)null),
+                fb.And(
+                    fb.Eq(x => x.LockHolder, RetentionLockHolder),
+                    fb.Lte(x => x.LeaseUntil, now)));
             var eligible = fb.Or(
                 fb.Eq(x => x.Status, TickerStatus.Idle),
                 fb.And(fb.Eq(x => x.Status, TickerStatus.Queued),
                     fb.Or(fb.Eq(x => x.LockHolder, null), fb.Eq(x => x.LockHolder, _lockHolder))),
-                fb.In(x => x.Status, new[]
-                {
-                    TickerStatus.Done, TickerStatus.DueDone, TickerStatus.Failed,
-                    TickerStatus.Cancelled, TickerStatus.Skipped
-                }));
+                fb.And(terminal, terminalOwnershipAvailable));
             var filter = fb.And(fb.Eq(x => x.Id, id), eligible);
             var update = Builders<TTimeTicker>.Update
                 .Set(x => x.ExecutionTime, executionTime)
@@ -984,6 +998,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var staleLockCutoff = now.Subtract(_schedulerOptions.QueuedLockTimeout);
             var timeQueuedFilters = Builders<TTimeTicker>.Filter;
             var staleQueuedTime = timeQueuedFilters.And(
+                timeQueuedFilters.Eq(x => x.ParentId, (Guid?)null),
                 timeQueuedFilters.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
                 timeQueuedFilters.Ne(x => x.LockHolder, null),
                 timeQueuedFilters.Ne(x => x.LockedAt, null),
@@ -1018,6 +1033,7 @@ namespace TickerQ.MongoDB.Infrastructure
 
             var timeFilters = Builders<TTimeTicker>.Filter;
             var staleTime = timeFilters.And(
+                timeFilters.Eq(x => x.ParentId, (Guid?)null),
                 timeFilters.Eq(x => x.Status, TickerStatus.InProgress),
                 timeFilters.Ne(x => x.LeaseUntil, null),
                 timeFilters.Lt(x => x.LeaseUntil, now));
@@ -1110,6 +1126,217 @@ namespace TickerQ.MongoDB.Infrastructure
             result.CancelledCronOccurrences = (int)cancelOccurrenceResult.ModifiedCount;
 
             return result;
+        }
+
+        // ===================================================================
+        // Retention
+        // ===================================================================
+
+        public bool SupportsRetention => true;
+
+        private static FilterDefinition<TTimeTicker> TimeRetentionEligible(
+            RetentionCutoffs cutoffs, DateTime now)
+        {
+            var fb = Builders<TTimeTicker>.Filter;
+            var outcomes = new List<FilterDefinition<TTimeTicker>>(4);
+            if (cutoffs.SucceededBefore is { } succeeded)
+                outcomes.Add(fb.And(
+                    fb.In(x => x.Status, new[] { TickerStatus.Done, TickerStatus.DueDone }),
+                    fb.Ne(x => x.ExecutedAt, (DateTime?)null),
+                    fb.Lt(x => x.ExecutedAt, succeeded)));
+            if (cutoffs.FailedBefore is { } failed)
+                outcomes.Add(fb.And(fb.Eq(x => x.Status, TickerStatus.Failed),
+                    fb.Ne(x => x.ExecutedAt, (DateTime?)null), fb.Lt(x => x.ExecutedAt, failed)));
+            if (cutoffs.CancelledBefore is { } cancelled)
+                outcomes.Add(fb.And(fb.Eq(x => x.Status, TickerStatus.Cancelled),
+                    fb.Ne(x => x.ExecutedAt, (DateTime?)null), fb.Lt(x => x.ExecutedAt, cancelled)));
+            if (cutoffs.SkippedBefore is { } skipped)
+                outcomes.Add(fb.And(fb.Eq(x => x.Status, TickerStatus.Skipped),
+                    fb.Ne(x => x.ExecutedAt, (DateTime?)null), fb.Lt(x => x.ExecutedAt, skipped)));
+
+            if (outcomes.Count == 0)
+                return fb.Where(_ => false);
+
+            return fb.And(
+                fb.Or(outcomes),
+                fb.Eq(x => x.AcquisitionToken, (Guid?)null),
+                fb.Or(fb.Eq(x => x.LeaseUntil, (DateTime?)null), fb.Lte(x => x.LeaseUntil, now)));
+        }
+
+        private static FilterDefinition<CronTickerOccurrenceEntity<TCronTicker>> OccurrenceRetentionEligible(
+            RetentionCutoffs cutoffs, DateTime now)
+        {
+            var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+            var outcomes = new List<FilterDefinition<CronTickerOccurrenceEntity<TCronTicker>>>(4);
+            if (cutoffs.SucceededBefore is { } succeeded)
+                outcomes.Add(fb.And(
+                    fb.In(x => x.Status, new[] { TickerStatus.Done, TickerStatus.DueDone }),
+                    fb.Ne(x => x.ExecutedAt, (DateTime?)null),
+                    fb.Lt(x => x.ExecutedAt, succeeded)));
+            if (cutoffs.FailedBefore is { } failed)
+                outcomes.Add(fb.And(fb.Eq(x => x.Status, TickerStatus.Failed),
+                    fb.Ne(x => x.ExecutedAt, (DateTime?)null), fb.Lt(x => x.ExecutedAt, failed)));
+            if (cutoffs.CancelledBefore is { } cancelled)
+                outcomes.Add(fb.And(fb.Eq(x => x.Status, TickerStatus.Cancelled),
+                    fb.Ne(x => x.ExecutedAt, (DateTime?)null), fb.Lt(x => x.ExecutedAt, cancelled)));
+            if (cutoffs.SkippedBefore is { } skipped)
+                outcomes.Add(fb.And(fb.Eq(x => x.Status, TickerStatus.Skipped),
+                    fb.Ne(x => x.ExecutedAt, (DateTime?)null), fb.Lt(x => x.ExecutedAt, skipped)));
+
+            if (outcomes.Count == 0)
+                return fb.Where(_ => false);
+
+            return fb.And(
+                fb.Or(outcomes),
+                fb.Eq(x => x.AcquisitionToken, (Guid?)null),
+                fb.Or(fb.Eq(x => x.LeaseUntil, (DateTime?)null), fb.Lte(x => x.LeaseUntil, now)));
+        }
+
+        private async Task RecoverExpiredRetentionClaimsAsync(DateTime now, CancellationToken cancellationToken)
+        {
+            var fb = Builders<TTimeTicker>.Filter;
+            var expiredClaim = fb.And(
+                fb.Eq(x => x.LockHolder, RetentionLockHolder),
+                fb.In(x => x.Status, TerminalStatuses),
+                fb.Ne(x => x.AcquisitionToken, (Guid?)null),
+                fb.Lte(x => x.LeaseUntil, now));
+            await _context.TimeTickers.UpdateManyAsync(
+                expiredClaim,
+                Builders<TTimeTicker>.Update
+                    .Set(x => x.LockHolder, (string)null)
+                    .Set(x => x.LockedAt, (DateTime?)null)
+                    .Set(x => x.LeaseUntil, (DateTime?)null)
+                    .Set(x => x.AcquisitionToken, (Guid?)null),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<RetentionChainBatchResult> DeleteEligibleTimeTickerChainsAsync(
+            RetentionCutoffs cutoffs, int batchSize, RetentionCursor cursor,
+            CancellationToken cancellationToken = default)
+        {
+            if (cutoffs is null || !cutoffs.HasAny || batchSize <= 0)
+                return RetentionChainBatchResult.Empty;
+
+            var now = _clock.UtcNow;
+            await RecoverExpiredRetentionClaimsAsync(now, cancellationToken).ConfigureAwait(false);
+
+            var coll = _context.TimeTickers;
+            var fb = Builders<TTimeTicker>.Filter;
+            var eligible = TimeRetentionEligible(cutoffs, now);
+            var rootFilter = fb.And(fb.Eq(x => x.ParentId, (Guid?)null), eligible);
+            if (cursor.HasValue)
+            {
+                rootFilter = fb.And(rootFilter, fb.Or(
+                    fb.Gt(x => x.ExecutedAt, cursor.ExecutedAt),
+                    fb.And(fb.Eq(x => x.ExecutedAt, cursor.ExecutedAt), fb.Gt(x => x.Id, cursor.Id))));
+            }
+
+            var roots = await coll.Find(rootFilter)
+                .Sort(Builders<TTimeTicker>.Sort.Ascending(x => x.ExecutedAt).Ascending(x => x.Id))
+                .Limit(batchSize + 1)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+            var hasMore = roots.Count > batchSize;
+            if (hasMore)
+                roots.RemoveAt(roots.Count - 1);
+            if (roots.Count == 0)
+                return RetentionChainBatchResult.Empty;
+
+            var deleted = 0;
+            foreach (var root in roots)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var descendants = await CollectDescendantIds(root.Id, cancellationToken).ConfigureAwait(false);
+                descendants.Add(root.Id);
+
+                var subtreeFilter = fb.In(x => x.Id, descendants);
+                var eligibleCount = await coll.CountDocumentsAsync(
+                    fb.And(subtreeFilter, eligible), cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (eligibleCount != descendants.Count)
+                    continue;
+
+                var claimToken = Guid.NewGuid();
+                var claimUntil = now.Add(RetentionClaimLease);
+                var claim = await coll.UpdateManyAsync(
+                    fb.And(subtreeFilter, eligible),
+                    Builders<TTimeTicker>.Update
+                        .Set(x => x.AcquisitionToken, claimToken)
+                        .Set(x => x.LockHolder, RetentionLockHolder)
+                        .Set(x => x.LockedAt, now)
+                        .Set(x => x.LeaseUntil, claimUntil),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                var claimedFilter = fb.And(
+                    subtreeFilter,
+                    fb.Eq(x => x.LockHolder, RetentionLockHolder),
+                    fb.Eq(x => x.AcquisitionToken, claimToken));
+                if (claim.ModifiedCount != descendants.Count)
+                {
+                    await ReleaseRetentionClaimAsync(claimedFilter, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                var claimStillHeld = true;
+                try
+                {
+                    var result = await coll.DeleteManyAsync(claimedFilter, cancellationToken).ConfigureAwait(false);
+                    if (result.DeletedCount != descendants.Count)
+                        throw new InvalidOperationException(
+                            "MongoDB retention claim was lost during chain deletion; the partial provider result cannot be treated as success.");
+                    deleted += (int)result.DeletedCount;
+                    claimStillHeld = false;
+                }
+                finally
+                {
+                    if (claimStillHeld)
+                        await ReleaseRetentionClaimAsync(claimedFilter, CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+
+            var last = roots[^1];
+            var next = hasMore
+                ? RetentionCursor.After(last.ExecutedAt!.Value, last.Id)
+                : RetentionCursor.Start;
+            return new RetentionChainBatchResult(deleted, hasMore, next);
+        }
+
+        private async Task ReleaseRetentionClaimAsync(
+            FilterDefinition<TTimeTicker> claimedFilter, CancellationToken cancellationToken)
+        {
+            await _context.TimeTickers.UpdateManyAsync(
+                claimedFilter,
+                Builders<TTimeTicker>.Update
+                    .Set(x => x.LockHolder, (string)null)
+                    .Set(x => x.LockedAt, (DateTime?)null)
+                    .Set(x => x.LeaseUntil, (DateTime?)null)
+                    .Set(x => x.AcquisitionToken, (Guid?)null),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<RetentionBatchResult> DeleteEligibleCronTickerOccurrencesAsync(
+            RetentionCutoffs cutoffs, int batchSize, CancellationToken cancellationToken = default)
+        {
+            if (cutoffs is null || !cutoffs.HasAny || batchSize <= 0)
+                return RetentionBatchResult.Empty;
+
+            var now = _clock.UtcNow;
+            var coll = _context.CronTickerOccurrences;
+            var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+            var eligible = OccurrenceRetentionEligible(cutoffs, now);
+            var candidates = await coll.Find(eligible)
+                .Sort(Builders<CronTickerOccurrenceEntity<TCronTicker>>.Sort
+                    .Ascending(x => x.ExecutedAt).Ascending(x => x.Id))
+                .Project(x => x.Id)
+                .Limit(batchSize + 1)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+            var hasMore = candidates.Count > batchSize;
+            if (hasMore)
+                candidates.RemoveAt(candidates.Count - 1);
+            if (candidates.Count == 0)
+                return RetentionBatchResult.Empty;
+
+            var result = await coll.DeleteManyAsync(
+                fb.And(fb.In(x => x.Id, candidates), eligible), cancellationToken).ConfigureAwait(false);
+            return new RetentionBatchResult((int)result.DeletedCount, hasMore);
         }
 
         // ===================================================================

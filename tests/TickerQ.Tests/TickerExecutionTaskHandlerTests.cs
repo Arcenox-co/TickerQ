@@ -329,6 +329,26 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteTaskAsync_QualifiedRemoteDelegate_DoesNotApplyCoreRetries()
+    {
+        var calls = 0;
+        var context = CreateContext(ct: (_, _, _) =>
+        {
+            calls++;
+            throw new InvalidOperationException("remote final failure");
+        });
+        context.FunctionName = "RemoteJob@node-a";
+        context.Retries = 3;
+        context.RetryIntervals = [0, 0, 0];
+
+        await _handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(1, calls);
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Equal(0, context.RetryCount);
+    }
+
+    [Fact]
     public async Task ExecuteTaskAsync_UpdatesExceptionDetails_OnFailedAttemptBeforeRetriesComplete()
     {
         var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
@@ -452,6 +472,34 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     #endregion
 
     #region Parent-Child Execution (TimeTicker)
+
+    [Fact]
+    public async Task ExecuteTaskAsync_ChildPersistsInProgressBeforeTerminalState()
+    {
+        var parentContext = CreateContext(
+            type: TickerType.TimeTicker,
+            ct: (_, _, _) => Task.CompletedTask);
+        var childContext = CreateContext(
+            type: TickerType.TimeTicker,
+            ct: (_, _, _) => Task.CompletedTask);
+        childContext.ParentId = parentContext.TickerId;
+        childContext.RunCondition = RunCondition.OnSuccess;
+        parentContext.TimeTickerChildren.Add(childContext);
+
+        var childStatuses = new List<TickerStatus>();
+        _internalManager.UpdateTickerAsync(
+                Arg.Is<InternalFunctionContext>(candidate => candidate.TickerId == childContext.TickerId),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                childStatuses.Add(call.ArgAt<InternalFunctionContext>(0).Status);
+                return Task.CompletedTask;
+            });
+
+        await _handler.ExecuteTaskAsync(parentContext, isDue: false);
+
+        Assert.Equal([TickerStatus.InProgress, TickerStatus.Done], childStatuses);
+    }
 
     [Fact]
     public async Task ExecuteTaskAsync_RunsInProgressChildren_ConcurrentlyWithParent()
@@ -641,9 +689,10 @@ public class TickerExecutionTaskHandlerTests : IDisposable
 
         await _handler.ExecuteTaskAsync(parentContext, isDue: false);
 
-        // The skipped children should be bulk-updated
         await _internalManager.Received().UpdateSkipTimeTickersWithUnifiedContextAsync(
-            Arg.Any<InternalFunctionContext[]>(),
+            Arg.Is<InternalFunctionContext[]>(resources =>
+                resources.Length == 2 &&
+                resources.All(resource => resource.ChainRootId == parentContext.TickerId)),
             Arg.Any<CancellationToken>());
     }
 

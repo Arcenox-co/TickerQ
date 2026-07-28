@@ -26,6 +26,13 @@ namespace TickerQ.Utilities.Models
         public string RequestContractFingerprint { get; set; }
         public Guid TickerId { get; set; }
         public Guid? ParentId { get; set; }
+        /// <summary>
+        /// Root aggregate that durably owns this execution. Equal to <see cref="TickerId"/>
+        /// for roots and propagated unchanged to every chain descendant. Execution-only;
+        /// providers such as Redis use it to update children embedded in the root document.
+        /// </summary>
+        [JsonIgnore]
+        public Guid? ChainRootId { get; set; }
         public TickerType Type { get; set; }
         public int Retries { get; set; }
         public int RetryCount { get; set; }
