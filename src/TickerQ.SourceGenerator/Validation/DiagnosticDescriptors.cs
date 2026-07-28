@@ -105,5 +105,31 @@ namespace TickerQ.SourceGenerator.Validation
             DiagnosticSeverity.Error,
             true
         );
+
+        /// <summary>
+        /// Request type's wire shape cannot be represented as a JSON Schema 2020-12 document. No schema
+        /// is emitted (a misleading schema is never produced); the function still registers.
+        /// </summary>
+        public static readonly DiagnosticDescriptor UnsupportedRequestSchema = new DiagnosticDescriptor(
+            "TQ012",
+            "Unsupported request schema",
+            "A JSON schema could not be generated for the request of function '{0}': {1}. The function is registered without a schema.",
+            "TickerQ.SourceGenerator",
+            DiagnosticSeverity.Warning,
+            true
+        );
+
+        /// <summary>
+        /// A custom JSON converter changes the wire shape beyond what the generator can infer. No schema
+        /// is emitted; use a statically inferable request wire type or remove the converter.
+        /// </summary>
+        public static readonly DiagnosticDescriptor CustomConverterRequestSchema = new DiagnosticDescriptor(
+            "TQ013",
+            "Custom converter changes request wire shape",
+            "The request of function '{0}' uses custom converter '{1}' that changes the JSON wire shape; a schema cannot be inferred. Remove the converter or use a request type with a statically inferable JSON shape. The function is registered without a schema.",
+            "TickerQ.SourceGenerator",
+            DiagnosticSeverity.Warning,
+            true
+        );
     }
 }

@@ -1,9 +1,11 @@
 ﻿using System;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 
 namespace TickerQ.Utilities
@@ -17,6 +19,54 @@ namespace TickerQ.Utilities
         /// Can be configured during application startup via TickerOptionsBuilder.
         /// </summary>
         public static JsonSerializerOptions RequestJsonSerializerOptions { get; set; } = new();
+
+        [UnconditionalSuppressMessage("Trimming", "IL2026",
+            Justification = "DefaultJsonTypeInfoResolver is created only when reflection serialization is enabled; Native AOT uses the configured source-generated resolver branch.")]
+        [UnconditionalSuppressMessage("AOT", "IL3050",
+            Justification = "DefaultJsonTypeInfoResolver is created only when reflection serialization is enabled; Native AOT uses the configured source-generated resolver branch.")]
+        internal static JsonSerializerOptions GetEffectiveRequestJsonSerializerOptions()
+        {
+            var options = RequestJsonSerializerOptions ??= new JsonSerializerOptions();
+            if (options.TypeInfoResolver != null)
+                return options;
+
+            if (!JsonSerializer.IsReflectionEnabledByDefault)
+                throw new InvalidOperationException(
+                    "Ticker request JsonTypeInfo is unavailable because reflection serialization is disabled. " +
+                    "Configure AddTickerQ with WithJsonContext using a source-generated context that includes every request type.");
+
+            // Do not mutate caller-owned options while Build is still staging registrations.
+            return new JsonSerializerOptions(options)
+            {
+                TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+            };
+        }
+
+        internal static void ValidateGeneratedSchemaSerializerProfile()
+            => ValidateGeneratedSchemaSerializerProfile(RequestJsonSerializerOptions ?? new JsonSerializerOptions());
+
+        internal static void ValidateGeneratedSchemaSerializerProfile(JsonSerializerOptions options)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            string incompatible = null;
+
+            if (options.PropertyNamingPolicy != null) incompatible = nameof(options.PropertyNamingPolicy);
+            else if (options.DictionaryKeyPolicy != null) incompatible = nameof(options.DictionaryKeyPolicy);
+            else if (options.IncludeFields) incompatible = nameof(options.IncludeFields);
+            else if (options.DefaultIgnoreCondition != JsonIgnoreCondition.Never) incompatible = nameof(options.DefaultIgnoreCondition);
+            else if (options.IgnoreReadOnlyProperties) incompatible = nameof(options.IgnoreReadOnlyProperties);
+            else if (options.IgnoreReadOnlyFields) incompatible = nameof(options.IgnoreReadOnlyFields);
+            else if (options.NumberHandling != JsonNumberHandling.Strict) incompatible = nameof(options.NumberHandling);
+            else if (options.PropertyNameCaseInsensitive) incompatible = nameof(options.PropertyNameCaseInsensitive);
+            else if (options.ReferenceHandler != null) incompatible = nameof(options.ReferenceHandler);
+            else if (options.UnmappedMemberHandling != JsonUnmappedMemberHandling.Skip) incompatible = nameof(options.UnmappedMemberHandling);
+            else if (options.Converters.Count != 0) incompatible = nameof(options.Converters);
+
+            if (incompatible != null)
+                throw new InvalidOperationException(
+                    $"Ticker request JSON option '{incompatible}' changes the wire shape and is incompatible with compile-time generated request schemas. " +
+                    "Use the default TickerQ request serializer profile or provide an explicit request contract through a non-generated registration path.");
+        }
         
         /// <summary>
         /// Controls whether ticker requests are GZip-compressed.
@@ -24,6 +74,8 @@ namespace TickerQ.Utilities
         /// </summary>
         public static bool UseGZipCompression { get; set; } = false;
 
+        [RequiresUnreferencedCode("Legacy request serialization may use reflection metadata. Use the function-aware or JsonTypeInfo overload for trimming/AOT.")]
+        [RequiresDynamicCode("Legacy request serialization may require runtime JSON metadata. Use the function-aware or JsonTypeInfo overload for Native AOT.")]
         public static byte[] CreateTickerRequest<T>(T data)
         {
             // If data is already a byte array, short-circuit where possible
@@ -72,6 +124,23 @@ namespace TickerQ.Utilities
             return returnVal;
         }
 
+        /// <summary>
+        /// Serializes with a function's registered runtime contract when available, falling
+        /// back to the configured global options for registrations without runtime JSON metadata.
+        /// </summary>
+        [UnconditionalSuppressMessage("Trimming", "IL2026",
+            Justification = "Registered source-generated functions return before the legacy fallback; missing metadata is an explicitly non-AOT legacy path.")]
+        [UnconditionalSuppressMessage("AOT", "IL3050",
+            Justification = "Registered source-generated functions return before the legacy fallback; missing metadata is an explicitly non-AOT legacy path.")]
+        public static byte[] CreateTickerRequest<T>(T data, string functionName)
+        {
+            return TickerFunctionProvider.TryGetRequestTypeInfo<T>(functionName, out var typeInfo)
+                ? CreateTickerRequest(data, typeInfo)
+                : CreateTickerRequest(data);
+        }
+
+        [RequiresUnreferencedCode("Legacy request deserialization may use reflection metadata. Use the JsonTypeInfo overload for trimming/AOT.")]
+        [RequiresDynamicCode("Legacy request deserialization may require runtime JSON metadata. Use the JsonTypeInfo overload for Native AOT.")]
         public static T ReadTickerRequest<T>(byte[] gzipBytes)
         {
             if (gzipBytes == null || gzipBytes.Length == 0)

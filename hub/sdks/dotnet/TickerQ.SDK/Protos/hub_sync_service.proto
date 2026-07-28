@@ -38,6 +38,24 @@ message SyncFunctionDescriptor {
   string request_example_json = 3;
   HubTaskPriority task_priority = 4;
   string expression = 5;
+  int32 contract_version = 6;
+  optional RequestContract request_contract = 7;
+}
+
+message RequestContract {
+  string type_name = 1;
+  string media_type = 2;
+  bool required = 3;
+  string schema_dialect = 4;
+  optional string schema_json = 5;
+  optional string fingerprint = 6;
+  repeated RequestExample examples = 7;
+}
+
+message RequestExample {
+  string key = 1;
+  optional string summary = 2;
+  string value_json = 3;
 }
 
 message SyncNodesFunctionsResponse {

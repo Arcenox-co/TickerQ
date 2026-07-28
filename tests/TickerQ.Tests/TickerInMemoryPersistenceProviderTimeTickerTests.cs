@@ -104,6 +104,89 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
     #endregion
 
     [Fact]
+    public async Task ReplaceTimeTickerChainAsync_DuplicateReplacementIds_LeavesOriginalAndWritesNothing()
+    {
+        var originalRoot = CreateTicker(function: "OriginalRoot");
+        var originalChild = CreateTicker(function: "OriginalChild", parentId: originalRoot.Id);
+        originalRoot.Children.Add(originalChild);
+        await _provider.AddTimeTickers(new[] { originalRoot }, CancellationToken.None);
+        _createdTimeTickerIds.Add(originalRoot.Id);
+
+        var duplicateId = Guid.NewGuid();
+        var replacementRoot = CreateTicker(id: duplicateId, function: "ReplacementRoot");
+        replacementRoot.Children.Add(CreateTicker(
+            id: duplicateId,
+            function: "ReplacementChild",
+            parentId: replacementRoot.Id));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _provider.ReplaceTimeTickerChainAsync(
+                originalRoot.Id,
+                replacementRoot,
+                CancellationToken.None));
+
+        var persistedRoot = await _provider.GetTimeTickerById(originalRoot.Id, CancellationToken.None);
+        var persistedChild = await _provider.GetTimeTickerById(originalChild.Id, CancellationToken.None);
+        var partialReplacement = await _provider.GetTimeTickerById(duplicateId, CancellationToken.None);
+
+        Assert.Equal("OriginalRoot", persistedRoot?.Function);
+        Assert.Equal("OriginalChild", persistedChild?.Function);
+        Assert.Null(partialReplacement);
+    }
+
+    [Fact]
+    public async Task ReplaceTimeTickerChainAsync_ConcurrentReader_NeverObservesTornGraph()
+    {
+        // Seed the original aggregate (root + child).
+        var oldRoot = CreateTicker(function: "OldRoot");
+        var oldChild = CreateTicker(function: "OldChild", parentId: oldRoot.Id);
+        oldRoot.Children.Add(oldChild);
+        await _provider.AddTimeTickers(new[] { oldRoot }, CancellationToken.None);
+        _createdTimeTickerIds.Add(oldRoot.Id);
+
+        var newRoot = CreateTicker(function: "NewRoot");
+        var newChild = CreateTicker(function: "NewChild", parentId: newRoot.Id);
+        newRoot.Children.Add(newChild);
+        _createdTimeTickerIds.Add(newRoot.Id);
+
+        Task<FakeTimeTicker[]> readerTask = null;
+        int? rootCountObservedMidWrite = null;
+
+        // The seam fires while the write lock is held and BOTH aggregates are present.
+        // A correctly fenced reader (GetTimeTickers → ReadGraph) blocks on the read lock
+        // and cannot complete inside this window; a non-atomic implementation would let
+        // it run and observe two roots (a doubled/torn graph). Making the reader observe
+        // the mid-write window deterministic — not timing-dependent — is the whole point
+        // of the seam: correct code ALWAYS blocks here, broken code ALWAYS races through.
+        TickerInMemoryPersistenceProvider<FakeTimeTicker, FakeCronTicker>.GraphReplacementMidpointHook = () =>
+        {
+            readerTask = Task.Run(() => _provider.GetTimeTickers(null, CancellationToken.None));
+            if (readerTask.Wait(TimeSpan.FromMilliseconds(500)))
+                rootCountObservedMidWrite = readerTask.Result.Length;
+        };
+
+        try
+        {
+            await _provider.ReplaceTimeTickerChainAsync(oldRoot.Id, newRoot, CancellationToken.None);
+        }
+        finally
+        {
+            TickerInMemoryPersistenceProvider<FakeTimeTicker, FakeCronTicker>.GraphReplacementMidpointHook = null;
+        }
+
+        // The reader was fenced out of the mid-replacement window: it did not complete
+        // while the write lock was held, so it never observed the doubled graph.
+        Assert.Null(rootCountObservedMidWrite);
+
+        // Once the write released the lock, the same read returns exactly one consistent
+        // aggregate — the new one — never a torn root/child or a leftover old root.
+        var observed = await readerTask;
+        var observedRoot = Assert.Single(observed);
+        Assert.Equal("NewRoot", observedRoot.Function);
+        Assert.Equal("NewChild", Assert.Single(observedRoot.Children).Function);
+    }
+
+    [Fact]
     public async Task AcquireTimeTickerOnDemand_ReturnsGenerationAndTimeoutsForEntireChain()
     {
         var root = CreateTicker();
@@ -700,6 +783,8 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
     {
         // Arrange: two acquirable tickers at different times within the scheduler window
         var early = CreateTicker(function: "EarliestFunc", executionTime: _now.AddSeconds(1));
+        early.RequestContractVersion = 31;
+        early.RequestContractFingerprint = "sha256:in-memory-time-contract";
         var late = CreateTicker(function: "LaterFunc", executionTime: _now.AddMinutes(5));
         await InsertAndTrack(early);
         await InsertAndTrack(late);
@@ -709,7 +794,9 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
 
         // Assert: the earliest ticker within the same second should be returned
         Assert.NotEmpty(results);
-        Assert.Contains(results, r => r.Id == early.Id);
+        var projected = Assert.Single(results, r => r.Id == early.Id);
+        Assert.Equal(early.RequestContractVersion, projected.RequestContractVersion);
+        Assert.Equal(early.RequestContractFingerprint, projected.RequestContractFingerprint);
     }
 
     [Fact]

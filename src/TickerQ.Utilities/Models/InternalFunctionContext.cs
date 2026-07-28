@@ -22,6 +22,8 @@ namespace TickerQ.Utilities.Models
         public TickerTaskPriority CachedPriority { get; set; }
         public int CachedMaxConcurrency { get; set; }
         public string FunctionName { get; set; }
+        public int? RequestContractVersion { get; set; }
+        public string RequestContractFingerprint { get; set; }
         public Guid TickerId { get; set; }
         public Guid? ParentId { get; set; }
         public TickerType Type { get; set; }

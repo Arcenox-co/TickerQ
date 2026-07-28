@@ -5,6 +5,12 @@ import {
   type UseQueryOptions,
 } from "@tanstack/react-query";
 import { dashboardApi } from "./dashboard-api";
+import {
+  assertChainLevelFits,
+  assertChainTraversalComplete,
+  CHAIN_MAX_DEPTH,
+  CHAIN_MAX_NODES,
+} from "@/lib/cron/chain-traversal";
 import type {
   AddCronTickerRequest,
   AddTimeTickerChainRequest,
@@ -248,9 +254,6 @@ export function useNodes() {
 // Depth bound matches the chain builder's MAX_DEPTH (20) so any chain the UI
 // can create also renders fully. The node cap is the real safety valve — it
 // bounds request fan-out on pathological trees regardless of depth.
-const CHAIN_MAX_DEPTH = 20;
-const CHAIN_MAX_NODES = 500;
-
 const ACTIVE_STATUSES = ["Idle", "Queued", "InProgress"];
 
 export function useChainTickers(rootId: string | null) {
@@ -276,9 +279,11 @@ export function useChainTickers(rootId: string | null) {
           frontier.map((t) => dashboardApi.getTimeTickerChildren(t.id, signal))
         );
         const next = childLists.flat();
+        assertChainLevelFits(all.length, next.length);
         all.push(...next);
         frontier = next;
       }
+      assertChainTraversalComplete(frontier.length);
       return all;
     },
   });
@@ -395,6 +400,14 @@ export function useAddTimeTickerChain() {
   return useMutation({
     mutationFn: (body: AddTimeTickerChainRequest) =>
       dashboardApi.addTimeTickerChain(body),
+    onSuccess: () => invalidateAll(qc),
+  });
+}
+export function useReplaceTimeTickerChain() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ rootId, body }: { rootId: string; body: AddTimeTickerChainRequest }) =>
+      dashboardApi.replaceTimeTickerChain(rootId, body),
     onSuccess: () => invalidateAll(qc),
   });
 }

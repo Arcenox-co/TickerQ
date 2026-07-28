@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Checkbox } from "@/components/ui/checkbox";
 import { TextField } from "@/components/form-fields/text-field";
-import { TextareaField } from "@/components/form-fields/textarea-field";
+
 import { NumberField } from "@/components/form-fields/number-field";
 import {
   SelectField,
@@ -29,7 +29,14 @@ import {
   CronExpressionPreview,
   isValidCronExpression,
 } from "@/components/cron/CronExpressionPreview";
-import { ON_STALE_OPTIONS } from "@/components/cron/CreateTimeTickerDialog";
+import { ON_STALE_OPTIONS } from "@/lib/cron/ticker-form-options";
+import type { FunctionInfoDto } from "@/services/api-types";
+import {
+  initialPayloadForFunction,
+  RequestPayloadEditor,
+  validateRequestPayload,
+} from "@/components/cron/RequestPayloadEditor";
+import { createDraftState, selectFunction } from "@/lib/function-draft";
 
 const schema = z.object({
   function: z.string().trim().min(1, "Function is required"),
@@ -66,11 +73,13 @@ export function CreateCronTickerDialog({
   open,
   onOpenChange,
   functionOptions = [],
+  functions = [],
   onSubmit,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   functionOptions?: SelectOption[];
+  functions?: FunctionInfoDto[];
   onSubmit?: (
     values: FormValues & { isEnabled: boolean }
   ) => Promise<void> | void;
@@ -92,14 +101,57 @@ export function CreateCronTickerDialog({
   const retriesValue = form.watch("retries") ?? 0;
   const intervalsValue = form.watch("retryIntervalsSeconds") ?? "";
   const expressionValue = form.watch("expression") ?? "";
+  const selectedFunctionName = form.watch("function");
+  const requestJson = form.watch("requestJson") ?? "";
+  const selectedFunction = functions.find((item) => item.functionName === selectedFunctionName);
   const [enabled, setEnabled] = useState(true);
+  const draftBook = useRef(createDraftState());
+  const requestEditorValid = useRef(true);
+
+  useEffect(() => {
+    const selection = selectFunction(
+      draftBook.current,
+      selectedFunctionName ?? "",
+      form.getValues("requestJson") ?? "",
+      (name) => initialPayloadForFunction(functions.find((item) => item.functionName === name)),
+    );
+    draftBook.current = selection.state;
+    if (selection.changed) {
+      form.setValue("requestJson", selection.value);
+      form.clearErrors("requestJson");
+      requestEditorValid.current = true;
+    }
+  }, [form, functions, selectedFunctionName]);
+
+  function resetDraftSession() {
+    draftBook.current = createDraftState();
+    requestEditorValid.current = true;
+  }
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen) {
+      resetDraftSession();
+      form.reset();
+      setEnabled(true);
+    }
+    onOpenChange(nextOpen);
+  }
 
   async function handleSubmit(values: FormValues) {
+    if (!requestEditorValid.current) {
+      form.setError("requestJson", { type: "validate", message: "Complete or correct the structured JSON field." });
+      return;
+    }
+    const requestError = validateRequestPayload(selectedFunction, values.requestJson ?? "");
+    if (requestError) {
+      form.setError("requestJson", { type: "validate", message: requestError });
+      return;
+    }
     try {
       await onSubmit?.({ ...values, isEnabled: enabled });
       toast.success("Cron ticker created");
       form.reset();
-      onOpenChange(false);
+      handleOpenChange(false);
     } catch (err) {
       toast.error("Failed to create", {
         description: err instanceof Error ? err.message : "An error occurred",
@@ -108,7 +160,7 @@ export function CreateCronTickerDialog({
   }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet open={open} onOpenChange={handleOpenChange}>
       <SheetContent
         side="right"
         className="w-[520px] sm:max-w-[520px] bg-surface-0 border-l border-border overflow-y-auto scrollbar-thin p-0 gap-0"
@@ -236,13 +288,13 @@ export function CreateCronTickerDialog({
                   />
                 </div>
 
-                <TextareaField
-                  control={form.control}
-                  name="requestJson"
-                  label="Request payload (optional)"
-                  description="JSON, plain text, or any string the function expects."
-                  placeholder='{"key":"value"}'
-                  rows={4}
+                <RequestPayloadEditor
+                  key={selectedFunctionName}
+                  functionInfo={selectedFunction}
+                  value={requestJson}
+                  onChange={(value) => form.setValue("requestJson", value, { shouldDirty: true })}
+                  onValidityChange={(valid) => { requestEditorValid.current = valid; }}
+                  error={form.formState.errors.requestJson?.message}
                 />
 
                 <label className="flex items-center gap-2 text-[12px] text-muted-foreground cursor-pointer select-none">
@@ -261,7 +313,7 @@ export function CreateCronTickerDialog({
                   variant="outline"
                   size="sm"
                   className="h-8 text-xs rounded-lg"
-                  onClick={() => onOpenChange(false)}
+                  onClick={() => handleOpenChange(false)}
                 >
                   Cancel
                 </Button>

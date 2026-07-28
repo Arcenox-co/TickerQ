@@ -210,6 +210,28 @@ public class DashboardSecurityHardeningTests : IDisposable
     }
 
     [Fact]
+    public async Task Assistant_StreamingFailureLogsButDoesNotExposeExceptionMessage()
+    {
+        const string secret = "provider=https://secret.example token=do-not-leak";
+        var context = new DefaultHttpContext { TraceIdentifier = "assistant-trace-123" };
+        context.Response.Body = new MemoryStream();
+        context.RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider();
+
+        var endpoints = typeof(TickerAssistantService).Assembly.GetType(
+            "TickerQ.Dashboard.Assistant.AssistantEndpoints", throwOnError: true)!;
+        var method = endpoints.GetMethod(
+            "WriteStreamingFailure", BindingFlags.NonPublic | BindingFlags.Static)!;
+        await (Task)method.Invoke(null, [context, new InvalidOperationException(secret)])!;
+
+        context.Response.Body.Position = 0;
+        var body = await new StreamReader(context.Response.Body).ReadToEndAsync();
+
+        Assert.Contains("The assistant request failed unexpectedly", body);
+        Assert.Contains(context.TraceIdentifier, body);
+        Assert.DoesNotContain(secret, body);
+    }
+
+    [Fact]
     public async Task WebhookNotifier_CountsDroppedOldestAndSanitizesReason()
     {
         var options = new FailureWebhookOptions

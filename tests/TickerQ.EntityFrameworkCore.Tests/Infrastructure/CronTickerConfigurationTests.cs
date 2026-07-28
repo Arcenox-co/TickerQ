@@ -31,6 +31,24 @@ public class CronTickerConfigurationTests : IAsyncLifetime
     }
 
     [Fact]
+    public void RequestContractIdentity_IsNullableAndFingerprintIsBounded()
+    {
+        foreach (var entityType in new[]
+                 {
+                     _context.Model.FindEntityType(typeof(CronTickerEntity))!,
+                     _context.Model.FindEntityType(typeof(TimeTickerEntity))!
+                 })
+        {
+            var version = entityType.FindProperty(nameof(CronTickerEntity.RequestContractVersion))!;
+            var fingerprint = entityType.FindProperty(nameof(CronTickerEntity.RequestContractFingerprint))!;
+
+            Assert.True(version.IsNullable);
+            Assert.True(fingerprint.IsNullable);
+            Assert.Equal(128, fingerprint.GetMaxLength());
+        }
+    }
+
+    [Fact]
     public void IsEnabled_Has_No_Database_Default()
     {
         var entityType = _context.Model.FindEntityType(typeof(CronTickerEntity))!;

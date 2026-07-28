@@ -19,6 +19,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<PackageReference Include="JsonSchema.Net" Version="9.2.2" />
 		<PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(DotNetAbstractionsVersion)" />
 		<PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="$(DotNetAbstractionsVersion)" />
 		<PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="$(DotNetAbstractionsVersion)" />

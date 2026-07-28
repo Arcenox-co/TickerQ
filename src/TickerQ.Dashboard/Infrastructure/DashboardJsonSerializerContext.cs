@@ -89,6 +89,8 @@ namespace TickerQ.Dashboard.Infrastructure;
 [JsonSerializable(typeof(IList<ExecutionFlatDto>))]
 [JsonSerializable(typeof(FunctionInfoDto))]
 [JsonSerializable(typeof(IList<FunctionInfoDto>))]
+[JsonSerializable(typeof(FunctionRequestContractDto))]
+[JsonSerializable(typeof(FunctionRequestExampleDto))]
 [JsonSerializable(typeof(NodeDto))]
 [JsonSerializable(typeof(IList<NodeDto>))]
 [JsonSerializable(typeof(HostStatusDto))]

@@ -207,11 +207,36 @@ internal static class DashboardProtoMapper
         var p = new FunctionProto
         {
             FunctionName = dto.FunctionName ?? string.Empty,
+            ContractVersion = dto.ContractVersion,
             Priority = dto.Priority.ToProto()
         };
         if (dto.RequestType != null) p.RequestType = dto.RequestType;
         if (dto.RequestExample != null) p.RequestExample = dto.RequestExample;
         if (dto.CronExpression != null) p.CronExpression = dto.CronExpression;
+        if (dto.RequestContract != null)
+        {
+            p.RequestContract = new FunctionRequestContractProto
+            {
+                TypeName = dto.RequestContract.TypeName ?? string.Empty,
+                MediaType = dto.RequestContract.MediaType ?? string.Empty,
+                Required = dto.RequestContract.Required,
+                SchemaDialect = dto.RequestContract.SchemaDialect ?? string.Empty
+            };
+            if (dto.RequestContract.SchemaJson != null)
+                p.RequestContract.SchemaJson = dto.RequestContract.SchemaJson;
+            if (dto.RequestContract.Fingerprint != null)
+                p.RequestContract.Fingerprint = dto.RequestContract.Fingerprint;
+            p.RequestContract.Examples.Add(dto.RequestContract.Examples.Select(example =>
+            {
+                var mapped = new FunctionRequestExampleProto
+                {
+                    Key = example.Key ?? string.Empty,
+                    ValueJson = example.ValueJson ?? string.Empty
+                };
+                if (example.Summary != null) mapped.Summary = example.Summary;
+                return mapped;
+            }));
+        }
         return p;
     }
 

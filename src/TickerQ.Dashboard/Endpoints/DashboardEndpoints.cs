@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using TickerQ.Dashboard.Assistant;
 using TickerQ.Dashboard.Authentication;
 using TickerQ.Dashboard.Authentication.Endpoints;
@@ -140,6 +141,7 @@ public static class DashboardEndpoints
         w.MapPost("/time-tickers/{id:guid}/duplicate", DuplicateTimeTicker<TTimeTicker, TCronTicker>);
         w.MapPatch("/time-tickers/{id:guid}", UpdateTimeTicker<TTimeTicker, TCronTicker>);
         w.MapPost("/time-tickers/chain", AddTimeTickerChain<TTimeTicker, TCronTicker>);
+        w.MapPut("/time-tickers/chain/{rootId:guid}", ReplaceTimeTickerChain<TTimeTicker, TCronTicker>);
 
         w.MapPost("/cron-tickers", AddCronTicker<TTimeTicker, TCronTicker>);
         w.MapPatch("/cron-tickers/{id:guid}", UpdateCronTicker<TTimeTicker, TCronTicker>);
@@ -166,15 +168,30 @@ public static class DashboardEndpoints
 
     /// <summary>
     /// Surface a failed <see cref="Utilities.Models.TickerResult{T}"/> to the
-    /// client: validation errors are the caller's fault (400), anything else
-    /// is a server fault (500) — both carry the message so the UI can show it.
+    /// client: validation errors are the caller's fault (400) and retain their
+    /// actionable message. Unexpected server faults are logged and return only a
+    /// generic message plus the request trace identifier.
     /// </summary>
     private static Task WriteTickerError(HttpContext context, Exception? exception)
     {
-        context.Response.StatusCode = exception is TickerValidatorException ? 400 : 500;
+        if (exception is TickerValidatorException validationException)
+        {
+            context.Response.StatusCode = 400;
+            return WriteJson(context, new ErrorResponseBody
+            {
+                Error = validationException.Message,
+            }, Json(context));
+        }
+
+        context.RequestServices
+            .GetService<ILoggerFactory>()?
+            .CreateLogger(typeof(DashboardEndpoints).FullName!)
+            .LogError(exception, "Dashboard ticker operation failed. TraceIdentifier: {TraceIdentifier}", context.TraceIdentifier);
+
+        context.Response.StatusCode = 500;
         return WriteJson(context, new ErrorResponseBody
         {
-            Error = exception?.Message ?? "The operation failed.",
+            Error = $"An internal server error occurred. Reference: {context.TraceIdentifier}",
         }, Json(context));
     }
 
@@ -728,6 +745,42 @@ public static class DashboardEndpoints
 
         var createdCount = 1 + CountDescendants(rootEntity);
         var result = await manager.AddAsync(rootEntity, c.RequestAborted);
+        if (!result.IsSucceeded || result.Result == null)
+        {
+            await WriteTickerError(c, result.Exception);
+            return;
+        }
+
+        await WriteJson(c, new AddTimeTickerChainResponseBody
+        {
+            RootId = result.Result.Id.ToString(),
+            CreatedCount = createdCount,
+        }, Json(c));
+    }
+
+    /// <summary>
+    /// Atomically replaces the whole chain aggregate rooted at <paramref name="rootId"/> with the
+    /// posted tree. Server-side, this validates and persists the complete replacement before
+    /// removing the original, in a single transaction — so a failed edit never deletes the
+    /// original chain. The dashboard uses this instead of a delete-then-create sequence.
+    /// </summary>
+    private static async Task ReplaceTimeTickerChain<TTimeTicker, TCronTicker>(HttpContext c, Guid rootId)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<AddTimeTickerChainRequest>(c, Json(c));
+        if (body == null || body.Root == null)
+        {
+            c.Response.StatusCode = 400;
+            return;
+        }
+
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+        var newRoot = BuildChainEntity<TTimeTicker>(body.Root, isRoot: true, parentId: null);
+        newRoot.ExecutionTime = body.ExecutionTime;
+
+        var createdCount = 1 + CountDescendants(newRoot);
+        var result = await manager.ReplaceChainAsync(rootId, newRoot, c.RequestAborted);
         if (!result.IsSucceeded || result.Result == null)
         {
             await WriteTickerError(c, result.Exception);

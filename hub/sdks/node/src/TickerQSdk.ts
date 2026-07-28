@@ -4,6 +4,7 @@ import {
     TickerFunctionProvider,
     type TickerFunctionHandler,
     type TickerFunctionHandlerNoRequest,
+    type TickerRequestContractDefinition,
 } from './infrastructure/TickerFunctionProvider';
 import { TickerFunctionBuilder, type FunctionOptions } from './infrastructure/TickerFunctionBuilder';
 import { TickerQFunctionSyncService } from './infrastructure/TickerQFunctionSyncService';
@@ -26,7 +27,7 @@ import { SdkExecutionEndpoint } from './middleware/SdkExecutionEndpoint';
  *
  * // With typed request
  * sdk.function('SendEmail', { priority: TickerTaskPriority.High })
- *     .withRequest({ to: '', subject: '', body: '' })
+ *     .withRequest({ to: '', subject: '', body: '' }, emailContract)
  *     .handle(async (ctx, signal) => {
  *         ctx.request.to; // fully typed
  *     });
@@ -88,6 +89,7 @@ export class TickerQSdk {
      *     async (ctx, signal) => {
      *         ctx.request.to;   // ← string, fully typed
      *     },
+     *     { requestContract: emailContract },
      * );
      * ```
      */
@@ -95,7 +97,7 @@ export class TickerQSdk {
         functionName: string,
         requestDefault: TRequest,
         handler: TickerFunctionHandler<TRequest>,
-        options?: FunctionOptions,
+        options: FunctionOptions & { requestContract: TickerRequestContractDefinition },
     ): this;
 
     /**
@@ -132,7 +134,7 @@ export class TickerQSdk {
                 functionName,
                 requestDefaultOrHandler,
                 handlerOrOptions as TickerFunctionHandler<any>,
-                maybeOptions,
+                maybeOptions as FunctionOptions & { requestContract: TickerRequestContractDefinition },
             );
         }
         return this;
@@ -144,7 +146,7 @@ export class TickerQSdk {
      * ```ts
      * // With typed request
      * sdk.function('SendEmail', { priority: TickerTaskPriority.High })
-     *     .withRequest({ to: '', subject: '', body: '' })
+     *     .withRequest({ to: '', subject: '', body: '' }, emailContract)
      *     .handle(async (ctx, signal) => {
      *         ctx.request.to; // fully typed
      *     });

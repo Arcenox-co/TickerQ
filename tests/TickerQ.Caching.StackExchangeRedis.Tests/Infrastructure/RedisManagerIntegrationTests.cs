@@ -34,6 +34,10 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
     private DateTime _fixedNow;
     private const string NodeId = "test-node-1";
     private const string ValidFunction = "TestFunction";
+    private static Task NoOpDelegate(
+        CancellationToken cancellationToken,
+        IServiceProvider serviceProvider,
+        TickerQ.Utilities.Base.TickerFunctionContext context) => Task.CompletedTask;
     private const string Prefix = "tq";
 
     // In-memory stores backing the mock
@@ -74,7 +78,7 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         TickerFunctionProvider.RegisterFunctions(
             new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
             {
-                [ValidFunction] = ("", TickerTaskPriority.Normal, (_, _, _) => Task.CompletedTask, 0)
+                [ValidFunction] = ("", TickerTaskPriority.Normal, NoOpDelegate, 0)
             });
         TickerFunctionProvider.Build();
 

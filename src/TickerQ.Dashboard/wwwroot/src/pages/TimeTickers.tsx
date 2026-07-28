@@ -32,6 +32,7 @@ import type {
   TimeTickerQueryFilter,
 } from "@/services/api-types";
 import { formatDuration } from "@/lib/cron/format";
+import { encodeRequestPayload } from "@/lib/request-payload";
 import { TimeCell } from "@/components/cron/TimeCell";
 import { CreateTimeTickerDialog } from "@/components/cron/CreateTimeTickerDialog";
 import { QueryErrorNotice } from "@/components/cron/QueryErrorNotice";
@@ -428,6 +429,7 @@ export default function TimeTickersPage() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         functionOptions={distinctFunctions.map((fn) => ({ value: fn, label: fn }))}
+        functions={allFns ?? []}
         onSubmit={async (values) => {
           const res = await addMutation.mutateAsync({
             function: values.function,
@@ -435,7 +437,7 @@ export default function TimeTickersPage() {
             description: values.description || null,
             retries: values.retries ?? null,
             retryIntervalsSeconds: parseIntervals(values.retryIntervalsSeconds),
-            request: values.requestJson || null,
+            request: encodeRequestPayload(values.requestJson),
             onStale: values.onStale,
             timeoutSeconds:
               values.timeoutSeconds && values.timeoutSeconds > 0 ? values.timeoutSeconds : null,

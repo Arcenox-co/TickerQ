@@ -29,6 +29,11 @@ export {
     type TickerFunctionHandlerNoRequest,
     type TickerFunctionRegistration,
     type TickerFunctionRequestInfo,
+    type TickerFunctionRequestContractInfo,
+    type TickerFunctionRequestExampleInfo,
+    type TickerRequestContractDefinition,
+    type TickerRequestExampleDefinition,
+    type TypedFunctionOptions,
 } from './infrastructure/TickerFunctionProvider';
 export { TickerFunctionBuilder, type FunctionOptions } from './infrastructure/TickerFunctionBuilder';
 export { TickerQFunctionSyncService } from './infrastructure/TickerQFunctionSyncService';

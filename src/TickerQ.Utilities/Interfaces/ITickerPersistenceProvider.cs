@@ -40,7 +40,26 @@ namespace TickerQ.Utilities.Interfaces
         #endregion
         
         #region Cron_Ticker_Core_Methods
-        Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default);
+        /// <summary>
+        /// Legacy seeding contract retained for source/binary compatibility with third-party providers.
+        /// Built-in providers override the richer overload below; legacy providers continue to receive
+        /// the function/expression projection through this default-interface bridge.
+        /// </summary>
+        Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
+            => MigrateDefinedCronTickers(
+                Array.ConvertAll(cronTickers, static ticker =>
+                    new DefinedCronTickerSeed(ticker.Function, ticker.Expression)),
+                cancellationToken);
+
+        /// <summary>
+        /// Seeds code-defined cron tickers with their request-contract identity. The default adapter
+        /// projects to the legacy tuple overload so providers compiled against the earlier interface
+        /// remain usable; built-in and identity-aware providers override this overload directly.
+        /// </summary>
+        Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
+            => MigrateDefinedCronTickers(
+                Array.ConvertAll(cronTickers, static ticker => (ticker.Function, ticker.Expression)),
+                cancellationToken);
         Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken);
         Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         #endregion
@@ -125,6 +144,24 @@ namespace TickerQ.Utilities.Interfaces
         Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default);
         Task<int> UpdateTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default);
         Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default);
+        /// <summary>
+        /// Atomically replaces the entire time-ticker chain aggregate rooted at
+        /// <paramref name="oldRootId"/> with <paramref name="newRoot"/> (root plus its whole
+        /// descendant tree). Implementations MUST persist the complete replacement first and
+        /// only then remove the original, all within a single transaction, so any validation
+        /// or persistence failure rolls back fully and leaves the original aggregate — every
+        /// node and every field (requests, retry intervals, stale/timeout/conditions) —
+        /// untouched. Returns the number of new nodes inserted.
+        ///
+        /// The default FAILS CLOSED: a provider that has not implemented a genuinely atomic
+        /// replace must not silently fall back to a non-atomic delete-then-create (the very
+        /// data-loss window this method exists to close). EF Core and the in-memory provider
+        /// override it; Mongo/Redis (no transactional replace yet) surface a clear error.
+        /// </summary>
+        Task<int> ReplaceTimeTickerChainAsync(Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(
+                "This persistence provider does not support atomic time-ticker chain replacement. " +
+                "Editing a chain would require a non-atomic delete-then-create that can lose the original on failure.");
         #endregion
 
         #region Cron_Ticker_Shared_Methods

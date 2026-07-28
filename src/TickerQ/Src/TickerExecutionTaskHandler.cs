@@ -31,8 +31,25 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     private readonly IInternalTickerManager _internalTickerManager;
     private readonly SchedulerOptionsBuilder _schedulerOptions;
     private readonly ITickerQFailureNotifier _failureNotifier;
+    private readonly Func<string, TickerFunctionDescriptor> _descriptorResolver;
 
     public TickerExecutionTaskHandler(IServiceProvider serviceProvider, ITickerClock clock, ITickerQInstrumentation tickerQInstrumentation, IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerQFailureNotifier failureNotifier)
+        : this(
+            serviceProvider, clock, tickerQInstrumentation, internalTickerManager, schedulerOptions, failureNotifier,
+            functionName => TickerFunctionProvider.TickerFunctionDescriptors.TryGetValue(functionName, out var descriptor)
+                ? descriptor
+                : null)
+    {
+    }
+
+    internal TickerExecutionTaskHandler(
+        IServiceProvider serviceProvider,
+        ITickerClock clock,
+        ITickerQInstrumentation tickerQInstrumentation,
+        IInternalTickerManager internalTickerManager,
+        SchedulerOptionsBuilder schedulerOptions,
+        ITickerQFailureNotifier failureNotifier,
+        Func<string, TickerFunctionDescriptor> descriptorResolver)
     {
         _serviceProvider = serviceProvider;
         _clock = clock;
@@ -40,6 +57,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         _internalTickerManager = internalTickerManager;
         _schedulerOptions = schedulerOptions;
         _failureNotifier = failureNotifier;
+        _descriptorResolver = descriptorResolver ?? throw new ArgumentNullException(nameof(descriptorResolver));
     }
 
     private void NotifyFailure(InternalFunctionContext context, string kind, string reason)
@@ -237,6 +255,21 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
         if (isChild)
             await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+
+        if (TryGetContractDriftReason(context, out var driftReason))
+        {
+            var exception = new TickerValidatorException(driftReason);
+            context.SetProperty(x => x.Status, TickerStatus.Failed)
+                .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
+                .SetProperty(x => x.ElapsedTime, 0L)
+                .SetProperty(x => x.ExceptionDetails, SerializeException(exception));
+
+            _tickerQInstrumentation.LogJobFailed(
+                context.TickerId, context.FunctionName, exception, context.RetryCount);
+            TryNotifyFailure(context, "contract_drift", driftReason);
+            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
 
         var stopWatch = new Stopwatch();
         // Total wall-clock from first attempt start through the final outcome,
@@ -584,6 +617,44 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         {
             _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, context.RetryCount);
         }
+    }
+
+    private bool TryGetContractDriftReason(InternalFunctionContext context, out string reason)
+    {
+        reason = null;
+
+        // Rows created before contract identity persistence remain executable for backward compatibility.
+        if (context.RequestContractVersion == null && context.RequestContractFingerprint == null)
+            return false;
+
+        var descriptor = _descriptorResolver(context.FunctionName);
+        if (descriptor == null)
+        {
+            reason =
+                $"Request contract drift detected for TickerFunction '{context.FunctionName}': " +
+                "the persisted ticker has contract identity, but the current descriptor is missing. " +
+                "Restore the descriptor or update the ticker before executing it.";
+            return true;
+        }
+
+        var currentFingerprint = descriptor.Request?.Fingerprint;
+        if (context.RequestContractVersion == descriptor.ContractVersion
+            && string.Equals(
+                context.RequestContractFingerprint,
+                currentFingerprint,
+                StringComparison.Ordinal))
+            return false;
+
+        var fingerprintChanged = !string.Equals(
+            context.RequestContractFingerprint,
+            currentFingerprint,
+            StringComparison.Ordinal);
+        reason =
+            $"Request contract drift detected for TickerFunction '{context.FunctionName}': " +
+            $"persisted version {context.RequestContractVersion?.ToString() ?? "<missing>"}, " +
+            $"current version {descriptor.ContractVersion}, fingerprint changed={fingerprintChanged}. " +
+            "Update the ticker payload against the current contract before executing it.";
+        return true;
     }
 
     private async Task<bool> WaitForRetry(InternalFunctionContext context, CancellationToken cancellationToken,

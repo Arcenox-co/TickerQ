@@ -1,10 +1,14 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using TickerQ.Caching.StackExchangeRedis;
 using TickerQ.Dashboard.Infrastructure;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.Tests;
+
+[JsonSerializable(typeof(TimeTickerEntity))]
+internal sealed partial class ContractIdentityTestJsonContext : JsonSerializerContext;
 
 public sealed class TrimSafeSerializationTests
 {
@@ -199,5 +203,26 @@ public sealed class TrimSafeSerializationTests
         Assert.NotNull(deserialized);
         Assert.Single(deserialized.Children);
         Assert.Equal(child.Id, deserialized.Children.First().Id);
+    }
+
+    [Fact]
+    public void TimeTickerEntity_RequestContractIdentity_RoundTripsViaSourceGeneratedContext()
+    {
+        var ticker = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            RequestContractVersion = 7,
+            RequestContractFingerprint = "sha256:test-fingerprint"
+        };
+
+        var json = JsonSerializer.Serialize(ticker, ContractIdentityTestJsonContext.Default.TimeTickerEntity);
+        Assert.Contains("\"RequestContractVersion\":7", json, StringComparison.Ordinal);
+        Assert.Contains("\"RequestContractFingerprint\":\"sha256:test-fingerprint\"", json, StringComparison.Ordinal);
+
+        var deserialized = JsonSerializer.Deserialize(json, ContractIdentityTestJsonContext.Default.TimeTickerEntity);
+
+        Assert.NotNull(deserialized);
+        Assert.Equal(7, deserialized.RequestContractVersion);
+        Assert.Equal("sha256:test-fingerprint", deserialized.RequestContractFingerprint);
     }
 }

@@ -29,6 +29,13 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.Property(e => e.IsEnabled)
                 .IsRequired();
 
+            builder.Property(e => e.RequestContractVersion)
+                .IsRequired(false);
+
+            builder.Property(e => e.RequestContractFingerprint)
+                .HasMaxLength(128)
+                .IsRequired(false);
+
             // Auto-pause flag set by the worker-stream connect/disconnect
             // monitor. Defaults false so existing rows from older databases
             // act as "not paused" without needing data backfill.

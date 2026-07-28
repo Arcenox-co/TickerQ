@@ -17,7 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { TextField } from "@/components/form-fields/text-field";
 import { NumberField } from "@/components/form-fields/number-field";
 import { SelectField } from "@/components/form-fields/select-field";
-import { ON_STALE_OPTIONS } from "@/components/cron/CreateTimeTickerDialog";
+import { ON_STALE_OPTIONS } from "@/lib/cron/ticker-form-options";
 import {
   describeRetryPolicy,
   parseIntervalsList,

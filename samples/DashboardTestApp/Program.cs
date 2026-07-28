@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using TickerQ.Dashboard.DependencyInjection;
@@ -98,8 +100,13 @@ builder.Services.AddTickerQ(options =>
             {
                 c.AddUser("admin", "admin");
                 c.SecureCookie = false;
+                c.AllowEphemeralSigningKey = true;
             });
-            auth.AddJwtBearer(j => j.AddUser("admin", "admin"));
+            auth.AddJwtBearer(j =>
+            {
+                j.AddUser("admin", "admin");
+                j.AllowEphemeralSigningKey = true;
+            });
             auth.AddBasic("admin", "admin", b => b.ChallengeBrowserPrompt = true);
         });
 
@@ -273,5 +280,67 @@ public class SampleJobs
         await Task.Delay(TimeSpan.FromMilliseconds(750), ct);
         _logger.LogInformation("Invoice generated at {Now:O}", DateTime.UtcNow);
     }
+
+    // Strongly-typed payload demo. Because the parameter is
+    // TickerFunctionContext<ProcessOrderRequest> (not the plain context), the
+    // source generator emits a JSON schema for ProcessOrderRequest. The
+    // dashboard's Functions view and the Chain Builder pick that schema up and
+    // render the schema-driven payload editor — a form with a field per member,
+    // required markers, the amount range, and the priority enum. Schedule it
+    // from that form, or seed one with a typed body.
+    [TickerFunction("ProcessOrder")]
+    public Task ProcessOrder(TickerFunctionContext<ProcessOrderRequest> context, CancellationToken ct)
+    {
+        var order = context.Request;
+        _logger.LogInformation(
+            "Processing order {OrderId} for {Email} — {Amount} (priority {Priority}, {TagCount} tags)",
+            order?.OrderId,
+            order?.Customer.Email,
+            order?.Amount,
+            order?.Priority,
+            order?.Tags?.Count ?? 0);
+        return Task.CompletedTask;
+    }
+}
+
+// Nested, strongly-typed request contract for the ProcessOrder function above.
+// Required members ([JsonRequired]) become required fields in the editor;
+// nullable / defaulted members render as optional; the DataAnnotations
+// ([Range], [MaxLength]) drive client-side validation in the form.
+public sealed class ProcessOrderRequest
+{
+    [JsonRequired]
+    [MaxLength(32)]
+    public string OrderId { get; set; } = string.Empty;
+
+    [JsonRequired]
+    public CustomerInfo Customer { get; set; } = new();
+
+    [Range(1, 1_000_000)]
+    public decimal Amount { get; set; }
+
+    // Plain numeric enum on purpose — a JsonStringEnumConverter would make the
+    // value unrepresentable in JSON Schema and suppress the generated schema.
+    public OrderPriority Priority { get; set; } = OrderPriority.Normal;
+
+    // Optional collection + free-text note — both render as optional fields.
+    public List<string>? Tags { get; set; }
+
+    public string? Notes { get; set; }
+}
+
+public sealed class CustomerInfo
+{
+    [JsonRequired]
+    public string Email { get; set; } = string.Empty;
+
+    public string? DisplayName { get; set; }
+}
+
+public enum OrderPriority
+{
+    Low,
+    Normal,
+    High
 }
 

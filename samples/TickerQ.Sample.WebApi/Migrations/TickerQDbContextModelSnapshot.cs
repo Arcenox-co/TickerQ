@@ -38,18 +38,34 @@ namespace TickerQ.Sample.WebApi.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<bool>("IsEnabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsSystemPaused")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER")
-                        .HasDefaultValueSql("1");
+                        .HasDefaultValue(false);
+
+                    b.Property<int>("OnStale")
+                        .HasColumnType("INTEGER");
 
                     b.Property<byte[]>("Request")
                         .HasColumnType("BLOB");
+
+                    b.Property<string>("RequestContractFingerprint")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("RequestContractVersion")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("Retries")
                         .HasColumnType("INTEGER");
 
                     b.PrimitiveCollection<string>("RetryIntervals")
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("TimeoutSeconds")
+                        .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("TEXT");
@@ -70,6 +86,9 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid?>("AcquisitionToken")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
@@ -88,6 +107,9 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.Property<DateTime>("ExecutionTime")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("LeaseUntil")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("LockHolder")
                         .HasColumnType("TEXT");
 
@@ -99,6 +121,9 @@ namespace TickerQ.Sample.WebApi.Migrations
 
                     b.Property<string>("SkippedReason")
                         .HasColumnType("TEXT");
+
+                    b.Property<int>("StaleRestartCount")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("Status")
                         .HasColumnType("INTEGER");
@@ -130,6 +155,9 @@ namespace TickerQ.Sample.WebApi.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid?>("AcquisitionToken")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
@@ -154,17 +182,30 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.Property<string>("InitIdentifier")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("LeaseUntil")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("LockHolder")
                         .HasColumnType("TEXT");
 
                     b.Property<DateTime?>("LockedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("OnStale")
+                        .HasColumnType("INTEGER");
+
                     b.Property<Guid?>("ParentId")
                         .HasColumnType("TEXT");
 
                     b.Property<byte[]>("Request")
                         .HasColumnType("BLOB");
+
+                    b.Property<string>("RequestContractFingerprint")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("RequestContractVersion")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("Retries")
                         .HasColumnType("INTEGER");
@@ -181,7 +222,13 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.Property<string>("SkippedReason")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("StaleRestartCount")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("Status")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("TimeoutSeconds")
                         .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("UpdatedAt")

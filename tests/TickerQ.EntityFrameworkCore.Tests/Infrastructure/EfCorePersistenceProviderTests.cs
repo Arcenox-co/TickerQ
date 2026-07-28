@@ -255,6 +255,72 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
 
     #endregion
 
+    [Fact]
+    public async Task ReplaceTimeTickerChainAsync_WhenReplacementInsertFails_OriginalAggregateRemainsUnchanged()
+    {
+        var root = CreateTimeTicker(function: "OriginalRoot");
+        root.Description = "root-description";
+        root.Request = System.Text.Encoding.UTF8.GetBytes("{\"message\":\"héllo\"}");
+        root.Retries = 3;
+        root.RetryIntervals = [5, 13, 21];
+        root.OnStale = StaleAction.Restart;
+        root.TimeoutSeconds = 47;
+        root.RunCondition = RunCondition.OnSuccess;
+
+        var child = CreateTimeTicker(function: "OriginalChild");
+        child.ParentId = root.Id;
+        child.Description = "child-description";
+        child.Request = System.Text.Encoding.UTF8.GetBytes("{\"child\":true}");
+        child.Retries = 2;
+        child.RetryIntervals = [8, 34];
+        child.OnStale = StaleAction.Cancel;
+        child.TimeoutSeconds = 59;
+        child.RunCondition = RunCondition.OnFailure;
+        root.Children = [child];
+
+        // Reusing this unrelated row's primary key forces the replacement insert to fail
+        // before the old aggregate is removed.
+        var collision = CreateTimeTicker(function: "UnrelatedCollision");
+        await SeedTimeTickers(root, collision);
+
+        var replacement = CreateTimeTicker(id: collision.Id, function: "InvalidReplacement");
+        replacement.Children = [CreateTimeTicker(function: "ReplacementChild")];
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            _provider.ReplaceTimeTickerChainAsync(root.Id, replacement, CancellationToken.None));
+
+        await using var verify = CreateVerifyContext();
+        var persisted = await verify.Set<TimeTickerEntity>()
+            .AsNoTracking()
+            .Where(x => x.Id == root.Id || x.Id == child.Id || x.Id == collision.Id)
+            .OrderBy(x => x.Function)
+            .ToListAsync();
+
+        Assert.Equal(3, persisted.Count);
+        var persistedRoot = Assert.Single(persisted, x => x.Id == root.Id);
+        var persistedChild = Assert.Single(persisted, x => x.Id == child.Id);
+        Assert.Single(persisted, x => x.Id == collision.Id);
+
+        Assert.Equal("OriginalRoot", persistedRoot.Function);
+        Assert.Equal("root-description", persistedRoot.Description);
+        Assert.Equal(root.Request, persistedRoot.Request);
+        Assert.Equal(3, persistedRoot.Retries);
+        Assert.Equal([5, 13, 21], persistedRoot.RetryIntervals);
+        Assert.Equal(StaleAction.Restart, persistedRoot.OnStale);
+        Assert.Equal(47, persistedRoot.TimeoutSeconds);
+        Assert.Equal(RunCondition.OnSuccess, persistedRoot.RunCondition);
+
+        Assert.Equal(root.Id, persistedChild.ParentId);
+        Assert.Equal("OriginalChild", persistedChild.Function);
+        Assert.Equal("child-description", persistedChild.Description);
+        Assert.Equal(child.Request, persistedChild.Request);
+        Assert.Equal(2, persistedChild.Retries);
+        Assert.Equal([8, 34], persistedChild.RetryIntervals);
+        Assert.Equal(StaleAction.Cancel, persistedChild.OnStale);
+        Assert.Equal(59, persistedChild.TimeoutSeconds);
+        Assert.Equal(RunCondition.OnFailure, persistedChild.RunCondition);
+    }
+
     // =========================================================================
     // 1. AddTimeTickers
     // =========================================================================
@@ -518,6 +584,102 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Equal(37, acquiredGreatGrandchild.TimeoutSeconds);
     }
 
+    // -------------------------------------------------------------------------
+    // Contract identity must survive the BFS extension below grandchild depth for
+    // every deep-chain acquisition path (normal / immediate / timed-out). The fast
+    // projection loads root+child+grandchild; the BFS hydrates great-grandchild and
+    // deeper and must carry RequestContractVersion/Fingerprint or those descendants
+    // execute under legacy compatibility, bypassing drift checks.
+    // -------------------------------------------------------------------------
+
+    private (TimeTickerEntity Root, Guid GreatGrandchildId, Guid GreatGreatGrandchildId) BuildIdentityChain(
+        TickerStatus status, DateTime? rootExecutionTime)
+    {
+        var root = CreateTimeTicker(executionTime: rootExecutionTime, status: status);
+        var child = CreateTimeTicker(executionTime: null, status: status);
+        var grandchild = CreateTimeTicker(executionTime: null, status: status);
+        var greatGrandchild = CreateTimeTicker(executionTime: null, status: status);
+        var greatGreatGrandchild = CreateTimeTicker(executionTime: null, status: status);
+
+        greatGrandchild.RequestContractVersion = 42;
+        greatGrandchild.RequestContractFingerprint = "sha256:great-grandchild";
+        greatGreatGrandchild.RequestContractVersion = 43;
+        greatGreatGrandchild.RequestContractFingerprint = "sha256:great-great-grandchild";
+
+        child.ParentId = root.Id;
+        grandchild.ParentId = child.Id;
+        greatGrandchild.ParentId = grandchild.Id;
+        greatGreatGrandchild.ParentId = greatGrandchild.Id;
+        root.Children = [child];
+        child.Children = [grandchild];
+        grandchild.Children = [greatGrandchild];
+        greatGrandchild.Children = [greatGreatGrandchild];
+
+        return (root, greatGrandchild.Id, greatGreatGrandchild.Id);
+    }
+
+    private static TimeTickerEntity FindById(TimeTickerEntity node, Guid id)
+    {
+        if (node.Id == id) return node;
+        if (node.Children == null) return null;
+        foreach (var child in node.Children)
+        {
+            var found = FindById(child, id);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static void AssertDeepContractIdentity(TimeTickerEntity acquiredRoot, Guid ggcId, Guid gggcId)
+    {
+        var greatGrandchild = FindById(acquiredRoot, ggcId);
+        Assert.NotNull(greatGrandchild);
+        Assert.Equal(42, greatGrandchild.RequestContractVersion);
+        Assert.Equal("sha256:great-grandchild", greatGrandchild.RequestContractFingerprint);
+
+        var greatGreatGrandchild = FindById(acquiredRoot, gggcId);
+        Assert.NotNull(greatGreatGrandchild);
+        Assert.Equal(43, greatGreatGrandchild.RequestContractVersion);
+        Assert.Equal("sha256:great-great-grandchild", greatGreatGrandchild.RequestContractFingerprint);
+    }
+
+    [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_PreservesContractIdentityBeyondGrandchild()
+    {
+        var (root, ggcId, gggcId) = BuildIdentityChain(TickerStatus.Idle, rootExecutionTime: null);
+        await SeedTimeTickers(root);
+
+        var acquired = await _provider.AcquireImmediateTimeTickersAsync([root.Id], CancellationToken.None);
+
+        AssertDeepContractIdentity(Assert.Single(acquired), ggcId, gggcId);
+    }
+
+    [Fact]
+    public async Task GetEarliestTimeTickers_PreservesContractIdentityBeyondGrandchild()
+    {
+        // Root within the 1-second normal-scheduling window.
+        var (root, ggcId, gggcId) = BuildIdentityChain(TickerStatus.Idle, rootExecutionTime: _fixedNow);
+        await SeedTimeTickers(root);
+
+        var earliest = await _provider.GetEarliestTimeTickers(CancellationToken.None);
+
+        var acquiredRoot = Assert.Single(earliest.Where(t => t.Id == root.Id));
+        AssertDeepContractIdentity(acquiredRoot, ggcId, gggcId);
+    }
+
+    [Fact]
+    public async Task QueueTimedOutTimeTickers_PreservesContractIdentityBeyondGrandchild()
+    {
+        // Root older than the 1-second window, so the timed-out fallback path hydrates it.
+        var (root, ggcId, gggcId) = BuildIdentityChain(TickerStatus.Idle, rootExecutionTime: _fixedNow.AddSeconds(-5));
+        await SeedTimeTickers(root);
+
+        var results = await ToListAsync(_provider.QueueTimedOutTimeTickers(CancellationToken.None));
+
+        var acquiredRoot = Assert.Single(results.Where(t => t.Id == root.Id));
+        AssertDeepContractIdentity(acquiredRoot, ggcId, gggcId);
+    }
+
     [Fact]
     public async Task AcquireImmediateTimeTickersAsync_EmptyIds_ReturnsEmpty()
     {
@@ -687,12 +849,16 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
             status: TickerStatus.Idle,
             lockHolder: null,
             lockedAt: null);
+        ticker.RequestContractVersion = 21;
+        ticker.RequestContractFingerprint = "sha256:ef-time-contract";
         await SeedTimeTickers(ticker);
 
         var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
 
         Assert.Single(results);
         Assert.Equal(ticker.Id, results[0].Id);
+        Assert.Equal(ticker.RequestContractVersion, results[0].RequestContractVersion);
+        Assert.Equal(ticker.RequestContractFingerprint, results[0].RequestContractFingerprint);
     }
 
     [Fact]
@@ -804,6 +970,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     public async Task QueueCronTickerOccurrences_NewOccurrence_InsertsWithUpsert()
     {
         var cron = CreateCronTicker();
+        cron.RequestContractVersion = 12;
+        cron.RequestContractFingerprint = "sha256:ef-queued-contract";
         await SeedCronTickers(cron);
 
         var executionTime = _fixedNow.AddMinutes(5);
@@ -811,6 +979,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         {
             FunctionName = cron.Function,
             Expression = cron.Expression,
+            RequestContractVersion = cron.RequestContractVersion,
+            RequestContractFingerprint = cron.RequestContractFingerprint,
             NextCronOccurrence = null // signals new insert path
         };
 
@@ -825,6 +995,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Equal(NodeId, results[0].LockHolder);
         Assert.NotNull(results[0].CronTicker);
         Assert.Equal(cron.Function, results[0].CronTicker.Function);
+        Assert.Equal(cron.RequestContractVersion, results[0].CronTicker.RequestContractVersion);
+        Assert.Equal(cron.RequestContractFingerprint, results[0].CronTicker.RequestContractFingerprint);
 
         // Verify in DB
         using var ctx = CreateVerifyContext();
@@ -921,6 +1093,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     public async Task GetEarliestAvailableCronOccurrence_ReturnsEarliestAcquirable()
     {
         var cron = CreateCronTicker();
+        cron.RequestContractVersion = 11;
+        cron.RequestContractFingerprint = "sha256:ef-cron-contract";
         await SeedCronTickers(cron);
 
         // Within the 1-second main scheduler window: >= now.AddSeconds(-1)
@@ -940,6 +1114,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Equal(cron.Id, result.CronTickerId);
         Assert.NotNull(result.CronTicker);
         Assert.Equal(cron.Function, result.CronTicker.Function);
+        Assert.Equal(11, result.CronTicker.RequestContractVersion);
+        Assert.Equal("sha256:ef-cron-contract", result.CronTicker.RequestContractFingerprint);
     }
 
     [Fact]

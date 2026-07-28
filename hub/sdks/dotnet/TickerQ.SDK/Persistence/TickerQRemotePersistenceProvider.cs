@@ -143,7 +143,7 @@ internal sealed class TickerQRemotePersistenceProvider<TTimeTicker, TCronTicker>
     #endregion
 
     #region Cron_Ticker_Core_Methods
-    public Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    public Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default) => throw new NotImplementedException();
     public Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken) => throw new NotImplementedException();
     public Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default) => throw new NotImplementedException();
     #endregion

@@ -944,6 +944,94 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     }
 
     // =========================================================================
+    // Request-contract identity must survive the queue projection (MapQueueNode /
+    // MapForQueue) on every time path and GetAllCronTickerExpressions on the cron
+    // path. If it does not, TickerExecutionTaskHandler treats the row as legacy and
+    // skips drift enforcement.
+    // =========================================================================
+
+    private const int RedisIdentityVersion = 77;
+    private const string RedisIdentityFingerprint = "sha256:redis-identity";
+
+    private TimeTickerEntity CreateIdentityTimeTicker(
+        DateTime? executionTime = null, TickerStatus status = TickerStatus.Idle)
+    {
+        var ticker = CreateTimeTicker(executionTime: executionTime, status: status, lockHolder: null, lockedAt: null);
+        ticker.RequestContractVersion = RedisIdentityVersion;
+        ticker.RequestContractFingerprint = RedisIdentityFingerprint;
+        return ticker;
+    }
+
+    private static void AssertTimeIdentity(TimeTickerEntity ticker)
+    {
+        Assert.Equal(RedisIdentityVersion, ticker.RequestContractVersion);
+        Assert.Equal(RedisIdentityFingerprint, ticker.RequestContractFingerprint);
+    }
+
+    [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_PreservesContractIdentity()
+    {
+        var ticker = CreateIdentityTimeTicker(status: TickerStatus.Idle);
+        SeedTimeTicker(ticker);
+
+        var results = await _provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None);
+
+        AssertTimeIdentity(Assert.Single(results));
+    }
+
+    [Fact]
+    public async Task GetEarliestTimeTickers_PreservesContractIdentity()
+    {
+        var ticker = CreateIdentityTimeTicker(executionTime: _fixedNow.AddMilliseconds(500), status: TickerStatus.Idle);
+        SeedTimeTicker(ticker);
+
+        var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
+
+        AssertTimeIdentity(Assert.Single(results.Where(t => t.Id == ticker.Id)));
+    }
+
+    [Fact]
+    public async Task QueueTimedOutTimeTickers_PreservesContractIdentity()
+    {
+        // Older than the fallback threshold (now - 100ms) so the timed-out path picks it up.
+        var ticker = CreateIdentityTimeTicker(executionTime: _fixedNow.AddSeconds(-5), status: TickerStatus.Idle);
+        SeedTimeTicker(ticker);
+
+        var results = await ToListAsync(_provider.QueueTimedOutTimeTickers(CancellationToken.None));
+
+        AssertTimeIdentity(Assert.Single(results.Where(t => t.Id == ticker.Id)));
+    }
+
+    [Fact]
+    public async Task AcquireTimeTickerOnDemandAsync_PreservesContractIdentity()
+    {
+        var ticker = CreateIdentityTimeTicker(status: TickerStatus.Done);
+        ticker.ExecutedAt = _fixedNow.AddMinutes(-1);
+        SeedTimeTicker(ticker);
+
+        var acquired = await _provider.AcquireTimeTickerOnDemandAsync(
+            ticker.Id, _fixedNow, CancellationToken.None);
+
+        Assert.NotNull(acquired);
+        AssertTimeIdentity(acquired);
+    }
+
+    [Fact]
+    public async Task GetAllCronTickerExpressions_PreservesContractIdentity()
+    {
+        var cron = CreateCronTicker();
+        cron.RequestContractVersion = 88;
+        cron.RequestContractFingerprint = "sha256:cron-identity";
+        SeedCronTicker(cron);
+
+        var results = await _provider.GetAllCronTickerExpressions(CancellationToken.None);
+
+        var projected = Assert.Single(results.Where(c => c.Id == cron.Id));
+        Assert.Equal(88, projected.RequestContractVersion);
+        Assert.Equal("sha256:cron-identity", projected.RequestContractFingerprint);
+    }
+
+    // =========================================================================
     // 9. InsertCronTickers
     // =========================================================================
 

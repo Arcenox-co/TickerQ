@@ -532,12 +532,12 @@ public class InternalTickerManagerTests
             var cronId = Guid.NewGuid();
             var occurrenceId = Guid.NewGuid();
             var nextTime = new DateTime(2025, 6, 15, 12, 30, 0, DateTimeKind.Utc);
+            var cron = MakeCron(cronId, "CronFunc", "0 30 12 * * *", retries: 2);
+            cron.RequestContractVersion = 13;
+            cron.RequestContractFingerprint = "sha256:manager-context";
 
             _persistence.GetAllCronTickerExpressions(Arg.Any<CancellationToken>())
-                .Returns(Task.FromResult(new CronTickerEntity[]
-                {
-                    MakeCron(cronId, "CronFunc", "0 30 12 * * *", retries: 2)
-                }));
+                .Returns(Task.FromResult(new CronTickerEntity[] { cron }));
 
             var occurrence = new CronTickerOccurrenceEntity<FakeCronTicker>
             {
@@ -570,6 +570,12 @@ public class InternalTickerManagerTests
             Assert.Equal("CronFunc", functions[0].FunctionName);
             Assert.Equal(TickerType.CronTickerOccurrence, functions[0].Type);
             Assert.Equal(cronId, functions[0].ParentId);
+            _persistence.Received(1).QueueCronTickerOccurrences(
+                Arg.Is<(DateTime Key, InternalManagerContext[] Items)>(x =>
+                    x.Items.Length == 1 &&
+                    x.Items[0].RequestContractVersion == cron.RequestContractVersion &&
+                    x.Items[0].RequestContractFingerprint == cron.RequestContractFingerprint),
+                Arg.Any<CancellationToken>());
         }
         finally
         {
@@ -1032,6 +1038,8 @@ public class InternalTickerManagerTests
             ExecutionTime = executionTime,
             Retries = 1,
             RetryIntervals = new[] { 1000 },
+            RequestContractVersion = 7,
+            RequestContractFingerprint = "sha256:time-contract",
             Children = new List<TimeTickerEntity>()
         };
 
@@ -1045,7 +1053,9 @@ public class InternalTickerManagerTests
                 Id = cronTickerId,
                 Function = "TimedOutCronFunc",
                 Retries = 2,
-                RetryIntervals = new[] { 500, 1000 }
+                RetryIntervals = new[] { 500, 1000 },
+                RequestContractVersion = 9,
+                RequestContractFingerprint = "sha256:cron-contract"
             }
         };
 
@@ -1062,12 +1072,16 @@ public class InternalTickerManagerTests
         Assert.Equal(timeTickerId, timeResult.TickerId);
         Assert.Equal("TimedOutTimeFunc", timeResult.FunctionName);
         Assert.Equal(1, timeResult.Retries);
+        Assert.Equal(7, timeResult.RequestContractVersion);
+        Assert.Equal("sha256:time-contract", timeResult.RequestContractFingerprint);
 
         var cronResult = Assert.Single(results.Where(r => r.Type == TickerType.CronTickerOccurrence));
         Assert.Equal(cronOccurrenceId, cronResult.TickerId);
         Assert.Equal("TimedOutCronFunc", cronResult.FunctionName);
         Assert.Equal(cronTickerId, cronResult.ParentId);
         Assert.Equal(2, cronResult.Retries);
+        Assert.Equal(9, cronResult.RequestContractVersion);
+        Assert.Equal("sha256:cron-contract", cronResult.RequestContractFingerprint);
     }
 
     [Fact]
