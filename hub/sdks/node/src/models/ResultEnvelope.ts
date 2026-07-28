@@ -61,11 +61,13 @@ export function normalizeResultEnvelope(raw: unknown): ResultEnvelope {
     }
     const contractId = get('contractId', 'ContractId');
     const contractType = get('contractType', 'ContractType');
-    if (contractId !== undefined && contractId !== null && typeof contractId !== 'string') {
-        throw new Error('TickerQ: result envelope contractId must be a string when present.');
+    if (contractId !== undefined && contractId !== null
+        && (typeof contractId !== 'string' || contractId.trim().length === 0)) {
+        throw new Error('TickerQ: result envelope contractId must be a non-blank string when present.');
     }
-    if (contractType !== undefined && contractType !== null && typeof contractType !== 'string') {
-        throw new Error('TickerQ: result envelope contractType must be a string when present.');
+    if (contractType !== undefined && contractType !== null
+        && (typeof contractType !== 'string' || contractType.trim().length === 0)) {
+        throw new Error('TickerQ: result envelope contractType must be a non-blank string when present.');
     }
     return {
         envelopeVersion: envelopeVersion as number,

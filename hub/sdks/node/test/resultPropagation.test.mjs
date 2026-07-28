@@ -35,6 +35,14 @@ assert.throws(
   /base64/i,
 );
 assert.throws(
+  () => normalizeExecutionContext({ parentResult: { ...parentEnvelope, contractId: '   ' } }),
+  /contractId must be a non-blank string/i,
+);
+assert.throws(
+  () => normalizeExecutionContext({ parentResult: { ...parentEnvelope, contractType: '' } }),
+  /contractType must be a non-blank string/i,
+);
+assert.throws(
   () => normalizeExecutionContext({
     parentResult: { ...parentEnvelope, payload: Buffer.alloc(1024 * 1024 + 1).toString('base64') },
   }),
