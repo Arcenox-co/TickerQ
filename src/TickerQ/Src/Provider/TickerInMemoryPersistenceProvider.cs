@@ -38,6 +38,12 @@ namespace TickerQ.Provider
         // Unique index on (ExecutionTime, CronTickerId) to prevent duplicate cron occurrences - mirrors EF Core's Upsert constraint
         private static readonly ConcurrentDictionary<(DateTime ExecutionTime, Guid CronTickerId), Guid> CronOccurrenceIndex = new();
 
+        // Committed parent-result envelopes keyed by ticker/occurrence id. Populated only by a winning
+        // successful terminal write and read by a child fetching its direct parent's result. Kept in a
+        // side store (never on the shared entity) so the wire row and EF/Mongo mappings stay untouched.
+        private static readonly ConcurrentDictionary<Guid, TickerResultEnvelope> TimeTickerResults = new();
+        private static readonly ConcurrentDictionary<Guid, TickerResultEnvelope> CronOccurrenceResults = new();
+
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
         private readonly TimeSpan _leaseDuration;
@@ -56,6 +62,24 @@ namespace TickerQ.Provider
 
         // Built-in provider: implements job retention with whole-chain, all-or-nothing semantics.
         public bool SupportsRetention => true;
+
+        // Built-in provider: durably stores per-ticker result envelopes for parent-result propagation.
+        public bool SupportsResultPublication => true;
+
+        // A result becomes visible only on the final successful terminal write: a present result envelope
+        // on a Done/DueDone terminal update. Failed/cancelled/skipped/retry writes never carry one (the
+        // execution handler only attaches it on success), and this re-check guards against any that slip through.
+        private static bool IsSuccessfulResultWrite(InternalFunctionContext functionContext)
+            => functionContext.ResultEnvelope != null
+               && functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))
+               && functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status))
+               && functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
+
+        public Task<TickerResultEnvelope> GetTimeTickerResultAsync(Guid id, CancellationToken cancellationToken = default)
+            => Task.FromResult(TimeTickerResults.TryGetValue(id, out var envelope) ? envelope : null);
+
+        public Task<TickerResultEnvelope> GetCronTickerOccurrenceResultAsync(Guid id, CancellationToken cancellationToken = default)
+            => Task.FromResult(CronOccurrenceResults.TryGetValue(id, out var envelope) ? envelope : null);
 
         #region Time Ticker Methods
 
@@ -222,11 +246,19 @@ namespace TickerQ.Provider
 
                 var updatedTicker = CloneTicker(ticker);
                 ApplyFunctionContextToTicker(updatedTicker, functionContext);
-                
+
                 if (TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker))
+                {
+                    // Commit the parent result only for the winning successful terminal write. This
+                    // returns before the execution handler releases/queues children, so the result is
+                    // durably visible to a child by the time it can read it.
+                    if (IsSuccessfulResultWrite(functionContext))
+                        TimeTickerResults[functionContext.TickerId] = functionContext.ResultEnvelope;
+
                     return Task.FromResult(1);
+                }
             }
-            
+
             return Task.FromResult(0);
         }
 
@@ -343,7 +375,11 @@ namespace TickerQ.Provider
                 updated.StaleRestartCount = 0;
                 updated.UpdatedAt = now;
                 if (TryUpdateTimeTicker(id, updated, ticker))
+                {
+                    // A re-run must not surface the prior run's result until it publishes anew.
+                    TimeTickerResults.TryRemove(id, out _);
                     return Task.FromResult<TimeTickerEntity>(ForQueueTimeTickers(updated));
+                }
             }
 
             return Task.FromResult<TimeTickerEntity>(null);
@@ -562,6 +598,7 @@ namespace TickerQ.Provider
                     if (TimeTickers.TryRemove(id, out var removed))
                     {
                         removedCount++;
+                        TimeTickerResults.TryRemove(id, out _);
 
                         // Clean children index
                         if (removed.ParentId.HasValue)
@@ -575,6 +612,7 @@ namespace TickerQ.Provider
                             if (TimeTickers.TryRemove(childId, out var child))
                             {
                                 removedCount++;
+                                TimeTickerResults.TryRemove(childId, out _);
                                 if (child.ParentId.HasValue)
                                     RemoveChildIndex(child.ParentId.Value, child.Id);
                             }
@@ -1126,10 +1164,12 @@ namespace TickerQ.Provider
 
                 var updatedOccurrence = CloneCronOccurrence(occurrence);
                 ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
-                
-                TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence);
+
+                if (TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence)
+                    && IsSuccessfulResultWrite(functionContext))
+                    CronOccurrenceResults[functionContext.TickerId] = functionContext.ResultEnvelope;
             }
-            
+
             return Task.CompletedTask;
         }
 
@@ -1335,6 +1375,7 @@ namespace TickerQ.Provider
                 if (CronOccurrences.TryRemove(id, out var removed))
                 {
                     CronOccurrenceIndex.TryRemove((removed.ExecutionTime, removed.CronTickerId), out _);
+                    CronOccurrenceResults.TryRemove(id, out _);
                     count++;
                 }
             }
@@ -1395,6 +1436,7 @@ namespace TickerQ.Provider
                     {
                         if (TimeTickers.TryRemove(node.Id, out var removed) && removed.ParentId.HasValue)
                             RemoveChildIndex(removed.ParentId.Value, removed.Id);
+                        TimeTickerResults.TryRemove(node.Id, out _);
                         deletedRows++;
                     }
                 }
@@ -1475,6 +1517,7 @@ namespace TickerQ.Provider
                                 occurrence.Id, current)))
                     {
                         CronOccurrenceIndex.TryRemove((current.ExecutionTime, current.CronTickerId), out _);
+                        CronOccurrenceResults.TryRemove(occurrence.Id, out _);
                         deleted++;
                     }
                 }

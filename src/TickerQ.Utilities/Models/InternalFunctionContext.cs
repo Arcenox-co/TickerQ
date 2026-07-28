@@ -56,6 +56,14 @@ namespace TickerQ.Utilities.Models
         /// </summary>
         public Guid? AcquisitionToken { get; set; }
         public RunCondition RunCondition { get; set; }
+        /// <summary>
+        /// Optional result published by a successful terminal execution, carried to the persistence
+        /// write so it commits atomically with the terminal status. Execution-only: it is never part
+        /// of the persisted wire row itself and never serialized on this context. Set only via the
+        /// success path so failed/retried/cancelled/skipped attempts never publish a result.
+        /// </summary>
+        [JsonIgnore]
+        public TickerResultEnvelope ResultEnvelope { get; set; }
         public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 
         [DynamicDependency(DynamicallyAccessedMemberTypes.PublicProperties, typeof(InternalFunctionContext))]

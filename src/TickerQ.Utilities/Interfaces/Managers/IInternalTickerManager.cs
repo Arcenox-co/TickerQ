@@ -19,6 +19,13 @@ namespace TickerQ.Utilities.Interfaces.Managers
         [RequiresDynamicCode("Legacy request deserialization may require runtime JSON metadata. Use the JsonTypeInfo overload for Native AOT.")]
         Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, CancellationToken cancellationToken = default);
         Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken = default);
+        /// <summary>
+        /// Returns the committed result envelope published by the direct parent, or <c>null</c> when the
+        /// parent published none, has no result concept (cron occurrence), or the provider does not support
+        /// result storage. Fails safe by default so providers/mocks that predate this member still work.
+        /// </summary>
+        Task<TickerResultEnvelope> GetParentResultAsync(Guid parentId, TickerType parentType, CancellationToken cancellationToken = default)
+            => Task.FromResult<TickerResultEnvelope>(null);
         Task<InternalFunctionContext[]> RunTimedOutTickers(CancellationToken cancellationToken = default);
         Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default);
         Task DeleteTicker(Guid tickerId, TickerType type, CancellationToken cancellationToken = default);

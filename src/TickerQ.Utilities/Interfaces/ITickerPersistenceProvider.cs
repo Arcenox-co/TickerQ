@@ -191,6 +191,32 @@ namespace TickerQ.Utilities.Interfaces
                 "Remove ConfigureJobRetention or use a provider that implements SupportsRetention.");
         #endregion
 
+        #region Parent_Result_Publication
+        /// <summary>
+        /// Whether this provider durably stores and returns per-ticker result envelopes so a child can
+        /// read its direct parent's committed result. Defaults to <c>false</c> so a provider that has not
+        /// implemented result storage fails closed: when a function actually publishes a result, the
+        /// manager surfaces a clear error instead of silently dropping it. The in-memory provider (this
+        /// slice) overrides to <c>true</c>; other built-in providers implement it in their own slices.
+        /// </summary>
+        bool SupportsResultPublication => false;
+
+        /// <summary>
+        /// Returns the committed result envelope for a time ticker, or <c>null</c> when it published none
+        /// or the provider does not support result storage. Reading is non-fatal (the child simply sees no
+        /// parent result); only <em>publishing</em> against an unsupported provider is an explicit failure.
+        /// </summary>
+        Task<TickerResultEnvelope> GetTimeTickerResultAsync(Guid id, CancellationToken cancellationToken = default)
+            => Task.FromResult<TickerResultEnvelope>(null);
+
+        /// <summary>
+        /// Returns the committed result envelope for a cron ticker occurrence, or <c>null</c> when none was
+        /// published or the provider does not support result storage.
+        /// </summary>
+        Task<TickerResultEnvelope> GetCronTickerOccurrenceResultAsync(Guid id, CancellationToken cancellationToken = default)
+            => Task.FromResult<TickerResultEnvelope>(null);
+        #endregion
+
         #region Queryable
         ITickerQueryable<TTimeTicker> TimeTickersQuery();
         ITickerQueryable<TCronTicker> CronTickersQuery();

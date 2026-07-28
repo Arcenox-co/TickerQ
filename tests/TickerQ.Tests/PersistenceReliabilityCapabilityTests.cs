@@ -113,6 +113,25 @@ public class PersistenceReliabilityCapabilityTests
             () => provider.DeleteEligibleCronTickerOccurrencesAsync(cutoffs, batchSize: 100));
     }
 
+    // Result-publication seam: a legacy provider that predates parent-result propagation (and thus
+    // only implements the mandatory members) must still compile — this class compiling proves that —
+    // and must fail closed: it reports no result support and its default result reads return null so
+    // the runtime never trusts fabricated results.
+    [Fact]
+    public void Minimal_provider_does_not_support_result_publication()
+    {
+        Assert.False(MinimalProvider().SupportsResultPublication);
+    }
+
+    [Fact]
+    public async Task Minimal_provider_default_result_reads_return_null()
+    {
+        var provider = MinimalProvider();
+
+        Assert.Null(await provider.GetTimeTickerResultAsync(Guid.NewGuid()));
+        Assert.Null(await provider.GetCronTickerOccurrenceResultAsync(Guid.NewGuid()));
+    }
+
     // Captures warning-level log entries without pulling in a logging framework.
     private sealed class ListLogger<T> : ILogger<T>
     {

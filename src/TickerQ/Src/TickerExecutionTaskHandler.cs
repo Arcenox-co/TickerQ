@@ -294,6 +294,15 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         // the last attempt's CPU time.
         var totalStopWatch = Stopwatch.StartNew();
 
+        // Fetch the direct parent's committed result (if any) before invoking the function so the
+        // body can read it. Roots (no ParentId) and parents that published none yield null. A cron
+        // occurrence's parent is the cron definition, which never publishes a result.
+        var parentResult = context.ParentId.HasValue
+            ? await _internalTickerManager
+                .GetParentResultAsync(context.ParentId.Value, context.Type, CancellationToken.None)
+                .ConfigureAwait(false)
+            : null;
+
         var tickerFunctionContext = new TickerFunctionContext
         {
             FunctionName = context.FunctionName,
@@ -302,6 +311,10 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             Type = context.Type,
             IsDue = isDue,
             ScheduledFor = context.ExecutionTime,
+            // Runtime-owned result sink the success path reads; shared by reference with the typed
+            // context wrapper the source generator builds.
+            ResultSink = new TickerResultSink(),
+            ParentResultEnvelope = parentResult,
             // Forward retry config so delegates that defer execution to a different
             // process (e.g. the remote-dispatch delegate that ships work to the SDK)
             // can pass it along — without these the SDK would see Retries=0.
@@ -351,6 +364,10 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     await WaitForRetry(context, cancellationToken, attempt, cancellationTokenSource)) break;
 
                 stopWatch.Restart();
+
+                // Discard any result an earlier failed attempt published so only the successful
+                // attempt's result can be committed — intermediate retry outputs never leak.
+                tickerFunctionContext.ResultSink.Reset();
 
                 if (context.CachedDelegate is null)
                 {
@@ -560,7 +577,13 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         if (success)
         {
             context.SetProperty(x => x.Status, isDue ? TickerStatus.DueDone : TickerStatus.Done);
-            
+
+            // Attach the published result ONLY on the successful terminal write so it commits
+            // atomically with the Done/DueDone status, before any children are released/queued.
+            // Absence (never called SetResult) leaves it unset — distinct from a published JSON null.
+            if (tickerFunctionContext.ResultSink.HasResult)
+                context.SetProperty(x => x.ResultEnvelope, tickerFunctionContext.ResultSink.Envelope);
+
             // Add success tags to activity
             jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
             jobActivity?.SetTag("tickerq.job.final_retry_count", context.RetryCount);
