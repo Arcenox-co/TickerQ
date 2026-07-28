@@ -147,5 +147,13 @@ namespace TickerQ.SourceGenerator.Validation
             "TickerQ.SourceGenerator",
             DiagnosticSeverity.Error,
             true);
+
+        public static readonly DiagnosticDescriptor UnsupportedResultSchema = new DiagnosticDescriptor(
+            "TQ016",
+            "Unsupported result wire schema",
+            "The result contract for function '{0}' cannot be represented exactly in contract version 1: {1}",
+            "TickerQ.SourceGenerator",
+            DiagnosticSeverity.Error,
+            true);
     }
 }

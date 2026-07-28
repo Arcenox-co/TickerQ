@@ -120,6 +120,86 @@ public sealed class ResultContractGenerationTests
         Assert.Contains(result.GeneratorDiagnostics, d => d.Id == "TQ015");
     }
 
+    [Theory]
+    [InlineData("object")]
+    [InlineData("long")]
+    [InlineData("ulong")]
+    public void UnsupportedResultWireShape_ReportsDiagnostic_AndDoesNotRegisterSchemaLessContract(string resultType)
+    {
+        var source = $$"""
+            using TickerQ.Utilities.Base;
+            namespace TestApp;
+            public sealed class Jobs
+            {
+                [TickerFunction("unsupported-result.job", ResultType = typeof({{resultType}}))]
+                public {{resultType}} Run(TickerFunctionContext context) => default;
+            }
+            """;
+
+        var result = SchemaTestHarness.Run(source);
+
+        var diagnostic = Assert.Single(result.GeneratorDiagnostics, d => d.Id == "TQ016");
+        Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
+        Assert.DoesNotContain("TickerResultContract(typeof", result.Generated, StringComparison.Ordinal);
+        Assert.DoesNotContain("RegisterResultTypeInfoResolver", result.Generated, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("public sealed record ResultModel(long Value);", "ResultModel")]
+    [InlineData("public sealed record ResultModel(ulong Value);", "ResultModel")]
+    [InlineData("public enum ResultModel : long { Value = 1 }", "ResultModel")]
+    [InlineData("public enum ResultModel : ulong { Value = 1 }", "ResultModel")]
+    [InlineData("public interface IResult { int Value { get; } }", "IResult")]
+    [InlineData("public abstract class ResultModel { public int Value { get; set; } }", "ResultModel")]
+    [InlineData("[System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter))] public enum ResultModel { Value }", "ResultModel")]
+    public void NestedOrPolymorphicUnsupportedResult_ReportsTQ016(string declaration, string resultType)
+    {
+        var source = $$"""
+            using TickerQ.Utilities.Base;
+            namespace TestApp;
+            {{declaration}}
+            public sealed class Jobs
+            {
+                [TickerFunction("unsupported-nested.job", ResultType = typeof({{resultType}}))]
+                public {{resultType}} Run(TickerFunctionContext context) => default;
+            }
+            """;
+
+        var result = SchemaTestHarness.Run(source);
+
+        Assert.Contains(result.GeneratorDiagnostics, d => d.Id == "TQ016" && d.Severity == DiagnosticSeverity.Error);
+        Assert.DoesNotContain("TickerResultContract(typeof", result.Generated, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CustomConverterResult_ReportsTQ016()
+    {
+        const string source = """
+            using System;
+            using System.Text.Json;
+            using System.Text.Json.Serialization;
+            using TickerQ.Utilities.Base;
+            namespace TestApp;
+            [JsonConverter(typeof(ResultConverter))]
+            public sealed record ResultModel(int Value);
+            public sealed class ResultConverter : JsonConverter<ResultModel>
+            {
+                public override ResultModel Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) => new(0);
+                public override void Write(Utf8JsonWriter writer, ResultModel value, JsonSerializerOptions options) => writer.WriteStringValue(value.Value.ToString());
+            }
+            public sealed class Jobs
+            {
+                [TickerFunction("converter-result.job", ResultType = typeof(ResultModel))]
+                public ResultModel Run(TickerFunctionContext context) => new(1);
+            }
+            """;
+
+        var result = SchemaTestHarness.Run(source);
+
+        Assert.Contains(result.GeneratorDiagnostics, d => d.Id == "TQ016" && d.Severity == DiagnosticSeverity.Error);
+        Assert.DoesNotContain("TickerResultContract(typeof", result.Generated, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void DeclaredResult_ValueTaskOfT_IsAwaitedAndPublished()
     {

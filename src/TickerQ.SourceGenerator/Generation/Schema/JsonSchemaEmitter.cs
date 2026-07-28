@@ -17,8 +17,9 @@ namespace TickerQ.SourceGenerator.Generation.Schema
     /// </summary>
     /// <remarks>
     /// When the wire shape cannot be inferred (custom converters, polymorphism, unsupported types) the
-    /// emitter throws <see cref="UnsupportedSchemaException"/>; callers translate that to a diagnostic
-    /// and emit a descriptor with no schema. A misleading schema is never produced.
+    /// emitter throws <see cref="UnsupportedSchemaException"/>. Request callers may retain their legacy
+    /// schema-less descriptor policy; result callers must translate the failure to an error diagnostic
+    /// and suppress result registration because cross-runtime result identity requires an exact schema.
     /// </remarks>
     internal sealed class JsonSchemaEmitter
     {
@@ -33,6 +34,12 @@ namespace TickerQ.SourceGenerator.Generation.Schema
         private readonly List<KeyValuePair<string, string>> _defs = new List<KeyValuePair<string, string>>();
         private readonly Dictionary<ISymbol, string> _defNames = new Dictionary<ISymbol, string>(SymbolEqualityComparer.Default);
         private readonly HashSet<string> _usedNames = new HashSet<string>(StringComparer.Ordinal);
+        private readonly bool _isResultContract;
+
+        private JsonSchemaEmitter(bool isResultContract = false)
+        {
+            _isResultContract = isResultContract;
+        }
 
         public static SchemaEmissionResult Emit(ITypeSymbol requestType)
         {
@@ -54,7 +61,7 @@ namespace TickerQ.SourceGenerator.Generation.Schema
         {
             try
             {
-                var emitter = new JsonSchemaEmitter();
+                var emitter = new JsonSchemaEmitter(isResultContract: true);
                 var members = emitter.EmitType(resultType);
                 members.Insert(0, Kv("$schema", SchemaJson.String("https://json-schema.org/draft/2020-12/schema")));
                 if (emitter._defs.Count > 0)
@@ -199,11 +206,17 @@ namespace TickerQ.SourceGenerator.Generation.Schema
                 case SpecialType.System_UInt16:
                 case SpecialType.System_Int32:
                 case SpecialType.System_UInt32:
-                case SpecialType.System_Int64:
-                case SpecialType.System_UInt64:
                     var integer = Scalar("integer", nullable);
                     ApplyIntegralBounds(integer, type);
                     return integer;
+                case SpecialType.System_Int64:
+                case SpecialType.System_UInt64:
+                    if (_isResultContract)
+                        throw new UnsupportedSchemaException(
+                            $"type '{DisplayName(type)}' can carry integers outside JavaScript's exact safe-integer range; 64-bit numeric result contracts are not supported in contract version 1");
+                    var wideInteger = Scalar("integer", nullable);
+                    ApplyIntegralBounds(wideInteger, type);
+                    return wideInteger;
                 case SpecialType.System_Single:
                 case SpecialType.System_Double:
                 case SpecialType.System_Decimal:
@@ -318,6 +331,11 @@ namespace TickerQ.SourceGenerator.Generation.Schema
             // values round-trip and therefore must not be constrained to the declared constants.
             if (!stringEnum)
             {
+                var underlying = enumType.EnumUnderlyingType?.SpecialType ?? SpecialType.None;
+                if (_isResultContract &&
+                    (underlying == SpecialType.System_Int64 || underlying == SpecialType.System_UInt64))
+                    throw new UnsupportedSchemaException(
+                        $"numeric enum type '{DisplayName(enumType)}' uses a 64-bit underlying type outside JavaScript's exact safe-integer range; 64-bit numeric result contracts are not supported in contract version 1");
                 var node = Scalar("integer", nullable);
                 ApplyIntegralBounds(node, enumType);
                 return node;

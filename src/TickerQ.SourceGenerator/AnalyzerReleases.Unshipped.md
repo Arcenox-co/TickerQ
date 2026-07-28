@@ -7,3 +7,4 @@ TQ012 | TickerQ.SourceGenerator | Warning | Unsupported request schema
 TQ013 | TickerQ.SourceGenerator | Warning | Custom converter changes request wire shape
 TQ014 | TickerQ.SourceGenerator | Error | Invalid result contract type
 TQ015 | TickerQ.SourceGenerator | Error | Declared result contract does not match method return type
+TQ016 | TickerQ.SourceGenerator | Error | Unsupported result wire schema

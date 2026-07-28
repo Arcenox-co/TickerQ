@@ -137,7 +137,7 @@ namespace TickerQ.SourceGenerator
                 return;
 
             EmitRequestSchemas(methods, productionContext);
-            EmitResultSchemas(methods);
+            EmitResultSchemas(methods, productionContext);
 
             var source = FactoryGenerator.Generate(effectiveNamespace, methods, constructors);
             var formatted = SourceGeneratorUtilities.FormatCode(source);
@@ -205,7 +205,9 @@ namespace TickerQ.SourceGenerator
                 methodSymbol.ReturnType.ToDisplayString()));
         }
 
-        private static void EmitResultSchemas(List<TickerMethodModel> methods)
+        private static void EmitResultSchemas(
+            List<TickerMethodModel> methods,
+            SourceProductionContext productionContext)
         {
             foreach (var method in methods)
             {
@@ -214,7 +216,17 @@ namespace TickerQ.SourceGenerator
 
                 var result = Generation.Schema.JsonSchemaEmitter.EmitResult(method.ResultType);
                 if (result.Supported)
+                {
                     method.ResultSchemaJson = result.SchemaJson;
+                    continue;
+                }
+
+                method.HasValidResultContract = false;
+                productionContext.ReportDiagnostic(Diagnostic.Create(
+                    DiagnosticDescriptors.UnsupportedResultSchema,
+                    method.DiagnosticLocation ?? Location.None,
+                    method.FunctionName,
+                    result.Reason));
             }
         }
 
