@@ -144,6 +144,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 else
                 {
                     var query = dbContext.Set<TTimeTicker>().Where(x => x.Id == functionContext.TickerId);
+                    query = ApplyTimeTickerGenerationFence(dbContext, query, functionContext);
                     if (functionContext.ParentId == null)
                         query = functionContext.AcquisitionToken.HasValue
                             ? query.Where(x => x.LockHolder == _lockHolder &&
@@ -261,6 +262,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     .SetProperty(x => x.LockHolder, _lockHolder)
                     .SetProperty(x => x.LockedAt, now)
                     .SetProperty(x => x.AcquisitionToken, acquisitionToken)
+                    .SetProperty(x => x.ChainRootId, timeTicker.Id)
+                    .SetProperty(x => x.ChainGeneration, acquisitionToken)
                     .SetProperty(x => x.UpdatedAt, now)
                     .SetProperty(x => x.Status, TickerStatus.Queued), cancellationToken);
 
@@ -271,7 +274,10 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             timeTicker.LockHolder = _lockHolder;
             timeTicker.LockedAt = now;
             timeTicker.AcquisitionToken = acquisitionToken;
+            timeTicker.ChainRootId = timeTicker.Id;
+            timeTicker.ChainGeneration = acquisitionToken;
             timeTicker.Status = TickerStatus.Queued;
+            StampQueueGeneration(timeTicker, timeTicker.Id, acquisitionToken);
                 
             yield return timeTicker;
         }
@@ -312,6 +318,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     .SetProperty(x => x.LockedAt, now)
                     .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
                     .SetProperty(x => x.AcquisitionToken, acquisitionToken)
+                    .SetProperty(x => x.ChainRootId, timeTicker.Id)
+                    .SetProperty(x => x.ChainGeneration, acquisitionToken)
                     .SetProperty(x => x.UpdatedAt, now)
                     .SetProperty(x => x.Status, TickerStatus.InProgress), cancellationToken).ConfigureAwait(false);
                 
@@ -319,6 +327,9 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 continue;
 
             timeTicker.AcquisitionToken = acquisitionToken;
+            timeTicker.ChainRootId = timeTicker.Id;
+            timeTicker.ChainGeneration = acquisitionToken;
+            StampQueueGeneration(timeTicker, timeTicker.Id, acquisitionToken);
             yield return timeTicker;
         }
     }
@@ -354,6 +365,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var query = dbContext.Set<TTimeTicker>()
             .Where(x => x.Id == functionContexts.TickerId);
 
+        query = ApplyTimeTickerGenerationFence(dbContext, query, functionContexts);
+
         // Fencing: a terminal write from this node must not overwrite a row the
         // stale watchdog already recovered (lock cleared / re-acquired elsewhere).
         // Only root tickers carry a lock — chain children execute under their
@@ -366,6 +379,19 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
         return await query
             .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(functionContexts, now, NextLeaseUntil(now)), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IQueryable<TTimeTicker> ApplyTimeTickerGenerationFence(
+        TDbContext dbContext, IQueryable<TTimeTicker> query, InternalFunctionContext context)
+    {
+        if (!context.ChainRootId.HasValue || !context.ChainGeneration.HasValue)
+            return context.ParentId == null ? query : query.Where(_ => false);
+
+        var rootId = context.ChainRootId.Value;
+        var generation = context.ChainGeneration.Value;
+        return query.Where(target => target.ChainRootId == rootId &&
+            dbContext.Set<TTimeTicker>().Any(root => root.Id == rootId && root.ParentId == null &&
+                root.ChainRootId == root.Id && root.ChainGeneration == generation));
     }
 
     /// <summary>
@@ -452,6 +478,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
         await ExtendQueueChainsBeyondGrandchildrenAsync(dbContext.Set<TTimeTicker>(), earliest, cancellationToken).ConfigureAwait(false);
+        foreach (var root in earliest)
+            StampQueueGeneration(root, root.Id, root.ChainGeneration);
         return earliest;
     }
 
@@ -523,6 +551,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     TimeoutSeconds = e.TimeoutSeconds,
                     RunCondition = e.RunCondition,
                     ParentId = e.ParentId,
+                    ChainRootId = e.ChainRootId,
+                    ChainGeneration = e.ChainGeneration,
                     RequestContractVersion = e.RequestContractVersion,
                     RequestContractFingerprint = e.RequestContractFingerprint,
                 })
@@ -542,6 +572,14 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             }
             frontier = nextFrontier;
         }
+    }
+
+    private static void StampQueueGeneration(TimeTickerEntity node, Guid rootId, Guid? generation)
+    {
+        node.ChainRootId = rootId;
+        node.ChainGeneration = generation;
+        foreach (var child in node.Children ?? [])
+            StampQueueGeneration(child, rootId, generation);
     }
 
     /// <summary>
@@ -682,6 +720,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                             .SetProperty(x => x.LockedAt, now)
                             .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
                             .SetProperty(x => x.AcquisitionToken, acquisitionToken)
+                            .SetProperty(x => x.ChainRootId, id)
+                            .SetProperty(x => x.ChainGeneration, acquisitionToken)
                             .SetProperty(x => x.Status, TickerStatus.InProgress)
                             .SetProperty(x => x.UpdatedAt, now),
                             cancellationToken)
@@ -706,6 +746,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 await ExtendQueueChainsBeyondGrandchildrenAsync(
                         dbContext.Set<TTimeTicker>(), acquired, cancellationToken)
                     .ConfigureAwait(false);
+                foreach (var root in acquired)
+                    StampQueueGeneration(root, root.Id, root.ChainGeneration);
 
                 cancellationToken.ThrowIfCancellationRequested();
                 return acquired;
@@ -758,6 +800,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                         .SetProperty(x => x.LockedAt, now)
                         .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
                         .SetProperty(x => x.AcquisitionToken, acquisitionToken)
+                        .SetProperty(x => x.ChainRootId, id)
+                        .SetProperty(x => x.ChainGeneration, acquisitionToken)
                         .SetProperty(x => x.RetryCount, 0)
                         .SetProperty(x => x.ExceptionMessage, (string)null)
                         .SetProperty(x => x.SkippedReason, (string)null)
@@ -786,6 +830,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     .ConfigureAwait(false);
                 await ExtendQueueChainsBeyondGrandchildrenAsync(
                     dbContext.Set<TTimeTicker>(), [result], cancellationToken).ConfigureAwait(false);
+                StampQueueGeneration(result, result.Id, result.ChainGeneration);
                 return result;
             },
             verifySucceeded: async _ => !acquired || await dbContext.Set<TTimeTicker>()

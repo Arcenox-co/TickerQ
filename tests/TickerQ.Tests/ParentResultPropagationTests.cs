@@ -108,10 +108,26 @@ public sealed class ParentResultPropagationTests : IDisposable
     {
         // Acquire through the provider so the row is InProgress and owned by this provider's holder,
         // giving the root terminal write a matching acquisition token to win fencing.
-        var token = onDemand
-            ? (await _provider.AcquireTimeTickerOnDemandAsync(id, _now, CancellationToken.None)).AcquisitionToken
-            : (await _provider.AcquireImmediateTimeTickersAsync(new[] { id }, CancellationToken.None))[0]
-                .AcquisitionToken;
+        Guid? token;
+        Guid? chainRootId;
+        Guid? chainGeneration;
+        if (parentId.HasValue)
+        {
+            var persisted = await _provider.GetTimeTickerById(id, CancellationToken.None);
+            token = persisted.AcquisitionToken;
+            chainRootId = persisted.ChainRootId;
+            chainGeneration = persisted.ChainGeneration;
+        }
+        else
+        {
+            var acquired = onDemand
+                ? await _provider.AcquireTimeTickerOnDemandAsync(id, _now, CancellationToken.None)
+                : (await _provider.AcquireImmediateTimeTickersAsync(
+                    new[] { id }, CancellationToken.None))[0];
+            token = acquired.AcquisitionToken;
+            chainRootId = acquired.ChainRootId;
+            chainGeneration = acquired.ChainGeneration;
+        }
 
         return new InternalFunctionContext
         {
@@ -120,6 +136,8 @@ public sealed class ParentResultPropagationTests : IDisposable
             Type = TickerType.TimeTicker,
             ParentId = parentId,
             AcquisitionToken = token,
+            ChainRootId = chainRootId,
+            ChainGeneration = chainGeneration,
             ExecutionTime = _now,
             Retries = retries,
             RetryCount = 0,
@@ -237,13 +255,16 @@ public sealed class ParentResultPropagationTests : IDisposable
     [Fact]
     public async Task PreloadedTransportParentResult_IsUsedWithoutProviderLookup()
     {
-        var id = await AddOwnedTicker();
+        var parentId = await AddOwnedTicker();
+        Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [parentId], CancellationToken.None));
+        var id = await AddOwnedTicker(parentId);
         ResultPayload seen = null;
         var ctx = await BuildOwnedContext(id, (_, _, c) =>
         {
             seen = c.GetParentResult(ResultJsonContext.Default.ResultPayload);
             return Task.CompletedTask;
-        }, parentId: Guid.NewGuid());
+        }, parentId);
         ctx.ParentResultEnvelope = new TickerResultEnvelope(
             JsonSerializer.SerializeToUtf8Bytes(
                 new ResultPayload { Value = 77, Label = "transport" },

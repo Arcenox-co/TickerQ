@@ -122,17 +122,20 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         var grandchild = CreateTimeTicker(status: TickerStatus.Idle);
         var child = CreateTimeTicker(status: TickerStatus.Idle);
         child.Children.Add(grandchild);
-        var root = CreateTimeTicker(status: TickerStatus.InProgress);
+        var root = CreateTimeTicker(status: TickerStatus.Idle);
         root.Children.Add(child);
         child.ParentId = root.Id;
         grandchild.ParentId = child.Id;
         await _provider.AddTimeTickers([root], CancellationToken.None);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [root.Id], CancellationToken.None));
 
         var update = new InternalFunctionContext
         {
             TickerId = grandchild.Id,
             ParentId = child.Id,
             ChainRootId = root.Id,
+            ChainGeneration = acquired.ChainGeneration,
             Type = TickerType.TimeTicker
         }.SetProperty(x => x.Status, TickerStatus.InProgress);
 
@@ -484,6 +487,8 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                         ["LockedAt"] = (string)argv[1],
                         ["LeaseUntil"] = (string)argv[2],
                         ["AcquisitionToken"] = (string)argv[3],
+                        ["ChainRootId"] = obj.GetProperty("Id").GetString(),
+                        ["ChainGeneration"] = (string)argv[3],
                         ["Status"] = inProgress,
                         ["ExecutionTime"] = (string)argv[5],
                         ["UpdatedAt"] = (string)argv[1],
@@ -501,11 +506,26 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                     var expectedHolder = (string)argv[0];
                     var expectedToken = (string)argv[1];
                     var expectedStatus = Rvi(argv[2]);
+                    var embeddedTargetId = (string)argv[7];
+                    var expectedGeneration = (string)argv[8];
                     var token = obj.TryGetProperty("AcquisitionToken", out var at) && at.ValueKind != JsonValueKind.Null
                         ? at.GetString() : null;
+                    var fencedStatus = status;
+                    if (!string.IsNullOrEmpty(embeddedTargetId))
+                    {
+                        var rootId = obj.GetProperty("Id").GetString();
+                        var chainRootId = obj.TryGetProperty("ChainRootId", out var cr) ? cr.GetString() : null;
+                        var generation = obj.TryGetProperty("ChainGeneration", out var cg) ? cg.GetString() : null;
+                        var target = FindEmbeddedTicker(obj, embeddedTargetId);
+                        if (string.IsNullOrEmpty(expectedGeneration) || target == null ||
+                            !string.Equals(rootId, chainRootId, StringComparison.OrdinalIgnoreCase) ||
+                            !string.Equals(generation, expectedGeneration, StringComparison.OrdinalIgnoreCase))
+                            return RedisResult.Create(RedisValue.Null);
+                        fencedStatus = target.Value.GetProperty("Status").GetInt32();
+                    }
                     if ((!string.IsNullOrEmpty(expectedHolder) && lockHolder != expectedHolder) ||
                         (!string.IsNullOrEmpty(expectedToken) && !string.Equals(token, expectedToken, StringComparison.OrdinalIgnoreCase)) ||
-                        (expectedStatus >= 0 && status != expectedStatus))
+                        (expectedStatus >= 0 && fencedStatus != expectedStatus))
                         return RedisResult.Create(RedisValue.Null);
                     var replacement = (string)argv[4];
                     _store[entityKey] = replacement;
@@ -610,7 +630,9 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                         ["LockedAt"] = (string)argv[1],
                         ["Status"] = targetStatus,
                         ["UpdatedAt"] = (string)argv[1],
-                        ["AcquisitionToken"] = (string)argv[6]
+                        ["AcquisitionToken"] = (string)argv[6],
+                        ["ChainRootId"] = obj.GetProperty("Id").GetString(),
+                        ["ChainGeneration"] = (string)argv[6]
                     });
                     _store[entityKey] = updated;
                     return RedisResult.Create((RedisValue)updated);
@@ -692,6 +714,22 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
             JsonValueKind.Object => children.EnumerateObject().Any(),
             _ => false
         };
+    }
+
+    private static JsonElement? FindEmbeddedTicker(JsonElement root, string targetId)
+    {
+        if (!root.TryGetProperty("Children", out var children) || children.ValueKind != JsonValueKind.Array)
+            return null;
+        foreach (var child in children.EnumerateArray())
+        {
+            if (child.TryGetProperty("Id", out var id) &&
+                string.Equals(id.GetString(), targetId, StringComparison.OrdinalIgnoreCase))
+                return child;
+            var descendant = FindEmbeddedTicker(child, targetId);
+            if (descendant.HasValue)
+                return descendant;
+        }
+        return null;
     }
 
     private void RemoveSortedSetMember(string key, string member)

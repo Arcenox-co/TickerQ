@@ -91,6 +91,31 @@ namespace TickerQ.MongoDB.Infrastructure
                 cancellationToken).ConfigureAwait(false);
         }
 
+        private async Task<bool> LockCurrentChainGenerationAsync(
+            IClientSessionHandle session, InternalFunctionContext context, CancellationToken cancellationToken)
+        {
+            if (!context.ChainRootId.HasValue || !context.ChainGeneration.HasValue)
+                return false;
+            var rootId = context.ChainRootId.Value;
+            var generation = context.ChainGeneration.Value;
+            var fb = Builders<TTimeTicker>.Filter;
+            var filter = fb.And(
+                fb.Eq(x => x.Id, rootId),
+                fb.Eq(x => x.ParentId, (Guid?)null),
+                fb.Eq(x => x.ChainRootId, rootId),
+                fb.Eq(x => x.ChainGeneration, generation));
+
+            // Take a write lock on the authoritative root inside the child transaction. A plain
+            // snapshot read permits write skew: a concurrent reacquisition could mint a new
+            // generation while this transaction writes only the child. The no-op conditional
+            // update forces either side of that race to conflict and retry against fresh state.
+            var result = await _context.TimeTickers.UpdateOneAsync(
+                session, filter,
+                Builders<TTimeTicker>.Update.Set(x => x.ChainGeneration, generation),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return result.MatchedCount == 1;
+        }
+
         // Every supported structural graph mutation writes the same durable epoch document in the
         // transaction that performs the mutation. Retention writes it too. Mongo write conflicts then
         // serialize both operations even though snapshot reads alone do not protect against phantoms.
@@ -325,10 +350,15 @@ namespace TickerQ.MongoDB.Infrastructure
                         }
                         else
                         {
+                            if (functionContext.ParentId != null &&
+                                !await LockCurrentChainGenerationAsync(s, functionContext, ct).ConfigureAwait(false))
+                                return false;
                             var fb = Builders<TTimeTicker>.Filter;
                             var filter = fb.And(
                                 fb.Eq(x => x.Id, functionContext.TickerId),
                                 fb.Ne(x => x.LockHolder, RetentionLockHolder));
+                            if (functionContext.ParentId != null)
+                                filter &= fb.Eq(x => x.ChainRootId, functionContext.ChainRootId);
                             if (functionContext.ParentId == null)
                                 filter &= functionContext.AcquisitionToken.HasValue
                                     ? fb.And(
@@ -389,6 +419,8 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockHolder, _lockHolder)
                     .Set(x => x.LockedAt, now)
                     .Set(x => x.AcquisitionToken, acquisitionToken)
+                    .Set(x => x.ChainRootId, ticker.Id)
+                    .Set(x => x.ChainGeneration, acquisitionToken)
                     .Set(x => x.UpdatedAt, now)
                     .Set(x => x.Status, TickerStatus.Queued);
 
@@ -400,6 +432,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 ticker.LockHolder = _lockHolder;
                 ticker.LockedAt = now;
                 ticker.AcquisitionToken = acquisitionToken;
+                ticker.ChainRootId = ticker.Id;
+                ticker.ChainGeneration = acquisitionToken;
                 ticker.Status = TickerStatus.Queued;
                 yield return ticker;
             }
@@ -435,6 +469,8 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.LockedAt, now)
                     .Set(x => x.LeaseUntil, NextLeaseUntil(now))
                     .Set(x => x.AcquisitionToken, acquisitionToken)
+                    .Set(x => x.ChainRootId, candidate.Id)
+                    .Set(x => x.ChainGeneration, acquisitionToken)
                     .Set(x => x.UpdatedAt, now)
                     .Set(x => x.Status, TickerStatus.InProgress);
 
@@ -443,6 +479,8 @@ namespace TickerQ.MongoDB.Infrastructure
                     continue;
 
                 candidate.AcquisitionToken = acquisitionToken;
+                candidate.ChainRootId = candidate.Id;
+                candidate.ChainGeneration = acquisitionToken;
                 yield return BuildQueuedEntity(candidate, byParent);
             }
         }
@@ -526,9 +564,35 @@ namespace TickerQ.MongoDB.Infrastructure
                     : fb.Where(_ => false);
             }
 
-            var result = await _context.TimeTickers.UpdateOneAsync(
-                filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-            return (int)result.ModifiedCount;
+            if (functionContext.ParentId == null)
+            {
+                var rootResult = await _context.TimeTickers.UpdateOneAsync(
+                    filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+                return (int)rootResult.ModifiedCount;
+            }
+
+            if (TransactionsKnownUnavailable)
+                throw new NotSupportedException("Durable Mongo chain generation fencing requires a replica set transaction.");
+            using var session = await _context.Database.Client.StartSessionAsync(
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                    if (!await LockCurrentChainGenerationAsync(s, functionContext, ct).ConfigureAwait(false))
+                        return 0;
+                    filter &= Builders<TTimeTicker>.Filter.Eq(x => x.ChainRootId, functionContext.ChainRootId);
+                    var childResult = await _context.TimeTickers.UpdateOneAsync(
+                        s, filter, update, cancellationToken: ct).ConfigureAwait(false);
+                    return (int)childResult.ModifiedCount;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+            {
+                throw new NotSupportedException(
+                    "Durable Mongo chain generation fencing requires a replica set transaction.", ex);
+            }
         }
 
         public async Task<byte[]> GetTimeTickerRequest(Guid id, CancellationToken cancellationToken)
@@ -593,6 +657,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 .Set(x => x.LockedAt, now)
                 .Set(x => x.LeaseUntil, NextLeaseUntil(now))
                 .Set(x => x.AcquisitionToken, acquisitionToken)
+                .Set(x => x.ChainGeneration, acquisitionToken)
                 .Set(x => x.Status, TickerStatus.InProgress)
                 .Set(x => x.UpdatedAt, now);
             var options = new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After };
@@ -603,7 +668,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 var filter = fb.And(
                     fb.Eq(x => x.Id, id),
                     MongoUpdateBuilders.CanAcquireTimeTicker<TTimeTicker>(_lockHolder));
-                var acquired = await coll.FindOneAndUpdateAsync(filter, update, options, cancellationToken)
+                var acquired = await coll.FindOneAndUpdateAsync(filter,
+                        update.Set(x => x.ChainRootId, id), options, cancellationToken)
                     .ConfigureAwait(false);
                 if (acquired != null) rows.Add(acquired);
             }
@@ -639,6 +705,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 .Set(x => x.LockedAt, now)
                 .Set(x => x.LeaseUntil, NextLeaseUntil(now))
                 .Set(x => x.AcquisitionToken, token)
+                .Set(x => x.ChainRootId, id)
+                .Set(x => x.ChainGeneration, token)
                 .Set(x => x.RetryCount, 0)
                 .Set(x => x.ExceptionMessage, (string)null)
                 .Set(x => x.SkippedReason, (string)null)
@@ -1935,23 +2003,63 @@ namespace TickerQ.MongoDB.Infrastructure
                         return 0;
                     var count = 0;
                     foreach (var ticker in tickers)
-                        count += await InsertWithChildren(session, ticker, null, ct).ConfigureAwait(false);
+                    {
+                        var identity = await ResolveInsertedChainIdentityAsync(
+                            session, ticker, tickers, ct).ConfigureAwait(false);
+                        count += await InsertWithChildren(
+                            session, ticker, null, identity.RootId, identity.Generation, ct).ConfigureAwait(false);
+                    }
                     return count;
                 },
                 async ct =>
                 {
                     var count = 0;
                     foreach (var ticker in tickers)
-                        count += await InsertWithChildren(null, ticker, null, ct).ConfigureAwait(false);
+                    {
+                        var identity = await ResolveInsertedChainIdentityAsync(
+                            null, ticker, tickers, ct).ConfigureAwait(false);
+                        count += await InsertWithChildren(
+                            null, ticker, null, identity.RootId, identity.Generation, ct).ConfigureAwait(false);
+                    }
                     return count;
                 },
                 cancellationToken).ConfigureAwait(false);
         }
 
+        private async Task<(Guid RootId, Guid? Generation)> ResolveInsertedChainIdentityAsync(
+            IClientSessionHandle session, TTimeTicker ticker, IReadOnlyCollection<TTimeTicker> supplied,
+            CancellationToken cancellationToken)
+        {
+            var suppliedById = supplied.ToDictionary(x => x.Id);
+            var current = ticker;
+            var visited = new HashSet<Guid>();
+            while (current.ParentId.HasValue && visited.Add(current.Id))
+            {
+                if (suppliedById.TryGetValue(current.ParentId.Value, out var suppliedParent))
+                {
+                    current = suppliedParent;
+                    continue;
+                }
+
+                var filter = Builders<TTimeTicker>.Filter.Eq(x => x.Id, current.ParentId.Value);
+                var parent = session == null
+                    ? await _context.TimeTickers.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+                    : await _context.TimeTickers.Find(session, filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                return parent == null
+                    ? (ticker.Id, ticker.ChainGeneration)
+                    : (parent.ChainRootId ?? parent.Id, parent.ChainGeneration);
+            }
+
+            return (current.Id, current.ChainGeneration);
+        }
+
         private async Task<int> InsertWithChildren(
-            IClientSessionHandle session, TTimeTicker ticker, Guid? parentId, CancellationToken ct)
+            IClientSessionHandle session, TTimeTicker ticker, Guid? parentId, Guid chainRootId,
+            Guid? chainGeneration, CancellationToken ct)
         {
             if (parentId.HasValue) ticker.ParentId = parentId.Value;
+            ticker.ChainRootId = chainRootId;
+            ticker.ChainGeneration = chainGeneration;
             if (session == null)
                 await _context.TimeTickers.InsertOneAsync(ticker, cancellationToken: ct).ConfigureAwait(false);
             else
@@ -1961,7 +2069,8 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 foreach (var child in ticker.Children)
                     if (child is TTimeTicker c)
-                        count += await InsertWithChildren(session, c, ticker.Id, ct).ConfigureAwait(false);
+                        count += await InsertWithChildren(
+                            session, c, ticker.Id, chainRootId, chainGeneration, ct).ConfigureAwait(false);
             }
             return count;
         }
@@ -1994,23 +2103,28 @@ namespace TickerQ.MongoDB.Infrastructure
                     }
                     var count = 0;
                     foreach (var ticker in tickers)
-                        count += await ReplaceWithChildren(session, ticker, null, ct).ConfigureAwait(false);
+                        count += await ReplaceWithChildren(
+                            session, ticker, null, ticker.Id, ticker.ChainGeneration, ct).ConfigureAwait(false);
                     return count;
                 },
                 async ct =>
                 {
                     var count = 0;
                     foreach (var ticker in tickers)
-                        count += await ReplaceWithChildren(null, ticker, null, ct).ConfigureAwait(false);
+                        count += await ReplaceWithChildren(
+                            null, ticker, null, ticker.Id, ticker.ChainGeneration, ct).ConfigureAwait(false);
                     return count;
                 },
                 cancellationToken).ConfigureAwait(false);
         }
 
         private async Task<int> ReplaceWithChildren(
-            IClientSessionHandle session, TTimeTicker ticker, Guid? parentId, CancellationToken ct)
+            IClientSessionHandle session, TTimeTicker ticker, Guid? parentId, Guid chainRootId,
+            Guid? chainGeneration, CancellationToken ct)
         {
             if (parentId.HasValue) ticker.ParentId = parentId.Value;
+            ticker.ChainRootId = chainRootId;
+            ticker.ChainGeneration = chainGeneration;
             var filter = Builders<TTimeTicker>.Filter.Eq(x => x.Id, ticker.Id);
             var options = new ReplaceOptions { IsUpsert = true };
             ReplaceOneResult result;
@@ -2023,7 +2137,8 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 foreach (var child in ticker.Children)
                     if (child is TTimeTicker c)
-                        count += await ReplaceWithChildren(session, c, ticker.Id, ct).ConfigureAwait(false);
+                        count += await ReplaceWithChildren(
+                            session, c, ticker.Id, chainRootId, chainGeneration, ct).ConfigureAwait(false);
             }
             return count;
         }
@@ -2074,7 +2189,8 @@ namespace TickerQ.MongoDB.Infrastructure
                         .AnyAsync(ct).ConfigureAwait(false);
                     if (!oldExists) return 0;
 
-                    var inserted = await InsertWithChildren(session, newRoot, null, ct).ConfigureAwait(false);
+                    var inserted = await InsertWithChildren(
+                        session, newRoot, null, newRoot.Id, null, ct).ConfigureAwait(false);
                     var oldIds = await CollectBoundedChainIds(
                         session, oldRootId, 1_000, ct).ConfigureAwait(false);
                     if (oldIds == null)
@@ -2447,6 +2563,8 @@ namespace TickerQ.MongoDB.Infrastructure
                             TimeoutSeconds = c.TimeoutSeconds,
                             RunCondition = c.RunCondition,
                             ParentId = c.ParentId,
+                            ChainRootId = c.ChainRootId,
+                            ChainGeneration = c.ChainGeneration,
                         })
                         .ToList();
                     node.Children = mapped;

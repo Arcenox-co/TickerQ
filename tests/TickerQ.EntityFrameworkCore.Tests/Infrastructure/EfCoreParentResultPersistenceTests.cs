@@ -88,9 +88,19 @@ public sealed class EfCoreParentResultPersistenceTests : IAsyncLifetime
         var root = NewTimeTicker();
         var child = NewTimeTicker(parentId: root.Id);
         var grandchild = NewTimeTicker(parentId: child.Id);
+        var generation = Guid.NewGuid();
+        root.ChainRootId = root.Id;
+        root.ChainGeneration = generation;
+        child.ChainRootId = root.Id;
+        child.ChainGeneration = generation;
+        grandchild.ChainRootId = root.Id;
+        grandchild.ChainGeneration = generation;
         await SeedAsync(root, child, grandchild);
 
-        Assert.True(await _provider.CommitSuccessfulTickerAsync(Success(child.Id, null, Envelope("child"), child.ParentId)));
+        var success = Success(child.Id, null, Envelope("child"), child.ParentId);
+        success.ChainRootId = root.Id;
+        success.ChainGeneration = generation;
+        Assert.True(await _provider.CommitSuccessfulTickerAsync(success));
 
         Assert.Null(await _provider.GetTimeTickerResultAsync(root.Id));
         Assert.Equal("child", System.Text.Encoding.UTF8.GetString(

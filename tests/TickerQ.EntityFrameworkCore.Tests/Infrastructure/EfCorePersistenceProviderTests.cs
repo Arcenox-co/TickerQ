@@ -1914,12 +1914,19 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         var parent = CreateTimeTicker();
         var child = CreateTimeTicker(status: TickerStatus.Idle);
         child.ParentId = parent.Id;
+        var generation = Guid.NewGuid();
+        parent.ChainRootId = parent.Id;
+        parent.ChainGeneration = generation;
+        child.ChainRootId = parent.Id;
+        child.ChainGeneration = generation;
         await SeedTimeTickers(parent, child);
 
         var update = new InternalFunctionContext
         {
             TickerId = child.Id,
             ParentId = child.ParentId,
+            ChainRootId = parent.Id,
+            ChainGeneration = generation,
             Type = TickerType.TimeTicker
         }.SetProperty(x => x.Status, TickerStatus.InProgress);
 
@@ -1943,12 +1950,19 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
             lockedAt: null);
         child.ParentId = parent.Id;
         child.LeaseUntil = _fixedNow.AddMinutes(-1);
+        var generation = Guid.NewGuid();
+        parent.ChainRootId = parent.Id;
+        parent.ChainGeneration = generation;
+        child.ChainRootId = parent.Id;
+        child.ChainGeneration = generation;
         await SeedTimeTickers(parent, child);
 
         var update = new InternalFunctionContext
         {
             TickerId = child.Id,
             ParentId = child.ParentId,
+            ChainRootId = parent.Id,
+            ChainGeneration = generation,
             Type = TickerType.TimeTicker
         }.SetProperty(x => x.Status, TickerStatus.Done);
 
@@ -1958,6 +1972,50 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id);
         Assert.Equal(TickerStatus.Done, persisted.Status);
         Assert.Null(persisted.LeaseUntil);
+    }
+
+    [Fact]
+    public async Task StaleChildGeneration_CannotOverwriteRerunStatusOrResult()
+    {
+        var child = CreateTimeTicker(status: TickerStatus.Idle);
+        child.ExecutionTime = null;
+        var root = CreateTimeTicker(status: TickerStatus.Idle);
+        root.Children.Add(child);
+        Assert.Equal(2, await _provider.AddTimeTickers([root], CancellationToken.None));
+
+        var runA = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [root.Id], CancellationToken.None));
+        var generationA = runA.ChainGeneration!.Value;
+        var rootDone = new InternalFunctionContext
+        {
+            TickerId = root.Id, ChainRootId = root.Id, ChainGeneration = generationA,
+            AcquisitionToken = runA.AcquisitionToken, Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.Done)
+         .SetProperty(x => x.ReleaseLock, true);
+        Assert.Equal(1, await _provider.UpdateTimeTicker(rootDone, CancellationToken.None));
+
+        var runB = await _provider.AcquireTimeTickerOnDemandAsync(
+            root.Id, _fixedNow, CancellationToken.None);
+        Assert.NotNull(runB);
+        var generationB = runB!.ChainGeneration!.Value;
+        Assert.NotEqual(generationA, generationB);
+
+        InternalFunctionContext Success(Guid generation, byte value) =>
+            new InternalFunctionContext
+            {
+                TickerId = child.Id, ParentId = root.Id, ChainRootId = root.Id,
+                ChainGeneration = generation, Type = TickerType.TimeTicker
+            }.SetProperty(x => x.Status, TickerStatus.Done)
+             .SetProperty(x => x.ResultEnvelope,
+                 new TickerResultEnvelope([value], 1, "application/octet-stream"));
+
+        Assert.True(await _provider.CommitSuccessfulTickerAsync(Success(generationB, 2)));
+        Assert.False(await _provider.CommitSuccessfulTickerAsync(Success(generationA, 1)));
+
+        using var verify = CreateVerifyContext();
+        Assert.Equal(TickerStatus.Done,
+            (await verify.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id)).Status);
+        Assert.Equal([2], (await _provider.GetTimeTickerResultAsync(child.Id))!.ToPayloadArray());
     }
 
     [Fact]

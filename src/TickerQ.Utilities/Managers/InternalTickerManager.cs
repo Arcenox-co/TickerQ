@@ -129,8 +129,11 @@ namespace TickerQ.Utilities.Managers
             return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
         }
 
-        private static InternalFunctionContext BuildTimeTickerContext(TimeTickerEntity ticker)
+        private static InternalFunctionContext BuildTimeTickerContext(
+            TimeTickerEntity ticker, Guid? chainRootId = null, Guid? chainGeneration = null)
         {
+            chainRootId ??= ticker.ChainRootId ?? ticker.Id;
+            chainGeneration ??= ticker.ChainGeneration;
             return new InternalFunctionContext
             {
                 FunctionName = ticker.Function,
@@ -143,9 +146,11 @@ namespace TickerQ.Utilities.Managers
                 TimeoutSeconds = ticker.TimeoutSeconds,
                 ParentId = ticker.ParentId,
                 AcquisitionToken = ticker.AcquisitionToken,
+                ChainRootId = chainRootId,
+                ChainGeneration = chainGeneration,
                 RunCondition = ticker.RunCondition ?? RunCondition.OnAnyCompletedStatus,
                 TimeTickerChildren = ticker.Children?
-                    .Select(BuildTimeTickerContext)
+                    .Select(child => BuildTimeTickerContext(child, chainRootId, chainGeneration))
                     .ToList() ?? []
             };
         }
@@ -424,10 +429,14 @@ namespace TickerQ.Utilities.Managers
             else
             {
                 var affected = await _persistenceProvider.UpdateTimeTicker(functionContext, cancellationToken).ConfigureAwait(false);
-                if (publishesResult && affected == 0)
+                // Ownership fencing lives in the provider: a stale token / lost CAS returns zero rows. A
+                // result publication or child mutation that affected nothing was NOT acknowledged. Fail closed
+                // so stale generations cannot notify or release descendants.
+                if (affected == 0 && (publishesResult || functionContext.ParentId != null))
                     throw new TickerResultNotAcknowledgedException(
-                        $"Result publication for TickerFunction '{functionContext.FunctionName}' " +
-                        $"(ticker {functionContext.TickerId}) was not acknowledged. Children are not released.");
+                        $"Mutation for TickerFunction '{functionContext.FunctionName}' " +
+                        $"(ticker {functionContext.TickerId}) was not acknowledged: ownership or chain generation is stale. " +
+                        "Notifications and descendant release are suppressed.");
             }
 
             await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);

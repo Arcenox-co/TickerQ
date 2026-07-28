@@ -126,7 +126,8 @@ namespace TickerQ.Provider
                     return true;
                 }
 
-                if (!TimeTickers.TryGetValue(functionContext.TickerId, out var ticker))
+                if (!TimeTickers.TryGetValue(functionContext.TickerId, out var ticker) ||
+                    !HasCurrentChainGeneration(functionContext, ticker))
                     return false;
                 if ((functionContext.ParentId == null || enforceChildFence) &&
                     (!functionContext.AcquisitionToken.HasValue || ticker.LockHolder != _lockHolder ||
@@ -173,6 +174,8 @@ namespace TickerQ.Provider
                         updatedTicker.LockHolder = _lockHolder;
                         updatedTicker.LockedAt = now;
                         updatedTicker.AcquisitionToken = Guid.NewGuid();
+                        updatedTicker.ChainRootId = updatedTicker.Id;
+                        updatedTicker.ChainGeneration = updatedTicker.AcquisitionToken;
                         updatedTicker.UpdatedAt = now;
                         updatedTicker.Status = TickerStatus.Queued;
                         
@@ -182,6 +185,8 @@ namespace TickerQ.Provider
                             timeTicker.LockHolder = _lockHolder;
                             timeTicker.LockedAt = now;
                             timeTicker.AcquisitionToken = updatedTicker.AcquisitionToken;
+                            timeTicker.ChainRootId = updatedTicker.Id;
+                            timeTicker.ChainGeneration = updatedTicker.ChainGeneration;
                             timeTicker.Status = TickerStatus.Queued;
                             
                             yield return timeTicker;
@@ -221,6 +226,8 @@ namespace TickerQ.Provider
                         updatedTicker.LockHolder = _lockHolder;
                         updatedTicker.LockedAt = now;
                         updatedTicker.AcquisitionToken = Guid.NewGuid();
+                        updatedTicker.ChainRootId = updatedTicker.Id;
+                        updatedTicker.ChainGeneration = updatedTicker.AcquisitionToken;
                         updatedTicker.UpdatedAt = now;
                         updatedTicker.Status = TickerStatus.InProgress;
 
@@ -309,29 +316,47 @@ namespace TickerQ.Provider
 
         public Task<int> UpdateTimeTicker(InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         {
-            if (TimeTickers.TryGetValue(functionContext.TickerId, out var ticker))
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
             {
+                if (!TimeTickers.TryGetValue(functionContext.TickerId, out var ticker) ||
+                    !HasCurrentChainGeneration(functionContext, ticker))
+                    return 0;
+
                 if (IsFencedTerminalWrite(functionContext) && functionContext.ParentId == null &&
                     (!functionContext.AcquisitionToken.HasValue || ticker.LockHolder != _lockHolder ||
                      ticker.AcquisitionToken != functionContext.AcquisitionToken))
-                    return Task.FromResult(0);
+                    return 0;
 
                 var updatedTicker = CloneTicker(ticker);
                 ApplyFunctionContextToTicker(updatedTicker, functionContext);
 
-                if (TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker))
-                {
-                    // Commit the parent result only for the winning successful terminal write. This
-                    // returns before the execution handler releases/queues children, so the result is
-                    // durably visible to a child by the time it can read it.
-                    if (IsSuccessfulResultWrite(functionContext))
-                        TimeTickerResults[functionContext.TickerId] = functionContext.ResultEnvelope;
+                EligibilityMutationLockHook?.Invoke(functionContext.TickerId);
+                if (!TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker))
+                    return 0;
 
-                    return Task.FromResult(1);
-                }
-            }
+                if (IsSuccessfulResultWrite(functionContext))
+                    TimeTickerResults[functionContext.TickerId] = functionContext.ResultEnvelope;
+                return 1;
+            }));
+        }
 
-            return Task.FromResult(0);
+        private static bool HasCurrentChainGeneration(
+            InternalFunctionContext context, TTimeTicker target)
+        {
+            if (context.ParentId == null)
+                return !context.ChainGeneration.HasValue ||
+                       (context.ChainRootId == target.Id &&
+                        target.ChainRootId == target.Id &&
+                        target.ChainGeneration == context.ChainGeneration);
+
+            if (!context.ChainRootId.HasValue || !context.ChainGeneration.HasValue ||
+                target.ChainRootId != context.ChainRootId)
+                return false;
+
+            return TimeTickers.TryGetValue(context.ChainRootId.Value, out var root) &&
+                   root.ParentId == null && root.ChainRootId == root.Id &&
+                   root.ChainGeneration == context.ChainGeneration;
         }
 
         public Task<byte[]> GetTimeTickerRequest(Guid id, CancellationToken cancellationToken)
@@ -406,6 +431,8 @@ namespace TickerQ.Provider
                 updatedTicker.LockHolder = _lockHolder;
                 updatedTicker.LockedAt = now;
                 updatedTicker.AcquisitionToken = Guid.NewGuid();
+                updatedTicker.ChainRootId = updatedTicker.Id;
+                updatedTicker.ChainGeneration = updatedTicker.AcquisitionToken;
                 updatedTicker.Status = TickerStatus.InProgress;
                 updatedTicker.UpdatedAt = now;
 
@@ -439,6 +466,8 @@ namespace TickerQ.Provider
                 updated.LockHolder = _lockHolder;
                 updated.LockedAt = now;
                 updated.AcquisitionToken = Guid.NewGuid();
+                updated.ChainRootId = updated.Id;
+                updated.ChainGeneration = updated.AcquisitionToken;
                 updated.RetryCount = 0;
                 updated.ExceptionMessage = null;
                 updated.SkippedReason = null;
@@ -543,7 +572,9 @@ namespace TickerQ.Provider
                 var added = 0;
                 foreach (var ticker in tickers)
                 {
-                    added += AddTickerWithChildren(ticker);
+                    var (rootId, generation) = ResolveInsertedChainIdentity(ticker, tickers);
+                    added += AddTickerWithChildren(ticker, chainRootId: rootId,
+                        chainGeneration: generation);
                 }
 
                 return added;
@@ -552,9 +583,37 @@ namespace TickerQ.Provider
             return Task.FromResult(count);
         }
         
-        private int AddTickerWithChildren(TTimeTicker ticker, Guid? parentId = null)
+        private static (Guid RootId, Guid? Generation) ResolveInsertedChainIdentity(
+            TTimeTicker ticker, IReadOnlyCollection<TTimeTicker> supplied)
+        {
+            var suppliedById = supplied.ToDictionary(x => x.Id);
+            var current = ticker;
+            var visited = new HashSet<Guid>();
+            while (current.ParentId.HasValue && visited.Add(current.Id))
+            {
+                if (suppliedById.TryGetValue(current.ParentId.Value, out var suppliedParent))
+                {
+                    current = suppliedParent;
+                    continue;
+                }
+
+                if (TimeTickers.TryGetValue(current.ParentId.Value, out var persistedParent))
+                    return (persistedParent.ChainRootId ?? persistedParent.Id,
+                        persistedParent.ChainGeneration);
+                break;
+            }
+
+            return (current.Id, current.ChainGeneration);
+        }
+
+        private int AddTickerWithChildren(
+            TTimeTicker ticker, Guid? parentId = null, Guid? chainRootId = null,
+            Guid? chainGeneration = null)
         {
             var count = 0;
+            chainRootId ??= ticker.Id;
+            ticker.ChainRootId = chainRootId;
+            ticker.ChainGeneration = chainGeneration;
             
             // Set the parent ID if this is a child
             if (parentId.HasValue)
@@ -579,7 +638,8 @@ namespace TickerQ.Provider
                         // Cast to TTimeTicker since Children is ICollection<TTimeTicker>
                         if (child is TTimeTicker childTicker)
                         {
-                            count += AddTickerWithChildren(childTicker, ticker.Id);
+                            count += AddTickerWithChildren(
+                                childTicker, ticker.Id, chainRootId, chainGeneration);
                         }
                     }
                 }
@@ -1752,7 +1812,9 @@ namespace TickerQ.Provider
                 ParentId = ticker.ParentId,
                 ExecutionTime = ticker.ExecutionTime,
                 AcquisitionToken = ticker.AcquisitionToken,
-                Children = BuildQueueDescendants(ticker.Id),
+                ChainRootId = ticker.Id,
+                ChainGeneration = ticker.ChainGeneration,
+                Children = BuildQueueDescendants(ticker.Id, ticker.Id, ticker.ChainGeneration),
             };
 
             return root;
@@ -1761,7 +1823,8 @@ namespace TickerQ.Provider
         // Recursive descendants walker for the queue projection. Mirrors the EF
         // provider's probe-and-extend semantics: unbounded depth, only includes
         // chain children (ExecutionTime == null) for the direct-children layer.
-        private static List<TimeTickerEntity> BuildQueueDescendants(Guid parentId)
+        private static List<TimeTickerEntity> BuildQueueDescendants(
+            Guid parentId, Guid chainRootId, Guid? chainGeneration)
         {
             if (!ChildrenIndex.TryGetValue(parentId, out var directChildren) || directChildren.IsEmpty)
                 return new List<TimeTickerEntity>();
@@ -1789,7 +1852,9 @@ namespace TickerQ.Provider
                     TimeoutSeconds = ch.TimeoutSeconds,
                     RunCondition = ch.RunCondition,
                     ParentId = ch.ParentId,
-                    Children = BuildQueueDescendantsAtAnyDepth(ch.Id),
+                    ChainRootId = chainRootId,
+                    ChainGeneration = chainGeneration,
+                    Children = BuildQueueDescendantsAtAnyDepth(ch.Id, chainRootId, chainGeneration),
                 });
             }
 
@@ -1798,7 +1863,8 @@ namespace TickerQ.Provider
 
         // Same as BuildQueueDescendants but without the ExecutionTime filter — once
         // we're past the direct-children layer, every descendant is a chain node.
-        private static List<TimeTickerEntity> BuildQueueDescendantsAtAnyDepth(Guid parentId)
+        private static List<TimeTickerEntity> BuildQueueDescendantsAtAnyDepth(
+            Guid parentId, Guid chainRootId, Guid? chainGeneration)
         {
             if (!ChildrenIndex.TryGetValue(parentId, out var directChildren) || directChildren.IsEmpty)
                 return new List<TimeTickerEntity>();
@@ -1820,7 +1886,9 @@ namespace TickerQ.Provider
                     TimeoutSeconds = ch.TimeoutSeconds,
                     RunCondition = ch.RunCondition,
                     ParentId = ch.ParentId,
-                    Children = BuildQueueDescendantsAtAnyDepth(ch.Id),
+                    ChainRootId = chainRootId,
+                    ChainGeneration = chainGeneration,
+                    Children = BuildQueueDescendantsAtAnyDepth(ch.Id, chainRootId, chainGeneration),
                 });
             }
             return children;
@@ -1904,6 +1972,8 @@ namespace TickerQ.Provider
                 Description = ticker.Description,
                 LeaseUntil = ticker.LeaseUntil,
                 AcquisitionToken = ticker.AcquisitionToken,
+                ChainRootId = ticker.ChainRootId,
+                ChainGeneration = ticker.ChainGeneration,
                 OnStale = ticker.OnStale,
                 StaleRestartCount = ticker.StaleRestartCount,
                 TimeoutSeconds = ticker.TimeoutSeconds,

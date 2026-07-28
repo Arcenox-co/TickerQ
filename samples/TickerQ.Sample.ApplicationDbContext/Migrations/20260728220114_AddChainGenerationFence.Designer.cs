@@ -2,17 +2,20 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
-using TickerQ.EntityFrameworkCore.DbContextFactory;
+using TickerQ.Sample.ApplicationDbContext.Data;
 
 #nullable disable
 
-namespace TickerQ.Sample.Console.Migrations
+namespace TickerQ.Sample.ApplicationDbContext.Migrations
 {
-    [DbContext(typeof(TickerQDbContext))]
-    partial class TickerQDbContextModelSnapshot : ModelSnapshot
+    [DbContext(typeof(AppDbContext))]
+    [Migration("20260728220114_AddChainGenerationFence")]
+    partial class AddChainGenerationFence
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.0");
@@ -77,6 +80,21 @@ namespace TickerQ.Sample.Console.Migrations
                     b.HasKey("TickerId");
 
                     b.ToTable("TimeTickerResults", "ticker");
+                });
+
+            modelBuilder.Entity("TickerQ.Sample.ApplicationDbContext.Data.Person", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Persons");
                 });
 
             modelBuilder.Entity("TickerQ.Utilities.Entities.CronTickerEntity", b =>

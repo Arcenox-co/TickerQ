@@ -44,6 +44,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 LockedAt = e.LockedAt,
                 LeaseUntil = e.LeaseUntil,
                 AcquisitionToken = e.AcquisitionToken,
+                ChainRootId = e.ChainRootId,
+                ChainGeneration = e.ChainGeneration,
                 RetryCount = e.RetryCount,
                 ExceptionMessage = e.ExceptionMessage,
                 SkippedReason = e.SkippedReason,
@@ -60,6 +62,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     RetryIntervals = ch.RetryIntervals,
                     TimeoutSeconds = ch.TimeoutSeconds,
                     ParentId = ch.ParentId,
+                    ChainRootId = ch.ChainRootId,
+                    ChainGeneration = ch.ChainGeneration,
                     RunCondition = ch.RunCondition,
                     Children = ch.Children.Select(gch => new TimeTickerEntity
                     {
@@ -70,6 +74,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         RetryIntervals = gch.RetryIntervals,
                         TimeoutSeconds = gch.TimeoutSeconds,
                         ParentId = gch.ParentId,
+                        ChainRootId = gch.ChainRootId,
+                        ChainGeneration = gch.ChainGeneration,
                         Id = gch.Id,
                         RunCondition = gch.RunCondition
                     }).ToArray()

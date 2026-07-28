@@ -988,6 +988,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             TickerId = Guid.NewGuid(),
             FunctionName = "TestFunction",
             Type = type,
+            ChainGeneration = type == TickerType.TimeTicker ? Guid.NewGuid() : null,
             ExecutionTime = DateTime.UtcNow,
             RetryIntervals = [],
             Retries = 0,

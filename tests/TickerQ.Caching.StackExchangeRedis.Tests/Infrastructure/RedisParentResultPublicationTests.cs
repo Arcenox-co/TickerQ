@@ -182,7 +182,7 @@ public sealed class RedisParentResultPublicationTests
             TickerId = child.Id,
             ParentId = root.Id,
             ChainRootId = root.Id,
-            AcquisitionToken = acquiredRoot.AcquisitionToken,
+            ChainGeneration = acquiredRoot.ChainGeneration,
             Type = TickerType.TimeTicker
         }.SetProperty(x => x.Status, TickerStatus.Done)
          .SetProperty(x => x.ResultEnvelope,
@@ -205,7 +205,7 @@ public sealed class RedisParentResultPublicationTests
         var update = new InternalFunctionContext
         {
             TickerId = child.Id, ParentId = root.Id, ChainRootId = root.Id,
-            AcquisitionToken = Guid.NewGuid(), Type = TickerType.TimeTicker
+            ChainGeneration = Guid.NewGuid(), Type = TickerType.TimeTicker
         }.SetProperty(x => x.Status, TickerStatus.Done)
          .SetProperty(x => x.ResultEnvelope,
              new TickerResultEnvelope([7], 1, "application/octet-stream"));

@@ -341,11 +341,15 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
         var child = NewTimeTicker();
         typeof(TimeTickerEntity).GetProperty(nameof(child.ParentId))!.SetValue(child, parent.Id);
         await _f.Provider.AddTimeTickers([parent, child], CancellationToken.None);
+        var acquired = Assert.Single(await _f.Provider.AcquireImmediateTimeTickersAsync(
+            [parent.Id], CancellationToken.None));
 
         var update = new InternalFunctionContext
         {
             TickerId = child.Id,
             ParentId = parent.Id,
+            ChainRootId = parent.Id,
+            ChainGeneration = acquired.ChainGeneration,
             Type = TickerType.TimeTicker
         }.SetProperty(x => x.Status, TickerStatus.InProgress);
 
@@ -365,11 +369,15 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
         typeof(TimeTickerEntity).GetProperty(nameof(child.ParentId))!.SetValue(child, parent.Id);
         child.LeaseUntil = _f.FixedNow.AddMinutes(-1);
         await _f.Provider.AddTimeTickers([parent, child], CancellationToken.None);
+        var acquired = Assert.Single(await _f.Provider.AcquireImmediateTimeTickersAsync(
+            [parent.Id], CancellationToken.None));
 
         var update = new InternalFunctionContext
         {
             TickerId = child.Id,
             ParentId = parent.Id,
+            ChainRootId = parent.Id,
+            ChainGeneration = acquired.ChainGeneration,
             Type = TickerType.TimeTicker
         }.SetProperty(x => x.Status, TickerStatus.Done);
 

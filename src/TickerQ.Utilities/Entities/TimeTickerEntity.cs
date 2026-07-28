@@ -51,6 +51,16 @@ namespace TickerQ.Utilities.Entities
         /// </summary>
         [JsonInclude]
         public virtual Guid? AcquisitionToken { get; set; }
+        /// <summary>The durable root of the execution graph containing this ticker.</summary>
+        [JsonInclude]
+        public virtual Guid? ChainRootId { get; set; }
+        /// <summary>
+        /// Generation shared by every descendant of the currently acquired root. Unlike
+        /// <see cref="AcquisitionToken"/>, this remains after root completion so delayed
+        /// child writes can still be rejected after the root is rerun.
+        /// </summary>
+        [JsonInclude]
+        public virtual Guid? ChainGeneration { get; set; }
         /// <summary>What the stale-job watchdog does with this ticker if it goes stale.</summary>
         public virtual StaleAction OnStale { get; set; }
         [JsonInclude]

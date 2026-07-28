@@ -147,6 +147,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
 
+            foreach (var ticker in tickers)
+                NormalizeChainRoot(ticker, ticker.Id);
+
             await dbContext.Set<TTimeTicker>()
                 .AddRangeAsync(tickers, cancellationToken);
             
@@ -158,6 +161,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
 
+            foreach (var ticker in timeTickers.Where(x => x.ParentId == null))
+                NormalizeChainRoot(ticker, ticker.Id);
             dbContext.Set<TTimeTicker>().UpdateRange(timeTickers);
              
             return await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -208,6 +213,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         {
             if (newRoot == null)
                 throw new ArgumentNullException(nameof(newRoot));
+
+            NormalizeChainRoot(newRoot, newRoot.Id);
 
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
@@ -268,6 +275,14 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     return newExists && oldGone;
                 },
                 cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
+        private static void NormalizeChainRoot(TTimeTicker node, Guid rootId)
+        {
+            node.ChainRootId = rootId;
+            if (node.Children == null) return;
+            foreach (var child in node.Children)
+                NormalizeChainRoot(child, rootId);
         }
         #endregion
 

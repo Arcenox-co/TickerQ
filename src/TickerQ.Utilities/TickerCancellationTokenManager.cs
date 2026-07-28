@@ -22,7 +22,7 @@ namespace TickerQ.Utilities
                 CancellationSource = cancellationSource,
                 IsDue = isDue,
                 ParentId = context.ParentId ?? Guid.Empty,
-                AcquisitionToken = context.AcquisitionToken
+                AcquisitionToken = context.ParentId.HasValue ? context.ChainGeneration : context.AcquisitionToken
             };
 
             var key = new TickerExecutionKey(context.Type, context.TickerId);
@@ -60,7 +60,7 @@ namespace TickerQ.Utilities
                 CancellationSource = cancellationSource,
                 IsDue = isDue,
                 ParentId = context.ParentId ?? Guid.Empty,
-                AcquisitionToken = context.AcquisitionToken
+                AcquisitionToken = context.ParentId.HasValue ? context.ChainGeneration : context.AcquisitionToken
             };
 
             var key = new TickerExecutionKey(context.Type, context.TickerId);

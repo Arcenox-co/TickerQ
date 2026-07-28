@@ -108,6 +108,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var ticker in tickers)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            NormalizeAggregate(ticker, ticker.Id, null);
             ticker.CreatedAt = ticker.CreatedAt == default ? now : ticker.CreatedAt;
             ticker.UpdatedAt = ticker.UpdatedAt == default ? now : ticker.UpdatedAt;
             var existing = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(ticker.Id)).ConfigureAwait(false);
@@ -127,6 +128,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var ticker in tickers)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            NormalizeAggregate(ticker, ticker.Id, ticker.ChainGeneration);
             ticker.UpdatedAt = now;
             await Serializer.SetAsync(TimeTickerKey(ticker.Id), ticker).ConfigureAwait(false);
             await IndexManager.AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
@@ -163,6 +165,14 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             foreach (var child in current.Children ?? [])
                 pending.Push(child);
         }
+    }
+
+    private static void NormalizeAggregate(TTimeTicker node, Guid rootId, Guid? generation)
+    {
+        node.ChainRootId = rootId;
+        node.ChainGeneration = generation;
+        foreach (var child in node.Children ?? [])
+            NormalizeAggregate(child, rootId, generation);
     }
     #endregion
 

@@ -1,12 +1,19 @@
 -- Atomic JSON/result replacement guarded by the observed generation and version.
 -- KEYS: entity, result side key
 -- ARGV: expectedHolder, expectedToken, expectedStatus (-1 skips), expectedUpdatedAt,
---       replacementJson, resultAction (none/set/clear), resultEnvelope, embeddedTargetId
+--       replacementJson, resultAction (none/set/clear), resultEnvelope, embeddedTargetId,
+--       expectedChainGeneration (required for embedded targets)
 local json = redis.call('GET', KEYS[1])
 if not json then return nil end
 local obj = cjson.decode(json)
 local fence = obj
 if ARGV[8] ~= '' then
+  local rootId = obj['Id'] or obj['id']
+  local chainRootId = obj['ChainRootId'] or obj['chainRootId']
+  local generation = obj['ChainGeneration'] or obj['chainGeneration']
+  if ARGV[9] == '' or not rootId or not chainRootId or not generation
+    or string.lower(tostring(rootId)) ~= string.lower(tostring(chainRootId))
+    or string.lower(tostring(generation)) ~= string.lower(ARGV[9]) then return nil end
   local function find(children)
     if type(children) ~= 'table' then return nil end
     for _, child in pairs(children) do

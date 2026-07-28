@@ -48,6 +48,9 @@ namespace TickerQ.MongoDB.Indexes
                 new CreateIndexModel<TTimeTicker>(keys.Ascending(x => x.ParentId),
                     new CreateIndexOptions { Name = "IX_TimeTicker_ParentId", Sparse = true }),
                 new CreateIndexModel<TTimeTicker>(
+                    keys.Ascending(x => x.ChainRootId).Ascending(x => x.ChainGeneration),
+                    new CreateIndexOptions { Name = "IX_TimeTicker_ChainRootId_ChainGeneration", Sparse = true }),
+                new CreateIndexModel<TTimeTicker>(
                     keys.Ascending(x => x.ParentId).Ascending(x => x.Status)
                         .Ascending(x => x.ExecutedAt).Ascending(x => x.Id),
                     new CreateIndexOptions { Name = "IX_TimeTicker_Retention" }),

@@ -222,6 +222,53 @@ public sealed class RedisRealScriptTests
     }
 
     [Fact]
+    public async Task StaleChildGeneration_CannotOverwriteRerunStatusOrResult_RealLua()
+    {
+        var child = NewIdleTicker();
+        child.ExecutionTime = null;
+        var root = NewIdleTicker();
+        root.Children.Add(child);
+        await _provider.AddTimeTickers([root], CancellationToken.None);
+
+        var runA = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [root.Id], CancellationToken.None));
+        var generationA = runA.ChainGeneration!.Value;
+        var rootDone = new InternalFunctionContext
+        {
+            TickerId = root.Id, ChainRootId = root.Id, ChainGeneration = generationA,
+            AcquisitionToken = runA.AcquisitionToken, Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.Done)
+         .SetProperty(x => x.ReleaseLock, true);
+        Assert.Equal(1, await _provider.UpdateTimeTicker(rootDone, CancellationToken.None));
+
+        _now = BaseNow.AddSeconds(1);
+        var runB = await _provider.AcquireTimeTickerOnDemandAsync(
+            root.Id, _now, CancellationToken.None);
+        Assert.NotNull(runB);
+        var generationB = runB!.ChainGeneration!.Value;
+        Assert.NotEqual(generationA, generationB);
+
+        InternalFunctionContext Success(Guid generation, byte value) =>
+            new InternalFunctionContext
+            {
+                TickerId = child.Id, ParentId = root.Id, ChainRootId = root.Id,
+                ChainGeneration = generation, Type = TickerType.TimeTicker
+            }.SetProperty(x => x.Status, TickerStatus.Done)
+             .SetProperty(x => x.ResultEnvelope,
+                 new TickerResultEnvelope([value], 1, "application/octet-stream"));
+
+        Assert.True(await _provider.CommitSuccessfulTickerAsync(Success(generationB, 2)));
+        Assert.False(await _provider.CommitSuccessfulTickerAsync(Success(generationA, 1)));
+        Assert.Equal(TickerStatus.Done,
+            (await _provider.GetTimeTickerById(root.Id))!.Children.Single().Status);
+        Assert.Equal([2], (await _provider.GetTimeTickerResultAsync(child.Id))!.ToPayloadArray());
+
+        using var json = JsonDocument.Parse(RawJson(root.Id));
+        Assert.Equal(generationB.ToString(),
+            json.RootElement.GetProperty("ChainGeneration").GetString(), ignoreCase: true);
+    }
+
+    [Fact]
     public async Task Retention_DeletesStandaloneButRetainsChainedRoot_RealLua()
     {
         var standalone = NewIdleTicker();

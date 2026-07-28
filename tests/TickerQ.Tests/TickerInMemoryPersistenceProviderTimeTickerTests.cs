@@ -226,6 +226,63 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task StaleChildGenerationCannotOverwriteRerunStatusOrResult()
+    {
+        var root = CreateTicker();
+        var child = CreateTicker(parentId: root.Id, useDefaultExecutionTime: false);
+        root.Children.Add(child);
+        await InsertAndTrack(root);
+
+        var runA = await _provider.AcquireTimeTickerOnDemandAsync(root.Id, _now, CancellationToken.None);
+        var generationA = Assert.IsType<Guid>(runA.ChainGeneration);
+
+        var completedRootA = new InternalFunctionContext()
+            .SetProperty(x => x.TickerId, root.Id)
+            .SetProperty(x => x.Type, TickerType.TimeTicker)
+            .SetProperty(x => x.ChainRootId, root.Id)
+            .SetProperty(x => x.ChainGeneration, generationA)
+            .SetProperty(x => x.AcquisitionToken, runA.AcquisitionToken)
+            .SetProperty(x => x.Status, TickerStatus.Done);
+        Assert.Equal(1, await _provider.UpdateTimeTicker(completedRootA, CancellationToken.None));
+
+        var runB = await _provider.AcquireTimeTickerOnDemandAsync(root.Id, _now, CancellationToken.None);
+        var generationB = Assert.IsType<Guid>(runB.ChainGeneration);
+        Assert.NotEqual(generationA, generationB);
+
+        var winningResult = new TickerResultEnvelope([2], TickerResultEnvelope.CurrentVersion, "application/json");
+        var childB = new InternalFunctionContext()
+            .SetProperty(x => x.TickerId, child.Id)
+            .SetProperty(x => x.ParentId, root.Id)
+            .SetProperty(x => x.Type, TickerType.TimeTicker)
+            .SetProperty(x => x.ChainRootId, root.Id)
+            .SetProperty(x => x.ChainGeneration, generationB)
+            .SetProperty(x => x.Status, TickerStatus.Done)
+            .SetProperty(x => x.ResultEnvelope, winningResult);
+        Assert.True(await _provider.CommitSuccessfulTickerAsync(childB, CancellationToken.None));
+
+        var staleChildA = new InternalFunctionContext()
+            .SetProperty(x => x.TickerId, child.Id)
+            .SetProperty(x => x.ParentId, root.Id)
+            .SetProperty(x => x.Type, TickerType.TimeTicker)
+            .SetProperty(x => x.ChainRootId, root.Id)
+            .SetProperty(x => x.ChainGeneration, generationA)
+            .SetProperty(x => x.Status, TickerStatus.Failed)
+            .SetProperty(x => x.ExceptionDetails, "late A");
+        Assert.Equal(0, await _provider.UpdateTimeTicker(staleChildA, CancellationToken.None));
+
+        var staleResult = new TickerResultEnvelope([1], TickerResultEnvelope.CurrentVersion, "application/json");
+        staleChildA.ResetUpdateProps()
+            .SetProperty(x => x.Status, TickerStatus.Done)
+            .SetProperty(x => x.ResultEnvelope, staleResult);
+        Assert.False(await _provider.CommitSuccessfulTickerAsync(staleChildA, CancellationToken.None));
+
+        var persistedChild = await _provider.GetTimeTickerById(child.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Done, persistedChild.Status);
+        Assert.Equal(winningResult.Payload.ToArray(),
+            (await _provider.GetTimeTickerResultAsync(child.Id, CancellationToken.None)).Payload.ToArray());
+    }
+
+    [Fact]
     public async Task GenerationFence_PreservesWinningTokenAndRejectsStaleTerminalWrite()
     {
         var ticker = await InsertAndTrack(CreateTicker());

@@ -28,6 +28,11 @@ obj['Status'] = tonumber(ARGV[3])
 obj['status'] = nil
 obj['AcquisitionToken'] = ARGV[7]
 obj['acquisitionToken'] = nil
+local rootId = obj['Id'] or obj['id']
+if ARGV[9] ~= '' and rootId and rootId ~= cjson.null then
+    obj['ChainRootId'] = tostring(rootId); obj['chainRootId'] = nil
+    obj['ChainGeneration'] = ARGV[7]; obj['chainGeneration'] = nil
+end
 if ARGV[8] ~= '' then
     obj['LeaseUntil'] = ARGV[8]
     obj['leaseUntil'] = nil
@@ -38,6 +43,10 @@ local function fenceChildren(children)
         child['LockHolder'] = ARGV[1]; child['lockHolder'] = nil
         child['LockedAt'] = ARGV[2]; child['lockedAt'] = nil
         child['AcquisitionToken'] = ARGV[7]; child['acquisitionToken'] = nil
+        if ARGV[9] ~= '' and rootId and rootId ~= cjson.null then
+            child['ChainRootId'] = tostring(rootId); child['chainRootId'] = nil
+            child['ChainGeneration'] = ARGV[7]; child['chainGeneration'] = nil
+        end
         local id = child['Id'] or child['id']
         if ARGV[9] ~= '' and id and id ~= cjson.null then
             redis.call('DEL', ARGV[9] .. tostring(id) .. ':result')

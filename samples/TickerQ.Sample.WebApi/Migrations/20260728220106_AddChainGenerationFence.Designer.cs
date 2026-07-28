@@ -2,17 +2,20 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using TickerQ.EntityFrameworkCore.DbContextFactory;
 
 #nullable disable
 
-namespace TickerQ.Sample.Console.Migrations
+namespace TickerQ.Sample.WebApi.Migrations
 {
     [DbContext(typeof(TickerQDbContext))]
-    partial class TickerQDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260728220106_AddChainGenerationFence")]
+    partial class AddChainGenerationFence
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.0");

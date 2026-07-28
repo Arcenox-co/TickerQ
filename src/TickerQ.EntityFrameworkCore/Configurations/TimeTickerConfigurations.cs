@@ -21,6 +21,13 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.Property(x => x.AcquisitionToken)
                 .IsRequired(false);
 
+            builder.Property(x => x.ChainRootId)
+                .IsRequired(false);
+            builder.Property(x => x.ChainGeneration)
+                .IsRequired(false);
+            builder.HasIndex(x => x.ChainRootId)
+                .HasDatabaseName("IX_TimeTicker_ChainRootId");
+
             builder.Property(x => x.RequestContractVersion)
                 .IsRequired(false);
 

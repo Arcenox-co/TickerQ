@@ -33,6 +33,9 @@ namespace TickerQ.Utilities.Models
         /// </summary>
         [JsonIgnore]
         public Guid? ChainRootId { get; set; }
+        /// <summary>Authoritative generation of <see cref="ChainRootId"/> for this execution.</summary>
+        [JsonIgnore]
+        public Guid? ChainGeneration { get; set; }
         public TickerType Type { get; set; }
         public int Retries { get; set; }
         public int RetryCount { get; set; }
@@ -52,7 +55,8 @@ namespace TickerQ.Utilities.Models
         /// Current InProgress generation of the root row this context executes under. Set at
         /// acquisition (minted fresh on every transition to InProgress) and carried through
         /// execution so the terminal write and lease renewal can be fenced on it. Null for
-        /// chain children (they run under their root's lock and carry no generation).
+        /// chain children (they run under their root's lease; <see cref="ChainGeneration"/>
+        /// fences their writes).
         /// </summary>
         public Guid? AcquisitionToken { get; set; }
         public RunCondition RunCondition { get; set; }

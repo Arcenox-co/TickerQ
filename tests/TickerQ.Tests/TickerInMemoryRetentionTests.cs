@@ -340,6 +340,9 @@ public class TickerInMemoryRetentionTests
         var root = Node(TickerStatus.Done, Ago(10));
         var child = Node(TickerStatus.Done, Ago(10), root.Id);
         var grandchild = Node(TickerStatus.Done, Ago(10), child.Id);
+        var generation = Guid.NewGuid();
+        root.ChainRootId = root.Id;
+        root.ChainGeneration = generation;
         child.Children.Add(grandchild);
         root.Children.Add(child);
         await Insert(root);
@@ -349,6 +352,8 @@ public class TickerInMemoryRetentionTests
         {
             TickerId = target.Id,
             ParentId = target.ParentId,
+            ChainRootId = root.Id,
+            ChainGeneration = generation,
             Type = TickerType.TimeTicker
         };
         context.SetProperty(c => c.Status, TickerStatus.InProgress);

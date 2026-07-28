@@ -136,7 +136,9 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         bool isChild,
         Guid? chainRootId = null)
     {
-        context.ChainRootId = chainRootId ?? context.TickerId;
+        context.ChainRootId = chainRootId ?? context.ChainRootId ?? context.TickerId;
+        if (isChild && !context.ChainGeneration.HasValue)
+            return;
 
         if (context.Type == TickerType.CronTickerOccurrence)
         {
@@ -212,10 +214,12 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                         );
                         child.ParentId = context.TickerId;
                         child.ChainRootId = context.ChainRootId;
+                        child.ChainGeneration = context.ChainGeneration;
                         childrenToSkip.Add(child);
 
                         // Recursively gather all descendants to skip
-                        GatherDescendantsToSkip(child, context.ChainRootId.Value, childrenToSkip);
+                        GatherDescendantsToSkip(child, context.ChainRootId.Value,
+                            context.ChainGeneration, childrenToSkip);
                     }
                 }
             }
@@ -814,6 +818,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     private static void GatherDescendantsToSkip(
         InternalFunctionContext parent,
         Guid chainRootId,
+        Guid? chainGeneration,
         List<InternalFunctionContext> skipList)
     {
         if (parent.TimeTickerChildren == null || parent.TimeTickerChildren.Count == 0)
@@ -823,10 +828,11 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         {
             child.ParentId = parent.TickerId;
             child.ChainRootId = chainRootId;
+            child.ChainGeneration = chainGeneration;
             skipList.Add(child);
 
             // Recursively gather grandchildren
-            GatherDescendantsToSkip(child, chainRootId, skipList);
+            GatherDescendantsToSkip(child, chainRootId, chainGeneration, skipList);
         }
     }
 
