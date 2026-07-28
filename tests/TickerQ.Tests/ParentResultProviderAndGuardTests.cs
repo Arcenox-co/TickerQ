@@ -117,6 +117,42 @@ public sealed class ParentResultProviderAndGuardTests
         await _provider.RemoveCronTickerOccurrences(new[] { occId }, CancellationToken.None);
     }
 
+    [Theory]
+    [InlineData(TickerStatus.Failed)]
+    [InlineData(TickerStatus.Cancelled)]
+    public async Task CronOccurrence_StaleNonSuccessTerminal_IsNotAcknowledged(TickerStatus status)
+    {
+        var cronId = Guid.NewGuid();
+        await _provider.InsertCronTickers([
+            new FakeCronTicker { Id = cronId, Function = "Fn", Expression = "* * * * *", Request = [] }
+        ], CancellationToken.None);
+        var occurrenceId = Guid.NewGuid();
+        await _provider.InsertCronTickerOccurrences([
+            new CronTickerOccurrenceEntity<FakeCronTicker>
+            {
+                Id = occurrenceId,
+                CronTickerId = cronId,
+                Status = TickerStatus.Idle,
+                ExecutionTime = _now
+            }
+        ], CancellationToken.None);
+        await _provider.AcquireImmediateCronOccurrencesAsync([occurrenceId], CancellationToken.None);
+        var stale = new InternalFunctionContext
+        {
+            TickerId = occurrenceId,
+            Type = TickerType.CronTickerOccurrence,
+            AcquisitionToken = Guid.NewGuid()
+        };
+        stale.SetProperty(x => x.Status, status);
+
+        Assert.False(await _provider.CommitTerminalTickerAsync(stale, CancellationToken.None));
+        var row = (await _provider.GetAllCronTickerOccurrences(
+            x => x.Id == occurrenceId, CancellationToken.None))[0];
+        Assert.Equal(TickerStatus.InProgress, row.Status);
+
+        await _provider.RemoveCronTickerOccurrences([occurrenceId], CancellationToken.None);
+    }
+
     [Fact]
     public async Task Manager_Throws_When_Publishing_Against_Provider_Without_Result_Support()
     {

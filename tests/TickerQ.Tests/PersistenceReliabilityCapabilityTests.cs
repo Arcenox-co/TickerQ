@@ -121,6 +121,7 @@ public class PersistenceReliabilityCapabilityTests
     public void Minimal_provider_does_not_support_result_publication()
     {
         Assert.False(MinimalProvider().SupportsResultPublication);
+        Assert.False(MinimalProvider().SupportsAcknowledgedTerminalUpdates);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Reflection;
 using TickerQ.SDK.Infrastructure;
 using TickerQ.SDK.Logging;
 using TickerQ.SDK.WorkerStream;
@@ -79,6 +80,28 @@ public sealed class WorkerStreamExecutionTests
         Assert.Equal(0, handler.SchedulerCalls);
     }
 
+    [Fact]
+    public async Task OlderSameTickerCompletion_DoesNotRemoveNewerExecutionCancellation()
+    {
+        var handler = new OverlappingHandler();
+        var service = CreateService(handler);
+        var tickerId = Guid.NewGuid();
+        var olderRequest = Request(tickerId);
+        var newerRequest = Request(tickerId);
+
+        var older = service.ExecuteFunctionAsync(olderRequest, tickerId, CancellationToken.None);
+        await handler.WaitForCallAsync(1);
+        var newer = service.ExecuteFunctionAsync(newerRequest, tickerId, CancellationToken.None);
+        await handler.WaitForCallAsync(2);
+
+        handler.Complete(0);
+        await older;
+        InvokeCancel(service, tickerId);
+
+        var newerResult = await newer.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(newerResult.Cancelled);
+    }
+
     private static WorkerStreamHostedService CreateService(ITickerExecutionTaskHandler handler)
     {
         var services = new ServiceCollection()
@@ -93,13 +116,21 @@ public sealed class WorkerStreamExecutionTests
             NullLogger<WorkerStreamHostedService>.Instance);
     }
 
-    private static ExecuteFunction Request() => new()
+    private static ExecuteFunction Request(Guid? tickerId = null) => new()
     {
         RequestId = Guid.NewGuid().ToString(),
-        TickerId = Guid.NewGuid().ToString(),
+        TickerId = (tickerId ?? Guid.NewGuid()).ToString(),
         FunctionName = "WorkerFunction@node",
         Type = (int)TickerType.TimeTicker
     };
+
+    private static void InvokeCancel(WorkerStreamHostedService service, Guid tickerId)
+    {
+        var method = typeof(WorkerStreamHostedService).GetMethod(
+            "HandleCancelExecution", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        method!.Invoke(service, [new CancelExecution { TickerId = tickerId.ToString() }]);
+    }
 
     private sealed class RecordingHandler(TickerWorkerExecutionResult outcome)
         : ITickerExecutionTaskHandler
@@ -121,6 +152,43 @@ public sealed class WorkerStreamExecutionTests
             WorkerCalls++;
             Context = context;
             return Task.FromResult(outcome);
+        }
+    }
+
+    private sealed class OverlappingHandler : ITickerExecutionTaskHandler
+    {
+        private readonly List<TaskCompletionSource<TickerWorkerExecutionResult>> _calls = [];
+        private readonly SemaphoreSlim _started = new(0);
+
+        public Task ExecuteTaskAsync(
+            InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public async Task<TickerWorkerExecutionResult> ExecuteWorkerTaskAsync(
+            InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
+        {
+            var completion = new TaskCompletionSource<TickerWorkerExecutionResult>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_calls) _calls.Add(completion);
+            _started.Release();
+            return await completion.Task.WaitAsync(cancellationToken);
+        }
+
+        public async Task WaitForCallAsync(int count)
+        {
+            while (true)
+            {
+                lock (_calls)
+                    if (_calls.Count >= count) return;
+                await _started.WaitAsync();
+            }
+        }
+
+        public void Complete(int index)
+        {
+            TaskCompletionSource<TickerWorkerExecutionResult> completion;
+            lock (_calls) completion = _calls[index];
+            completion.SetResult(new TickerWorkerExecutionResult(TickerStatus.Done, null, null));
         }
     }
 }

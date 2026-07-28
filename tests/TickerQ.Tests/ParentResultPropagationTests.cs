@@ -34,6 +34,7 @@ public sealed class ParentResultPropagationTests : IDisposable
     private readonly TickerInMemoryPersistenceProvider<FakeTimeTicker, FakeCronTicker> _provider;
     private readonly IInternalTickerManager _manager;
     private readonly TickerExecutionTaskHandler _handler;
+    private readonly ITickerQNotificationHubSender _notificationHub;
     private readonly List<Guid> _created = new();
 
     public ParentResultPropagationTests()
@@ -50,6 +51,7 @@ public sealed class ParentResultPropagationTests : IDisposable
         _provider = new TickerInMemoryPersistenceProvider<FakeTimeTicker, FakeCronTicker>(sp);
 
         var hub = Substitute.For<ITickerQNotificationHubSender>();
+        _notificationHub = hub;
         hub.UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(Arg.Any<InternalFunctionContext>())
             .Returns(Task.CompletedTask);
         hub.UpdateCronOccurrenceFromInternalFunctionContext<FakeCronTicker>(Arg.Any<InternalFunctionContext>())
@@ -464,6 +466,49 @@ public sealed class ParentResultPropagationTests : IDisposable
 
         Assert.False(childRan); // deferred child must NOT be released when the result write was not acknowledged
         Assert.Null(await _provider.GetTimeTickerResultAsync(parentId));
+    }
+
+    [Theory]
+    [InlineData(TickerStatus.Failed, RunCondition.OnFailure)]
+    [InlineData(TickerStatus.Cancelled, RunCondition.OnCancelled)]
+    public async Task StaleToken_NonSuccessTerminal_DoesNotNotifyOrReleaseDeferredChild(
+        TickerStatus terminalStatus, RunCondition childCondition)
+    {
+        var parentId = await AddOwnedTicker();
+        await _provider.AcquireImmediateTimeTickersAsync([parentId], CancellationToken.None);
+        var childRan = false;
+        var childId = await AddOwnedTicker(parentId);
+        var child = new InternalFunctionContext
+        {
+            TickerId = childId,
+            FunctionName = "Fn",
+            Type = TickerType.TimeTicker,
+            ParentId = parentId,
+            RunCondition = childCondition,
+            ExecutionTime = _now,
+            RetryIntervals = [],
+            CachedDelegate = (_, _, _) => { childRan = true; return Task.CompletedTask; },
+            TimeTickerChildren = []
+        };
+        var parent = new InternalFunctionContext
+        {
+            TickerId = parentId,
+            FunctionName = "Fn@remote",
+            Type = TickerType.TimeTicker,
+            AcquisitionToken = Guid.NewGuid(),
+            ExecutionTime = _now,
+            RetryIntervals = [],
+            CachedDelegate = terminalStatus == TickerStatus.Cancelled
+                ? (_, _, _) => throw new TaskCanceledException()
+                : (_, _, _) => throw new InvalidOperationException("remote failure"),
+            TimeTickerChildren = [child]
+        };
+
+        await Assert.ThrowsAsync<TickerResultNotAcknowledgedException>(() => Run(parent));
+
+        Assert.False(childRan);
+        await _notificationHub.DidNotReceive()
+            .UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(Arg.Any<InternalFunctionContext>());
     }
 
     // ---- immutable bytes end-to-end ------------------------------------------------------------

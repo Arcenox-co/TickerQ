@@ -50,6 +50,37 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     protected readonly ITickerQRedisContext RedisContext;
 
     public bool SupportsResultPublication => true;
+    public bool SupportsAcknowledgedTerminalUpdates => true;
+
+    public async Task<bool> CommitTerminalTickerAsync(
+        InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+    {
+        if (functionContext == null) throw new ArgumentNullException(nameof(functionContext));
+        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or
+                TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped))
+            throw new InvalidOperationException("Acknowledged terminal persistence requires a terminal status mutation.");
+        if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone &&
+            functionContext.ParentId != null)
+            return false;
+        if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
+            return await CommitSuccessfulTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
+
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var now = _clock.UtcNow;
+        if (functionContext.Type == TickerType.CronTickerOccurrence)
+            return await session.Context.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                .Where(x => x.Id == functionContext.TickerId && functionContext.AcquisitionToken.HasValue &&
+                            x.LockHolder == _lockHolder && x.AcquisitionToken == functionContext.AcquisitionToken)
+                .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(
+                    functionContext, NextLeaseUntil(now)), cancellationToken).ConfigureAwait(false) == 1;
+
+        return await session.Context.Set<TTimeTicker>()
+            .Where(x => x.Id == functionContext.TickerId && functionContext.AcquisitionToken.HasValue &&
+                        x.LockHolder == _lockHolder && x.AcquisitionToken == functionContext.AcquisitionToken)
+            .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(
+                functionContext, now, NextLeaseUntil(now)), cancellationToken).ConfigureAwait(false) == 1;
+    }
 
     public async Task<TickerResultEnvelope> GetTimeTickerResultAsync(
         Guid id, CancellationToken cancellationToken = default)

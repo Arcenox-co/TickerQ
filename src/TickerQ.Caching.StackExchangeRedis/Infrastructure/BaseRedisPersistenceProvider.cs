@@ -216,6 +216,27 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                 functionContext, resultAction, encodedEnvelope, cancellationToken).ConfigureAwait(false);
     }
 
+    public bool SupportsAcknowledgedTerminalUpdates => true;
+
+    public async Task<bool> CommitTerminalTickerAsync(
+        InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+    {
+        if (functionContext == null) throw new ArgumentNullException(nameof(functionContext));
+        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or
+                TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped))
+            throw new InvalidOperationException("Acknowledged terminal persistence requires a terminal status mutation.");
+        if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
+            return await CommitSuccessfulTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return functionContext.Type == TickerType.CronTickerOccurrence
+            ? await CommitSuccessfulCronOccurrenceAsync(
+                functionContext, "none", null, cancellationToken).ConfigureAwait(false)
+            : await CommitSuccessfulTimeTickerAsync(
+                functionContext, "none", null, cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task<bool> CommitSuccessfulTimeTickerAsync(
         InternalFunctionContext functionContext, string resultAction, byte[] encodedEnvelope,
         CancellationToken cancellationToken)

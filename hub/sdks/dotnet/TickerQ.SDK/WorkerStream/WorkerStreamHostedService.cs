@@ -502,7 +502,10 @@ internal sealed class WorkerStreamHostedService : BackgroundService
         }
         finally
         {
-            _runningCts.TryRemove(tickerId, out _);
+            // Remove only the generation registered by this execution. An older overlapping
+            // completion must not erase a newer same-ticker CTS and make it uncancellable.
+            ((ICollection<KeyValuePair<Guid, CancellationTokenSource>>)_runningCts)
+                .Remove(new KeyValuePair<Guid, CancellationTokenSource>(tickerId, executionCts));
         }
 
         return result;

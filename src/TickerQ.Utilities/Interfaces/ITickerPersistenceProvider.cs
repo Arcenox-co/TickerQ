@@ -202,6 +202,22 @@ namespace TickerQ.Utilities.Interfaces
         bool SupportsResultPublication => false;
 
         /// <summary>
+        /// Whether this provider can atomically apply a terminal status under the acquisition fence
+        /// and report whether that exact generation won. Remote finalization requires this capability.
+        /// </summary>
+        bool SupportsAcknowledgedTerminalUpdates => false;
+
+        /// <summary>
+        /// Applies one terminal mutation and returns its provider-native ownership acknowledgement.
+        /// Successful mutations include the explicit optional result mutation; non-successful terminal
+        /// mutations must not change result storage. The default fails closed for legacy providers.
+        /// </summary>
+        Task<bool> CommitTerminalTickerAsync(
+            InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(
+                "This persistence provider does not implement acknowledged terminal updates.");
+
+        /// <summary>
         /// Commits an accepted successful terminal status and its optional result envelope as one
         /// provider mutation. A null envelope is meaningful and clears a result from an earlier run.
         /// Returns false when the ownership/generation fence rejects the completion. Every provider that

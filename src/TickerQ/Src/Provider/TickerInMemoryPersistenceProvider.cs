@@ -65,6 +65,7 @@ namespace TickerQ.Provider
 
         // Built-in provider: durably stores per-ticker result envelopes for parent-result propagation.
         public bool SupportsResultPublication => true;
+        public bool SupportsAcknowledgedTerminalUpdates => true;
 
         // A result becomes visible only on the final successful terminal write: a present result envelope
         // on a Done/DueDone terminal update. Failed/cancelled/skipped/retry writes never carry one (the
@@ -85,14 +86,25 @@ namespace TickerQ.Provider
 
         public Task<bool> CommitSuccessfulTickerAsync(
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+            => CommitTerminalTickerCoreAsync(functionContext, enforceChildFence: false, cancellationToken);
+
+        public Task<bool> CommitTerminalTickerAsync(
+            InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+            => CommitTerminalTickerCoreAsync(functionContext, enforceChildFence: true, cancellationToken);
+
+        private Task<bool> CommitTerminalTickerCoreAsync(
+            InternalFunctionContext functionContext, bool enforceChildFence,
+            CancellationToken cancellationToken)
         {
             if (functionContext == null)
                 throw new ArgumentNullException(nameof(functionContext));
             if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
-                functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
-                !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+                functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or
+                    TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped) ||
+                (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone &&
+                 !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
                 throw new InvalidOperationException(
-                    "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
+                    "Acknowledged terminal persistence requires a terminal status and an explicit optional result mutation on success.");
 
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(WriteGraph(() =>
@@ -109,13 +121,14 @@ namespace TickerQ.Provider
                     ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
                     if (!TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence))
                         return false;
-                    ReplaceCommittedResult(CronOccurrenceResults, functionContext);
+                    if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
+                        ReplaceCommittedResult(CronOccurrenceResults, functionContext);
                     return true;
                 }
 
                 if (!TimeTickers.TryGetValue(functionContext.TickerId, out var ticker))
                     return false;
-                if (functionContext.ParentId == null &&
+                if ((functionContext.ParentId == null || enforceChildFence) &&
                     (!functionContext.AcquisitionToken.HasValue || ticker.LockHolder != _lockHolder ||
                      ticker.AcquisitionToken != functionContext.AcquisitionToken))
                     return false;
@@ -124,7 +137,8 @@ namespace TickerQ.Provider
                 ApplyFunctionContextToTicker(updatedTicker, functionContext);
                 if (!TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker))
                     return false;
-                ReplaceCommittedResult(TimeTickerResults, functionContext);
+                if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
+                    ReplaceCommittedResult(TimeTickerResults, functionContext);
                 return true;
             }));
         }

@@ -1270,4 +1270,24 @@ public class InternalTickerManagerTests
         await _persistence.DidNotReceive().UpdateTimeTickersWithUnifiedContext(
             Arg.Any<Guid[]>(), Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public async Task RemoteTerminalUpdate_LegacyProvider_FailsClosedWithoutWriteOrNotification()
+    {
+        var context = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            FunctionName = "RemoteFn@worker",
+            Type = TickerType.CronTickerOccurrence
+        };
+        context.SetProperty(x => x.Status, TickerStatus.Failed);
+
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => _manager.UpdateTickerAsync(context, CancellationToken.None));
+
+        await _persistence.DidNotReceive().UpdateCronTickerOccurrence(
+            Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>());
+        await _notificationHub.DidNotReceive()
+            .UpdateCronOccurrenceFromInternalFunctionContext<FakeCronTicker>(Arg.Any<InternalFunctionContext>());
+    }
 }

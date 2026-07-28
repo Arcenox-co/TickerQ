@@ -657,6 +657,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         string reason, Stopwatch stopWatch, CancellationToken cancellationToken, ExecutionMode mode)
     {
         _ = cancellationToken; // deliberately unused — see CancellationToken.None below
+        var terminalPersisted = mode != ExecutionMode.Scheduler;
 
         try
         {
@@ -673,7 +674,10 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             // Scheduler mode owns the terminal write. Worker mode only returns this outcome so
             // the scheduler can apply it to the original acquired context and fence the commit.
             if (mode == ExecutionMode.Scheduler)
+            {
                 await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+                terminalPersisted = true;
+            }
 
             // Notifications and user hooks are best-effort side effects. Neither may prevent
             // the authoritative terminal row from being persisted, nor suppress the other.
@@ -691,6 +695,10 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, context.RetryCount);
                 }
             }
+        }
+        catch (Exception) when (!terminalPersisted)
+        {
+            throw;
         }
         catch (Exception ex)
         {

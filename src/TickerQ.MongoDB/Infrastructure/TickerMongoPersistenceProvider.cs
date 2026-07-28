@@ -145,6 +145,48 @@ namespace TickerQ.MongoDB.Infrastructure
         private const string CronOccurrenceResultKind = "cron-occurrence";
 
         public bool SupportsResultPublication => true;
+        public bool SupportsAcknowledgedTerminalUpdates => true;
+
+        public async Task<bool> CommitTerminalTickerAsync(
+            InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+        {
+            if (functionContext == null) throw new ArgumentNullException(nameof(functionContext));
+            if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+                functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or
+                    TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped))
+                throw new InvalidOperationException("Acknowledged terminal persistence requires a terminal status mutation.");
+            if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone &&
+                functionContext.ParentId != null)
+                return false;
+            if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
+                return await CommitSuccessfulTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
+
+            var now = _clock.UtcNow;
+            if (functionContext.Type == TickerType.CronTickerOccurrence)
+            {
+                var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+                var filter = functionContext.AcquisitionToken.HasValue
+                    ? fb.And(fb.Eq(x => x.Id, functionContext.TickerId),
+                        fb.Eq(x => x.LockHolder, _lockHolder),
+                        fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
+                    : fb.Where(_ => false);
+                var result = await _context.CronTickerOccurrences.UpdateOneAsync(filter,
+                    MongoUpdateBuilders.BuildCronOccurrenceUpdate<TCronTicker>(
+                        functionContext, now, NextLeaseUntil(now)), cancellationToken: cancellationToken).ConfigureAwait(false);
+                return result.MatchedCount == 1;
+            }
+
+            var timeFb = Builders<TTimeTicker>.Filter;
+            var timeFilter = functionContext.AcquisitionToken.HasValue
+                ? timeFb.And(timeFb.Eq(x => x.Id, functionContext.TickerId),
+                    timeFb.Eq(x => x.LockHolder, _lockHolder),
+                    timeFb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
+                : timeFb.Where(_ => false);
+            var timeResult = await _context.TimeTickers.UpdateOneAsync(timeFilter,
+                MongoUpdateBuilders.BuildTimeTickerUpdate<TTimeTicker>(
+                    functionContext, now, NextLeaseUntil(now)), cancellationToken: cancellationToken).ConfigureAwait(false);
+            return timeResult.MatchedCount == 1;
+        }
 
         private static BsonBinaryData ResultId(Guid id)
             => new(id, GuidRepresentation.Standard);
