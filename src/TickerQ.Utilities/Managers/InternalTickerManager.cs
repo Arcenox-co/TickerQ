@@ -366,8 +366,9 @@ namespace TickerQ.Utilities.Managers
             // loudly — silently dropping the result would leave children reading a stale/absent parent
             // result with no signal. Only publishing (not reading) is fatal, and only when a result is
             // actually present on this terminal write.
-            var publishesResult = functionContext.ResultEnvelope != null
-                && functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope));
+            var carriesResultMutation = functionContext.GetPropsToUpdate()
+                .Contains(nameof(InternalFunctionContext.ResultEnvelope));
+            var publishesResult = functionContext.ResultEnvelope != null && carriesResultMutation;
 
             if (publishesResult && !_persistenceProvider.SupportsResultPublication)
                 throw new NotSupportedException(
@@ -375,13 +376,30 @@ namespace TickerQ.Utilities.Managers
                     $"TickerFunction '{functionContext.FunctionName}' called SetResult, but results cannot be " +
                     "durably stored by this provider. Use a provider that supports result publication or remove the SetResult call.");
 
+            var successfulTerminal = carriesResultMutation
+                && functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status))
+                && functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
+
+            if (successfulTerminal && _persistenceProvider.SupportsResultPublication)
+            {
+                var acknowledged = await _persistenceProvider
+                    .CommitSuccessfulTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
+                if (!acknowledged)
+                    throw new TickerResultNotAcknowledgedException(
+                        $"Successful completion for TickerFunction '{functionContext.FunctionName}' " +
+                        $"(ticker {functionContext.TickerId}) was not acknowledged: the atomic fenced " +
+                        "status/result mutation lost ownership or did not commit. Children are not released.");
+
+                if (functionContext.Type == TickerType.CronTickerOccurrence)
+                    await _notificationHubSender.UpdateCronOccurrenceFromInternalFunctionContext<TCronTicker>(functionContext).ConfigureAwait(false);
+                else
+                    await _notificationHubSender.UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(functionContext).ConfigureAwait(false);
+                return;
+            }
+
             if (functionContext.Type == TickerType.CronTickerOccurrence)
             {
                 await _persistenceProvider.UpdateCronTickerOccurrence(functionContext, cancellationToken).ConfigureAwait(false);
-                // Acknowledge before any success notification: a fenced/stale terminal write does not store
-                // the result, so publishing one that did not land must not masquerade as success.
-                if (publishesResult)
-                    await EnsureResultAcknowledgedAsync(functionContext, cancellationToken).ConfigureAwait(false);
                 await _notificationHubSender.UpdateCronOccurrenceFromInternalFunctionContext<TCronTicker>(functionContext).ConfigureAwait(false);
             }
             else
@@ -400,22 +418,7 @@ namespace TickerQ.Utilities.Managers
             }
         }
 
-        // Confirms a published result actually landed in durable storage before success is acknowledged.
-        // Used on the cron path (whose update returns no affected-row count); the time path uses the count
-        // directly. Only invoked against providers that advertise result support.
-        private async Task EnsureResultAcknowledgedAsync(InternalFunctionContext functionContext, CancellationToken cancellationToken)
-        {
-            var stored = functionContext.Type == TickerType.CronTickerOccurrence
-                ? await _persistenceProvider.GetCronTickerOccurrenceResultAsync(functionContext.TickerId, cancellationToken).ConfigureAwait(false)
-                : await _persistenceProvider.GetTimeTickerResultAsync(functionContext.TickerId, cancellationToken).ConfigureAwait(false);
 
-            if (!ReferenceEquals(stored, functionContext.ResultEnvelope))
-                throw new TickerResultNotAcknowledgedException(
-                    $"Result publication for TickerFunction '{functionContext.FunctionName}' " +
-                    $"(ticker {functionContext.TickerId}) was not acknowledged: the fenced terminal write did " +
-                    "not durably store the published result (stale acquisition token or lost race).");
-        }
-        
         public async Task UpdateSkipTimeTickersWithUnifiedContextAsync(InternalFunctionContext[] resources, CancellationToken cancellationToken = default)
         {
             var executedAt = _clock.UtcNow;

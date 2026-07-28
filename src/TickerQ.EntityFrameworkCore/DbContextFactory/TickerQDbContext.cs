@@ -41,6 +41,8 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
         modelBuilder.ApplyConfiguration(new TimeTickerConfigurations<TTimeTicker>(schema));
         modelBuilder.ApplyConfiguration(new CronTickerConfigurations<TCronTicker>(schema));
         modelBuilder.ApplyConfiguration(new CronTickerOccurrenceConfigurations<TCronTicker>(schema));
+        modelBuilder.ApplyConfiguration(new TimeTickerResultConfigurations<TTimeTicker>(schema));
+        modelBuilder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<TCronTicker>(schema));
 
         // Assistant chat history tables — mapped only when opted in via
         // AddAssistantHistory(), so headless setups get no schema changes.

@@ -132,6 +132,19 @@ public class PersistenceReliabilityCapabilityTests
         Assert.Null(await provider.GetCronTickerOccurrenceResultAsync(Guid.NewGuid()));
     }
 
+    [Fact]
+    public async Task Advertising_result_support_without_atomic_override_fails_closed()
+    {
+        ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker> provider =
+            new FalseAdvertisingResultProvider();
+
+        Assert.True(provider.SupportsResultPublication);
+        var error = await Assert.ThrowsAsync<NotSupportedException>(() =>
+            provider.CommitSuccessfulTickerAsync(new InternalFunctionContext()));
+        Assert.Contains(nameof(ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker>.CommitSuccessfulTickerAsync),
+            error.Message);
+    }
+
     // Captures warning-level log entries without pulling in a logging framework.
     private sealed class ListLogger<T> : ILogger<T>
     {
@@ -161,7 +174,7 @@ public class PersistenceReliabilityCapabilityTests
 
     // Implements only the mandatory (non-default) interface members. Everything in the
     // Stale_Job_Recovery region is intentionally left to the interface defaults.
-    private sealed class MinimalStubProvider : ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker>
+    private class MinimalStubProvider : ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker>
     {
         private static NotSupportedException NotUsed() => new("Not needed for capability tests");
 
@@ -210,5 +223,11 @@ public class PersistenceReliabilityCapabilityTests
         public Task<int> InsertCronTickerOccurrences(CronTickerOccurrenceEntity<FakeCronTicker>[] cronTickerOccurrences, CancellationToken cancellationToken) => throw NotUsed();
         public Task<int> RemoveCronTickerOccurrences(Guid[] cronTickerOccurrences, CancellationToken cancellationToken) => throw NotUsed();
         public Task<CronTickerOccurrenceEntity<FakeCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default) => throw NotUsed();
+    }
+
+    private sealed class FalseAdvertisingResultProvider : MinimalStubProvider,
+        ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker>
+    {
+        bool ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker>.SupportsResultPublication => true;
     }
 }

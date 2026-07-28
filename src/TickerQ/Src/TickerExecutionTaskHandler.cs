@@ -580,9 +580,10 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
             // Attach the published result ONLY on the successful terminal write so it commits
             // atomically with the Done/DueDone status, before any children are released/queued.
-            // Absence (never called SetResult) leaves it unset — distinct from a published JSON null.
-            if (tickerFunctionContext.ResultSink.HasResult)
-                context.SetProperty(x => x.ResultEnvelope, tickerFunctionContext.ResultSink.Envelope);
+            // Always stage the optional envelope on success. Null means absence and deliberately clears
+            // any result from an earlier successful run; a present JSON "null" remains an envelope.
+            context.SetProperty(x => x.ResultEnvelope,
+                tickerFunctionContext.ResultSink.HasResult ? tickerFunctionContext.ResultSink.Envelope : null);
 
             // Add success tags to activity
             jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());

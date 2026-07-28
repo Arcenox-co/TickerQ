@@ -10,6 +10,8 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using TickerQ.EntityFrameworkCore.DbContextFactory;
+using TickerQ.EntityFrameworkCore.Configurations;
+using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -46,6 +48,161 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     protected readonly string _lockHolder;
     protected readonly ITickerClock _clock;
     protected readonly ITickerQRedisContext RedisContext;
+
+    public bool SupportsResultPublication => true;
+
+    public async Task<TickerResultEnvelope> GetTimeTickerResultAsync(
+        Guid id, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var row = await session.Context.Set<TimeTickerResultEntity<TTimeTicker>>()
+            .AsNoTracking().SingleOrDefaultAsync(x => x.TickerId == id, cancellationToken)
+            .ConfigureAwait(false);
+        return row == null ? null : ReadEnvelope(
+            row.Payload, row.EnvelopeVersion, row.MediaType, row.ContractId, row.ContractType);
+    }
+
+    public async Task<TickerResultEnvelope> GetCronTickerOccurrenceResultAsync(
+        Guid id, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var row = await session.Context.Set<CronTickerOccurrenceResultEntity<TCronTicker>>()
+            .AsNoTracking().SingleOrDefaultAsync(x => x.TickerId == id, cancellationToken)
+            .ConfigureAwait(false);
+        return row == null ? null : ReadEnvelope(
+            row.Payload, row.EnvelopeVersion, row.MediaType, row.ContractId, row.ContractType);
+    }
+
+    public async Task<bool> CommitSuccessfulTickerAsync(
+        InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+    {
+        if (functionContext == null)
+            throw new ArgumentNullException(nameof(functionContext));
+        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
+            !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+            throw new InvalidOperationException(
+                "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
+
+        ValidateEnvelope(functionContext.ResultEnvelope);
+        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(
+            async ct =>
+            {
+                // A retry must start with a fresh context so a rolled-back tracked result entity from the
+                // prior attempt cannot leak into or collide with the next serializable transaction.
+                using var operationSession = await CreateDbContextAsync(ct).ConfigureAwait(false);
+                var dbContext = operationSession.Context;
+                await using var transaction = await dbContext.Database
+                    .BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
+                var now = _clock.UtcNow;
+                int affected;
+                if (functionContext.Type == TickerType.CronTickerOccurrence)
+                {
+                    var query = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                        .Where(x => x.Id == functionContext.TickerId);
+                    query = functionContext.AcquisitionToken.HasValue
+                        ? query.Where(x => x.LockHolder == _lockHolder &&
+                                           x.AcquisitionToken == functionContext.AcquisitionToken)
+                        : query.Where(_ => false);
+                    affected = await query.ExecuteUpdateAsync(
+                        setter => setter.UpdateCronTickerOccurrence<TCronTicker>(
+                            functionContext, NextLeaseUntil(now)), ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    var query = dbContext.Set<TTimeTicker>().Where(x => x.Id == functionContext.TickerId);
+                    if (functionContext.ParentId == null)
+                        query = functionContext.AcquisitionToken.HasValue
+                            ? query.Where(x => x.LockHolder == _lockHolder &&
+                                               x.AcquisitionToken == functionContext.AcquisitionToken)
+                            : query.Where(_ => false);
+                    affected = await query.ExecuteUpdateAsync(
+                        setter => setter.UpdateTimeTicker<TTimeTicker>(
+                            functionContext, now, NextLeaseUntil(now)), ct).ConfigureAwait(false);
+                }
+
+                if (affected != 1)
+                {
+                    await transaction.RollbackAsync(ct).ConfigureAwait(false);
+                    return false;
+                }
+
+                await OnSuccessfulStatusWrittenForTestAsync(
+                    dbContext, functionContext, ct).ConfigureAwait(false);
+                await ReplaceResultAsync(dbContext, functionContext, ct).ConfigureAwait(false);
+                await transaction.CommitAsync(ct).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+    }
+
+    protected internal virtual Task OnSuccessfulStatusWrittenForTestAsync(
+        TDbContext dbContext, InternalFunctionContext functionContext, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    private static async Task ReplaceResultAsync(
+        TDbContext dbContext, InternalFunctionContext functionContext, CancellationToken cancellationToken)
+    {
+        if (functionContext.Type == TickerType.CronTickerOccurrence)
+        {
+            await dbContext.Set<CronTickerOccurrenceResultEntity<TCronTicker>>()
+                .Where(x => x.TickerId == functionContext.TickerId)
+                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+            if (functionContext.ResultEnvelope != null)
+            {
+                dbContext.Set<CronTickerOccurrenceResultEntity<TCronTicker>>().Add(new()
+                {
+                    TickerId = functionContext.TickerId,
+                    Payload = functionContext.ResultEnvelope.ToPayloadArray(),
+                    EnvelopeVersion = functionContext.ResultEnvelope.Version,
+                    MediaType = functionContext.ResultEnvelope.MediaType,
+                    ContractId = functionContext.ResultEnvelope.ContractId,
+                    ContractType = functionContext.ResultEnvelope.ContractType
+                });
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            }
+            return;
+        }
+
+        await dbContext.Set<TimeTickerResultEntity<TTimeTicker>>()
+            .Where(x => x.TickerId == functionContext.TickerId)
+            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+        if (functionContext.ResultEnvelope != null)
+        {
+            dbContext.Set<TimeTickerResultEntity<TTimeTicker>>().Add(new()
+            {
+                TickerId = functionContext.TickerId,
+                Payload = functionContext.ResultEnvelope.ToPayloadArray(),
+                EnvelopeVersion = functionContext.ResultEnvelope.Version,
+                MediaType = functionContext.ResultEnvelope.MediaType,
+                ContractId = functionContext.ResultEnvelope.ContractId,
+                ContractType = functionContext.ResultEnvelope.ContractType
+            });
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+
+    private static void ValidateEnvelope(TickerResultEnvelope envelope)
+    {
+        if (envelope == null)
+            return;
+        envelope.EnsureSupportedVersion();
+        if (envelope.PayloadLength > TickerResultStorage.MaxPayloadBytes)
+            throw new ArgumentOutOfRangeException(nameof(envelope), envelope.PayloadLength,
+                $"Ticker result payload cannot exceed {TickerResultStorage.MaxPayloadBytes} bytes.");
+    }
+
+    private static TickerResultEnvelope ReadEnvelope(
+        byte[] payload, int version, string mediaType, string contractId, string contractType)
+    {
+        if (payload == null || payload.Length > TickerResultStorage.MaxPayloadBytes)
+            throw new InvalidOperationException("Persisted ticker result payload is corrupt or exceeds the 1 MiB limit.");
+        var envelope = new TickerResultEnvelope(payload, version, mediaType, contractId, contractType);
+        envelope.EnsureSupportedVersion();
+        return envelope;
+    }
 
     protected Task<DbContextLease<TDbContext>> CreateDbContextAsync(CancellationToken cancellationToken)
         => DbContextLease<TDbContext>.CreateAsync(_serviceProvider, cancellationToken);
@@ -582,6 +739,12 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 acquired = affected == 1;
                 if (!acquired)
                     return null;
+
+                // Revival starts a new generation. Remove the previous successful generation's
+                // output in this same transaction so a crash/retry cannot leak stale parent data.
+                await dbContext.Set<TimeTickerResultEntity<TTimeTicker>>()
+                    .Where(x => x.TickerId == id)
+                    .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
 
                 var result = await dbContext.Set<TTimeTicker>()
                     .AsNoTracking()

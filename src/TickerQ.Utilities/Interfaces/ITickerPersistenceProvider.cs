@@ -202,6 +202,20 @@ namespace TickerQ.Utilities.Interfaces
         bool SupportsResultPublication => false;
 
         /// <summary>
+        /// Commits an accepted successful terminal status and its optional result envelope as one
+        /// provider mutation. A null envelope is meaningful and clears a result from an earlier run.
+        /// Returns false when the ownership/generation fence rejects the completion. Every provider that
+        /// advertises result publication must override this member with one atomic, fenced operation.
+        /// The compatibility default fails closed because composing the legacy status update and result
+        /// read APIs cannot prove atomicity and would introduce an acknowledgement/read-back race.
+        /// </summary>
+        Task<bool> CommitSuccessfulTickerAsync(
+            InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(
+                "This persistence provider advertises result publication but does not implement the required " +
+                "atomic CommitSuccessfulTickerAsync override.");
+
+        /// <summary>
         /// Returns the committed result envelope for a time ticker, or <c>null</c> when it published none
         /// or the provider does not support result storage. Reading is non-fatal (the child simply sees no
         /// parent result); only <em>publishing</em> against an unsupported provider is an explicit failure.

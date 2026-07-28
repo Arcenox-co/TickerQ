@@ -76,10 +76,68 @@ namespace TickerQ.Provider
                && functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
 
         public Task<TickerResultEnvelope> GetTimeTickerResultAsync(Guid id, CancellationToken cancellationToken = default)
-            => Task.FromResult(TimeTickerResults.TryGetValue(id, out var envelope) ? envelope : null);
+            => Task.FromResult(ReadGraph(() =>
+                TimeTickerResults.TryGetValue(id, out var envelope) ? envelope : null));
 
         public Task<TickerResultEnvelope> GetCronTickerOccurrenceResultAsync(Guid id, CancellationToken cancellationToken = default)
-            => Task.FromResult(CronOccurrenceResults.TryGetValue(id, out var envelope) ? envelope : null);
+            => Task.FromResult(ReadGraph(() =>
+                CronOccurrenceResults.TryGetValue(id, out var envelope) ? envelope : null));
+
+        public Task<bool> CommitSuccessfulTickerAsync(
+            InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+        {
+            if (functionContext == null)
+                throw new ArgumentNullException(nameof(functionContext));
+            if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+                functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
+                !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+                throw new InvalidOperationException(
+                    "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (functionContext.Type == TickerType.CronTickerOccurrence)
+                {
+                    if (!CronOccurrences.TryGetValue(functionContext.TickerId, out var occurrence) ||
+                        !functionContext.AcquisitionToken.HasValue || occurrence.LockHolder != _lockHolder ||
+                        occurrence.AcquisitionToken != functionContext.AcquisitionToken)
+                        return false;
+
+                    var updatedOccurrence = CloneCronOccurrence(occurrence);
+                    ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
+                    if (!TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence))
+                        return false;
+                    ReplaceCommittedResult(CronOccurrenceResults, functionContext);
+                    return true;
+                }
+
+                if (!TimeTickers.TryGetValue(functionContext.TickerId, out var ticker))
+                    return false;
+                if (functionContext.ParentId == null &&
+                    (!functionContext.AcquisitionToken.HasValue || ticker.LockHolder != _lockHolder ||
+                     ticker.AcquisitionToken != functionContext.AcquisitionToken))
+                    return false;
+
+                var updatedTicker = CloneTicker(ticker);
+                ApplyFunctionContextToTicker(updatedTicker, functionContext);
+                if (!TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker))
+                    return false;
+                ReplaceCommittedResult(TimeTickerResults, functionContext);
+                return true;
+            }));
+        }
+
+        private static void ReplaceCommittedResult(
+            ConcurrentDictionary<Guid, TickerResultEnvelope> results,
+            InternalFunctionContext functionContext)
+        {
+            if (functionContext.ResultEnvelope == null)
+                results.TryRemove(functionContext.TickerId, out _);
+            else
+                results[functionContext.TickerId] = functionContext.ResultEnvelope;
+        }
 
         #region Time Ticker Methods
 
