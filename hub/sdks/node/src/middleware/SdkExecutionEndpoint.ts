@@ -40,6 +40,7 @@ function buildInternalContext(
         cachedMaxConcurrency: registration.maxConcurrency,
         functionName: context.functionName,
         tickerId: context.id,
+        acquisitionToken: context.acquisitionToken,
         parentId: context.parentId,
         type: context.type,
         retries: 0,
@@ -338,8 +339,12 @@ export class SdkExecutionEndpoint {
             internalCtx.parametersToUpdate = ['Status', 'ElapsedTime', 'ExecutedAt'];
             if (functionContext.resultSink.resultEnvelope) {
                 internalCtx.resultEnvelope = functionContext.resultSink.resultEnvelope;
-                internalCtx.parametersToUpdate.push('ResultEnvelope');
+            } else {
+                // A successful attempt that publishes no result must explicitly clear any durable
+                // value left by an earlier attempt; JSON undefined would omit this mutation.
+                internalCtx.resultEnvelope = null;
             }
+            internalCtx.parametersToUpdate.push('ResultEnvelope');
 
             this.logger?.info(
                 `TickerQ [${typeName}] '${context.functionName}' status -> ${TickerStatus[internalCtx.status]} (${elapsed}ms)`,
@@ -394,6 +399,9 @@ export class SdkExecutionEndpoint {
                 `TickerQ [${typeName}] '${context.functionName}' failed to report status ${TickerStatus[internalCtx.status]} to Scheduler:`,
                 err,
             );
+            // Terminal acknowledgement is part of execution correctness. Propagate stale-token,
+            // unsupported-provider and transport failures instead of logging a false success.
+            throw err;
         }
     }
 

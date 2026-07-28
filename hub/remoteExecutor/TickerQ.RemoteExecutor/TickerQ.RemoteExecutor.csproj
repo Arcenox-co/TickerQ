@@ -9,7 +9,12 @@
     <Title>TickerQ Remote Executor</Title>
     <Description>Remote execution integration for TickerQ, enabling hub registration and remote task dispatch.</Description>
     <PackageTags>$(PackageTags);remote;executor;hub;dispatch;callback</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\TickerQ.Utilities\TickerQ.Utilities.csproj" />

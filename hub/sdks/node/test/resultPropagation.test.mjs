@@ -15,10 +15,16 @@ const parentEnvelope = {
   contractType: 'OrderResult',
   payload: Buffer.from(JSON.stringify(parentValue)).toString('base64'),
 };
+const acquisitionToken = '13bb9d2e-f5ab-4c50-b7e2-1a4d85c00f9a';
 
-const normalized = normalizeExecutionContext({ ParentResult: parentEnvelope });
+const normalized = normalizeExecutionContext({ AcquisitionToken: acquisitionToken, ParentResult: parentEnvelope });
 assert.deepEqual(normalized.parentResult, parentEnvelope);
-const normalizedPascalEnvelope = normalizeExecutionContext({ ParentResult: {
+assert.equal(normalized.acquisitionToken, acquisitionToken);
+assert.equal(normalizeExecutionContext({ acquisitionToken }).acquisitionToken, acquisitionToken);
+assert.throws(() => normalizeExecutionContext({}), /acquisitionToken.*required/i);
+assert.throws(() => normalizeExecutionContext({ AcquisitionToken: 'not-a-uuid' }), /acquisitionToken.*UUID/i);
+assert.throws(() => normalizeExecutionContext({ AcquisitionToken: '00000000-0000-0000-0000-000000000000' }), /acquisitionToken.*non-empty UUID/i);
+const normalizedPascalEnvelope = normalizeExecutionContext({ AcquisitionToken: acquisitionToken, ParentResult: {
   EnvelopeVersion: 1,
   MediaType: 'application/json',
   ContractId: 'sha256:parent',
@@ -27,33 +33,34 @@ const normalizedPascalEnvelope = normalizeExecutionContext({ ParentResult: {
 } });
 assert.deepEqual(normalizedPascalEnvelope.parentResult, parentEnvelope);
 assert.throws(
-  () => normalizeExecutionContext({ parentResult: { ...parentEnvelope, envelopeVersion: 2 } }),
+  () => normalizeExecutionContext({ acquisitionToken, parentResult: { ...parentEnvelope, envelopeVersion: 2 } }),
   /unsupported result envelope version/i,
 );
 assert.throws(
-  () => normalizeExecutionContext({ parentResult: { ...parentEnvelope, payload: 'not base64!' } }),
+  () => normalizeExecutionContext({ acquisitionToken, parentResult: { ...parentEnvelope, payload: 'not base64!' } }),
   /base64/i,
 );
 assert.throws(
-  () => normalizeExecutionContext({ parentResult: { ...parentEnvelope, contractId: '   ' } }),
+  () => normalizeExecutionContext({ acquisitionToken, parentResult: { ...parentEnvelope, contractId: '   ' } }),
   /contractId must be a non-blank string/i,
 );
 assert.throws(
-  () => normalizeExecutionContext({ parentResult: { ...parentEnvelope, contractType: '' } }),
+  () => normalizeExecutionContext({ acquisitionToken, parentResult: { ...parentEnvelope, contractType: '' } }),
   /contractType must be a non-blank string/i,
 );
 assert.throws(
   () => normalizeExecutionContext({
+    acquisitionToken,
     parentResult: { ...parentEnvelope, payload: Buffer.alloc(1024 * 1024 + 1).toString('base64') },
   }),
   /payload exceeds/i,
 );
 
-const withoutParent = createFunctionContext(normalizeExecutionContext({}));
+const withoutParent = createFunctionContext(normalizeExecutionContext({ acquisitionToken }));
 assert.equal(withoutParent.hasParentResult, false);
 assert.equal(withoutParent.getParentResult(), undefined);
 
-const withParent = createFunctionContext(normalizeExecutionContext({ parentResult: parentEnvelope }));
+const withParent = createFunctionContext(normalizeExecutionContext({ acquisitionToken, parentResult: parentEnvelope }));
 assert.equal(withParent.hasParentResult, true);
 assert.deepEqual(withParent.getParentResult(), parentValue);
 withParent.setResult({ first: true });
@@ -61,6 +68,7 @@ withParent.setResult(null);
 assert.equal(withParent.resultSink.hasResult, true);
 assert.equal(Buffer.from(withParent.resultSink.resultEnvelope.payload, 'base64').toString(), 'null');
 const explicitNullParent = createFunctionContext(normalizeExecutionContext({
+  acquisitionToken,
   parentResult: { ...parentEnvelope, payload: Buffer.from('null').toString('base64') },
 }));
 assert.equal(explicitNullParent.hasParentResult, true);
@@ -91,7 +99,7 @@ await sync.syncAsync();
 assert.deepEqual(syncBody.functions[0].resultContract, resultInfo.resultContract);
 assert.equal(syncBody.functions[0].resultType, 'Object');
 
-async function execute(handler, { parentResult, abort = false, retryCount = 0 } = {}) {
+async function execute(handler, { parentResult, abort = false, retryCount = 0, statusFailure } = {}) {
   TickerFunctionProvider.reset();
   new TickerFunctionBuilder('Job').handle(handler);
   let scheduled;
@@ -105,13 +113,19 @@ async function execute(handler, { parentResult, abort = false, retryCount = 0 } 
   };
   const updates = [];
   const persistence = {
-    updateTimeTicker: async body => updates.push(JSON.parse(JSON.stringify(body))),
-    updateCronTickerOccurrence: async body => updates.push(JSON.parse(JSON.stringify(body))),
+    updateTimeTicker: async body => {
+      if (statusFailure) throw statusFailure;
+      updates.push(JSON.parse(JSON.stringify(body)));
+    },
+    updateCronTickerOccurrence: async body => {
+      if (statusFailure) throw statusFailure;
+      updates.push(JSON.parse(JSON.stringify(body)));
+    },
   };
   const options = { webhookSignature: 'secret' };
   const endpoint = new SdkExecutionEndpoint(options, {}, scheduler, { getSemaphore: () => null }, persistence);
   const body = {
-    Id: crypto.randomUUID(), Type: 0, RetryCount: retryCount, IsDue: false,
+    Id: crypto.randomUUID(), AcquisitionToken: acquisitionToken, Type: 0, RetryCount: retryCount, IsDue: false,
     ScheduledFor: new Date().toISOString(), FunctionName: 'Job',
     ...(parentResult === undefined ? {} : { ParentResult: parentResult }),
   };
@@ -137,6 +151,7 @@ const success = await execute(async ctx => {
   ctx.setResult(null);
 }, { parentResult: parentEnvelope });
 assert.ok(success.resultEnvelope);
+assert.equal(success.acquisitionToken, acquisitionToken);
 assert.ok(success.parametersToUpdate.includes('ResultEnvelope'));
 assert.equal(Buffer.from(success.resultEnvelope.payload, 'base64').toString(), 'null');
 
@@ -144,21 +159,30 @@ const failure = await execute(async ctx => {
   ctx.setResult({ mustNotLeak: true });
   throw new Error('boom');
 });
+assert.equal(failure.acquisitionToken, acquisitionToken);
 assert.equal('resultEnvelope' in failure, false);
 
 const retryFailure = await execute(async ctx => {
   ctx.setResult({ mustNotLeak: true });
   throw new Error('retry me');
 }, { retryCount: 2 });
+assert.equal(retryFailure.acquisitionToken, acquisitionToken);
 assert.equal('resultEnvelope' in retryFailure, false);
 
 const cancelled = await execute(async ctx => {
   ctx.setResult({ mustNotLeak: true });
   throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
 }, { abort: true });
+assert.equal(cancelled.acquisitionToken, acquisitionToken);
 assert.equal('resultEnvelope' in cancelled, false);
 
 const nextAttempt = await execute(async () => {});
-assert.equal('resultEnvelope' in nextAttempt, false, 'a new attempt must not inherit the prior attempt result');
+assert.equal(nextAttempt.resultEnvelope, null, 'a successful attempt without a result must clear stale durable output');
+assert.ok(nextAttempt.parametersToUpdate.includes('ResultEnvelope'));
+
+await assert.rejects(
+  execute(async () => {}, { statusFailure: new Error('stale acquisition') }),
+  /stale acquisition/,
+);
 
 console.log('result propagation and contract tests passed');

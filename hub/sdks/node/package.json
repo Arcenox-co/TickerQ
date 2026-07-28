@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc -p tsconfig.type-tests.json",
-    "test": "npm run build && npm run typecheck && node test/canonicalContract.test.mjs && node test/registerFunctionPolicy.test.mjs && node test/parentContext.test.mjs && node test/resultPropagation.test.mjs",
+    "test": "npm run build && npm run typecheck && node test/canonicalContract.test.mjs && node test/registerFunctionPolicy.test.mjs && node test/parentContext.test.mjs && node test/resultPropagation.test.mjs && node test/schedulerCompatibility.test.mjs",
     "watch": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"

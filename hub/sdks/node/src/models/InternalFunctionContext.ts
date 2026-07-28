@@ -7,6 +7,7 @@ export interface InternalFunctionContext {
     cachedMaxConcurrency: number;
     functionName: string;
     tickerId: string;
+    acquisitionToken: string;
     parentId: string | null;
     type: TickerType;
     retries: number;
@@ -21,5 +22,5 @@ export interface InternalFunctionContext {
     runCondition: RunCondition;
     timeTickerChildren: InternalFunctionContext[];
     /** Included only in a final successful status update. */
-    resultEnvelope?: ResultEnvelope;
+    resultEnvelope?: ResultEnvelope | null;
 }

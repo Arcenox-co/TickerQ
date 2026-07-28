@@ -21,18 +21,15 @@ export class TickerQRemotePersistenceProvider {
     // ─── Time Ticker CRUD ───────────────────────────────────────────────
 
     async addTimeTickers(tickers: TimeTickerEntity[], signal?: AbortSignal): Promise<number> {
-        await this.client.postAsync(`/${TIME_TICKERS_PATH}`, tickers, signal);
-        return tickers.length;
+        return (await this.client.postAsync<TimeTickerEntity[], number>(`/${TIME_TICKERS_PATH}`, tickers, signal)) ?? 0;
     }
 
     async updateTimeTickers(tickers: TimeTickerEntity[], signal?: AbortSignal): Promise<number> {
-        await this.client.putAsync(`/${TIME_TICKERS_PATH}`, tickers, signal);
-        return tickers.length;
+        return (await this.client.putAsync<TimeTickerEntity[], number>(`/${TIME_TICKERS_PATH}`, tickers, signal)) ?? 0;
     }
 
     async removeTimeTickers(tickerIds: string[], signal?: AbortSignal): Promise<number> {
-        await this.client.postAsync(`/${TIME_TICKERS_PATH}/delete`, tickerIds, signal);
-        return tickerIds.length;
+        return (await this.client.postAsync<string[], number>(`/${TIME_TICKERS_PATH}/delete`, tickerIds, signal)) ?? 0;
     }
 
     async updateTimeTicker(functionContext: InternalFunctionContext, signal?: AbortSignal): Promise<void> {
@@ -58,18 +55,15 @@ export class TickerQRemotePersistenceProvider {
     // ─── Cron Ticker CRUD ───────────────────────────────────────────────
 
     async insertCronTickers(tickers: CronTickerEntity[], signal?: AbortSignal): Promise<number> {
-        await this.client.postAsync(`/${CRON_TICKERS_PATH}`, tickers, signal);
-        return tickers.length;
+        return (await this.client.postAsync<CronTickerEntity[], number>(`/${CRON_TICKERS_PATH}`, tickers, signal)) ?? 0;
     }
 
     async updateCronTickers(tickers: CronTickerEntity[], signal?: AbortSignal): Promise<number> {
-        await this.client.putAsync(`/${CRON_TICKERS_PATH}`, tickers, signal);
-        return tickers.length;
+        return (await this.client.putAsync<CronTickerEntity[], number>(`/${CRON_TICKERS_PATH}`, tickers, signal)) ?? 0;
     }
 
     async removeCronTickers(cronTickerIds: string[], signal?: AbortSignal): Promise<number> {
-        await this.client.postAsync(`/${CRON_TICKERS_PATH}/delete`, cronTickerIds, signal);
-        return cronTickerIds.length;
+        return (await this.client.postAsync<string[], number>(`/${CRON_TICKERS_PATH}/delete`, cronTickerIds, signal)) ?? 0;
     }
 
     // ─── Cron Ticker Occurrence ─────────────────────────────────────────
