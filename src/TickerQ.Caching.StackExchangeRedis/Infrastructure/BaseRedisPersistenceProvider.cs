@@ -80,19 +80,20 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     public bool SupportsLeaseBasedRecovery => true;
 
     #region Lua script operations
-    protected async Task<T> TryAcquireAsync<T>(string key, TickerStatus targetStatus, string expectedUpdatedAt = "") where T : class
+    protected async Task<T> TryAcquireAsync<T>(string key, string resultKey, TickerStatus targetStatus, string expectedUpdatedAt = "") where T : class
     {
         var now = Clock.UtcNow;
         var acquisitionToken = Guid.NewGuid();
         var result = await Db.ScriptEvaluateAsync(
             AcquireScript,
-            [(RedisKey)key],
+            [(RedisKey)key, (RedisKey)resultKey],
             [(RedisValue)LockHolder, (RedisValue)now.ToString("O"), (RedisValue)(int)targetStatus,
              (RedisValue)(expectedUpdatedAt ?? ""), LuaStatusIdle, LuaStatusQueued,
              (RedisValue)acquisitionToken.ToString(),
              (RedisValue)(targetStatus == TickerStatus.InProgress
                  ? now.Add(_schedulerOptions.LeaseDuration).ToString("O")
-                 : "")]
+                 : ""),
+             (RedisValue)(key.StartsWith($"{Prefix}:tt:", StringComparison.Ordinal) ? $"{Prefix}:tt:" : "")]
         ).ConfigureAwait(false);
 
         if (result.IsNull) return null;
@@ -114,12 +115,12 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         return Serializer.DeserializeOrNull<T>((string)result);
     }
 
-    protected async Task<T> TryReleaseAsync<T>(string key) where T : class
+    protected async Task<T> TryReleaseAsync<T>(string key, string resultKey) where T : class
     {
         var now = Clock.UtcNow;
         var result = await Db.ScriptEvaluateAsync(
             ReleaseScript,
-            [(RedisKey)key],
+            [(RedisKey)key, (RedisKey)resultKey],
             [(RedisValue)LockHolder, (RedisValue)now.ToString("O"), LuaStatusIdle, LuaStatusQueued]
         ).ConfigureAwait(false);
 
@@ -127,12 +128,12 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         return Serializer.DeserializeOrNull<T>((string)result);
     }
 
-    protected async Task<T> TryRecoverDeadNodeAsync<T>(string key, string deadNodeId) where T : class
+    protected async Task<T> TryRecoverDeadNodeAsync<T>(string key, string resultKey, string deadNodeId) where T : class
     {
         var now = Clock.UtcNow;
         var result = await Db.ScriptEvaluateAsync(
             RecoverDeadNodeScript,
-            [(RedisKey)key],
+            [(RedisKey)key, (RedisKey)resultKey],
             [(RedisValue)deadNodeId, (RedisValue)now.ToString("O"), LuaStatusIdle, LuaStatusQueued, LuaStatusInProgress]
         ).ConfigureAwait(false);
 
@@ -140,21 +141,165 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         return Serializer.DeserializeOrNull<T>((string)result);
     }
 
-    private async Task<T> TryCasReplaceAsync<T>(string key, T replacement, DateTime expectedUpdatedAt,
-        string expectedHolder = "", Guid? expectedToken = null, int expectedStatus = -1) where T : class
+    private async Task<T> TryCasReplaceAsync<T>(string key, string resultKey, T replacement, DateTime expectedUpdatedAt,
+        string expectedHolder = "", Guid? expectedToken = null, int expectedStatus = -1,
+        string resultAction = "none", byte[] resultEnvelope = null, Guid? embeddedTargetId = null) where T : class
     {
-        var result = await Db.ScriptEvaluateAsync(CasReplaceScript, [(RedisKey)key],
-            [(RedisValue)expectedHolder, (RedisValue)(expectedToken?.ToString() ?? ""),
-             (RedisValue)expectedStatus, (RedisValue)expectedUpdatedAt.ToString("O"),
-             (RedisValue)Serializer.Serialize(replacement)]).ConfigureAwait(false);
+        var result = await EvaluateCasReplaceAsync(key, resultKey, replacement, expectedUpdatedAt,
+            expectedHolder, expectedToken, expectedStatus, resultAction, resultEnvelope, embeddedTargetId)
+            .ConfigureAwait(false);
         return result.IsNull ? null : Serializer.DeserializeOrNull<T>((string)result);
     }
+
+    private async Task<bool> TryAcknowledgeCasReplaceAsync<T>(string key, string resultKey, T replacement,
+        DateTime expectedUpdatedAt, string expectedHolder, Guid? expectedToken, int expectedStatus,
+        string resultAction, byte[] resultEnvelope, Guid? embeddedTargetId = null) where T : class
+    {
+        var result = await EvaluateCasReplaceAsync(key, resultKey, replacement, expectedUpdatedAt,
+            expectedHolder, expectedToken, expectedStatus, resultAction, resultEnvelope, embeddedTargetId)
+            .ConfigureAwait(false);
+        return !result.IsNull;
+    }
+
+    private Task<RedisResult> EvaluateCasReplaceAsync<T>(string key, string resultKey, T replacement,
+        DateTime expectedUpdatedAt, string expectedHolder, Guid? expectedToken, int expectedStatus,
+        string resultAction, byte[] resultEnvelope, Guid? embeddedTargetId) where T : class
+        => Db.ScriptEvaluateAsync(CasReplaceScript, [(RedisKey)key, (RedisKey)resultKey],
+            [(RedisValue)expectedHolder, (RedisValue)(expectedToken?.ToString() ?? ""),
+             (RedisValue)expectedStatus, (RedisValue)expectedUpdatedAt.ToString("O"),
+             (RedisValue)Serializer.Serialize(replacement), (RedisValue)resultAction,
+             (RedisValue)(resultEnvelope ?? []),
+             (RedisValue)(embeddedTargetId?.ToString() ?? "")]);
 
     private static bool IsFencedTerminalWrite(InternalFunctionContext context)
         => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) ||
            (context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
             context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                 or TickerStatus.Cancelled or TickerStatus.Skipped);
+
+    private static bool IsSuccessfulTerminalWrite(InternalFunctionContext context)
+        => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+           context.Status is TickerStatus.Done or TickerStatus.DueDone;
+
+    private static (string Action, byte[] Envelope) GetResultMutation(InternalFunctionContext context)
+    {
+        if (!IsSuccessfulTerminalWrite(context)) return ("none", null);
+        var publishes = context.ResultEnvelope != null &&
+            context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope));
+        return publishes
+            ? ("set", RedisResultEnvelopeCodec.Serialize(context.ResultEnvelope))
+            : ("clear", null);
+    }
+
+    public async Task<bool> CommitSuccessfulTickerAsync(
+        InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+    {
+        if (functionContext == null)
+            throw new ArgumentNullException(nameof(functionContext));
+        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
+            !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+            throw new InvalidOperationException(
+                "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
+
+        cancellationToken.ThrowIfCancellationRequested();
+        // Serialize before reading or invoking Lua so malformed/oversized envelopes cannot mutate status.
+        var encodedEnvelope = functionContext.ResultEnvelope == null
+            ? null
+            : RedisResultEnvelopeCodec.Serialize(functionContext.ResultEnvelope);
+        var resultAction = encodedEnvelope == null ? "clear" : "set";
+
+        return functionContext.Type == TickerType.CronTickerOccurrence
+            ? await CommitSuccessfulCronOccurrenceAsync(
+                functionContext, resultAction, encodedEnvelope, cancellationToken).ConfigureAwait(false)
+            : await CommitSuccessfulTimeTickerAsync(
+                functionContext, resultAction, encodedEnvelope, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> CommitSuccessfulTimeTickerAsync(
+        InternalFunctionContext functionContext, string resultAction, byte[] encodedEnvelope,
+        CancellationToken cancellationToken)
+    {
+        if (functionContext.ParentId != null)
+            return await CommitSuccessfulEmbeddedTimeTickerAsync(
+                functionContext, resultAction, encodedEnvelope, cancellationToken).ConfigureAwait(false);
+
+        var ticker = await Serializer.GetAsync<TTimeTicker>(
+            TimeTickerKey(functionContext.TickerId)).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (ticker == null || !functionContext.AcquisitionToken.HasValue)
+            return false;
+
+        var expectedUpdatedAt = ticker.UpdatedAt;
+        var expectedStatus = (int)ticker.Status;
+        ApplyFunctionContextToTicker(ticker, functionContext);
+        ticker.UpdatedAt = NextAggregateUpdatedAt(expectedUpdatedAt);
+        var acknowledged = await TryAcknowledgeCasReplaceAsync(
+            TimeTickerKey(ticker.Id), TimeTickerResultKey(ticker.Id), ticker, expectedUpdatedAt,
+            LockHolder, functionContext.AcquisitionToken, expectedStatus, resultAction, encodedEnvelope)
+            .ConfigureAwait(false);
+        if (!acknowledged)
+            return false;
+
+        await IndexManager.AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> CommitSuccessfulEmbeddedTimeTickerAsync(
+        InternalFunctionContext functionContext, string resultAction, byte[] encodedEnvelope,
+        CancellationToken cancellationToken)
+    {
+        var rootId = functionContext.ChainRootId ?? functionContext.ParentId;
+        if (!rootId.HasValue || !functionContext.AcquisitionToken.HasValue)
+            return false;
+
+        var root = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(rootId.Value)).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (root == null)
+            return false;
+
+        var child = FindEmbeddedTimeTicker(root.Children, functionContext.TickerId);
+        if (child == null)
+            return false;
+
+        var expectedUpdatedAt = root.UpdatedAt;
+        var expectedStatus = (int)child.Status;
+        ApplyFunctionContextToTicker(child, functionContext);
+        root.UpdatedAt = NextAggregateUpdatedAt(expectedUpdatedAt);
+        var acknowledged = await TryAcknowledgeCasReplaceAsync(
+            TimeTickerKey(root.Id), TimeTickerResultKey(functionContext.TickerId), root, expectedUpdatedAt,
+            LockHolder, functionContext.AcquisitionToken, expectedStatus, resultAction, encodedEnvelope,
+            functionContext.TickerId).ConfigureAwait(false);
+        if (!acknowledged)
+            return false;
+
+        await IndexManager.AddTimeTickerIndexesAsync(root).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> CommitSuccessfulCronOccurrenceAsync(
+        InternalFunctionContext functionContext, string resultAction, byte[] encodedEnvelope,
+        CancellationToken cancellationToken)
+    {
+        var occurrence = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(
+            CronOccurrenceKey(functionContext.TickerId)).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (occurrence == null || !functionContext.AcquisitionToken.HasValue)
+            return false;
+
+        var expectedUpdatedAt = occurrence.UpdatedAt;
+        var expectedStatus = (int)occurrence.Status;
+        ApplyFunctionContextToCronOccurrence(occurrence, functionContext);
+        var acknowledged = await TryAcknowledgeCasReplaceAsync(
+            CronOccurrenceKey(occurrence.Id), CronOccurrenceResultKey(occurrence.Id), occurrence,
+            expectedUpdatedAt, LockHolder, functionContext.AcquisitionToken, expectedStatus,
+            resultAction, encodedEnvelope).ConfigureAwait(false);
+        if (!acknowledged)
+            return false;
+
+        await IndexManager.AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
+        return true;
+    }
     #endregion
 
     #region FunctionContext mapping
@@ -279,7 +424,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             cancellationToken.ThrowIfCancellationRequested();
 
             var acquired = await TryAcquireAsync<TTimeTicker>(
-                TimeTickerKey(timeTicker.Id),
+                TimeTickerKey(timeTicker.Id), TimeTickerResultKey(timeTicker.Id),
                 TickerStatus.Queued,
                 timeTicker.UpdatedAt.ToString("O")).ConfigureAwait(false);
 
@@ -309,7 +454,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
 
             var acquired = await TryAcquireAsync<TTimeTicker>(
-                TimeTickerKey(id),
+                TimeTickerKey(id), TimeTickerResultKey(id),
                 TickerStatus.InProgress).ConfigureAwait(false);
 
             if (acquired == null) continue;
@@ -330,7 +475,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var released = await TryReleaseAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
+            var released = await TryReleaseAsync<TTimeTicker>(
+                TimeTickerKey(id), TimeTickerResultKey(id)).ConfigureAwait(false);
             if (released == null) continue;
 
             await IndexManager.AddTimeTickerIndexesAsync(released).ConfigureAwait(false);
@@ -377,8 +523,11 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             var expectedStatus = fenced ? (int)ticker.Status : -1;
             ApplyFunctionContextToTicker(ticker, functionContext);
             ticker.UpdatedAt = NextAggregateUpdatedAt(expectedUpdatedAt);
-            var updated = await TryCasReplaceAsync(TimeTickerKey(ticker.Id), ticker, expectedUpdatedAt,
-                    fenced ? LockHolder : "", fenced ? functionContext.AcquisitionToken : null, expectedStatus)
+            var resultMutation = GetResultMutation(functionContext);
+            var updated = await TryCasReplaceAsync(TimeTickerKey(ticker.Id), TimeTickerResultKey(ticker.Id),
+                    ticker, expectedUpdatedAt, fenced ? LockHolder : "",
+                    fenced ? functionContext.AcquisitionToken : null, expectedStatus,
+                    resultMutation.Action, resultMutation.Envelope)
                 .ConfigureAwait(false);
             if (updated == null) continue;
             await IndexManager.AddTimeTickerIndexesAsync(updated).ConfigureAwait(false);
@@ -405,9 +554,19 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             if (child == null) return 0;
 
             var expectedUpdatedAt = root.UpdatedAt;
+            var fenced = IsFencedTerminalWrite(functionContext);
+            if (fenced && !functionContext.AcquisitionToken.HasValue) return 0;
+            var expectedStatus = fenced ? (int)child.Status : -1;
             ApplyFunctionContextToTicker(child, functionContext);
             root.UpdatedAt = NextAggregateUpdatedAt(expectedUpdatedAt);
-            var updated = await TryCasReplaceAsync(TimeTickerKey(root.Id), root, expectedUpdatedAt)
+            var resultMutation = GetResultMutation(functionContext);
+            var updated = await TryCasReplaceAsync(TimeTickerKey(root.Id),
+                    TimeTickerResultKey(functionContext.TickerId), root, expectedUpdatedAt,
+                    expectedHolder: fenced ? LockHolder : "",
+                    expectedToken: fenced ? functionContext.AcquisitionToken : null,
+                    expectedStatus: expectedStatus,
+                    resultAction: resultMutation.Action, resultEnvelope: resultMutation.Envelope,
+                    embeddedTargetId: functionContext.TickerId)
                 .ConfigureAwait(false);
             if (updated == null) continue;
             await IndexManager.AddTimeTickerIndexesAsync(updated).ConfigureAwait(false);
@@ -483,7 +642,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             cancellationToken.ThrowIfCancellationRequested();
 
             var ticker = await TryAcquireAsync<TTimeTicker>(
-                TimeTickerKey(id),
+                TimeTickerKey(id), TimeTickerResultKey(id),
                 TickerStatus.InProgress).ConfigureAwait(false);
 
             if (ticker == null) continue;
@@ -501,7 +660,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         cancellationToken.ThrowIfCancellationRequested();
         var now = Clock.UtcNow;
         var token = Guid.NewGuid();
-        var result = await Db.ScriptEvaluateAsync(AcquireOnDemandScript, [(RedisKey)TimeTickerKey(id)],
+        var result = await Db.ScriptEvaluateAsync(AcquireOnDemandScript,
+            [(RedisKey)TimeTickerKey(id), (RedisKey)TimeTickerResultKey(id)],
             [(RedisValue)LockHolder, (RedisValue)now.ToString("O"),
              (RedisValue)now.Add(_schedulerOptions.LeaseDuration).ToString("O"),
              (RedisValue)token.ToString(), LuaStatusInProgress, (RedisValue)executionTime.ToUniversalTime().ToString("O"),
@@ -523,7 +683,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var recovered = await TryRecoverDeadNodeAsync<TTimeTicker>(TimeTickerKey(id), instanceIdentifier).ConfigureAwait(false);
+            var recovered = await TryRecoverDeadNodeAsync<TTimeTicker>(
+                TimeTickerKey(id), TimeTickerResultKey(id), instanceIdentifier).ConfigureAwait(false);
             if (recovered == null) continue;
 
             await IndexManager.AddTimeTickerIndexesAsync(recovered).ConfigureAwait(false);
@@ -710,7 +871,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             else
             {
                 var acquired = await TryAcquireAsync<CronTickerOccurrenceEntity<TCronTicker>>(
-                    CronOccurrenceKey(item.NextCronOccurrence.Id),
+                    CronOccurrenceKey(item.NextCronOccurrence.Id), CronOccurrenceResultKey(item.NextCronOccurrence.Id),
                     TickerStatus.Queued).ConfigureAwait(false);
 
                 if (acquired == null) continue;
@@ -749,7 +910,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             if (!Guid.TryParse(redisValue.ToString(), out var id)) continue;
 
             var acquired = await TryAcquireAsync<CronTickerOccurrenceEntity<TCronTicker>>(
-                CronOccurrenceKey(id),
+                CronOccurrenceKey(id), CronOccurrenceResultKey(id),
                 TickerStatus.InProgress).ConfigureAwait(false);
 
             if (acquired == null) continue;
@@ -769,8 +930,11 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         var expectedUpdatedAt = occurrence.UpdatedAt;
         var expectedStatus = fenced ? (int)occurrence.Status : -1;
         ApplyFunctionContextToCronOccurrence(occurrence, functionContext);
-        var updated = await TryCasReplaceAsync(CronOccurrenceKey(occurrence.Id), occurrence, expectedUpdatedAt,
-            fenced ? LockHolder : "", fenced ? functionContext.AcquisitionToken : null, expectedStatus)
+        var resultMutation = GetResultMutation(functionContext);
+        var updated = await TryCasReplaceAsync(CronOccurrenceKey(occurrence.Id),
+            CronOccurrenceResultKey(occurrence.Id), occurrence, expectedUpdatedAt,
+            fenced ? LockHolder : "", fenced ? functionContext.AcquisitionToken : null, expectedStatus,
+            resultMutation.Action, resultMutation.Envelope)
             .ConfigureAwait(false);
         if (updated != null)
             await IndexManager.AddCronOccurrenceIndexesAsync(updated).ConfigureAwait(false);
@@ -786,7 +950,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var released = await TryReleaseAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
+            var released = await TryReleaseAsync<CronTickerOccurrenceEntity<TCronTicker>>(
+                CronOccurrenceKey(id), CronOccurrenceResultKey(id)).ConfigureAwait(false);
             if (released == null) continue;
 
             await IndexManager.AddCronOccurrenceIndexesAsync(released).ConfigureAwait(false);
@@ -839,7 +1004,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             cancellationToken.ThrowIfCancellationRequested();
 
             var recovered = await TryRecoverDeadNodeAsync<CronTickerOccurrenceEntity<TCronTicker>>(
-                CronOccurrenceKey(id), instanceIdentifier).ConfigureAwait(false);
+                CronOccurrenceKey(id), CronOccurrenceResultKey(id), instanceIdentifier).ConfigureAwait(false);
 
             if (recovered == null) continue;
 
@@ -923,7 +1088,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             cancellationToken.ThrowIfCancellationRequested();
             var ticker = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
             if (ticker == null) continue;
-            var code = await RecoverStaleAsync(TimeTickerKey(id), ticker.OnStale, maxStaleRestarts).ConfigureAwait(false);
+            var code = await RecoverStaleAsync(TimeTickerKey(id), TimeTickerResultKey(id),
+                ticker.OnStale, maxStaleRestarts).ConfigureAwait(false);
             if (code.Entity is TTimeTicker updated) await IndexManager.AddTimeTickerIndexesAsync(updated).ConfigureAwait(false);
             if (code.Code == 'R') result.RestartedTimeTickers++;
             else if (code.Code == 'C') result.CancelledTimeTickers++;
@@ -938,7 +1104,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             var policy = occurrence.CronTicker?.OnStale;
             if (!policy.HasValue)
                 policy = (await Serializer.GetAsync<TCronTicker>(CronKey(occurrence.CronTickerId)).ConfigureAwait(false))?.OnStale;
-            var code = await RecoverStaleAsync(CronOccurrenceKey(id), policy ?? StaleAction.Restart, maxStaleRestarts,
+            var code = await RecoverStaleAsync(CronOccurrenceKey(id), CronOccurrenceResultKey(id),
+                policy ?? StaleAction.Restart, maxStaleRestarts,
                 json => Serializer.DeserializeOrNull<CronTickerOccurrenceEntity<TCronTicker>>(json)).ConfigureAwait(false);
             if (code.Entity is CronTickerOccurrenceEntity<TCronTicker> updated)
                 await IndexManager.AddCronOccurrenceIndexesAsync(updated).ConfigureAwait(false);
@@ -948,15 +1115,19 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         return result;
     }
 
-    private Task<(char Code, object Entity)> RecoverStaleAsync(string key, StaleAction policy, int maxStaleRestarts)
-        => RecoverStaleAsync(key, policy, maxStaleRestarts, json => Serializer.DeserializeOrNull<TTimeTicker>(json));
+    private Task<(char Code, object Entity)> RecoverStaleAsync(
+        string key, string resultKey, StaleAction policy, int maxStaleRestarts)
+        => RecoverStaleAsync(key, resultKey, policy, maxStaleRestarts,
+            json => Serializer.DeserializeOrNull<TTimeTicker>(json));
 
-    private async Task<(char Code, object Entity)> RecoverStaleAsync(string key, StaleAction policy, int maxStaleRestarts,
+    private async Task<(char Code, object Entity)> RecoverStaleAsync(string key, string resultKey,
+        StaleAction policy, int maxStaleRestarts,
         Func<string, object> deserialize)
     {
         const string staleReason = "Stale: the node executing this ticker stopped renewing its lease (presumed dead).";
         var now = Clock.UtcNow;
-        var response = await Db.ScriptEvaluateAsync(RecoverStaleScript, [(RedisKey)key],
+        var response = await Db.ScriptEvaluateAsync(RecoverStaleScript,
+            [(RedisKey)key, (RedisKey)resultKey],
             [(RedisValue)now.ToString("O"),
              (RedisValue)now.Subtract(_schedulerOptions.QueuedLockTimeout).ToString("O"),
              (RedisValue)maxStaleRestarts, (RedisValue)(int)policy,

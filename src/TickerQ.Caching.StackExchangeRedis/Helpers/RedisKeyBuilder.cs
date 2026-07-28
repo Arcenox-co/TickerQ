@@ -27,8 +27,10 @@ internal static class RedisKeyBuilder
     internal const string RetentionReconciliationPendingKey = $"{Prefix}:retention:reconcile:pending";
 
     internal static string TimeTickerKey(Guid id) => $"{Prefix}:tt:{id}";
+    internal static string TimeTickerResultKey(Guid id) => $"{Prefix}:tt:{id}:result";
     internal static string CronKey(Guid id) => $"{Prefix}:cron:{id}";
     internal static string CronOccurrenceKey(Guid id) => $"{Prefix}:co:{id}";
+    internal static string CronOccurrenceResultKey(Guid id) => $"{Prefix}:co:{id}:result";
     internal static string CronOccurrencesByCronKey(Guid cronId) => $"{Prefix}:cron:{cronId}:occurrences";
 
     internal static double ToScore(DateTime utc) => utc.ToUniversalTime().Ticks;

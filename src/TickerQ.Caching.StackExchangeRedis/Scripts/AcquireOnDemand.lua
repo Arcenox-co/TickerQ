@@ -1,4 +1,5 @@
 -- Atomically revive one non-running ticker for on-demand execution.
+-- KEYS: entity, result side key
 -- ARGV: holder, now, leaseUntil, token, inProgressStatus, executionTime, queuedStatus
 local json = redis.call('GET', KEYS[1])
 if not json then return nil end
@@ -20,10 +21,27 @@ obj['SkippedReason'] = cjson.null; obj['skippedReason'] = nil
 obj['ElapsedTime'] = 0; obj['elapsedTime'] = nil
 obj['RetryCount'] = 0; obj['retryCount'] = nil
 obj['StaleRestartCount'] = 0; obj['staleRestartCount'] = nil
+local resultKey = tostring(KEYS[2])
+local resultPrefix = string.match(resultKey, '^(.*:tt:)[^:]+:result$')
+local function fenceChildren(children)
+  if type(children) ~= 'table' then return end
+  for _, child in pairs(children) do
+    child['LockHolder'] = ARGV[1]; child['lockHolder'] = nil
+    child['LockedAt'] = ARGV[2]; child['lockedAt'] = nil
+    child['AcquisitionToken'] = ARGV[4]; child['acquisitionToken'] = nil
+    local id = child['Id'] or child['id']
+    if resultPrefix and id and id ~= cjson.null then
+      redis.call('DEL', resultPrefix .. tostring(id) .. ':result')
+    end
+    fenceChildren(child['Children'] or child['children'])
+  end
+end
+fenceChildren(obj['Children'] or obj['children'])
 local updated = cjson.encode(obj)
 -- cjson encodes an empty Lua table as '{}', turning empty JSON arrays ('[]') into objects.
 -- Restore the array-typed fields so C# deserialization does not fail on re-encode.
 updated = updated:gsub('"Children":{}', '"Children":[]')
 updated = updated:gsub('"RetryIntervals":{}', '"RetryIntervals":[]')
 redis.call('SET', KEYS[1], updated)
+redis.call('DEL', KEYS[2])
 return updated

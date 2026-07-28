@@ -96,7 +96,8 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
         foreach (var occurrenceId in ParseGuidSet(members))
         {
             await RemoveCronOccurrenceIndexesAsync(occurrenceId, cronId).ConfigureAwait(false);
-            await _db.KeyDeleteAsync(CronOccurrenceKey(occurrenceId)).ConfigureAwait(false);
+            await _db.KeyDeleteAsync([CronOccurrenceKey(occurrenceId), CronOccurrenceResultKey(occurrenceId)])
+                .ConfigureAwait(false);
         }
         await _db.KeyDeleteAsync(reverseKey).ConfigureAwait(false);
     }

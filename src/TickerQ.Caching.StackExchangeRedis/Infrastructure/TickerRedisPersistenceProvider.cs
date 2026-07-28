@@ -3,6 +3,7 @@ using System.Linq.Expressions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
+using TickerQ.Caching.StackExchangeRedis.Helpers;
 using static TickerQ.Caching.StackExchangeRedis.DependencyInjection.ServiceExtension;
 using static TickerQ.Caching.StackExchangeRedis.Helpers.RedisKeyBuilder;
 using TickerQ.Utilities;
@@ -27,6 +28,22 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         TickerQRedisOptionBuilder redisOptions,
         ILogger<TickerRedisPersistenceProvider<TTimeTicker, TCronTicker>> logger)
         : base(db, clock, optionsBuilder, redisOptions, logger) { }
+
+    public bool SupportsResultPublication => true;
+
+    public Task<TickerResultEnvelope> GetTimeTickerResultAsync(Guid id, CancellationToken cancellationToken = default)
+        => GetResultAsync(TimeTickerResultKey(id), cancellationToken);
+
+    public Task<TickerResultEnvelope> GetCronTickerOccurrenceResultAsync(Guid id, CancellationToken cancellationToken = default)
+        => GetResultAsync(CronOccurrenceResultKey(id), cancellationToken);
+
+    private async Task<TickerResultEnvelope> GetResultAsync(string key, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var value = await Db.StringGetAsync(key).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return value.IsNull ? null : RedisResultEnvelopeCodec.TryDeserialize((byte[])value);
+    }
 
     #region Queryable_Methods
     public ITickerQueryable<TTimeTicker> TimeTickersQuery()
@@ -93,6 +110,11 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             cancellationToken.ThrowIfCancellationRequested();
             ticker.CreatedAt = ticker.CreatedAt == default ? now : ticker.CreatedAt;
             ticker.UpdatedAt = ticker.UpdatedAt == default ? now : ticker.UpdatedAt;
+            var existing = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(ticker.Id)).ConfigureAwait(false);
+            var aggregateIds = EnumerateAggregateIds(ticker).Concat(
+                existing == null ? [] : EnumerateAggregateIds(existing));
+            await Db.KeyDeleteAsync(aggregateIds.Distinct()
+                .Select(TimeTickerResultKey).Select(x => (RedisKey)x).ToArray()).ConfigureAwait(false);
             await Serializer.SetAsync(TimeTickerKey(ticker.Id), ticker).ConfigureAwait(false);
             await IndexManager.AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
         }
@@ -118,11 +140,29 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var id in tickerIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var ticker = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
             await IndexManager.RemoveTimeTickerIndexesAsync(id).ConfigureAwait(false);
+            var resultKeys = ticker == null
+                ? [(RedisKey)TimeTickerResultKey(id)]
+                : EnumerateAggregateIds(ticker).Select(TimeTickerResultKey).Select(x => (RedisKey)x).ToArray();
+            await Db.KeyDeleteAsync(resultKeys).ConfigureAwait(false);
             if (await Db.KeyDeleteAsync(TimeTickerKey(id)).ConfigureAwait(false))
                 count++;
         }
         return count;
+    }
+
+    private static IEnumerable<Guid> EnumerateAggregateIds(TTimeTicker root)
+    {
+        var pending = new Stack<TTimeTicker>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            yield return current.Id;
+            foreach (var child in current.Children ?? [])
+                pending.Push(child);
+        }
     }
     #endregion
 
@@ -212,6 +252,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var occurrence in cronTickerOccurrences)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            await Db.KeyDeleteAsync(CronOccurrenceResultKey(occurrence.Id)).ConfigureAwait(false);
             await Serializer.SetAsync(CronOccurrenceKey(occurrence.Id), occurrence).ConfigureAwait(false);
             await IndexManager.AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
         }
@@ -227,6 +268,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             var occurrence = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
             if (occurrence != null)
                 await IndexManager.RemoveCronOccurrenceIndexesAsync(id, occurrence.CronTickerId).ConfigureAwait(false);
+            await Db.KeyDeleteAsync(CronOccurrenceResultKey(id)).ConfigureAwait(false);
             if (await Db.KeyDeleteAsync(CronOccurrenceKey(id)).ConfigureAwait(false))
                 removed++;
         }
@@ -244,7 +286,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             cancellationToken.ThrowIfCancellationRequested();
 
             var occurrence = await TryAcquireAsync<CronTickerOccurrenceEntity<TCronTicker>>(
-                CronOccurrenceKey(id),
+                CronOccurrenceKey(id), CronOccurrenceResultKey(id),
                 TickerStatus.InProgress).ConfigureAwait(false);
 
             if (occurrence == null) continue;
@@ -326,7 +368,8 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
                     TimeTickerRetentionSucceededKey,
                     TimeTickerRetentionFailedKey,
                     TimeTickerRetentionCancelledKey,
-                    TimeTickerRetentionSkippedKey
+                    TimeTickerRetentionSkippedKey,
+                    TimeTickerResultKey(candidate.Id)
                 ],
                 [
                     candidate.FirstStatus,
@@ -384,7 +427,8 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
                     CronOccurrenceRetentionFailedKey,
                     CronOccurrenceRetentionCancelledKey,
                     CronOccurrenceRetentionSkippedKey,
-                    CronOccurrencesByCronKey(occurrence.CronTickerId)
+                    CronOccurrencesByCronKey(occurrence.CronTickerId),
+                    CronOccurrenceResultKey(candidate.Id)
                 ],
                 [
                     candidate.FirstStatus,
@@ -644,6 +688,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         redis.call('ZREM', KEYS[5], ARGV[5])
         redis.call('ZREM', KEYS[6], ARGV[5])
         redis.call('ZREM', KEYS[7], ARGV[5])
+        redis.call('DEL', KEYS[8])
         return 1
         """;
 
@@ -675,6 +720,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         redis.call('ZREM', KEYS[6], ARGV[5])
         redis.call('ZREM', KEYS[7], ARGV[5])
         redis.call('SREM', KEYS[8], ARGV[5])
+        redis.call('DEL', KEYS[9])
         return 1
         """;
     #endregion
