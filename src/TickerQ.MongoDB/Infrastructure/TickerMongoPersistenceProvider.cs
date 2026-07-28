@@ -5,8 +5,9 @@ using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using MongoDB.Bson;
 using MongoDB.Driver;
-using MongoDB.Driver.Core.Clusters;
+using MongoDB.Driver.Core.Servers;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -25,6 +26,18 @@ namespace TickerQ.MongoDB.Infrastructure
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
         private readonly SchedulerOptionsBuilder _schedulerOptions;
+        private readonly IMongoCollection<BsonDocument> _graphFence;
+
+        private const string GraphFenceId = "time-ticker-graph";
+        private static readonly TransactionOptions GraphTransactionOptions = new(
+            readConcern: ReadConcern.Snapshot,
+            writeConcern: WriteConcern.WMajority);
+
+        // Deterministic race-test seams. They run inside the transaction at the named fence points.
+        internal Func<CancellationToken, Task> BeforeGraphMutationFenceForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> AfterGraphMutationFenceForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> BeforeRetentionFenceForTestAsync { get; set; }
+        internal Func<Guid, CancellationToken, Task> AfterRetentionDiscoveryForTestAsync { get; set; }
 
         internal const string RetentionLockHolder = "__tickerq_retention__";
         private static readonly TickerStatus[] TerminalStatuses =
@@ -45,6 +58,74 @@ namespace TickerQ.MongoDB.Infrastructure
             _clock = clock;
             _lockHolder = optionsBuilder.ExecutionOwnerId;
             _schedulerOptions = optionsBuilder;
+            _graphFence = context.Database.GetCollection<BsonDocument>(
+                context.TimeTickers.CollectionNamespace.CollectionName + "_GraphFence");
+        }
+
+        // A directConnection=true client deliberately reports ClusterType.Standalone even when the
+        // selected server is a replica-set primary. ServerDescription.Type is the capability-bearing
+        // signal: only a fully discovered, genuine standalone is known not to support transactions.
+        private bool TransactionsKnownUnavailable
+        {
+            get
+            {
+                var servers = _context.Database.Client.Cluster.Description.Servers;
+                return servers.Count > 0 && servers.All(x => x.Type == ServerType.Standalone);
+            }
+        }
+
+        private static bool IsCanonicalTransactionsUnsupported(MongoCommandException exception)
+            => exception.Code == 20 &&
+               exception.Message.Contains(
+                   "Transaction numbers are only allowed on a replica set member or mongos",
+                   StringComparison.OrdinalIgnoreCase);
+
+        private async Task TouchGraphFenceAsync(IClientSessionHandle session, CancellationToken cancellationToken)
+        {
+            await _graphFence.UpdateOneAsync(
+                session,
+                Builders<BsonDocument>.Filter.Eq("_id", GraphFenceId),
+                Builders<BsonDocument>.Update.Inc("Version", 1L),
+                new UpdateOptions { IsUpsert = true },
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        // Every supported structural graph mutation writes the same durable epoch document in the
+        // transaction that performs the mutation. Retention writes it too. Mongo write conflicts then
+        // serialize both operations even though snapshot reads alone do not protect against phantoms.
+        // The document contains no expiring owner/claim: a process crash rolls the transaction back, so
+        // there is no claim to recover and old databases are initialized lazily/provisioned on startup.
+        private async Task<int> ExecuteGraphMutationAsync(
+            Func<IClientSessionHandle, CancellationToken, Task<int>> transactionalOperation,
+            Func<CancellationToken, Task<int>> standaloneOperation,
+            CancellationToken cancellationToken)
+        {
+            if (TransactionsKnownUnavailable)
+                return await standaloneOperation(cancellationToken).ConfigureAwait(false);
+
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await session.WithTransactionAsync(
+                    async (s, ct) =>
+                    {
+                        if (BeforeGraphMutationFenceForTestAsync != null)
+                            await BeforeGraphMutationFenceForTestAsync(ct).ConfigureAwait(false);
+                        await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                        if (AfterGraphMutationFenceForTestAsync != null)
+                            await AfterGraphMutationFenceForTestAsync(ct).ConfigureAwait(false);
+                        return await transactionalOperation(s, ct).ConfigureAwait(false);
+                    },
+                    GraphTransactionOptions,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+            {
+                // Retention itself fails closed on this topology, so preserving the historical standalone
+                // mutation behavior cannot race a chain delete.
+                return await standaloneOperation(cancellationToken).ConfigureAwait(false);
+            }
         }
 
         private DateTime? NextLeaseUntil(DateTime now)
@@ -323,6 +404,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var terminal = fb.In(x => x.Status, TerminalStatuses);
             var terminalOwnershipAvailable = fb.Or(
                 fb.Eq(x => x.AcquisitionToken, (Guid?)null),
+                fb.Ne(x => x.LockHolder, RetentionLockHolder),
                 fb.And(
                     fb.Eq(x => x.LockHolder, RetentionLockHolder),
                     fb.Lte(x => x.LeaseUntil, now)));
@@ -1252,10 +1334,9 @@ namespace TickerQ.MongoDB.Infrastructure
             // time chains this sweep. We never downgrade to a non-transactional chain delete.
             var client = _context.Database.Client;
 
-            // Deterministic pre-check: the topology is known after the root query above, so refuse up front on
-            // a standalone rather than partially deleting. The NotSupportedException catch below is a defensive
-            // backstop for topologies that only reveal the limitation when the transaction actually runs.
-            if (client.Cluster.Description.Type == ClusterType.Standalone)
+            // The root query has selected a server, so a genuine standalone can be refused up front. Do not use
+            // ClusterType here: directConnection=true reports Standalone even for a replica-set primary.
+            if (TransactionsKnownUnavailable)
                 return RetentionChainBatchResult.Empty;
 
             using var session = await client
@@ -1270,7 +1351,12 @@ namespace TickerQ.MongoDB.Infrastructure
                     deleted += await DeleteChainTransactionallyAsync(
                         session, root.Id, cutoffs, now, eligible, cancellationToken).ConfigureAwait(false);
                 }
-                catch (NotSupportedException)
+                catch (MongoException ex) when (ex.HasErrorLabel("TransientTransactionError"))
+                {
+                    // A supported graph mutation won the epoch write. Retain this chain for the sweep;
+                    // the next sweep will discover the mutation's committed topology from scratch.
+                }
+                catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
                 {
                     // Standalone topology: transactions are unsupported. Fail closed — retain every time
                     // chain this sweep rather than deleting any chain non-atomically.
@@ -1306,6 +1392,10 @@ namespace TickerQ.MongoDB.Infrastructure
             var committed = false;
             try
             {
+                if (BeforeRetentionFenceForTestAsync != null)
+                    await BeforeRetentionFenceForTestAsync(cancellationToken).ConfigureAwait(false);
+                await TouchGraphFenceAsync(session, cancellationToken).ConfigureAwait(false);
+
                 // Re-read the chain under the transaction snapshot, bounded to the cap.
                 var chainIds = await CollectBoundedChainIds(
                     session, rootId, cutoffs.MaxNodesPerChain, cancellationToken).ConfigureAwait(false);
@@ -1328,6 +1418,21 @@ namespace TickerQ.MongoDB.Infrastructure
                     await session.AbortTransactionAsync(cancellationToken).ConfigureAwait(false);
                     return 0; // ineligible descendant / concurrent mutation → retain whole
                 }
+
+                // The candidate must still be a root. Candidate discovery happened before the transaction;
+                // pinning this exact edge prevents a reparented candidate from being deleted as a root.
+                var rootStillRoot = await coll.CountDocumentsAsync(
+                    session,
+                    fb.And(fb.Eq(x => x.Id, rootId), fb.Eq(x => x.ParentId, (Guid?)null), eligible),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (rootStillRoot != 1)
+                {
+                    await session.AbortTransactionAsync(cancellationToken).ConfigureAwait(false);
+                    return 0;
+                }
+
+                if (AfterRetentionDiscoveryForTestAsync != null)
+                    await AfterRetentionDiscoveryForTestAsync(rootId, cancellationToken).ConfigureAwait(false);
 
                 var result = await coll.DeleteManyAsync(
                     session, fb.And(subtreeFilter, eligible),
@@ -1469,58 +1574,195 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public async Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
         {
-            var count = 0;
-            foreach (var t in tickers) count += await InsertWithChildren(t, null, cancellationToken).ConfigureAwait(false);
-            return count;
+            if (tickers == null || tickers.Length == 0) return 0;
+            return await ExecuteGraphMutationAsync(
+                async (session, ct) =>
+                {
+                    if (!await ReferencedParentsExistAsync(session, tickers, ct).ConfigureAwait(false))
+                        return 0;
+                    var count = 0;
+                    foreach (var ticker in tickers)
+                        count += await InsertWithChildren(session, ticker, null, ct).ConfigureAwait(false);
+                    return count;
+                },
+                async ct =>
+                {
+                    var count = 0;
+                    foreach (var ticker in tickers)
+                        count += await InsertWithChildren(null, ticker, null, ct).ConfigureAwait(false);
+                    return count;
+                },
+                cancellationToken).ConfigureAwait(false);
         }
 
-        private async Task<int> InsertWithChildren(TTimeTicker ticker, Guid? parentId, CancellationToken ct)
+        private async Task<int> InsertWithChildren(
+            IClientSessionHandle session, TTimeTicker ticker, Guid? parentId, CancellationToken ct)
         {
             if (parentId.HasValue) ticker.ParentId = parentId.Value;
-            await _context.TimeTickers.InsertOneAsync(ticker, cancellationToken: ct).ConfigureAwait(false);
+            if (session == null)
+                await _context.TimeTickers.InsertOneAsync(ticker, cancellationToken: ct).ConfigureAwait(false);
+            else
+                await _context.TimeTickers.InsertOneAsync(session, ticker, cancellationToken: ct).ConfigureAwait(false);
             var count = 1;
             if (ticker.Children != null)
             {
                 foreach (var child in ticker.Children)
-                    if (child is TTimeTicker c) count += await InsertWithChildren(c, ticker.Id, ct).ConfigureAwait(false);
+                    if (child is TTimeTicker c)
+                        count += await InsertWithChildren(session, c, ticker.Id, ct).ConfigureAwait(false);
             }
             return count;
         }
 
         public async Task<int> UpdateTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
         {
-            var count = 0;
-            foreach (var t in tickers) count += await ReplaceWithChildren(t, null, cancellationToken).ConfigureAwait(false);
-            return count;
+            if (tickers == null || tickers.Length == 0) return 0;
+            // Preserve historical upsert behavior for genuinely-new top-level rows, while remembering
+            // which rows existed when this mutation began. If retention wins and deletes one of those
+            // rows before this transaction wins the fence, do not resurrect it from a stale replacement.
+            var topLevelIds = tickers.Select(x => x.Id).Distinct().ToArray();
+            var requiredExistingIds = (await _context.TimeTickers
+                    .Find(Builders<TTimeTicker>.Filter.In(x => x.Id, topLevelIds))
+                    .Project(x => x.Id)
+                    .ToListAsync(cancellationToken).ConfigureAwait(false))
+                .ToHashSet();
+            return await ExecuteGraphMutationAsync(
+                async (session, ct) =>
+                {
+                    if (!await ReferencedParentsExistAsync(session, tickers, ct).ConfigureAwait(false))
+                        return 0;
+                    if (requiredExistingIds.Count > 0)
+                    {
+                        var stillExisting = await _context.TimeTickers.CountDocumentsAsync(
+                            session,
+                            Builders<TTimeTicker>.Filter.In(x => x.Id, requiredExistingIds),
+                            cancellationToken: ct).ConfigureAwait(false);
+                        if (stillExisting != requiredExistingIds.Count)
+                            return 0;
+                    }
+                    var count = 0;
+                    foreach (var ticker in tickers)
+                        count += await ReplaceWithChildren(session, ticker, null, ct).ConfigureAwait(false);
+                    return count;
+                },
+                async ct =>
+                {
+                    var count = 0;
+                    foreach (var ticker in tickers)
+                        count += await ReplaceWithChildren(null, ticker, null, ct).ConfigureAwait(false);
+                    return count;
+                },
+                cancellationToken).ConfigureAwait(false);
         }
 
-        private async Task<int> ReplaceWithChildren(TTimeTicker ticker, Guid? parentId, CancellationToken ct)
+        private async Task<int> ReplaceWithChildren(
+            IClientSessionHandle session, TTimeTicker ticker, Guid? parentId, CancellationToken ct)
         {
             if (parentId.HasValue) ticker.ParentId = parentId.Value;
-            var result = await _context.TimeTickers.ReplaceOneAsync(
-                Builders<TTimeTicker>.Filter.Eq(x => x.Id, ticker.Id),
-                ticker,
-                new ReplaceOptions { IsUpsert = true },
-                ct).ConfigureAwait(false);
+            var filter = Builders<TTimeTicker>.Filter.Eq(x => x.Id, ticker.Id);
+            var options = new ReplaceOptions { IsUpsert = true };
+            ReplaceOneResult result;
+            if (session == null)
+                result = await _context.TimeTickers.ReplaceOneAsync(filter, ticker, options, ct).ConfigureAwait(false);
+            else
+                result = await _context.TimeTickers.ReplaceOneAsync(session, filter, ticker, options, ct).ConfigureAwait(false);
             var count = (int)result.ModifiedCount + (result.UpsertedId is null ? 0 : 1);
             if (ticker.Children != null)
             {
                 foreach (var child in ticker.Children)
-                    if (child is TTimeTicker c) count += await ReplaceWithChildren(c, ticker.Id, ct).ConfigureAwait(false);
+                    if (child is TTimeTicker c)
+                        count += await ReplaceWithChildren(session, c, ticker.Id, ct).ConfigureAwait(false);
             }
             return count;
         }
 
+        // A mutation that attaches to an existing aggregate must prove its external parent still exists
+        // after winning the graph fence. If retention committed first, this check fails and the mutation
+        // returns zero rather than inserting/upserting an orphan under the deleted aggregate.
+        private async Task<bool> ReferencedParentsExistAsync(
+            IClientSessionHandle session, IEnumerable<TTimeTicker> roots, CancellationToken cancellationToken)
+        {
+            var suppliedIds = new HashSet<Guid>();
+            var referencedParents = new HashSet<Guid>();
+            void Visit(TTimeTicker node, Guid? imposedParent)
+            {
+                suppliedIds.Add(node.Id);
+                var parent = imposedParent ?? node.ParentId;
+                if (parent.HasValue) referencedParents.Add(parent.Value);
+                if (node.Children == null) return;
+                foreach (var child in node.Children)
+                    if (child is TTimeTicker typed) Visit(typed, node.Id);
+            }
+            foreach (var root in roots) Visit(root, null);
+            referencedParents.ExceptWith(suppliedIds);
+            if (referencedParents.Count == 0) return true;
+
+            var count = await _context.TimeTickers.CountDocumentsAsync(
+                session,
+                Builders<TTimeTicker>.Filter.In(x => x.Id, referencedParents),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return count == referencedParents.Count;
+        }
+
+        public async Task<int> ReplaceTimeTickerChainAsync(
+            Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
+        {
+            if (newRoot == null) throw new ArgumentNullException(nameof(newRoot));
+            if (TransactionsKnownUnavailable)
+                throw new NotSupportedException(
+                    "Atomic Mongo time-ticker chain replacement requires a replica set transaction.");
+
+            return await ExecuteGraphMutationAsync(
+                async (session, ct) =>
+                {
+                    var oldExists = await _context.TimeTickers.Find(
+                            session, Builders<TTimeTicker>.Filter.And(
+                                Builders<TTimeTicker>.Filter.Eq(x => x.Id, oldRootId),
+                                Builders<TTimeTicker>.Filter.Eq(x => x.ParentId, (Guid?)null)))
+                        .AnyAsync(ct).ConfigureAwait(false);
+                    if (!oldExists) return 0;
+
+                    var inserted = await InsertWithChildren(session, newRoot, null, ct).ConfigureAwait(false);
+                    var oldIds = await CollectBoundedChainIds(
+                        session, oldRootId, 1_000, ct).ConfigureAwait(false);
+                    if (oldIds == null)
+                        throw new InvalidOperationException("The original chain exceeds the safe replacement bound.");
+                    var deleted = await _context.TimeTickers.DeleteManyAsync(
+                        session,
+                        Builders<TTimeTicker>.Filter.In(x => x.Id, oldIds),
+                        cancellationToken: ct).ConfigureAwait(false);
+                    if (deleted.DeletedCount != oldIds.Count)
+                        throw new InvalidOperationException("The original chain changed during replacement.");
+                    return inserted;
+                },
+                _ => throw new NotSupportedException(
+                    "Atomic Mongo time-ticker chain replacement requires a replica set transaction."),
+                cancellationToken).ConfigureAwait(false);
+        }
+
         public async Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default)
         {
+            if (tickerIds == null || tickerIds.Length == 0) return 0;
+            return await ExecuteGraphMutationAsync(
+                (session, ct) => RemoveTimeTickersCoreAsync(session, tickerIds, ct),
+                ct => RemoveTimeTickersCoreAsync(null, tickerIds, ct),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<int> RemoveTimeTickersCoreAsync(
+            IClientSessionHandle session, IEnumerable<Guid> tickerIds, CancellationToken cancellationToken)
+        {
             var count = 0;
-            foreach (var id in tickerIds)
+            foreach (var id in tickerIds.Distinct())
             {
-                var allIds = await CollectDescendantIds(id, cancellationToken).ConfigureAwait(false);
+                var allIds = await CollectDescendantIds(session, id, cancellationToken).ConfigureAwait(false);
                 allIds.Add(id);
-                var result = await _context.TimeTickers.DeleteManyAsync(
-                    Builders<TTimeTicker>.Filter.In(x => x.Id, allIds),
-                    cancellationToken).ConfigureAwait(false);
+                var filter = Builders<TTimeTicker>.Filter.In(x => x.Id, allIds);
+                DeleteResult result;
+                if (session == null)
+                    result = await _context.TimeTickers.DeleteManyAsync(filter, cancellationToken).ConfigureAwait(false);
+                else
+                    result = await _context.TimeTickers.DeleteManyAsync(
+                        session, filter, cancellationToken: cancellationToken).ConfigureAwait(false);
                 count += (int)result.DeletedCount;
             }
             return count;
@@ -1855,7 +2097,8 @@ namespace TickerQ.MongoDB.Infrastructure
             return result;
         }
 
-        private async Task<HashSet<Guid>> CollectDescendantIds(Guid parentId, CancellationToken ct)
+        private async Task<HashSet<Guid>> CollectDescendantIds(
+            IClientSessionHandle session, Guid parentId, CancellationToken ct)
         {
             var collected = new HashSet<Guid>();
             var frontier = new Queue<Guid>();
@@ -1863,8 +2106,11 @@ namespace TickerQ.MongoDB.Infrastructure
             while (frontier.Count > 0)
             {
                 var id = frontier.Dequeue();
-                var childIds = await _context.TimeTickers
-                    .Find(Builders<TTimeTicker>.Filter.Eq(x => x.ParentId, (Guid?)id))
+                var filter = Builders<TTimeTicker>.Filter.Eq(x => x.ParentId, (Guid?)id);
+                var query = session == null
+                    ? _context.TimeTickers.Find(filter)
+                    : _context.TimeTickers.Find(session, filter);
+                var childIds = await query
                     .Project(x => x.Id)
                     .ToListAsync(ct)
                     .ConfigureAwait(false);

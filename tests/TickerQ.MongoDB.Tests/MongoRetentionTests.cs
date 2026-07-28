@@ -1,4 +1,7 @@
+using MongoDB.Bson;
 using MongoDB.Driver;
+using MongoDB.Driver.Core.Clusters;
+using MongoDB.Driver.Core.Servers;
 using TickerQ.MongoDB.Infrastructure;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -59,6 +62,26 @@ public sealed class MongoRetentionTests : IAsyncLifetime
     [Fact]
     public void SupportsRetention_IsTrue()
         => Assert.True(_fixture.Provider.SupportsRetention);
+
+    [Fact]
+    public async Task SharedFixture_SupportsTransactionsInDirectReplicaSetMode()
+    {
+        await _fixture.Database.RunCommandAsync<BsonDocument>(new BsonDocument("ping", 1));
+
+        var description = _fixture.Client.Cluster.Description;
+        var server = Assert.Single(description.Servers);
+        Assert.True(_fixture.UsesDirectConnection);
+        Assert.Equal(ClusterType.Standalone, description.Type);
+        Assert.Equal(ServerType.ReplicaSetPrimary, server.Type);
+        Assert.NotNull(server.LogicalSessionTimeout);
+        Assert.False(string.IsNullOrWhiteSpace(server.ReplicaSetConfig?.Name));
+
+        using var session = await _fixture.Client.StartSessionAsync();
+        session.StartTransaction();
+        await _fixture.Database.GetCollection<BsonDocument>("transaction_capability_probe")
+            .InsertOneAsync(session, new BsonDocument("_id", ObjectId.GenerateNewId()));
+        await session.AbortTransactionAsync();
+    }
 
     [Fact]
     public async Task BlockedOldestRoot_DoesNotStarveLaterEligibleRoot()
@@ -205,7 +228,7 @@ public sealed class MongoRetentionTests : IAsyncLifetime
         var acquired = await _fixture.Provider.AcquireTimeTickerOnDemandAsync(
             claimed.Id, _fixture.FixedNow, CancellationToken.None);
         Assert.NotNull(acquired);
-        Assert.Equal(TickerStatus.Queued, acquired!.Status);
+        Assert.Equal(TickerStatus.InProgress, acquired!.Status);
         Assert.NotEqual(TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>.RetentionLockHolder, acquired.LockHolder);
     }
 

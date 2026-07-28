@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 
 using System;
+using System.Data;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
@@ -415,17 +416,28 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         }
 
         // Deletes the arbitrary-depth chain rooted at <paramref name="rootId"/> only if EVERY node is
-        // eligible; otherwise the whole chain is retained. Concurrency behavior (bounded by the database's
-        // transaction semantics): the eligibility predicate is re-applied inside the delete transaction and
-        // the total deleted count is verified against the collected subtree size — if a node was reactivated
-        // between the pre-check and the delete, the transaction rolls back and the chain is left fully intact.
-        // A chain is therefore deleted whole or not at all; it is never partially erased.
+        // eligible; otherwise the whole chain is retained. Subtree discovery, topology/eligibility
+        // verification, and the whole-chain delete are performed as ONE serializable transaction so a
+        // concurrent supported graph mutation (reparent via UpdateTimeTickers, or a phantom insert via
+        // AddTimeTickers/UpdateTimeTickers) races cleanly: either the mutation commits first and the
+        // re-read inside the transaction observes the new topology (retaining the chain), or retention
+        // commits first and the mutation fails/retries against the deleted rows — never an orphaned or
+        // lost adopted child.
+        //
+        // Three guards make the atomicity provider-robust rather than relying on isolation alone:
+        //   1. The subtree is re-discovered INSIDE the transaction (not from a pre-transaction snapshot).
+        //   2. Each delete revalidates the EXACT parent edge (root: ParentId == null; descendant:
+        //      ParentId still points into the discovered set) so a child reparented OUT of the chain is
+        //      left intact; the total deleted count is verified against the subtree size (all-or-nothing).
+        //   3. A phantom guard rejects the chain if any row OUTSIDE the discovered set references a
+        //      discovered node as its parent (a child inserted/reparented INTO the chain in the window),
+        //      which would otherwise be orphaned by the delete.
         //
         // <paramref name="maxNodesPerChain"/> caps traversal: the BFS visits at most cap+1 nodes and stops
         // the instant the subtree is known to exceed the cap, retaining the oversized chain WHOLE and
         // building no delete/query predicate over an unbounded id set. This keeps every `IN (...)` collection
         // (frontier and level filters) bounded by the cap so no provider is handed an oversized SQL IN list.
-        private static async Task<int> DeleteChainIfFullyEligibleAsync(
+        private async Task<int> DeleteChainIfFullyEligibleAsync(
             TDbContext dbContext, DbSet<TTimeTicker> set, Guid rootId, int maxNodesPerChain,
             Expression<Func<TTimeTicker, bool>> eligible, CancellationToken cancellationToken)
         {
@@ -436,83 +448,121 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             if (maxNodesPerChain < 1)
                 return 0;
 
-            // BFS the subtree, collecting ids per depth tier so deletion can proceed deepest-first
-            // (the self-referencing FK is OnDelete(NoAction)). Bounded to cap+1 nodes: as soon as the
-            // subtree is proven larger than the cap the whole chain is retained, before any delete runs.
-            var levels = new List<List<Guid>> { new() { rootId } };
-            var frontier = levels[0];
-            var subtreeSize = 1;
-            while (frontier.Count > 0)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                // Nodes we may still admit before reaching the cap; take one extra to detect overflow.
-                var remaining = maxNodesPerChain - subtreeSize;
-                var childIds = await set.AsNoTracking()
-                    .Where(x => x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
-                    .Select(x => x.Id)
-                    .Take(remaining + 1)
-                    .ToListAsync(cancellationToken).ConfigureAwait(false);
-                if (childIds.Count == 0)
-                    break;
-                subtreeSize += childIds.Count;
-                if (subtreeSize > maxNodesPerChain)
-                    return 0; // oversized chain → retain whole; no delete/query predicate is built for it
-                levels.Add(childIds);
-                frontier = childIds;
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            var allIds = levels.SelectMany(l => l).ToList();
-
-            // Cheap pre-check outside any transaction: is EVERY node eligible? Short-circuits the common
-            // "not fully eligible" case without opening a transaction that would only roll back.
-            var eligibleCount = await set.AsNoTracking()
-                .Where(x => allIds.Contains(x.Id))
-                .Where(eligible)
-                .CountAsync(cancellationToken).ConfigureAwait(false);
-            if (eligibleCount != subtreeSize)
-                return 0; // any node ineligible → retain the whole chain
-
             var strategy = dbContext.Database.CreateExecutionStrategy();
-            try
+            return await strategy.ExecuteAsync(async () =>
             {
-                return await strategy.ExecuteInTransactionAsync(
-                    operation: async _ =>
+                await using var transaction = await dbContext.Database
+                    .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                    .ConfigureAwait(false);
+
+                // BFS the subtree INSIDE the transaction, collecting ids per depth tier so deletion can
+                // proceed deepest-first (the self-referencing FK is OnDelete(NoAction)). Bounded to cap+1
+                // nodes: as soon as the subtree exceeds the cap the whole chain is retained before any delete.
+                var levels = new List<List<Guid>> { new() { rootId } };
+                var allIds = new HashSet<Guid> { rootId };
+                var expectedParents = new Dictionary<Guid, Guid?> { [rootId] = null };
+                var frontier = levels[0];
+                var subtreeSize = 1;
+                while (frontier.Count > 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // Nodes we may still admit before reaching the cap; take one extra to detect overflow.
+                    var remaining = maxNodesPerChain - subtreeSize;
+                    var children = await set.AsNoTracking()
+                        .Where(x => x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                        .Select(x => new { x.Id, x.ParentId })
+                        .Take(remaining + 1)
+                        .ToListAsync(cancellationToken).ConfigureAwait(false);
+                    var childIds = children.Select(x => x.Id).ToList();
+                    if (childIds.Count == 0)
+                        break;
+                    subtreeSize += childIds.Count;
+                    if (subtreeSize > maxNodesPerChain)
                     {
-                        var deleted = 0;
-                        for (var i = levels.Count - 1; i >= 0; i--)
-                        {
-                            var levelIds = levels[i];
-                            if (levelIds.Count == 0)
-                                continue;
-                            deleted += await set
-                                .Where(x => levelIds.Contains(x.Id))
-                                .Where(eligible)
-                                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
-                        }
+                        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                        return 0; // oversized chain → retain whole; no delete predicate is built for it
+                    }
+                    levels.Add(childIds);
+                    frontier = childIds;
+                    foreach (var child in children)
+                    {
+                        allIds.Add(child.Id);
+                        expectedParents[child.Id] = child.ParentId;
+                    }
+                }
 
-                        // All-or-nothing: a mismatch means a node was reactivated/removed concurrently.
-                        if (deleted != subtreeSize)
-                            throw new RetentionChainConcurrentlyModifiedException();
+                cancellationToken.ThrowIfCancellationRequested();
+                var idList = allIds.ToList();
 
-                        return deleted;
-                    },
-                    verifySucceeded: async _ =>
-                        !await set.AsNoTracking().AnyAsync(x => x.Id == rootId, CancellationToken.None)
-                            .ConfigureAwait(false),
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
-            }
-            catch (RetentionChainConcurrentlyModifiedException)
-            {
-                // The transaction rolled back; the chain is fully retained. Skip it this sweep.
-                return 0;
-            }
+                // Every node must still be eligible (unowned, past cutoff) under this transaction.
+                var eligibleCount = await set.AsNoTracking()
+                    .Where(x => idList.Contains(x.Id))
+                    .Where(eligible)
+                    .CountAsync(cancellationToken).ConfigureAwait(false);
+                if (eligibleCount != subtreeSize)
+                {
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    return 0; // any node ineligible → retain the whole chain
+                }
+
+                // Deterministic test seam: interleave a concurrent graph mutation in the race window.
+                await OnChainDiscoveredForTestAsync(dbContext, rootId, idList, cancellationToken).ConfigureAwait(false);
+
+                // Phantom guard: reject if any row outside the discovered set now points at a discovered
+                // node as its parent — a child inserted/reparented INTO the chain in the window that the
+                // deepest-first delete would otherwise orphan. Also reconfirm the root is still a root.
+                var rootStillRoot = await set.AsNoTracking()
+                    .AnyAsync(x => x.Id == rootId && x.ParentId == null, cancellationToken)
+                    .ConfigureAwait(false);
+                var hasPhantomChild = await set.AsNoTracking()
+                    .AnyAsync(x => x.ParentId.HasValue && idList.Contains(x.ParentId.Value) && !idList.Contains(x.Id),
+                        cancellationToken).ConfigureAwait(false);
+                var currentEdges = await set.AsNoTracking()
+                    .Where(x => idList.Contains(x.Id))
+                    .Select(x => new { x.Id, x.ParentId })
+                    .ToListAsync(cancellationToken).ConfigureAwait(false);
+                var exactEdgesStillMatch = currentEdges.Count == subtreeSize
+                    && currentEdges.All(x => expectedParents.TryGetValue(x.Id, out var parentId)
+                        && x.ParentId == parentId);
+                if (!rootStillRoot || hasPhantomChild || !exactEdgesStillMatch)
+                {
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    return 0; // topology changed under us → retain the whole chain
+                }
+
+                // Delete deepest-first, revalidating BOTH eligibility AND the exact parent edge so a node
+                // reparented OUT of this chain (ParentId no longer points into the set) is left intact.
+                var deleted = 0;
+                for (var i = levels.Count - 1; i >= 0; i--)
+                {
+                    var levelIds = levels[i];
+                    if (levelIds.Count == 0)
+                        continue;
+                    deleted += await set
+                        .Where(x => levelIds.Contains(x.Id))
+                        .Where(eligible)
+                        .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                // All-or-nothing: a mismatch means a node was reparented/reactivated/removed concurrently.
+                if (deleted != subtreeSize)
+                {
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    return 0;
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return deleted;
+            }).ConfigureAwait(false);
         }
 
-        private sealed class RetentionChainConcurrentlyModifiedException : Exception
-        {
-        }
+        // Test seam: overridden in tests to deterministically interleave a concurrent graph mutation
+        // (reparent / phantom insert) at the exact point between subtree discovery+validation and the
+        // destructive chain delete. No-op in production.
+        protected internal virtual Task OnChainDiscoveredForTestAsync(
+            TDbContext dbContext, Guid rootId, IReadOnlyCollection<Guid> discoveredIds, CancellationToken cancellationToken)
+            => Task.CompletedTask;
 
         #endregion
 

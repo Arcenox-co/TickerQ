@@ -1,6 +1,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
+using MongoDB.Bson;
 using MongoDB.Driver;
 using TickerQ.MongoDB.Infrastructure;
 using TickerQ.Utilities.Entities;
@@ -20,6 +21,13 @@ namespace TickerQ.MongoDB.Indexes
 
         public async Task StartAsync(CancellationToken cancellationToken)
         {
+            var fence = _context.Database.GetCollection<BsonDocument>(
+                _context.TimeTickers.CollectionNamespace.CollectionName + "_GraphFence");
+            await fence.UpdateOneAsync(
+                Builders<BsonDocument>.Filter.Eq("_id", "time-ticker-graph"),
+                Builders<BsonDocument>.Update.SetOnInsert("Version", 0L),
+                new UpdateOptions { IsUpsert = true },
+                cancellationToken).ConfigureAwait(false);
             await CreateTimeTickerIndexes(cancellationToken).ConfigureAwait(false);
             await CreateCronTickerIndexes(cancellationToken).ConfigureAwait(false);
             await CreateCronOccurrenceIndexes(cancellationToken).ConfigureAwait(false);

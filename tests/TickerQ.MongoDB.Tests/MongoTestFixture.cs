@@ -17,14 +17,17 @@ namespace TickerQ.MongoDB.Tests;
 public class MongoTestFixture : IAsyncLifetime
 {
     public MongoDbContainer Container { get; } = new MongoDbBuilder("mongo:7")
+        .WithReplicaSet()
         .Build();
 
     public IMongoClient Client { get; private set; } = null!;
     public IMongoDatabase Database { get; private set; } = null!;
+    public bool UsesDirectConnection { get; private set; }
     public IMongoCollection<TimeTickerEntity> TimeTickers => _context.TimeTickers;
     public IMongoCollection<CronTickerEntity> CronTickers => _context.CronTickers;
     public IMongoCollection<CronTickerOccurrenceEntity<CronTickerEntity>> CronTickerOccurrences => _context.CronTickerOccurrences;
-    public ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity> Provider { get; private set; } = null!;
+    public ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity> Provider => ConcreteProvider;
+    internal TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity> ConcreteProvider { get; private set; } = null!;
     public ITickerClock Clock { get; private set; } = null!;
     public DateTime FixedNow { get; } = new(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc);
     public const string NodeId = "test-node-1";
@@ -43,7 +46,9 @@ public class MongoTestFixture : IAsyncLifetime
 
         TickerClassMaps.RegisterOnce<TimeTickerEntity, CronTickerEntity>();
 
-        Client = new MongoClient(Container.GetConnectionString());
+        var connectionString = Container.GetConnectionString();
+        UsesDirectConnection = MongoClientSettings.FromConnectionString(connectionString).DirectConnection == true;
+        Client = new MongoClient(connectionString);
         Database = Client.GetDatabase("tickerq_test");
         _context = new TickerMongoContext<TimeTickerEntity, CronTickerEntity>(Database, "ticker_");
 
@@ -51,7 +56,7 @@ public class MongoTestFixture : IAsyncLifetime
         Clock.UtcNow.Returns(FixedNow);
 
         Options = new SchedulerOptionsBuilder { NodeIdentifier = NodeId };
-        Provider = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(_context, Clock, Options);
+        ConcreteProvider = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(_context, Clock, Options);
 
         var provisioner = new TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity>(_context);
         await provisioner.StartAsync(CancellationToken.None);
