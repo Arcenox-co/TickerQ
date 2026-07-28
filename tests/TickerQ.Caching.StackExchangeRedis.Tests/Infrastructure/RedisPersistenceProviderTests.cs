@@ -146,6 +146,106 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     public void SupportsRetention_IsTrue()
         => Assert.True(_provider.SupportsRetention);
 
+    [Fact]
+    public async Task ReconcileRetentionIndexes_BackfillsMissingTimeAndOccurrenceIndexes()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Done);
+        ticker.ExecutedAt = _fixedNow.AddDays(-10);
+        SeedTimeTicker(ticker);
+        var cron = CreateCronTicker();
+        SeedCronTicker(cron);
+        var occurrence = CreateCronOccurrence(cron.Id, status: TickerStatus.Failed);
+        occurrence.ExecutedAt = _fixedNow.AddDays(-9);
+        SeedCronOccurrence(occurrence);
+
+        await ReconcileToCompletionAsync(batchSize: 1);
+
+        Assert.Contains(ticker.Id.ToString(), _sortedSets[$"{Prefix}:tt:retention:succeeded"].Values);
+        Assert.Contains(occurrence.Id.ToString(), _sortedSets[$"{Prefix}:co:retention:failed"].Values);
+    }
+
+    [Fact]
+    public async Task ReconcileRetentionIndexes_RepairsStaleEntryAndIsIdempotent()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Failed);
+        ticker.ExecutedAt = _fixedNow.AddDays(-10);
+        SeedTimeTicker(ticker);
+        AddSortedSetEntry($"{Prefix}:tt:retention:succeeded", ticker.Id, ticker.ExecutedAt.Value);
+
+        await ReconcileToCompletionAsync(batchSize: 10);
+        await ReconcileToCompletionAsync(batchSize: 10);
+
+        Assert.DoesNotContain(ticker.Id.ToString(), _sortedSets[$"{Prefix}:tt:retention:succeeded"].Values);
+        Assert.Equal(1, _sortedSets[$"{Prefix}:tt:retention:failed"].Values.Count(x => x == ticker.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task ReconcileRetentionIndexes_IsBoundedAndResumesFromPersistedProgress()
+    {
+        for (var i = 0; i < 3; i++)
+        {
+            var ticker = CreateTimeTicker(status: TickerStatus.Done);
+            ticker.ExecutedAt = _fixedNow.AddDays(-10).AddMinutes(i);
+            SeedTimeTicker(ticker);
+        }
+
+        var first = await _provider.ReconcileRetentionIndexesAsync(2, CancellationToken.None);
+        var second = await _provider.ReconcileRetentionIndexesAsync(2, CancellationToken.None);
+
+        Assert.InRange(first.Examined, 1, 2);
+        Assert.True(first.HasMore);
+        Assert.InRange(second.Examined, 1, 2);
+        Assert.Equal(3, _sortedSets[$"{Prefix}:tt:retention:succeeded"].Count);
+    }
+
+    [Fact]
+    public async Task ReconcileRetentionIndexes_HonorsCancellationAndExcludesChainedRoots()
+    {
+        var chained = CreateTimeTicker(status: TickerStatus.Done);
+        chained.ExecutedAt = _fixedNow.AddDays(-10);
+        chained.Children.Add(CreateTimeTicker(status: TickerStatus.Done));
+        SeedTimeTicker(chained);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _provider.ReconcileRetentionIndexesAsync(10, cancellation.Token));
+        await ReconcileToCompletionAsync(batchSize: 10);
+
+        Assert.False(_sortedSets.TryGetValue($"{Prefix}:tt:retention:succeeded", out var indexed) &&
+                     indexed.Values.Contains(chained.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task ReconcileRetentionIndexes_NeverDeletesCronDefinitions()
+    {
+        var cron = CreateCronTicker();
+        SeedCronTicker(cron);
+
+        await ReconcileToCompletionAsync(batchSize: 10);
+
+        Assert.NotNull(await _provider.GetCronTickerById(cron.Id, CancellationToken.None));
+    }
+
+    private async Task ReconcileToCompletionAsync(int batchSize)
+    {
+        for (var i = 0; i < 20; i++)
+        {
+            var result = await _provider.ReconcileRetentionIndexesAsync(batchSize, CancellationToken.None);
+            if (!result.HasMore)
+                return;
+        }
+
+        throw new InvalidOperationException("Redis retention reconciliation did not converge.");
+    }
+
+    private void AddSortedSetEntry(string key, Guid id, DateTime score)
+    {
+        if (!_sortedSets.TryGetValue(key, out var entries))
+            _sortedSets[key] = entries = new SortedList<double, string>();
+        entries[score.ToUniversalTime().Ticks] = id.ToString();
+    }
+
     #region IDatabase Mock Wiring
 
     private void SetupStringOperations()
@@ -332,6 +432,10 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                 var script = callInfo.ArgAt<string>(0);
                 var keys = callInfo.ArgAt<RedisKey[]>(1);
                 var argv = callInfo.ArgAt<RedisValue[]>(2);
+
+                if (script.Contains("retention index reconciliation", StringComparison.Ordinal))
+                    return SimulateRetentionReconciliation(keys, argv);
+
                 var entityKey = (string)keys[0];
 
                 if (!_store.TryGetValue(entityKey, out var json))
@@ -512,6 +616,90 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                     return RedisResult.Create((RedisValue)updated);
                 }
             });
+    }
+
+    private RedisResult SimulateRetentionReconciliation(RedisKey[] keys, RedisValue[] argv)
+    {
+        var phaseKey = (string)keys[2];
+        var cursorKey = (string)keys[3];
+        var phase = _store.GetValueOrDefault(phaseKey, "time");
+        var offset = int.TryParse(_store.GetValueOrDefault(cursorKey, "0"), out var parsed) ? parsed : 0;
+        var max = Rvi(argv[0]);
+        var idsKey = (string)(phase == "time" ? keys[0] : keys[1]);
+        var prefix = (string)(phase == "time" ? argv[1] : argv[2]);
+        var ids = _sets.GetValueOrDefault(idsKey, []).OrderBy(x => x, StringComparer.Ordinal).ToArray();
+        var selected = ids.Skip(offset).Take(max).ToArray();
+        var nextOffset = offset + selected.Length;
+
+        foreach (var id in selected)
+        {
+            var firstIndex = phase == "time" ? 4 : 8;
+            for (var i = firstIndex; i < firstIndex + 4; i++)
+                RemoveSortedSetMember((string)keys[i], id);
+
+            if (!_store.TryGetValue(prefix + id, out var raw))
+                continue;
+            using var doc = JsonDocument.Parse(raw);
+            var obj = doc.RootElement;
+            if (!obj.TryGetProperty("ExecutedAt", out var executed) || executed.ValueKind == JsonValueKind.Null ||
+                HasValue(obj, "AcquisitionToken") || HasValue(obj, "LeaseUntil") ||
+                phase == "time" && HasChildren(obj))
+                continue;
+
+            var status = obj.GetProperty("Status").GetInt32();
+            var indexOffset = status == Rvi(argv[3]) || status == Rvi(argv[4]) ? 0
+                : status == Rvi(argv[5]) ? 1
+                : status == Rvi(argv[6]) ? 2
+                : status == Rvi(argv[7]) ? 3 : -1;
+            if (indexOffset >= 0)
+                AddSortedSetEntry((string)keys[firstIndex + indexOffset], Guid.Parse(id), executed.GetDateTime());
+        }
+
+        var completed = false;
+        if (nextOffset >= ids.Length)
+        {
+            nextOffset = 0;
+            if (phase == "time")
+                phase = "occurrence";
+            else
+            {
+                phase = "time";
+                completed = true;
+            }
+        }
+        _store[phaseKey] = phase;
+        _store[cursorKey] = nextOffset.ToString();
+        return RedisResult.Create(new RedisValue[]
+        {
+            selected.Length,
+            completed ? 0 : 1,
+            $"{phase}:{nextOffset}"
+        });
+    }
+
+    private static bool HasValue(JsonElement obj, string property)
+        => obj.TryGetProperty(property, out var value) &&
+           value.ValueKind != JsonValueKind.Null &&
+           (value.ValueKind != JsonValueKind.String || !string.IsNullOrEmpty(value.GetString()));
+
+    private static bool HasChildren(JsonElement obj)
+    {
+        if (!obj.TryGetProperty("Children", out var children) || children.ValueKind == JsonValueKind.Null)
+            return false;
+        return children.ValueKind switch
+        {
+            JsonValueKind.Array => children.EnumerateArray().Any(),
+            JsonValueKind.Object => children.EnumerateObject().Any(),
+            _ => false
+        };
+    }
+
+    private void RemoveSortedSetMember(string key, string member)
+    {
+        if (!_sortedSets.TryGetValue(key, out var entries))
+            return;
+        foreach (var score in entries.Where(x => x.Value == member).Select(x => x.Key).ToArray())
+            entries.Remove(score);
     }
 
     private void SetupKeyOperations()

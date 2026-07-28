@@ -142,6 +142,14 @@ namespace TickerQ.Utilities.Interfaces
         bool SupportsRetention => false;
 
         /// <summary>
+        /// Repairs provider-specific retention indexes in one bounded, resumable step. Providers
+        /// without secondary retention indexes inherit the completed no-op for source compatibility.
+        /// </summary>
+        Task<RetentionIndexReconciliationResult> ReconcileRetentionIndexesAsync(
+            int batchSize, CancellationToken cancellationToken = default)
+            => Task.FromResult(RetentionIndexReconciliationResult.Completed);
+
+        /// <summary>
         /// Examines up to <paramref name="batchSize"/> candidate root chains starting strictly after
         /// <paramref name="cursor"/> (keyset ordering by <c>(ExecutedAt, Id)</c> ascending), deletes those
         /// that are fully eligible, and returns the rows removed, whether more candidates remain, and the

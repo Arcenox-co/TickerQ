@@ -24,14 +24,21 @@ namespace TickerQ.Caching.StackExchangeRedis.Tests.Infrastructure;
 /// </summary>
 public sealed class RedisRealScriptFixture : IAsyncLifetime
 {
-    public RedisContainer Container { get; } = new RedisBuilder().WithImage("redis:7").Build();
+    private readonly string? _externalConnection = Environment.GetEnvironmentVariable("TICKERQ_TEST_REDIS");
+    public RedisContainer? Container { get; private set; }
     public IConnectionMultiplexer Mux { get; private set; } = null!;
     public IDatabase Db { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
-        await Container.StartAsync();
-        Mux = await ConnectionMultiplexer.ConnectAsync(Container.GetConnectionString());
+        var connection = _externalConnection;
+        if (string.IsNullOrWhiteSpace(connection))
+        {
+            Container = new RedisBuilder().WithImage("redis:7").Build();
+            await Container.StartAsync();
+            connection = Container.GetConnectionString();
+        }
+        Mux = await ConnectionMultiplexer.ConnectAsync(connection);
         Db = Mux.GetDatabase();
     }
 
@@ -39,7 +46,8 @@ public sealed class RedisRealScriptFixture : IAsyncLifetime
     {
         if (Mux is not null)
             await Mux.DisposeAsync();
-        await Container.DisposeAsync();
+        if (Container is not null)
+            await Container.DisposeAsync();
     }
 }
 
@@ -241,6 +249,29 @@ public sealed class RedisRealScriptTests
     }
 
     [Fact]
+    public async Task Retention_UsesStrictCutoffAndBlocksOwnedRows_RealLua()
+    {
+        var cutoff = BaseNow.AddDays(-7);
+        var exactlyAtCutoff = NewIdleTicker();
+        exactlyAtCutoff.Status = TickerStatus.Done;
+        exactlyAtCutoff.ExecutedAt = cutoff;
+        var owned = NewIdleTicker();
+        owned.Status = TickerStatus.Done;
+        owned.ExecutedAt = cutoff.AddDays(-1);
+        owned.AcquisitionToken = Guid.NewGuid();
+        owned.LeaseUntil = BaseNow.AddMinutes(1);
+        await _provider.AddTimeTickers([exactlyAtCutoff, owned], CancellationToken.None);
+
+        var result = await _provider.DeleteEligibleTimeTickerChainsAsync(
+            new RetentionCutoffs(cutoff, null, null, null), 10,
+            RetentionCursor.Start, CancellationToken.None);
+
+        Assert.Equal(0, result.Deleted);
+        Assert.NotNull(await _provider.GetTimeTickerById(exactlyAtCutoff.Id, CancellationToken.None));
+        Assert.NotNull(await _provider.GetTimeTickerById(owned.Id, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Retention_DeletesOccurrenceButPreservesCronDefinition_RealLua()
     {
         var cron = new CronTickerEntity
@@ -273,6 +304,34 @@ public sealed class RedisRealScriptTests
         Assert.Equal(1, result.Deleted);
         Assert.NotNull(await _provider.GetCronTickerById(cron.Id, CancellationToken.None));
         Assert.Empty(await _provider.GetAllCronTickerOccurrences(_ => true, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RetentionReconciliation_BackfillsMissingIndexAndResumes_RealLua()
+    {
+        var tickers = Enumerable.Range(0, 3).Select(i =>
+        {
+            var ticker = NewIdleTicker();
+            ticker.Status = TickerStatus.Done;
+            ticker.ExecutedAt = BaseNow.AddDays(-10).AddMinutes(i);
+            return ticker;
+        }).ToArray();
+        await _provider.AddTimeTickers(tickers, CancellationToken.None);
+        foreach (var ticker in tickers)
+            await _db.SortedSetRemoveAsync(RedisKeyBuilder.TimeTickerRetentionSucceededKey, ticker.Id.ToString());
+
+        var first = await _provider.ReconcileRetentionIndexesAsync(1, CancellationToken.None);
+        Assert.True(first.HasMore);
+        Assert.Equal(1, first.Examined);
+        Assert.Contains("pending=", first.NextCursor);
+        for (var i = 0; i < 20; i++)
+        {
+            var result = await _provider.ReconcileRetentionIndexesAsync(1, CancellationToken.None);
+            if (!result.HasMore)
+                break;
+        }
+
+        Assert.Equal(3, await _db.SortedSetLengthAsync(RedisKeyBuilder.TimeTickerRetentionSucceededKey));
     }
 
     // -------------------------------------------------------------------------

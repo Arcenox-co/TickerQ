@@ -49,6 +49,12 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerQNotificationHubSender, NoOpTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
 
+            // Retention capability validation must be the first TickerQ hosted service so an
+            // unsupported provider fails before initialization, scheduler, or worker side effects.
+            // It remains absent when background services are disabled, preserving queue-only hosts.
+            if (optionInstance.RegisterBackgroundServices && optionInstance.JobRetention.IsEnabled)
+                services.AddHostedService<TickerQRetentionCapabilityValidator>();
+
             // Register the initializer hosted service BEFORE scheduler services
             // to guarantee seeding completes before the scheduler starts polling.
             // Registered as a singleton so UseTickerQ can resolve it to set the initialization flag.

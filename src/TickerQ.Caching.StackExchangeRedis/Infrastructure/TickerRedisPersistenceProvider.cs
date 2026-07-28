@@ -263,10 +263,52 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     #region Retention
     public bool SupportsRetention => true;
 
+    public async Task<RetentionIndexReconciliationResult> ReconcileRetentionIndexesAsync(
+        int batchSize, CancellationToken cancellationToken = default)
+    {
+        if (batchSize <= 0)
+            return RetentionIndexReconciliationResult.Completed;
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var result = await Db.ScriptEvaluateAsync(ReconcileRetentionIndexesScript,
+            [
+                TimeTickerIdsKey,
+                CronOccurrenceIdsKey,
+                RetentionReconciliationPhaseKey,
+                RetentionReconciliationCursorKey,
+                TimeTickerRetentionSucceededKey,
+                TimeTickerRetentionFailedKey,
+                TimeTickerRetentionCancelledKey,
+                TimeTickerRetentionSkippedKey,
+                CronOccurrenceRetentionSucceededKey,
+                CronOccurrenceRetentionFailedKey,
+                CronOccurrenceRetentionCancelledKey,
+                CronOccurrenceRetentionSkippedKey,
+                RetentionReconciliationPendingKey
+            ],
+            [
+                batchSize,
+                $"{Prefix}:tt:",
+                $"{Prefix}:co:",
+                (int)TickerStatus.Done,
+                (int)TickerStatus.DueDone,
+                (int)TickerStatus.Failed,
+                (int)TickerStatus.Cancelled,
+                (int)TickerStatus.Skipped
+            ]).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var values = (RedisResult[])result;
+        var examined = (int)(long)values[0];
+        var hasMore = (long)values[1] == 1;
+        return new RetentionIndexReconciliationResult(examined, hasMore, values[2].ToString());
+    }
+
     public async Task<RetentionChainBatchResult> DeleteEligibleTimeTickerChainsAsync(
         RetentionCutoffs cutoffs, int batchSize, RetentionCursor cursor,
         CancellationToken cancellationToken = default)
     {
+        await ReconcileRetentionIndexesAsync(batchSize, cancellationToken).ConfigureAwait(false);
         var candidates = await GetRetentionCandidatesAsync(
             true, cutoffs, batchSize + 1, cancellationToken).ConfigureAwait(false);
         var hasMore = candidates.Count > batchSize;
@@ -315,6 +357,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     public async Task<RetentionBatchResult> DeleteEligibleCronTickerOccurrencesAsync(
         RetentionCutoffs cutoffs, int batchSize, CancellationToken cancellationToken = default)
     {
+        await ReconcileRetentionIndexesAsync(batchSize, cancellationToken).ConfigureAwait(false);
         var candidates = await GetRetentionCandidatesAsync(
             false, cutoffs, batchSize + 1, cancellationToken).ConfigureAwait(false);
         var hasMore = candidates.Count > batchSize;
@@ -456,6 +499,101 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
 
     private sealed record RetentionCandidate(
         Guid Id, DateTime ExecutedAt, DateTime Cutoff, int FirstStatus, int SecondStatus);
+
+    // One atomic SSCAN step repairs every retention sorted-set membership from the authoritative
+    // JSON document and checkpoints phase/cursor in Redis. A completed occurrence pass resets to
+    // the time stream, so repeated sweeps are idempotent and also repair later crashes/stale writes.
+    // Chained roots deliberately fail closed until Redis persists child rows independently.
+    private const string ReconcileRetentionIndexesScript = """
+        -- retention index reconciliation
+        local phase = redis.call('GET', KEYS[3]) or 'time'
+        local cursor = redis.call('GET', KEYS[4]) or '0'
+        local idsKey = phase == 'time' and KEYS[1] or KEYS[2]
+        local prefix = phase == 'time' and ARGV[2] or ARGV[3]
+        local firstIndex = phase == 'time' and 5 or 9
+        local maxRecords = tonumber(ARGV[1])
+        local members = {}
+        local nextCursor = cursor
+        while #members < maxRecords and redis.call('LLEN', KEYS[13]) > 0 do
+            table.insert(members, redis.call('LPOP', KEYS[13]))
+        end
+        if #members == 0 then
+            local scan = redis.call('SSCAN', idsKey, cursor, 'COUNT', maxRecords)
+            nextCursor = scan[1]
+            for index, id in ipairs(scan[2]) do
+                if index <= maxRecords then table.insert(members, id)
+                else redis.call('RPUSH', KEYS[13], id) end
+            end
+        end
+
+        local function dateTimeTicks(value)
+            local year, month, day, hour, minute, second, fraction = string.match(
+                value, '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)')
+            if not year then return nil end
+            year, month, day = tonumber(year), tonumber(month), tonumber(day)
+            hour, minute, second = tonumber(hour), tonumber(minute), tonumber(second)
+            local priorYear = year - 1
+            local days = priorYear * 365 + math.floor(priorYear / 4)
+                - math.floor(priorYear / 100) + math.floor(priorYear / 400)
+            local beforeMonth = {0,31,59,90,120,151,181,212,243,273,304,334}
+            days = days + beforeMonth[month] + day - 1
+            if month > 2 and (year % 400 == 0 or (year % 4 == 0 and year % 100 ~= 0)) then
+                days = days + 1
+            end
+            fraction = string.sub((fraction or '') .. '0000000', 1, 7)
+            return days * 864000000000 + hour * 36000000000 + minute * 600000000
+                + second * 10000000 + tonumber(fraction)
+        end
+
+        for _, id in ipairs(members) do
+            for index = firstIndex, firstIndex + 3 do
+                redis.call('ZREM', KEYS[index], id)
+            end
+
+            local raw = redis.call('GET', prefix .. id)
+            if raw then
+                local ok, obj = pcall(cjson.decode, raw)
+                if ok then
+                    local eligible = obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null
+                        and (obj.AcquisitionToken == nil or obj.AcquisitionToken == cjson.null or obj.AcquisitionToken == '')
+                        and (obj.LeaseUntil == nil or obj.LeaseUntil == cjson.null or obj.LeaseUntil == '')
+                    if phase == 'time' and obj.Children ~= nil and obj.Children ~= cjson.null
+                        and next(obj.Children) ~= nil then
+                        eligible = false
+                    end
+
+                    if eligible then
+                        local status = tonumber(obj.Status)
+                        local offset = nil
+                        if status == tonumber(ARGV[4]) or status == tonumber(ARGV[5]) then offset = 0
+                        elseif status == tonumber(ARGV[6]) then offset = 1
+                        elseif status == tonumber(ARGV[7]) then offset = 2
+                        elseif status == tonumber(ARGV[8]) then offset = 3 end
+                        if offset ~= nil then
+                            local ticks = dateTimeTicks(obj.ExecutedAt)
+                            if ticks ~= nil then
+                                redis.call('ZADD', KEYS[firstIndex + offset], ticks, id)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        local completed = 0
+        if nextCursor == '0' and redis.call('LLEN', KEYS[13]) == 0 then
+            if phase == 'time' then
+                phase = 'occurrence'
+            else
+                phase = 'time'
+                completed = 1
+            end
+        end
+        redis.call('SET', KEYS[3], phase)
+        redis.call('SET', KEYS[4], nextCursor)
+        return {#members, completed == 0 and 1 or 0,
+            phase .. ':' .. nextCursor .. ':pending=' .. redis.call('LLEN', KEYS[13])}
+        """;
 
     private const string DeleteTimeTickerForRetentionScript = """
         local raw = redis.call('GET', KEYS[1])

@@ -22,6 +22,9 @@ internal static class RedisKeyBuilder
     internal const string CronOccurrenceRetentionFailedKey = $"{Prefix}:co:retention:failed";
     internal const string CronOccurrenceRetentionCancelledKey = $"{Prefix}:co:retention:cancelled";
     internal const string CronOccurrenceRetentionSkippedKey = $"{Prefix}:co:retention:skipped";
+    internal const string RetentionReconciliationPhaseKey = $"{Prefix}:retention:reconcile:phase";
+    internal const string RetentionReconciliationCursorKey = $"{Prefix}:retention:reconcile:cursor";
+    internal const string RetentionReconciliationPendingKey = $"{Prefix}:retention:reconcile:pending";
 
     internal static string TimeTickerKey(Guid id) => $"{Prefix}:tt:{id}";
     internal static string CronKey(Guid id) => $"{Prefix}:cron:{id}";
