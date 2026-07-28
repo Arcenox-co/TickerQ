@@ -31,6 +31,7 @@ namespace TickerQ.MongoDB.Indexes
             await CreateTimeTickerIndexes(cancellationToken).ConfigureAwait(false);
             await CreateCronTickerIndexes(cancellationToken).ConfigureAwait(false);
             await CreateCronOccurrenceIndexes(cancellationToken).ConfigureAwait(false);
+            await CreateResultIndexes(cancellationToken).ConfigureAwait(false);
         }
 
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -93,5 +94,12 @@ namespace TickerQ.MongoDB.Indexes
             };
             return _context.CronTickerOccurrences.Indexes.CreateManyAsync(models, ct);
         }
+
+        private Task CreateResultIndexes(CancellationToken ct)
+            => _context.TickerResults.Indexes.CreateOneAsync(
+                new CreateIndexModel<BsonDocument>(
+                    Builders<BsonDocument>.IndexKeys.Ascending("Kind"),
+                    new CreateIndexOptions { Name = "IX_TickerResult_Kind" }),
+                cancellationToken: ct);
     }
 }

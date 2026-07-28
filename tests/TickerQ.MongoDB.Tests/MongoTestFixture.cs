@@ -1,3 +1,4 @@
+using MongoDB.Bson;
 using MongoDB.Driver;
 using NSubstitute;
 using Testcontainers.MongoDb;
@@ -72,9 +73,14 @@ public class MongoTestFixture : IAsyncLifetime
         await TimeTickers.DeleteManyAsync(Builders<TimeTickerEntity>.Filter.Empty);
         await CronTickers.DeleteManyAsync(Builders<CronTickerEntity>.Filter.Empty);
         await CronTickerOccurrences.DeleteManyAsync(Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Filter.Empty);
+        await Database.GetCollection<BsonDocument>("ticker_TickerResults")
+            .DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
     }
 
     /// <summary>Internal helper to instantiate a fresh provisioner for idempotency tests.</summary>
     internal TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity> NewProvisioner()
         => new(_context);
+
+    internal TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity> NewProvider()
+        => new(_context, Clock, Options);
 }

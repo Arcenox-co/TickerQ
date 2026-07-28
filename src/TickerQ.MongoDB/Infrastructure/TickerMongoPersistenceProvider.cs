@@ -38,6 +38,7 @@ namespace TickerQ.MongoDB.Infrastructure
         internal Func<CancellationToken, Task> AfterGraphMutationFenceForTestAsync { get; set; }
         internal Func<CancellationToken, Task> BeforeRetentionFenceForTestAsync { get; set; }
         internal Func<Guid, CancellationToken, Task> AfterRetentionDiscoveryForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> AfterResultMutationForTestAsync { get; set; }
 
         internal const string RetentionLockHolder = "__tickerq_retention__";
         private static readonly TickerStatus[] TerminalStatuses =
@@ -138,6 +139,185 @@ namespace TickerQ.MongoDB.Infrastructure
                (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
                 functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                     or TickerStatus.Cancelled or TickerStatus.Skipped);
+
+        private const int MaxResultPayloadBytes = 1024 * 1024;
+        private const string TimeResultKind = "time";
+        private const string CronOccurrenceResultKind = "cron-occurrence";
+
+        public bool SupportsResultPublication => true;
+
+        private static BsonBinaryData ResultId(Guid id)
+            => new(id, GuidRepresentation.Standard);
+
+        private static void ValidateResult(TickerResultEnvelope envelope)
+        {
+            envelope.EnsureSupportedVersion();
+            if (envelope.PayloadLength > MaxResultPayloadBytes)
+                throw new ArgumentOutOfRangeException(
+                    nameof(envelope), envelope.PayloadLength,
+                    $"Ticker result payloads cannot exceed {MaxResultPayloadBytes} bytes.");
+        }
+
+        private static BsonDocument ToResultDocument(
+            Guid id, string kind, TickerResultEnvelope envelope)
+        {
+            ValidateResult(envelope);
+            var document = new BsonDocument
+            {
+                ["_id"] = ResultId(id),
+                ["Kind"] = kind,
+                ["Payload"] = new BsonBinaryData(envelope.ToPayloadArray()),
+                ["Version"] = envelope.Version,
+                ["MediaType"] = envelope.MediaType
+            };
+            if (envelope.ContractId != null) document["ContractId"] = envelope.ContractId;
+            if (envelope.ContractType != null) document["ContractType"] = envelope.ContractType;
+            return document;
+        }
+
+        private async Task StoreOrClearResultAsync(
+            IClientSessionHandle session, Guid id, string kind,
+            TickerResultEnvelope envelope, CancellationToken cancellationToken)
+        {
+            var filter = Builders<BsonDocument>.Filter.Eq("_id", ResultId(id));
+            if (envelope == null)
+            {
+                await _context.TickerResults.DeleteOneAsync(
+                    session, filter, new DeleteOptions(), cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            await _context.TickerResults.ReplaceOneAsync(
+                session, filter, ToResultDocument(id, kind, envelope),
+                new ReplaceOptions { IsUpsert = true }, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<TickerResultEnvelope> GetResultAsync(
+            Guid id, string expectedKind, CancellationToken cancellationToken)
+        {
+            var document = await _context.TickerResults.Find(
+                    Builders<BsonDocument>.Filter.Eq("_id", ResultId(id)))
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (document == null
+                || !document.TryGetValue("Kind", out var kind) || !kind.IsString || kind.AsString != expectedKind
+                || !document.TryGetValue("Payload", out var payload) || !payload.IsBsonBinaryData
+                || !document.TryGetValue("Version", out var version) || !version.IsInt32
+                || version.AsInt32 != TickerResultEnvelope.CurrentVersion
+                || !document.TryGetValue("MediaType", out var mediaType) || !mediaType.IsString
+                || string.IsNullOrWhiteSpace(mediaType.AsString))
+                return null;
+
+            var bytes = payload.AsBsonBinaryData.Bytes;
+            if (bytes.Length > MaxResultPayloadBytes)
+                return null;
+
+            static bool OptionalString(BsonDocument source, string name, out string value)
+            {
+                value = null;
+                if (!source.TryGetValue(name, out var field) || field.IsBsonNull) return true;
+                if (!field.IsString || string.IsNullOrWhiteSpace(field.AsString)) return false;
+                value = field.AsString;
+                return true;
+            }
+
+            if (!OptionalString(document, "ContractId", out var contractId)
+                || !OptionalString(document, "ContractType", out var contractType))
+                return null;
+
+            return new TickerResultEnvelope(
+                bytes, version.AsInt32, mediaType.AsString, contractId, contractType);
+        }
+
+        public Task<TickerResultEnvelope> GetTimeTickerResultAsync(
+            Guid id, CancellationToken cancellationToken = default)
+            => GetResultAsync(id, TimeResultKind, cancellationToken);
+
+        public Task<TickerResultEnvelope> GetCronTickerOccurrenceResultAsync(
+            Guid id, CancellationToken cancellationToken = default)
+            => GetResultAsync(id, CronOccurrenceResultKind, cancellationToken);
+
+        public async Task<bool> CommitSuccessfulTickerAsync(
+            InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+        {
+            if (functionContext == null)
+                throw new ArgumentNullException(nameof(functionContext));
+            if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+                functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
+                !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+                throw new InvalidOperationException(
+                    "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
+
+            if (functionContext.ResultEnvelope != null)
+                ValidateResult(functionContext.ResultEnvelope);
+            if (TransactionsKnownUnavailable)
+                throw new NotSupportedException(
+                    "Atomic Mongo result publication requires a replica set transaction.");
+
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await session.WithTransactionAsync(
+                    async (s, ct) =>
+                    {
+                        await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                        var now = _clock.UtcNow;
+                        UpdateResult acknowledged;
+                        string resultKind;
+
+                        if (functionContext.Type == TickerType.CronTickerOccurrence)
+                        {
+                            var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+                            var filter = functionContext.AcquisitionToken.HasValue
+                                ? fb.And(
+                                    fb.Eq(x => x.Id, functionContext.TickerId),
+                                    fb.Eq(x => x.LockHolder, _lockHolder),
+                                    fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
+                                : fb.Where(_ => false);
+                            acknowledged = await _context.CronTickerOccurrences.UpdateOneAsync(
+                                s, filter,
+                                MongoUpdateBuilders.BuildCronOccurrenceUpdate<TCronTicker>(
+                                    functionContext, now, NextLeaseUntil(now)),
+                                cancellationToken: ct).ConfigureAwait(false);
+                            resultKind = CronOccurrenceResultKind;
+                        }
+                        else
+                        {
+                            var fb = Builders<TTimeTicker>.Filter;
+                            var filter = fb.And(
+                                fb.Eq(x => x.Id, functionContext.TickerId),
+                                fb.Ne(x => x.LockHolder, RetentionLockHolder));
+                            if (functionContext.ParentId == null)
+                                filter &= functionContext.AcquisitionToken.HasValue
+                                    ? fb.And(
+                                        fb.Eq(x => x.LockHolder, _lockHolder),
+                                        fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
+                                    : fb.Where(_ => false);
+                            acknowledged = await _context.TimeTickers.UpdateOneAsync(
+                                s, filter,
+                                MongoUpdateBuilders.BuildTimeTickerUpdate<TTimeTicker>(
+                                    functionContext, now, NextLeaseUntil(now)),
+                                cancellationToken: ct).ConfigureAwait(false);
+                            resultKind = TimeResultKind;
+                        }
+
+                        if (acknowledged.MatchedCount != 1)
+                            return false;
+
+                        await StoreOrClearResultAsync(
+                            s, functionContext.TickerId, resultKind,
+                            functionContext.ResultEnvelope, ct).ConfigureAwait(false);
+                        if (AfterResultMutationForTestAsync != null)
+                            await AfterResultMutationForTestAsync(ct).ConfigureAwait(false);
+                        return true;
+                    }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+            {
+                throw new NotSupportedException(
+                    "Atomic Mongo result publication requires a replica set transaction.", ex);
+            }
+        }
 
         // ===================================================================
         // Time Ticker — core scheduler methods
@@ -304,12 +484,8 @@ namespace TickerQ.MongoDB.Infrastructure
                     : fb.Where(_ => false);
             }
 
-            var result = await _context.TimeTickers
-                .UpdateOneAsync(
-                    filter,
-                    update,
-                    cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
+            var result = await _context.TimeTickers.UpdateOneAsync(
+                filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
             return (int)result.ModifiedCount;
         }
 
@@ -428,10 +604,35 @@ namespace TickerQ.MongoDB.Infrastructure
                 .Set(x => x.ElapsedTime, 0L)
                 .Set(x => x.StaleRestartCount, 0)
                 .Set(x => x.UpdatedAt, now);
-            var row = await _context.TimeTickers.FindOneAndUpdateAsync(
-                filter, update,
-                new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After },
-                cancellationToken).ConfigureAwait(false);
+            if (TransactionsKnownUnavailable)
+                throw new NotSupportedException(
+                    "Atomic Mongo ticker restart requires a replica set transaction.");
+
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            TTimeTicker row;
+            try
+            {
+                row = await session.WithTransactionAsync(
+                    async (s, ct) =>
+                    {
+                        await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                        var acquired = await _context.TimeTickers.FindOneAndUpdateAsync(
+                            s, filter, update,
+                            new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After },
+                            ct).ConfigureAwait(false);
+                        if (acquired == null) return null;
+                        await _context.TickerResults.DeleteOneAsync(
+                            s, Builders<BsonDocument>.Filter.Eq("_id", ResultId(id)),
+                            new DeleteOptions(), ct).ConfigureAwait(false);
+                        return acquired;
+                    }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+            {
+                throw new NotSupportedException(
+                    "Atomic Mongo ticker restart requires a replica set transaction.", ex);
+            }
             if (row == null) return null;
 
             var byParent = await LoadChildrenLookup([row.Id], cancellationToken).ConfigureAwait(false);
@@ -503,10 +704,40 @@ namespace TickerQ.MongoDB.Infrastructure
 
             if (orphanIds.Length > 0)
             {
-                await occSet.DeleteManyAsync(
-                    Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.In(x => x.CronTickerId, orphanIds),
-                    cancellationToken).ConfigureAwait(false);
-                await cronSet.DeleteManyAsync(fb.In(x => x.Id, orphanIds), cancellationToken).ConfigureAwait(false);
+                var occurrenceFilter = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter
+                    .In(x => x.CronTickerId, orphanIds);
+                var occurrenceIds = await occSet.Find(occurrenceFilter)
+                    .Project(x => x.Id).ToListAsync(cancellationToken).ConfigureAwait(false);
+                var resultFilter = Builders<BsonDocument>.Filter.In(
+                    "_id", occurrenceIds.Select(ResultId));
+
+                if (TransactionsKnownUnavailable)
+                {
+                    await occSet.DeleteManyAsync(occurrenceFilter, cancellationToken).ConfigureAwait(false);
+                    if (occurrenceIds.Count > 0)
+                        await _context.TickerResults.DeleteManyAsync(
+                            resultFilter, cancellationToken).ConfigureAwait(false);
+                    await cronSet.DeleteManyAsync(
+                        fb.In(x => x.Id, orphanIds), cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    using var session = await _context.Database.Client
+                        .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                    await session.WithTransactionAsync(
+                        async (s, ct) =>
+                        {
+                            await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                            await occSet.DeleteManyAsync(
+                                s, occurrenceFilter, cancellationToken: ct).ConfigureAwait(false);
+                            if (occurrenceIds.Count > 0)
+                                await _context.TickerResults.DeleteManyAsync(
+                                    s, resultFilter, cancellationToken: ct).ConfigureAwait(false);
+                            await cronSet.DeleteManyAsync(
+                                s, fb.In(x => x.Id, orphanIds), cancellationToken: ct).ConfigureAwait(false);
+                            return true;
+                        }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+                }
             }
 
             // Match only SEEDED rows (non-empty InitIdentifier). A user/dashboard-created
@@ -795,12 +1026,8 @@ namespace TickerQ.MongoDB.Infrastructure
                     : fb.Where(_ => false);
             }
 
-            await _context.CronTickerOccurrences
-                .UpdateOneAsync(
-                    filter,
-                    update,
-                    cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
+            await _context.CronTickerOccurrences.UpdateOneAsync(
+                filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
         public async Task ReleaseAcquiredCronTickerOccurrences(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
@@ -1124,18 +1351,48 @@ namespace TickerQ.MongoDB.Infrastructure
                 timeFilters.Eq(x => x.OnStale, StaleAction.Restart),
                 timeFilters.Lt(x => x.StaleRestartCount, maxStaleRestarts));
 
-            var restartTimeResult = await _context.TimeTickers.UpdateManyAsync(
-                restartTime,
-                Builders<TTimeTicker>.Update
-                    .Set(x => x.Status, TickerStatus.Idle)
-                    .Set(x => x.LockHolder, (string)null)
-                    .Set(x => x.LockedAt, (DateTime?)null)
-                    .Set(x => x.LeaseUntil, (DateTime?)null)
+            var restartTimeUpdate = Builders<TTimeTicker>.Update
+                .Set(x => x.Status, TickerStatus.Idle)
+                .Set(x => x.LockHolder, (string)null)
+                .Set(x => x.LockedAt, (DateTime?)null)
+                .Set(x => x.LeaseUntil, (DateTime?)null)
                 .Set(x => x.AcquisitionToken, (Guid?)null)
-                    .Inc(x => x.StaleRestartCount, 1)
-                    .Set(x => x.UpdatedAt, now),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-            result.RestartedTimeTickers = (int)restartTimeResult.ModifiedCount;
+                .Inc(x => x.StaleRestartCount, 1)
+                .Set(x => x.UpdatedAt, now);
+            if (TransactionsKnownUnavailable)
+            {
+                var restartIds = await _context.TimeTickers.Find(restartTime)
+                    .Project(x => x.Id).ToListAsync(cancellationToken).ConfigureAwait(false);
+                var restartTimeResult = await _context.TimeTickers.UpdateManyAsync(
+                    restartTime, restartTimeUpdate,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (restartIds.Count > 0)
+                    await _context.TickerResults.DeleteManyAsync(
+                        Builders<BsonDocument>.Filter.In("_id", restartIds.Select(ResultId)),
+                        cancellationToken).ConfigureAwait(false);
+                result.RestartedTimeTickers = (int)restartTimeResult.ModifiedCount;
+            }
+            else
+            {
+                using var restartSession = await _context.Database.Client
+                    .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                result.RestartedTimeTickers = await restartSession.WithTransactionAsync(
+                    async (s, ct) =>
+                    {
+                        await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                        var restartIds = await _context.TimeTickers.Find(s, restartTime)
+                            .Project(x => x.Id).ToListAsync(ct).ConfigureAwait(false);
+                        var restarted = await _context.TimeTickers.UpdateManyAsync(
+                            s, restartTime, restartTimeUpdate,
+                            cancellationToken: ct).ConfigureAwait(false);
+                        if (restartIds.Count > 0)
+                            await _context.TickerResults.DeleteManyAsync(
+                                s,
+                                Builders<BsonDocument>.Filter.In("_id", restartIds.Select(ResultId)),
+                                cancellationToken: ct).ConfigureAwait(false);
+                        return (int)restarted.ModifiedCount;
+                    }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            }
 
             var cancelTimeResult = await _context.TimeTickers.UpdateManyAsync(
                 staleTime,
@@ -1179,18 +1436,46 @@ namespace TickerQ.MongoDB.Infrastructure
                     occurrenceFilters.Eq(x => x.LeaseUntil, staleRow.LeaseUntil),
                     occurrenceFilters.Eq(x => x.LockHolder, staleRow.LockHolder),
                     occurrenceFilters.Eq(x => x.StaleRestartCount, staleRow.StaleRestartCount));
-                var restartOccurrenceResult = await _context.CronTickerOccurrences.UpdateOneAsync(
-                    restartOccurrenceFilter,
-                    Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
-                        .Set(x => x.Status, TickerStatus.Idle)
-                        .Set(x => x.LockHolder, (string)null)
-                        .Set(x => x.LockedAt, (DateTime?)null)
-                        .Set(x => x.LeaseUntil, (DateTime?)null)
-                .Set(x => x.AcquisitionToken, (Guid?)null)
-                        .Inc(x => x.StaleRestartCount, 1)
-                        .Set(x => x.UpdatedAt, now),
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
-                result.RestartedCronOccurrences += (int)restartOccurrenceResult.ModifiedCount;
+                var restartOccurrenceUpdate = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
+                    .Set(x => x.Status, TickerStatus.Idle)
+                    .Set(x => x.LockHolder, (string)null)
+                    .Set(x => x.LockedAt, (DateTime?)null)
+                    .Set(x => x.LeaseUntil, (DateTime?)null)
+                    .Set(x => x.AcquisitionToken, (Guid?)null)
+                    .Inc(x => x.StaleRestartCount, 1)
+                    .Set(x => x.UpdatedAt, now);
+                int restartedCount;
+                if (TransactionsKnownUnavailable)
+                {
+                    var restarted = await _context.CronTickerOccurrences.UpdateOneAsync(
+                        restartOccurrenceFilter, restartOccurrenceUpdate,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                    restartedCount = (int)restarted.ModifiedCount;
+                    if (restartedCount == 1)
+                        await _context.TickerResults.DeleteOneAsync(
+                            Builders<BsonDocument>.Filter.Eq("_id", ResultId(staleRow.Id)),
+                            cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    using var restartSession = await _context.Database.Client
+                        .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                    restartedCount = await restartSession.WithTransactionAsync(
+                        async (s, ct) =>
+                        {
+                            await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                            var restarted = await _context.CronTickerOccurrences.UpdateOneAsync(
+                                s, restartOccurrenceFilter, restartOccurrenceUpdate,
+                                cancellationToken: ct).ConfigureAwait(false);
+                            if (restarted.ModifiedCount == 1)
+                                await _context.TickerResults.DeleteOneAsync(
+                                    s,
+                                    Builders<BsonDocument>.Filter.Eq("_id", ResultId(staleRow.Id)),
+                                    new DeleteOptions(), ct).ConfigureAwait(false);
+                            return (int)restarted.ModifiedCount;
+                        }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+                }
+                result.RestartedCronOccurrences += restartedCount;
             }
 
             var cancelOccurrenceResult = await _context.CronTickerOccurrences.UpdateManyAsync(
@@ -1443,6 +1728,11 @@ namespace TickerQ.MongoDB.Infrastructure
                     return 0; // concurrent delete/mutation → retain whole
                 }
 
+                await _context.TickerResults.DeleteManyAsync(
+                    session,
+                    Builders<BsonDocument>.Filter.In("_id", chainIds.Select(ResultId)),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+
                 await session.CommitTransactionAsync(cancellationToken).ConfigureAwait(false);
                 committed = true;
                 return (int)result.DeletedCount;
@@ -1517,9 +1807,30 @@ namespace TickerQ.MongoDB.Infrastructure
             if (candidates.Count == 0)
                 return RetentionBatchResult.Empty;
 
-            var result = await coll.DeleteManyAsync(
-                fb.And(fb.In(x => x.Id, candidates), eligible), cancellationToken).ConfigureAwait(false);
-            return new RetentionBatchResult((int)result.DeletedCount, hasMore);
+            var rowFilter = fb.And(fb.In(x => x.Id, candidates), eligible);
+            var resultFilter = Builders<BsonDocument>.Filter.In("_id", candidates.Select(ResultId));
+            if (TransactionsKnownUnavailable)
+            {
+                var standalone = await coll.DeleteManyAsync(
+                    rowFilter, cancellationToken).ConfigureAwait(false);
+                await _context.TickerResults.DeleteManyAsync(
+                    resultFilter, cancellationToken).ConfigureAwait(false);
+                return new RetentionBatchResult((int)standalone.DeletedCount, hasMore);
+            }
+
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            var deleted = await session.WithTransactionAsync(
+                async (s, ct) =>
+                {
+                    await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                    var result = await coll.DeleteManyAsync(
+                        s, rowFilter, cancellationToken: ct).ConfigureAwait(false);
+                    await _context.TickerResults.DeleteManyAsync(
+                        s, resultFilter, cancellationToken: ct).ConfigureAwait(false);
+                    return (int)result.DeletedCount;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            return new RetentionBatchResult(deleted, hasMore);
         }
 
         // ===================================================================
@@ -1732,6 +2043,10 @@ namespace TickerQ.MongoDB.Infrastructure
                         cancellationToken: ct).ConfigureAwait(false);
                     if (deleted.DeletedCount != oldIds.Count)
                         throw new InvalidOperationException("The original chain changed during replacement.");
+                    await _context.TickerResults.DeleteManyAsync(
+                        session,
+                        Builders<BsonDocument>.Filter.In("_id", oldIds.Select(ResultId)),
+                        cancellationToken: ct).ConfigureAwait(false);
                     return inserted;
                 },
                 _ => throw new NotSupportedException(
@@ -1763,6 +2078,12 @@ namespace TickerQ.MongoDB.Infrastructure
                 else
                     result = await _context.TimeTickers.DeleteManyAsync(
                         session, filter, cancellationToken: cancellationToken).ConfigureAwait(false);
+                var resultFilter = Builders<BsonDocument>.Filter.In("_id", allIds.Select(ResultId));
+                if (session == null)
+                    await _context.TickerResults.DeleteManyAsync(resultFilter, cancellationToken).ConfigureAwait(false);
+                else
+                    await _context.TickerResults.DeleteManyAsync(
+                        session, resultFilter, cancellationToken: cancellationToken).ConfigureAwait(false);
                 count += (int)result.DeletedCount;
             }
             return count;
@@ -1878,10 +2199,31 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public async Task<int> RemoveCronTickerOccurrences(Guid[] cronTickerOccurrences, CancellationToken cancellationToken)
         {
-            var result = await _context.CronTickerOccurrences.DeleteManyAsync(
-                Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.In(x => x.Id, cronTickerOccurrences),
-                cancellationToken).ConfigureAwait(false);
-            return (int)result.DeletedCount;
+            if (cronTickerOccurrences == null || cronTickerOccurrences.Length == 0) return 0;
+            var ids = cronTickerOccurrences.Distinct().ToArray();
+            var rowFilter = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.In(x => x.Id, ids);
+            var resultFilter = Builders<BsonDocument>.Filter.In("_id", ids.Select(ResultId));
+
+            if (TransactionsKnownUnavailable)
+            {
+                var standalone = await _context.CronTickerOccurrences.DeleteManyAsync(
+                    rowFilter, cancellationToken).ConfigureAwait(false);
+                await _context.TickerResults.DeleteManyAsync(resultFilter, cancellationToken).ConfigureAwait(false);
+                return (int)standalone.DeletedCount;
+            }
+
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            return await session.WithTransactionAsync(
+                async (s, ct) =>
+                {
+                    await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                    var result = await _context.CronTickerOccurrences.DeleteManyAsync(
+                        s, rowFilter, cancellationToken: ct).ConfigureAwait(false);
+                    await _context.TickerResults.DeleteManyAsync(
+                        s, resultFilter, cancellationToken: ct).ConfigureAwait(false);
+                    return (int)result.DeletedCount;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
