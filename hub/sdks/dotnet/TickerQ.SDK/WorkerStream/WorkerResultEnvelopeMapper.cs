@@ -1,5 +1,4 @@
 using Google.Protobuf;
-using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
 using TickerQ.Worker.V1;
 
@@ -36,24 +35,25 @@ internal static class WorkerResultEnvelopeMapper
 
     internal static ExecutionResult CreateExecutionResult(
         string requestId,
-        InternalFunctionContext function,
+        TickerWorkerExecutionResult outcome,
         bool cancelled)
     {
-        ArgumentNullException.ThrowIfNull(function);
+        ArgumentNullException.ThrowIfNull(outcome);
 
-        var success = !cancelled && function.Status is TickerStatus.Done or TickerStatus.DueDone;
+        // Stream cancellation is authoritative even if the function raced to a successful return.
+        var success = !cancelled && outcome.Success;
         var result = new ExecutionResult
         {
             RequestId = requestId ?? string.Empty,
             Success = success,
-            Cancelled = cancelled,
-            Error = success ? string.Empty : function.ExceptionDetails ?? (cancelled
+            Cancelled = cancelled || outcome.Cancelled,
+            Error = success ? string.Empty : outcome.Error ?? (cancelled || outcome.Cancelled
                 ? "Cancelled by dashboard"
                 : "Function execution failed")
         };
 
-        if (success && function.ResultEnvelope is not null)
-            result.Result = ToProto(function.ResultEnvelope);
+        if (success && outcome.ResultEnvelope is not null)
+            result.Result = ToProto(outcome.ResultEnvelope);
 
         return result;
     }

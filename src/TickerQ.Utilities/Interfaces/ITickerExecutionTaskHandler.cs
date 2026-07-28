@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Models;
@@ -7,6 +8,16 @@ namespace TickerQ.Utilities.Interfaces
     public interface ITickerExecutionTaskHandler
     {
         Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Executes one remotely dispatched worker function, including its retry policy, without
+        /// performing scheduler lifecycle persistence. The scheduler remains the sole authority that
+        /// maps the immutable terminal outcome onto its acquired, generation-fenced context.
+        /// </summary>
+        Task<TickerWorkerExecutionResult> ExecuteWorkerTaskAsync(
+            InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
+            => Task.FromException<TickerWorkerExecutionResult>(new NotSupportedException(
+                "This execution handler does not support the worker-only execution primitive."));
 
         /// <summary>
         /// Overload for callers that registered the ticker with the cancellation manager at

@@ -101,12 +101,15 @@ public sealed class ParentResultPropagationTests : IDisposable
     }
 
     private async Task<InternalFunctionContext> BuildOwnedContext(
-        Guid id, TickerFunctionDelegate del, Guid? parentId = null, int retries = 0, int[] retryIntervals = null)
+        Guid id, TickerFunctionDelegate del, Guid? parentId = null, int retries = 0,
+        int[] retryIntervals = null, bool onDemand = false)
     {
         // Acquire through the provider so the row is InProgress and owned by this provider's holder,
         // giving the root terminal write a matching acquisition token to win fencing.
-        var acquired = await _provider.AcquireImmediateTimeTickersAsync(new[] { id }, CancellationToken.None);
-        var token = acquired[0].AcquisitionToken;
+        var token = onDemand
+            ? (await _provider.AcquireTimeTickerOnDemandAsync(id, _now, CancellationToken.None)).AcquisitionToken
+            : (await _provider.AcquireImmediateTimeTickersAsync(new[] { id }, CancellationToken.None))[0]
+                .AcquisitionToken;
 
         return new InternalFunctionContext
         {
@@ -167,6 +170,22 @@ public sealed class ParentResultPropagationTests : IDisposable
         await Run(ctx);
 
         Assert.Equal(TickerStatus.Done, ctx.Status);
+        Assert.Null(await _provider.GetTimeTickerResultAsync(id));
+    }
+
+    [Fact]
+    public async Task SuccessfulRerunWithExplicitResultAbsence_ClearsOldResult()
+    {
+        var id = await AddOwnedTicker();
+        await Run(await BuildOwnedContext(
+            id, PublishDelegate(new ResultPayload { Value = 42, Label = "old" })));
+        Assert.NotNull(await _provider.GetTimeTickerResultAsync(id));
+
+        var rerun = await BuildOwnedContext(
+            id, (_, _, _) => Task.CompletedTask, onDemand: true);
+        await Run(rerun);
+
+        Assert.Equal(TickerStatus.Done, rerun.Status);
         Assert.Null(await _provider.GetTimeTickerResultAsync(id));
     }
 

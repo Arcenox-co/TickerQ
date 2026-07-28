@@ -170,18 +170,19 @@ public sealed class WorkerResultEnvelopeMapperTests
     [InlineData(TickerStatus.DueDone, true, true)]
     [InlineData(TickerStatus.Failed, false, false)]
     [InlineData(TickerStatus.Cancelled, false, false)]
-    [InlineData(TickerStatus.InProgress, false, false)]
+    [InlineData(TickerStatus.Skipped, false, false)]
     public void CreateExecutionResult_IncludesEnvelopeOnlyForFinalSuccess(
         TickerStatus status, bool success, bool expectEnvelope)
     {
-        var function = new InternalFunctionContext
-        {
-            Status = status,
-            ResultEnvelope = new TickerResultEnvelope(
+        var outcome = new TickerWorkerExecutionResult(
+            status,
+            status is TickerStatus.Done or TickerStatus.DueDone ? null : "terminal failure",
+            new TickerResultEnvelope(
                 System.Text.Encoding.UTF8.GetBytes("null"), 1, "application/json", "contract", "Example.Result")
-        };
+        );
 
-        var result = WorkerResultEnvelopeMapper.CreateExecutionResult("request", function, cancelled: status == TickerStatus.Cancelled);
+        var result = WorkerResultEnvelopeMapper.CreateExecutionResult(
+            "request", outcome, cancelled: status == TickerStatus.Cancelled);
 
         Assert.Equal(success, result.Success);
         Assert.Equal(expectEnvelope, result.Result is not null);
@@ -190,20 +191,39 @@ public sealed class WorkerResultEnvelopeMapperTests
     }
 
     [Fact]
+    public void WorkerOutcome_RejectsNonTerminalStatus()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new TickerWorkerExecutionResult(TickerStatus.InProgress, null, null));
+    }
+
+    [Fact]
     public void CreateExecutionResult_FinalSuccessfulRetryWithoutResult_OmitsEarlierAttemptResult()
     {
         // Core resets its per-attempt sink before every retry (covered by
         // ParentResultPropagationTests). The transport must preserve the resulting absence.
-        var function = new InternalFunctionContext
-        {
-            Status = TickerStatus.Done,
-            ResultEnvelope = null
-        };
+        var outcome = new TickerWorkerExecutionResult(TickerStatus.Done, null, null);
 
         var result = WorkerResultEnvelopeMapper.CreateExecutionResult(
-            "request", function, cancelled: false);
+            "request", outcome, cancelled: false);
 
         Assert.True(result.Success);
+        Assert.Null(result.Result);
+    }
+
+    [Fact]
+    public void CreateExecutionResult_StreamCancellationDominatesSuccessfulOutcome()
+    {
+        var outcome = new TickerWorkerExecutionResult(
+            TickerStatus.Done,
+            null,
+            new TickerResultEnvelope(ByteString.CopyFromUtf8("null").ToByteArray(), 1, "application/json"));
+
+        var result = WorkerResultEnvelopeMapper.CreateExecutionResult(
+            "request", outcome, cancelled: true);
+
+        Assert.False(result.Success);
+        Assert.True(result.Cancelled);
         Assert.Null(result.Result);
     }
 }

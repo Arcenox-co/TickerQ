@@ -22,11 +22,24 @@ internal static class WorkerResultEnvelopeMapper
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(context);
-        if (result.Cancelled || !result.Success || result.Result is null)
+        if (result.Cancelled || !result.Success)
             return;
 
+        // A successful legacy response with no result field is an explicit absence, not "leave
+        // whatever was staged before". Reset for absence so an absent final response clears any
+        // older envelope while remaining distinct from a present JSON null envelope.
+        var sink = context.ResultSink ??= new TickerResultSink();
+        if (result.Result is null)
+        {
+            sink.Reset();
+            return;
+        }
+
+        // Validate/convert before mutating the sink so malformed transport data fails closed
+        // without erasing a previously staged value.
         var envelope = FromProto(result.Result);
-        (context.ResultSink ??= new TickerResultSink()).Set(envelope);
+        sink.Reset();
+        sink.Set(envelope);
     }
 
     internal static void ValidateAndStageResult(ExecutionResult result, TickerFunctionContext context)

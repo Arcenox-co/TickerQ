@@ -409,6 +409,26 @@ internal sealed class WorkerStreamHostedService : BackgroundService
 
     private async Task RunExecuteFunctionInBackgroundAsync(ExecuteFunction req, Guid tickerId, CancellationToken ct)
     {
+        var result = await ExecuteFunctionAsync(req, tickerId, ct).ConfigureAwait(false);
+
+        try
+        {
+            await SendAsync(new WorkerEvent { ExecutionResult = result }, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to send ExecutionResult for {RequestId}", req.RequestId);
+        }
+    }
+
+    /// <summary>
+    /// Executes one scheduler command through the worker-only Core primitive and maps its immutable
+    /// terminal outcome to the stream response. Kept as one testable command boundary so tests prove
+    /// the hosted worker never falls back to the lifecycle-persisting scheduler primitive.
+    /// </summary>
+    internal async Task<ExecutionResult> ExecuteFunctionAsync(
+        ExecuteFunction req, Guid tickerId, CancellationToken ct)
+    {
         ExecutionResult result;
         // Per-execution CTS — looked up by tickerId in _runningCts so a
         // CancelExecution arriving on the worker stream can signal this CTS,
@@ -427,10 +447,6 @@ internal sealed class WorkerStreamHostedService : BackgroundService
 
             await using var scope = _serviceProvider.CreateAsyncScope();
             var taskHandler = scope.ServiceProvider.GetRequiredService<ITickerExecutionTaskHandler>();
-
-            _logger.LogInformation(
-                "[DBG] ExecuteFunction running: ticker={TickerId} retries={Retries} intervals=[{Intervals}]",
-                tickerId, req.Retries, string.Join(",", req.RetryIntervalsSeconds));
 
             var function = new InternalFunctionContext
             {
@@ -466,12 +482,15 @@ internal sealed class WorkerStreamHostedService : BackgroundService
             try
             {
                 using var _ = TickerExecutionScope.Push(tickerId, (TickerType)req.Type, bareFunctionName);
-                await taskHandler.ExecuteTaskAsync(function, req.IsDue, executionCts.Token).ConfigureAwait(false);
+                var outcome = await taskHandler.ExecuteWorkerTaskAsync(
+                    function, req.IsDue, executionCts.Token).ConfigureAwait(false);
+                result = WorkerResultEnvelopeMapper.CreateExecutionResult(
+                    req.RequestId, outcome, executionCts.IsCancellationRequested);
             }
-            finally { semaphore?.Release(); }
-
-            result = WorkerResultEnvelopeMapper.CreateExecutionResult(
-                req.RequestId, function, executionCts.IsCancellationRequested);
+            finally
+            {
+                semaphore?.Release();
+            }
         }
         catch (OperationCanceledException) when (executionCts.IsCancellationRequested)
         {
@@ -486,14 +505,7 @@ internal sealed class WorkerStreamHostedService : BackgroundService
             _runningCts.TryRemove(tickerId, out _);
         }
 
-        try
-        {
-            await SendAsync(new WorkerEvent { ExecutionResult = result }, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to send ExecutionResult for {RequestId}", req.RequestId);
-        }
+        return result;
     }
 
     private async Task HandleTriggerResyncAsync(TriggerResync req, CancellationToken ct)

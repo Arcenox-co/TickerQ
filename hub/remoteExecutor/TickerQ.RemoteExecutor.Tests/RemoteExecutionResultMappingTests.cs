@@ -69,7 +69,7 @@ public sealed class RemoteExecutionResultMappingTests
     }
 
     [Fact]
-    public void StageSuccessfulResult_DoesNotStageFailureOrAbsentResult()
+    public void StageSuccessfulResult_DoesNotStageFailureOrLegacyAbsentResult()
     {
         var failed = NewContext();
         WorkerResultEnvelopeMapper.StageSuccessfulResult(
@@ -79,7 +79,25 @@ public sealed class RemoteExecutionResultMappingTests
         var absent = NewContext();
         WorkerResultEnvelopeMapper.StageSuccessfulResult(
             new ExecutionResult { Success = true }, absent);
-        Assert.Null(GetInternal(absent, "ResultSink"));
+        var absentSink = GetInternal(absent, "ResultSink");
+        Assert.NotNull(absentSink);
+        Assert.False((bool)GetProperty(absentSink, "HasResult")!);
+    }
+
+    [Fact]
+    public void StageSuccessfulResult_LegacyAbsenceClearsPreviouslyStagedEnvelope()
+    {
+        var context = NewContext();
+        WorkerResultEnvelopeMapper.StageSuccessfulResult(
+            new ExecutionResult { Success = true, Result = ProtoEnvelope("null") }, context);
+
+        WorkerResultEnvelopeMapper.StageSuccessfulResult(
+            new ExecutionResult { Success = true }, context);
+
+        var sink = GetInternal(context, "ResultSink");
+        Assert.NotNull(sink);
+        Assert.False((bool)GetProperty(sink, "HasResult")!);
+        Assert.Null(GetProperty(sink, "Envelope"));
     }
 
     [Fact]

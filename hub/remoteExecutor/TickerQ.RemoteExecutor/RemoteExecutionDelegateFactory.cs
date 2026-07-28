@@ -126,8 +126,6 @@ internal static class RemoteExecutionDelegateFactory
 
             var payload = await loader.LoadPayloadAsync(context.Id, context.Type, ct).ConfigureAwait(false);
 
-            Console.WriteLine($"[DBG-DLG] Dispatching {context.FunctionName} ({context.Id}): retries={context.Retries} intervals=[{(context.RetryIntervals == null ? "null" : string.Join(",", context.RetryIntervals))}]");
-
             var execute = CreateExecuteFunction(context, payload);
 
             var dispatchStart = DateTimeOffset.UtcNow;
