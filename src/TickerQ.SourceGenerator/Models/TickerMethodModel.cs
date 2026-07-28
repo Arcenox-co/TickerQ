@@ -36,5 +36,11 @@ namespace TickerQ.SourceGenerator.Models
         public string SchemaJson { get; set; }
         public string DefaultExampleJson { get; set; }
         public Location DiagnosticLocation { get; set; }
+
+        // Optional result contract declared by TickerFunctionAttribute.ResultType.
+        public ITypeSymbol ResultType { get; set; }
+        public string ResultTypeFullName { get; set; }
+        public string ResultSchemaJson { get; set; }
+        public bool HasValidResultContract { get; set; }
     }
 }

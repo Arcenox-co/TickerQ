@@ -131,5 +131,21 @@ namespace TickerQ.SourceGenerator.Validation
             DiagnosticSeverity.Warning,
             true
         );
+
+        public static readonly DiagnosticDescriptor InvalidResultContract = new DiagnosticDescriptor(
+            "TQ014",
+            "Invalid result contract",
+            "The result contract for function '{0}' must be a closed, non-void CLR type",
+            "TickerQ.SourceGenerator",
+            DiagnosticSeverity.Error,
+            true);
+
+        public static readonly DiagnosticDescriptor ResultContractReturnTypeMismatch = new DiagnosticDescriptor(
+            "TQ015",
+            "Result contract does not match method return type",
+            "The declared result contract '{1}' for function '{0}' does not match returned type '{2}'. Return the declared type directly or through Task/ValueTask.",
+            "TickerQ.SourceGenerator",
+            DiagnosticSeverity.Error,
+            true);
     }
 }

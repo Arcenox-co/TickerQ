@@ -24,6 +24,10 @@ public class SampleJobs
     [TickerFunction("ReflectionFree_IncludedAccessorJob")]
     public Task IncludedAccessorJobAsync(TickerFunctionContext<IncludedAccessorRequest> context)
         => Task.CompletedTask;
+
+    [TickerFunction("ReflectionFree_ResultJob", ResultType = typeof(JobResult))]
+    public ValueTask<JobResult> ResultJobAsync(TickerFunctionContext context)
+        => ValueTask.FromResult(new JobResult("aot-result", 42));
 }
 
 // Approach 2: Interface-based (new) — registered via app.MapTicker<T>()
@@ -40,6 +44,8 @@ public record OrderRequest(string OrderId, decimal Amount, OrderCustomer? Custom
 
 public record OrderCustomer(string Email, string? DisplayName = null);
 
+public record JobResult(string Value, int Count);
+
 public class IncludedAccessorRequest
 {
     [JsonInclude]
@@ -55,6 +61,7 @@ public class IncludedAccessorRequest
 [JsonSerializable(typeof(OrderRequest))]
 [JsonSerializable(typeof(OrderCustomer))]
 [JsonSerializable(typeof(IncludedAccessorRequest))]
+[JsonSerializable(typeof(JobResult))]
 internal partial class TickerQRequestJsonContext : JsonSerializerContext;
 
 public class ProcessOrderJob : ITickerFunction<OrderRequest>

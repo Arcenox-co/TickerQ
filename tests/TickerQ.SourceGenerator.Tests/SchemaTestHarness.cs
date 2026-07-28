@@ -20,9 +20,13 @@ namespace TickerQ.Utilities.Base
     public class TickerFunctionAttribute : System.Attribute
     {
         public TickerFunctionAttribute(string functionName, string cronExpression = null, int taskPriority = 0, int maxConcurrency = 0) { }
+        public System.Type ResultType { get; set; }
     }
 
-    public class TickerFunctionContext { }
+    public class TickerFunctionContext
+    {
+        public void SetResult<T>(T value, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo, TickerQ.Utilities.Models.TickerResultContract contract) { }
+    }
     public class TickerFunctionContext<T> : TickerFunctionContext { public T Request { get; } }
 }
 
@@ -63,16 +67,30 @@ namespace TickerQ.Utilities.Models
             TickerQ.Utilities.Enums.TickerTaskPriority priority = TickerQ.Utilities.Enums.TickerTaskPriority.Normal,
             string cronExpression = null,
             int contractVersion = 1,
-            TickerRequestContract request = null)
+            TickerRequestContract request = null,
+            TickerResultContract result = null)
         {
             FunctionName = functionName; Priority = priority; CronExpression = cronExpression;
-            ContractVersion = contractVersion; Request = request;
+            ContractVersion = contractVersion; Request = request; Result = result;
         }
         public string FunctionName { get; }
         public TickerQ.Utilities.Enums.TickerTaskPriority Priority { get; }
         public string CronExpression { get; }
         public int ContractVersion { get; }
         public TickerRequestContract Request { get; }
+        public TickerResultContract Result { get; }
+    }
+
+    public sealed class TickerResultContract
+    {
+        public TickerResultContract(string typeName, string mediaType = ""application/json"", int contractVersion = 1, string schemaDialect = ""https://json-schema.org/draft/2020-12/schema"", string schemaJson = null)
+        {
+            TypeName = typeName; MediaType = mediaType; ContractVersion = contractVersion; SchemaJson = schemaJson;
+        }
+        public string TypeName { get; }
+        public string MediaType { get; }
+        public int ContractVersion { get; }
+        public string SchemaJson { get; }
     }
 }
 
@@ -92,6 +110,10 @@ namespace TickerQ.Utilities
         public static void RegisterRequestTypeInfoResolver(
             System.Collections.Generic.IDictionary<string, (System.Type, System.Func<System.Text.Json.JsonSerializerOptions, System.Text.Json.Serialization.Metadata.JsonTypeInfo>)> t) { }
         public static System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> GetRequestTypeInfo<T>(string functionName) => default;
+        public static void RegisterResultTypeInfoResolver(
+            System.Collections.Generic.IDictionary<string, (System.Type, System.Func<System.Text.Json.JsonSerializerOptions, System.Text.Json.Serialization.Metadata.JsonTypeInfo>)> t) { }
+        public static System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> GetResultTypeInfo<T>(string functionName) => default;
+        public static TickerQ.Utilities.Models.TickerResultContract GetResultContract(string functionName) => default;
         public static void RegisterDescriptors(
             System.Collections.Generic.Dictionary<string, TickerQ.Utilities.Models.TickerFunctionDescriptor> d, string origin = null) { }
     }

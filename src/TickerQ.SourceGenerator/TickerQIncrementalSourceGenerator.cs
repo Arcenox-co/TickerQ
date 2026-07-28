@@ -118,6 +118,7 @@ namespace TickerQ.SourceGenerator
                     usedFunctionNames, productionContext);
 
                 TickerFunctionValidator.ValidateMethodParameters(methodDecl, methodSymbol, productionContext);
+                ValidateResultContract(method, methodSymbol, productionContext);
 
                 methods.Add(method);
             }
@@ -136,6 +137,7 @@ namespace TickerQ.SourceGenerator
                 return;
 
             EmitRequestSchemas(methods, productionContext);
+            EmitResultSchemas(methods);
 
             var source = FactoryGenerator.Generate(effectiveNamespace, methods, constructors);
             var formatted = SourceGeneratorUtilities.FormatCode(source);
@@ -180,6 +182,39 @@ namespace TickerQ.SourceGenerator
                         DiagnosticDescriptors.UnsupportedRequestSchema, location,
                         method.FunctionName, result.Reason));
                 }
+            }
+        }
+
+        private static void ValidateResultContract(
+            TickerMethodModel method,
+            IMethodSymbol methodSymbol,
+            SourceProductionContext productionContext)
+        {
+            if (method.ResultType == null || method.HasValidResultContract)
+                return;
+
+            var invalidType = method.ResultType.SpecialType == SpecialType.System_Void
+                || method.ResultType is INamedTypeSymbol named && named.IsUnboundGenericType;
+            productionContext.ReportDiagnostic(Diagnostic.Create(
+                invalidType
+                    ? DiagnosticDescriptors.InvalidResultContract
+                    : DiagnosticDescriptors.ResultContractReturnTypeMismatch,
+                method.DiagnosticLocation ?? Location.None,
+                method.FunctionName,
+                method.ResultType.ToDisplayString(),
+                methodSymbol.ReturnType.ToDisplayString()));
+        }
+
+        private static void EmitResultSchemas(List<TickerMethodModel> methods)
+        {
+            foreach (var method in methods)
+            {
+                if (!method.HasValidResultContract)
+                    continue;
+
+                var result = Generation.Schema.JsonSchemaEmitter.EmitResult(method.ResultType);
+                if (result.Supported)
+                    method.ResultSchemaJson = result.SchemaJson;
             }
         }
 

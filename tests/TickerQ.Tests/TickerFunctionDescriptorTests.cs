@@ -64,6 +64,66 @@ public class TickerFunctionDescriptorTests
         Assert.Empty(contract.Examples);
     }
 
+    [Fact]
+    public void ResultContract_CanonicalizesSchema_AndDescriptorVersionControlsFingerprint()
+    {
+        var first = new TickerResultContract(
+            "Jobs.Result",
+            schemaJson: "{\"type\":\"object\",\"properties\":{\"b\":{\"type\":\"string\"},\"a\":{\"type\":\"integer\"}}}");
+        var reordered = new TickerResultContract(
+            "Jobs.Result",
+            schemaJson: "{ \"properties\": { \"a\": { \"type\": \"integer\" }, \"b\": { \"type\": \"string\" } }, \"type\": \"object\" }");
+
+        Assert.Equal(first, reordered);
+        Assert.Equal(first.Fingerprint, reordered.Fingerprint);
+        Assert.Equal(first.Fingerprint, first.ContractId);
+        Assert.StartsWith("sha256:", first.ContractId, StringComparison.Ordinal);
+        Assert.Equal(first.Schema!.Value.GetRawText(), reordered.Schema!.Value.GetRawText());
+
+        var descriptor = new TickerFunctionDescriptor("Jobs.Result", contractVersion: 7, result: first);
+
+        Assert.Equal(7, descriptor.Result!.ContractVersion);
+        Assert.NotEqual(first.Fingerprint, descriptor.Result.Fingerprint);
+        Assert.Equal(descriptor.Result.Fingerprint, descriptor.Result.ContractId);
+        Assert.NotEqual(first.ContractId, descriptor.Result.ContractId);
+    }
+
+    [Fact]
+    public void ResultContract_ConflictingEmbeddedSchemaDialect_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => new TickerResultContract(
+            "Jobs.Result",
+            schemaJson: "{\"$schema\":\"https://json-schema.org/draft-07/schema\",\"type\":\"object\"}"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResultContract_BlankTypeName_Throws(string typeName)
+    {
+        Assert.Throws<ArgumentException>(() => new TickerResultContract(typeName));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResultContract_BlankMediaType_Throws(string mediaType)
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new TickerResultContract("Result", mediaType: mediaType));
+    }
+
+    [Fact]
+    public void ResultContract_MatchesNodeRequiredFalseGoldenVector()
+    {
+        var contract = new TickerResultContract("Result", schemaJson: "{\"type\":\"object\"}");
+
+        Assert.Equal("sha256:5bfb64a13d90f838565e0e9320f10f02bbf31d395987e728c2804d7f8c465e2a", contract.ContractId);
+        Assert.Equal(contract.Fingerprint, contract.ContractId);
+    }
+
     // ---------------------------------------------------------------
     // Value equality
     // ---------------------------------------------------------------

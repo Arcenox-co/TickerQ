@@ -80,7 +80,22 @@ if (Environment.GetEnvironmentVariable("TICKERQ_AOT_METADATA_PROBE") == "1")
     if (includedRoundTrip is null || !includedRoundTrip.Matches("included-aot-probe"))
         throw new InvalidOperationException("Native AOT [JsonInclude] accessor round-trip failed.");
 
-    Console.WriteLine("TickerQ Native AOT request metadata probe passed.");
+    var resultTypeInfo = TickerFunctionProvider.GetResultTypeInfo<JobResult>("ReflectionFree_ResultJob");
+    if (resultTypeInfo.Type != typeof(JobResult))
+        throw new InvalidOperationException("Native AOT result metadata resolution failed.");
+    var resultDescriptor = TickerFunctionProvider.TickerFunctionDescriptors["ReflectionFree_ResultJob"].Result
+        ?? throw new InvalidOperationException("Native AOT result descriptor resolution failed.");
+    var resultContractId = TickerFunctionProvider.GetResultContract("ReflectionFree_ResultJob").ContractId;
+    if (!resultContractId.StartsWith("sha256:", StringComparison.Ordinal)
+        || resultContractId != resultDescriptor.Fingerprint
+        || resultContractId != resultDescriptor.ContractId)
+        throw new InvalidOperationException("Native AOT canonical result contract identity failed.");
+    await TickerFunctionProvider.TickerFunctions["ReflectionFree_ResultJob"].Delegate(
+        CancellationToken.None,
+        app.Services,
+        new TickerFunctionContext());
+
+    Console.WriteLine("TickerQ Native AOT request/result metadata probe passed.");
     return;
 }
 

@@ -45,7 +45,7 @@ namespace TickerQ.SourceGenerator.Analysis
 
             var fullClassName = SourceGeneratorUtilities.GetFullClassName(classDecl);
             var isStatic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
-            var isAsync = SourceGeneratorUtilities.IsMethodAwaitable(methodDecl);
+            var isAsync = IsTaskLike(methodSymbol.ReturnType);
 
             var model = new TickerMethodModel
             {
@@ -62,9 +62,52 @@ namespace TickerQ.SourceGenerator.Analysis
                 IsAsync = isAsync,
             };
 
+            AnalyzeResult(methodSymbol, attrData, model);
+
             AnalyzeParameters(methodDecl, semanticModel, model);
 
             return model;
+        }
+
+        private static void AnalyzeResult(IMethodSymbol methodSymbol, AttributeData attribute, TickerMethodModel model)
+        {
+            var declared = attribute.NamedArguments
+                .FirstOrDefault(pair => pair.Key == "ResultType").Value.Value as ITypeSymbol;
+            if (declared == null)
+                return;
+
+            model.ResultType = declared;
+            model.ResultTypeFullName = RenderTypeSyntax(declared);
+
+            var returned = methodSymbol.ReturnType;
+            var returnsNonGenericTaskLike = IsNonGenericTaskLike(returned);
+            if (returned is INamedTypeSymbol named
+                && named.TypeArguments.Length == 1
+                && IsGenericTaskLike(named))
+                returned = named.TypeArguments[0];
+
+            model.HasValidResultContract = declared.SpecialType != SpecialType.System_Void
+                && (!(declared is INamedTypeSymbol declaredNamed) || !declaredNamed.IsUnboundGenericType)
+                && !returnsNonGenericTaskLike
+                && SymbolEqualityComparer.Default.Equals(declared, returned);
+        }
+
+        private static bool IsTaskLike(ITypeSymbol type)
+            => IsNonGenericTaskLike(type)
+                || type is INamedTypeSymbol named && named.TypeArguments.Length == 1 && IsGenericTaskLike(named);
+
+        private static bool IsNonGenericTaskLike(ITypeSymbol type)
+        {
+            var name = type.ToDisplayString();
+            return name == "System.Threading.Tasks.Task"
+                || name == "System.Threading.Tasks.ValueTask";
+        }
+
+        private static bool IsGenericTaskLike(INamedTypeSymbol type)
+        {
+            var name = type.OriginalDefinition.ToDisplayString();
+            return name == "System.Threading.Tasks.Task<TResult>"
+                || name == "System.Threading.Tasks.ValueTask<TResult>";
         }
 
         private static void AnalyzeParameters(MethodDeclarationSyntax methodDecl, SemanticModel semanticModel, TickerMethodModel model)

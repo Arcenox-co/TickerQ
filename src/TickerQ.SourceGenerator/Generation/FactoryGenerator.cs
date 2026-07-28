@@ -35,6 +35,7 @@ namespace TickerQ.SourceGenerator.Generation
             }
 
             var requestTypes = BuildRequestTypeRegistrations(methods);
+            var resultTypes = BuildResultTypeRegistrations(methods);
             var descriptors = BuildDescriptorRegistrations(methods);
 
             return Templates.InstanceFactory
@@ -43,6 +44,7 @@ namespace TickerQ.SourceGenerator.Generation
                 .Replace("{{DELEGATE_REGISTRATIONS}}", delegateRegistrations.ToString().TrimEnd())
                 .Replace("{{CONSTRUCTOR_METHODS}}", constructorMethods.ToString().TrimEnd())
                 .Replace("{{REQUEST_TYPE_REGISTRATIONS}}", requestTypes)
+                .Replace("{{RESULT_TYPE_REGISTRATIONS}}", resultTypes)
                 .Replace("{{DESCRIPTOR_REGISTRATIONS}}", descriptors);
         }
 
@@ -52,7 +54,7 @@ namespace TickerQ.SourceGenerator.Generation
                 ? "string.Empty"
                 : SourceGeneratorUtilities.FormatStringLiteral(method.CronExpression);
 
-            var isAsync = method.IsAsync || method.UsesGenericContext;
+            var isAsync = method.IsAsync || method.UsesGenericContext || method.HasValidResultContract;
             var asyncKeyword = isAsync ? "async " : "";
 
             var body = BuildDelegateBody(method, constructors);
@@ -77,6 +79,21 @@ namespace TickerQ.SourceGenerator.Generation
 
             var args = BuildMethodArgs(method);
             var methodCall = $"{callTarget}.{method.MethodName}({args})";
+
+            if (method.HasValidResultContract)
+            {
+                var functionName = SourceGeneratorUtilities.FormatStringLiteral(method.FunctionName);
+                var prefix = method.UsesGenericContext
+                    ? $"                    var requestTypeInfo = global::TickerQ.Utilities.TickerFunctionProvider.GetRequestTypeInfo<{method.GenericRequestTypeFullName}>({functionName});\n" +
+                      $"                    var genericContext = await global::TickerQ.Utilities.TickerRequestProvider.ToGenericContextAsync<{method.GenericRequestTypeFullName}>(context, requestTypeInfo, cancellationToken);\n"
+                    : string.Empty;
+                var invocation = method.IsAsync || method.UsesGenericContext ? "await " + methodCall : methodCall;
+                return prefix
+                    + $"                    var resultTypeInfo = global::TickerQ.Utilities.TickerFunctionProvider.GetResultTypeInfo<{method.ResultTypeFullName}>({functionName});\n"
+                    + $"                    var resultContract = global::TickerQ.Utilities.TickerFunctionProvider.GetResultContract({functionName});\n"
+                    + $"                    var result = {invocation};\n"
+                    + "                    context.SetResult(result, resultTypeInfo, resultContract);";
+            }
 
             if (method.UsesGenericContext)
             {
@@ -178,6 +195,25 @@ namespace TickerQ.SourceGenerator.Generation
             return legacyRegistration + "\n" + metadataRegistration;
         }
 
+        private static string BuildResultTypeRegistrations(List<TickerMethodModel> methods)
+        {
+            var resultMethods = methods.Where(m => m.HasValidResultContract).ToList();
+            if (resultMethods.Count == 0)
+                return string.Empty;
+
+            var entries = new StringBuilder();
+            foreach (var method in resultMethods)
+            {
+                entries.AppendLine(Templates.ResultTypeInfoResolverEntry
+                    .Replace("{{FUNCTION_NAME}}", SourceGeneratorUtilities.FormatStringLiteral(method.FunctionName))
+                    .Replace("{{RESULT_TYPE}}", method.ResultTypeFullName));
+            }
+
+            return Templates.ResultTypeInfoResolverRegistration
+                .Replace("{{COUNT}}", resultMethods.Count.ToString())
+                .Replace("{{ENTRIES}}", entries.ToString().TrimEnd());
+        }
+
         private static string BuildDescriptorRegistrations(List<TickerMethodModel> methods)
         {
             if (methods.Count == 0)
@@ -217,6 +253,15 @@ namespace TickerQ.SourceGenerator.Generation
                         .Replace("{{PRIORITY}}", m.TaskPriority.ToString())
                         .Replace("{{CRON_EXPRESSION}}", cronExpr)
                         .Replace("{{REQUEST_TYPE}}", m.GenericRequestTypeFullName);
+                }
+
+                if (m.HasValidResultContract)
+                {
+                    var schema = m.ResultSchemaJson == null
+                        ? string.Empty
+                        : ", schemaJson: " + SourceGeneratorUtilities.FormatStringLiteral(m.ResultSchemaJson);
+                    entry = entry.Substring(0, entry.Length - 2)
+                        + $", result: new global::TickerQ.Utilities.Models.TickerResultContract(typeof({m.ResultTypeFullName}).FullName{schema})),";
                 }
 
                 entries.AppendLine(entry);

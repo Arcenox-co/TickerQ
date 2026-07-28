@@ -25,7 +25,8 @@ namespace TickerQ.Utilities.Models
             TickerTaskPriority priority = TickerTaskPriority.Normal,
             string cronExpression = null,
             int contractVersion = TickerRequestContractConstants.InitialContractVersion,
-            TickerRequestContract request = null)
+            TickerRequestContract request = null,
+            TickerResultContract result = null)
         {
             if (functionName == null)
                 throw new ArgumentNullException(nameof(functionName));
@@ -40,6 +41,7 @@ namespace TickerQ.Utilities.Models
             CronExpression = cronExpression;
             ContractVersion = contractVersion;
             Request = request?.WithContractVersion(contractVersion);
+            Result = result?.WithContractVersion(contractVersion);
         }
 
         public string FunctionName { get; }
@@ -55,6 +57,9 @@ namespace TickerQ.Utilities.Models
         /// <summary>Request contract, or null for request-less functions.</summary>
         public TickerRequestContract Request { get; }
 
+        /// <summary>Declared optional result contract, or null for legacy/non-result functions.</summary>
+        public TickerResultContract Result { get; }
+
         /// <summary>
         /// Returns a copy with reconciled scheduling metadata. Used by <c>Build()</c> to keep
         /// priority/cron coherent with the authoritative functions registry without forcing
@@ -64,7 +69,7 @@ namespace TickerQ.Utilities.Models
         {
             if (Priority == priority && string.Equals(CronExpression, cronExpression, StringComparison.Ordinal))
                 return this;
-            return new TickerFunctionDescriptor(FunctionName, priority, cronExpression, ContractVersion, Request);
+            return new TickerFunctionDescriptor(FunctionName, priority, cronExpression, ContractVersion, Request, Result);
         }
 
         /// <summary>
@@ -77,7 +82,8 @@ namespace TickerQ.Utilities.Models
             if (other is null) return false;
             return string.Equals(FunctionName, other.FunctionName, StringComparison.Ordinal)
                    && ContractVersion == other.ContractVersion
-                   && Equals(Request, other.Request);
+                   && Equals(Request, other.Request)
+                   && Equals(Result, other.Result);
         }
 
         public bool Equals(TickerFunctionDescriptor other)
@@ -88,7 +94,8 @@ namespace TickerQ.Utilities.Models
                    && Priority == other.Priority
                    && string.Equals(CronExpression, other.CronExpression, StringComparison.Ordinal)
                    && ContractVersion == other.ContractVersion
-                   && Equals(Request, other.Request);
+                   && Equals(Request, other.Request)
+                   && Equals(Result, other.Result);
         }
 
         public override bool Equals(object obj) => Equals(obj as TickerFunctionDescriptor);
@@ -101,10 +108,11 @@ namespace TickerQ.Utilities.Models
             hash.Add(CronExpression, StringComparer.Ordinal);
             hash.Add(ContractVersion);
             hash.Add(Request);
+            hash.Add(Result);
             return hash.ToHashCode();
         }
 
         public override string ToString()
-            => $"{FunctionName} v{ContractVersion} priority={Priority} cron={CronExpression ?? "null"} request={(Request?.ToString() ?? "null")}";
+            => $"{FunctionName} v{ContractVersion} priority={Priority} cron={CronExpression ?? "null"} request={(Request?.ToString() ?? "null")} result={(Result?.ToString() ?? "null")}";
     }
 }

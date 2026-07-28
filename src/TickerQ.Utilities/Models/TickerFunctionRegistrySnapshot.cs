@@ -14,16 +14,19 @@ namespace TickerQ.Utilities.Models
         public static readonly TickerFunctionRegistrySnapshot Empty = new(
             FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>.Empty,
             FrozenDictionary<string, TickerFunctionDescriptor>.Empty,
-            FrozenDictionary<string, TickerRuntimeRequestMetadata>.Empty);
+            FrozenDictionary<string, TickerRuntimeRequestMetadata>.Empty,
+            FrozenDictionary<string, TickerRuntimeResultMetadata>.Empty);
 
         public TickerFunctionRegistrySnapshot(
             FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> functions,
             FrozenDictionary<string, TickerFunctionDescriptor> descriptors,
-            FrozenDictionary<string, TickerRuntimeRequestMetadata> runtimeRequests)
+            FrozenDictionary<string, TickerRuntimeRequestMetadata> runtimeRequests,
+            FrozenDictionary<string, TickerRuntimeResultMetadata> runtimeResults)
         {
             Functions = functions;
             Descriptors = descriptors;
             RuntimeRequests = runtimeRequests;
+            RuntimeResults = runtimeResults;
         }
 
         public FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> Functions { get; }
@@ -31,5 +34,7 @@ namespace TickerQ.Utilities.Models
         public FrozenDictionary<string, TickerFunctionDescriptor> Descriptors { get; }
 
         public FrozenDictionary<string, TickerRuntimeRequestMetadata> RuntimeRequests { get; }
+
+        public FrozenDictionary<string, TickerRuntimeResultMetadata> RuntimeResults { get; }
     }
 }

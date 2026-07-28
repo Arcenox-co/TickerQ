@@ -49,6 +49,24 @@ namespace TickerQ.SourceGenerator.Generation.Schema
             }
         }
 
+        /// <summary>Emits a schema document for any serializable result root, including scalars.</summary>
+        public static SchemaEmissionResult EmitResult(ITypeSymbol resultType)
+        {
+            try
+            {
+                var emitter = new JsonSchemaEmitter();
+                var members = emitter.EmitType(resultType);
+                members.Insert(0, Kv("$schema", SchemaJson.String("https://json-schema.org/draft/2020-12/schema")));
+                if (emitter._defs.Count > 0)
+                    members.Add(Kv("$defs", SchemaJson.Object(emitter._defs)));
+                return SchemaEmissionResult.ForSupported(SchemaJson.Object(members), "null");
+            }
+            catch (UnsupportedSchemaException ex)
+            {
+                return SchemaEmissionResult.ForUnsupported(ex.Reason, ex.ConverterType);
+            }
+        }
+
         private string EmitRoot(ITypeSymbol requestType)
         {
             var type = requestType;

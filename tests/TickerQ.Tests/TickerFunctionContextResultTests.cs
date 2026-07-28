@@ -55,6 +55,31 @@ public class TickerFunctionContextResultTests
     }
 
     [Fact]
+    public void SetResult_WithCanonicalContractId_PublishesIdentityAndFullWireType()
+    {
+        var context = NewRuntimeContext();
+        var contract = new TickerResultContract(
+            typeof(ResultPayload).FullName,
+            schemaJson: "{\"type\":\"object\"}");
+
+        context.SetResult(new ResultPayload { Value = 7 }, ResultJsonContext.Default.ResultPayload, contract);
+
+        Assert.Equal(contract.ContractId, context.ResultSink.Envelope.ContractId);
+        Assert.Equal(typeof(ResultPayload).FullName, context.ResultSink.Envelope.ContractType);
+    }
+
+    [Fact]
+    public void SetResult_WithSchemaLessContract_Throws()
+    {
+        var context = NewRuntimeContext();
+        var contract = new TickerResultContract(typeof(ResultPayload).FullName);
+
+        Assert.Throws<ArgumentException>(() =>
+            context.SetResult(new ResultPayload(), ResultJsonContext.Default.ResultPayload, contract));
+        Assert.False(context.ResultSink.HasResult);
+    }
+
+    [Fact]
     public void SetResult_JsonNull_IsDistinguishable_From_Absence()
     {
         // Absence.

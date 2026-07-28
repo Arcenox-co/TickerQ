@@ -107,6 +107,34 @@ public class TickerFunctionContext
     }
 
     /// <summary>
+    /// Publishes a declared result using source-generated serializer metadata and its validated,
+    /// canonical schema fingerprint. This is the Native-AOT-safe path emitted by the generator.
+    /// </summary>
+    public void SetResult<T>(T value, JsonTypeInfo<T> typeInfo, TickerResultContract contract)
+    {
+        if (typeInfo is null)
+            throw new ArgumentNullException(nameof(typeInfo));
+        if (contract is null)
+            throw new ArgumentNullException(nameof(contract));
+        if (string.IsNullOrWhiteSpace(contract.ContractId))
+            throw new ArgumentException("Result contract must have a canonical schema fingerprint.", nameof(contract));
+        if (!string.Equals(contract.TypeName, typeInfo.Type.FullName, StringComparison.Ordinal))
+            throw new ArgumentException(
+                $"Result contract type '{contract.TypeName}' does not match serializer type '{typeInfo.Type.FullName}'.",
+                nameof(contract));
+
+        var payload = JsonSerializer.SerializeToUtf8Bytes(value, typeInfo);
+        var envelope = new TickerResultEnvelope(
+            payload,
+            TickerResultEnvelope.CurrentVersion,
+            contract.MediaType,
+            contract.ContractId,
+            contract.TypeName);
+
+        (ResultSink ??= new TickerResultSink()).Set(envelope);
+    }
+
+    /// <summary>
     /// Reflection-based convenience overload of <see cref="SetResult{T}(T, JsonTypeInfo{T})"/>.
     /// This path is NOT Native-AOT/trim-safe; prefer the <see cref="JsonTypeInfo{T}"/> overload
     /// in trimmed or AOT-published apps.

@@ -31,6 +31,7 @@ namespace {{NAMESPACE}}
             };
             global::TickerQ.Utilities.TickerFunctionProvider.RegisterFunctions(tickerFunctionDelegateDict, {{METHOD_COUNT}});
             RegisterRequestTypes();
+            RegisterResultTypes();
             RegisterDescriptors();
         }
 
@@ -38,6 +39,11 @@ namespace {{NAMESPACE}}
         private static void RegisterRequestTypes()
         {
 {{REQUEST_TYPE_REGISTRATIONS}}
+        }
+
+        private static void RegisterResultTypes()
+        {
+{{RESULT_TYPE_REGISTRATIONS}}
         }
 
         private static void RegisterDescriptors()
@@ -127,6 +133,14 @@ namespace {{NAMESPACE}}
             global::TickerQ.Utilities.TickerFunctionProvider.RegisterRequestTypeInfoResolver(requestTypeInfoResolvers);";
 
         internal const string RequestTypeInfoResolverEntry = @"                [{{FUNCTION_NAME}}] = (typeof({{REQUEST_TYPE}}), options => options.GetTypeInfo(typeof({{REQUEST_TYPE}}))),";
+
+        internal const string ResultTypeInfoResolverRegistration = @"            var resultTypeInfoResolvers = new Dictionary<string, (Type, global::System.Func<global::System.Text.Json.JsonSerializerOptions, global::System.Text.Json.Serialization.Metadata.JsonTypeInfo>)>({{COUNT}})
+            {
+{{ENTRIES}}
+            };
+            global::TickerQ.Utilities.TickerFunctionProvider.RegisterResultTypeInfoResolver(resultTypeInfoResolvers);";
+
+        internal const string ResultTypeInfoResolverEntry = @"                [{{FUNCTION_NAME}}] = (typeof({{RESULT_TYPE}}), options => options.GetTypeInfo(typeof({{RESULT_TYPE}}))),";
 
         /// <summary>
         /// Canonical descriptor registration block (emitted for ALL functions).

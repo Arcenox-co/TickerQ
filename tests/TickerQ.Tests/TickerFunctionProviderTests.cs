@@ -52,6 +52,7 @@ public class TickerFunctionProviderTests : IDisposable
         type.GetField("_requestTypeRegistrations", flags)!.SetValue(null, null);
         type.GetField("_requestInfoRegistrations", flags)!.SetValue(null, null);
         type.GetField("_runtimeRequestRegistrations", flags)!.SetValue(null, null);
+        type.GetField("_runtimeResultRegistrations", flags)!.SetValue(null, null);
         ((System.Collections.IList)type.GetField("_pendingDescriptors", flags)!.GetValue(null)!).Clear();
         type.GetProperty("IsBuilt", flags)!.SetValue(null, false);
     }
@@ -62,6 +63,116 @@ public class TickerFunctionProviderTests : IDisposable
     private sealed class RuntimeRequest
     {
         public string OrderId { get; set; }
+    }
+
+    [Fact]
+    public void GeneratedResultPublication_UsesDescriptorFingerprintInEnvelope()
+    {
+        const string functionName = "GeneratedResultFunc";
+        TickerFunctionProvider.RegisterResultTypeInfoResolver(
+            new Dictionary<string, (Type ResultType, Func<JsonSerializerOptions, JsonTypeInfo> Resolve)>
+            {
+                [functionName] = (typeof(ResultPayload), _ => ResultJsonContext.Default.ResultPayload)
+            });
+        TickerFunctionProvider.RegisterDescriptors(
+            new Dictionary<string, TickerFunctionDescriptor>
+            {
+                [functionName] = new TickerFunctionDescriptor(
+                    functionName,
+                    result: new TickerResultContract(
+                        typeof(ResultPayload).FullName!,
+                        schemaJson: "{\"type\":\"object\"}"))
+            },
+            "test");
+        TickerFunctionProvider.Build();
+
+        var descriptor = TickerFunctionProvider.TickerFunctionDescriptors[functionName];
+        var context = new TickerQ.Utilities.Base.TickerFunctionContext();
+        var typeInfo = TickerFunctionProvider.GetResultTypeInfo<ResultPayload>(functionName);
+        var resultContract = TickerFunctionProvider.GetResultContract(functionName);
+        context.SetResult(new ResultPayload { Value = 42 }, typeInfo, resultContract);
+
+        Assert.Equal(descriptor.Result!.Fingerprint, descriptor.Result.ContractId);
+        Assert.Equal(descriptor.Result.ContractId, context.ResultSink.Envelope.ContractId);
+        Assert.Equal(descriptor.Result.TypeName, context.ResultSink.Envelope.ContractType);
+    }
+
+    [Fact]
+    public void ResultMetadata_SurvivesRepeatedBuild_AndBacksImmutableSnapshot()
+    {
+        const string functionName = "ResultFunc";
+        var typeInfo = ResultJsonContext.Default.ResultPayload;
+        TickerFunctionProvider.RegisterResultTypeInfoResolver(
+            new Dictionary<string, (Type ResultType, Func<JsonSerializerOptions, JsonTypeInfo> Resolve)>
+            {
+                [functionName] = (typeof(ResultPayload), _ => typeInfo)
+            });
+        TickerFunctionProvider.RegisterDescriptors(
+            new Dictionary<string, TickerFunctionDescriptor>
+            {
+                [functionName] = new TickerFunctionDescriptor(
+                    functionName,
+                    result: new TickerResultContract(
+                        typeof(ResultPayload).FullName!,
+                        schemaJson: "{\"type\":\"object\"}"))
+            },
+            "test");
+
+        TickerFunctionProvider.Build();
+        var captured = TickerFunctionProvider.Snapshot;
+
+        Assert.Same(typeInfo, TickerFunctionProvider.GetResultTypeInfo<ResultPayload>(functionName));
+        Assert.Same(captured.RuntimeResults, TickerFunctionProvider.RuntimeResults);
+        Assert.Same(captured.Descriptors, TickerFunctionProvider.TickerFunctionDescriptors);
+        Assert.Equal(captured.Descriptors[functionName].Result!.Fingerprint,
+            TickerFunctionProvider.GetResultContract(functionName).ContractId);
+
+        TickerFunctionProvider.Build();
+
+        Assert.Same(typeInfo, TickerFunctionProvider.GetResultTypeInfo<ResultPayload>(functionName));
+        Assert.Single(captured.RuntimeResults);
+        Assert.Single(captured.Descriptors);
+    }
+
+    [Fact]
+    public void Build_SourceGeneratedResultSchemaRejectsShapeChangingSerializerOptionsAtomically()
+    {
+        const string functionName = "ResultSchemaFunc";
+        TickerFunctionProvider.RegisterResultTypeInfoResolver(
+            new Dictionary<string, (Type ResultType, Func<JsonSerializerOptions, JsonTypeInfo> Resolve)>
+            {
+                [functionName] = (typeof(ResultPayload), _ => ResultJsonContext.Default.ResultPayload)
+            });
+        TickerFunctionProvider.RegisterDescriptors(
+            new Dictionary<string, TickerFunctionDescriptor>
+            {
+                [functionName] = new TickerFunctionDescriptor(
+                    functionName,
+                    result: new TickerResultContract(
+                        typeof(ResultPayload).FullName!,
+                        schemaJson: "{}"))
+            },
+            "source-gen");
+
+        var previous = TickerHelper.RequestJsonSerializerOptions;
+        try
+        {
+            TickerHelper.RequestJsonSerializerOptions = new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                TypeInfoResolver = ResultJsonContext.Default
+            };
+
+            var error = Assert.Throws<InvalidOperationException>(TickerFunctionProvider.Build);
+
+            Assert.Contains("PropertyNamingPolicy", error.Message, StringComparison.Ordinal);
+            Assert.False(TickerFunctionProvider.IsBuilt);
+            Assert.Empty(TickerFunctionProvider.TickerFunctionDescriptors);
+        }
+        finally
+        {
+            TickerHelper.RequestJsonSerializerOptions = previous;
+        }
     }
 
     // ---------------------------------------------------------------

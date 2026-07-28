@@ -37,6 +37,7 @@ namespace TickerQ.Utilities
             Dictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>,
             Dictionary<string, string>> _functionRegistrations;
         private static Action<Dictionary<string, TickerRuntimeRequestMetadata>> _runtimeRequestRegistrations;
+        private static Action<Dictionary<string, TickerRuntimeResultMetadata>> _runtimeResultRegistrations;
 
         // Pending canonical descriptor registrations, snapshotted at registration time with provenance.
         private static readonly List<(TickerFunctionDescriptor Descriptor, string Origin)> _pendingDescriptors = new();
@@ -71,6 +72,7 @@ namespace TickerQ.Utilities
         /// runtime/serializer metadata never crosses the transport.
         /// </summary>
         internal static FrozenDictionary<string, TickerRuntimeRequestMetadata> RuntimeRequests => Snapshot.RuntimeRequests;
+        internal static FrozenDictionary<string, TickerRuntimeResultMetadata> RuntimeResults => Snapshot.RuntimeResults;
 
         public static bool IsBuilt { get; private set; }
 
@@ -273,12 +275,16 @@ namespace TickerQ.Utilities
                 var mergedRuntime = new Dictionary<string, TickerRuntimeRequestMetadata>(current.RuntimeRequests.Count);
                 foreach (var (k, v) in current.RuntimeRequests)
                     if (!isCurrentlyRemote(k)) mergedRuntime[k] = v;
+                var mergedResults = new Dictionary<string, TickerRuntimeResultMetadata>(current.RuntimeResults.Count);
+                foreach (var (k, v) in current.RuntimeResults)
+                    if (!isCurrentlyRemote(k)) mergedResults[k] = v;
 
                 // Publish one coherent canonical snapshot, then update the legacy function mirror.
                 Volatile.Write(ref _snapshot, new TickerFunctionRegistrySnapshot(
                     mergedFunctions.ToFrozenDictionary(),
                     mergedDescriptors.ToFrozenDictionary(),
-                    mergedRuntime.ToFrozenDictionary()));
+                    mergedRuntime.ToFrozenDictionary(),
+                    mergedResults.ToFrozenDictionary()));
                 TickerFunctions = mergedFunctions.ToFrozenDictionary();
                 IsBuilt = true;
             }
@@ -309,12 +315,14 @@ namespace TickerQ.Utilities
 
                 var runtime = new Dictionary<string, TickerRuntimeRequestMetadata>(current.RuntimeRequests);
                 runtime.Remove(functionName);
+                var runtimeResults = new Dictionary<string, TickerRuntimeResultMetadata>(current.RuntimeResults);
+                runtimeResults.Remove(functionName);
 
                 var frozenFunctions = functions.ToFrozenDictionary();
 
                 // Publish one coherent canonical snapshot, then keep the legacy mirrors in step.
                 Volatile.Write(ref _snapshot, new TickerFunctionRegistrySnapshot(
-                    frozenFunctions, descriptors.ToFrozenDictionary(), runtime.ToFrozenDictionary()));
+                    frozenFunctions, descriptors.ToFrozenDictionary(), runtime.ToFrozenDictionary(), runtimeResults.ToFrozenDictionary()));
                 TickerFunctions = frozenFunctions;
 
                 if (TickerFunctionRequestInfos.ContainsKey(functionName))
@@ -592,6 +600,83 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
+        /// Defers source-generated result JsonTypeInfo resolution until Build(). No reflection fallback
+        /// is used by generated result publication.
+        /// </summary>
+        public static void RegisterResultTypeInfoResolver(
+            IDictionary<string, (Type ResultType, Func<JsonSerializerOptions, JsonTypeInfo> Resolve)> results)
+        {
+            if (results == null) throw new ArgumentNullException(nameof(results));
+            if (results.Count == 0) return;
+
+            var snapshot = new Dictionary<string, (Type ResultType, Func<JsonSerializerOptions, JsonTypeInfo> Resolve)>(results);
+            foreach (var (name, entry) in snapshot)
+            {
+                if (entry.ResultType == null)
+                    throw new ArgumentException($"Null result type registered for function '{name}'.", nameof(results));
+                if (entry.Resolve == null)
+                    throw new ArgumentException($"Null result JsonTypeInfo resolver registered for function '{name}'.", nameof(results));
+            }
+
+            lock (_buildLock)
+            {
+                _runtimeResultRegistrations += dict =>
+                {
+                    var options = TickerHelper.GetEffectiveRequestJsonSerializerOptions();
+                    foreach (var (name, entry) in snapshot)
+                    {
+                        JsonTypeInfo typeInfo;
+                        try
+                        {
+                            typeInfo = entry.Resolve(options);
+                        }
+                        catch (NotSupportedException exception)
+                        {
+                            throw new InvalidOperationException(
+                                $"No JsonTypeInfo was available for result type '{entry.ResultType}' of function '{name}'. " +
+                                "For Native AOT, configure AddTickerQ with WithJsonContext using a context that includes every declared result type.",
+                                exception);
+                        }
+
+                        if (typeInfo == null || typeInfo.Type != entry.ResultType)
+                            throw new InvalidOperationException(
+                                $"Resolved result JsonTypeInfo does not match result type '{entry.ResultType}' for function '{name}'.");
+                        if (dict.TryGetValue(name, out var existing) && existing.ResultType != entry.ResultType)
+                            throw new InvalidOperationException(
+                                $"Conflicting runtime result types for function '{name}': '{existing.ResultType}' and '{entry.ResultType}'.");
+                        dict[name] = new TickerRuntimeResultMetadata(entry.ResultType, typeInfo);
+                    }
+                };
+            }
+        }
+
+        /// <summary>Returns AOT-safe serializer metadata for a declared function result.</summary>
+        public static JsonTypeInfo<T> GetResultTypeInfo<T>(string functionName)
+        {
+            if (functionName != null
+                && RuntimeResults.TryGetValue(functionName, out var metadata)
+                && metadata.JsonTypeInfo is JsonTypeInfo<T> typed)
+                return typed;
+
+            throw new InvalidOperationException(
+                $"No JsonTypeInfo<{typeof(T)}> is registered for ticker function result '{functionName}'. " +
+                "Ensure Build() completed and WithJsonContext includes the declared result type.");
+        }
+
+        /// <summary>Returns the canonical wire contract for a declared function result.</summary>
+        public static TickerResultContract GetResultContract(string functionName)
+        {
+            if (functionName != null
+                && TickerFunctionDescriptors.TryGetValue(functionName, out var descriptor)
+                && !string.IsNullOrWhiteSpace(descriptor.Result?.ContractId))
+                return descriptor.Result;
+
+            throw new InvalidOperationException(
+                $"No canonical result contract id is registered for ticker function '{functionName}'. " +
+                "Ensure Build() completed and the declared result has a generated schema.");
+        }
+
+        /// <summary>
         /// Registers request type metadata (string type + example JSON) for functions.
         /// </summary>
         /// <param name="requestInfos">The request info entries to register. Cannot be null.</param>
@@ -748,7 +833,8 @@ namespace TickerQ.Utilities
                 foreach (var pending in _pendingDescriptors)
                 {
                     if (string.Equals(pending.Origin, "source-gen", StringComparison.Ordinal)
-                        && pending.Descriptor.Request?.Schema.HasValue == true)
+                        && (pending.Descriptor.Request?.Schema.HasValue == true
+                            || pending.Descriptor.Result?.Schema.HasValue == true))
                     {
                         TickerHelper.ValidateGeneratedSchemaSerializerProfile();
                         break;
@@ -793,16 +879,32 @@ namespace TickerQ.Utilities
 
                 ValidateGeneratedSchemaRuntimeMetadata(descriptorDict, runtimeDict);
 
+                var runtimeResultDict = new Dictionary<string, TickerRuntimeResultMetadata>(Snapshot.RuntimeResults);
+                _runtimeResultRegistrations?.Invoke(runtimeResultDict);
+                foreach (var (name, descriptor) in descriptorDict)
+                {
+                    if (descriptor.Result == null)
+                        continue;
+                    if (!runtimeResultDict.TryGetValue(name, out var metadata)
+                        || metadata.JsonTypeInfo == null
+                        || !string.Equals(metadata.ResultType.FullName, descriptor.Result.TypeName, StringComparison.Ordinal))
+                        throw new InvalidOperationException(
+                            $"Declared result contract for function '{name}' has no matching source-generated JsonTypeInfo metadata.");
+                }
+
+                ValidateGeneratedResultSchemaRuntimeMetadata(runtimeResultDict);
+
                 // ---- FREEZE (still no publish; ToFrozenDictionary can't fail for valid dicts).
                 var frozenFunctions = functionsDict.ToFrozenDictionary();
                 var frozenTypes = requestTypesDict.ToFrozenDictionary();
                 var frozenInfos = requestInfoDict.ToFrozenDictionary();
                 var frozenDescriptors = descriptorDict.ToFrozenDictionary();
                 var frozenRuntime = runtimeDict.ToFrozenDictionary();
+                var frozenRuntimeResults = runtimeResultDict.ToFrozenDictionary();
 
                 // ---- PUBLISH the one canonical snapshot via a single Volatile.Write, then update the
                 // legacy mirror fields (assigned individually — NOT claimed atomic), then clear pending.
-                Volatile.Write(ref _snapshot, new TickerFunctionRegistrySnapshot(frozenFunctions, frozenDescriptors, frozenRuntime));
+                Volatile.Write(ref _snapshot, new TickerFunctionRegistrySnapshot(frozenFunctions, frozenDescriptors, frozenRuntime, frozenRuntimeResults));
                 TickerFunctions = frozenFunctions;
                 TickerFunctionRequestTypes = frozenTypes;
                 TickerFunctionRequestInfos = frozenInfos;
@@ -812,6 +914,7 @@ namespace TickerQ.Utilities
                 _requestTypeRegistrations = null;
                 _requestInfoRegistrations = null;
                 _runtimeRequestRegistrations = null;
+                _runtimeResultRegistrations = null;
                 _pendingDescriptors.Clear();
             }
         }
@@ -869,6 +972,33 @@ namespace TickerQ.Utilities
                         $"Runtime serializer metadata for function '{functionName}' is incompatible with its generated schema: " +
                         $"schema properties [{string.Join(", ", schemaNames.OrderBy(name => name, StringComparer.Ordinal))}] " +
                         $"do not match serializer metadata properties [{string.Join(", ", metadataNames.OrderBy(name => name, StringComparer.Ordinal))}].");
+            }
+        }
+
+        private static void ValidateGeneratedResultSchemaRuntimeMetadata(
+            IReadOnlyDictionary<string, TickerRuntimeResultMetadata> runtimeResults)
+        {
+            foreach (var (descriptor, origin) in _pendingDescriptors)
+            {
+                if (!string.Equals(origin, "source-gen", StringComparison.Ordinal)
+                    || descriptor.Result?.Schema.HasValue != true)
+                    continue;
+
+                var functionName = descriptor.FunctionName;
+                if (!runtimeResults.TryGetValue(functionName, out var metadata)
+                    || metadata.JsonTypeInfo == null)
+                    throw new InvalidOperationException(
+                        $"Generated result schema for function '{functionName}' has no matching runtime serializer metadata.");
+
+                TickerHelper.ValidateGeneratedSchemaSerializerProfile(metadata.JsonTypeInfo.Options);
+
+                var originatingResolver = metadata.JsonTypeInfo.OriginatingResolver;
+                var supportedResolver = originatingResolver is JsonSerializerContext
+                    || originatingResolver is DefaultJsonTypeInfoResolver { Modifiers.Count: 0 };
+                if (!supportedResolver)
+                    throw new InvalidOperationException(
+                        $"Runtime result serializer metadata resolver for function '{functionName}' is custom or modified and cannot be " +
+                        "proven compatible with its generated schema. Use an unmodified default resolver or a source-generated JsonSerializerContext.");
             }
         }
 
