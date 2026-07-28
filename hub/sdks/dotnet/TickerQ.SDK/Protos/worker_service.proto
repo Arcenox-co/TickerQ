@@ -180,15 +180,16 @@ message RemoveFunction {
   string function_name = 2;
 }
 
-// Scheduler → SDK: cancel a currently-running execution by ticker id. The SDK
-// looks up the registered CancellationTokenSource for that ticker (if any) and
-// signals it; the user's [TickerFunction] method that's awaiting on the CT
-// (e.g. Task.Delay(_, ct)) throws OperationCanceledException and exits. SDKs
-// that don't have a matching ticker silently ignore the message — broadcast
-// is fine because the ticker id is globally unique.
+// Scheduler → SDK: cancel a currently-running execution. New schedulers target
+// the ExecuteFunction request generation; ticker-only legacy messages cancel
+// every active matching generation. The user's [TickerFunction] method awaiting
+// the token (e.g. Task.Delay(_, ct)) throws OperationCanceledException and exits.
 message CancelExecution {
   string request_id = 1;
   string ticker_id = 2;
+  // Correlates cancellation to one ExecuteFunction generation. Empty messages
+  // from older schedulers retain ticker-wide legacy cancellation semantics.
+  optional string execution_request_id = 3;
 }
 
 message CommandAck {

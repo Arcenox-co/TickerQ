@@ -49,17 +49,18 @@ internal sealed class WorkerStreamHostedService : BackgroundService
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<OperationResult>> _pendingOps = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<BytesResult>> _pendingBytes = new();
-    // Currently-executing tickers — mapped to the per-execution CancellationTokenSource
-    // we hand to [TickerFunction] methods. The scheduler can dispatch a CancelExecution
-    // command (from a dashboard Cancel click) to signal one of these CTSes; the user's
-    // method awaiting on the token then throws OperationCanceledException.
-    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _runningCts = new();
+    // Active executions are keyed by ExecuteFunction.request_id rather than ticker id so
+    // overlapping generations of the same ticker remain independently cancellable.
+    private readonly ConcurrentDictionary<string, RunningExecution> _runningExecutions = new();
 
     // Flips to a fresh instance on every reconnect; .Task is awaited by the persistence
     // provider's SendAsync to avoid writing to a half-torn-down stream.
     private TaskCompletionSource<bool> _readyGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile IClientStreamWriter<WorkerEvent>? _writer;
     private GrpcChannel? _channel;
+
+    internal Func<Func<Task>, Task> BackgroundTaskRunner { get; set; }
+        = static work => Task.Run(work);
 
     public WorkerStreamHostedService(
         TickerSdkOptions options,
@@ -371,7 +372,7 @@ internal sealed class WorkerStreamHostedService : BackgroundService
         }
     }
 
-    private Task HandleExecuteFunctionAsync(ExecuteFunction req, CancellationToken ct)
+    internal Task HandleExecuteFunctionAsync(ExecuteFunction req, CancellationToken ct)
     {
         // Validate + parse synchronously so a malformed request can fail fast and
         // doesn't escape to a background task where the error would be silently
@@ -383,12 +384,23 @@ internal sealed class WorkerStreamHostedService : BackgroundService
             return SendImmediateFailureAsync(req.RequestId, "FunctionName is required", ct);
         if (!Guid.TryParse(req.TickerId, out var tickerId))
             return SendImmediateFailureAsync(req.RequestId, "TickerId must be a GUID", ct);
+        if (string.IsNullOrWhiteSpace(req.RequestId))
+            return SendImmediateFailureAsync(req.RequestId, "RequestId is required", ct);
+
+        // Register before detaching. Task.Run generations may begin in any order, so
+        // registration inside the detached delegate would reintroduce arrival ambiguity.
+        var execution = new RunningExecution(tickerId, new CancellationTokenSource());
+        if (!_runningExecutions.TryAdd(req.RequestId, execution))
+        {
+            execution.Cancellation.Dispose();
+            return SendImmediateFailureAsync(req.RequestId, "RequestId is already running", ct);
+        }
 
         // Background-execute. We deliberately do NOT await this — the read loop
         // returns to handle further commands (CancelExecution, heartbeat, etc.)
         // while the function body runs. The ExecutionResult is sent from inside
         // the background task once the work actually completes.
-        _ = Task.Run(() => RunExecuteFunctionInBackgroundAsync(req, tickerId, ct));
+        _ = BackgroundTaskRunner(() => RunExecuteFunctionInBackgroundAsync(req, tickerId, execution, ct));
         return Task.CompletedTask;
     }
 
@@ -407,9 +419,10 @@ internal sealed class WorkerStreamHostedService : BackgroundService
         }
     }
 
-    private async Task RunExecuteFunctionInBackgroundAsync(ExecuteFunction req, Guid tickerId, CancellationToken ct)
+    private async Task RunExecuteFunctionInBackgroundAsync(
+        ExecuteFunction req, Guid tickerId, RunningExecution execution, CancellationToken ct)
     {
-        var result = await ExecuteFunctionAsync(req, tickerId, ct).ConfigureAwait(false);
+        var result = await ExecuteRegisteredFunctionAsync(req, tickerId, execution, ct).ConfigureAwait(false);
 
         try
         {
@@ -426,15 +439,29 @@ internal sealed class WorkerStreamHostedService : BackgroundService
     /// terminal outcome to the stream response. Kept as one testable command boundary so tests prove
     /// the hosted worker never falls back to the lifecycle-persisting scheduler primitive.
     /// </summary>
-    internal async Task<ExecutionResult> ExecuteFunctionAsync(
+    internal Task<ExecutionResult> ExecuteFunctionAsync(
         ExecuteFunction req, Guid tickerId, CancellationToken ct)
     {
+        var execution = new RunningExecution(tickerId, new CancellationTokenSource());
+        if (!_runningExecutions.TryAdd(req.RequestId, execution))
+        {
+            execution.Cancellation.Dispose();
+            return Task.FromResult(new ExecutionResult
+            {
+                RequestId = req.RequestId,
+                Success = false,
+                Error = "RequestId is already running"
+            });
+        }
+
+        return ExecuteRegisteredFunctionAsync(req, tickerId, execution, ct);
+    }
+
+    private async Task<ExecutionResult> ExecuteRegisteredFunctionAsync(
+        ExecuteFunction req, Guid tickerId, RunningExecution execution, CancellationToken ct)
+    {
         ExecutionResult result;
-        // Per-execution CTS — looked up by tickerId in _runningCts so a
-        // CancelExecution arriving on the worker stream can signal this CTS,
-        // which in turn cancels the user's Task.Delay(_, ct) and exits the body.
-        using var executionCts = new CancellationTokenSource();
-        _runningCts[tickerId] = executionCts;
+        var executionCts = execution.Cancellation;
         try
         {
             // The scheduler stores function names qualified ("SampleTimeJob@test-sdk-node")
@@ -502,10 +529,10 @@ internal sealed class WorkerStreamHostedService : BackgroundService
         }
         finally
         {
-            // Remove only the generation registered by this execution. An older overlapping
-            // completion must not erase a newer same-ticker CTS and make it uncancellable.
-            ((ICollection<KeyValuePair<Guid, CancellationTokenSource>>)_runningCts)
-                .Remove(new KeyValuePair<Guid, CancellationTokenSource>(tickerId, executionCts));
+            // Remove only this request registration; another same-ticker generation is independent.
+            ((ICollection<KeyValuePair<string, RunningExecution>>)_runningExecutions)
+                .Remove(new KeyValuePair<string, RunningExecution>(req.RequestId, execution));
+            executionCts.Dispose();
         }
 
         return result;
@@ -546,19 +573,38 @@ internal sealed class WorkerStreamHostedService : BackgroundService
     private void HandleCancelExecution(CancelExecution req)
     {
         if (!Guid.TryParse(req.TickerId, out var tickerId)) return;
-        if (_runningCts.TryGetValue(tickerId, out var cts))
+
+        if (req.HasExecutionRequestId)
         {
-            try
-            {
-                cts.Cancel();
-                _logger.LogInformation("[CancelExecution] Signalled cancellation for ticker {TickerId}", tickerId);
-            }
-            catch (ObjectDisposedException)
-            {
-                // Race with execution finishing — already cleaned up. Safe to ignore.
-            }
+            if (_runningExecutions.TryGetValue(req.ExecutionRequestId, out var exact)
+                && exact.TickerId == tickerId)
+                CancelExecution(exact, tickerId, req.ExecutionRequestId);
+            return;
+        }
+
+        // Legacy schedulers identify only the ticker. Cancel every active matching
+        // generation; choosing an arbitrary last writer is unsafe.
+        foreach (var pair in _runningExecutions)
+            if (pair.Value.TickerId == tickerId)
+                CancelExecution(pair.Value, tickerId, pair.Key);
+    }
+
+    private void CancelExecution(RunningExecution execution, Guid tickerId, string executionRequestId)
+    {
+        try
+        {
+            execution.Cancellation.Cancel();
+            _logger.LogInformation(
+                "[CancelExecution] Signalled cancellation for ticker {TickerId}, execution {ExecutionRequestId}",
+                tickerId, executionRequestId);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Race with execution finishing — already cleaned up. Safe to ignore.
         }
     }
+
+    private sealed record RunningExecution(Guid TickerId, CancellationTokenSource Cancellation);
 
     private void FailAllPending(Exception ex)
     {

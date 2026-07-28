@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Google.Protobuf;
 using System.Reflection;
 using TickerQ.SDK.Infrastructure;
 using TickerQ.SDK.Logging;
@@ -81,7 +82,7 @@ public sealed class WorkerStreamExecutionTests
     }
 
     [Fact]
-    public async Task OlderSameTickerCompletion_DoesNotRemoveNewerExecutionCancellation()
+    public async Task TargetedCancellation_StopsOnlyMatchingRequest_WhenOlderGenerationRegistersLate()
     {
         var handler = new OverlappingHandler();
         var service = CreateService(handler);
@@ -89,17 +90,81 @@ public sealed class WorkerStreamExecutionTests
         var olderRequest = Request(tickerId);
         var newerRequest = Request(tickerId);
 
-        var older = service.ExecuteFunctionAsync(olderRequest, tickerId, CancellationToken.None);
-        await handler.WaitForCallAsync(1);
         var newer = service.ExecuteFunctionAsync(newerRequest, tickerId, CancellationToken.None);
+        await handler.WaitForCallAsync(1);
+        var older = service.ExecuteFunctionAsync(olderRequest, tickerId, CancellationToken.None);
         await handler.WaitForCallAsync(2);
 
-        handler.Complete(0);
-        await older;
-        InvokeCancel(service, tickerId);
+        InvokeCancel(service, tickerId, newerRequest.RequestId);
 
         var newerResult = await newer.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(newerResult.Cancelled);
+        Assert.False(older.IsCompleted);
+
+        handler.Complete(1);
+        var olderResult = await older.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(olderResult.Success);
+    }
+
+    [Fact]
+    public async Task DetachedExecutionReorder_KeepsArrivalGenerationRegistration()
+    {
+        var handler = new OverlappingHandler();
+        var service = CreateService(handler);
+        var detached = new List<Func<Task>>();
+        service.BackgroundTaskRunner = work =>
+        {
+            detached.Add(work);
+            return Task.CompletedTask;
+        };
+        var tickerId = Guid.NewGuid();
+        var olderRequest = Request(tickerId);
+        var newerRequest = Request(tickerId);
+
+        await service.HandleExecuteFunctionAsync(olderRequest, CancellationToken.None);
+        await service.HandleExecuteFunctionAsync(newerRequest, CancellationToken.None);
+
+        _ = detached[1](); // Force the newer detached body to begin first.
+        await handler.WaitForCallAsync(1);
+        _ = detached[0](); // The older body registers with the handler late.
+        await handler.WaitForCallAsync(2);
+        InvokeCancel(service, tickerId, newerRequest.RequestId);
+
+        await handler.WaitForCancellationAsync(0).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(handler.IsCancellationRequested(1));
+        handler.Complete(1);
+    }
+
+    [Fact]
+    public async Task LegacyTickerOnlyCancellation_StopsAllMatchingActiveRequests()
+    {
+        var handler = new OverlappingHandler();
+        var service = CreateService(handler);
+        var tickerId = Guid.NewGuid();
+        var first = service.ExecuteFunctionAsync(Request(tickerId), tickerId, CancellationToken.None);
+        await handler.WaitForCallAsync(1);
+        var second = service.ExecuteFunctionAsync(Request(tickerId), tickerId, CancellationToken.None);
+        await handler.WaitForCallAsync(2);
+
+        InvokeCancel(service, tickerId);
+
+        Assert.True((await first.WaitAsync(TimeSpan.FromSeconds(5))).Cancelled);
+        Assert.True((await second.WaitAsync(TimeSpan.FromSeconds(5))).Cancelled);
+    }
+
+    [Fact]
+    public void LegacyCancelExecutionWireMessage_ParsesWithoutExecutionRequestId()
+    {
+        var legacy = new CancelExecution
+        {
+            RequestId = "command",
+            TickerId = Guid.NewGuid().ToString()
+        };
+
+        var parsed = CancelExecution.Parser.ParseFrom(legacy.ToByteArray());
+
+        Assert.False(parsed.HasExecutionRequestId);
+        Assert.Equal(string.Empty, parsed.ExecutionRequestId);
     }
 
     private static WorkerStreamHostedService CreateService(ITickerExecutionTaskHandler handler)
@@ -124,12 +189,16 @@ public sealed class WorkerStreamExecutionTests
         Type = (int)TickerType.TimeTicker
     };
 
-    private static void InvokeCancel(WorkerStreamHostedService service, Guid tickerId)
+    private static void InvokeCancel(
+        WorkerStreamHostedService service, Guid tickerId, string? executionRequestId = null)
     {
         var method = typeof(WorkerStreamHostedService).GetMethod(
             "HandleCancelExecution", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        method!.Invoke(service, [new CancelExecution { TickerId = tickerId.ToString() }]);
+        var request = new CancelExecution { TickerId = tickerId.ToString() };
+        if (executionRequestId is not null)
+            request.ExecutionRequestId = executionRequestId;
+        method!.Invoke(service, [request]);
     }
 
     private sealed class RecordingHandler(TickerWorkerExecutionResult outcome)
@@ -158,6 +227,7 @@ public sealed class WorkerStreamExecutionTests
     private sealed class OverlappingHandler : ITickerExecutionTaskHandler
     {
         private readonly List<TaskCompletionSource<TickerWorkerExecutionResult>> _calls = [];
+        private readonly List<CancellationToken> _tokens = [];
         private readonly SemaphoreSlim _started = new(0);
 
         public Task ExecuteTaskAsync(
@@ -169,7 +239,11 @@ public sealed class WorkerStreamExecutionTests
         {
             var completion = new TaskCompletionSource<TickerWorkerExecutionResult>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            lock (_calls) _calls.Add(completion);
+            lock (_calls)
+            {
+                _calls.Add(completion);
+                _tokens.Add(cancellationToken);
+            }
             _started.Release();
             return await completion.Task.WaitAsync(cancellationToken);
         }
@@ -189,6 +263,21 @@ public sealed class WorkerStreamExecutionTests
             TaskCompletionSource<TickerWorkerExecutionResult> completion;
             lock (_calls) completion = _calls[index];
             completion.SetResult(new TickerWorkerExecutionResult(TickerStatus.Done, null, null));
+        }
+
+        public bool IsCancellationRequested(int index)
+        {
+            lock (_calls) return _tokens[index].IsCancellationRequested;
+        }
+
+        public Task WaitForCancellationAsync(int index)
+        {
+            CancellationToken token;
+            lock (_calls) token = _tokens[index];
+            if (token.IsCancellationRequested) return Task.CompletedTask;
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            token.Register(() => completion.TrySetResult());
+            return completion.Task;
         }
     }
 }

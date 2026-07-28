@@ -137,11 +137,9 @@ internal static class RemoteExecutionDelegateFactory
             catch (Exception waitEx) when (ct.IsCancellationRequested)
             {
                 // The dashboard's Cancel signalled the scheduler-local CTS, which
-                // tripped the timeout-Register callback inside ExecuteFunctionAsync
-                // (it surfaces as TimeoutException). The SDK has its own
-                // CancelExecution arriving in parallel and will land Cancelled in
-                // the DB on its own — we just need to make sure the scheduler's
-                // task handler sees this as cancellation, not a generic failure.
+                // caused ExecuteFunctionAsync to push a generation-correlated
+                // CancelExecution on this worker connection. Keep the scheduler's
+                // task handler cancellation-shaped rather than a generic failure.
                 _ = waitEx;
                 throw new TaskCanceledException("Cancelled by dashboard");
             }
