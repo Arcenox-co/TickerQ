@@ -22,6 +22,7 @@ internal sealed class RedisNodeFinalizationRecord
     public string ControlNonce { get; set; }
     public string ExactBodyBase64 { get; set; }
     public string BodyDigest { get; set; }
+    public string TerminalMutationDigest { get; set; }
     public string ImmutableDigest { get; set; }
     public DateTime CreatedAtUtc { get; set; }
     public DateTime AvailableAtUtc { get; set; }
@@ -32,7 +33,8 @@ internal sealed class RedisNodeFinalizationRecord
     public DateTime? LastAttemptAtUtc { get; set; }
     public string LastErrorCode { get; set; }
 
-    internal static RedisNodeFinalizationRecord Create(NodeFinalizationIntent intent)
+    internal static RedisNodeFinalizationRecord Create(NodeFinalizationIntent intent,
+        string terminalMutationDigest = null)
     {
         var body = intent.ExactBody;
         var record = new RedisNodeFinalizationRecord
@@ -51,6 +53,7 @@ internal sealed class RedisNodeFinalizationRecord
             ControlNonce = intent.ControlNonce.ToString("D"),
             ExactBodyBase64 = Convert.ToBase64String(body),
             BodyDigest = Convert.ToHexString(SHA256.HashData(body)),
+            TerminalMutationDigest = terminalMutationDigest,
             CreatedAtUtc = intent.CreatedAtUtc,
             AvailableAtUtc = intent.CreatedAtUtc,
             AttemptCount = 0
@@ -71,6 +74,7 @@ internal sealed class RedisNodeFinalizationRecord
         {
             var bodyDigest = Convert.ToHexString(SHA256.HashData(Convert.FromBase64String(ExactBodyBase64)));
             return string.Equals(BodyDigest, bodyDigest, StringComparison.Ordinal) &&
+                   IsSha256Digest(TerminalMutationDigest) &&
                    string.Equals(ImmutableDigest, ComputeImmutableDigest(this), StringComparison.Ordinal);
         }
         catch (FormatException)
@@ -79,7 +83,11 @@ internal sealed class RedisNodeFinalizationRecord
         }
     }
 
-    private static string ComputeImmutableDigest(RedisNodeFinalizationRecord record)
+    private static bool IsSha256Digest(string value)
+        => value is { Length: 64 } && value.All(character =>
+            character is >= '0' and <= '9' or >= 'A' and <= 'F');
+
+    internal static string ComputeImmutableDigest(RedisNodeFinalizationRecord record)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -97,8 +105,41 @@ internal sealed class RedisNodeFinalizationRecord
             writer.WriteBoolean("allowPrivate", record.AllowPrivateCallbackAddressesForLocalDevelopment);
             writer.WriteString("requestNonce", record.RequestNonce);
             writer.WriteString("controlNonce", record.ControlNonce);
+            writer.WriteString("exactBodyBase64", record.ExactBodyBase64);
             writer.WriteString("bodyDigest", record.BodyDigest);
             writer.WriteString("createdAtUtc", record.CreatedAtUtc.ToString("O"));
+            writer.WriteEndObject();
+        }
+        return Convert.ToHexString(SHA256.HashData(stream.ToArray()));
+    }
+
+    internal static string ComputeTerminalMutationDigest(InternalFunctionContext context,
+        string resultAction, byte[] resultEnvelope)
+    {
+        var properties = context.GetPropsToUpdate().Order(StringComparer.Ordinal).ToArray();
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteStartArray("properties");
+            foreach (var property in properties) writer.WriteStringValue(property);
+            writer.WriteEndArray();
+            if (properties.Contains(nameof(InternalFunctionContext.Status), StringComparer.Ordinal))
+                writer.WriteNumber("status", (int)context.Status);
+            if (properties.Contains(nameof(InternalFunctionContext.ExceptionDetails), StringComparer.Ordinal))
+                writer.WriteString("exceptionDetails", context.ExceptionDetails);
+            if (properties.Contains(nameof(InternalFunctionContext.ExecutedAt), StringComparer.Ordinal))
+                writer.WriteString("executedAt", context.ExecutedAt.ToString("O"));
+            if (properties.Contains(nameof(InternalFunctionContext.ElapsedTime), StringComparer.Ordinal))
+                writer.WriteNumber("elapsedTime", context.ElapsedTime);
+            if (properties.Contains(nameof(InternalFunctionContext.RetryCount), StringComparer.Ordinal))
+                writer.WriteNumber("retryCount", context.RetryCount);
+            if (properties.Contains(nameof(InternalFunctionContext.ReleaseLock), StringComparer.Ordinal))
+                writer.WriteBoolean("releaseLock", context.ReleaseLock);
+            writer.WriteString("resultAction", resultAction);
+            writer.WriteString("resultDigest", resultEnvelope == null
+                ? null
+                : Convert.ToHexString(SHA256.HashData(resultEnvelope)));
             writer.WriteEndObject();
         }
         return Convert.ToHexString(SHA256.HashData(stream.ToArray()));

@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Security.Cryptography;
 using System.Net;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -86,6 +88,55 @@ public sealed class RedisNodeFinalizationOutboxTests
     }
 
     [Fact]
+    public async Task DuplicateWithDifferentExactBodyBytesAndCopiedDigestsFailsClosed()
+    {
+        var acquired = await AcquireTimeAsync();
+        var intent = Intent(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken!.Value);
+        var context = Terminal(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken.Value, null);
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(context, intent));
+
+        var key = intent.OutboxId.ToString("D");
+        var corrupt = JsonNode.Parse((string)(await _db.HashGetAsync(
+            RedisKeyBuilder.NodeFinalizationRecordsKey, key))!)!.AsObject();
+        corrupt[nameof(RedisNodeFinalizationRecord.ExactBodyBase64)] = Convert.ToBase64String("different"u8);
+        await _db.HashSetAsync(RedisKeyBuilder.NodeFinalizationRecordsKey, key, corrupt.ToJsonString());
+
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(context, intent));
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("result")]
+    [InlineData("terminal-prop")]
+    public async Task DuplicateDispatchWithDifferentTerminalMutationFailsClosed(string difference)
+    {
+        var acquired = await AcquireTimeAsync();
+        var intent = Intent(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken!.Value);
+        var original = Terminal(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken.Value, null);
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(original, intent));
+
+        var duplicate = difference switch
+        {
+            "status" => new InternalFunctionContext
+                {
+                    TickerId = acquired.Id, Type = TickerType.TimeTicker,
+                    AcquisitionToken = acquired.AcquisitionToken.Value
+                }
+                .SetProperty(x => x.Status, TickerStatus.Failed)
+                .SetProperty(x => x.ExceptionDetails, "different failure")
+                .SetProperty(x => x.ReleaseLock, true),
+            "result" => Terminal(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken.Value,
+                new TickerResultEnvelope([9], 1, "application/octet-stream")),
+            _ => Terminal(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken.Value, null)
+                .SetProperty(x => x.ElapsedTime, 99)
+        };
+
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(duplicate, intent));
+    }
+
+    [Fact]
     public async Task WrongTypeScriptFailureLeavesTerminalResultAndOutboxAbsent()
     {
         var acquired = await AcquireTimeAsync();
@@ -146,6 +197,97 @@ public sealed class RedisNodeFinalizationOutboxTests
         Assert.Equal(1, await _db.SortedSetLengthAsync(RedisKeyBuilder.NodeFinalizationDueKey));
     }
 
+    [Theory]
+    [InlineData("base64")]
+    [InlineData("digest")]
+    [InlineData("guid")]
+    [InlineData("uri")]
+    [InlineData("body")]
+    public async Task SemanticallyCorruptClaimIsExactlyDiscarded(string corruption)
+    {
+        var (intent, record) = await EnqueueAndReadRecordAsync();
+        switch (corruption)
+        {
+            case "base64":
+                record.ExactBodyBase64 = "%%%";
+                break;
+            case "digest":
+                record.BodyDigest = new string('0', 64);
+                break;
+            case "guid":
+                record.TickerId = "not-a-guid";
+                break;
+            case "uri":
+                record.FinalizeUri = "ftp://node.example/finalize";
+                break;
+            case "body":
+                var mismatchedBody = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+                {
+                    tickerType = record.TickerType,
+                    tickerId = Guid.NewGuid(),
+                    acquisitionToken = record.AcquisitionToken,
+                    dispatchId = record.DispatchId,
+                    nodeEpoch = record.NodeEpoch,
+                    controlNonce = record.ControlNonce
+                }));
+                record.ExactBodyBase64 = Convert.ToBase64String(mismatchedBody);
+                record.BodyDigest = Convert.ToHexString(SHA256.HashData(mismatchedBody));
+                break;
+        }
+        record.ImmutableDigest = RedisNodeFinalizationRecord.ComputeImmutableDigest(record);
+        await StoreRecordAsync(record);
+
+        Assert.Empty(await _provider.ClaimDueNodeFinalizationsAsync("worker", 1, Now, Now.AddMinutes(1)));
+        Assert.False(await _db.HashExistsAsync(RedisKeyBuilder.NodeFinalizationRecordsKey,
+            intent.OutboxId.ToString("D")));
+        Assert.Null(await _db.SortedSetScoreAsync(RedisKeyBuilder.NodeFinalizationDueKey,
+            intent.OutboxId.ToString("D")));
+    }
+
+    [Fact]
+    public async Task CorruptClaimCleanupCannotDeleteConcurrentRepairWithNewLease()
+    {
+        var (intent, record) = await EnqueueAndReadRecordAsync();
+        record.ExactBodyBase64 = "%%%";
+        record.ImmutableDigest = RedisNodeFinalizationRecord.ComputeImmutableDigest(record);
+        await StoreRecordAsync(record);
+
+        var repaired = RedisNodeFinalizationRecord.Create(intent, record.TerminalMutationDigest);
+        var newerToken = Guid.NewGuid();
+        var newerLease = Now.AddMinutes(2);
+        _provider.AfterNodeFinalizationClaimScriptEvaluatedAsync = async () =>
+        {
+            repaired.ClaimToken = newerToken.ToString("D");
+            repaired.ClaimedBy = "repair-worker";
+            repaired.LeaseUntilUtc = newerLease;
+            repaired.AttemptCount = 2;
+            await StoreRecordAsync(repaired, RedisKeyBuilder.ToScore(newerLease));
+        };
+
+        Assert.Empty(await _provider.ClaimDueNodeFinalizationsAsync("worker", 1, Now, Now.AddMinutes(1)));
+        Assert.True(await _db.HashExistsAsync(RedisKeyBuilder.NodeFinalizationRecordsKey,
+            intent.OutboxId.ToString("D")));
+        Assert.Equal(RedisKeyBuilder.ToScore(newerLease), await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.NodeFinalizationDueKey, intent.OutboxId.ToString("D")));
+    }
+
+    [Fact]
+    public async Task CancellationAfterClaimEvalReturnsCommittedClaimWithoutHidingLease()
+    {
+        await EnqueueAndReadRecordAsync();
+        using var cancellation = new CancellationTokenSource();
+        _provider.AfterNodeFinalizationClaimScriptEvaluatedAsync = () =>
+        {
+            cancellation.Cancel();
+            return Task.CompletedTask;
+        };
+
+        var claim = Assert.Single(await _provider.ClaimDueNodeFinalizationsAsync(
+            "worker", 1, Now, Now.AddMinutes(1), cancellation.Token));
+        Assert.Equal("worker", claim.ClaimedBy);
+        Assert.True(cancellation.IsCancellationRequested);
+    }
+
     [Fact]
     public async Task CronOccurrenceAndEmbeddedChildUseExactGenerationFence()
     {
@@ -198,6 +340,25 @@ public sealed class RedisNodeFinalizationOutboxTests
         return Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([ticker.Id]));
     }
 
+    private async Task<(NodeFinalizationIntent Intent, RedisNodeFinalizationRecord Record)> EnqueueAndReadRecordAsync()
+    {
+        var acquired = await AcquireTimeAsync();
+        var intent = Intent(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken!.Value);
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            Terminal(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken.Value, null), intent));
+        var raw = (string)(await _db.HashGetAsync(RedisKeyBuilder.NodeFinalizationRecordsKey,
+            intent.OutboxId.ToString("D")))!;
+        return (intent, JsonSerializer.Deserialize<RedisNodeFinalizationRecord>(raw)!);
+    }
+
+    private async Task StoreRecordAsync(RedisNodeFinalizationRecord record, double? score = null)
+    {
+        await _db.HashSetAsync(RedisKeyBuilder.NodeFinalizationRecordsKey, record.OutboxId,
+            JsonSerializer.Serialize(record));
+        await _db.SortedSetAddAsync(RedisKeyBuilder.NodeFinalizationDueKey, record.OutboxId,
+            score ?? RedisKeyBuilder.ToScore(Now));
+    }
+
     private static TimeTickerEntity NewTicker() => new()
     {
         Id = Guid.NewGuid(), Function = "OutboxFn", ExecutionTime = Now.AddMinutes(-1),
@@ -232,6 +393,32 @@ public sealed class RedisNodeFinalizationOutboxTests
 
 public sealed class RedisNodeFinalizationTopologyTests
 {
+    [Fact]
+    public void CapabilityDynamicallyTracksDisconnectedStandaloneAndClusterTopology()
+    {
+        var db = Substitute.For<IDatabase>();
+        var multiplexer = Substitute.For<IConnectionMultiplexer>();
+        var server = Substitute.For<IServer>();
+        var endpoint = new DnsEndPoint("redis.example", 6379);
+        db.Multiplexer.Returns(multiplexer);
+        multiplexer.GetEndPoints(Arg.Any<bool>()).Returns([endpoint]);
+        multiplexer.GetServer(endpoint, Arg.Any<object>()).Returns(server);
+        var clock = Substitute.For<ITickerClock>();
+        clock.UtcNow.Returns(new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc));
+        var provider = new TickerRedisPersistenceProvider<TimeTickerEntity, CronTickerEntity>(
+            db, clock, new SchedulerOptionsBuilder { NodeIdentifier = "dynamic-node" },
+            new TickerQRedisOptionBuilder { JsonSerializerContext = TestJsonSerializerContext.Default },
+            NullLogger<TickerRedisPersistenceProvider<TimeTickerEntity, CronTickerEntity>>.Instance);
+
+        server.IsConnected.Returns(false);
+        Assert.False(provider.SupportsDurableNodeFinalizationOutbox);
+        server.IsConnected.Returns(true);
+        server.ServerType.Returns(ServerType.Standalone);
+        Assert.True(provider.SupportsDurableNodeFinalizationOutbox);
+        server.ServerType.Returns(ServerType.Cluster);
+        Assert.False(provider.SupportsDurableNodeFinalizationOutbox);
+    }
+
     [Fact]
     public void ClusterTopologyFailsClosedBeforeAnyCrossSlotScriptCanRun()
     {

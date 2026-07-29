@@ -42,9 +42,10 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     private static readonly string RecoverStaleScript = LuaScriptLoader.Load("RecoverStale");
     private static readonly string AcquireOnDemandScript = LuaScriptLoader.Load("AcquireOnDemand");
     private static readonly string ClaimNodeFinalizationsScript = LuaScriptLoader.Load("ClaimNodeFinalizations");
+    private static readonly string DiscardClaimedNodeFinalizationScript = LuaScriptLoader.Load("DiscardClaimedNodeFinalization");
     private static readonly string CompleteNodeFinalizationScript = LuaScriptLoader.Load("CompleteNodeFinalization");
     private static readonly string RescheduleNodeFinalizationScript = LuaScriptLoader.Load("RescheduleNodeFinalization");
-    private readonly bool _supportsDurableNodeFinalizationOutbox;
+    internal Func<Task> AfterNodeFinalizationClaimScriptEvaluatedAsync { get; set; }
 
     protected BaseRedisPersistenceProvider(
         IDatabase db,
@@ -79,7 +80,6 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
         Serializer = new RedisSerializer(db, jsonOptions, logger ?? throw new ArgumentNullException(nameof(logger)));
         IndexManager = new RedisIndexManager<TTimeTicker, TCronTicker>(db, LockHolder, Clock);
-        _supportsDurableNodeFinalizationOutbox = IsStandaloneTopology(db);
     }
 
     public bool SupportsLeaseBasedRecovery => true;
@@ -89,7 +89,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     /// result, and outbox keys have no common hash tag, so a multi-key script would CROSSSLOT.
     /// Standalone Redis (including ordinary primary/replica deployments) supports the atomic script.
     /// </summary>
-    public bool SupportsDurableNodeFinalizationOutbox => _supportsDurableNodeFinalizationOutbox;
+    public bool SupportsDurableNodeFinalizationOutbox => IsStandaloneTopology(Db);
 
     private static bool IsStandaloneTopology(IDatabase db)
     {
@@ -103,9 +103,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             foreach (var endpoint in endpoints)
             {
                 var server = multiplexer.GetServer(endpoint);
-                if (!server.IsConnected) continue;
+                if (!server.IsConnected || server.ServerType != ServerType.Standalone) return false;
                 observed = true;
-                if (server.ServerType != ServerType.Standalone) return false;
             }
             return observed;
         }
@@ -297,6 +296,9 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             ? RedisResultEnvelopeCodec.Serialize(functionContext.ResultEnvelope)
             : null;
         var resultAction = successful ? (encodedEnvelope == null ? "clear" : "set") : "none";
+        if (outboxRecord != null)
+            outboxRecord.TerminalMutationDigest = RedisNodeFinalizationRecord.ComputeTerminalMutationDigest(
+                functionContext, resultAction, encodedEnvelope);
 
         return functionContext.Type == TickerType.CronTickerOccurrence
             ? await CommitSuccessfulCronOccurrenceAsync(
@@ -423,16 +425,27 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
         var result = await Db.ScriptEvaluateAsync(ClaimNodeFinalizationsScript,
             [(RedisKey)NodeFinalizationRecordsKey, NodeFinalizationDueKey], arguments).ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
+        if (AfterNodeFinalizationClaimScriptEvaluatedAsync != null)
+            await AfterNodeFinalizationClaimScriptEvaluatedAsync().ConfigureAwait(false);
         var rows = (RedisResult[])result;
         var claims = new List<NodeFinalizationClaim>(Math.Min(rows.Length, maxCount));
         foreach (var row in rows)
         {
-            var record = Serializer.DeserializeOrNull<RedisNodeFinalizationRecord>(row.ToString());
+            var columns = (RedisResult[])row;
+            if (columns.Length != 4) continue;
+            var outboxId = columns[0].ToString();
+            var issuedToken = columns[1].ToString();
+            var issuedOwner = columns[2].ToString();
+            var rawRecord = columns[3].ToString();
+            var record = Serializer.DeserializeOrNull<RedisNodeFinalizationRecord>(rawRecord);
             if (record == null || !record.HasValidIntegrity() || !Guid.TryParse(record.ClaimToken, out var token) ||
                 !string.Equals(record.ClaimedBy, workerId, StringComparison.Ordinal) ||
                 record.LeaseUntilUtc != leaseUntilUtc || record.AttemptCount < 1)
+            {
+                await DiscardClaimedNodeFinalizationAsync(
+                    outboxId, issuedToken, issuedOwner, rawRecord).ConfigureAwait(false);
                 continue;
+            }
             try
             {
                 claims.Add(new NodeFinalizationClaim(record.ToIntent(), token, workerId,
@@ -440,11 +453,19 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             }
             catch (Exception exception) when (exception is ArgumentException or FormatException)
             {
-                // Persisted corruption is never returned as claimed work. The bounded Lua page has
-                // already repaired structurally corrupt index entries; semantic corruption fails closed.
+                await DiscardClaimedNodeFinalizationAsync(
+                    outboxId, issuedToken, issuedOwner, rawRecord).ConfigureAwait(false);
             }
         }
         return claims;
+    }
+
+    private async Task DiscardClaimedNodeFinalizationAsync(
+        string outboxId, string claimToken, string claimedBy, string rawRecord)
+    {
+        await Db.ScriptEvaluateAsync(DiscardClaimedNodeFinalizationScript,
+            [(RedisKey)NodeFinalizationRecordsKey, NodeFinalizationDueKey],
+            [(RedisValue)outboxId, claimToken, claimedBy, rawRecord]).ConfigureAwait(false);
     }
 
     public Task<bool> CompleteNodeFinalizationAsync(

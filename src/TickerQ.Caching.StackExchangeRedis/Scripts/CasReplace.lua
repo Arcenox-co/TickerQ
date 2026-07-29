@@ -13,7 +13,8 @@ local function same_immutable(a, b)
     and a['FinalizePathAndQuery'] == b['FinalizePathAndQuery']
     and a['AllowPrivateCallbackAddressesForLocalDevelopment'] == b['AllowPrivateCallbackAddressesForLocalDevelopment']
     and a['RequestNonce'] == b['RequestNonce'] and a['ControlNonce'] == b['ControlNonce']
-    and a['BodyDigest'] == b['BodyDigest'] and a['CreatedAtUtc'] == b['CreatedAtUtc']
+    and a['ExactBodyBase64'] == b['ExactBodyBase64'] and a['BodyDigest'] == b['BodyDigest']
+    and a['TerminalMutationDigest'] == b['TerminalMutationDigest'] and a['CreatedAtUtc'] == b['CreatedAtUtc']
     and a['ImmutableDigest'] == b['ImmutableDigest']
 end
 local function type_is(key, allowed)
@@ -37,7 +38,8 @@ if enqueue then
   end
   local recordOk, record = pcall(cjson.decode, ARGV[10])
   if not recordOk or type(record) ~= 'table' or record['OutboxId'] ~= ARGV[11]
-    or record['ImmutableDigest'] ~= ARGV[12] then
+    or record['ImmutableDigest'] ~= ARGV[12] or type(record['TerminalMutationDigest']) ~= 'string'
+    or string.len(record['TerminalMutationDigest']) ~= 64 then
     return redis.error_reply('invalid outbox record')
   end
   local existingJson = redis.call('HGET', KEYS[3], ARGV[11])

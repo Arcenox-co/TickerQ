@@ -24,7 +24,9 @@ for i, member in ipairs(members) do
       local updated = cjson.encode(record)
       redis.call('HSET', KEYS[1], member, updated)
       redis.call('ZADD', KEYS[2], ARGV[4], member)
-      table.insert(claimed, updated)
+      -- Return claim identity outside the JSON payload so the caller can exactly discard a
+      -- semantically invalid record even when its JSON cannot be reconstructed as a C# record.
+      table.insert(claimed, { member, ARGV[6 + i], ARGV[3], updated })
     end
   end
 end
