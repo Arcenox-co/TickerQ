@@ -13,10 +13,17 @@ namespace TickerQ.MongoDB.Indexes
         where TCronTicker : CronTickerEntity, new()
     {
         private readonly ITickerMongoContext<TTimeTicker, TCronTicker> _context;
+        private readonly TickerMongoPersistenceProvider<TTimeTicker, TCronTicker> _provider;
+        private static readonly TransactionOptions ProbeTransactionOptions = new(
+            readConcern: ReadConcern.Snapshot,
+            writeConcern: WriteConcern.WMajority);
 
-        public TickerIndexProvisioner(ITickerMongoContext<TTimeTicker, TCronTicker> context)
+        public TickerIndexProvisioner(
+            ITickerMongoContext<TTimeTicker, TCronTicker> context,
+            TickerMongoPersistenceProvider<TTimeTicker, TCronTicker> provider)
         {
             _context = context;
+            _provider = provider;
         }
 
         public async Task StartAsync(CancellationToken cancellationToken)
@@ -33,6 +40,42 @@ namespace TickerQ.MongoDB.Indexes
             await CreateCronOccurrenceIndexes(cancellationToken).ConfigureAwait(false);
             await CreateResultIndexes(cancellationToken).ConfigureAwait(false);
             await CreateNodeFinalizationIndexes(cancellationToken).ConfigureAwait(false);
+            await ProbeTransactionsAndMarkReadyAsync(fence, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task ProbeTransactionsAndMarkReadyAsync(
+            IMongoCollection<BsonDocument> fence, CancellationToken cancellationToken)
+        {
+            using var probeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            probeTimeout.CancelAfter(System.TimeSpan.FromSeconds(10));
+            var probeToken = probeTimeout.Token;
+            using var session = await _context.Database.Client.StartSessionAsync(
+                cancellationToken: probeToken).ConfigureAwait(false);
+            try
+            {
+                await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    await fence.UpdateOneAsync(s,
+                        Builders<BsonDocument>.Filter.Eq("_id", "time-ticker-graph"),
+                        Builders<BsonDocument>.Update.Inc("Version", 0L),
+                        cancellationToken: ct).ConfigureAwait(false);
+                    return true;
+                }, ProbeTransactionOptions, probeToken).ConfigureAwait(false);
+                _provider.MarkDurableNodeFinalizationOutboxReady();
+            }
+            catch (MongoCommandException ex) when (ex.Code == 20 && ex.Message.Contains(
+                       "Transaction numbers are only allowed on a replica set member or mongos",
+                       System.StringComparison.OrdinalIgnoreCase))
+            {
+                // Standalone deployments remain operational for non-transactional features, but
+                // durable Node finalization support stays false.
+            }
+            catch (System.NotSupportedException ex) when (ex.Message.Contains(
+                       "Standalone servers do not support transactions",
+                       System.StringComparison.OrdinalIgnoreCase))
+            {
+                // The driver can reject a discovered standalone locally before issuing a command.
+            }
         }
 
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

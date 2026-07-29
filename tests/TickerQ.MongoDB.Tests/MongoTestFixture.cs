@@ -24,6 +24,7 @@ public class MongoTestFixture : IAsyncLifetime
     public IMongoClient Client { get; private set; } = null!;
     public IMongoDatabase Database { get; private set; } = null!;
     public bool UsesDirectConnection { get; private set; }
+    public bool ProviderBeforeReadinessProbe { get; private set; }
     public IMongoCollection<TimeTickerEntity> TimeTickers => _context.TimeTickers;
     public IMongoCollection<CronTickerEntity> CronTickers => _context.CronTickers;
     public IMongoCollection<CronTickerOccurrenceEntity<CronTickerEntity>> CronTickerOccurrences => _context.CronTickerOccurrences;
@@ -59,8 +60,9 @@ public class MongoTestFixture : IAsyncLifetime
 
         Options = new SchedulerOptionsBuilder { NodeIdentifier = NodeId };
         ConcreteProvider = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(_context, Clock, Options);
+        ProviderBeforeReadinessProbe = ConcreteProvider.SupportsDurableNodeFinalizationOutbox;
 
-        var provisioner = new TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity>(_context);
+        var provisioner = new TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity>(_context, ConcreteProvider);
         await provisioner.StartAsync(CancellationToken.None);
     }
 
@@ -81,7 +83,7 @@ public class MongoTestFixture : IAsyncLifetime
 
     /// <summary>Internal helper to instantiate a fresh provisioner for idempotency tests.</summary>
     internal TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity> NewProvisioner()
-        => new(_context);
+        => new(_context, ConcreteProvider);
 
     internal TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity> NewProvider()
         => new(_context, Clock, Options);

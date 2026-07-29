@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using MongoDB.Bson;
@@ -41,6 +42,7 @@ namespace TickerQ.MongoDB.Infrastructure
         internal Func<Guid, CancellationToken, Task> AfterRetentionDiscoveryForTestAsync { get; set; }
         internal Func<CancellationToken, Task> AfterResultMutationForTestAsync { get; set; }
         internal Func<CancellationToken, Task> AfterNodeFinalizationInsertForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> AfterNodeFinalizationTransactionForTestAsync { get; set; }
 
         internal const string RetentionLockHolder = "__tickerq_retention__";
         private static readonly TickerStatus[] TerminalStatuses =
@@ -63,8 +65,6 @@ namespace TickerQ.MongoDB.Infrastructure
             _schedulerOptions = optionsBuilder;
             _graphFence = context.Database.GetCollection<BsonDocument>(
                 context.TimeTickers.CollectionNamespace.CollectionName + "_GraphFence");
-            if (!string.IsNullOrWhiteSpace(context.Database.Client.Settings.ReplicaSetName))
-                _durableNodeFinalizationSupported = 1;
         }
 
         // A directConnection=true client deliberately reports ClusterType.Standalone even when the
@@ -220,24 +220,11 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public bool SupportsResultPublication => true;
         public bool SupportsAcknowledgedTerminalUpdates => true;
-        // An explicit replica-set setting is sufficient immediately. Testcontainers and some existing-client
-        // configurations use directConnection=true without a replicaSet query option; for those, the server
-        // description becomes authoritative after the index provisioner's startup round trip. Unknown and
-        // standalone descriptions remain false. Once transaction support is proven it is latched, so a
-        // temporary topology-discovery outage cannot make an advertised provider silently stop participating.
         public bool SupportsDurableNodeFinalizationOutbox
-        {
-            get
-            {
-                if (Volatile.Read(ref _durableNodeFinalizationSupported) == 1) return true;
-                var servers = _context.Database.Client.Cluster.Description.Servers;
-                if (servers.Count == 0 || servers.Any(x =>
-                        x.Type is not (ServerType.ReplicaSetPrimary or ServerType.ReplicaSetSecondary)))
-                    return false;
-                Interlocked.Exchange(ref _durableNodeFinalizationSupported, 1);
-                return true;
-            }
-        }
+            => Volatile.Read(ref _durableNodeFinalizationSupported) == 1;
+
+        internal void MarkDurableNodeFinalizationOutboxReady()
+            => Interlocked.Exchange(ref _durableNodeFinalizationSupported, 1);
 
         private static BsonBinaryData ResultId(Guid id)
             => new(id, GuidRepresentation.Standard);
@@ -359,10 +346,36 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             "SchemaVersion", "TickerType", "TickerId", "AcquisitionToken", "DispatchId", "NodeEpoch",
             "FinalizeUri", "FinalizePathAndQuery", "AllowPrivateCallbackAddressesForLocalDevelopment",
-            "RequestNonce", "ControlNonce", "ExactBody", "CreatedAtUtc"
+            "RequestNonce", "ControlNonce", "ExactBody", "CreatedAtUtc", "TerminalMutationDigest"
         };
 
-        private static BsonDocument ToNodeFinalizationDocument(NodeFinalizationIntent intent) => new()
+        private static byte[] TerminalMutationDigest(InternalFunctionContext context)
+        {
+            var result = context.ResultEnvelope;
+            var canonical = new BsonDocument
+            {
+                ["Properties"] = new BsonArray(context.GetPropsToUpdate().OrderBy(x => x, StringComparer.Ordinal)),
+                ["Status"] = (int)context.Status,
+                ["ExecutedAt"] = context.ExecutedAt,
+                ["ExceptionDetails"] = context.ExceptionDetails == null ? BsonNull.Value : context.ExceptionDetails,
+                ["ElapsedTime"] = context.ElapsedTime,
+                ["RetryCount"] = context.RetryCount,
+                ["ReleaseLock"] = context.ReleaseLock,
+                ["ExecutionTime"] = context.ExecutionTime,
+                ["Result"] = result == null ? BsonNull.Value : new BsonDocument
+                {
+                    ["Payload"] = new BsonBinaryData(result.ToPayloadArray()),
+                    ["Version"] = result.Version,
+                    ["MediaType"] = result.MediaType,
+                    ["ContractId"] = result.ContractId == null ? BsonNull.Value : result.ContractId,
+                    ["ContractType"] = result.ContractType == null ? BsonNull.Value : result.ContractType
+                }
+            };
+            return SHA256.HashData(canonical.ToBson());
+        }
+
+        private static BsonDocument ToNodeFinalizationDocument(
+            NodeFinalizationIntent intent, InternalFunctionContext context) => new()
         {
             ["_id"] = GuidValue(intent.OutboxId),
             ["SchemaVersion"] = intent.SchemaVersion,
@@ -378,6 +391,7 @@ namespace TickerQ.MongoDB.Infrastructure
             ["ControlNonce"] = GuidValue(intent.ControlNonce),
             ["ExactBody"] = new BsonBinaryData(intent.ExactBody),
             ["CreatedAtUtc"] = intent.CreatedAtUtc,
+            ["TerminalMutationDigest"] = new BsonBinaryData(TerminalMutationDigest(context)),
             ["AvailableAtUtc"] = intent.CreatedAtUtc,
             ["ClaimToken"] = BsonNull.Value,
             ["ClaimedBy"] = BsonNull.Value,
@@ -390,6 +404,23 @@ namespace TickerQ.MongoDB.Infrastructure
             => stored.GetValue("_id", BsonNull.Value).Equals(expected["_id"]) &&
                NodeFinalizationImmutableFields.All(name =>
                    stored.GetValue(name, BsonNull.Value).Equals(expected[name]));
+
+        private static bool IsAmbiguousCommitFailure(Exception exception)
+            => exception is TimeoutException or MongoConnectionException ||
+               exception is MongoException mongo && mongo.HasErrorLabel("UnknownTransactionCommitResult");
+
+        private async Task<bool> ResolveAmbiguousNodeFinalizationCommitAsync(
+            Guid outboxId, BsonDocument expected)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var stored = await _context.NodeFinalizations.Find(
+                    Builders<BsonDocument>.Filter.Eq("_id", GuidValue(outboxId)))
+                .FirstOrDefaultAsync(timeout.Token).ConfigureAwait(false);
+            if (stored == null) return false;
+            if (HasExactImmutableIntent(stored, expected)) return true;
+            throw new InvalidOperationException(
+                "Ambiguous Node finalization commit resolved to an outbox row with different immutable intent or terminal mutation data.");
+        }
 
         private static Guid ReadGuid(BsonDocument document, string name)
             => document[name].AsBsonBinaryData.ToGuid(GuidRepresentation.Standard);
@@ -438,12 +469,12 @@ namespace TickerQ.MongoDB.Infrastructure
                 throw new NotSupportedException(
                     "Durable Mongo Node finalization requires an explicitly configured replica set transaction.");
 
-            var expected = ToNodeFinalizationDocument(intent);
+            var expected = ToNodeFinalizationDocument(intent, functionContext);
             using var session = await _context.Database.Client
                 .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
             try
             {
-                return await session.WithTransactionAsync(async (s, ct) =>
+                var committed = await session.WithTransactionAsync(async (s, ct) =>
                 {
                     await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
                     var idFilter = Builders<BsonDocument>.Filter.Eq("_id", GuidValue(intent.OutboxId));
@@ -485,7 +516,11 @@ namespace TickerQ.MongoDB.Infrastructure
                         var filter = fb.And(fb.Eq(x => x.Id, functionContext.TickerId),
                             fb.Ne(x => x.LockHolder, RetentionLockHolder));
                         if (functionContext.ParentId != null)
-                            filter &= fb.Eq(x => x.ChainRootId, functionContext.ChainRootId);
+                            filter &= fb.And(
+                                fb.Eq(x => x.ParentId, functionContext.ParentId),
+                                fb.Eq(x => x.ChainRootId, functionContext.ChainRootId),
+                                fb.Eq(x => x.ChainGeneration, functionContext.ChainGeneration),
+                                fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken));
                         else
                             filter &= fb.And(fb.Eq(x => x.LockHolder, _lockHolder),
                                 fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken));
@@ -509,11 +544,21 @@ namespace TickerQ.MongoDB.Infrastructure
                         await AfterNodeFinalizationInsertForTestAsync(ct).ConfigureAwait(false);
                     return true;
                 }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+                if (AfterNodeFinalizationTransactionForTestAsync != null)
+                    await AfterNodeFinalizationTransactionForTestAsync(CancellationToken.None).ConfigureAwait(false);
+                return committed;
             }
             catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
             {
                 throw new NotSupportedException(
                     "Durable Mongo Node finalization requires a replica set transaction.", ex);
+            }
+            catch (Exception ex) when (IsAmbiguousCommitFailure(ex))
+            {
+                if (await ResolveAmbiguousNodeFinalizationCommitAsync(intent.OutboxId, expected)
+                        .ConfigureAwait(false))
+                    return true;
+                throw;
             }
         }
 

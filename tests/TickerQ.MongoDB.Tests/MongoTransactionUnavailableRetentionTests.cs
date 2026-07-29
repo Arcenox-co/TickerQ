@@ -53,7 +53,7 @@ public sealed class MongoTransactionUnavailableRetentionTests : IAsyncLifetime
         var options = new SchedulerOptionsBuilder { NodeIdentifier = "standalone-node" };
         _provider = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(_context, clock, options);
 
-        var provisioner = new TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity>(_context);
+        var provisioner = new TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity>(_context, _provider);
         await provisioner.StartAsync(CancellationToken.None);
     }
 

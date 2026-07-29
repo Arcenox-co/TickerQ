@@ -16,8 +16,12 @@ public sealed class MongoNodeFinalizationOutboxTests : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
-    public void ReplicaSetProviderAdvertisesDurableSupport()
-        => Assert.True(_fixture.Provider.SupportsDurableNodeFinalizationOutbox);
+    public void DirectConnectionReplicaSetAdvertisesDurableSupportOnlyAfterStartupProbe()
+    {
+        Assert.True(_fixture.UsesDirectConnection);
+        Assert.False(_fixture.ProviderBeforeReadinessProbe);
+        Assert.True(_fixture.Provider.SupportsDurableNodeFinalizationOutbox);
+    }
 
     [Fact]
     public async Task AcceptedCommitAtomicallyPersistsStatusResultAndExactSecretFreeIntent()
@@ -55,6 +59,72 @@ public sealed class MongoNodeFinalizationOutboxTests : IAsyncLifetime
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             _fixture.Provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
                 Terminal(ticker.Id, acquired.AcquisitionToken, null), mismatch));
+    }
+
+    [Fact]
+    public async Task SameDispatchWithDifferentTerminalStatusOrResultFailsClosed()
+    {
+        var (ticker, acquired) = await AddAcquiredTimeTickerAsync();
+        var intent = Intent(ticker.Id, acquired.AcquisitionToken!.Value);
+        Assert.True(await _fixture.Provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            Terminal(ticker.Id, acquired.AcquisitionToken, new TickerResultEnvelope([1], 1, "application/json")), intent));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _fixture.Provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+                Terminal(ticker.Id, acquired.AcquisitionToken, new TickerResultEnvelope([2], 1, "application/json")), intent));
+        var failed = Terminal(ticker.Id, acquired.AcquisitionToken, null);
+        failed.SetProperty(x => x.Status, TickerStatus.Failed);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _fixture.Provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(failed, intent));
+
+        Assert.Equal(TickerStatus.Done, (await _fixture.Provider.GetTimeTickerById(ticker.Id))!.Status);
+        Assert.Equal(1, (await _fixture.Provider.GetTimeTickerResultAsync(ticker.Id))!.ToPayloadArray()[0]);
+        Assert.Equal(1, await _fixture.NodeFinalizations.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty));
+    }
+
+    [Fact]
+    public async Task ChildFinalizationRequiresPersistedExecutionIdentityAndParentAndRejectsSecondDispatch()
+    {
+        var root = NewTimeTicker();
+        var child = NewTimeTicker(root.Id);
+        await _fixture.Provider.AddTimeTickers([root, child]);
+        var acquiredRoot = Assert.Single(await _fixture.Provider.AcquireImmediateTimeTickersAsync([root.Id]));
+        var generation = acquiredRoot.ChainGeneration!.Value;
+        await StampChildExecutionAsync(child.Id, generation);
+
+        var first = Intent(child.Id, generation);
+        Assert.True(await _fixture.Provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            Terminal(child.Id, generation, new TickerResultEnvelope([3], 1, "application/json"),
+                parentId: root.Id, rootId: root.Id, generation: generation), first));
+
+        var second = Intent(child.Id, generation);
+        Assert.False(await _fixture.Provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            Terminal(child.Id, generation, new TickerResultEnvelope([9], 1, "application/json"),
+                parentId: root.Id, rootId: root.Id, generation: generation), second));
+        Assert.Equal(1, await _fixture.NodeFinalizations.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty));
+        Assert.Equal(3, (await _fixture.Provider.GetTimeTickerResultAsync(child.Id))!.ToPayloadArray()[0]);
+    }
+
+    [Fact]
+    public async Task ReparentedChildRejectsStaleParentIntentWithoutMutationOrOutbox()
+    {
+        var root = NewTimeTicker();
+        var oldParent = NewTimeTicker(root.Id);
+        var newParent = NewTimeTicker(root.Id);
+        var child = NewTimeTicker(oldParent.Id);
+        await _fixture.Provider.AddTimeTickers([root, oldParent, newParent, child]);
+        var acquiredRoot = Assert.Single(await _fixture.Provider.AcquireImmediateTimeTickersAsync([root.Id]));
+        var generation = acquiredRoot.ChainGeneration!.Value;
+        await StampChildExecutionAsync(child.Id, generation);
+        await _fixture.TimeTickers.UpdateOneAsync(x => x.Id == child.Id,
+            Builders<TimeTickerEntity>.Update.Set(x => x.ParentId, newParent.Id));
+
+        var intent = Intent(child.Id, generation);
+        Assert.False(await _fixture.Provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            Terminal(child.Id, generation, null, parentId: oldParent.Id,
+                rootId: root.Id, generation: generation), intent));
+        Assert.Equal(TickerStatus.InProgress, (await _fixture.Provider.GetTimeTickerById(child.Id))!.Status);
+        Assert.Equal(0, await _fixture.NodeFinalizations.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty));
     }
 
     [Fact]
@@ -105,6 +175,29 @@ public sealed class MongoNodeFinalizationOutboxTests : IAsyncLifetime
         Assert.Equal(TickerStatus.InProgress, (await _fixture.Provider.GetTimeTickerById(ticker.Id))!.Status);
         Assert.Null(await _fixture.Provider.GetTimeTickerResultAsync(ticker.Id));
         Assert.Equal(0, await _fixture.NodeFinalizations.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty));
+    }
+
+    [Fact]
+    public async Task MajorityCommitThenResponseLossIsResolvedByExactIndependentReadback()
+    {
+        var (ticker, acquired) = await AddAcquiredTimeTickerAsync();
+        var intent = Intent(ticker.Id, acquired.AcquisitionToken!.Value);
+        _fixture.ConcreteProvider.AfterNodeFinalizationTransactionForTestAsync =
+            _ => throw new TimeoutException("simulated lost commit response");
+        try
+        {
+            Assert.True(await _fixture.Provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+                Terminal(ticker.Id, acquired.AcquisitionToken,
+                    new TickerResultEnvelope([4], 1, "application/json")), intent));
+        }
+        finally
+        {
+            _fixture.ConcreteProvider.AfterNodeFinalizationTransactionForTestAsync = null;
+        }
+
+        Assert.Equal(TickerStatus.Done, (await _fixture.Provider.GetTimeTickerById(ticker.Id))!.Status);
+        Assert.Equal(4, (await _fixture.Provider.GetTimeTickerResultAsync(ticker.Id))!.ToPayloadArray()[0]);
+        Assert.Equal(1, await _fixture.NodeFinalizations.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty));
     }
 
     [Fact]
@@ -159,16 +252,31 @@ public sealed class MongoNodeFinalizationOutboxTests : IAsyncLifetime
     }
 
     private static InternalFunctionContext Terminal(Guid id, Guid? token, TickerResultEnvelope? result,
-        TickerType tickerType = TickerType.TimeTicker, Guid? parentId = null)
+        TickerType tickerType = TickerType.TimeTicker, Guid? parentId = null,
+        Guid? rootId = null, Guid? generation = null)
     {
         var context = new InternalFunctionContext
         {
             TickerId = id, FunctionName = "node-outbox", Type = tickerType,
-            AcquisitionToken = token, ParentId = parentId
+            AcquisitionToken = token, ParentId = parentId,
+            ChainRootId = rootId, ChainGeneration = generation
         }.SetProperty(x => x.Status, TickerStatus.Done).SetProperty(x => x.ReleaseLock, true);
         context.SetProperty(x => x.ResultEnvelope, result);
         return context;
     }
+
+    private TimeTickerEntity NewTimeTicker(Guid? parentId = null) => new()
+    {
+        Id = Guid.NewGuid(), Function = "node-outbox-child", Request = [], ParentId = parentId,
+        ExecutionTime = parentId == null ? _fixture.FixedNow : null, Status = TickerStatus.Idle,
+        CreatedAt = _fixture.FixedNow, UpdatedAt = _fixture.FixedNow
+    };
+
+    private Task StampChildExecutionAsync(Guid childId, Guid generation)
+        => _fixture.TimeTickers.UpdateOneAsync(x => x.Id == childId,
+            Builders<TimeTickerEntity>.Update
+                .Set(x => x.Status, TickerStatus.InProgress)
+                .Set(x => x.AcquisitionToken, generation));
 
     private static NodeFinalizationIntent Intent(Guid tickerId, Guid token, Guid? outboxId = null,
         Guid? controlNonce = null, TickerType tickerType = TickerType.TimeTicker)
