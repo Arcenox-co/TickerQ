@@ -198,15 +198,12 @@ namespace TickerQ.Utilities
         
         public static string ReadTickerRequestAsString(byte[] gzipBytes)
         {
-            if (!UseGZipCompression)
+            var isCompressed = gzipBytes.Length >= GZipSignature.Length &&
+                               gzipBytes.TakeLast(GZipSignature.Length).SequenceEqual(GZipSignature);
+            if (!isCompressed)
             {
-                // When compression is disabled, treat the bytes as plain UTF-8 JSON
+                // Persisted rows can outlive compression configuration changes.
                 return Encoding.UTF8.GetString(gzipBytes);
-            }
-
-            if (!gzipBytes.TakeLast(GZipSignature.Length).SequenceEqual(GZipSignature))
-            {
-                throw new Exception("The bytes are not GZip compressed.");
             }
 
             var compressedBytes = gzipBytes.Take(gzipBytes.Length - GZipSignature.Length).ToArray();

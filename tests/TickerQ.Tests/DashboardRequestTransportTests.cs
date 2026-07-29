@@ -177,24 +177,13 @@ public sealed class DashboardRequestTransportTests
     public void WriteFallback_EmitsNumericArray_WithoutRecursing()
     {
         var options = BuildOptions();
-        // Force the primary Base64 path to fail: with compression enabled,
-        // ReadTickerRequestAsString rejects bytes lacking the GZip signature,
-        // exercising the Write fallback. It must emit a numeric array directly
-        // instead of re-entering the serializer for byte[] (infinite recursion).
-        var original = TickerHelper.UseGZipCompression;
-        try
-        {
-            TickerHelper.UseGZipCompression = true;
-            var value = new byte[] { 1, 2, 3 };
+        // A corrupt stored value carrying the TickerQ GZip marker must fall back
+        // to raw numeric bytes without re-entering this byte[] converter.
+        var value = new byte[] { 1, 2, 3, 0x1f, 0x8b, 0x08, 0x00 };
 
-            var wire = JsonSerializer.Serialize(value, options);
+        var wire = JsonSerializer.Serialize(value, options);
 
-            Assert.Equal("[1,2,3]", wire);
-        }
-        finally
-        {
-            TickerHelper.UseGZipCompression = original;
-        }
+        Assert.Equal("[1,2,3,31,139,8,0]", wire);
     }
 
     [Fact]
