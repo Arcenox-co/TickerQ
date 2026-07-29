@@ -59,6 +59,10 @@ public sealed class MongoTransactionUnavailableRetentionTests : IAsyncLifetime
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
 
+    [Fact]
+    public void DurableNodeFinalizationCapabilityIsFalseOnStandalone()
+        => Assert.False(_provider.SupportsDurableNodeFinalizationOutbox);
+
     private DateTime Ago(double days) => _now - TimeSpan.FromDays(days);
 
     private TimeTickerEntity Node(TickerStatus status, DateTime? executedAt, Guid? parentId = null)

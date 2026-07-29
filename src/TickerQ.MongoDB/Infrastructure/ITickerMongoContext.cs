@@ -13,5 +13,6 @@ namespace TickerQ.MongoDB.Infrastructure
         IMongoCollection<TCronTicker> CronTickers { get; }
         IMongoCollection<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrences { get; }
         IMongoCollection<BsonDocument> TickerResults { get; }
+        IMongoCollection<BsonDocument> NodeFinalizations { get; }
     }
 }

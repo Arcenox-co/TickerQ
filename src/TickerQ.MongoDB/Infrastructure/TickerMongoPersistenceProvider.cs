@@ -27,6 +27,7 @@ namespace TickerQ.MongoDB.Infrastructure
         private readonly string _lockHolder;
         private readonly SchedulerOptionsBuilder _schedulerOptions;
         private readonly IMongoCollection<BsonDocument> _graphFence;
+        private int _durableNodeFinalizationSupported;
 
         private const string GraphFenceId = "time-ticker-graph";
         private static readonly TransactionOptions GraphTransactionOptions = new(
@@ -39,6 +40,7 @@ namespace TickerQ.MongoDB.Infrastructure
         internal Func<CancellationToken, Task> BeforeRetentionFenceForTestAsync { get; set; }
         internal Func<Guid, CancellationToken, Task> AfterRetentionDiscoveryForTestAsync { get; set; }
         internal Func<CancellationToken, Task> AfterResultMutationForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> AfterNodeFinalizationInsertForTestAsync { get; set; }
 
         internal const string RetentionLockHolder = "__tickerq_retention__";
         private static readonly TickerStatus[] TerminalStatuses =
@@ -61,6 +63,8 @@ namespace TickerQ.MongoDB.Infrastructure
             _schedulerOptions = optionsBuilder;
             _graphFence = context.Database.GetCollection<BsonDocument>(
                 context.TimeTickers.CollectionNamespace.CollectionName + "_GraphFence");
+            if (!string.IsNullOrWhiteSpace(context.Database.Client.Settings.ReplicaSetName))
+                _durableNodeFinalizationSupported = 1;
         }
 
         // A directConnection=true client deliberately reports ClusterType.Standalone even when the
@@ -216,6 +220,24 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public bool SupportsResultPublication => true;
         public bool SupportsAcknowledgedTerminalUpdates => true;
+        // An explicit replica-set setting is sufficient immediately. Testcontainers and some existing-client
+        // configurations use directConnection=true without a replicaSet query option; for those, the server
+        // description becomes authoritative after the index provisioner's startup round trip. Unknown and
+        // standalone descriptions remain false. Once transaction support is proven it is latched, so a
+        // temporary topology-discovery outage cannot make an advertised provider silently stop participating.
+        public bool SupportsDurableNodeFinalizationOutbox
+        {
+            get
+            {
+                if (Volatile.Read(ref _durableNodeFinalizationSupported) == 1) return true;
+                var servers = _context.Database.Client.Cluster.Description.Servers;
+                if (servers.Count == 0 || servers.Any(x =>
+                        x.Type is not (ServerType.ReplicaSetPrimary or ServerType.ReplicaSetSecondary)))
+                    return false;
+                Interlocked.Exchange(ref _durableNodeFinalizationSupported, 1);
+                return true;
+            }
+        }
 
         private static BsonBinaryData ResultId(Guid id)
             => new(id, GuidRepresentation.Standard);
@@ -329,6 +351,248 @@ namespace TickerQ.MongoDB.Infrastructure
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
             => CommitTerminalTickerCoreAsync(
                 functionContext, enforceRemoteChildToken: true, cancellationToken);
+
+        private static BsonBinaryData GuidValue(Guid value)
+            => new(value, GuidRepresentation.Standard);
+
+        private static readonly string[] NodeFinalizationImmutableFields =
+        {
+            "SchemaVersion", "TickerType", "TickerId", "AcquisitionToken", "DispatchId", "NodeEpoch",
+            "FinalizeUri", "FinalizePathAndQuery", "AllowPrivateCallbackAddressesForLocalDevelopment",
+            "RequestNonce", "ControlNonce", "ExactBody", "CreatedAtUtc"
+        };
+
+        private static BsonDocument ToNodeFinalizationDocument(NodeFinalizationIntent intent) => new()
+        {
+            ["_id"] = GuidValue(intent.OutboxId),
+            ["SchemaVersion"] = intent.SchemaVersion,
+            ["TickerType"] = (int)intent.TickerType,
+            ["TickerId"] = GuidValue(intent.TickerId),
+            ["AcquisitionToken"] = GuidValue(intent.AcquisitionToken),
+            ["DispatchId"] = GuidValue(intent.DispatchId),
+            ["NodeEpoch"] = GuidValue(intent.NodeEpoch),
+            ["FinalizeUri"] = intent.FinalizeUri,
+            ["FinalizePathAndQuery"] = intent.FinalizePathAndQuery,
+            ["AllowPrivateCallbackAddressesForLocalDevelopment"] = intent.AllowPrivateCallbackAddressesForLocalDevelopment,
+            ["RequestNonce"] = GuidValue(intent.RequestNonce),
+            ["ControlNonce"] = GuidValue(intent.ControlNonce),
+            ["ExactBody"] = new BsonBinaryData(intent.ExactBody),
+            ["CreatedAtUtc"] = intent.CreatedAtUtc,
+            ["AvailableAtUtc"] = intent.CreatedAtUtc,
+            ["ClaimToken"] = BsonNull.Value,
+            ["ClaimedBy"] = BsonNull.Value,
+            ["AttemptCount"] = 0,
+            ["LastAttemptAtUtc"] = BsonNull.Value,
+            ["LastErrorCode"] = BsonNull.Value
+        };
+
+        private static bool HasExactImmutableIntent(BsonDocument stored, BsonDocument expected)
+            => stored.GetValue("_id", BsonNull.Value).Equals(expected["_id"]) &&
+               NodeFinalizationImmutableFields.All(name =>
+                   stored.GetValue(name, BsonNull.Value).Equals(expected[name]));
+
+        private static Guid ReadGuid(BsonDocument document, string name)
+            => document[name].AsBsonBinaryData.ToGuid(GuidRepresentation.Standard);
+
+        private static NodeFinalizationIntent ReadNodeFinalizationIntent(BsonDocument document)
+            => new(
+                document["SchemaVersion"].AsInt32,
+                ReadGuid(document, "_id"),
+                (TickerType)document["TickerType"].AsInt32,
+                ReadGuid(document, "TickerId"),
+                ReadGuid(document, "AcquisitionToken"),
+                ReadGuid(document, "DispatchId"),
+                ReadGuid(document, "NodeEpoch"),
+                document["FinalizeUri"].AsString,
+                document["FinalizePathAndQuery"].AsString,
+                document["AllowPrivateCallbackAddressesForLocalDevelopment"].AsBoolean,
+                ReadGuid(document, "RequestNonce"),
+                ReadGuid(document, "ControlNonce"),
+                document["ExactBody"].AsBsonBinaryData.Bytes,
+                document["CreatedAtUtc"].ToUniversalTime());
+
+        private static void ValidateNodeFinalizationCommit(
+            InternalFunctionContext context, NodeFinalizationIntent intent)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(intent);
+            var successful = context.Status is TickerStatus.Done or TickerStatus.DueDone;
+            if (!context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+                context.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                    or TickerStatus.Cancelled or TickerStatus.Skipped) ||
+                (successful && !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+                throw new InvalidOperationException(
+                    "Durable Node finalization accepts only a terminal mutation; success requires an explicit optional result envelope.");
+            if (context.Type != intent.TickerType || context.TickerId != intent.TickerId ||
+                context.AcquisitionToken != intent.AcquisitionToken || intent.OutboxId != intent.DispatchId)
+                throw new InvalidOperationException("Node finalization intent does not match the exact ticker execution identity.");
+            if (context.ResultEnvelope != null) ValidateResult(context.ResultEnvelope);
+        }
+
+        public async Task<bool> CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            InternalFunctionContext functionContext, NodeFinalizationIntent intent,
+            CancellationToken cancellationToken = default)
+        {
+            ValidateNodeFinalizationCommit(functionContext, intent);
+            if (!SupportsDurableNodeFinalizationOutbox)
+                throw new NotSupportedException(
+                    "Durable Mongo Node finalization requires an explicitly configured replica set transaction.");
+
+            var expected = ToNodeFinalizationDocument(intent);
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                    var idFilter = Builders<BsonDocument>.Filter.Eq("_id", GuidValue(intent.OutboxId));
+                    var existing = await _context.NodeFinalizations.Find(s, idFilter)
+                        .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                    if (existing != null)
+                    {
+                        if (HasExactImmutableIntent(existing, expected)) return true;
+                        throw new InvalidOperationException(
+                            "A Node finalization outbox ID already exists with different immutable intent data.");
+                    }
+
+                    var now = _clock.UtcNow;
+                    UpdateResult acknowledged;
+                    string resultKind;
+                    if (functionContext.Type == TickerType.CronTickerOccurrence)
+                    {
+                        var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+                        var filter = functionContext.AcquisitionToken.HasValue
+                            ? fb.And(fb.Eq(x => x.Id, functionContext.TickerId),
+                                fb.Eq(x => x.LockHolder, _lockHolder),
+                                fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
+                            : fb.Where(_ => false);
+                        acknowledged = await _context.CronTickerOccurrences.UpdateOneAsync(
+                            s, filter, MongoUpdateBuilders.BuildCronOccurrenceUpdate<TCronTicker>(
+                                functionContext, now, NextLeaseUntil(now)), cancellationToken: ct).ConfigureAwait(false);
+                        resultKind = CronOccurrenceResultKind;
+                    }
+                    else
+                    {
+                        if (functionContext.ParentId != null &&
+                            !await LockCurrentChainGenerationAsync(s, functionContext, ct).ConfigureAwait(false))
+                            return false;
+                        if (functionContext.ParentId != null &&
+                            (!functionContext.AcquisitionToken.HasValue ||
+                             functionContext.AcquisitionToken != functionContext.ChainGeneration))
+                            return false;
+                        var fb = Builders<TTimeTicker>.Filter;
+                        var filter = fb.And(fb.Eq(x => x.Id, functionContext.TickerId),
+                            fb.Ne(x => x.LockHolder, RetentionLockHolder));
+                        if (functionContext.ParentId != null)
+                            filter &= fb.Eq(x => x.ChainRootId, functionContext.ChainRootId);
+                        else
+                            filter &= fb.And(fb.Eq(x => x.LockHolder, _lockHolder),
+                                fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken));
+                        acknowledged = await _context.TimeTickers.UpdateOneAsync(
+                            s, filter, MongoUpdateBuilders.BuildTimeTickerUpdate<TTimeTicker>(
+                                functionContext, now, NextLeaseUntil(now)), cancellationToken: ct).ConfigureAwait(false);
+                        resultKind = TimeResultKind;
+                    }
+
+                    if (acknowledged.MatchedCount != 1) return false;
+                    if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
+                    {
+                        await StoreOrClearResultAsync(s, functionContext.TickerId, resultKind,
+                            functionContext.ResultEnvelope, ct).ConfigureAwait(false);
+                        if (AfterResultMutationForTestAsync != null)
+                            await AfterResultMutationForTestAsync(ct).ConfigureAwait(false);
+                    }
+                    await _context.NodeFinalizations.InsertOneAsync(
+                        s, expected, cancellationToken: ct).ConfigureAwait(false);
+                    if (AfterNodeFinalizationInsertForTestAsync != null)
+                        await AfterNodeFinalizationInsertForTestAsync(ct).ConfigureAwait(false);
+                    return true;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+            {
+                throw new NotSupportedException(
+                    "Durable Mongo Node finalization requires a replica set transaction.", ex);
+            }
+        }
+
+        private static FilterDefinition<BsonDocument> ExactNodeFinalizationClaimFilter(NodeFinalizationClaim claim)
+        {
+            var intent = claim.Intent;
+            var fb = Builders<BsonDocument>.Filter;
+            return fb.And(
+                fb.Eq("_id", GuidValue(intent.OutboxId)),
+                fb.Eq("TickerType", (int)intent.TickerType),
+                fb.Eq("TickerId", GuidValue(intent.TickerId)),
+                fb.Eq("AcquisitionToken", GuidValue(intent.AcquisitionToken)),
+                fb.Eq("DispatchId", GuidValue(intent.DispatchId)),
+                fb.Eq("NodeEpoch", GuidValue(intent.NodeEpoch)),
+                fb.Eq("ClaimToken", GuidValue(claim.ClaimToken)),
+                fb.Eq("ClaimedBy", claim.ClaimedBy));
+        }
+
+        public async Task<IReadOnlyList<NodeFinalizationClaim>> ClaimDueNodeFinalizationsAsync(
+            string workerId, int maxCount, DateTime nowUtc, DateTime leaseUntilUtc,
+            CancellationToken cancellationToken = default)
+        {
+            if (!SupportsDurableNodeFinalizationOutbox) return Array.Empty<NodeFinalizationClaim>();
+            if (string.IsNullOrWhiteSpace(workerId) || workerId.Length > NodeFinalizationClaim.MaxClaimedByLength)
+                throw new ArgumentException("Worker ID is required and must be bounded.", nameof(workerId));
+            if (maxCount < 0) throw new ArgumentOutOfRangeException(nameof(maxCount));
+            if (maxCount == 0) return Array.Empty<NodeFinalizationClaim>();
+            if (nowUtc.Kind != DateTimeKind.Utc || leaseUntilUtc.Kind != DateTimeKind.Utc || leaseUntilUtc <= nowUtc)
+                throw new ArgumentException("Claim times must be UTC and the lease must end after now.");
+
+            var claims = new List<NodeFinalizationClaim>(maxCount);
+            for (var i = 0; i < maxCount; i++)
+            {
+                var token = Guid.NewGuid();
+                var document = await _context.NodeFinalizations.FindOneAndUpdateAsync(
+                    Builders<BsonDocument>.Filter.Lte("AvailableAtUtc", nowUtc),
+                    Builders<BsonDocument>.Update
+                        .Set("ClaimToken", GuidValue(token)).Set("ClaimedBy", workerId)
+                        .Set("AvailableAtUtc", leaseUntilUtc).Set("LastAttemptAtUtc", nowUtc)
+                        .Set("LastErrorCode", BsonNull.Value).Inc("AttemptCount", 1),
+                    new FindOneAndUpdateOptions<BsonDocument>
+                    {
+                        Sort = Builders<BsonDocument>.Sort.Ascending("AvailableAtUtc").Ascending("_id"),
+                        ReturnDocument = ReturnDocument.After
+                    }, cancellationToken).ConfigureAwait(false);
+                if (document == null) break;
+                claims.Add(new NodeFinalizationClaim(ReadNodeFinalizationIntent(document), token, workerId,
+                    document["AvailableAtUtc"].ToUniversalTime(), document["AttemptCount"].AsInt32));
+            }
+            return claims;
+        }
+
+        public async Task<bool> CompleteNodeFinalizationAsync(
+            NodeFinalizationClaim claim, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(claim);
+            if (!SupportsDurableNodeFinalizationOutbox) return false;
+            var result = await _context.NodeFinalizations.DeleteOneAsync(
+                ExactNodeFinalizationClaimFilter(claim), cancellationToken).ConfigureAwait(false);
+            return result.DeletedCount == 1;
+        }
+
+        public async Task<bool> RescheduleNodeFinalizationAsync(
+            NodeFinalizationClaim claim, DateTime availableAtUtc, string errorCode,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(claim);
+            if (availableAtUtc.Kind != DateTimeKind.Utc)
+                throw new ArgumentException("AvailableAtUtc must be UTC.", nameof(availableAtUtc));
+            if (string.IsNullOrWhiteSpace(errorCode) || errorCode.Length > NodeFinalizationOperationalState.MaxErrorCodeLength)
+                throw new ArgumentException("Error code is required and must be bounded.", nameof(errorCode));
+            if (!SupportsDurableNodeFinalizationOutbox) return false;
+            var result = await _context.NodeFinalizations.UpdateOneAsync(
+                ExactNodeFinalizationClaimFilter(claim),
+                Builders<BsonDocument>.Update.Set("AvailableAtUtc", availableAtUtc)
+                    .Set("ClaimToken", BsonNull.Value).Set("ClaimedBy", BsonNull.Value)
+                    .Set("LastErrorCode", errorCode), cancellationToken: cancellationToken).ConfigureAwait(false);
+            return result.MatchedCount == 1;
+        }
 
         private async Task<bool> CommitTerminalTickerCoreAsync(
             InternalFunctionContext functionContext, bool enforceRemoteChildToken,

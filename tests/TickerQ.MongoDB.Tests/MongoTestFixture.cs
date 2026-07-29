@@ -27,6 +27,7 @@ public class MongoTestFixture : IAsyncLifetime
     public IMongoCollection<TimeTickerEntity> TimeTickers => _context.TimeTickers;
     public IMongoCollection<CronTickerEntity> CronTickers => _context.CronTickers;
     public IMongoCollection<CronTickerOccurrenceEntity<CronTickerEntity>> CronTickerOccurrences => _context.CronTickerOccurrences;
+    public IMongoCollection<BsonDocument> NodeFinalizations => _context.NodeFinalizations;
     public ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity> Provider => ConcreteProvider;
     internal TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity> ConcreteProvider { get; private set; } = null!;
     public ITickerClock Clock { get; private set; } = null!;
@@ -75,6 +76,7 @@ public class MongoTestFixture : IAsyncLifetime
         await CronTickerOccurrences.DeleteManyAsync(Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Filter.Empty);
         await Database.GetCollection<BsonDocument>("ticker_TickerResults")
             .DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
+        await NodeFinalizations.DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
     }
 
     /// <summary>Internal helper to instantiate a fresh provisioner for idempotency tests.</summary>
