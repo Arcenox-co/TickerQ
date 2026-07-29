@@ -55,6 +55,7 @@ public class DesignTimeDbContextTests : IDisposable
         var cronResultEntity = model.FindEntityType(typeof(CronTickerOccurrenceResultEntity<CronTickerEntity>));
         Assert.Equal("ticker", timeResultEntity!.GetSchema());
         Assert.Equal("ticker", cronResultEntity!.GetSchema());
+        Assert.Equal("ticker", model.FindEntityType(typeof(NodeFinalizationOutboxEntity))!.GetSchema());
     }
 
     [Fact]
@@ -124,6 +125,8 @@ public class DesignTimeDbContextTests : IDisposable
             model.FindEntityType(typeof(TimeTickerResultEntity<TimeTickerEntity>))!.GetSchema());
         Assert.Equal("ticker",
             model.FindEntityType(typeof(CronTickerOccurrenceResultEntity<CronTickerEntity>))!.GetSchema());
+        Assert.Equal("ticker",
+            model.FindEntityType(typeof(NodeFinalizationOutboxEntity))!.GetSchema());
     }
 
     [Fact]

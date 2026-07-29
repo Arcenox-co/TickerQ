@@ -36,6 +36,7 @@ namespace TickerQ.EntityFrameworkCore.Customizer
             builder.ApplyConfiguration(new CronTickerOccurrenceConfigurations<TCronTicker>(schema));
             builder.ApplyConfiguration(new TimeTickerResultConfigurations<TTimeTicker>(schema));
             builder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<TCronTicker>(schema));
+            builder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations(schema));
 
             // Opt-in assistant chat history tables (AddAssistantHistory()).
             if (assistantHistory != null)

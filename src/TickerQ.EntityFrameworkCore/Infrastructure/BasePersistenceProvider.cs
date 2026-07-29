@@ -51,6 +51,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
     public bool SupportsResultPublication => true;
     public bool SupportsAcknowledgedTerminalUpdates => true;
+    public bool SupportsDurableNodeFinalizationOutbox => true;
 
     public async Task<TickerResultEnvelope> GetTimeTickerResultAsync(
         Guid id, CancellationToken cancellationToken = default)
@@ -97,20 +98,180 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         => CommitTerminalTickerCoreAsync(
             functionContext, enforceRemoteChildToken: true, cancellationToken);
 
+    public async Task<bool> CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+        InternalFunctionContext functionContext, NodeFinalizationIntent intent,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateTerminalCommit(functionContext);
+        ArgumentNullException.ThrowIfNull(intent);
+        if (intent.TickerType != functionContext.Type || intent.TickerId != functionContext.TickerId ||
+            !functionContext.AcquisitionToken.HasValue ||
+            intent.AcquisitionToken != functionContext.AcquisitionToken.Value)
+            throw new InvalidOperationException(
+                "Node finalization intent identity does not match the terminal ticker mutation.");
+
+        ValidateEnvelope(functionContext.ResultEnvelope);
+        var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
+        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async ct =>
+        {
+            using var operationSession = await CreateDbContextAsync(ct).ConfigureAwait(false);
+            var dbContext = operationSession.Context;
+            await using var transaction = await dbContext.Database
+                .BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
+
+            var existing = await dbContext.Set<NodeFinalizationOutboxEntity>()
+                .AsNoTracking().SingleOrDefaultAsync(x => x.OutboxId == intent.OutboxId, ct)
+                .ConfigureAwait(false);
+            if (existing != null)
+            {
+                if (!ImmutableIntentMatches(existing, intent))
+                    throw new InvalidOperationException(
+                        "Durable Node finalization outbox integrity violation: an existing outbox ID has different immutable content.");
+                await transaction.CommitAsync(ct).ConfigureAwait(false);
+                return true;
+            }
+
+            var now = _clock.UtcNow;
+            int affected;
+            if (functionContext.Type == TickerType.CronTickerOccurrence)
+            {
+                var query = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                    .Where(x => x.Id == functionContext.TickerId && x.LockHolder == _lockHolder &&
+                                x.AcquisitionToken == functionContext.AcquisitionToken);
+                affected = await query.ExecuteUpdateAsync(
+                    setter => setter.UpdateCronTickerOccurrence<TCronTicker>(
+                        functionContext, NextLeaseUntil(now)), ct).ConfigureAwait(false);
+            }
+            else
+            {
+                if (functionContext.ParentId != null &&
+                    !await LockCurrentChainGenerationAsync(dbContext, functionContext, ct).ConfigureAwait(false))
+                {
+                    await transaction.RollbackAsync(ct).ConfigureAwait(false);
+                    return false;
+                }
+                if (functionContext.ParentId != null &&
+                    functionContext.AcquisitionToken != functionContext.ChainGeneration)
+                {
+                    await transaction.RollbackAsync(ct).ConfigureAwait(false);
+                    return false;
+                }
+                var query = ApplyTimeTickerGenerationFence(dbContext,
+                    dbContext.Set<TTimeTicker>().Where(x => x.Id == functionContext.TickerId), functionContext);
+                if (functionContext.ParentId == null)
+                    query = query.Where(x => x.LockHolder == _lockHolder &&
+                                             x.AcquisitionToken == functionContext.AcquisitionToken);
+                affected = await query.ExecuteUpdateAsync(
+                    setter => setter.UpdateTimeTicker<TTimeTicker>(
+                        functionContext, now, NextLeaseUntil(now)), ct).ConfigureAwait(false);
+            }
+
+            if (affected != 1)
+            {
+                await transaction.RollbackAsync(ct).ConfigureAwait(false);
+                return false;
+            }
+
+            if (successful)
+            {
+                await OnSuccessfulStatusWrittenForTestAsync(dbContext, functionContext, ct).ConfigureAwait(false);
+                await ReplaceResultAsync(dbContext, functionContext, ct).ConfigureAwait(false);
+            }
+
+            dbContext.Set<NodeFinalizationOutboxEntity>().Add(ToEntity(intent));
+            await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+            return true;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<NodeFinalizationClaim>> ClaimDueNodeFinalizationsAsync(
+        string workerId, int maxCount, DateTime nowUtc, DateTime leaseUntilUtc,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateWorkerAndLease(workerId, maxCount, nowUtc, leaseUntilUtc);
+        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async ct =>
+        {
+            using var operationSession = await CreateDbContextAsync(ct).ConfigureAwait(false);
+            var dbContext = operationSession.Context;
+            await using var transaction = await dbContext.Database
+                .BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
+            var candidates = await dbContext.Set<NodeFinalizationOutboxEntity>()
+                .AsNoTracking().Where(x => x.AvailableAtUtc <= nowUtc)
+                .OrderBy(x => x.AvailableAtUtc).ThenBy(x => x.OutboxId)
+                .Select(x => x.OutboxId).Take(maxCount).ToArrayAsync(ct).ConfigureAwait(false);
+            var claims = new List<NodeFinalizationClaim>(candidates.Length);
+            foreach (var outboxId in candidates)
+            {
+                var claimToken = Guid.NewGuid();
+                var affected = await dbContext.Set<NodeFinalizationOutboxEntity>()
+                    .Where(x => x.OutboxId == outboxId && x.AvailableAtUtc <= nowUtc)
+                    .ExecuteUpdateAsync(setter => setter
+                        .SetProperty(x => x.ClaimToken, claimToken)
+                        .SetProperty(x => x.ClaimedBy, workerId)
+                        .SetProperty(x => x.AvailableAtUtc, leaseUntilUtc)
+                        .SetProperty(x => x.AttemptCount, x => x.AttemptCount + 1)
+                        .SetProperty(x => x.LastAttemptAtUtc, nowUtc), ct).ConfigureAwait(false);
+                if (affected != 1) continue;
+                var row = await dbContext.Set<NodeFinalizationOutboxEntity>().AsNoTracking()
+                    .SingleAsync(x => x.OutboxId == outboxId && x.ClaimToken == claimToken &&
+                                      x.ClaimedBy == workerId, ct).ConfigureAwait(false);
+                claims.Add(ToClaim(row));
+            }
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+            return (IReadOnlyList<NodeFinalizationClaim>)claims;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> CompleteNodeFinalizationAsync(
+        NodeFinalizationClaim claim, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+        var intent = claim.Intent;
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        return await session.Context.Set<NodeFinalizationOutboxEntity>()
+            .Where(x => x.OutboxId == intent.OutboxId && x.TickerType == intent.TickerType &&
+                        x.TickerId == intent.TickerId && x.AcquisitionToken == intent.AcquisitionToken &&
+                        x.DispatchId == intent.DispatchId && x.NodeEpoch == intent.NodeEpoch &&
+                        x.ClaimToken == claim.ClaimToken && x.ClaimedBy == claim.ClaimedBy)
+            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false) == 1;
+    }
+
+    public async Task<bool> RescheduleNodeFinalizationAsync(
+        NodeFinalizationClaim claim, DateTime availableAtUtc, string errorCode,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+        if (availableAtUtc.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("Available time must be UTC.", nameof(availableAtUtc));
+        if (string.IsNullOrWhiteSpace(errorCode) ||
+            errorCode.Length > NodeFinalizationOperationalState.MaxErrorCodeLength)
+            throw new ArgumentException("Error code must be non-empty and bounded.", nameof(errorCode));
+        var intent = claim.Intent;
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        return await session.Context.Set<NodeFinalizationOutboxEntity>()
+            .Where(x => x.OutboxId == intent.OutboxId && x.TickerType == intent.TickerType &&
+                        x.TickerId == intent.TickerId && x.AcquisitionToken == intent.AcquisitionToken &&
+                        x.DispatchId == intent.DispatchId && x.NodeEpoch == intent.NodeEpoch &&
+                        x.ClaimToken == claim.ClaimToken && x.ClaimedBy == claim.ClaimedBy)
+            .ExecuteUpdateAsync(setter => setter
+                .SetProperty(x => x.AvailableAtUtc, availableAtUtc)
+                .SetProperty(x => x.ClaimToken, (Guid?)null)
+                .SetProperty(x => x.ClaimedBy, (string)null)
+                .SetProperty(x => x.LastErrorCode, errorCode), cancellationToken)
+            .ConfigureAwait(false) == 1;
+    }
+
     private async Task<bool> CommitTerminalTickerCoreAsync(
         InternalFunctionContext functionContext, bool enforceRemoteChildToken,
         CancellationToken cancellationToken = default)
     {
-        if (functionContext == null)
-            throw new ArgumentNullException(nameof(functionContext));
+        ValidateTerminalCommit(functionContext);
         var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
-        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
-            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
-                or TickerStatus.Cancelled or TickerStatus.Skipped) ||
-            (successful && !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
-            throw new InvalidOperationException(
-                "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
-
         ValidateEnvelope(functionContext.ResultEnvelope);
         using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var strategy = strategySession.Context.Database.CreateExecutionStrategy();
@@ -228,6 +389,76 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         }
     }
 
+
+    private static void ValidateTerminalCommit(InternalFunctionContext functionContext)
+    {
+        ArgumentNullException.ThrowIfNull(functionContext);
+        var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
+        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                or TickerStatus.Cancelled or TickerStatus.Skipped) ||
+            (successful && !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+            throw new InvalidOperationException(
+                "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
+    }
+
+    private static void ValidateWorkerAndLease(
+        string workerId, int maxCount, DateTime nowUtc, DateTime leaseUntilUtc)
+    {
+        if (string.IsNullOrWhiteSpace(workerId) || workerId.Length > NodeFinalizationClaim.MaxClaimedByLength)
+            throw new ArgumentException("Worker ID must be non-empty and bounded.", nameof(workerId));
+        if (maxCount <= 0) throw new ArgumentOutOfRangeException(nameof(maxCount));
+        if (nowUtc.Kind != DateTimeKind.Utc) throw new ArgumentException("Current time must be UTC.", nameof(nowUtc));
+        if (leaseUntilUtc.Kind != DateTimeKind.Utc || leaseUntilUtc <= nowUtc)
+            throw new ArgumentException("Lease expiry must be UTC and later than the current time.", nameof(leaseUntilUtc));
+    }
+
+    private static NodeFinalizationOutboxEntity ToEntity(NodeFinalizationIntent intent) => new()
+    {
+        OutboxId = intent.OutboxId,
+        SchemaVersion = intent.SchemaVersion,
+        TickerType = intent.TickerType,
+        TickerId = intent.TickerId,
+        AcquisitionToken = intent.AcquisitionToken,
+        DispatchId = intent.DispatchId,
+        NodeEpoch = intent.NodeEpoch,
+        FinalizeUri = intent.FinalizeUri,
+        FinalizePathAndQuery = intent.FinalizePathAndQuery,
+        AllowPrivateCallbackAddressesForLocalDevelopment = intent.AllowPrivateCallbackAddressesForLocalDevelopment,
+        RequestNonce = intent.RequestNonce,
+        ControlNonce = intent.ControlNonce,
+        ExactBody = intent.ExactBody,
+        CreatedAtUtc = intent.CreatedAtUtc,
+        AvailableAtUtc = intent.CreatedAtUtc,
+        AttemptCount = 0
+    };
+
+    private static NodeFinalizationClaim ToClaim(NodeFinalizationOutboxEntity row)
+    {
+        var intent = new NodeFinalizationIntent(
+            row.SchemaVersion, row.OutboxId, row.TickerType, row.TickerId, row.AcquisitionToken,
+            row.DispatchId, row.NodeEpoch, row.FinalizeUri, row.FinalizePathAndQuery,
+            row.AllowPrivateCallbackAddressesForLocalDevelopment, row.RequestNonce, row.ControlNonce,
+            row.ExactBody, AsUtc(row.CreatedAtUtc));
+        return new NodeFinalizationClaim(intent, row.ClaimToken!.Value, row.ClaimedBy,
+            AsUtc(row.AvailableAtUtc), row.AttemptCount);
+    }
+
+    private static DateTime AsUtc(DateTime value)
+        => value.Kind == DateTimeKind.Utc ? value : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+
+    private static bool ImmutableIntentMatches(
+        NodeFinalizationOutboxEntity row, NodeFinalizationIntent intent)
+        => row.SchemaVersion == intent.SchemaVersion && row.OutboxId == intent.OutboxId &&
+           row.TickerType == intent.TickerType && row.TickerId == intent.TickerId &&
+           row.AcquisitionToken == intent.AcquisitionToken && row.DispatchId == intent.DispatchId &&
+           row.NodeEpoch == intent.NodeEpoch &&
+           string.Equals(row.FinalizeUri, intent.FinalizeUri, StringComparison.Ordinal) &&
+           string.Equals(row.FinalizePathAndQuery, intent.FinalizePathAndQuery, StringComparison.Ordinal) &&
+           row.AllowPrivateCallbackAddressesForLocalDevelopment == intent.AllowPrivateCallbackAddressesForLocalDevelopment &&
+           row.RequestNonce == intent.RequestNonce && row.ControlNonce == intent.ControlNonce &&
+           row.ExactBody != null && row.ExactBody.SequenceEqual(intent.ExactBody) &&
+           row.CreatedAtUtc.Ticks == intent.CreatedAtUtc.Ticks;
 
     private static void ValidateEnvelope(TickerResultEnvelope envelope)
     {
