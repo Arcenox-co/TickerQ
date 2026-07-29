@@ -69,18 +69,23 @@ internal sealed class NodeFinalizationReconciler<TTimeTicker, TCronTicker> : Bac
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_provider.SupportsDurableNodeFinalizationOutbox)
-        {
-            _logger.LogInformation("Durable Node finalization reconciler is disabled because the persistence provider does not advertise support.");
-            return;
-        }
-
         var inFlight = new List<Task>(_workerCount);
         try
         {
             while (!stoppingToken.IsCancellationRequested)
             {
                 inFlight.RemoveAll(static task => task.IsCompleted);
+
+                // Readiness may be latched by a provider startup probe after this hosted service
+                // starts. Do not exit permanently, and do not acquire new durable claims while
+                // readiness is false. Already-acquired claims remain in flight and retain their
+                // normal completion/reschedule semantics.
+                if (!_provider.SupportsDurableNodeFinalizationOutbox)
+                {
+                    await WaitForWakeOrDelayAsync(IdleDelay, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 var freeSlots = _workerCount - inFlight.Count;
                 if (freeSlots == 0)
                 {

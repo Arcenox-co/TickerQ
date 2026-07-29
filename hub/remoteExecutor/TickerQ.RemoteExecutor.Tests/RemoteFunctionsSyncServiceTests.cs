@@ -58,7 +58,7 @@ public sealed class RemoteFunctionsSyncServiceTests
     }
 
     [Fact]
-    public void CapabilitySnapshot_IsLazilyDerivedFromTheFinalSingletonProviderRegistration()
+    public void ProviderBackedCapabilities_AreLazilyDerivedFromTheFinalSingletonProviderRegistration()
     {
         var builder = new TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>(
             new TickerExecutionContext(), new SchedulerOptionsBuilder());
@@ -75,6 +75,47 @@ public sealed class RemoteFunctionsSyncServiceTests
 
         Assert.True(snapshot.SupportsNodeCallbacks);
         Assert.Same(provider, serviceProvider.GetRequiredService<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>());
+    }
+
+    [Fact]
+    public async Task NodeRegistration_RechecksBothProviderCapabilitiesOnEverySync()
+    {
+        var acknowledged = false;
+        var durableOutbox = false;
+        var capabilities = new RemoteExecutorPersistenceCapabilities(
+            () => acknowledged, () => durableOutbox);
+        var service = new RemoteFunctionsSyncService(
+            new TickerQRemoteExecutionOptions(), (_, _) => Task.CompletedTask,
+            capabilities: capabilities);
+        var nodeName = $"dynamic-capability-{Guid.NewGuid():N}";
+        var functionName = $"DynamicNodeFunction{Guid.NewGuid():N}";
+        var node = new HubNode
+        {
+            NodeName = nodeName,
+            SdkType = "nodejs",
+            CallbackUrl = "https://node.example/finalize",
+            NodeEpoch = Guid.NewGuid().ToString()
+        };
+        node.Functions.Add(new HubFunction { FunctionName = functionName, IsActive = true });
+        var response = new GetRegisteredFunctionsResponse();
+        response.Nodes.Add(node);
+        var key = $"{functionName}@{nodeName}";
+
+        await service.RegisterFunctionsFromResponse(response, CancellationToken.None);
+        Assert.False(TickerFunctionProvider.TickerFunctions.ContainsKey(key));
+
+        acknowledged = true;
+        await service.RegisterFunctionsFromResponse(response, CancellationToken.None);
+        Assert.False(TickerFunctionProvider.TickerFunctions.ContainsKey(key));
+
+        durableOutbox = true;
+        await service.RegisterFunctionsFromResponse(response, CancellationToken.None);
+        Assert.True(TickerFunctionProvider.TickerFunctions.ContainsKey(key));
+
+        acknowledged = false;
+        await service.RegisterFunctionsFromResponse(response, CancellationToken.None);
+        Assert.False(TickerFunctionProvider.TickerFunctions.ContainsKey(key));
+        RemoteFunctionRegistry.Remove(functionName);
     }
 
     [Fact]

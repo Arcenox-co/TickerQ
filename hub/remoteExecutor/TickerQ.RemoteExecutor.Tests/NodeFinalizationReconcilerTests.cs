@@ -37,6 +37,57 @@ public sealed class NodeFinalizationReconcilerTests
     }
 
     [Fact]
+    public async Task ProviderBecomingReadyAfterStartupStartsDrainingWithoutRestart()
+    {
+        var store = new DurableOutboxFake(supportsDurableOutbox: false);
+        var intent = Intent("https://node.example/finalize");
+        store.Seed(intent);
+        using var client = Client((request, _) => Task.FromResult(Finalized(request, intent, Secret)));
+        var worker = Reconciler(store, client, workers: 1);
+
+        await worker.StartAsync(CancellationToken.None);
+        await Task.Delay(150);
+        Assert.Equal(0, store.ClaimCalls);
+
+        store.SupportsDurableOutbox = true;
+        worker.Wake();
+        await store.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await worker.StopAsync(CancellationToken.None);
+
+        Assert.Empty(store.Snapshot());
+    }
+
+    [Fact]
+    public async Task ProviderBecomingUnreadyStopsNewClaimsButDoesNotCancelExistingClaims()
+    {
+        var store = new DurableOutboxFake();
+        var first = Intent("https://node.example/first/finalize");
+        var second = Intent("https://node.example/second/finalize");
+        store.Seed(first);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var client = Client(async (request, cancellationToken) =>
+        {
+            firstStarted.TrySetResult();
+            await releaseFirst.Task.WaitAsync(cancellationToken);
+            return Finalized(request, first, Secret);
+        });
+        var worker = Reconciler(store, client, workers: 1);
+
+        await worker.StartAsync(CancellationToken.None);
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        store.SupportsDurableOutbox = false;
+        store.Seed(second);
+        releaseFirst.TrySetResult();
+        await store.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.Delay(150);
+
+        Assert.True(store.Contains(second.OutboxId));
+        Assert.Equal(1, store.ClaimCalls);
+        await worker.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public async Task ClaimsOnlyFreeSlotsAndSlowEndpointDoesNotHeadOfLineBlockHealthyWork()
     {
         var store = new DurableOutboxFake();
@@ -343,10 +394,13 @@ public sealed class NodeFinalizationReconcilerTests
         public TaskCompletionSource Completed { get; private set; } = NewSignal();
         public TaskCompletionSource Rescheduled { get; private set; } = NewSignal();
 
-        public DurableOutboxFake()
+        public bool SupportsDurableOutbox { get; set; }
+
+        public DurableOutboxFake(bool supportsDurableOutbox = true)
         {
+            SupportsDurableOutbox = supportsDurableOutbox;
             Provider = Substitute.For<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
-            Provider.SupportsDurableNodeFinalizationOutbox.Returns(true);
+            Provider.SupportsDurableNodeFinalizationOutbox.Returns(_ => SupportsDurableOutbox);
             Provider.ClaimDueNodeFinalizationsAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<DateTime>(),
                     Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
                 .Returns(call => Task.FromResult<IReadOnlyList<NodeFinalizationClaim>>(Claim(
