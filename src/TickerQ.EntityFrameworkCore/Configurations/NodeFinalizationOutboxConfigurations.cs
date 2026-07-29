@@ -20,6 +20,7 @@ public sealed class NodeFinalizationOutboxConfigurations : IEntityTypeConfigurat
         builder.Property(x => x.FinalizeUri).IsRequired().HasMaxLength(NodeFinalizationIntent.MaxUriLength);
         builder.Property(x => x.FinalizePathAndQuery).IsRequired().HasMaxLength(NodeFinalizationIntent.MaxPathAndQueryLength);
         builder.Property(x => x.ExactBody).IsRequired().HasMaxLength(NodeFinalizationIntent.MaxExactBodyBytes);
+        builder.Property(x => x.TerminalMutationDigest).IsRequired().HasMaxLength(32);
         builder.Property(x => x.ClaimedBy).IsRequired(false).HasMaxLength(NodeFinalizationClaim.MaxClaimedByLength);
         builder.Property(x => x.LastErrorCode).IsRequired(false).HasMaxLength(NodeFinalizationOperationalState.MaxErrorCodeLength);
         builder.ToTable("NodeFinalizationOutbox", _schema);

@@ -198,8 +198,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 setters
                     .SetProperty(x => x.LockHolder, (string)null)
-                    .SetProperty(x => x.LockedAt, (DateTime?)null)
-                    .SetProperty(x => x.LeaseUntil, (DateTime?)null);
+                    .SetProperty(x => x.LockedAt, (DateTime?)null);
+                if (!WritesTerminalStatus(functionContext, propsToUpdate))
+                    setters.SetProperty(x => x.LeaseUntil, (DateTime?)null);
             }
 
             // EXECUTION TIME
@@ -307,8 +308,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 setters
                     .SetProperty(x => x.LockHolder, (string)null)
-                    .SetProperty(x => x.LockedAt, (DateTime?)null)
-                    .SetProperty(x => x.LeaseUntil, (DateTime?)null);
+                    .SetProperty(x => x.LockedAt, (DateTime?)null);
+                if (!WritesTerminalStatus(functionContext, propsToUpdate))
+                    setters.SetProperty(x => x.LeaseUntil, (DateTime?)null);
             }
 
             // UPDATED_AT ALWAYS

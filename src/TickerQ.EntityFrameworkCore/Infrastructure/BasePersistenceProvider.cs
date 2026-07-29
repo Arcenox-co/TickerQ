@@ -1,11 +1,15 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.DependencyInjection;
 
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -31,6 +35,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         _clock = clock;
         RedisContext = redisContext;
         _serviceProvider = serviceProvider;
+        _nodeFinalizationOutboxReadiness = serviceProvider.GetService<IEfCoreNodeFinalizationOutboxReadiness>();
         _lockHolder = optionsBuilder.ExecutionOwnerId;
         _schedulerOptions = optionsBuilder;
     }
@@ -48,10 +53,12 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     protected readonly string _lockHolder;
     protected readonly ITickerClock _clock;
     protected readonly ITickerQRedisContext RedisContext;
+    private readonly IEfCoreNodeFinalizationOutboxReadiness _nodeFinalizationOutboxReadiness;
 
     public bool SupportsResultPublication => true;
     public bool SupportsAcknowledgedTerminalUpdates => true;
-    public bool SupportsDurableNodeFinalizationOutbox => true;
+    public bool SupportsDurableNodeFinalizationOutbox =>
+        _nodeFinalizationOutboxReadiness?.IsReady == true;
 
     public async Task<TickerResultEnvelope> GetTimeTickerResultAsync(
         Guid id, CancellationToken cancellationToken = default)
@@ -112,6 +119,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
         ValidateEnvelope(functionContext.ResultEnvelope);
         var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
+        var terminalMutationDigest = ComputeTerminalMutationDigest(functionContext);
         using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var strategy = strategySession.Context.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async ct =>
@@ -126,7 +134,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .ConfigureAwait(false);
             if (existing != null)
             {
-                if (!ImmutableIntentMatches(existing, intent))
+                if (!ImmutableIntentMatches(existing, intent, terminalMutationDigest))
                     throw new InvalidOperationException(
                         "Durable Node finalization outbox integrity violation: an existing outbox ID has different immutable content.");
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
@@ -180,7 +188,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 await ReplaceResultAsync(dbContext, functionContext, ct).ConfigureAwait(false);
             }
 
-            dbContext.Set<NodeFinalizationOutboxEntity>().Add(ToEntity(intent));
+            dbContext.Set<NodeFinalizationOutboxEntity>().Add(ToEntity(intent, terminalMutationDigest));
             await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
             await transaction.CommitAsync(ct).ConfigureAwait(false);
             return true;
@@ -413,7 +421,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             throw new ArgumentException("Lease expiry must be UTC and later than the current time.", nameof(leaseUntilUtc));
     }
 
-    private static NodeFinalizationOutboxEntity ToEntity(NodeFinalizationIntent intent) => new()
+    private static NodeFinalizationOutboxEntity ToEntity(
+        NodeFinalizationIntent intent, byte[] terminalMutationDigest) => new()
     {
         OutboxId = intent.OutboxId,
         SchemaVersion = intent.SchemaVersion,
@@ -428,7 +437,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         RequestNonce = intent.RequestNonce,
         ControlNonce = intent.ControlNonce,
         ExactBody = intent.ExactBody,
-        CreatedAtUtc = intent.CreatedAtUtc,
+        CreatedAtUtcTicks = intent.CreatedAtUtc.Ticks,
+        TerminalMutationDigest = terminalMutationDigest,
         AvailableAtUtc = intent.CreatedAtUtc,
         AttemptCount = 0
     };
@@ -439,7 +449,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             row.SchemaVersion, row.OutboxId, row.TickerType, row.TickerId, row.AcquisitionToken,
             row.DispatchId, row.NodeEpoch, row.FinalizeUri, row.FinalizePathAndQuery,
             row.AllowPrivateCallbackAddressesForLocalDevelopment, row.RequestNonce, row.ControlNonce,
-            row.ExactBody, AsUtc(row.CreatedAtUtc));
+            row.ExactBody, new DateTime(row.CreatedAtUtcTicks, DateTimeKind.Utc));
         return new NodeFinalizationClaim(intent, row.ClaimToken!.Value, row.ClaimedBy,
             AsUtc(row.AvailableAtUtc), row.AttemptCount);
     }
@@ -448,7 +458,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         => value.Kind == DateTimeKind.Utc ? value : DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
     private static bool ImmutableIntentMatches(
-        NodeFinalizationOutboxEntity row, NodeFinalizationIntent intent)
+        NodeFinalizationOutboxEntity row, NodeFinalizationIntent intent, byte[] terminalMutationDigest)
         => row.SchemaVersion == intent.SchemaVersion && row.OutboxId == intent.OutboxId &&
            row.TickerType == intent.TickerType && row.TickerId == intent.TickerId &&
            row.AcquisitionToken == intent.AcquisitionToken && row.DispatchId == intent.DispatchId &&
@@ -458,7 +468,72 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
            row.AllowPrivateCallbackAddressesForLocalDevelopment == intent.AllowPrivateCallbackAddressesForLocalDevelopment &&
            row.RequestNonce == intent.RequestNonce && row.ControlNonce == intent.ControlNonce &&
            row.ExactBody != null && row.ExactBody.SequenceEqual(intent.ExactBody) &&
-           row.CreatedAtUtc.Ticks == intent.CreatedAtUtc.Ticks;
+           row.CreatedAtUtcTicks == intent.CreatedAtUtc.Ticks &&
+           row.TerminalMutationDigest is { Length: 32 } &&
+           CryptographicOperations.FixedTimeEquals(row.TerminalMutationDigest, terminalMutationDigest);
+
+    private static byte[] ComputeTerminalMutationDigest(InternalFunctionContext context)
+    {
+        var properties = context.GetPropsToUpdate();
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(1); // canonical digest schema version
+            writer.Write((int)context.Type);
+            writer.Write((int)context.Status);
+
+            WriteOptional(writer, properties.Contains(nameof(InternalFunctionContext.ExecutedAt)),
+                () => writer.Write(context.ExecutedAt.Ticks));
+
+            var writesException = context.Status == TickerStatus.Skipped ||
+                                  properties.Contains(nameof(InternalFunctionContext.ExceptionDetails));
+            WriteOptional(writer, writesException, () => WriteNullableString(writer, context.ExceptionDetails));
+
+            WriteOptional(writer, properties.Contains(nameof(InternalFunctionContext.ElapsedTime)),
+                () => writer.Write(context.ElapsedTime));
+            WriteOptional(writer, properties.Contains(nameof(InternalFunctionContext.RetryCount)),
+                () => writer.Write(context.RetryCount));
+            writer.Write(properties.Contains(nameof(InternalFunctionContext.ReleaseLock)));
+
+            // Only cron occurrences persist ExecutionTime through this terminal setter.
+            WriteOptional(writer,
+                context.Type == TickerType.CronTickerOccurrence &&
+                properties.Contains(nameof(InternalFunctionContext.ExecutionTime)),
+                () => writer.Write(context.ExecutionTime.Ticks));
+
+            var successful = context.Status is TickerStatus.Done or TickerStatus.DueDone;
+            writer.Write(successful);
+            if (successful)
+            {
+                var envelope = context.ResultEnvelope;
+                writer.Write(envelope != null); // explicit delete/no-result versus exact envelope
+                if (envelope != null)
+                {
+                    writer.Write(envelope.Version);
+                    writer.Write(envelope.MediaType);
+                    WriteNullableString(writer, envelope.ContractId);
+                    WriteNullableString(writer, envelope.ContractType);
+                    var payload = envelope.ToPayloadArray();
+                    writer.Write(payload.Length);
+                    writer.Write(payload);
+                }
+            }
+        }
+
+        return SHA256.HashData(stream.GetBuffer().AsSpan(0, checked((int)stream.Length)));
+    }
+
+    private static void WriteOptional(BinaryWriter writer, bool present, Action writeValue)
+    {
+        writer.Write(present);
+        if (present) writeValue();
+    }
+
+    private static void WriteNullableString(BinaryWriter writer, string value)
+    {
+        writer.Write(value != null);
+        if (value != null) writer.Write(value);
+    }
 
     private static void ValidateEnvelope(TickerResultEnvelope envelope)
     {

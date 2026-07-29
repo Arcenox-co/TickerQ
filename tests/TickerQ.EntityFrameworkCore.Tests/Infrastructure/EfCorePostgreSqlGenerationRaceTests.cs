@@ -1,4 +1,5 @@
 using DotNet.Testcontainers.Builders;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -73,6 +74,51 @@ public sealed class EfCorePostgreSqlGenerationRaceTests : IAsyncLifetime
     {
         foreach (var mutation in new[] { "lifecycle", "terminal-status", "terminal-result" })
             await AssertChildWinsRootLockRaceAsync(mutation);
+    }
+
+    [PostgreSqlRaceFact]
+    public async Task OutboxAmbiguousRetryPreservesNonMicrosecondCreatedTicks()
+    {
+        await using (var cleanup = new TestTickerQDbContext(_options))
+        {
+            await cleanup.Set<NodeFinalizationOutboxEntity>().ExecuteDeleteAsync();
+            await cleanup.Set<TimeTickerResultEntity<TimeTickerEntity>>().ExecuteDeleteAsync();
+            await cleanup.Set<TimeTickerEntity>().ExecuteDeleteAsync();
+        }
+
+        var ticker = NewTicker(TickerStatus.Idle);
+        await _provider.AddTimeTickers([ticker], CancellationToken.None);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([ticker.Id]));
+        var dispatch = Guid.NewGuid();
+        var epoch = Guid.NewGuid();
+        var control = Guid.NewGuid();
+        var createdAt = _now.AddTicks(7); // PostgreSQL timestamp cannot represent these ticks exactly.
+        var body = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            tickerType = (int)TickerType.TimeTicker, tickerId = ticker.Id,
+            acquisitionToken = acquired.AcquisitionToken, dispatchId = dispatch,
+            nodeEpoch = epoch, controlNonce = control
+        });
+        var intent = new NodeFinalizationIntent(
+            NodeFinalizationIntent.CurrentSchemaVersion, dispatch, TickerType.TimeTicker, ticker.Id,
+            acquired.AcquisitionToken!.Value, dispatch, epoch, "https://node.example/finalize", "/finalize",
+            false, Guid.NewGuid(), control, body, createdAt);
+        var mutation = new InternalFunctionContext
+        {
+            TickerId = ticker.Id, Type = TickerType.TimeTicker,
+            AcquisitionToken = acquired.AcquisitionToken
+        }.SetProperty(x => x.Status, TickerStatus.Done)
+         .SetProperty(x => x.ExecutedAt, _now)
+         .SetProperty(x => x.ReleaseLock, true)
+         .SetProperty(x => x.ResultEnvelope, new TickerResultEnvelope([1, 2, 3], 1, "application/octet-stream"));
+
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(mutation, intent));
+        // Simulated execution-strategy replay after commit acknowledgement loss.
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(mutation, intent));
+
+        var claim = Assert.Single(await _provider.ClaimDueNodeFinalizationsAsync(
+            "postgres-ticks", 1, createdAt.AddSeconds(1), createdAt.AddMinutes(1)));
+        Assert.Equal(createdAt.Ticks, claim.Intent.CreatedAtUtc.Ticks);
     }
 
     private async Task AssertChildWinsRootLockRaceAsync(string mutation)

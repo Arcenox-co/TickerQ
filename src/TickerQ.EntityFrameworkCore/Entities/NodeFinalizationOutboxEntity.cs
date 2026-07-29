@@ -22,7 +22,8 @@ public sealed class NodeFinalizationOutboxEntity
     public Guid RequestNonce { get; set; }
     public Guid ControlNonce { get; set; }
     public byte[] ExactBody { get; set; }
-    public DateTime CreatedAtUtc { get; set; }
+    public long CreatedAtUtcTicks { get; set; }
+    public byte[] TerminalMutationDigest { get; set; }
 
     public DateTime AvailableAtUtc { get; set; }
     public Guid? ClaimToken { get; set; }

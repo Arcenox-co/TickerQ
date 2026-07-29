@@ -26,7 +26,9 @@ public static class ServiceBuilder
 
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
             RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(builder, services);
+            // Bootstrapper enumeration preserves registration order: migrate before probing.
             RegisterAutoMigrate<TContext, TTimeTicker, TCronTicker>(builder, services);
+            RegisterNodeFinalizationReadiness<TContext>(services);
         };
     }
 
@@ -47,7 +49,9 @@ public static class ServiceBuilder
             services.TryAddScoped<TContext>(sp => sp.GetRequiredService<IDbContextFactory<TContext>>().CreateDbContext());
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
             RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(builder, services);
+            // Bootstrapper enumeration preserves registration order: migrate before probing.
             RegisterAutoMigrate<TContext, TTimeTicker, TCronTicker>(builder, services);
+            RegisterNodeFinalizationReadiness<TContext>(services);
         };
     }
 
@@ -62,6 +66,16 @@ public static class ServiceBuilder
         if (!builder.AutoMigrate) return;
 
         services.AddSingleton<ITickerQPersistenceBootstrapper, EfCoreAutoMigrateBootstrapper<TContext>>();
+    }
+
+    private static void RegisterNodeFinalizationReadiness<TContext>(IServiceCollection services)
+        where TContext : DbContext
+    {
+        services.TryAddSingleton<EfCoreNodeFinalizationOutboxReadiness>();
+        services.TryAddSingleton<IEfCoreNodeFinalizationOutboxReadiness>(sp =>
+            sp.GetRequiredService<EfCoreNodeFinalizationOutboxReadiness>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<ITickerQPersistenceBootstrapper,
+            EfCoreNodeFinalizationOutboxReadinessProbe<TContext>>());
     }
 
     // Assistant chat history is strictly opt-in: nothing is registered (and

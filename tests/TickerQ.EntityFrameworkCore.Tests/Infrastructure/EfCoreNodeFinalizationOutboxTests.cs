@@ -3,8 +3,10 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using TickerQ.EntityFrameworkCore.Entities;
+using TickerQ.EntityFrameworkCore.Infrastructure;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -57,13 +59,124 @@ public sealed class EfCoreNodeFinalizationOutboxTests : IAsyncLifetime
             [nameof(NodeFinalizationOutboxEntity.AvailableAtUtc), nameof(NodeFinalizationOutboxEntity.OutboxId)]));
         Assert.Equal(NodeFinalizationIntent.MaxExactBodyBytes,
             entity.FindProperty(nameof(NodeFinalizationOutboxEntity.ExactBody))!.GetMaxLength());
+        Assert.Equal(typeof(long),
+            entity.FindProperty(nameof(NodeFinalizationOutboxEntity.CreatedAtUtcTicks))!.ClrType);
+        Assert.Equal(32,
+            entity.FindProperty(nameof(NodeFinalizationOutboxEntity.TerminalMutationDigest))!.GetMaxLength());
         Assert.Equal(NodeFinalizationIntent.MaxUriLength,
             entity.FindProperty(nameof(NodeFinalizationOutboxEntity.FinalizeUri))!.GetMaxLength());
         Assert.Equal(NodeFinalizationClaim.MaxClaimedByLength,
             entity.FindProperty(nameof(NodeFinalizationOutboxEntity.ClaimedBy))!.GetMaxLength());
         Assert.Equal(NodeFinalizationOperationalState.MaxErrorCodeLength,
             entity.FindProperty(nameof(NodeFinalizationOutboxEntity.LastErrorCode))!.GetMaxLength());
-        Assert.True(_provider.SupportsDurableNodeFinalizationOutbox);
+        Assert.False(_provider.SupportsDurableNodeFinalizationOutbox);
+    }
+
+    [Fact]
+    public async Task Readiness_probe_enables_outbox_only_after_model_and_schema_access_succeed()
+    {
+        var readiness = new EfCoreNodeFinalizationOutboxReadiness();
+        await using var services = BuildServices(readiness);
+        var provider = CreateProvider(services, "ready-node");
+        var probe = new EfCoreNodeFinalizationOutboxReadinessProbe<TestTickerQDbContext>(services, readiness);
+
+        Assert.False(provider.SupportsDurableNodeFinalizationOutbox);
+        await probe.BootstrapAsync();
+        Assert.True(provider.SupportsDurableNodeFinalizationOutbox);
+    }
+
+    [Fact]
+    public async Task Missing_outbox_schema_logs_error_and_keeps_non_node_persistence_available()
+    {
+        var missingPath = Path.Combine(Path.GetTempPath(), $"tickerq-node-outbox-missing-{Guid.NewGuid():N}.db");
+        try
+        {
+            var options = new DbContextOptionsBuilder<TestTickerQDbContext>()
+                .UseSqlite($"Data Source={missingPath}").Options;
+            var readiness = new EfCoreNodeFinalizationOutboxReadiness();
+            var logger = new RecordingLogger<EfCoreNodeFinalizationOutboxReadinessProbe<TestTickerQDbContext>>();
+            var services = new ServiceCollection()
+                .AddSingleton<IDbContextFactory<TestTickerQDbContext>>(
+                    new PooledDbContextFactory<TestTickerQDbContext>(options))
+                .BuildServiceProvider();
+            await using (services)
+            {
+                await using (var context = new TestTickerQDbContext(options))
+                {
+                    await context.Database.EnsureCreatedAsync();
+                    await context.Database.ExecuteSqlRawAsync("DROP TABLE NodeFinalizationOutbox");
+                }
+                var probe = new EfCoreNodeFinalizationOutboxReadinessProbe<TestTickerQDbContext>(
+                    services, readiness, logger);
+
+                await probe.BootstrapAsync();
+
+                Assert.False(readiness.IsReady);
+                var error = Assert.Single(logger.Entries, x => x.Level == LogLevel.Error);
+                Assert.Contains("NodeFinalizationOutbox", error.Message);
+                Assert.Contains("migration", error.Message, StringComparison.OrdinalIgnoreCase);
+
+                var provider = CreateProvider(services, "non-node-host");
+                var ticker = new TimeTickerEntity
+                {
+                    Id = Guid.NewGuid(), Function = "Ordinary", Status = TickerStatus.Idle,
+                    ExecutionTime = _now, Request = [], CreatedAt = _now, UpdatedAt = _now
+                };
+                await provider.AddTimeTickers([ticker], CancellationToken.None);
+                await using (var verify = new TestTickerQDbContext(options))
+                    Assert.Equal(ticker.Id, (await verify.Set<TimeTickerEntity>().SingleAsync()).Id);
+
+                // The latch can recover if an external migration repairs the schema later.
+                await using (var repair = new TestTickerQDbContext(options))
+                {
+                    await repair.Database.EnsureDeletedAsync();
+                    await repair.Database.EnsureCreatedAsync();
+                }
+                await probe.BootstrapAsync();
+                Assert.True(readiness.IsReady);
+            }
+        }
+        finally
+        {
+            if (File.Exists(missingPath)) File.Delete(missingPath);
+        }
+    }
+
+    [Fact]
+    public async Task Missing_outbox_model_logs_error_and_leaves_readiness_false()
+    {
+        var options = new DbContextOptionsBuilder<MissingOutboxDbContext>()
+            .UseSqlite("Data Source=:memory:").Options;
+        var readiness = new EfCoreNodeFinalizationOutboxReadiness();
+        var logger = new RecordingLogger<EfCoreNodeFinalizationOutboxReadinessProbe<MissingOutboxDbContext>>();
+        await using var services = new ServiceCollection()
+            .AddSingleton<IDbContextFactory<MissingOutboxDbContext>>(
+                new PooledDbContextFactory<MissingOutboxDbContext>(options))
+            .BuildServiceProvider();
+        var probe = new EfCoreNodeFinalizationOutboxReadinessProbe<MissingOutboxDbContext>(
+            services, readiness, logger);
+
+        await probe.BootstrapAsync();
+
+        Assert.False(readiness.IsReady);
+        var error = Assert.Single(logger.Entries, x => x.Level == LogLevel.Error);
+        Assert.Contains("model", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("NodeFinalizationOutbox", error.Message);
+    }
+
+    [Fact]
+    public async Task Readiness_probe_propagates_cancellation_and_does_not_mark_ready()
+    {
+        var readiness = new EfCoreNodeFinalizationOutboxReadiness();
+        await using var services = BuildServices(readiness);
+        var probe = new EfCoreNodeFinalizationOutboxReadinessProbe<TestTickerQDbContext>(services, readiness);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            probe.BootstrapAsync(cancellation.Token));
+
+        Assert.False(readiness.IsReady);
     }
 
     [Fact]
@@ -120,6 +233,47 @@ public sealed class EfCoreNodeFinalizationOutboxTests : IAsyncLifetime
 
         await using var verify = new TestTickerQDbContext(_options);
         Assert.Single(await verify.Set<NodeFinalizationOutboxEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Duplicate_outbox_rejects_different_terminal_status_or_result_mutation()
+    {
+        var acquired = await AddAndAcquireTimeTickerAsync();
+        var intent = Intent(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken!.Value);
+        var original = Success(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken, Envelope("original"));
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(original, intent));
+
+        var differentStatus = Terminal(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken,
+            TickerStatus.Cancelled, null);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(differentStatus, intent));
+
+        var differentResult = Success(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken,
+            Envelope("different"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(differentResult, intent));
+    }
+
+    [Fact]
+    public async Task Ambiguous_commit_retry_preserves_non_microsecond_created_ticks_exactly()
+    {
+        var acquired = await AddAndAcquireTimeTickerAsync();
+        var createdAt = _now.AddTicks(7);
+        var intent = Intent(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken!.Value,
+            createdAtUtc: createdAt);
+        var mutation = Success(TickerType.TimeTicker, acquired.Id, acquired.AcquisitionToken, Envelope("once"));
+
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(mutation, intent));
+        // Simulates an execution-strategy retry after the first transaction committed but its
+        // acknowledgement was lost.
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(mutation, intent));
+
+        var claim = Assert.Single(await _provider.ClaimDueNodeFinalizationsAsync(
+            "ticks-worker", 1, createdAt, createdAt.AddMinutes(1)));
+        Assert.Equal(createdAt.Ticks, claim.Intent.CreatedAtUtc.Ticks);
+        await using var verify = new TestTickerQDbContext(_options);
+        Assert.Equal(createdAt.Ticks,
+            (await verify.Set<NodeFinalizationOutboxEntity>().SingleAsync()).CreatedAtUtcTicks);
     }
 
     [Fact]
@@ -216,7 +370,7 @@ public sealed class EfCoreNodeFinalizationOutboxTests : IAsyncLifetime
     }
 
     private NodeFinalizationIntent Intent(TickerType type, Guid tickerId, Guid acquisitionToken,
-        Guid? dispatchId = null, Guid? requestNonce = null)
+        Guid? dispatchId = null, Guid? requestNonce = null, DateTime? createdAtUtc = null)
     {
         var dispatch = dispatchId ?? Guid.NewGuid();
         var epoch = Guid.NewGuid();
@@ -227,7 +381,7 @@ public sealed class EfCoreNodeFinalizationOutboxTests : IAsyncLifetime
         });
         return new NodeFinalizationIntent(NodeFinalizationIntent.CurrentSchemaVersion, dispatch, type, tickerId,
             acquisitionToken, dispatch, epoch, "https://node.example/finalize", "/finalize", false,
-            requestNonce ?? Guid.NewGuid(), control, body, _now);
+            requestNonce ?? Guid.NewGuid(), control, body, createdAtUtc ?? _now);
     }
 
     private static InternalFunctionContext Success(TickerType type, Guid id, Guid? token, TickerResultEnvelope? result)
@@ -245,10 +399,12 @@ public sealed class EfCoreNodeFinalizationOutboxTests : IAsyncLifetime
     }
 
     private static TickerResultEnvelope Envelope(string value) => new(Encoding.UTF8.GetBytes(value), 1, "application/json");
-    private ServiceProvider BuildServices()
+    private ServiceProvider BuildServices(EfCoreNodeFinalizationOutboxReadiness? readiness = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton<IDbContextFactory<TestTickerQDbContext>>(new PooledDbContextFactory<TestTickerQDbContext>(_options));
+        if (readiness != null)
+            services.AddSingleton<IEfCoreNodeFinalizationOutboxReadiness>(readiness);
         return services.BuildServiceProvider();
     }
     private TestableProvider CreateProvider(IServiceProvider services, string node) => new(services, Clock(), Options(node), Redis());
@@ -267,3 +423,16 @@ internal sealed class FaultingNodeOutboxProvider : TestableProvider
 }
 
 internal sealed class InjectedNodeOutboxFailureException : Exception;
+
+internal sealed class MissingOutboxDbContext(DbContextOptions<MissingOutboxDbContext> options) : DbContext(options);
+
+internal sealed class RecordingLogger<T> : ILogger<T>
+{
+    internal List<(LogLevel Level, string Message, Exception? Exception)> Entries { get; } = [];
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public bool IsEnabled(LogLevel logLevel) => true;
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+        Func<TState, Exception?, string> formatter)
+        => Entries.Add((logLevel, formatter(state, exception), exception));
+}
