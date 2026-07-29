@@ -365,24 +365,13 @@ namespace TickerQ.Utilities.Managers
             }
         }
         
-        public Task UpdateTickerAsync(
+        public async Task UpdateTickerAsync(
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
-            => UpdateTickerCoreAsync(
-                functionContext,
-                requireAcknowledgedTerminal: !string.IsNullOrEmpty(functionContext.FunctionName) &&
-                                             functionContext.FunctionName.Contains('@'),
-                cancellationToken);
-
-        private async Task UpdateTickerCoreAsync(
-            InternalFunctionContext functionContext, bool requireAcknowledgedTerminal,
-            CancellationToken cancellationToken)
         {
             var props = functionContext.GetPropsToUpdate();
             var carriesResultMutation = props.Contains(nameof(InternalFunctionContext.ResultEnvelope));
             var publishesResult = functionContext.ResultEnvelope != null && carriesResultMutation;
-            var terminal = props.Contains(nameof(InternalFunctionContext.Status)) &&
-                functionContext.Status is TickerStatus.Done or TickerStatus.DueDone or
-                    TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped;
+            var terminal = IsTerminalMutation(functionContext);
             var successfulTerminal = terminal && carriesResultMutation &&
                 functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
 
@@ -392,26 +381,9 @@ namespace TickerQ.Utilities.Managers
                     $"TickerFunction '{functionContext.FunctionName}' called SetResult, but results cannot be " +
                     "durably stored by this provider. Use a provider that supports result publication or remove the SetResult call.");
 
-            if (terminal && requireAcknowledgedTerminal &&
-                _persistenceProvider.SupportsAcknowledgedTerminalUpdates)
-            {
-                var acknowledged = await _persistenceProvider
-                    .CommitTerminalTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
-                if (!acknowledged)
-                    throw new TickerResultNotAcknowledgedException(
-                        $"Terminal completion for TickerFunction '{functionContext.FunctionName}' " +
-                        $"(ticker {functionContext.TickerId}) was not acknowledged: the fenced mutation " +
-                        "lost ownership or did not commit. Children are not released.");
-
-                await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);
-                return;
-            }
-
-            if (terminal && requireAcknowledgedTerminal)
-                throw new NotSupportedException(
-                    "Remote terminal completion requires a persistence provider that supports acknowledged terminal updates.");
-
-            // Compatibility path for local execution with a legacy/custom provider.
+            // Local successful publication keeps the established atomic status+result contract.
+            // Remote callback outcomes use UpdateTickerFromRemoteAsync below; do not infer remoteness
+            // from a function-name convention or route ordinary local terminal writes through it.
             if (successfulTerminal && _persistenceProvider.SupportsResultPublication)
             {
                 var acknowledged = await _persistenceProvider
@@ -429,9 +401,8 @@ namespace TickerQ.Utilities.Managers
             else
             {
                 var affected = await _persistenceProvider.UpdateTimeTicker(functionContext, cancellationToken).ConfigureAwait(false);
-                // Ownership fencing lives in the provider: a stale token / lost CAS returns zero rows. A
-                // result publication or child mutation that affected nothing was NOT acknowledged. Fail closed
-                // so stale generations cannot notify or release descendants.
+                // Ownership and aggregate-generation fencing lives in the provider. Never notify or
+                // release descendants after a rejected child/result mutation.
                 if (affected == 0 && (publishesResult || functionContext.ParentId != null))
                     throw new TickerResultNotAcknowledgedException(
                         $"Mutation for TickerFunction '{functionContext.FunctionName}' " +
@@ -441,6 +412,38 @@ namespace TickerQ.Utilities.Managers
 
             await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);
         }
+
+        public async Task UpdateTickerFromRemoteAsync(
+            InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+        {
+            if (!IsTerminalMutation(functionContext))
+            {
+                await UpdateTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (!_persistenceProvider.SupportsAcknowledgedTerminalUpdates)
+                throw new NotSupportedException(
+                    "The configured persistence provider does not support acknowledged terminal updates required by remote callbacks.");
+
+            var acknowledged = await _persistenceProvider
+                .CommitTerminalTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
+            if (!acknowledged)
+            {
+                var message = $"Terminal completion for TickerFunction '{functionContext.FunctionName}' " +
+                              $"(ticker {functionContext.TickerId}) was not acknowledged by the exact acquisition generation.";
+                if (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+                    throw new TickerResultNotAcknowledgedException(message);
+                throw new TickerTerminalUpdateNotAcknowledgedException(message);
+            }
+
+            await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);
+        }
+
+        private static bool IsTerminalMutation(InternalFunctionContext context)
+            => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+               context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                   or TickerStatus.Cancelled or TickerStatus.Skipped;
 
         private Task NotifyTickerUpdateAsync(InternalFunctionContext functionContext)
             => functionContext.Type == TickerType.CronTickerOccurrence

@@ -134,11 +134,18 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         CancellationTokenSource registeredSource,
         CancellationToken cancellationToken,
         bool isChild,
-        Guid? chainRootId = null)
+        Guid? chainRootId = null,
+        Guid? chainAcquisitionToken = null)
     {
         context.ChainRootId = chainRootId ?? context.ChainRootId ?? context.TickerId;
         if (isChild && !context.ChainGeneration.HasValue)
             return;
+
+        // Remote transports need the root acquisition token as their signed dispatch identity.
+        // Assign it without staging an AcquisitionToken persistence mutation on the child; durable
+        // child ownership remains the aggregate ChainGeneration fence.
+        if (isChild)
+            context.AcquisitionToken = chainAcquisitionToken;
 
         if (context.Type == TickerType.CronTickerOccurrence)
         {
@@ -174,7 +181,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 {
                     if (child.RunCondition == RunCondition.InProgress)
                         tasksToRunNow[tasksToRunNowCount++] = SafeRecursiveExecution(
-                            child, context.ChainRootId.Value, isDue, cancellationToken);
+                            child, context.ChainRootId.Value, context.AcquisitionToken, isDue, cancellationToken);
                     else
                     {
                         childrenToRunAfter[childrenToRunAfterCount++] = child;
@@ -203,7 +210,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     if (ShouldRunChild(child, context.Status))
                     {
                         childrenToRunAfterTask[taskCount++] = SafeRecursiveExecution(
-                            child, context.ChainRootId.Value, isDue, cancellationToken);
+                            child, context.ChainRootId.Value, context.AcquisitionToken, isDue, cancellationToken);
                     }
                     else
                     {
@@ -334,6 +341,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         {
             FunctionName = context.FunctionName,
             Id = context.TickerId,
+            AcquisitionToken = context.AcquisitionToken,
             ParentId = context.ParentId,
             Type = context.Type,
             IsDue = isDue,
@@ -485,7 +493,8 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             }
             catch (TickerExecutionTimeoutException ex)
             {
-                await HandleExecutionTimeoutAsync(context, jobActivity, ex.Message, stopWatch, cancellationToken, mode);
+                await HandleExecutionTimeoutAsync(context, tickerFunctionContext, jobActivity,
+                    ex.Message, stopWatch, cancellationToken, mode);
                 return;
             }
             catch (OperationCanceledException) when (attemptCts is { IsCancellationRequested: true } &&
@@ -493,7 +502,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             {
                 // Only the CancelAfter could have fired the attempt token without the
                 // parent — the function honored cancellation within the grace window.
-                await HandleExecutionTimeoutAsync(context, jobActivity,
+                await HandleExecutionTimeoutAsync(context, tickerFunctionContext, jobActivity,
                     $"Exceeded execution timeout of {effectiveTimeout?.TotalSeconds ?? 0:0}s.",
                     stopWatch, cancellationToken, mode);
                 return;
@@ -515,7 +524,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type);
 
                 if (mode == ExecutionMode.Scheduler)
-                    await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+                    await PersistExecutionUpdateAsync(context, tickerFunctionContext);
                 
                 return;
             }
@@ -543,7 +552,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
 
                 if (mode == ExecutionMode.Scheduler)
-                    await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+                    await PersistExecutionUpdateAsync(context, tickerFunctionContext);
 
                 return;
             }
@@ -564,7 +573,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
 
                 if (mode == ExecutionMode.Scheduler)
-                    await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+                    await PersistExecutionUpdateAsync(context, tickerFunctionContext);
                 return;
             }
             catch (Exception ex)
@@ -628,7 +637,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, totalStopWatch.ElapsedMilliseconds, true);
 
             if (mode == ExecutionMode.Scheduler)
-                await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+                await PersistExecutionUpdateAsync(context, tickerFunctionContext);
         }
         else if (lastException != null)
         {
@@ -646,7 +655,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             _tickerQInstrumentation.LogJobCompleted(context.TickerId, context.FunctionName, totalStopWatch.ElapsedMilliseconds, false);
 
             if (mode == ExecutionMode.Scheduler)
-                await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+                await PersistExecutionUpdateAsync(context, tickerFunctionContext);
 
             TryNotifyFailure(context, "failed", lastException.Message);
         }
@@ -657,7 +666,8 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     /// reason persisted. Timeouts don't consume the retry budget — a job that
     /// hung once is likely to hang again; opt into re-runs explicitly.
     /// </summary>
-    private async Task HandleExecutionTimeoutAsync(InternalFunctionContext context, Activity jobActivity,
+    private async Task HandleExecutionTimeoutAsync(InternalFunctionContext context,
+        TickerFunctionContext tickerFunctionContext, Activity jobActivity,
         string reason, Stopwatch stopWatch, CancellationToken cancellationToken, ExecutionMode mode)
     {
         _ = cancellationToken; // deliberately unused — see CancellationToken.None below
@@ -679,7 +689,9 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             // the scheduler can apply it to the original acquired context and fence the commit.
             if (mode == ExecutionMode.Scheduler)
             {
-                await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
+                // The terminal write must ignore the surrounding cancelled token and must be
+                // durably acknowledged before notification or remote finalize.
+                await PersistExecutionUpdateAsync(context, tickerFunctionContext);
                 terminalPersisted = true;
             }
 
@@ -708,6 +720,24 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         {
             _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, context.RetryCount);
         }
+    }
+
+    private async Task PersistExecutionUpdateAsync(
+        InternalFunctionContext context,
+        TickerFunctionContext executionContext)
+    {
+        var terminal = context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
+                       context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                           or TickerStatus.Cancelled or TickerStatus.Skipped;
+        if (!executionContext.IsRemoteCallbackExecution || !terminal)
+        {
+            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        await _internalTickerManager.UpdateTickerFromRemoteAsync(context, CancellationToken.None).ConfigureAwait(false);
+        if (executionContext.ConfirmRemoteCommitAsync is not null)
+            await executionContext.ConfirmRemoteCommitAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
     private bool TryGetContractDriftReason(InternalFunctionContext context, out string reason)
@@ -839,6 +869,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     private Task SafeRecursiveExecution(
         InternalFunctionContext context,
         Guid chainRootId,
+        Guid? chainAcquisitionToken,
         bool isDue,
         CancellationToken cancellationToken = default)
     {
@@ -846,7 +877,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         {
             return ExecuteTreeAsync(
                 context, isDue, registeredSource: null, cancellationToken, isChild: true,
-                chainRootId: chainRootId);
+                chainRootId: chainRootId, chainAcquisitionToken: chainAcquisitionToken);
         }
         catch
         {

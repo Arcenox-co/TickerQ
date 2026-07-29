@@ -86,26 +86,37 @@ namespace TickerQ.Provider
 
         public Task<bool> CommitSuccessfulTickerAsync(
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
-            => CommitTerminalTickerCoreAsync(functionContext, enforceChildFence: false, cancellationToken);
+        {
+            ValidateTerminalCommit(functionContext, requireSuccessful: true);
+            return CommitTerminalTickerCoreAsync(functionContext, enforceRemoteChildToken: false, cancellationToken);
+        }
 
         public Task<bool> CommitTerminalTickerAsync(
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
-            => CommitTerminalTickerCoreAsync(functionContext, enforceChildFence: true, cancellationToken);
+        {
+            ValidateTerminalCommit(functionContext, requireSuccessful: false);
+            return CommitTerminalTickerCoreAsync(functionContext, enforceRemoteChildToken: true, cancellationToken);
+        }
+
+        private static void ValidateTerminalCommit(InternalFunctionContext context, bool requireSuccessful)
+        {
+            if (context == null)
+                throw new ArgumentNullException(nameof(context));
+            var successful = context.Status is TickerStatus.Done or TickerStatus.DueDone;
+            if (!context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+                context.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                    or TickerStatus.Cancelled or TickerStatus.Skipped) ||
+                (requireSuccessful && !successful) ||
+                (successful && !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+                throw new InvalidOperationException(
+                    "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
+        }
 
         private Task<bool> CommitTerminalTickerCoreAsync(
-            InternalFunctionContext functionContext, bool enforceChildFence,
+            InternalFunctionContext functionContext, bool enforceRemoteChildToken,
             CancellationToken cancellationToken)
         {
-            if (functionContext == null)
-                throw new ArgumentNullException(nameof(functionContext));
-            if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
-                functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or
-                    TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped) ||
-                (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone &&
-                 !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
-                throw new InvalidOperationException(
-                    "Acknowledged terminal persistence requires a terminal status and an explicit optional result mutation on success.");
-
+            var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(WriteGraph(() =>
             {
@@ -121,7 +132,7 @@ namespace TickerQ.Provider
                     ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
                     if (!TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence))
                         return false;
-                    if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
+                    if (successful)
                         ReplaceCommittedResult(CronOccurrenceResults, functionContext);
                     return true;
                 }
@@ -129,16 +140,31 @@ namespace TickerQ.Provider
                 if (!TimeTickers.TryGetValue(functionContext.TickerId, out var ticker) ||
                     !HasCurrentChainGeneration(functionContext, ticker))
                     return false;
-                if ((functionContext.ParentId == null || enforceChildFence) &&
-                    (!functionContext.AcquisitionToken.HasValue || ticker.LockHolder != _lockHolder ||
-                     ticker.AcquisitionToken != functionContext.AcquisitionToken))
-                    return false;
+
+                if (functionContext.ParentId == null)
+                {
+                    if (!functionContext.AcquisitionToken.HasValue || ticker.LockHolder != _lockHolder ||
+                        ticker.AcquisitionToken != functionContext.AcquisitionToken)
+                        return false;
+                }
+                else
+                {
+                    if (ticker.ParentId != functionContext.ParentId)
+                        return false;
+                    // A remote child dispatch carries the root acquisition token. Bind that signed
+                    // identity to the durable aggregate generation without requiring children to
+                    // persist a duplicate acquisition token of their own.
+                    if (enforceRemoteChildToken &&
+                        (!functionContext.AcquisitionToken.HasValue ||
+                         functionContext.AcquisitionToken != functionContext.ChainGeneration))
+                        return false;
+                }
 
                 var updatedTicker = CloneTicker(ticker);
                 ApplyFunctionContextToTicker(updatedTicker, functionContext);
                 if (!TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker))
                     return false;
-                if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
+                if (successful)
                     ReplaceCommittedResult(TimeTickerResults, functionContext);
                 return true;
             }));

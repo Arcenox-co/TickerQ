@@ -94,13 +94,16 @@ public sealed class MongoResultPersistenceTests : IAsyncLifetime
         await _fixture.Provider.AddTimeTickers([root, child, grandchild]);
         var acquiredRoot = Assert.Single(await _fixture.Provider.AcquireImmediateTimeTickersAsync([root.Id]));
 
-        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(Success(root.Id, acquiredRoot.AcquisitionToken, null, Envelope(1))));
+        Assert.Equal(1, await StartChildAsync(child.Id, root.Id, root.Id, acquiredRoot.ChainGeneration));
+        Assert.Equal(1, await StartChildAsync(grandchild.Id, child.Id, root.Id, acquiredRoot.ChainGeneration));
         Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(
             Success(child.Id, null, root.Id, Envelope(2), rootId: root.Id,
                 generation: acquiredRoot.ChainGeneration)));
         Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(
             Success(grandchild.Id, null, child.Id, Envelope(3), rootId: root.Id,
                 generation: acquiredRoot.ChainGeneration)));
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(
+            Success(root.Id, acquiredRoot.AcquisitionToken, null, Envelope(1))));
 
         Assert.Equal(1, (await _fixture.Provider.GetTimeTickerResultAsync(root.Id))!.ToPayloadArray()[0]);
         Assert.Equal(2, (await _fixture.Provider.GetTimeTickerResultAsync(child.Id))!.ToPayloadArray()[0]);
@@ -182,6 +185,23 @@ public sealed class MongoResultPersistenceTests : IAsyncLifetime
             (await _fixture.Provider.GetTimeTickerById(child.Id))!.Status);
         Assert.Equal(2,
             (await _fixture.Provider.GetTimeTickerResultAsync(child.Id))!.ToPayloadArray()[0]);
+    }
+
+    [Fact]
+    public async Task StaleRootTokenEmbeddedChildTerminalWriteIsNotAcknowledged()
+    {
+        var root = NewTimeTicker();
+        var child = NewTimeTicker(root.Id);
+        await _fixture.Provider.AddTimeTickers([root, child]);
+        var acquired = Assert.Single(await _fixture.Provider.AcquireImmediateTimeTickersAsync([root.Id]));
+        Assert.Equal(1, await StartChildAsync(child.Id, root.Id, root.Id, acquired.ChainGeneration));
+        var stale = Success(child.Id, Guid.NewGuid(), root.Id, Envelope(5),
+            rootId: root.Id, generation: acquired.ChainGeneration);
+
+        Assert.False(await _fixture.Provider.CommitTerminalTickerAsync(stale));
+        Assert.Null(await _fixture.Provider.GetTimeTickerResultAsync(child.Id));
+        Assert.Equal(TickerStatus.InProgress,
+            (await _fixture.Provider.GetTimeTickerById(child.Id))!.Status);
     }
 
     [Fact]
@@ -280,11 +300,12 @@ public sealed class MongoResultPersistenceTests : IAsyncLifetime
         var child = NewTimeTicker(root.Id);
         await _fixture.Provider.AddTimeTickers([root, child]);
         var acquiredRoot = Assert.Single(await _fixture.Provider.AcquireImmediateTimeTickersAsync([root.Id]));
-        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(
-            Success(root.Id, acquiredRoot.AcquisitionToken, null, Envelope(1))));
+        Assert.Equal(1, await StartChildAsync(child.Id, root.Id, root.Id, acquiredRoot.ChainGeneration));
         Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(
             Success(child.Id, null, root.Id, Envelope(2), rootId: root.Id,
                 generation: acquiredRoot.ChainGeneration)));
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(
+            Success(root.Id, acquiredRoot.AcquisitionToken, null, Envelope(1))));
 
         Assert.Equal(2, await _fixture.Provider.RemoveTimeTickers([root.Id]));
         Assert.Equal(0, await Results.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty));
@@ -401,6 +422,13 @@ public sealed class MongoResultPersistenceTests : IAsyncLifetime
         context.SetProperty(x => x.ResultEnvelope, envelope);
         return context;
     }
+
+    private Task<int> StartChildAsync(Guid id, Guid parentId, Guid rootId, Guid? generation)
+        => _fixture.Provider.UpdateTimeTicker(new InternalFunctionContext
+        {
+            TickerId = id, ParentId = parentId, ChainRootId = rootId,
+            ChainGeneration = generation, Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.InProgress));
 
     private static BsonDocument ResultDocument(Guid id, string kind, byte value) => new()
     {

@@ -96,10 +96,13 @@ public sealed class EfCoreParentResultPersistenceTests : IAsyncLifetime
         grandchild.ChainRootId = root.Id;
         grandchild.ChainGeneration = generation;
         await SeedAsync(root, child, grandchild);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([root.Id]));
+        Assert.Equal(1, await StartChildAsync(
+            child.Id, child.ParentId!.Value, root.Id, acquired.ChainGeneration));
 
         var success = Success(child.Id, null, Envelope("child"), child.ParentId);
         success.ChainRootId = root.Id;
-        success.ChainGeneration = generation;
+        success.ChainGeneration = acquired.ChainGeneration;
         Assert.True(await _provider.CommitSuccessfulTickerAsync(success));
 
         Assert.Null(await _provider.GetTimeTickerResultAsync(root.Id));
@@ -121,6 +124,37 @@ public sealed class EfCoreParentResultPersistenceTests : IAsyncLifetime
         await using var verify = new TestTickerQDbContext(_options);
         Assert.Equal(TickerStatus.InProgress,
             (await verify.Set<TimeTickerEntity>().SingleAsync(x => x.Id == ticker.Id)).Status);
+    }
+
+    [Fact]
+    public async Task StaleRootToken_EmbeddedChildTerminalWrite_IsNotAcknowledged()
+    {
+        var root = NewTimeTicker();
+        var child = NewTimeTicker(parentId: root.Id);
+        await SeedAsync(root, child);
+        var acquiredRoot = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([root.Id]));
+        var acquiredChild = Assert.Single(acquiredRoot.Children);
+        var persistedRoot = await _seed.Set<TimeTickerEntity>().SingleAsync(x => x.Id == acquiredRoot.Id);
+        var persistedChild = await _seed.Set<TimeTickerEntity>().SingleAsync(x => x.Id == acquiredChild.Id);
+        persistedRoot.ChainRootId = acquiredRoot.ChainRootId;
+        persistedRoot.ChainGeneration = acquiredRoot.ChainGeneration;
+        persistedChild.ChainRootId = acquiredChild.ChainRootId;
+        persistedChild.ChainGeneration = acquiredChild.ChainGeneration;
+        await _seed.SaveChangesAsync();
+        _seed.ChangeTracker.Clear();
+        Assert.Equal(1, await StartChildAsync(
+            acquiredChild.Id, acquiredChild.ParentId!.Value,
+            acquiredChild.ChainRootId!.Value, acquiredChild.ChainGeneration));
+        var stale = Success(
+            acquiredChild.Id, Guid.NewGuid(), Envelope("stale-child"), acquiredChild.ParentId);
+        stale.ChainRootId = acquiredChild.ChainRootId;
+        stale.ChainGeneration = acquiredChild.ChainGeneration;
+
+        Assert.False(await _provider.CommitTerminalTickerAsync(stale));
+        Assert.Null(await _provider.GetTimeTickerResultAsync(child.Id));
+        await using var verify = new TestTickerQDbContext(_options);
+        Assert.Equal(TickerStatus.InProgress,
+            (await verify.Set<TimeTickerEntity>().SingleAsync(x => x.Id == child.Id)).Status);
     }
 
     [Fact]
@@ -314,6 +348,13 @@ public sealed class EfCoreParentResultPersistenceTests : IAsyncLifetime
          .SetProperty(x => x.ExecutedAt, DateTime.UtcNow)
          .SetProperty(x => x.ReleaseLock, true)
          .SetProperty(x => x.ResultEnvelope, result);
+
+    private Task<int> StartChildAsync(Guid id, Guid parentId, Guid rootId, Guid? generation)
+        => _provider.UpdateTimeTicker(new InternalFunctionContext
+        {
+            TickerId = id, ParentId = parentId, ChainRootId = rootId,
+            ChainGeneration = generation, Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.InProgress), CancellationToken.None);
 
     private static TickerResultEnvelope Envelope(string value)
         => new(System.Text.Encoding.UTF8.GetBytes(value), 1, "application/json");

@@ -73,6 +73,46 @@ public sealed class ParentResultProviderAndGuardTests
     }
 
     [Fact]
+    public async Task StaleRootToken_EmbeddedChildTerminalWrite_IsNotAcknowledged()
+    {
+        var root = new FakeTimeTicker
+            { Id = Guid.NewGuid(), Function = "Root", Status = TickerStatus.Idle, ExecutionTime = _now };
+        var child = new FakeTimeTicker
+            { Id = Guid.NewGuid(), Function = "Child", Status = TickerStatus.Idle, ParentId = root.Id };
+        root.Children.Add(child);
+        await _provider.AddTimeTickers([root], CancellationToken.None);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([root.Id], CancellationToken.None));
+        var started = new InternalFunctionContext
+        {
+            TickerId = child.Id,
+            ParentId = root.Id,
+            ChainRootId = acquired.ChainRootId,
+            ChainGeneration = acquired.ChainGeneration,
+            Type = TickerType.TimeTicker
+        }.SetProperty(x => x.AcquisitionToken, acquired.AcquisitionToken)
+         .SetProperty(x => x.Status, TickerStatus.InProgress);
+        Assert.Equal(1, await _provider.UpdateTimeTicker(started, CancellationToken.None));
+
+        var stale = new InternalFunctionContext
+        {
+            TickerId = child.Id,
+            ParentId = root.Id,
+            ChainRootId = acquired.ChainRootId,
+            ChainGeneration = acquired.ChainGeneration,
+            Type = TickerType.TimeTicker,
+            AcquisitionToken = Guid.NewGuid()
+        }.SetProperty(x => x.Status, TickerStatus.Done)
+         .SetProperty(x => x.ResultEnvelope, Envelope("stale-child"));
+
+        Assert.False(await _provider.CommitTerminalTickerAsync(stale, CancellationToken.None));
+        Assert.Null(await _provider.GetTimeTickerResultAsync(child.Id));
+        Assert.Equal(TickerStatus.InProgress,
+            (await _provider.GetTimeTickerById(child.Id, CancellationToken.None))!.Status);
+
+        await _provider.RemoveTimeTickers([root.Id], CancellationToken.None);
+    }
+
+    [Fact]
     public async Task CronOccurrence_Success_Stores_And_Reads_Result()
     {
         // Build an owned InProgress occurrence, then commit a successful terminal result on it.

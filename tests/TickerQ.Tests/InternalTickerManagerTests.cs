@@ -1283,11 +1283,69 @@ public class InternalTickerManagerTests
         context.SetProperty(x => x.Status, TickerStatus.Failed);
 
         await Assert.ThrowsAsync<NotSupportedException>(
-            () => _manager.UpdateTickerAsync(context, CancellationToken.None));
+            () => _manager.UpdateTickerFromRemoteAsync(context, CancellationToken.None));
 
         await _persistence.DidNotReceive().UpdateCronTickerOccurrence(
             Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>());
         await _notificationHub.DidNotReceive()
             .UpdateCronOccurrenceFromInternalFunctionContext<FakeCronTicker>(Arg.Any<InternalFunctionContext>());
     }
+
+    [Fact]
+    public async Task Remote_terminal_update_fails_closed_when_provider_does_not_support_acknowledgement()
+    {
+        var context = TerminalContext(TickerStatus.Failed);
+
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            _manager.UpdateTickerFromRemoteAsync(context));
+
+        await _persistence.DidNotReceiveWithAnyArgs().UpdateTimeTicker(default!, default);
+    }
+
+    [Fact]
+    public async Task Remote_terminal_update_rejects_stale_generation_before_notification()
+    {
+        _persistence.SupportsAcknowledgedTerminalUpdates.Returns(true);
+        _persistence.CommitTerminalTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        var context = TerminalContext(TickerStatus.Cancelled);
+
+        await Assert.ThrowsAsync<TickerQ.Utilities.Exceptions.TickerTerminalUpdateNotAcknowledgedException>(() =>
+            _manager.UpdateTickerFromRemoteAsync(context));
+
+        await _notificationHub.DidNotReceiveWithAnyArgs()
+            .UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(default!);
+    }
+
+    [Fact]
+    public async Task Remote_terminal_update_notifies_only_after_acknowledged_commit()
+    {
+        _persistence.SupportsAcknowledgedTerminalUpdates.Returns(true);
+        _persistence.CommitTerminalTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+        var context = TerminalContext(TickerStatus.Skipped);
+
+        await _manager.UpdateTickerFromRemoteAsync(context);
+
+        Received.InOrder(() =>
+        {
+            _persistence.CommitTerminalTickerAsync(context, Arg.Any<CancellationToken>());
+            _notificationHub.UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(context);
+        });
+    }
+
+    private static InternalFunctionContext TerminalContext(TickerStatus status)
+        => new()
+        {
+            TickerId = Guid.NewGuid(),
+            AcquisitionToken = Guid.NewGuid(),
+            FunctionName = "remote@node",
+            Type = TickerType.TimeTicker,
+            Status = status,
+            ParametersToUpdate = new HashSet<string>
+            {
+                nameof(InternalFunctionContext.Status),
+                nameof(InternalFunctionContext.ExecutedAt)
+            }
+        };
 }

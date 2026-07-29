@@ -94,6 +94,12 @@ message HubNode {
   // Unix milliseconds when Hub last saw activity from this node's control
   // stream. Informational; useful for dashboard "last seen" displays.
   int64 last_seen_unix_ms = 10;
+  // SDK runtime identifier used by the scheduler to select callback dispatch
+  // (nodejs) versus the persistent worker stream (dotnet).
+  string sdk_type = 11;
+  // Process-instance UUID published by callback runtimes. Core pins every dispatch/control
+  // message to this epoch so delayed requests cannot cross a Node restart.
+  string node_epoch = 12;
 }
 
 message HubFunction {

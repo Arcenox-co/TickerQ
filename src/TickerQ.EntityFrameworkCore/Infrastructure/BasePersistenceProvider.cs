@@ -52,36 +52,6 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     public bool SupportsResultPublication => true;
     public bool SupportsAcknowledgedTerminalUpdates => true;
 
-    public async Task<bool> CommitTerminalTickerAsync(
-        InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
-    {
-        if (functionContext == null) throw new ArgumentNullException(nameof(functionContext));
-        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
-            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or
-                TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped))
-            throw new InvalidOperationException("Acknowledged terminal persistence requires a terminal status mutation.");
-        if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone &&
-            functionContext.ParentId != null)
-            return false;
-        if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
-            return await CommitSuccessfulTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
-
-        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var now = _clock.UtcNow;
-        if (functionContext.Type == TickerType.CronTickerOccurrence)
-            return await session.Context.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-                .Where(x => x.Id == functionContext.TickerId && functionContext.AcquisitionToken.HasValue &&
-                            x.LockHolder == _lockHolder && x.AcquisitionToken == functionContext.AcquisitionToken)
-                .ExecuteUpdateAsync(setter => setter.UpdateCronTickerOccurrence<TCronTicker>(
-                    functionContext, NextLeaseUntil(now)), cancellationToken).ConfigureAwait(false) == 1;
-
-        return await session.Context.Set<TTimeTicker>()
-            .Where(x => x.Id == functionContext.TickerId && functionContext.AcquisitionToken.HasValue &&
-                        x.LockHolder == _lockHolder && x.AcquisitionToken == functionContext.AcquisitionToken)
-            .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(
-                functionContext, now, NextLeaseUntil(now)), cancellationToken).ConfigureAwait(false) == 1;
-    }
-
     public async Task<TickerResultEnvelope> GetTimeTickerResultAsync(
         Guid id, CancellationToken cancellationToken = default)
     {
@@ -107,13 +77,39 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     public async Task<bool> CommitSuccessfulTickerAsync(
         InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
     {
-        if (functionContext == null)
-            throw new ArgumentNullException(nameof(functionContext));
-        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
-            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
-            !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+        ValidateSuccessfulCommit(functionContext);
+        return await CommitTerminalTickerCoreAsync(
+            functionContext, enforceRemoteChildToken: false, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void ValidateSuccessfulCommit(InternalFunctionContext context)
+    {
+        if (context == null) throw new ArgumentNullException(nameof(context));
+        if (!context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            context.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
+            !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
             throw new InvalidOperationException(
                 "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
+    }
+
+    public Task<bool> CommitTerminalTickerAsync(
+        InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+        => CommitTerminalTickerCoreAsync(
+            functionContext, enforceRemoteChildToken: true, cancellationToken);
+
+    private async Task<bool> CommitTerminalTickerCoreAsync(
+        InternalFunctionContext functionContext, bool enforceRemoteChildToken,
+        CancellationToken cancellationToken = default)
+    {
+        if (functionContext == null)
+            throw new ArgumentNullException(nameof(functionContext));
+        var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
+        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                or TickerStatus.Cancelled or TickerStatus.Skipped) ||
+            (successful && !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+            throw new InvalidOperationException(
+                "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
 
         ValidateEnvelope(functionContext.ResultEnvelope);
         using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
@@ -150,6 +146,13 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                         await transaction.RollbackAsync(ct).ConfigureAwait(false);
                         return false;
                     }
+                    if (functionContext.ParentId != null && enforceRemoteChildToken &&
+                        (!functionContext.AcquisitionToken.HasValue ||
+                         functionContext.AcquisitionToken != functionContext.ChainGeneration))
+                    {
+                        await transaction.RollbackAsync(ct).ConfigureAwait(false);
+                        return false;
+                    }
                     var query = dbContext.Set<TTimeTicker>().Where(x => x.Id == functionContext.TickerId);
                     query = ApplyTimeTickerGenerationFence(dbContext, query, functionContext);
                     if (functionContext.ParentId == null)
@@ -168,9 +171,12 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     return false;
                 }
 
-                await OnSuccessfulStatusWrittenForTestAsync(
-                    dbContext, functionContext, ct).ConfigureAwait(false);
-                await ReplaceResultAsync(dbContext, functionContext, ct).ConfigureAwait(false);
+                if (successful)
+                {
+                    await OnSuccessfulStatusWrittenForTestAsync(
+                        dbContext, functionContext, ct).ConfigureAwait(false);
+                    await ReplaceResultAsync(dbContext, functionContext, ct).ConfigureAwait(false);
+                }
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
                 return true;
             }, cancellationToken).ConfigureAwait(false);

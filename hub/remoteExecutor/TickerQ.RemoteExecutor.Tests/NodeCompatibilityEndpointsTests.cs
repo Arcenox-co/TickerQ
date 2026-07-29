@@ -28,7 +28,7 @@ public sealed class NodeCompatibilityEndpointsTests
     {
         InternalFunctionContext? captured = null;
         var manager = Substitute.For<IInternalTickerManager>();
-        manager.UpdateTickerAsync(Arg.Do<InternalFunctionContext>(x => captured = x), Arg.Any<CancellationToken>())
+        manager.UpdateTickerFromRemoteAsync(Arg.Do<InternalFunctionContext>(x => captured = x), Arg.Any<CancellationToken>())
             .Returns(Task.CompletedTask);
         using var host = await StartHostAsync(manager);
         var id = Guid.NewGuid();
@@ -59,7 +59,7 @@ public sealed class NodeCompatibilityEndpointsTests
     {
         InternalFunctionContext? captured = null;
         var manager = Substitute.For<IInternalTickerManager>();
-        manager.UpdateTickerAsync(Arg.Do<InternalFunctionContext>(x => captured = x), Arg.Any<CancellationToken>())
+        manager.UpdateTickerFromRemoteAsync(Arg.Do<InternalFunctionContext>(x => captured = x), Arg.Any<CancellationToken>())
             .Returns(Task.CompletedTask);
         using var host = await StartHostAsync(manager);
         var payload = Encoding.UTF8.GetBytes("null");
@@ -124,7 +124,7 @@ public sealed class NodeCompatibilityEndpointsTests
             $"{Prefix}/time-tickers/context", body);
 
         Assert.Equal(expectedStatus, (int)response.StatusCode);
-        await manager.DidNotReceiveWithAnyArgs().UpdateTickerAsync(default!, default);
+        await manager.DidNotReceiveWithAnyArgs().UpdateTickerFromRemoteAsync(default!, default);
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public sealed class NodeCompatibilityEndpointsTests
     public async Task StaleManagerAcknowledgement_ReturnsConflict()
     {
         var manager = Substitute.For<IInternalTickerManager>();
-        manager.UpdateTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
+        manager.UpdateTickerFromRemoteAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
             .Returns(_ => throw new TickerResultNotAcknowledgedException("stale acquisition"));
         using var host = await StartHostAsync(manager);
 
@@ -204,13 +204,13 @@ public sealed class NodeCompatibilityEndpointsTests
             (await SendSignedAsync(host.GetTestClient(), HttpMethod.Post,
                 $"{Prefix}/time-tickers", huge)).StatusCode);
 
-        manager.UpdateTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
+        manager.UpdateTickerFromRemoteAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
             .Returns(_ => throw new NotSupportedException("result provider"));
         Assert.Equal(HttpStatusCode.NotImplemented,
             (await SendSignedAsync(host.GetTestClient(), HttpMethod.Put,
                 $"{Prefix}/time-tickers/context", ContextJson(resultEnvelope: null))).StatusCode);
 
-        manager.UpdateTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
+        manager.UpdateTickerFromRemoteAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
             .Returns(_ => throw new InvalidOperationException("unexpected"));
         Assert.Equal(HttpStatusCode.InternalServerError,
             (await SendSignedAsync(host.GetTestClient(), HttpMethod.Put,

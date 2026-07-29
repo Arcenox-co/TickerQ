@@ -56,6 +56,7 @@ export class TickerQFunctionSyncService {
             nodeName: this.options.nodeName!,
             callbackUrl: this.options.callbackUri!,
             isProduction: process.env.NODE_ENV === 'production',
+            nodeEpoch: this.options.nodeEpoch,
             functions: nodeFunctions,
         };
 

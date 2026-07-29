@@ -217,47 +217,6 @@ namespace TickerQ.MongoDB.Infrastructure
         public bool SupportsResultPublication => true;
         public bool SupportsAcknowledgedTerminalUpdates => true;
 
-        public async Task<bool> CommitTerminalTickerAsync(
-            InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
-        {
-            if (functionContext == null) throw new ArgumentNullException(nameof(functionContext));
-            if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
-                functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or
-                    TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped))
-                throw new InvalidOperationException("Acknowledged terminal persistence requires a terminal status mutation.");
-            if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone &&
-                functionContext.ParentId != null)
-                return false;
-            if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
-                return await CommitSuccessfulTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
-
-            var now = _clock.UtcNow;
-            if (functionContext.Type == TickerType.CronTickerOccurrence)
-            {
-                var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
-                var filter = functionContext.AcquisitionToken.HasValue
-                    ? fb.And(fb.Eq(x => x.Id, functionContext.TickerId),
-                        fb.Eq(x => x.LockHolder, _lockHolder),
-                        fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
-                    : fb.Where(_ => false);
-                var result = await _context.CronTickerOccurrences.UpdateOneAsync(filter,
-                    MongoUpdateBuilders.BuildCronOccurrenceUpdate<TCronTicker>(
-                        functionContext, now, NextLeaseUntil(now)), cancellationToken: cancellationToken).ConfigureAwait(false);
-                return result.MatchedCount == 1;
-            }
-
-            var timeFb = Builders<TTimeTicker>.Filter;
-            var timeFilter = functionContext.AcquisitionToken.HasValue
-                ? timeFb.And(timeFb.Eq(x => x.Id, functionContext.TickerId),
-                    timeFb.Eq(x => x.LockHolder, _lockHolder),
-                    timeFb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
-                : timeFb.Where(_ => false);
-            var timeResult = await _context.TimeTickers.UpdateOneAsync(timeFilter,
-                MongoUpdateBuilders.BuildTimeTickerUpdate<TTimeTicker>(
-                    functionContext, now, NextLeaseUntil(now)), cancellationToken: cancellationToken).ConfigureAwait(false);
-            return timeResult.MatchedCount == 1;
-        }
-
         private static BsonBinaryData ResultId(Guid id)
             => new(id, GuidRepresentation.Standard);
 
@@ -351,13 +310,39 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<bool> CommitSuccessfulTickerAsync(
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         {
-            if (functionContext == null)
-                throw new ArgumentNullException(nameof(functionContext));
-            if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
-                functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
-                !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+            ValidateSuccessfulCommit(functionContext);
+            return await CommitTerminalTickerCoreAsync(
+                functionContext, enforceRemoteChildToken: false, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static void ValidateSuccessfulCommit(InternalFunctionContext context)
+        {
+            if (context == null) throw new ArgumentNullException(nameof(context));
+            if (!context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+                context.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
+                !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
                 throw new InvalidOperationException(
                     "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
+        }
+
+        public Task<bool> CommitTerminalTickerAsync(
+            InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+            => CommitTerminalTickerCoreAsync(
+                functionContext, enforceRemoteChildToken: true, cancellationToken);
+
+        private async Task<bool> CommitTerminalTickerCoreAsync(
+            InternalFunctionContext functionContext, bool enforceRemoteChildToken,
+            CancellationToken cancellationToken = default)
+        {
+            if (functionContext == null)
+                throw new ArgumentNullException(nameof(functionContext));
+            var successful = functionContext.Status is TickerStatus.Done or TickerStatus.DueDone;
+            if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+                functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                    or TickerStatus.Cancelled or TickerStatus.Skipped) ||
+                (successful && !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+                throw new InvalidOperationException(
+                    "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
 
             if (functionContext.ResultEnvelope != null)
                 ValidateResult(functionContext.ResultEnvelope);
@@ -398,6 +383,10 @@ namespace TickerQ.MongoDB.Infrastructure
                             if (functionContext.ParentId != null &&
                                 !await LockCurrentChainGenerationAsync(s, functionContext, ct).ConfigureAwait(false))
                                 return false;
+                            if (functionContext.ParentId != null && enforceRemoteChildToken &&
+                                (!functionContext.AcquisitionToken.HasValue ||
+                                 functionContext.AcquisitionToken != functionContext.ChainGeneration))
+                                return false;
                             var fb = Builders<TTimeTicker>.Filter;
                             var filter = fb.And(
                                 fb.Eq(x => x.Id, functionContext.TickerId),
@@ -421,11 +410,14 @@ namespace TickerQ.MongoDB.Infrastructure
                         if (acknowledged.MatchedCount != 1)
                             return false;
 
-                        await StoreOrClearResultAsync(
-                            s, functionContext.TickerId, resultKind,
-                            functionContext.ResultEnvelope, ct).ConfigureAwait(false);
-                        if (AfterResultMutationForTestAsync != null)
-                            await AfterResultMutationForTestAsync(ct).ConfigureAwait(false);
+                        if (successful)
+                        {
+                            await StoreOrClearResultAsync(
+                                s, functionContext.TickerId, resultKind,
+                                functionContext.ResultEnvelope, ct).ConfigureAwait(false);
+                            if (AfterResultMutationForTestAsync != null)
+                                await AfterResultMutationForTestAsync(ct).ConfigureAwait(false);
+                        }
                         return true;
                     }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
             }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { normalizeExecutionContext } from '../dist/models/RemoteExecutionContext.js';
+import { normalizeExecutionContext as normalizeRawExecutionContext } from '../dist/models/RemoteExecutionContext.js';
 import { createFunctionContext } from '../dist/models/TickerFunctionContext.js';
 import { TickerFunctionProvider } from '../dist/infrastructure/TickerFunctionProvider.js';
 import { TickerFunctionBuilder } from '../dist/infrastructure/TickerFunctionBuilder.js';
@@ -16,6 +16,8 @@ const parentEnvelope = {
   payload: Buffer.from(JSON.stringify(parentValue)).toString('base64'),
 };
 const acquisitionToken = '13bb9d2e-f5ab-4c50-b7e2-1a4d85c00f9a';
+const executionId = '8b626b30-902e-4d47-978b-64254e1df27a';
+const normalizeExecutionContext = raw => normalizeRawExecutionContext({ executionId, ...raw });
 
 const normalized = normalizeExecutionContext({ AcquisitionToken: acquisitionToken, ParentResult: parentEnvelope });
 assert.deepEqual(normalized.parentResult, parentEnvelope);
@@ -122,27 +124,42 @@ async function execute(handler, { parentResult, abort = false, retryCount = 0, s
       updates.push(JSON.parse(JSON.stringify(body)));
     },
   };
-  const options = { webhookSignature: 'secret' };
+  const nodeEpoch = crypto.randomUUID();
+  const options = { webhookSignature: 'secret', nodeEpoch };
   const endpoint = new SdkExecutionEndpoint(options, {}, scheduler, { getSemaphore: () => null }, persistence);
+  const tickerId = crypto.randomUUID();
+  const dispatchId = crypto.randomUUID();
   const body = {
-    Id: crypto.randomUUID(), AcquisitionToken: acquisitionToken, Type: 0, RetryCount: retryCount, IsDue: false,
+    Id: tickerId, TickerId: tickerId, AcquisitionToken: acquisitionToken, ExecutionId: dispatchId,
+    DispatchId: dispatchId, TickerType: 0, NodeEpoch: nodeEpoch,
+    Type: 0, RetryCount: retryCount, IsDue: false,
     ScheduledFor: new Date().toISOString(), FunctionName: 'Job',
+    HasRequest: false, RequestPayload: null,
     ...(parentResult === undefined ? {} : { ParentResult: parentResult }),
   };
   const raw = JSON.stringify(body);
   const timestamp = Math.floor(Date.now() / 1000);
+  const nonce = crypto.randomUUID();
   const req = {
-    body,
+    body, rawBody: Buffer.from(raw),
     originalUrl: '/execute', url: '/execute',
     headers: {
       'x-timestamp': String(timestamp),
-      'x-tickerq-signature': generateSignature('secret', 'POST', '/execute', timestamp, raw),
+      'x-request-nonce': nonce,
+      'x-tickerq-signature': generateSignature('secret', 'POST', '/execute', timestamp, raw, nonce),
     },
   };
-  const res = { status() { return this; }, send() {} };
+  let outcome;
+  const res = {
+    headers: {},
+    set(name, value) { this.headers[name] = value; return this; },
+    status() { return this; },
+    send(value) { if (value) outcome = JSON.parse(Buffer.isBuffer(value) ? value.toString('utf8') : value); },
+  };
   await endpoint.expressHandlers().execute(req, res);
   await scheduled;
-  return updates[0];
+  assert.equal(updates.length, 0, 'callback execution must not persist terminal state');
+  return outcome;
 }
 
 const success = await execute(async ctx => {
@@ -179,10 +196,5 @@ assert.equal('resultEnvelope' in cancelled, false);
 const nextAttempt = await execute(async () => {});
 assert.equal(nextAttempt.resultEnvelope, null, 'a successful attempt without a result must clear stale durable output');
 assert.ok(nextAttempt.parametersToUpdate.includes('ResultEnvelope'));
-
-await assert.rejects(
-  execute(async () => {}, { statusFailure: new Error('stale acquisition') }),
-  /stale acquisition/,
-);
 
 console.log('result propagation and contract tests passed');

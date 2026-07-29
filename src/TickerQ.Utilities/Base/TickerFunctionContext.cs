@@ -2,6 +2,8 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
@@ -15,6 +17,9 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
     {
         Request = request;
         Id = tickerFunctionContext.Id;
+        AcquisitionToken = tickerFunctionContext.AcquisitionToken;
+        IsRemoteCallbackExecution = tickerFunctionContext.IsRemoteCallbackExecution;
+        ConfirmRemoteCommitAsync = tickerFunctionContext.ConfirmRemoteCommitAsync;
         ParentId = tickerFunctionContext.ParentId;
         Type = tickerFunctionContext.Type;
         RetryCount = tickerFunctionContext.RetryCount;
@@ -38,6 +43,12 @@ public class TickerFunctionContext
     internal AsyncServiceScope ServiceScope { get; set; }
     internal Action RequestCancelOperationAction { get; set; }
     public Guid Id { get; internal set; }
+    /// <summary>Persistence acquisition generation used only by remote transports for fencing.</summary>
+    internal Guid? AcquisitionToken { get; set; }
+    /// <summary>True only after an authenticated remote callback outcome was accepted.</summary>
+    internal bool IsRemoteCallbackExecution { get; set; }
+    /// <summary>Sent only after Core's exact-generation terminal commit succeeds.</summary>
+    internal Func<CancellationToken, Task> ConfirmRemoteCommitAsync { get; set; }
     /// <summary>
     /// The parent ticker identifier.
     /// For cron ticker occurrences, this is the owning CronTicker's Id.

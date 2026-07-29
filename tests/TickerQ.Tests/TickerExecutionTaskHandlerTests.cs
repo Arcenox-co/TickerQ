@@ -101,6 +101,33 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteTaskAsync_DoesNotReleaseDeferredChild_WhenTerminalOwnershipIsStale()
+    {
+        var childCalls = 0;
+        var root = CreateContext(ct: (_, _, _) => Task.CompletedTask, type: TickerType.TimeTicker);
+        var child = CreateContext(ct: (_, _, _) =>
+        {
+            childCalls++;
+            return Task.CompletedTask;
+        }, type: TickerType.TimeTicker);
+        child.RunCondition = RunCondition.OnSuccess;
+        root.TimeTickerChildren.Add(child);
+        _internalManager.UpdateTickerAsync(
+                Arg.Is<InternalFunctionContext>(candidate => ReferenceEquals(candidate, root)
+                    && candidate.Status == TickerStatus.Done),
+                Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new TickerQ.Utilities.Exceptions.TickerTerminalUpdateNotAcknowledgedException("stale"));
+
+        await Assert.ThrowsAsync<TickerQ.Utilities.Exceptions.TickerTerminalUpdateNotAcknowledgedException>(() =>
+            _handler.ExecuteTaskAsync(root, isDue: false));
+
+        Assert.Equal(0, childCalls);
+        await _internalManager.DidNotReceive().UpdateTickerAsync(
+            Arg.Is<InternalFunctionContext>(candidate => ReferenceEquals(candidate, child)),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ExecuteTaskAsync_WithPreRegisteredSource_ReusesIt_NoDuplicate_AndRequestCancelHitsSameSource()
     {
         var delegateStarted = new TaskCompletionSource();
@@ -479,6 +506,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         var parentContext = CreateContext(
             type: TickerType.TimeTicker,
             ct: (_, _, _) => Task.CompletedTask);
+        parentContext.AcquisitionToken = Guid.NewGuid();
         var childContext = CreateContext(
             type: TickerType.TimeTicker,
             ct: (_, _, _) => Task.CompletedTask);

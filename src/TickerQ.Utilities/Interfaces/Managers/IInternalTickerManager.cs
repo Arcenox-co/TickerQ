@@ -15,6 +15,8 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task ReleaseAcquiredResources(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
         Task<InternalFunctionContext[]> SetTickersInProgress(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
         Task UpdateTickerAsync(InternalFunctionContext context, CancellationToken cancellationToken = default);
+        Task UpdateTickerFromRemoteAsync(InternalFunctionContext context, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("The configured manager does not support acknowledged remote terminal updates.");
         [RequiresUnreferencedCode("Legacy request deserialization may use reflection metadata. Use the JsonTypeInfo overload for trimming/AOT.")]
         [RequiresDynamicCode("Legacy request deserialization may require runtime JSON metadata. Use the JsonTypeInfo overload for Native AOT.")]
         Task<T> GetRequestAsync<T>(Guid tickerId, TickerType type, CancellationToken cancellationToken = default);

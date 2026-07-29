@@ -268,10 +268,29 @@ public class RemoteFunctionsSyncService : BackgroundService
                     continue;
                 }
 
-                // Dispatch goes via the worker stream — no callback URL is dialed; the SDK
-                // is identified by NodeName and reached through its open stream registered
-                // in WorkerStreamRegistry.
-                var functionDelegate = RemoteExecutionDelegateFactory.Create(node.NodeName);
+                // Runtime routing is explicit. Dotnet SDKs use the persistent worker stream;
+                // Node SDKs execute through their signed callback and return a terminal outcome
+                // for Core to finalize exactly once.
+                TickerFunctionDelegate functionDelegate;
+                if (IsNodeSdk(node.SdkType))
+                {
+                    if (!Guid.TryParse(node.NodeEpoch, out var nodeEpoch) || nodeEpoch == Guid.Empty)
+                    {
+                        _logger?.LogWarning(
+                            "Skipping Node function {FunctionName}@{NodeName}: the synchronized process epoch is missing or invalid.",
+                            function.FunctionName, node.NodeName);
+                        continue;
+                    }
+                    functionDelegate = NodeCallbackExecutionDelegateFactory.Create(
+                        node.CallbackUrl,
+                        () => _options.WebHookSignature,
+                        nodeEpoch,
+                        _options.AllowPrivateNodeCallbackAddressesForLocalDevelopment);
+                }
+                else
+                {
+                    functionDelegate = RemoteExecutionDelegateFactory.Create(node.NodeName);
+                }
 
                 var priority = (TickerTaskPriority)(int)function.TaskPriority;
                 var cronExpression = function.NodeExpression ?? string.Empty;
@@ -388,6 +407,10 @@ public class RemoteFunctionsSyncService : BackgroundService
             _logger?.LogInformation("Migrated {Count} cron tickers", cronSeeds.Count);
         }
     }
+
+    private static bool IsNodeSdk(string? sdkType)
+        => string.Equals(sdkType, "nodejs", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(sdkType, "node", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Builds the canonical wire request contract for a remote function from the Hub's metadata.

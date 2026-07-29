@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { validateSignature } from '../utils/TickerQSignature';
+import { createHash, randomUUID } from 'crypto';
+import { generateResponseSignature, validateSignature } from '../utils/TickerQSignature';
 import { TickerSdkOptions } from '../TickerSdkOptions';
 import { TickerFunctionProvider } from '../infrastructure/TickerFunctionProvider';
 import { TickerQFunctionSyncService } from '../infrastructure/TickerQFunctionSyncService';
@@ -13,456 +14,292 @@ import type { InternalFunctionContext } from '../models/InternalFunctionContext'
 import { TickerType, TickerStatus, TickerTaskPriority, RunCondition } from '../enums';
 import type { TickerQLogger } from '../client/TickerQSdkHttpClient';
 
-function buildFunctionContext(
-    context: RemoteExecutionContext,
-    resultContract?: TickerFunctionResultContractInfo,
-): TickerFunctionContext<unknown> & { readonly resultSink: FunctionResultSink } {
-    return createFunctionContext(
-        context,
-        TickerFunctionProvider.getRequestDefault(context.functionName),
-        resultContract
-            ? {
-                contractId: resultContract.fingerprint,
-                contractType: resultContract.typeName,
-                mediaType: resultContract.mediaType,
-            }
-            : undefined,
-    );
-}
+const MaxRequestBodyBytes = 2 * 1024 * 1024;
+const MaxRegistryEntries = 10_000;
+const MaxReplayEntries = 20_000;
+const FinalizedTtlMs = 24 * 60 * 60 * 1000;
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+class RequestBodyTooLargeError extends Error {}
 
-function buildInternalContext(
-    context: RemoteExecutionContext,
-    registration: { priority: TickerTaskPriority; maxConcurrency: number },
-): InternalFunctionContext {
-    return {
-        parametersToUpdate: [],
-        cachedPriority: registration.priority,
-        cachedMaxConcurrency: registration.maxConcurrency,
-        functionName: context.functionName,
-        tickerId: context.id,
-        acquisitionToken: context.acquisitionToken,
-        parentId: context.parentId,
-        type: context.type,
-        retries: 0,
-        retryCount: context.retryCount,
-        status: TickerStatus.InProgress,
-        elapsedTime: 0,
-        exceptionDetails: null,
-        executedAt: new Date().toISOString(),
-        retryIntervals: [],
-        releaseLock: false,
-        executionTime: context.scheduledFor,
-        runCondition: RunCondition.OnSuccess,
-        timeTickerChildren: [],
-    };
+type ExecutionIdentity = { tickerType: TickerType; tickerId: string; acquisitionToken: string; dispatchId: string; nodeEpoch: string };
+type RegistryState = 'cancelPending' | 'active' | 'settled' | 'finalized';
+interface ExecutionRecord {
+    identity: ExecutionIdentity;
+    requestDigest?: string;
+    state: RegistryState;
+    controller: AbortController;
+    completion: Promise<InternalFunctionContext>;
+    resolve: (value: InternalFunctionContext) => void;
+    outcome?: InternalFunctionContext;
+    expiresAt?: number;
 }
+interface ReplayEntry { digest: string; identityKey: string; at: number }
 
+function buildFunctionContext(context: RemoteExecutionContext, resultContract?: TickerFunctionResultContractInfo): TickerFunctionContext<unknown> & { readonly resultSink: FunctionResultSink } {
+    return createFunctionContext(context, context.hasRequest ? context.request : undefined,
+        resultContract ? { contractId: resultContract.fingerprint, contractType: resultContract.typeName, mediaType: resultContract.mediaType } : undefined);
+}
+function buildInternalContext(context: RemoteExecutionContext, registration: { priority: TickerTaskPriority; maxConcurrency: number }): InternalFunctionContext {
+    return { parametersToUpdate: [], cachedPriority: registration.priority, cachedMaxConcurrency: registration.maxConcurrency,
+        functionName: context.functionName, tickerId: context.id, acquisitionToken: context.acquisitionToken,
+        parentId: context.parentId, type: context.type, retries: 0, retryCount: context.retryCount,
+        status: TickerStatus.InProgress, elapsedTime: 0, exceptionDetails: null,
+        executedAt: new Date().toISOString(), retryIntervals: [], releaseLock: false,
+        executionTime: context.scheduledFor, runCondition: RunCondition.OnSuccess, timeTickerChildren: [] };
+}
 function serializeException(err: unknown): string {
-    if (err instanceof Error) {
-        return JSON.stringify({
-            type: err.constructor.name,
-            message: err.message,
-            stackTrace: err.stack ?? null,
-        });
-    }
-    return JSON.stringify({ type: 'Unknown', message: String(err), stackTrace: null });
+    return JSON.stringify(err instanceof Error ? { type: err.constructor.name, message: err.message, stackTrace: err.stack ?? null }
+        : { type: 'Unknown', message: String(err), stackTrace: null });
 }
 
-/**
- * HTTP request handler for the /execute and /resync endpoints.
- * Framework-agnostic — works with raw Node.js http, Express, Fastify, etc.
- */
+/** Exact-byte authenticated callback endpoint with replay-safe retained execution outcomes. */
 export class SdkExecutionEndpoint {
-    private readonly options: TickerSdkOptions;
-    private readonly syncService: TickerQFunctionSyncService;
-    private readonly scheduler: TickerQTaskScheduler;
-    private readonly concurrencyGate: TickerFunctionConcurrencyGate;
-    private readonly persistenceProvider: TickerQRemotePersistenceProvider;
-    private readonly logger: TickerQLogger | null;
+    private readonly executions = new Map<string, ExecutionRecord>();
+    private readonly replay = new Map<string, ReplayEntry>();
+    private stopping = false;
+    constructor(private readonly options: TickerSdkOptions, private readonly syncService: TickerQFunctionSyncService,
+        private readonly scheduler: TickerQTaskScheduler, private readonly concurrencyGate: TickerFunctionConcurrencyGate,
+        private readonly persistenceProvider: TickerQRemotePersistenceProvider, private readonly logger: TickerQLogger | null = null) {}
 
-    constructor(
-        options: TickerSdkOptions,
-        syncService: TickerQFunctionSyncService,
-        scheduler: TickerQTaskScheduler,
-        concurrencyGate: TickerFunctionConcurrencyGate,
-        persistenceProvider: TickerQRemotePersistenceProvider,
-        logger?: TickerQLogger,
-    ) {
-        this.options = options;
-        this.syncService = syncService;
-        this.scheduler = scheduler;
-        this.concurrencyGate = concurrencyGate;
-        this.persistenceProvider = persistenceProvider;
-        this.logger = logger ?? null;
-    }
-
-    /**
-     * Returns an Express-compatible middleware router.
-     * Mounts POST /execute and POST /resync under the given prefix.
-     */
     createHandler(prefix = ''): (req: IncomingMessage, res: ServerResponse) => void {
-        const executePath = `${prefix}/execute`;
-        const resyncPath = `${prefix}/resync`;
-
-        return async (req: IncomingMessage, res: ServerResponse) => {
-            const url = req.url ?? '';
-            const method = req.method?.toUpperCase() ?? '';
-
-            if (method !== 'POST') {
-                res.writeHead(405);
-                res.end('Method Not Allowed');
-                return;
-            }
-
-            if (url === executePath) {
-                await this.handleExecute(req, res);
-            } else if (url === resyncPath) {
-                await this.handleResync(req, res);
-            } else {
-                res.writeHead(404);
-                res.end('Not Found');
-            }
+        const paths = { [`${prefix}/execute`]: 'execute', [`${prefix}/cancel`]: 'cancel', [`${prefix}/finalize`]: 'finalize', [`${prefix}/resync`]: 'resync' } as const;
+        return async (req, res) => {
+            if (req.method?.toUpperCase() !== 'POST') { res.writeHead(405); res.end('Method Not Allowed'); return; }
+            const kind = paths[req.url as keyof typeof paths];
+            if (kind === 'execute') await this.handleNative(req, res, 'execute');
+            else if (kind === 'cancel') await this.handleNative(req, res, 'cancel');
+            else if (kind === 'finalize') await this.handleNative(req, res, 'finalize');
+            else if (kind === 'resync') await this.handleResync(req, res);
+            else { res.writeHead(404); res.end('Not Found'); }
         };
     }
 
-    /**
-     * Returns Express-compatible route handlers.
-     * Call with your express app or router instance:
-     *
-     * ```ts
-     * const { execute, resync } = sdk.getEndpoint().expressHandlers();
-     * app.post('/execute', execute);
-     * app.post('/resync', resync);
-     * ```
-     */
     expressHandlers(prefix = ''): {
-        execute: (req: any, res: any) => Promise<void>;
-        resync: (req: any, res: any) => Promise<void>;
-        mount: (app: { post: (path: string, handler: (req: any, res: any) => Promise<void>) => void }) => void;
+        execute: (req: any, res: any) => Promise<void>; cancel: (req: any, res: any) => Promise<void>;
+        finalize: (req: any, res: any) => Promise<void>; resync: (req: any, res: any) => Promise<void>;
+        mount: (app: { post: (path: string, handler: any) => void }) => void;
     } {
-        const execute = async (req: any, res: any) => {
-            await this.handleExecuteExpress(req, res);
-        };
-        const resync = async (req: any, res: any) => {
-            await this.handleResync(req, res);
-        };
-        const mount = (app: { post: (path: string, handler: (req: any, res: any) => Promise<void>) => void }) => {
-            app.post(`${prefix}/execute`, execute);
-            app.post(`${prefix}/resync`, resync);
-        };
-        return { execute, resync, mount };
+        const execute = (req: any, res: any) => this.handleExpress(req, res, 'execute');
+        const cancel = (req: any, res: any) => this.handleExpress(req, res, 'cancel');
+        const finalize = (req: any, res: any) => this.handleExpress(req, res, 'finalize');
+        const resync = (req: any, res: any) => this.handleResync(req, res);
+        return { execute, cancel, finalize, resync, mount: app => {
+            app.post(`${prefix}/execute`, execute); app.post(`${prefix}/cancel`, cancel);
+            app.post(`${prefix}/finalize`, finalize); app.post(`${prefix}/resync`, resync);
+        }};
     }
 
-    // ─── /execute ───────────────────────────────────────────────────────
+    /** Express json({ verify: endpoint.expressRawBodyCapture }) compatible exact-byte capture. */
+    readonly expressRawBodyCapture = (req: any, _res: any, buffer: Buffer): void => { req.rawBody = Buffer.from(buffer); };
 
-    private async handleExecute(req: IncomingMessage, res: ServerResponse): Promise<void> {
-        const bodyBytes = await readBody(req);
-
-        // Validate signature
-        const pathAndQuery = req.url ?? '/execute';
-        const validationError = validateSignature(
-            this.options.webhookSignature,
-            'POST',
-            pathAndQuery,
-            getHeader(req, 'x-timestamp'),
-            getHeader(req, 'x-tickerq-signature'),
-            bodyBytes,
-        );
-
-        if (validationError) {
-            this.logger?.warn(`TickerQ signature validation failed: ${validationError}`);
-            res.writeHead(401);
-            res.end('Unauthorized');
-            return;
-        }
-
-        let context: RemoteExecutionContext;
-        try {
-            const raw = JSON.parse(bodyBytes.toString('utf-8'));
-            context = normalizeExecutionContext(raw);
-        } catch {
-            res.writeHead(400);
-            res.end('Invalid JSON body');
-            return;
-        }
-
-        if (!context.functionName) {
-            res.writeHead(400);
-            res.end('Missing functionName');
-            return;
-        }
-
-        this.logger?.info(
-            `TickerQ: Received /execute for '${context.functionName}' (id: ${context.id}, type: ${context.type})`,
-        );
-
-        // Look up the function
-        const registration = TickerFunctionProvider.getFunction(context.functionName);
-        if (!registration) {
-            this.logger?.error(`TickerQ: Function '${context.functionName}' not found. Ensure it is registered.`);
-            res.writeHead(404);
-            res.end(`Function '${context.functionName}' not found`);
-            return;
-        }
-
-        const functionContext = buildFunctionContext(context, registration.resultContract);
-
-        // Queue execution with priority and concurrency gate
-        const semaphore = this.concurrencyGate.getSemaphore(
-            context.functionName,
-            registration.maxConcurrency,
-        );
-
-        // Respond immediately — execution happens async (fire-and-forget from Hub's perspective)
-        res.writeHead(200);
-        res.end('OK');
-
-        // Execute in the task scheduler
-        this.scheduler.queueAsync(async (signal) => {
-            await this.executeAndReportStatus(context, registration, functionContext, semaphore, signal);
-        }, registration.priority).catch((err) => {
-            this.logger?.error(`TickerQ: Failed to queue '${context.functionName}':`, err);
-        });
+    beginShutdown(): void {
+        if (this.stopping) return;
+        this.stopping = true; this.scheduler.freeze();
+        for (const record of this.executions.values()) if (record.state === 'active') record.controller.abort();
+        this.scheduler.abortAll();
+    }
+    async shutdown(timeoutMs = 30_000): Promise<boolean> {
+        this.beginShutdown();
+        const deadline = Date.now() + Math.max(0, timeoutMs);
+        const active = [...this.executions.values()].filter(x => x.state === 'active').map(x => x.completion.catch(() => undefined));
+        const settled = await Promise.race([
+            Promise.all(active).then(() => true),
+            new Promise<boolean>(resolve => setTimeout(() => resolve(false), Math.max(0, deadline - Date.now()))),
+        ]);
+        if (!settled) return false;
+        const drained = await this.scheduler.waitForRunningTasks(Math.max(0, deadline - Date.now()));
+        if (!drained) return false;
+        this.scheduler.dispose();
+        return true;
     }
 
-    /**
-     * Express-specific handler that reads body from req.body if already parsed.
-     */
-    private async handleExecuteExpress(req: any, res: any): Promise<void> {
-        let bodyBytes: Buffer;
-        let bodyStr: string;
-
-        if (req.body && typeof req.body === 'object') {
-            bodyStr = JSON.stringify(req.body);
-            bodyBytes = Buffer.from(bodyStr, 'utf-8');
-        } else if (req.rawBody) {
-            bodyBytes = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(req.rawBody);
-            bodyStr = bodyBytes.toString('utf-8');
-        } else {
-            bodyBytes = await readBody(req);
-            bodyStr = bodyBytes.toString('utf-8');
-        }
-
-        // Validate signature
-        const pathAndQuery = req.originalUrl ?? req.url ?? '/execute';
-        const validationError = validateSignature(
-            this.options.webhookSignature,
-            'POST',
-            pathAndQuery,
-            req.headers['x-timestamp'] as string | undefined,
-            req.headers['x-tickerq-signature'] as string | undefined,
-            bodyBytes,
-        );
-
-        if (validationError) {
-            this.logger?.warn(`TickerQ signature validation failed: ${validationError}`);
-            res.status(401).send('Unauthorized');
-            return;
-        }
-
-        let context: RemoteExecutionContext;
-        try {
-            const raw = typeof req.body === 'object' ? req.body : JSON.parse(bodyStr);
-            context = normalizeExecutionContext(raw);
-        } catch {
-            res.status(400).send('Invalid JSON body');
-            return;
-        }
-
-        if (!context.functionName) {
-            res.status(400).send('Missing functionName');
-            return;
-        }
-
-        this.logger?.info(
-            `TickerQ: Received /execute for '${context.functionName}' (id: ${context.id}, type: ${context.type})`,
-        );
-
-        const registration = TickerFunctionProvider.getFunction(context.functionName);
-        if (!registration) {
-            this.logger?.error(`TickerQ: Function '${context.functionName}' not found.`);
-            res.status(404).send(`Function '${context.functionName}' not found`);
-            return;
-        }
-
-        const functionContext = buildFunctionContext(context, registration.resultContract);
-
-        const semaphore = this.concurrencyGate.getSemaphore(
-            context.functionName,
-            registration.maxConcurrency,
-        );
-
-        res.status(200).send('OK');
-
-        this.scheduler.queueAsync(async (signal) => {
-            await this.executeAndReportStatus(context, registration, functionContext, semaphore, signal);
-        }, registration.priority).catch((err) => {
-            this.logger?.error(`TickerQ: Failed to queue '${context.functionName}':`, err);
-        });
+    private async handleNative(req: IncomingMessage, res: ServerResponse, kind: 'execute'|'cancel'|'finalize'): Promise<void> {
+        let body: Buffer;
+        try { body = await readBody(req); }
+        catch (e) { if (e instanceof RequestBodyTooLargeError) { res.writeHead(413); res.end('Payload Too Large'); return; } throw e; }
+        const path = req.url ?? `/${kind}`;
+        const auth = this.authenticate(req.headers as Record<string, any>, path, body);
+        if (auth.error) { res.writeHead(401); res.end('Unauthorized'); return; }
+        const result = await this.dispatch(kind, body, auth.nonce!, path);
+        this.sendSignedNative(res, result.status, path, auth.nonce!, result.body);
+    }
+    private async handleExpress(req: any, res: any, kind: 'execute'|'cancel'|'finalize'): Promise<void> {
+        if (!req.rawBody) { res.status(400).send('Exact rawBody is required; configure express.json({ verify: endpoint.expressRawBodyCapture }).'); return; }
+        const body = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(req.rawBody);
+        if (body.length > MaxRequestBodyBytes) { res.status(413).send('Payload Too Large'); return; }
+        const path = req.originalUrl ?? req.url ?? `/${kind}`;
+        const auth = this.authenticate(req.headers ?? {}, path, body);
+        if (auth.error) { res.status(401).send('Unauthorized'); return; }
+        const result = await this.dispatch(kind, body, auth.nonce!, path);
+        const timestamp = Math.floor(Date.now() / 1000); const secret = this.options.webhookSignature!;
+        res.set('content-type', 'application/json'); res.set('x-response-timestamp', String(timestamp));
+        res.set('x-request-nonce', auth.nonce!); res.set('x-tickerq-signature', generateResponseSignature(secret, result.status, path, timestamp, auth.nonce!, result.body));
+        res.status(result.status).send(result.body);
     }
 
-    // ─── Execution lifecycle ──────────────────────────────────────────────
+    private authenticate(headers: Record<string, any>, path: string, body: Buffer): { error?: string; nonce?: string } {
+        const header = (name: string): string | undefined => { const value = headers[name] ?? headers[name.toLowerCase()]; return Array.isArray(value) ? value[0] : value?.toString(); };
+        const nonce = header('x-request-nonce');
+        if (!nonce || !uuid.test(nonce) || zeroUuid(nonce)) return { error: 'Missing or invalid request nonce.' };
+        const normalizedNonce = nonce.toLowerCase();
+        const error = validateSignature(this.options.webhookSignature, 'POST', path, header('x-timestamp'), header('x-tickerq-signature'), body, normalizedNonce);
+        if (error) return { error };
+        return { nonce: normalizedNonce };
+    }
 
-    private async executeAndReportStatus(
-        context: RemoteExecutionContext,
-        registration: { delegate: (ctx: any, signal: AbortSignal) => Promise<void>; priority: TickerTaskPriority; maxConcurrency: number },
-        functionContext: TickerFunctionContext<unknown> & { readonly resultSink: FunctionResultSink },
-        semaphore: { acquire: () => Promise<() => void> } | null,
-        signal: AbortSignal,
-    ): Promise<void> {
-        const internalCtx = buildInternalContext(context, registration);
-        const startTime = performance.now();
-        let release: (() => void) | null = null;
-        const typeName = context.type === TickerType.CronTickerOccurrence ? 'CronTicker' : 'TimeTicker';
+    private async dispatch(kind: 'execute'|'cancel'|'finalize', body: Buffer, nonce: string, path: string): Promise<{ status: number; body: Buffer }> {
+        this.cleanup();
+        let raw: Record<string, unknown>;
+        try { raw = JSON.parse(body.toString('utf8')); } catch { return response(400, { error: 'invalid_json' }); }
+        let identity: ExecutionIdentity;
+        try { identity = normalizeIdentity(raw); } catch { return response(400, { error: 'invalid_identity' }); }
+        if (identity.nodeEpoch !== this.options.nodeEpoch.toLowerCase()) return response(409, { error: 'node_epoch_mismatch' });
+        const key = identityKey(identity); const digest = createHash('sha256').update(body).digest('hex');
+        const seen = this.replay.get(nonce);
+        if (seen && (seen.digest !== digest || seen.identityKey !== key)) return response(409, { error: 'replay_conflict' });
+        if (!seen) {
+            if (this.replay.size >= MaxReplayEntries) this.replay.delete(this.replay.keys().next().value!);
+            this.replay.set(nonce, { digest, identityKey: key, at: Date.now() });
+        }
+        if (kind === 'execute') return this.execute(raw, identity, key, digest);
+        let controlNonce: string;
+        try { controlNonce = readUuid(raw, 'controlNonce', 'ControlNonce'); } catch { return response(400, { error: 'invalid_control_nonce' }); }
+        if (kind === 'cancel') return this.cancel(identity, key, controlNonce);
+        return this.finalize(identity, key, controlNonce);
+    }
 
-        this.logger?.info(
-            `TickerQ [${typeName}] Executing '${context.functionName}' (id: ${context.id}, retry: ${context.retryCount}, isDue: ${context.isDue})`,
-        );
-
-        try {
-            if (semaphore) {
-                this.logger?.info(`TickerQ [${typeName}] '${context.functionName}' waiting for concurrency semaphore...`);
-                release = await semaphore.acquire();
-                this.logger?.info(`TickerQ [${typeName}] '${context.functionName}' semaphore acquired.`);
+    private async execute(raw: Record<string, unknown>, identity: ExecutionIdentity, key: string, digest: string): Promise<{status:number;body:Buffer}> {
+        if (this.stopping) return response(503, { error: 'shutting_down' });
+        const existing = this.executions.get(key);
+        if (existing) {
+            if (existing.state === 'finalized') return response(410, { state: 'finalized', identity });
+            if (existing.requestDigest && existing.requestDigest !== digest) return response(409, { error: 'execution_body_conflict' });
+            if (!existing.requestDigest) existing.requestDigest = digest;
+            if (existing.state === 'cancelPending') {
+                let cancelledContext: RemoteExecutionContext;
+                try { cancelledContext = normalizeExecutionContext(raw); } catch { return response(400, { error: 'invalid_execution' }); }
+                const registration = TickerFunctionProvider.getFunction(cancelledContext.functionName);
+                if (!registration) return response(404, { error: 'function_not_found' });
+                this.settle(existing, cancelledOutcome(cancelledContext, registration, abortError()));
             }
+            const outcome = await existing.completion;
+            return response(200, { identity, ...outcome });
+        }
+        if (this.executions.size >= MaxRegistryEntries) return response(503, { error: 'registry_full' });
+        let context: RemoteExecutionContext;
+        try { context = normalizeExecutionContext(raw); } catch { return response(400, { error: 'invalid_execution' }); }
+        const registration = TickerFunctionProvider.getFunction(context.functionName);
+        if (!registration) return response(404, { error: 'function_not_found' });
+        const expectsRequest = TickerFunctionProvider.getRequestDefault(context.functionName) !== undefined;
+        if (expectsRequest !== context.hasRequest) return response(400, { error: expectsRequest ? 'missing_request' : 'unexpected_request' });
+        const record = createRecord(identity, 'active'); record.requestDigest = digest;
+        this.executions.set(key, record);
+        const functionContext = buildFunctionContext(context, registration.resultContract);
+        const semaphore = this.concurrencyGate.getSemaphore(context.functionName, registration.maxConcurrency);
+        void this.executeInScheduler(context, registration, functionContext, semaphore, record.controller.signal)
+            .then(outcome => this.settle(record, outcome), err => this.settle(record, failedOutcome(context, registration, err)));
+        const outcome = await record.completion;
+        return response(200, { identity, ...outcome });
+    }
 
-            internalCtx.status = TickerStatus.InProgress;
-            this.logger?.info(`TickerQ [${typeName}] '${context.functionName}' status -> InProgress`);
+    private async cancel(identity: ExecutionIdentity, key: string, controlNonce: string): Promise<{status:number;body:Buffer}> {
+        let record = this.executions.get(key);
+        if (!record) {
+            if (this.executions.size >= MaxRegistryEntries) return response(503, { error: 'registry_full' });
+            record = createRecord(identity, 'cancelPending'); this.executions.set(key, record);
+        }
+        if (record.state === 'finalized') return response(410, { state: 'finalized', controlNonce, identity });
+        if (record.state === 'settled') return response(200, { state: record.outcome?.status === TickerStatus.Cancelled ? 'stopped' : 'completed', controlNonce, identity, outcome: record.outcome });
+        if (record.state === 'active') record.controller.abort();
+        // cancelPending intentionally waits for a matching execute, proving pre-cancel cannot be mistaken for settlement.
+        const outcome = await record.completion;
+        return response(200, { state: outcome.status === TickerStatus.Cancelled ? 'stopped' : 'completed', controlNonce, identity, outcome });
+    }
 
+    private finalize(identity: ExecutionIdentity, key: string, controlNonce: string): {status:number;body:Buffer} {
+        const record = this.executions.get(key);
+        if (!record) return response(404, { state: 'unknown', controlNonce, identity });
+        if (record.state === 'active' || record.state === 'cancelPending') return response(409, { state: 'not_settled', controlNonce, identity });
+        record.state = 'finalized'; record.outcome = undefined; record.expiresAt = Date.now() + FinalizedTtlMs;
+        return response(200, { state: 'finalized', controlNonce, identity });
+    }
+
+    private settle(record: ExecutionRecord, outcome: InternalFunctionContext): void {
+        if (record.state === 'settled' || record.state === 'finalized') return;
+        record.state = 'settled'; record.outcome = outcome; record.resolve(outcome);
+    }
+    private executeInScheduler(context: RemoteExecutionContext, registration: any, functionContext: any, semaphore: any, signal: AbortSignal): Promise<InternalFunctionContext> {
+        return new Promise((resolve, reject) => {
+            this.scheduler.queueAsync(async schedulerSignal => {
+                const linked = linkAbortSignals(schedulerSignal, signal);
+                resolve(await this.executeAndReturnOutcome(context, registration, functionContext, semaphore, linked.signal));
+            }, registration.priority, signal).catch(err => {
+                if (signal.aborted) resolve(cancelledOutcome(context, registration, err)); else reject(err);
+            });
+        });
+    }
+    private async executeAndReturnOutcome(context: RemoteExecutionContext, registration: any, functionContext: any, semaphore: any, signal: AbortSignal): Promise<InternalFunctionContext> {
+        const internal = buildInternalContext(context, registration); const start = performance.now(); let release: (()=>void)|null = null;
+        try {
+            if (signal.aborted) throw abortError();
+            if (semaphore) release = await semaphore.acquire(signal);
+            if (signal.aborted) throw abortError();
             await registration.delegate(functionContext, signal);
-
-            // Success — set Done or DueDone based on isDue flag
-            const elapsed = Math.round(performance.now() - startTime);
-            internalCtx.status = context.isDue ? TickerStatus.DueDone : TickerStatus.Done;
-            internalCtx.elapsedTime = elapsed;
-            internalCtx.executedAt = new Date().toISOString();
-            internalCtx.parametersToUpdate = ['Status', 'ElapsedTime', 'ExecutedAt'];
-            if (functionContext.resultSink.resultEnvelope) {
-                internalCtx.resultEnvelope = functionContext.resultSink.resultEnvelope;
-            } else {
-                // A successful attempt that publishes no result must explicitly clear any durable
-                // value left by an earlier attempt; JSON undefined would omit this mutation.
-                internalCtx.resultEnvelope = null;
-            }
-            internalCtx.parametersToUpdate.push('ResultEnvelope');
-
-            this.logger?.info(
-                `TickerQ [${typeName}] '${context.functionName}' status -> ${TickerStatus[internalCtx.status]} (${elapsed}ms)`,
-            );
+            if (signal.aborted) throw abortError();
+            internal.status = context.isDue ? TickerStatus.DueDone : TickerStatus.Done;
+            internal.parametersToUpdate = ['Status','ElapsedTime','ExecutedAt','ResultEnvelope'];
+            internal.resultEnvelope = functionContext.resultSink.resultEnvelope ?? null;
         } catch (err) {
-            const elapsed = Math.round(performance.now() - startTime);
-
-            if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
-                internalCtx.status = TickerStatus.Cancelled;
-                this.logger?.warn(
-                    `TickerQ [${typeName}] '${context.functionName}' status -> Cancelled after ${elapsed}ms`,
-                );
-            } else {
-                internalCtx.status = TickerStatus.Failed;
-                this.logger?.error(
-                    `TickerQ [${typeName}] '${context.functionName}' status -> Failed after ${elapsed}ms:`,
-                    err,
-                );
-            }
-
-            internalCtx.elapsedTime = elapsed;
-            internalCtx.executedAt = new Date().toISOString();
-            internalCtx.exceptionDetails = serializeException(err);
-            internalCtx.parametersToUpdate = ['Status', 'ElapsedTime', 'ExecutedAt', 'ExceptionDetails'];
-        } finally {
-            if (release) {
-                release();
-                this.logger?.info(`TickerQ [${typeName}] '${context.functionName}' semaphore released.`);
-            }
-        }
-
-        // Report status back to the Scheduler/Hub
-        const endpoint = context.type === TickerType.CronTickerOccurrence
-            ? 'cron-ticker-occurrences/context'
-            : 'time-tickers/context';
-
-        this.logger?.info(
-            `TickerQ [${typeName}] '${context.functionName}' reporting status ${TickerStatus[internalCtx.status]} to Scheduler (PUT /${endpoint})...`,
-        );
-
-        try {
-            if (context.type === TickerType.CronTickerOccurrence) {
-                await this.persistenceProvider.updateCronTickerOccurrence(internalCtx);
-            } else {
-                await this.persistenceProvider.updateTimeTicker(internalCtx);
-            }
-            this.logger?.info(
-                `TickerQ [${typeName}] '${context.functionName}' status reported successfully.`,
-            );
-        } catch (err) {
-            this.logger?.error(
-                `TickerQ [${typeName}] '${context.functionName}' failed to report status ${TickerStatus[internalCtx.status]} to Scheduler:`,
-                err,
-            );
-            // Terminal acknowledgement is part of execution correctness. Propagate stale-token,
-            // unsupported-provider and transport failures instead of logging a false success.
-            throw err;
-        }
+            internal.status = signal.aborted || (err instanceof Error && err.name === 'AbortError') ? TickerStatus.Cancelled : TickerStatus.Failed;
+            internal.exceptionDetails = serializeException(err);
+            internal.parametersToUpdate = ['Status','ElapsedTime','ExecutedAt','ExceptionDetails'];
+        } finally { release?.(); internal.elapsedTime = Math.round(performance.now() - start); internal.executedAt = new Date().toISOString(); }
+        return internal;
     }
 
-    // ─── /resync ────────────────────────────────────────────────────────
+    private sendSignedNative(res: ServerResponse, status: number, path: string, nonce: string, body: Buffer): void {
+        const timestamp = Math.floor(Date.now()/1000); const secret = this.options.webhookSignature!;
+        res.writeHead(status, { 'content-type': 'application/json', 'x-response-timestamp': String(timestamp), 'x-request-nonce': nonce,
+            'x-tickerq-signature': generateResponseSignature(secret, status, path, timestamp, nonce, body) }); res.end(body);
+    }
+    private cleanup(): void {
+        const now = Date.now();
+        for (const [key, value] of this.executions) if (value.state === 'finalized' && (value.expiresAt ?? 0) <= now) this.executions.delete(key);
+        const replayCutoff = now - FinalizedTtlMs;
+        for (const [key, value] of this.replay) if (value.at < replayCutoff) this.replay.delete(key);
+    }
 
-    private async handleResync(req: IncomingMessage | any, res: ServerResponse | any): Promise<void> {
-        // Validate signature on resync too
-        const bodyBytes = await readBody(req);
-        const pathAndQuery = req.originalUrl ?? req.url ?? '/resync';
-        const validationError = validateSignature(
-            this.options.webhookSignature,
-            'POST',
-            pathAndQuery,
-            getHeader(req, 'x-timestamp'),
-            getHeader(req, 'x-tickerq-signature'),
-            bodyBytes,
-        );
-
-        if (validationError) {
-            this.logger?.warn(`TickerQ resync signature validation failed: ${validationError}`);
-            if (typeof res.status === 'function') {
-                res.status(401).send('Unauthorized');
-            } else {
-                res.writeHead(401);
-                res.end('Unauthorized');
-            }
-            return;
-        }
-
-        try {
-            await this.syncService.syncAsync();
-            if (typeof res.status === 'function') {
-                res.status(200).send('OK');
-            } else {
-                res.writeHead(200);
-                res.end('OK');
-            }
-        } catch (err) {
-            this.logger?.error('TickerQ: Resync failed:', err);
-            if (typeof res.status === 'function') {
-                res.status(500).send('Resync failed');
-            } else {
-                res.writeHead(500);
-                res.end('Resync failed');
-            }
-        }
+    private async handleResync(req: any, res: any): Promise<void> {
+        let body: Buffer; try { body = req.rawBody ? Buffer.from(req.rawBody) : await readBody(req); } catch { body = Buffer.alloc(0); }
+        const path = req.originalUrl ?? req.url ?? '/resync';
+        const error = validateSignature(this.options.webhookSignature, 'POST', path, getHeader(req,'x-timestamp'), getHeader(req,'x-tickerq-signature'), body);
+        if (error) { send(res, 401, 'Unauthorized'); return; }
+        try { await this.syncService.syncAsync(); send(res, 200, 'OK'); } catch { send(res, 500, 'Resync failed'); }
     }
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────
-
-function readBody(req: IncomingMessage): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
-        req.on('end', () => resolve(Buffer.concat(chunks)));
-        req.on('error', reject);
-    });
+function createRecord(identity: ExecutionIdentity, state: RegistryState): ExecutionRecord {
+    let resolve!: (value: InternalFunctionContext)=>void;
+    const completion = new Promise<InternalFunctionContext>(r => { resolve = r; });
+    return { identity, state, controller: new AbortController(), completion, resolve };
 }
-
-function getHeader(req: IncomingMessage, name: string): string | undefined {
-    const val = req.headers[name];
-    return Array.isArray(val) ? val[0] : val;
+function response(status: number, value: unknown): {status:number;body:Buffer} { return { status, body: Buffer.from(JSON.stringify(value),'utf8') }; }
+function normalizeIdentity(raw: Record<string, unknown>): ExecutionIdentity {
+    const tickerType = Number(raw.tickerType ?? raw.TickerType ?? raw.type ?? raw.Type);
+    if (tickerType !== TickerType.TimeTicker && tickerType !== TickerType.CronTickerOccurrence) throw new TypeError('tickerType');
+    return { tickerType, tickerId: readUuid(raw,'tickerId','TickerId','id','Id'), acquisitionToken: readUuid(raw,'acquisitionToken','AcquisitionToken'),
+        dispatchId: readUuid(raw,'dispatchId','DispatchId','executionId','ExecutionId'), nodeEpoch: readUuid(raw,'nodeEpoch','NodeEpoch') };
 }
+function readUuid(raw: Record<string, unknown>, ...keys: string[]): string {
+    let value: unknown; for (const key of keys) if (raw[key] !== undefined) { value = raw[key]; break; }
+    if (typeof value !== 'string' || !uuid.test(value) || zeroUuid(value)) throw new TypeError(keys[0]); return value.toLowerCase();
+}
+function zeroUuid(value: string): boolean { return value.toLowerCase() === '00000000-0000-0000-0000-000000000000'; }
+function identityKey(i: ExecutionIdentity): string { return `${i.tickerType}:${i.tickerId}:${i.acquisitionToken}:${i.dispatchId}:${i.nodeEpoch}`; }
+function linkAbortSignals(a: AbortSignal,b: AbortSignal): AbortController { const c=new AbortController(); const abort=()=>{if(!c.signal.aborted)c.abort();}; if(a.aborted||b.aborted)abort(); else {a.addEventListener('abort',abort,{once:true});b.addEventListener('abort',abort,{once:true});} return c; }
+function abortError(): Error { return Object.assign(new Error('Callback execution was aborted.'),{name:'AbortError'}); }
+function cancelledOutcome(context: RemoteExecutionContext, registration: any, err: unknown): InternalFunctionContext { const o=buildInternalContext(context,registration);o.status=TickerStatus.Cancelled;o.exceptionDetails=serializeException(err);o.parametersToUpdate=['Status','ElapsedTime','ExecutedAt','ExceptionDetails'];return o; }
+function failedOutcome(context: RemoteExecutionContext, registration: any, err: unknown): InternalFunctionContext { const o=buildInternalContext(context,registration);o.status=TickerStatus.Failed;o.exceptionDetails=serializeException(err);o.parametersToUpdate=['Status','ElapsedTime','ExecutedAt','ExceptionDetails'];return o; }
+function readBody(req: IncomingMessage): Promise<Buffer> { return new Promise((resolve,reject)=>{const chunks:Buffer[]=[];let n=0,done=false;req.on('data',(c:Buffer)=>{if(done)return;n+=c.length;if(n>MaxRequestBodyBytes){done=true;reject(new RequestBodyTooLargeError());}else chunks.push(c);});req.on('end',()=>{if(!done)resolve(Buffer.concat(chunks));});req.on('error',e=>{if(!done)reject(e);});}); }
+function getHeader(req:any,name:string):string|undefined { const value=req.headers?.[name];return Array.isArray(value)?value[0]:value; }
+function send(res:any,status:number,body:string):void { if(typeof res.status==='function')res.status(status).send(body);else{res.writeHead(status);res.end(body);} }

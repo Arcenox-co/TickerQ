@@ -520,12 +520,20 @@ public sealed class ParentResultPropagationTests : IDisposable
             ExecutionTime = _now,
             RetryIntervals = [],
             CachedDelegate = terminalStatus == TickerStatus.Cancelled
-                ? (_, _, _) => throw new TaskCanceledException()
-                : (_, _, _) => throw new InvalidOperationException("remote failure"),
+                ? (_, _, executionContext) =>
+                {
+                    executionContext.IsRemoteCallbackExecution = true;
+                    throw new TaskCanceledException();
+                }
+                : (_, _, executionContext) =>
+                {
+                    executionContext.IsRemoteCallbackExecution = true;
+                    throw new InvalidOperationException("remote failure");
+                },
             TimeTickerChildren = [child]
         };
 
-        await Assert.ThrowsAsync<TickerResultNotAcknowledgedException>(() => Run(parent));
+        await Assert.ThrowsAsync<TickerTerminalUpdateNotAcknowledgedException>(() => Run(parent));
 
         Assert.False(childRan);
         await _notificationHub.DidNotReceive()

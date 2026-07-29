@@ -200,56 +200,60 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     public async Task<bool> CommitSuccessfulTickerAsync(
         InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
     {
-        if (functionContext == null)
-            throw new ArgumentNullException(nameof(functionContext));
+        if (functionContext == null) throw new ArgumentNullException(nameof(functionContext));
         if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
             functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone) ||
             !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
             throw new InvalidOperationException(
                 "Atomic result persistence accepts only a successful terminal mutation with an explicit optional result envelope.");
+        return await CommitTerminalTickerCoreAsync(
+            functionContext, enforceRemoteChildToken: false, cancellationToken).ConfigureAwait(false);
+    }
+
+    public bool SupportsAcknowledgedTerminalUpdates => true;
+
+    public Task<bool> CommitTerminalTickerAsync(
+        InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
+        => CommitTerminalTickerCoreAsync(
+            functionContext, enforceRemoteChildToken: true, cancellationToken);
+
+    private async Task<bool> CommitTerminalTickerCoreAsync(
+        InternalFunctionContext functionContext, bool enforceRemoteChildToken,
+        CancellationToken cancellationToken = default)
+    {
+        if (functionContext == null)
+            throw new ArgumentNullException(nameof(functionContext));
+        var successful = IsSuccessfulTerminalWrite(functionContext);
+        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
+            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                or TickerStatus.Cancelled or TickerStatus.Skipped) ||
+            (successful && !functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
+            throw new InvalidOperationException(
+                "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
 
         cancellationToken.ThrowIfCancellationRequested();
         // Serialize before reading or invoking Lua so malformed/oversized envelopes cannot mutate status.
-        var encodedEnvelope = functionContext.ResultEnvelope == null
-            ? null
-            : RedisResultEnvelopeCodec.Serialize(functionContext.ResultEnvelope);
-        var resultAction = encodedEnvelope == null ? "clear" : "set";
+        var encodedEnvelope = successful && functionContext.ResultEnvelope != null
+            ? RedisResultEnvelopeCodec.Serialize(functionContext.ResultEnvelope)
+            : null;
+        var resultAction = successful ? (encodedEnvelope == null ? "clear" : "set") : "none";
 
         return functionContext.Type == TickerType.CronTickerOccurrence
             ? await CommitSuccessfulCronOccurrenceAsync(
                 functionContext, resultAction, encodedEnvelope, cancellationToken).ConfigureAwait(false)
             : await CommitSuccessfulTimeTickerAsync(
-                functionContext, resultAction, encodedEnvelope, cancellationToken).ConfigureAwait(false);
-    }
-
-    public bool SupportsAcknowledgedTerminalUpdates => true;
-
-    public async Task<bool> CommitTerminalTickerAsync(
-        InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
-    {
-        if (functionContext == null) throw new ArgumentNullException(nameof(functionContext));
-        if (!functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
-            functionContext.Status is not (TickerStatus.Done or TickerStatus.DueDone or
-                TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped))
-            throw new InvalidOperationException("Acknowledged terminal persistence requires a terminal status mutation.");
-        if (functionContext.Status is TickerStatus.Done or TickerStatus.DueDone)
-            return await CommitSuccessfulTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
-
-        cancellationToken.ThrowIfCancellationRequested();
-        return functionContext.Type == TickerType.CronTickerOccurrence
-            ? await CommitSuccessfulCronOccurrenceAsync(
-                functionContext, "none", null, cancellationToken).ConfigureAwait(false)
-            : await CommitSuccessfulTimeTickerAsync(
-                functionContext, "none", null, cancellationToken).ConfigureAwait(false);
+                functionContext, resultAction, encodedEnvelope, cancellationToken,
+                enforceRemoteChildToken).ConfigureAwait(false);
     }
 
     private async Task<bool> CommitSuccessfulTimeTickerAsync(
         InternalFunctionContext functionContext, string resultAction, byte[] encodedEnvelope,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool enforceRemoteChildToken)
     {
         if (functionContext.ParentId != null)
             return await CommitSuccessfulEmbeddedTimeTickerAsync(
-                functionContext, resultAction, encodedEnvelope, cancellationToken).ConfigureAwait(false);
+                functionContext, resultAction, encodedEnvelope, cancellationToken,
+                enforceRemoteChildToken).ConfigureAwait(false);
 
         var ticker = await Serializer.GetAsync<TTimeTicker>(
             TimeTickerKey(functionContext.TickerId)).ConfigureAwait(false);
@@ -274,10 +278,14 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
     private async Task<bool> CommitSuccessfulEmbeddedTimeTickerAsync(
         InternalFunctionContext functionContext, string resultAction, byte[] encodedEnvelope,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool enforceRemoteChildToken = false)
     {
         var rootId = functionContext.ChainRootId;
         if (!rootId.HasValue || !functionContext.ChainGeneration.HasValue)
+            return false;
+        if (enforceRemoteChildToken &&
+            (!functionContext.AcquisitionToken.HasValue ||
+             functionContext.AcquisitionToken != functionContext.ChainGeneration))
             return false;
 
         var root = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(rootId.Value)).ConfigureAwait(false);

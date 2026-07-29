@@ -204,7 +204,7 @@ public static class NodeCompatibilityEndpoints
             var wire = JsonSerializer.Deserialize<NodeFunctionContextWire>(authenticated.Body, JsonOptions)
                 ?? throw new ArgumentException("Context is required.");
             var context = MapContext(wire, expectedType);
-            await manager.UpdateTickerAsync(context, cancellationToken);
+            await manager.UpdateTickerFromRemoteAsync(context, cancellationToken);
             return Results.Ok(1);
         }
         catch (JsonException)
@@ -220,6 +220,10 @@ public static class NodeCompatibilityEndpoints
             return Results.BadRequest("Invalid or unsupported context payload.");
         }
         catch (TickerResultNotAcknowledgedException)
+        {
+            return Results.Conflict();
+        }
+        catch (TickerTerminalUpdateNotAcknowledgedException)
         {
             return Results.Conflict();
         }
