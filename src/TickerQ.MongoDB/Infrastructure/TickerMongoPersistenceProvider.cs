@@ -116,6 +116,30 @@ namespace TickerQ.MongoDB.Infrastructure
             return result.MatchedCount == 1;
         }
 
+        private async Task NormalizeChainDescendantsAsync(
+            IClientSessionHandle session, Guid rootId, Guid generation, CancellationToken cancellationToken)
+        {
+            var frontier = new[] { rootId };
+            var fb = Builders<TTimeTicker>.Filter;
+            while (frontier.Length > 0)
+            {
+                var children = await _context.TimeTickers.Find(
+                        session, fb.In(x => x.ParentId, frontier.Select(x => (Guid?)x)))
+                    .Project(x => x.Id)
+                    .ToListAsync(cancellationToken).ConfigureAwait(false);
+                if (children.Count == 0)
+                    return;
+
+                await _context.TimeTickers.UpdateManyAsync(
+                    session, fb.In(x => x.Id, children),
+                    Builders<TTimeTicker>.Update
+                        .Set(x => x.ChainRootId, rootId)
+                        .Set(x => x.ChainGeneration, generation),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                frontier = children.ToArray();
+            }
+        }
+
         // Every supported structural graph mutation writes the same durable epoch document in the
         // transaction that performs the mutation. Retention writes it too. Mongo write conflicts then
         // serialize both operations even though snapshot reads alone do not protect against phantoms.
@@ -647,6 +671,9 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<TimeTickerEntity[]> AcquireImmediateTimeTickersAsync(Guid[] ids, CancellationToken cancellationToken = default)
         {
             if (ids == null || ids.Length == 0) return Array.Empty<TimeTickerEntity>();
+            if (TransactionsKnownUnavailable)
+                throw new NotSupportedException(
+                    "Atomic Mongo chain acquisition requires a replica set transaction.");
 
             var now = _clock.UtcNow;
             var acquisitionToken = Guid.NewGuid();
@@ -660,18 +687,35 @@ namespace TickerQ.MongoDB.Infrastructure
                 .Set(x => x.ChainGeneration, acquisitionToken)
                 .Set(x => x.Status, TickerStatus.InProgress)
                 .Set(x => x.UpdatedAt, now);
-            var options = new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After };
             var rows = new List<TTimeTicker>(ids.Length);
 
             foreach (var id in ids.Distinct())
             {
-                var filter = fb.And(
-                    fb.Eq(x => x.Id, id),
-                    MongoUpdateBuilders.CanAcquireTimeTicker<TTimeTicker>(_lockHolder));
-                var acquired = await coll.FindOneAndUpdateAsync(filter,
-                        update.Set(x => x.ChainRootId, id), options, cancellationToken)
-                    .ConfigureAwait(false);
-                if (acquired != null) rows.Add(acquired);
+                using var session = await _context.Database.Client
+                    .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    var acquired = await session.WithTransactionAsync(async (s, ct) =>
+                    {
+                        await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                        var filter = fb.And(
+                            fb.Eq(x => x.Id, id),
+                            MongoUpdateBuilders.CanAcquireTimeTicker<TTimeTicker>(_lockHolder));
+                        var row = await coll.FindOneAndUpdateAsync(
+                            s, filter, update.Set(x => x.ChainRootId, id),
+                            new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After }, ct)
+                            .ConfigureAwait(false);
+                        if (row != null)
+                            await NormalizeChainDescendantsAsync(s, id, acquisitionToken, ct).ConfigureAwait(false);
+                        return row;
+                    }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+                    if (acquired != null) rows.Add(acquired);
+                }
+                catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+                {
+                    throw new NotSupportedException(
+                        "Atomic Mongo chain acquisition requires a replica set transaction.", ex);
+                }
             }
 
             if (rows.Count == 0) return Array.Empty<TimeTickerEntity>();
@@ -732,6 +776,7 @@ namespace TickerQ.MongoDB.Infrastructure
                             new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After },
                             ct).ConfigureAwait(false);
                         if (acquired == null) return null;
+                        await NormalizeChainDescendantsAsync(s, id, token, ct).ConfigureAwait(false);
                         await _context.TickerResults.DeleteOneAsync(
                             s, Builders<BsonDocument>.Filter.Eq("_id", ResultId(id)),
                             new DeleteOptions(), ct).ConfigureAwait(false);

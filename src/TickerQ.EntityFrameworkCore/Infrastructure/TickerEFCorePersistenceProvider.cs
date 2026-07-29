@@ -147,8 +147,13 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
 
+            var suppliedById = tickers.ToDictionary(x => x.Id);
             foreach (var ticker in tickers)
-                NormalizeChainRoot(ticker, ticker.Id);
+            {
+                var rootId = await ResolveChainRootForInsertAsync(
+                    dbContext.Set<TTimeTicker>(), ticker, suppliedById, cancellationToken).ConfigureAwait(false);
+                NormalizeChainRoot(ticker, rootId);
+            }
 
             await dbContext.Set<TTimeTicker>()
                 .AddRangeAsync(tickers, cancellationToken);
@@ -283,6 +288,39 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             if (node.Children == null) return;
             foreach (var child in node.Children)
                 NormalizeChainRoot(child, rootId);
+        }
+
+        private static async Task<Guid> ResolveChainRootForInsertAsync(
+            DbSet<TTimeTicker> set, TTimeTicker ticker,
+            IReadOnlyDictionary<Guid, TTimeTicker> suppliedById, CancellationToken cancellationToken)
+        {
+            var current = ticker;
+            var visited = new HashSet<Guid>();
+            while (current.ParentId.HasValue)
+            {
+                if (!visited.Add(current.Id))
+                    throw new InvalidOperationException("Cyclic time ticker parent chain detected.");
+
+                if (suppliedById.TryGetValue(current.ParentId.Value, out var suppliedParent))
+                {
+                    current = suppliedParent;
+                    continue;
+                }
+
+                var persistedParent = await set.AsNoTracking()
+                    .Where(x => x.Id == current.ParentId.Value)
+                    .Select(x => new { x.Id, x.ChainRootId })
+                    .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                if (persistedParent == null)
+                    throw new InvalidOperationException(
+                        $"Time ticker '{current.Id}' references missing parent '{current.ParentId.Value}'.");
+
+                return persistedParent.ChainRootId ?? persistedParent.Id;
+            }
+
+            if (!visited.Add(current.Id))
+                throw new InvalidOperationException("Cyclic time ticker parent chain detected.");
+            return current.Id;
         }
         #endregion
 

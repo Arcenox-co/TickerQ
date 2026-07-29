@@ -25,6 +25,18 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                 type: "TEXT",
                 nullable: true);
 
+            migrationBuilder.Sql(@"
+                WITH RECURSIVE chain_nodes(Id, RootId) AS (
+                    SELECT Id, Id FROM TimeTickers WHERE ParentId IS NULL
+                    UNION ALL
+                    SELECT child.Id, chain_nodes.RootId
+                    FROM TimeTickers AS child
+                    INNER JOIN chain_nodes ON child.ParentId = chain_nodes.Id
+                )
+                UPDATE TimeTickers
+                SET ChainRootId = (SELECT RootId FROM chain_nodes WHERE chain_nodes.Id = TimeTickers.Id)
+                WHERE EXISTS (SELECT 1 FROM chain_nodes WHERE chain_nodes.Id = TimeTickers.Id);");
+
             migrationBuilder.CreateTable(
                 name: "CronTickerOccurrenceResults",
                 schema: "ticker",

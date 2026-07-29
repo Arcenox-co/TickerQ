@@ -179,6 +179,50 @@ public class TickerCancellationTokenManagerTests : IDisposable
     }
 
     [Fact]
+    public void DuplicateChildWithSameChainGeneration_IsSameOwner()
+    {
+        var tickerId = Guid.NewGuid();
+        var parentId = Guid.NewGuid();
+        var generation = Guid.NewGuid();
+        var first = MakeContext(tickerId, parentId);
+        first.ChainGeneration = generation;
+        var duplicate = MakeContext(tickerId, parentId);
+        duplicate.ChainGeneration = generation;
+        var liveSource = TickerCancellationTokenManager.TryRegisterAcquired(first, isDue: false)!;
+
+        var duplicateSource = TickerCancellationTokenManager.TryRegisterAcquired(
+            duplicate, isDue: false, out var generationConflict);
+
+        Assert.Null(duplicateSource);
+        Assert.False(generationConflict);
+        Assert.False(liveSource.IsCancellationRequested);
+        Assert.True(TickerCancellationTokenManager.RemoveTickerCancellationToken(
+            new TickerExecutionKey(first.Type, tickerId), liveSource));
+    }
+
+    [Fact]
+    public void DuplicateChildWithDifferentChainGeneration_ConflictsWithoutReleasingLiveOwner()
+    {
+        var tickerId = Guid.NewGuid();
+        var parentId = Guid.NewGuid();
+        var first = MakeContext(tickerId, parentId);
+        first.ChainGeneration = Guid.NewGuid();
+        var stale = MakeContext(tickerId, parentId);
+        stale.ChainGeneration = Guid.NewGuid();
+        var liveSource = TickerCancellationTokenManager.TryRegisterAcquired(first, isDue: false)!;
+
+        var staleSource = TickerCancellationTokenManager.TryRegisterAcquired(
+            stale, isDue: false, out var generationConflict);
+
+        Assert.Null(staleSource);
+        Assert.True(generationConflict);
+        Assert.False(liveSource.IsCancellationRequested);
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+        Assert.True(TickerCancellationTokenManager.RemoveTickerCancellationToken(
+            new TickerExecutionKey(first.Type, tickerId), liveSource));
+    }
+
+    [Fact]
     public void StaleLeaseGeneration_DoesNotCancelCurrentOwnerAfterTurnover()
     {
         var tickerId = Guid.NewGuid();

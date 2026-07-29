@@ -362,6 +362,31 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AcquireImmediateTimeTicker_PreUpgradeAggregate_NormalizesDescendantsBeforeFencedWrite()
+    {
+        var root = NewTimeTicker();
+        var child = NewTimeTicker();
+        typeof(TimeTickerEntity).GetProperty(nameof(child.ParentId))!.SetValue(child, root.Id);
+        await _f.Provider.AddTimeTickers([root, child], CancellationToken.None);
+        await _f.TimeTickers.UpdateManyAsync(
+            Builders<TimeTickerEntity>.Filter.In(x => x.Id, new[] { root.Id, child.Id }),
+            Builders<TimeTickerEntity>.Update.Unset(nameof(TimeTickerEntity.ChainRootId))
+                .Unset(nameof(TimeTickerEntity.ChainGeneration)));
+
+        var acquired = Assert.Single(await _f.Provider.AcquireImmediateTimeTickersAsync(
+            [root.Id], CancellationToken.None));
+        var update = new InternalFunctionContext
+        {
+            TickerId = child.Id, ParentId = root.Id, ChainRootId = root.Id,
+            ChainGeneration = acquired.ChainGeneration, Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.Done);
+
+        Assert.Equal(1, await _f.Provider.UpdateTimeTicker(update, CancellationToken.None));
+        var persistedChild = await _f.Provider.GetTimeTickerById(child.Id, CancellationToken.None);
+        Assert.Equal(root.Id, persistedChild!.ChainRootId);
+    }
+
+    [Fact]
     public async Task UpdateTimeTicker_ChildTerminalWrite_ClearsLegacyLease()
     {
         var parent = NewTimeTicker();

@@ -509,6 +509,8 @@ namespace TickerQ.Utilities.Managers
                 TimeoutSeconds = ticker.TimeoutSeconds,
                 ParentId = ticker.ParentId,
                 AcquisitionToken = ticker.AcquisitionToken,
+                ChainRootId = ticker.ChainRootId,
+                ChainGeneration = ticker.ChainGeneration,
                 ExecutionTime = ticker.ExecutionTime ?? DateTime.UtcNow,
                 RunCondition = ticker.RunCondition ?? Enums.RunCondition.OnAnyCompletedStatus,
                 TimeTickerChildren = ticker.Children.Select(BuildContextFromNonGeneric).ToList()

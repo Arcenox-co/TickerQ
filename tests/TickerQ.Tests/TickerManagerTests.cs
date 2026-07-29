@@ -1247,6 +1247,73 @@ public class TickerManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task AddTimeTickerAsync_ImmediateDispatch_PreservesChainIdentityForRootAndChild()
+    {
+        _dispatcher.IsEnabled.Returns(true);
+        var generation = Guid.NewGuid();
+        var rootId = Guid.NewGuid();
+        var childId = Guid.NewGuid();
+        var acquired = new TimeTickerEntity
+        {
+            Id = rootId, Function = ValidFunctionName, ExecutionTime = FixedUtcNow,
+            AcquisitionToken = generation, ChainRootId = rootId, ChainGeneration = generation,
+            Children = [new TimeTickerEntity
+            {
+                Id = childId, Function = ValidFunctionName, ParentId = rootId,
+                ChainRootId = rootId, ChainGeneration = generation
+            }]
+        };
+        InternalFunctionContext[] dispatched = null;
+        _persistenceProvider.AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>()).Returns(1);
+        _persistenceProvider.AcquireImmediateTimeTickersAsync(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
+            .Returns([acquired]);
+        _dispatcher.DispatchAsync(Arg.Do<InternalFunctionContext[]>(x => dispatched = x), CancellationToken.None)
+            .Returns(Task.CompletedTask);
+
+        var result = await _timeTickerManager.AddAsync(new TimeTickerEntity
+        {
+            Id = rootId, Function = ValidFunctionName, ExecutionTime = FixedUtcNow
+        });
+
+        Assert.True(result.IsSucceeded);
+        var root = Assert.Single(dispatched!);
+        Assert.Equal(rootId, root.ChainRootId);
+        Assert.Equal(generation, root.ChainGeneration);
+        var child = Assert.Single(root.TimeTickerChildren);
+        Assert.Equal(rootId, child.ChainRootId);
+        Assert.Equal(generation, child.ChainGeneration);
+    }
+
+    [Fact]
+    public async Task AddTimeTickerBatch_ImmediateDispatch_PreservesChainIdentity()
+    {
+        _dispatcher.IsEnabled.Returns(true);
+        var generation = Guid.NewGuid();
+        var rootId = Guid.NewGuid();
+        var acquired = new TimeTickerEntity
+        {
+            Id = rootId, Function = ValidFunctionName, ExecutionTime = FixedUtcNow,
+            AcquisitionToken = generation, ChainRootId = rootId, ChainGeneration = generation
+        };
+        InternalFunctionContext[] dispatched = null;
+        _persistenceProvider.AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>()).Returns(1);
+        _persistenceProvider.AcquireImmediateTimeTickersAsync(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
+            .Returns([acquired]);
+        _dispatcher.DispatchAsync(Arg.Do<InternalFunctionContext[]>(x => dispatched = x), CancellationToken.None)
+            .Returns(Task.CompletedTask);
+
+        var result = await _timeTickerManager.AddBatchAsync([new TimeTickerEntity
+        {
+            Id = rootId, Function = ValidFunctionName, ExecutionTime = FixedUtcNow
+        }]);
+
+        Assert.True(result.IsSucceeded);
+        var root = Assert.Single(dispatched!);
+        Assert.Equal(rootId, root.ChainRootId);
+        Assert.Equal(generation, root.ChainGeneration);
+    }
+
+    [Fact]
     public async Task AddTimeTickerAsync_DispatcherDisabledAndImmediateExecution_DoesNotDispatch()
     {
         _dispatcher.IsEnabled.Returns(false);

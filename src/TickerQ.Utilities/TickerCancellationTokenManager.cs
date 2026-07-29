@@ -77,7 +77,7 @@ namespace TickerQ.Utilities
                     continue;
 
                 // The same persisted generation is already owned locally.
-                if (existing.AcquisitionToken == context.AcquisitionToken)
+                if (existing.AcquisitionToken == details.AcquisitionToken)
                 {
                     cancellationSource.Dispose();
                     return null;

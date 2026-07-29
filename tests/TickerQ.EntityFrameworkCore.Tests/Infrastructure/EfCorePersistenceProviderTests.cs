@@ -258,6 +258,52 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     #endregion
 
     [Fact]
+    public async Task AddTimeTickers_FlatThreeLevelChain_PersistsTrueRootIdentity()
+    {
+        var root = CreateTimeTicker();
+        var child = CreateTimeTicker();
+        child.ParentId = root.Id;
+        var grandchild = CreateTimeTicker();
+        grandchild.ParentId = child.Id;
+
+        Assert.Equal(3, await _provider.AddTimeTickers([grandchild, root, child], CancellationToken.None));
+
+        await using var verify = CreateVerifyContext();
+        var persisted = await verify.Set<TimeTickerEntity>().AsNoTracking().ToDictionaryAsync(x => x.Id);
+        Assert.Equal(root.Id, persisted[root.Id].ChainRootId);
+        Assert.Equal(root.Id, persisted[child.Id].ChainRootId);
+        Assert.Equal(root.Id, persisted[grandchild.Id].ChainRootId);
+    }
+
+    [Fact]
+    public async Task AddTimeTickers_FlatBatchWithOrphan_RejectsWithoutPersistence()
+    {
+        var orphan = CreateTimeTicker();
+        orphan.ParentId = Guid.NewGuid();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _provider.AddTimeTickers([orphan], CancellationToken.None));
+
+        await using var verify = CreateVerifyContext();
+        Assert.Empty(await verify.Set<TimeTickerEntity>().AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task AddTimeTickers_FlatBatchWithParentCycle_RejectsWithoutPersistence()
+    {
+        var first = CreateTimeTicker();
+        var second = CreateTimeTicker();
+        first.ParentId = second.Id;
+        second.ParentId = first.Id;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _provider.AddTimeTickers([first, second], CancellationToken.None));
+
+        await using var verify = CreateVerifyContext();
+        Assert.Empty(await verify.Set<TimeTickerEntity>().AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
     public async Task ReplaceTimeTickerChainAsync_WhenReplacementInsertFails_OriginalAggregateRemainsUnchanged()
     {
         var root = CreateTimeTicker(function: "OriginalRoot");
