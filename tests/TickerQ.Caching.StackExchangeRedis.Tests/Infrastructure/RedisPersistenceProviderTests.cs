@@ -86,6 +86,169 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
     public Task DisposeAsync() => Task.CompletedTask;
 
+    [Fact]
+    public async Task RetentionIndex_TracksOnlyTerminalStandaloneTimeTickers()
+    {
+        var standalone = CreateTimeTicker(status: TickerStatus.Done);
+        standalone.ExecutedAt = _fixedNow.AddDays(-10);
+        var chained = CreateTimeTicker(status: TickerStatus.Done);
+        chained.ExecutedAt = _fixedNow.AddDays(-10);
+        chained.Children.Add(CreateTimeTicker(status: TickerStatus.Done));
+
+        await _provider.AddTimeTickers([standalone, chained], CancellationToken.None);
+
+        Assert.True(_sortedSets.TryGetValue($"{Prefix}:tt:retention:succeeded", out var indexed));
+        Assert.Contains(standalone.Id.ToString(), indexed!.Values);
+        Assert.DoesNotContain(chained.Id.ToString(), indexed.Values);
+    }
+
+    [Fact]
+    public async Task RetentionIndex_ReactivationRemovesTerminalCandidate()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Done);
+        ticker.ExecutedAt = _fixedNow.AddDays(-10);
+        await _provider.AddTimeTickers([ticker], CancellationToken.None);
+        Assert.Contains(ticker.Id.ToString(), _sortedSets[$"{Prefix}:tt:retention:succeeded"].Values);
+
+        await _provider.AcquireTimeTickerOnDemandAsync(ticker.Id, _fixedNow, CancellationToken.None);
+
+        Assert.False(_sortedSets.TryGetValue($"{Prefix}:tt:retention:succeeded", out var indexed) &&
+                     indexed.Values.Contains(ticker.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task UpdateTimeTicker_GrandchildMutatesEmbeddedRootAggregate()
+    {
+        var grandchild = CreateTimeTicker(status: TickerStatus.Idle);
+        var child = CreateTimeTicker(status: TickerStatus.Idle);
+        child.Children.Add(grandchild);
+        var root = CreateTimeTicker(status: TickerStatus.Idle);
+        root.Children.Add(child);
+        child.ParentId = root.Id;
+        grandchild.ParentId = child.Id;
+        await _provider.AddTimeTickers([root], CancellationToken.None);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [root.Id], CancellationToken.None));
+
+        var update = new InternalFunctionContext
+        {
+            TickerId = grandchild.Id,
+            ParentId = child.Id,
+            ChainRootId = root.Id,
+            ChainGeneration = acquired.ChainGeneration,
+            Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.InProgress);
+
+        Assert.Equal(1, await _provider.UpdateTimeTicker(update, CancellationToken.None));
+        var persisted = await _provider.GetTimeTickerById(root.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.InProgress, persisted!.Children.Single().Children.Single().Status);
+        Assert.Null(persisted.Children.Single().Children.Single().LeaseUntil);
+    }
+
+    [Fact]
+    public void SupportsRetention_IsTrue()
+        => Assert.True(_provider.SupportsRetention);
+
+    [Fact]
+    public async Task ReconcileRetentionIndexes_BackfillsMissingTimeAndOccurrenceIndexes()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Done);
+        ticker.ExecutedAt = _fixedNow.AddDays(-10);
+        SeedTimeTicker(ticker);
+        var cron = CreateCronTicker();
+        SeedCronTicker(cron);
+        var occurrence = CreateCronOccurrence(cron.Id, status: TickerStatus.Failed);
+        occurrence.ExecutedAt = _fixedNow.AddDays(-9);
+        SeedCronOccurrence(occurrence);
+
+        await ReconcileToCompletionAsync(batchSize: 1);
+
+        Assert.Contains(ticker.Id.ToString(), _sortedSets[$"{Prefix}:tt:retention:succeeded"].Values);
+        Assert.Contains(occurrence.Id.ToString(), _sortedSets[$"{Prefix}:co:retention:failed"].Values);
+    }
+
+    [Fact]
+    public async Task ReconcileRetentionIndexes_RepairsStaleEntryAndIsIdempotent()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Failed);
+        ticker.ExecutedAt = _fixedNow.AddDays(-10);
+        SeedTimeTicker(ticker);
+        AddSortedSetEntry($"{Prefix}:tt:retention:succeeded", ticker.Id, ticker.ExecutedAt.Value);
+
+        await ReconcileToCompletionAsync(batchSize: 10);
+        await ReconcileToCompletionAsync(batchSize: 10);
+
+        Assert.DoesNotContain(ticker.Id.ToString(), _sortedSets[$"{Prefix}:tt:retention:succeeded"].Values);
+        Assert.Equal(1, _sortedSets[$"{Prefix}:tt:retention:failed"].Values.Count(x => x == ticker.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task ReconcileRetentionIndexes_IsBoundedAndResumesFromPersistedProgress()
+    {
+        for (var i = 0; i < 3; i++)
+        {
+            var ticker = CreateTimeTicker(status: TickerStatus.Done);
+            ticker.ExecutedAt = _fixedNow.AddDays(-10).AddMinutes(i);
+            SeedTimeTicker(ticker);
+        }
+
+        var first = await _provider.ReconcileRetentionIndexesAsync(2, CancellationToken.None);
+        var second = await _provider.ReconcileRetentionIndexesAsync(2, CancellationToken.None);
+
+        Assert.InRange(first.Examined, 1, 2);
+        Assert.True(first.HasMore);
+        Assert.InRange(second.Examined, 1, 2);
+        Assert.Equal(3, _sortedSets[$"{Prefix}:tt:retention:succeeded"].Count);
+    }
+
+    [Fact]
+    public async Task ReconcileRetentionIndexes_HonorsCancellationAndExcludesChainedRoots()
+    {
+        var chained = CreateTimeTicker(status: TickerStatus.Done);
+        chained.ExecutedAt = _fixedNow.AddDays(-10);
+        chained.Children.Add(CreateTimeTicker(status: TickerStatus.Done));
+        SeedTimeTicker(chained);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _provider.ReconcileRetentionIndexesAsync(10, cancellation.Token));
+        await ReconcileToCompletionAsync(batchSize: 10);
+
+        Assert.False(_sortedSets.TryGetValue($"{Prefix}:tt:retention:succeeded", out var indexed) &&
+                     indexed.Values.Contains(chained.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task ReconcileRetentionIndexes_NeverDeletesCronDefinitions()
+    {
+        var cron = CreateCronTicker();
+        SeedCronTicker(cron);
+
+        await ReconcileToCompletionAsync(batchSize: 10);
+
+        Assert.NotNull(await _provider.GetCronTickerById(cron.Id, CancellationToken.None));
+    }
+
+    private async Task ReconcileToCompletionAsync(int batchSize)
+    {
+        for (var i = 0; i < 20; i++)
+        {
+            var result = await _provider.ReconcileRetentionIndexesAsync(batchSize, CancellationToken.None);
+            if (!result.HasMore)
+                return;
+        }
+
+        throw new InvalidOperationException("Redis retention reconciliation did not converge.");
+    }
+
+    private void AddSortedSetEntry(string key, Guid id, DateTime score)
+    {
+        if (!_sortedSets.TryGetValue(key, out var entries))
+            _sortedSets[key] = entries = new SortedList<double, string>();
+        entries[score.ToUniversalTime().Ticks] = id.ToString();
+    }
+
     #region IDatabase Mock Wiring
 
     private void SetupStringOperations()
@@ -234,6 +397,18 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                 return true;
             });
 
+        batch.SortedSetAddAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<double>(),
+                Arg.Any<SortedSetWhen>(), Arg.Any<CommandFlags>())
+            .Returns(callInfo =>
+            {
+                var key = (string)callInfo.ArgAt<RedisKey>(0);
+                var member = (string)callInfo.ArgAt<RedisValue>(1);
+                var score = callInfo.ArgAt<double>(2);
+                if (!_sortedSets.ContainsKey(key)) _sortedSets[key] = new SortedList<double, string>();
+                _sortedSets[key][score] = member;
+                return true;
+            });
+
         batch.SortedSetRemoveAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<CommandFlags>())
             .Returns(callInfo =>
             {
@@ -260,6 +435,10 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                 var script = callInfo.ArgAt<string>(0);
                 var keys = callInfo.ArgAt<RedisKey[]>(1);
                 var argv = callInfo.ArgAt<RedisValue[]>(2);
+
+                if (script.Contains("retention index reconciliation", StringComparison.Ordinal))
+                    return SimulateRetentionReconciliation(keys, argv);
+
                 var entityKey = (string)keys[0];
 
                 if (!_store.TryGetValue(entityKey, out var json))
@@ -270,7 +449,111 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                 var lockHolder = obj.TryGetProperty("LockHolder", out var lh) && lh.ValueKind != JsonValueKind.Null
                     ? lh.GetString() : null;
 
-                // Differentiate scripts by arg count: Acquire=6, Release=4, RecoverDeadNode=5
+                if (script.Contains("Renew one lease", StringComparison.Ordinal))
+                {
+                    var token = obj.TryGetProperty("AcquisitionToken", out var at) && at.ValueKind != JsonValueKind.Null
+                        ? at.GetString() : null;
+                    if (lockHolder != (string)argv[0] ||
+                        !string.Equals(token, (string)argv[1], StringComparison.OrdinalIgnoreCase) ||
+                        status != Rvi(argv[2]))
+                        return RedisResult.Create((RedisValue)0);
+                    _store[entityKey] = SetJsonProperties(json, new Dictionary<string, object?>
+                    {
+                        ["LeaseUntil"] = (string)argv[3]
+                    });
+                    return RedisResult.Create((RedisValue)1);
+                }
+
+                if (script.Contains("still owns the same InProgress generation", StringComparison.Ordinal))
+                {
+                    var token = obj.TryGetProperty("AcquisitionToken", out var at) && at.ValueKind != JsonValueKind.Null
+                        ? at.GetString() : null;
+                    var held = lockHolder == (string)argv[0] &&
+                               string.Equals(token, (string)argv[1], StringComparison.OrdinalIgnoreCase) &&
+                               status == Rvi(argv[2]);
+                    return RedisResult.Create((RedisValue)(held ? 1 : 0));
+                }
+
+                if (script.Contains("revive one non-running ticker", StringComparison.Ordinal))
+                {
+                    var inProgress = Rvi(argv[4]);
+                    if (status == inProgress) return RedisResult.Create(RedisValue.Null);
+                    var queued = Rvi(argv[6]);
+                    if (status == queued && !string.IsNullOrEmpty(lockHolder) && lockHolder != (string)argv[0])
+                        return RedisResult.Create(RedisValue.Null);
+                    var updated = SetJsonProperties(json, new Dictionary<string, object?>
+                    {
+                        ["LockHolder"] = (string)argv[0],
+                        ["LockedAt"] = (string)argv[1],
+                        ["LeaseUntil"] = (string)argv[2],
+                        ["AcquisitionToken"] = (string)argv[3],
+                        ["ChainRootId"] = obj.GetProperty("Id").GetString(),
+                        ["ChainGeneration"] = (string)argv[3],
+                        ["Status"] = inProgress,
+                        ["ExecutionTime"] = (string)argv[5],
+                        ["UpdatedAt"] = (string)argv[1],
+                        ["ExecutedAt"] = null,
+                        ["ElapsedTime"] = 0,
+                        ["StaleRestartCount"] = 0,
+                        ["Exception"] = null
+                    });
+                    _store[entityKey] = updated;
+                    return RedisResult.Create((RedisValue)updated);
+                }
+
+                if (script.Contains("guarded by the observed generation", StringComparison.Ordinal))
+                {
+                    var expectedHolder = (string)argv[0];
+                    var expectedToken = (string)argv[1];
+                    var expectedStatus = Rvi(argv[2]);
+                    var embeddedTargetId = (string)argv[7];
+                    var expectedGeneration = (string)argv[8];
+                    var token = obj.TryGetProperty("AcquisitionToken", out var at) && at.ValueKind != JsonValueKind.Null
+                        ? at.GetString() : null;
+                    var fencedStatus = status;
+                    if (!string.IsNullOrEmpty(embeddedTargetId))
+                    {
+                        var rootId = obj.GetProperty("Id").GetString();
+                        var chainRootId = obj.TryGetProperty("ChainRootId", out var cr) ? cr.GetString() : null;
+                        var generation = obj.TryGetProperty("ChainGeneration", out var cg) ? cg.GetString() : null;
+                        var target = FindEmbeddedTicker(obj, embeddedTargetId);
+                        if (string.IsNullOrEmpty(expectedGeneration) || target == null ||
+                            !string.Equals(rootId, chainRootId, StringComparison.OrdinalIgnoreCase) ||
+                            !string.Equals(generation, expectedGeneration, StringComparison.OrdinalIgnoreCase))
+                            return RedisResult.Create(RedisValue.Null);
+                        fencedStatus = target.Value.GetProperty("Status").GetInt32();
+                    }
+                    if ((!string.IsNullOrEmpty(expectedHolder) && lockHolder != expectedHolder) ||
+                        (!string.IsNullOrEmpty(expectedToken) && !string.Equals(token, expectedToken, StringComparison.OrdinalIgnoreCase)) ||
+                        (expectedStatus >= 0 && fencedStatus != expectedStatus))
+                        return RedisResult.Create(RedisValue.Null);
+                    var replacement = (string)argv[4];
+                    _store[entityKey] = replacement;
+                    return RedisResult.Create((RedisValue)replacement);
+                }
+
+                if (script.Contains("expected acquisition token", StringComparison.Ordinal))
+                {
+                    var expectedHolder = (string)argv[0];
+                    var expectedToken = (string)argv[1];
+                    var statusQueued = Rvi(argv[3]);
+                    var statusInProgress = Rvi(argv[4]);
+                    var token = obj.TryGetProperty("AcquisitionToken", out var at) && at.ValueKind != JsonValueKind.Null
+                        ? at.GetString() : null;
+                    if (status != statusQueued || lockHolder != expectedHolder ||
+                        !string.Equals(token, expectedToken, StringComparison.OrdinalIgnoreCase))
+                        return RedisResult.Create(RedisValue.Null);
+
+                    var transitioned = SetJsonProperties(json, new Dictionary<string, object>
+                    {
+                        ["Status"] = statusInProgress,
+                        ["UpdatedAt"] = (string)argv[2]
+                    });
+                    _store[entityKey] = transitioned;
+                    return RedisResult.Create((RedisValue)transitioned);
+                }
+
+                // Differentiate remaining scripts by arg count: Acquire=7, Release=4, RecoverDeadNode=5
                 if (argv.Length == 5)
                 {
                     // RecoverDeadNode: ARGV[0]=deadNodeId, ARGV[1]=now, ARGV[2]=statusIdle, ARGV[3]=statusQueued, ARGV[4]=statusInProgress
@@ -286,6 +569,8 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                     {
                         ["LockHolder"] = null,
                         ["LockedAt"] = null,
+                        ["LeaseUntil"] = null,
+                        ["AcquisitionToken"] = null,
                         ["Status"] = statusIdle,
                         ["UpdatedAt"] = (string)argv[1]
                     });
@@ -307,6 +592,8 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                     {
                         ["LockHolder"] = null,
                         ["LockedAt"] = null,
+                        ["LeaseUntil"] = null,
+                        ["AcquisitionToken"] = null,
                         ["Status"] = statusIdle,
                         ["UpdatedAt"] = (string)argv[1]
                     });
@@ -314,7 +601,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                     return RedisResult.Create((RedisValue)updated);
                 }
 
-                // Acquire: ARGV[0]=lockHolder, ARGV[1]=now, ARGV[2]=targetStatus, ARGV[3]=expectedUpdatedAt, ARGV[4]=statusIdle, ARGV[5]=statusQueued
+                // Acquire also receives ARGV[6]=fresh acquisition token.
                 {
                     var reqLockHolder = (string)argv[0];
                     var targetStatus = Rvi(argv[2]);
@@ -342,12 +629,115 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                         ["LockHolder"] = reqLockHolder,
                         ["LockedAt"] = (string)argv[1],
                         ["Status"] = targetStatus,
-                        ["UpdatedAt"] = (string)argv[1]
+                        ["UpdatedAt"] = (string)argv[1],
+                        ["AcquisitionToken"] = (string)argv[6],
+                        ["ChainRootId"] = obj.GetProperty("Id").GetString(),
+                        ["ChainGeneration"] = (string)argv[6]
                     });
                     _store[entityKey] = updated;
                     return RedisResult.Create((RedisValue)updated);
                 }
             });
+    }
+
+    private RedisResult SimulateRetentionReconciliation(RedisKey[] keys, RedisValue[] argv)
+    {
+        var phaseKey = (string)keys[2];
+        var cursorKey = (string)keys[3];
+        var phase = _store.GetValueOrDefault(phaseKey, "time");
+        var offset = int.TryParse(_store.GetValueOrDefault(cursorKey, "0"), out var parsed) ? parsed : 0;
+        var max = Rvi(argv[0]);
+        var idsKey = (string)(phase == "time" ? keys[0] : keys[1]);
+        var prefix = (string)(phase == "time" ? argv[1] : argv[2]);
+        var ids = _sets.GetValueOrDefault(idsKey, []).OrderBy(x => x, StringComparer.Ordinal).ToArray();
+        var selected = ids.Skip(offset).Take(max).ToArray();
+        var nextOffset = offset + selected.Length;
+
+        foreach (var id in selected)
+        {
+            var firstIndex = phase == "time" ? 4 : 8;
+            for (var i = firstIndex; i < firstIndex + 4; i++)
+                RemoveSortedSetMember((string)keys[i], id);
+
+            if (!_store.TryGetValue(prefix + id, out var raw))
+                continue;
+            using var doc = JsonDocument.Parse(raw);
+            var obj = doc.RootElement;
+            if (!obj.TryGetProperty("ExecutedAt", out var executed) || executed.ValueKind == JsonValueKind.Null ||
+                HasValue(obj, "AcquisitionToken") || HasValue(obj, "LeaseUntil") ||
+                phase == "time" && HasChildren(obj))
+                continue;
+
+            var status = obj.GetProperty("Status").GetInt32();
+            var indexOffset = status == Rvi(argv[3]) || status == Rvi(argv[4]) ? 0
+                : status == Rvi(argv[5]) ? 1
+                : status == Rvi(argv[6]) ? 2
+                : status == Rvi(argv[7]) ? 3 : -1;
+            if (indexOffset >= 0)
+                AddSortedSetEntry((string)keys[firstIndex + indexOffset], Guid.Parse(id), executed.GetDateTime());
+        }
+
+        var completed = false;
+        if (nextOffset >= ids.Length)
+        {
+            nextOffset = 0;
+            if (phase == "time")
+                phase = "occurrence";
+            else
+            {
+                phase = "time";
+                completed = true;
+            }
+        }
+        _store[phaseKey] = phase;
+        _store[cursorKey] = nextOffset.ToString();
+        return RedisResult.Create(new RedisValue[]
+        {
+            selected.Length,
+            completed ? 0 : 1,
+            $"{phase}:{nextOffset}"
+        });
+    }
+
+    private static bool HasValue(JsonElement obj, string property)
+        => obj.TryGetProperty(property, out var value) &&
+           value.ValueKind != JsonValueKind.Null &&
+           (value.ValueKind != JsonValueKind.String || !string.IsNullOrEmpty(value.GetString()));
+
+    private static bool HasChildren(JsonElement obj)
+    {
+        if (!obj.TryGetProperty("Children", out var children) || children.ValueKind == JsonValueKind.Null)
+            return false;
+        return children.ValueKind switch
+        {
+            JsonValueKind.Array => children.EnumerateArray().Any(),
+            JsonValueKind.Object => children.EnumerateObject().Any(),
+            _ => false
+        };
+    }
+
+    private static JsonElement? FindEmbeddedTicker(JsonElement root, string targetId)
+    {
+        if (!root.TryGetProperty("Children", out var children) || children.ValueKind != JsonValueKind.Array)
+            return null;
+        foreach (var child in children.EnumerateArray())
+        {
+            if (child.TryGetProperty("Id", out var id) &&
+                string.Equals(id.GetString(), targetId, StringComparison.OrdinalIgnoreCase))
+                return child;
+            var descendant = FindEmbeddedTicker(child, targetId);
+            if (descendant.HasValue)
+                return descendant;
+        }
+        return null;
+    }
+
+    private void RemoveSortedSetMember(string key, string member)
+    {
+        if (!_sortedSets.TryGetValue(key, out var entries))
+            return;
+        foreach (var score in entries.Where(x => x.Value == member).Select(x => x.Key).ToArray())
+            entries.Remove(score);
     }
 
     private void SetupKeyOperations()
@@ -367,27 +757,39 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         using (var writer = new Utf8JsonWriter(ms))
         {
             writer.WriteStartObject();
+            var written = new HashSet<string>(StringComparer.Ordinal);
             foreach (var prop in doc.RootElement.EnumerateObject())
             {
+                written.Add(prop.Name);
                 if (props.TryGetValue(prop.Name, out var newVal))
                 {
                     writer.WritePropertyName(prop.Name);
-                    switch (newVal)
-                    {
-                        case null: writer.WriteNullValue(); break;
-                        case int i: writer.WriteNumberValue(i); break;
-                        case string s: writer.WriteStringValue(s); break;
-                        default: writer.WriteStringValue(newVal.ToString()); break;
-                    }
+                    WriteValue(writer, newVal);
                 }
                 else
                 {
                     prop.WriteTo(writer);
                 }
             }
+            foreach (var (name, value) in props.Where(x => !written.Contains(x.Key)))
+            {
+                writer.WritePropertyName(name);
+                WriteValue(writer, value);
+            }
             writer.WriteEndObject();
         }
         return System.Text.Encoding.UTF8.GetString(ms.ToArray());
+    }
+
+    private static void WriteValue(Utf8JsonWriter writer, object? value)
+    {
+        switch (value)
+        {
+            case null: writer.WriteNullValue(); break;
+            case int i: writer.WriteNumberValue(i); break;
+            case string s: writer.WriteStringValue(s); break;
+            default: writer.WriteStringValue(value.ToString()); break;
+        }
     }
 
     #endregion
@@ -619,11 +1021,11 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         Assert.Single(results);
         Assert.Equal(ticker.Id, results[0].Id);
         Assert.Equal(TickerStatus.Queued, results[0].Status);
-        Assert.Equal(NodeId, results[0].LockHolder);
+        Assert.StartsWith(NodeId + ":", results[0].LockHolder);
 
         using var doc = JsonDocument.Parse(_store[$"{Prefix}:tt:{ticker.Id}"]);
         Assert.Equal((int)TickerStatus.Queued, doc.RootElement.GetProperty("Status").GetInt32());
-        Assert.Equal(NodeId, doc.RootElement.GetProperty("LockHolder").GetString());
+        Assert.StartsWith(NodeId + ":", doc.RootElement.GetProperty("LockHolder").GetString());
     }
 
     [Fact]
@@ -665,7 +1067,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         // Use JsonDocument to verify directly:
         using var doc = JsonDocument.Parse(_store[storeKey]);
         Assert.Equal(2, doc.RootElement.GetProperty("Status").GetInt32()); // InProgress = 2
-        Assert.Equal(NodeId, doc.RootElement.GetProperty("LockHolder").GetString());
+        Assert.StartsWith(NodeId + ":", doc.RootElement.GetProperty("LockHolder").GetString());
     }
 
     [Fact]
@@ -673,6 +1075,102 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     {
         var results = await _provider.AcquireImmediateTimeTickersAsync([], CancellationToken.None);
         Assert.Empty(results);
+    }
+
+    [Fact]
+    public async Task AcquireTimeTickerOnDemandAsync_AtomicallyRevivesTerminalTicker()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Done, lockHolder: null, lockedAt: null);
+        ticker.ExecutedAt = _fixedNow.AddMinutes(-1);
+        ticker.ElapsedTime = 123;
+        ticker.StaleRestartCount = 3;
+        SeedTimeTicker(ticker);
+
+        var acquired = await _provider.AcquireTimeTickerOnDemandAsync(
+            ticker.Id, _fixedNow, CancellationToken.None);
+
+        var raw = _store[$"{Prefix}:tt:{ticker.Id}"];
+        using (var doc = JsonDocument.Parse(raw))
+            Assert.NotEqual(JsonValueKind.Null, doc.RootElement.GetProperty("LeaseUntil").ValueKind);
+        Assert.NotNull(JsonSerializer.Deserialize<TimeTickerEntity>(raw, _jsonOptions)!.LeaseUntil);
+
+        Assert.NotNull(acquired);
+        Assert.Equal(TickerStatus.InProgress, acquired.Status);
+        Assert.NotNull(acquired.AcquisitionToken);
+        Assert.NotNull(acquired.LeaseUntil);
+        Assert.StartsWith(NodeId + ":", acquired.LockHolder);
+        Assert.Null(acquired.ExecutedAt);
+        Assert.Equal(0, acquired.ElapsedTime);
+        Assert.Equal(0, acquired.StaleRestartCount);
+        Assert.Null(await _provider.AcquireTimeTickerOnDemandAsync(
+            ticker.Id, _fixedNow, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AcquireTimeTickerOnDemandAsync_DoesNotStealOtherOwnersQueuedGeneration()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Queued, lockHolder: "other-owner", lockedAt: _fixedNow);
+        ticker.AcquisitionToken = Guid.NewGuid();
+        SeedTimeTicker(ticker);
+
+        Assert.Null(await _provider.AcquireTimeTickerOnDemandAsync(
+            ticker.Id, _fixedNow, CancellationToken.None));
+
+        var stored = VerifyInStore<TimeTickerEntity>($"{Prefix}:tt:{ticker.Id}");
+        Assert.Equal("other-owner", stored!.LockHolder);
+        Assert.Equal(ticker.AcquisitionToken, stored.AcquisitionToken);
+    }
+
+    [Fact]
+    public async Task UpdateTimeTicker_TerminalWriteIsFencedByGeneration()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Idle, lockHolder: null, lockedAt: null);
+        SeedTimeTicker(ticker);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [ticker.Id], CancellationToken.None));
+
+        var stale = new InternalFunctionContext()
+            .SetProperty(x => x.TickerId, ticker.Id)
+            .SetProperty(x => x.Type, TickerType.TimeTicker)
+            .SetProperty(x => x.AcquisitionToken, Guid.NewGuid())
+            .SetProperty(x => x.Status, TickerStatus.Done);
+        Assert.Equal(0, await _provider.UpdateTimeTicker(stale, CancellationToken.None));
+
+        var winning = new InternalFunctionContext()
+            .SetProperty(x => x.TickerId, ticker.Id)
+            .SetProperty(x => x.Type, TickerType.TimeTicker)
+            .SetProperty(x => x.AcquisitionToken, acquired.AcquisitionToken)
+            .SetProperty(x => x.Status, TickerStatus.Done);
+        Assert.Equal(1, await _provider.UpdateTimeTicker(winning, CancellationToken.None));
+
+        var persisted = VerifyInStore<TimeTickerEntity>($"{Prefix}:tt:{ticker.Id}");
+        Assert.Equal(TickerStatus.Done, persisted!.Status);
+        Assert.Null(persisted.AcquisitionToken);
+        Assert.Null(persisted.LeaseUntil);
+    }
+
+    [Fact]
+    public async Task LeaseRenewalAndHeldCheck_AreFencedByGeneration()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Idle, lockHolder: null, lockedAt: null);
+        SeedTimeTicker(ticker);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [ticker.Id], CancellationToken.None));
+        var winningLease = new AcquisitionLease(ticker.Id, acquired.AcquisitionToken);
+        var staleLease = new AcquisitionLease(ticker.Id, Guid.NewGuid());
+        var renewedUntil = _fixedNow.AddMinutes(2);
+
+        Assert.Equal(1, await _provider.RenewTimeTickerLeases(
+            [winningLease], renewedUntil, CancellationToken.None));
+        Assert.Equal(0, await _provider.RenewTimeTickerLeases(
+            [staleLease], renewedUntil.AddMinutes(1), CancellationToken.None));
+        Assert.Equal([ticker.Id], await _provider.GetStillHeldTickerIds(
+            [winningLease], [], CancellationToken.None));
+        Assert.Empty(await _provider.GetStillHeldTickerIds(
+            [staleLease], [], CancellationToken.None));
+
+        var persisted = VerifyInStore<TimeTickerEntity>($"{Prefix}:tt:{ticker.Id}");
+        Assert.Equal(renewedUntil, persisted!.LeaseUntil);
     }
 
     [Fact]
@@ -692,8 +1190,11 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     [Fact]
     public async Task ReleaseAcquiredTimeTickers_ReleasesLocksOnMatchingTickers()
     {
-        var ticker = CreateTimeTicker(status: TickerStatus.Queued, lockHolder: NodeId, lockedAt: _fixedNow);
+        var ticker = CreateTimeTicker(status: TickerStatus.Idle, lockHolder: null, lockedAt: null);
         SeedTimeTicker(ticker);
+        Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None));
+        var tickerKey = $"{Prefix}:tt:{ticker.Id}";
+        _store[tickerKey] = SetJsonProperties(_store[tickerKey], new() { ["Status"] = (int)TickerStatus.Queued });
 
         await _provider.ReleaseAcquiredTimeTickers([ticker.Id], CancellationToken.None);
 
@@ -738,6 +1239,94 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     {
         var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
         Assert.Empty(results);
+    }
+
+    // =========================================================================
+    // Request-contract identity must survive the queue projection (MapQueueNode /
+    // MapForQueue) on every time path and GetAllCronTickerExpressions on the cron
+    // path. If it does not, TickerExecutionTaskHandler treats the row as legacy and
+    // skips drift enforcement.
+    // =========================================================================
+
+    private const int RedisIdentityVersion = 77;
+    private const string RedisIdentityFingerprint = "sha256:redis-identity";
+
+    private TimeTickerEntity CreateIdentityTimeTicker(
+        DateTime? executionTime = null, TickerStatus status = TickerStatus.Idle)
+    {
+        var ticker = CreateTimeTicker(executionTime: executionTime, status: status, lockHolder: null, lockedAt: null);
+        ticker.RequestContractVersion = RedisIdentityVersion;
+        ticker.RequestContractFingerprint = RedisIdentityFingerprint;
+        return ticker;
+    }
+
+    private static void AssertTimeIdentity(TimeTickerEntity ticker)
+    {
+        Assert.Equal(RedisIdentityVersion, ticker.RequestContractVersion);
+        Assert.Equal(RedisIdentityFingerprint, ticker.RequestContractFingerprint);
+    }
+
+    [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_PreservesContractIdentity()
+    {
+        var ticker = CreateIdentityTimeTicker(status: TickerStatus.Idle);
+        SeedTimeTicker(ticker);
+
+        var results = await _provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None);
+
+        AssertTimeIdentity(Assert.Single(results));
+    }
+
+    [Fact]
+    public async Task GetEarliestTimeTickers_PreservesContractIdentity()
+    {
+        var ticker = CreateIdentityTimeTicker(executionTime: _fixedNow.AddMilliseconds(500), status: TickerStatus.Idle);
+        SeedTimeTicker(ticker);
+
+        var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
+
+        AssertTimeIdentity(Assert.Single(results.Where(t => t.Id == ticker.Id)));
+    }
+
+    [Fact]
+    public async Task QueueTimedOutTimeTickers_PreservesContractIdentity()
+    {
+        // Older than the fallback threshold (now - 100ms) so the timed-out path picks it up.
+        var ticker = CreateIdentityTimeTicker(executionTime: _fixedNow.AddSeconds(-5), status: TickerStatus.Idle);
+        SeedTimeTicker(ticker);
+
+        var results = await ToListAsync(_provider.QueueTimedOutTimeTickers(CancellationToken.None));
+
+        AssertTimeIdentity(Assert.Single(results.Where(t => t.Id == ticker.Id)));
+    }
+
+    [Fact]
+    public async Task AcquireTimeTickerOnDemandAsync_PreservesContractIdentity()
+    {
+        var ticker = CreateIdentityTimeTicker(status: TickerStatus.Done);
+        ticker.ExecutedAt = _fixedNow.AddMinutes(-1);
+        SeedTimeTicker(ticker);
+
+        var acquired = await _provider.AcquireTimeTickerOnDemandAsync(
+            ticker.Id, _fixedNow, CancellationToken.None);
+
+        Assert.NotNull(acquired);
+        AssertTimeIdentity(acquired);
+    }
+
+    [Fact]
+    public async Task GetAllCronTickerExpressions_PreservesContractIdentity()
+    {
+        var cron = CreateCronTicker();
+        cron.RequestContractVersion = 88;
+        cron.RequestContractFingerprint = "sha256:cron-identity";
+        SeedCronTicker(cron);
+
+        var results = await _provider.GetAllCronTickerExpressions(CancellationToken.None);
+
+        var projected = Assert.Single(results.Where(c => c.Id == cron.Id));
+        Assert.Equal(88, projected.RequestContractVersion);
+        Assert.Equal("sha256:cron-identity", projected.RequestContractFingerprint);
     }
 
     // =========================================================================
@@ -856,7 +1445,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         Assert.Single(results);
         var stored = VerifyInStore<CronTickerOccurrenceEntity<CronTickerEntity>>($"{Prefix}:co:{occ.Id}");
         Assert.Equal(TickerStatus.InProgress, stored!.Status);
-        Assert.Equal(NodeId, stored.LockHolder);
+        Assert.StartsWith(NodeId + ":", stored.LockHolder);
     }
 
     [Fact]
@@ -938,8 +1527,11 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         var cron = CreateCronTicker();
         SeedCronTicker(cron);
 
-        var occ = CreateCronOccurrence(cron.Id, status: TickerStatus.Queued, lockHolder: NodeId, lockedAt: _fixedNow);
+        var occ = CreateCronOccurrence(cron.Id, status: TickerStatus.Idle, lockHolder: null, lockedAt: null);
         SeedCronOccurrence(occ);
+        Assert.Single(await _provider.AcquireImmediateCronOccurrencesAsync([occ.Id], CancellationToken.None));
+        var occurrenceKey = $"{Prefix}:co:{occ.Id}";
+        _store[occurrenceKey] = SetJsonProperties(_store[occurrenceKey], new() { ["Status"] = (int)TickerStatus.Queued });
 
         await _provider.ReleaseAcquiredCronTickerOccurrences([occ.Id], CancellationToken.None);
 

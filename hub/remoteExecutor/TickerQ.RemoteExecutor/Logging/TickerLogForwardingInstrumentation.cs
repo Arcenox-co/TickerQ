@@ -81,6 +81,21 @@ internal sealed class TickerLogForwardingInstrumentation : ITickerQInstrumentati
         Push(jobId, null, functionName, 2, $"Skipped: {reason}");
     }
 
+    public void LogJobTimeoutPending(
+        Guid jobId,
+        string functionName,
+        TimeSpan timeout,
+        TimeSpan gracePeriod)
+    {
+        _inner.LogJobTimeoutPending(jobId, functionName, timeout, gracePeriod);
+        Push(
+            jobId,
+            null,
+            functionName,
+            3 /* Warn */,
+            $"Timeout pending after {timeout.TotalMilliseconds:0}ms; grace period {gracePeriod.TotalMilliseconds:0}ms");
+    }
+
     public void LogSeedingDataStarted(string seedingDataType)
         => _inner.LogSeedingDataStarted(seedingDataType);
 

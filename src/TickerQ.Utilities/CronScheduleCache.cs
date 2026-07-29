@@ -19,8 +19,25 @@ internal static partial class CronScheduleCache
     private static string Normalize(string expr)
     {
         ArgumentNullException.ThrowIfNull(expr);
-        
-        return ReplaceRegex().Replace(expr.Trim(), " "); 
+
+        var collapsed = ReplaceRegex().Replace(expr.Trim(), " ");
+
+        // Standard 5-part cron (no seconds) — prepend "0" so NCrontab's
+        // IncludingSeconds parser accepts it. Keeps 5- and 6-part spellings
+        // of the same schedule on one cache entry.
+        return CountParts(collapsed) == 5 ? "0 " + collapsed : collapsed;
+    }
+
+    private static int CountParts(string expr)
+    {
+        if (expr.Length == 0)
+            return 0;
+
+        var parts = 1;
+        foreach (var ch in expr)
+            if (ch == ' ')
+                parts++;
+        return parts;
     }
 
     public static CrontabSchedule Get(string expression)

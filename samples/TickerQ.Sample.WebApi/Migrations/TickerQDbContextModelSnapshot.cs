@@ -17,6 +17,68 @@ namespace TickerQ.Sample.WebApi.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.0");
 
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.CronTickerOccurrenceResultEntity<TickerQ.Utilities.Entities.CronTickerEntity>", b =>
+                {
+                    b.Property<Guid>("TickerId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContractId")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContractType")
+                        .HasMaxLength(1024)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("EnvelopeVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("MediaType")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte[]>("Payload")
+                        .IsRequired()
+                        .HasMaxLength(1048576)
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("TickerId");
+
+                    b.ToTable("CronTickerOccurrenceResults", "ticker");
+                });
+
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.TimeTickerResultEntity<TickerQ.Utilities.Entities.TimeTickerEntity>", b =>
+                {
+                    b.Property<Guid>("TickerId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContractId")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContractType")
+                        .HasMaxLength(1024)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("EnvelopeVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("MediaType")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte[]>("Payload")
+                        .IsRequired()
+                        .HasMaxLength(1048576)
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("TickerId");
+
+                    b.ToTable("TimeTickerResults", "ticker");
+                });
+
             modelBuilder.Entity("TickerQ.Utilities.Entities.CronTickerEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -38,18 +100,34 @@ namespace TickerQ.Sample.WebApi.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<bool>("IsEnabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsSystemPaused")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER")
-                        .HasDefaultValueSql("1");
+                        .HasDefaultValue(false);
+
+                    b.Property<int>("OnStale")
+                        .HasColumnType("INTEGER");
 
                     b.Property<byte[]>("Request")
                         .HasColumnType("BLOB");
+
+                    b.Property<string>("RequestContractFingerprint")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("RequestContractVersion")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("Retries")
                         .HasColumnType("INTEGER");
 
                     b.PrimitiveCollection<string>("RetryIntervals")
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("TimeoutSeconds")
+                        .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("TEXT");
@@ -70,6 +148,9 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid?>("AcquisitionToken")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
@@ -88,6 +169,9 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.Property<DateTime>("ExecutionTime")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("LeaseUntil")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("LockHolder")
                         .HasColumnType("TEXT");
 
@@ -99,6 +183,9 @@ namespace TickerQ.Sample.WebApi.Migrations
 
                     b.Property<string>("SkippedReason")
                         .HasColumnType("TEXT");
+
+                    b.Property<int>("StaleRestartCount")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("Status")
                         .HasColumnType("INTEGER");
@@ -118,6 +205,9 @@ namespace TickerQ.Sample.WebApi.Migrations
                         .IsUnique()
                         .HasDatabaseName("UQ_CronTickerId_ExecutionTime");
 
+                    b.HasIndex("Status", "ExecutedAt")
+                        .HasDatabaseName("IX_CronTickerOccurrence_Status_ExecutedAt");
+
                     b.HasIndex("Status", "ExecutionTime")
                         .HasDatabaseName("IX_CronTickerOccurrence_Status_ExecutionTime");
 
@@ -128,6 +218,15 @@ namespace TickerQ.Sample.WebApi.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("AcquisitionToken")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("ChainGeneration")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("ChainRootId")
                         .HasColumnType("TEXT");
 
                     b.Property<DateTime>("CreatedAt")
@@ -154,17 +253,30 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.Property<string>("InitIdentifier")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("LeaseUntil")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("LockHolder")
                         .HasColumnType("TEXT");
 
                     b.Property<DateTime?>("LockedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("OnStale")
+                        .HasColumnType("INTEGER");
+
                     b.Property<Guid?>("ParentId")
                         .HasColumnType("TEXT");
 
                     b.Property<byte[]>("Request")
                         .HasColumnType("BLOB");
+
+                    b.Property<string>("RequestContractFingerprint")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("RequestContractVersion")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("Retries")
                         .HasColumnType("INTEGER");
@@ -181,7 +293,13 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.Property<string>("SkippedReason")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("StaleRestartCount")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("Status")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("TimeoutSeconds")
                         .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("UpdatedAt")
@@ -189,15 +307,43 @@ namespace TickerQ.Sample.WebApi.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ChainRootId")
+                        .HasDatabaseName("IX_TimeTicker_ChainRootId");
+
                     b.HasIndex("ExecutionTime")
                         .HasDatabaseName("IX_TimeTicker_ExecutionTime");
 
                     b.HasIndex("ParentId");
 
+                    b.HasIndex("Status", "ExecutedAt")
+                        .HasDatabaseName("IX_TimeTicker_Status_ExecutedAt");
+
                     b.HasIndex("Status", "ExecutionTime")
                         .HasDatabaseName("IX_TimeTicker_Status_ExecutionTime");
 
                     b.ToTable("TimeTickers", "ticker");
+                });
+
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.CronTickerOccurrenceResultEntity<TickerQ.Utilities.Entities.CronTickerEntity>", b =>
+                {
+                    b.HasOne("TickerQ.Utilities.Entities.CronTickerOccurrenceEntity<TickerQ.Utilities.Entities.CronTickerEntity>", "Occurrence")
+                        .WithOne()
+                        .HasForeignKey("TickerQ.EntityFrameworkCore.Entities.CronTickerOccurrenceResultEntity<TickerQ.Utilities.Entities.CronTickerEntity>", "TickerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Occurrence");
+                });
+
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.TimeTickerResultEntity<TickerQ.Utilities.Entities.TimeTickerEntity>", b =>
+                {
+                    b.HasOne("TickerQ.Utilities.Entities.TimeTickerEntity", "Ticker")
+                        .WithOne()
+                        .HasForeignKey("TickerQ.EntityFrameworkCore.Entities.TimeTickerResultEntity<TickerQ.Utilities.Entities.TimeTickerEntity>", "TickerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Ticker");
                 });
 
             modelBuilder.Entity("TickerQ.Utilities.Entities.CronTickerOccurrenceEntity<TickerQ.Utilities.Entities.CronTickerEntity>", b =>

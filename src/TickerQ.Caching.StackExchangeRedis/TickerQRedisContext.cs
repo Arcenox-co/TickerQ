@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Caching.StackExchangeRedis.DependencyInjection;
+using TickerQ.Caching.StackExchangeRedis.Infrastructure;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -32,7 +33,8 @@ internal class TickerQRedisContext : ITickerQRedisContext
     public async Task NotifyNodeAliveAsync()
     {
         var node = _schedulerOptions.NodeIdentifier;
-        var key  = $"hb:{node}";
+        var owner = _schedulerOptions.ExecutionOwnerId;
+        var key  = $"hb:{owner}";
 
         var payload = new NodeHeartbeatPayload
         {
@@ -51,7 +53,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
                 AbsoluteExpirationRelativeToNow = ttl
             });
 
-        await AddNodeToRegistryAsync(node);
+        await AddNodeToRegistryAsync(owner);
     }
     
     public async Task<string[]> GetDeadNodesAsync()
@@ -188,4 +190,5 @@ internal sealed class NodeHeartbeatPayload
 [JsonSerializable(typeof(int[]))]
 [JsonSerializable(typeof(long))]
 [JsonSerializable(typeof(bool))]
+[JsonSerializable(typeof(RedisNodeFinalizationRecord))]
 internal partial class RedisContextJsonSerializerContext : JsonSerializerContext;

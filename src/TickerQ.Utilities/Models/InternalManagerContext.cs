@@ -6,9 +6,12 @@ public class InternalManagerContext(Guid id)
 {
     public Guid Id { get; set; } = id;
     public string FunctionName { get; set; }
+    public int? RequestContractVersion { get; set; }
+    public string RequestContractFingerprint { get; set; }
     public string Expression { get; set; }
     public int Retries { get; set; }
     public int[] RetryIntervals { get; set; }
+    public int? TimeoutSeconds { get; set; }
     public NextCronOccurrence NextCronOccurrence { get; set; }
 }
 

@@ -1,0 +1,441 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/inter";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Light theme (default when `dark` class is absent on <html>) */
+:root {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 174 65% 38%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 174 55% 94%;
+    --accent-foreground: 174 65% 28%;
+
+    --destructive: 0 84% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 174 65% 38%;
+
+    --radius: 0.75rem;
+
+    --gradient-primary: linear-gradient(135deg, hsl(174 65% 38%) 0%, hsl(190 72% 34%) 100%);
+    --glow-primary: 0 0 28px hsl(174 65% 38% / 0.18);
+
+    --sidebar-background: 0 0% 99%;
+    --sidebar-foreground: 222 47% 11%;
+    --sidebar-primary: 174 65% 38%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 210 40% 96%;
+    --sidebar-accent-foreground: 222 47% 11%;
+    --sidebar-border: 214 32% 91%;
+    --sidebar-ring: 174 65% 38%;
+
+    --surface-0: 210 40% 98%;
+    --surface-1: 210 40% 96%;
+    --surface-2: 214 32% 91%;
+    --surface-3: 214 24% 84%;
+
+    --status-healthy: 142 64% 36%;
+    --status-warning: 32 95% 44%;
+    --status-error: 0 72% 50%;
+    --status-info: 174 65% 38%;
+    --status-idle: 220 9% 46%;
+    --status-skipped: 27 90% 48%;
+    --status-cancelled: 215 16% 45%;
+    --status-queued: 262 83% 52%;
+
+    --success: 142 64% 36%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 44%;
+    --warning-foreground: 222 47% 11%;
+
+    --env-production: 142 64% 34%;
+    --env-staging: 38 92% 42%;
+    --env-development: 217 85% 48%;
+
+    --gradient-card: linear-gradient(180deg, hsl(var(--card)) 0%, hsl(var(--surface-1)) 100%);
+}
+
+.dark {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 98%;
+
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 47% 8%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 174 72% 50%;
+    --primary-foreground: 222 47% 6%;
+
+    --secondary: 222 47% 14%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 222 30% 16%;
+    --muted-foreground: 215 20% 55%;
+
+    --accent: 174 72% 50%;
+    --accent-foreground: 222 47% 6%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 222 30% 18%;
+    --input: 222 30% 14%;
+    --ring: 174 72% 50%;
+
+    --gradient-primary: linear-gradient(135deg, hsl(174 72% 50%) 0%, hsl(190 80% 45%) 100%);
+    --glow-primary: 0 0 40px hsl(174 72% 50% / 0.15);
+
+    --sidebar-background: 222 47% 7%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 174 72% 50%;
+    --sidebar-primary-foreground: 222 47% 6%;
+    --sidebar-accent: 222 47% 12%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 222 30% 18%;
+    --sidebar-ring: 174 72% 50%;
+
+    --surface-0: 222 47% 6%;
+    --surface-1: 222 47% 7%;
+    --surface-2: 222 30% 14%;
+    --surface-3: 222 30% 18%;
+
+    --status-healthy: 142 71% 73%;
+    --status-warning: 43 96% 56%;
+    --status-error: 0 94% 71%;
+    --status-info: 170 77% 50%;
+    --status-idle: 240 4% 46%;
+    --status-skipped: 27 96% 61%;
+    --status-cancelled: 215 16% 65%;
+    --status-queued: 253 91% 76%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 210 40% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 222 47% 6%;
+
+    --env-production: 142 71% 42%;
+    --env-staging: 43 96% 52%;
+    --env-development: 217 91% 58%;
+}
+
+@theme inline {
+    --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+    --color-background: hsl(var(--background));
+    --color-foreground: hsl(var(--foreground));
+    --color-card: hsl(var(--card));
+    --color-card-foreground: hsl(var(--card-foreground));
+    --color-popover: hsl(var(--popover));
+    --color-popover-foreground: hsl(var(--popover-foreground));
+    --color-primary: hsl(var(--primary));
+    --color-primary-foreground: hsl(var(--primary-foreground));
+    --color-secondary: hsl(var(--secondary));
+    --color-secondary-foreground: hsl(var(--secondary-foreground));
+    --color-muted: hsl(var(--muted));
+    --color-muted-foreground: hsl(var(--muted-foreground));
+    --color-accent: hsl(var(--accent));
+    --color-accent-foreground: hsl(var(--accent-foreground));
+    --color-destructive: hsl(var(--destructive));
+    --color-destructive-foreground: hsl(var(--destructive-foreground));
+    --color-border: hsl(var(--border));
+    --color-input: hsl(var(--input));
+    --color-ring: hsl(var(--ring));
+
+    --radius-lg: var(--radius);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-xl: calc(var(--radius) + 4px);
+
+    --color-sidebar: hsl(var(--sidebar-background));
+    --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+    --color-sidebar-primary: hsl(var(--sidebar-primary));
+    --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+    --color-sidebar-accent: hsl(var(--sidebar-accent));
+    --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+    --color-sidebar-border: hsl(var(--sidebar-border));
+    --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+    --color-surface-0: hsl(var(--surface-0));
+    --color-surface-1: hsl(var(--surface-1));
+    --color-surface-2: hsl(var(--surface-2));
+    --color-surface-3: hsl(var(--surface-3));
+
+    --color-status-healthy: hsl(var(--status-healthy));
+    --color-status-warning: hsl(var(--status-warning));
+    --color-status-error: hsl(var(--status-error));
+    --color-status-info: hsl(var(--status-info));
+    --color-status-idle: hsl(var(--status-idle));
+    --color-status-skipped: hsl(var(--status-skipped));
+    --color-status-cancelled: hsl(var(--status-cancelled));
+    --color-status-queued: hsl(var(--status-queued));
+
+    --color-success: hsl(var(--success));
+    --color-success-foreground: hsl(var(--success-foreground));
+    --color-warning: hsl(var(--warning));
+    --color-warning-foreground: hsl(var(--warning-foreground));
+
+    --color-env-production: hsl(var(--env-production));
+    --color-env-staging: hsl(var(--env-staging));
+    --color-env-development: hsl(var(--env-development));
+
+    --animate-accordion-down: accordion-down 0.2s ease-out;
+    --animate-accordion-up: accordion-up 0.2s ease-out;
+    --animate-pulse-dot: pulse-dot 2s ease-in-out infinite;
+    --animate-fade-in: fade-in 0.3s ease-out;
+}
+
+@layer base {
+    *,
+    ::after,
+    ::before,
+    ::backdrop {
+        border-color: hsl(var(--border));
+    }
+
+    body {
+        background: hsl(var(--background));
+        color: hsl(var(--foreground));
+        font-family: var(--font-sans);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+
+    /**
+     * Cron dashboard: stronger UI contrast (borders, muted text, surfaces).
+     * Mirrors the Hub UI scope; applied at the Shell root so the whole app
+     * picks up the dashboard palette.
+     */
+    .cron-dashboard {
+        --foreground: 210 40% 99%;
+        --card: 0 0% 99%;
+        --card-foreground: 222 47% 9%;
+        --muted: 210 38% 93%;
+        --muted-foreground: 215 20% 36%;
+        --border: 214 30% 78%;
+        --input: 214 30% 82%;
+        --secondary: 210 36% 92%;
+        --secondary-foreground: 222 47% 9%;
+        --sidebar-accent: 210 38% 93%;
+        --sidebar-border: 214 30% 78%;
+        --surface-1: 210 40% 97%;
+        --surface-2: 214 30% 88%;
+        --surface-3: 214 26% 74%;
+    }
+
+    .dark .cron-dashboard {
+        --foreground: 210 25% 99%;
+        --card: 222 42% 12%;
+        --card-foreground: 210 25% 99%;
+        --muted: 222 28% 19%;
+        --muted-foreground: 215 14% 76%;
+        --border: 222 26% 30%;
+        --input: 222 28% 17%;
+        --secondary: 222 40% 16%;
+        --secondary-foreground: 210 25% 99%;
+        --sidebar-background: 222 42% 9%;
+        --sidebar-foreground: 210 25% 99%;
+        --sidebar-accent: 222 38% 14%;
+        --sidebar-accent-foreground: 210 25% 99%;
+        --sidebar-border: 222 26% 30%;
+        --surface-0: 222 47% 6%;
+        --surface-1: 222 42% 10%;
+        --surface-2: 222 28% 18%;
+        --surface-3: 222 26% 28%;
+    }
+}
+
+@layer utilities {
+    .gradient-text {
+        background-clip: text;
+        color: transparent;
+        background-image: var(--gradient-primary);
+    }
+
+    .gradient-primary {
+        background-image: var(--gradient-primary);
+    }
+
+    .glow-primary {
+        box-shadow: var(--glow-primary);
+    }
+
+    /* Flattened to solid bg-card so cards read as the same product across pages. */
+    .card-gradient {
+        background: hsl(var(--card));
+    }
+
+    .scrollbar-thin {
+        scrollbar-width: thin;
+        scrollbar-color: hsl(var(--surface-3)) transparent;
+    }
+    .scrollbar-thin::-webkit-scrollbar {
+        width: 4px;
+        height: 4px;
+    }
+    .scrollbar-thin::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    .scrollbar-thin::-webkit-scrollbar-thumb {
+        background-color: hsl(var(--surface-3));
+        border-radius: 9999px;
+    }
+
+    @keyframes accordion-down {
+        from {
+            height: 0;
+        }
+        to {
+            height: var(--radix-accordion-content-height);
+        }
+    }
+    @keyframes accordion-up {
+        from {
+            height: var(--radix-accordion-content-height);
+        }
+        to {
+            height: 0;
+        }
+    }
+    @keyframes pulse-dot {
+        0%,
+        100% {
+            opacity: 1;
+        }
+        50% {
+            opacity: 0.4;
+        }
+    }
+    @keyframes fade-in {
+        from {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .animate-fade-in {
+        animation: fade-in 0.5s ease-out forwards;
+    }
+
+    /* Brief highlight on a just-created table row so the user can spot it. */
+    @keyframes row-highlight {
+        0% {
+            background-color: hsl(var(--primary) / 0.18);
+        }
+        20% {
+            background-color: hsl(var(--primary) / 0.18);
+        }
+        100% {
+            background-color: hsl(var(--primary) / 0);
+        }
+    }
+    .animate-row-highlight {
+        animation: row-highlight 5s ease-out forwards;
+    }
+
+    /* Indeterminate top-edge progress strip used on cards during background refetches. */
+    @keyframes loading-bar {
+        0% {
+            transform: translateX(-100%);
+        }
+        100% {
+            transform: translateX(100%);
+        }
+    }
+    .loading-bar-track {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        overflow: hidden;
+        pointer-events: none;
+    }
+    .loading-bar-track::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        width: 40%;
+        background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.7), transparent);
+        animation: loading-bar 1.2s linear infinite;
+    }
+
+    /* Recharts default tooltip uses hardcoded inline styles — force theme-aware colors. */
+    .recharts-tooltip-wrapper,
+    .recharts-tooltip-wrapper *,
+    .recharts-default-tooltip,
+    .recharts-default-tooltip *,
+    .recharts-tooltip-label,
+    .recharts-tooltip-item,
+    .recharts-tooltip-item-name,
+    .recharts-tooltip-item-value,
+    .recharts-tooltip-item-unit {
+        color: hsl(var(--popover-foreground)) !important;
+    }
+    .recharts-default-tooltip {
+        background-color: hsl(var(--popover)) !important;
+        border-color: hsl(var(--border)) !important;
+    }
+
+    /* Sonner toast — solid background, strong border + shadow so alerts pop
+       over the dashboard background, with a typed left-rail accent. */
+    .cn-toast {
+        background-color: hsl(var(--popover)) !important;
+        color: hsl(var(--popover-foreground)) !important;
+        border: 1px solid hsl(var(--border)) !important;
+        border-left-width: 3px !important;
+        box-shadow:
+            0 12px 24px -8px rgb(0 0 0 / 0.45),
+            0 4px 8px -2px rgb(0 0 0 / 0.30) !important;
+        backdrop-filter: none !important;
+    }
+    .cn-toast[data-type="success"] {
+        border-left-color: hsl(var(--status-healthy)) !important;
+    }
+    .cn-toast[data-type="success"] [data-icon] {
+        color: hsl(var(--status-healthy)) !important;
+    }
+    .cn-toast[data-type="error"] {
+        border-left-color: hsl(var(--status-error)) !important;
+    }
+    .cn-toast[data-type="error"] [data-icon] {
+        color: hsl(var(--status-error)) !important;
+    }
+    .cn-toast[data-type="warning"] {
+        border-left-color: hsl(var(--status-warning)) !important;
+    }
+    .cn-toast[data-type="warning"] [data-icon] {
+        color: hsl(var(--status-warning)) !important;
+    }
+    .cn-toast[data-type="info"] {
+        border-left-color: hsl(var(--primary)) !important;
+    }
+    .cn-toast[data-type="info"] [data-icon] {
+        color: hsl(var(--primary)) !important;
+    }
+}

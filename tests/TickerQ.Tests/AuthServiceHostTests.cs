@@ -123,8 +123,9 @@ public class AuthServiceHostTests
 
         var context = new DefaultHttpContext();
 
-        // First identity is unauthenticated (default)
-        var id1 = new ClaimsIdentity();
+        // First identity is unauthenticated (no authentication type) but carries a
+        // misleading Name claim that must NOT be used for the resulting username.
+        var id1 = new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, "misleading-name") });
 
         // Second identity is authenticated
         var id2 = new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, "second-identity") }, "AuthType");
@@ -143,6 +144,6 @@ public class AuthServiceHostTests
         var result = await svc.AuthenticateAsync(context);
 
         Assert.True(result.IsAuthenticated);
-        Assert.Equal("host-user", result.Username);
+        Assert.Equal("second-identity", result.Username);
     }
 }

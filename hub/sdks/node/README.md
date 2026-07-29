@@ -30,7 +30,12 @@ const sdk = new TickerQSdk((opts) =>
 
 // 2. Register functions
 sdk.function('SendEmail', { priority: TickerTaskPriority.High })
-    .withRequest({ to: '', subject: '', body: '' })
+    .withRequest(
+        { to: '', subject: '', body: '' },
+        { schema: { type: 'object', required: ['to', 'subject', 'body'], properties: {
+            to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' },
+        } } },
+    )
     .handle(async (ctx, signal) => {
         console.log(`Sending email to ${ctx.request.to}`);
     });
@@ -46,7 +51,9 @@ app.listen(3000);
 
 ### With typed request
 
-The default value provides both **type inference** and the **example JSON** sent to the Hub.
+The default value provides TypeScript inference and the legacy example. Add `requestContract`
+to publish an authoritative Draft 2020-12 schema. The SDK canonicalizes the schema and computes
+the same deterministic `sha256:` fingerprint as the .NET runtime.
 
 ```ts
 sdk.function('ProcessOrder', {
@@ -54,7 +61,27 @@ sdk.function('ProcessOrder', {
     maxConcurrency: 3,
     requestType: 'OrderRequest',
 })
-    .withRequest({ orderId: 0, customerId: '', items: [''], total: 0 })
+    .withRequest(
+      { orderId: 0, customerId: '', items: [''], total: 0 },
+      {
+        schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['orderId', 'customerId', 'items', 'total'],
+            properties: {
+                orderId: { type: 'integer', minimum: 1 },
+                customerId: { type: 'string', minLength: 1 },
+                items: { type: 'array', items: { type: 'string' } },
+                total: { type: 'number', minimum: 0 },
+            },
+        },
+        examples: [{
+            key: 'standard-order',
+            summary: 'Typical order',
+            value: { orderId: 42, customerId: 'customer-7', items: ['sku-1'], total: 19.99 },
+        }],
+      },
+    )
     .handle(async (ctx, signal) => {
         ctx.request.orderId;    // number
         ctx.request.customerId; // string
@@ -74,13 +101,42 @@ sdk.function('DatabaseCleanup', {
     });
 ```
 
-### With primitive request
+### Typed results and direct-parent results
+
+Use `withResult` to publish a canonical result contract and type `ctx.setResult`. Results are JSON-encoded,
+base64-wrapped in a versioned envelope, and included only in a final successful status update. `null` is an
+explicit present result; not calling `setResult` means no result. Each execution attempt has a fresh sink.
+
+```ts
+sdk.function('CreateReport')
+    .withResult(
+        { reportId: '' },
+        { schema: { type: 'object', required: ['reportId'], properties: {
+            reportId: { type: 'string' },
+        } } },
+    )
+    .handle(async (ctx) => {
+        const parent = ctx.getParentResult<{ sourceId: string }>();
+        if (ctx.hasParentResult) console.log(parent?.sourceId);
+        ctx.setResult({ reportId: 'report-1' });
+    });
+```
+
+Only the direct parent's result is exposed. Unknown envelope versions, invalid base64, non-JSON media types
+when deserializing, and decoded payloads over 1 MiB are rejected.
+
+### With an object-wrapped scalar request
+
+Canonical request contracts require an object-root schema. Wrap scalar values in a named property:
 
 ```ts
 sdk.function('ResizeImage')
-    .withRequest('default-url')
+    .withRequest(
+        { url: '' },
+        { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' } } } },
+    )
     .handle(async (ctx, signal) => {
-        console.log(ctx.request); // string
+        console.log(ctx.request.url); // string
     });
 ```
 
@@ -92,6 +148,13 @@ sdk.function('ResizeImage')
 | `priority` | `TickerTaskPriority` | `Normal` | `High`, `Normal`, `Low`, or `LongRunning` |
 | `maxConcurrency` | `number` | `0` (unlimited) | Max parallel executions for this function |
 | `requestType` | `string` | auto-detected | Type name sent to Hub for documentation |
+| `requestContract` | `TickerRequestContractDefinition` | — | Authoritative JSON Schema, examples, media type, and contract version sent to Hub |
+| `resultType` | `string` | auto-detected | Result type name sent to Hub for documentation |
+| `resultContract` | `TickerResultContractDefinition` | — | Authoritative result JSON Schema metadata (normally set by `withResult`) |
+
+Browser-side validation is advisory. The scheduler validates the serialized payload again before
+any persistence write. Schema or version drift is checked again before invocation and does not
+consume a retry attempt.
 
 ## SDK Configuration
 
@@ -170,7 +233,12 @@ With a typed request:
 
 ```ts
 sdk.function('SendEmail')
-    .withRequest({ to: '', subject: '' })
+    .withRequest(
+        { to: '', subject: '' },
+        { schema: { type: 'object', required: ['to', 'subject'], properties: {
+            to: { type: 'string' }, subject: { type: 'string' },
+        } } },
+    )
     .handle(async (ctx, signal) => {
         ctx.request.to;      // string — fully typed
         ctx.request.subject; // string

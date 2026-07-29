@@ -416,6 +416,48 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             );
         }
         
+        public async Task<bool> RunTimeTickerOnDemandAsync(Guid id, CancellationToken cancellationToken = default)
+        {
+            var acquired = await _persistenceProvider
+                .AcquireTimeTickerOnDemandAsync(id, DateTime.UtcNow, cancellationToken)
+                .ConfigureAwait(false);
+            if (acquired == null)
+                return false;
+
+            var context = BuildOnDemandTimeContext(acquired);
+            await _dispatcher.DispatchAsync([context], CancellationToken.None).ConfigureAwait(false);
+            if (_notificationHubSender != null)
+                await _notificationHubSender.UpdateTimeTickerNotifyAsync(id).ConfigureAwait(false);
+            return true;
+        }
+
+        private static InternalFunctionContext BuildOnDemandTimeContext(TimeTickerEntity ticker)
+        {
+            var context = new InternalFunctionContext
+            {
+                FunctionName = ticker.Function,
+                RequestContractVersion = ticker.RequestContractVersion,
+                RequestContractFingerprint = ticker.RequestContractFingerprint,
+                TickerId = ticker.Id,
+                Type = TickerType.TimeTicker,
+                Retries = ticker.Retries,
+                RetryIntervals = ticker.RetryIntervals,
+                TimeoutSeconds = ticker.TimeoutSeconds,
+                ParentId = ticker.ParentId,
+                AcquisitionToken = ticker.AcquisitionToken,
+                ExecutionTime = ticker.ExecutionTime ?? DateTime.UtcNow,
+                RunCondition = ticker.RunCondition ?? RunCondition.OnAnyCompletedStatus,
+                TimeTickerChildren = ticker.Children?.Select(BuildOnDemandTimeContext).ToList() ?? []
+            };
+            if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
+            {
+                context.CachedDelegate = tickerItem.Delegate;
+                context.CachedPriority = tickerItem.Priority;
+                context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
+            }
+            return context;
+        }
+
         public async Task AddOnDemandCronTickerOccurrenceAsync(Guid id, CancellationToken cancellationToken)
         {
             var now = DateTime.UtcNow;
@@ -445,10 +487,14 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                 {
                     ParentId = occurrence.CronTickerId,
                     FunctionName = occurrence.CronTicker.Function,
+                    RequestContractVersion = occurrence.CronTicker.RequestContractVersion,
+                    RequestContractFingerprint = occurrence.CronTicker.RequestContractFingerprint,
                     TickerId = occurrence.Id,
                     Type = TickerType.CronTickerOccurrence,
                     Retries = occurrence.CronTicker.Retries,
                     RetryIntervals = occurrence.CronTicker.RetryIntervals,
+                    TimeoutSeconds = occurrence.CronTicker.TimeoutSeconds,
+                    AcquisitionToken = occurrence.AcquisitionToken,
                     ExecutionTime = occurrence.ExecutionTime
                 };
 
@@ -460,12 +506,14 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
                     context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
                 }
 
-                await _dispatcher.DispatchAsync([context], cancellationToken).ConfigureAwait(false);
+                // CancellationToken.None on purpose: the job must outlive the HTTP request
+                // that triggered it (see TickerManager immediate dispatch).
+                await _dispatcher.DispatchAsync([context], System.Threading.CancellationToken.None).ConfigureAwait(false);
             }
 
             // Notify dashboard about the new occurrence (prefer the acquired version if available)
             if (_notificationHubSender != null)
-                await _notificationHubSender.AddCronOccurrenceAsync(id, acquiredOccurrence ?? onDemandOccurrence);
+                await _notificationHubSender.AddCronOccurrenceAsync(id, (acquiredOccurrence ?? onDemandOccurrence).Id);
         }
 
         public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetCronTickersOccurrencesAsync(Guid cronTickerId, CancellationToken cancellationToken)
@@ -607,7 +655,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             if (affectedRows > 0)
             {
                 _tickerQHostScheduler.Restart();
-                await _notificationHubSender.UpdateCronTickerNotifyAsync(cronTicker);
+                await _notificationHubSender.UpdateCronTickerNotifyAsync(cronTicker.Id);
             }
 
             return affectedRows > 0;
@@ -671,27 +719,28 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
 
         public IEnumerable<(string, (string, string, TickerTaskPriority))> GetTickerFunctions()
         {
-            foreach (var tickerFunction in TickerFunctionProvider.TickerFunctions.Select(x => new { x.Key, x.Value.Priority }))
+            var descriptors = TickerFunctionProvider.TickerFunctionDescriptors;
+            var requestTypes = TickerFunctionProvider.TickerFunctionRequestTypes;
+
+            foreach (var (functionName, descriptor) in descriptors)
             {
-                if (TickerFunctionProvider.TickerFunctionRequestTypes.TryGetValue(tickerFunction.Key,
-                        out var functionTypeContext) &&
-                    functionTypeContext.Item2 != null)
+                var request = descriptor.Request;
+                var exampleJson = request?.Examples.FirstOrDefault()?.Value.GetRawText();
+
+                // Compatibility only: canonical descriptors define membership and metadata. Until
+                // local registration emits examples, retain the previous generated-example behavior
+                // from one captured runtime-type mirror without admitting legacy-only functions.
+                if (exampleJson == null && request != null &&
+                    requestTypes.TryGetValue(functionName, out var runtimeRequest) &&
+                    runtimeRequest.Item2 != null)
                 {
-                    JsonExampleGenerator.TryGenerateExampleJson(functionTypeContext.Item2, out var exampleJson);
-                    yield return (tickerFunction.Key, (functionTypeContext.Item1, exampleJson, tickerFunction.Priority));
+                    JsonExampleGenerator.TryGenerateExampleJson(runtimeRequest.Item2, out exampleJson);
                 }
-                else if (TickerFunctionProvider.TickerFunctionRequestInfos.TryGetValue(tickerFunction.Key,
-                             out var requestInfo))
-                {
-                    var exampleJson = string.IsNullOrWhiteSpace(requestInfo.RequestExampleJson)
-                        ? null
-                        : requestInfo.RequestExampleJson;
-                    yield return (tickerFunction.Key, (requestInfo.RequestType ?? string.Empty, exampleJson, tickerFunction.Priority));
-                }
-                else
-                {
-                    yield return (tickerFunction.Key, (string.Empty, null, tickerFunction.Priority));
-                }
+
+                yield return (functionName, (
+                    request?.TypeName ?? string.Empty,
+                    exampleJson!,
+                    descriptor.Priority));
             }
         }
     }

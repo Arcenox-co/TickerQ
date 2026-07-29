@@ -14,13 +14,27 @@ namespace TickerQ.MongoDB.Infrastructure
     internal static class MongoUpdateBuilders
     {
         public static UpdateDefinition<TTimeTicker> BuildTimeTickerUpdate<TTimeTicker>(
-            InternalFunctionContext ctx, DateTime updatedAt)
+            InternalFunctionContext ctx, DateTime updatedAt, DateTime? leaseUntil = null)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         {
             var props = ctx.GetPropsToUpdate();
             var defs = Builders<TTimeTicker>.Update;
             UpdateDefinition<TTimeTicker> u = null;
 
+            if (ClearsAcquisitionToken(props, ctx))
+                u = Combine(u, defs.Set(x => x.LeaseUntil, (DateTime?)null));
+            else if (ctx.ParentId == null && leaseUntil != null &&
+                     props.Contains(nameof(InternalFunctionContext.Status)) &&
+                     ctx.Status == TickerStatus.InProgress)
+                u = Combine(u, defs.Set(x => x.LeaseUntil, leaseUntil));
+
+            // ACQUISITION TOKEN (generation) — stamp on the InProgress transition, clear on
+            // any terminal write or lock release. Mirrors the EF setter helper.
+            if (StampsAcquisitionToken(props, ctx))
+                u = Combine(u, defs.Set(x => x.AcquisitionToken, ctx.AcquisitionToken));
+            else if (ClearsAcquisitionToken(props, ctx))
+                u = Combine(u, defs.Set(x => x.AcquisitionToken, (Guid?)null));
+
             if (props.Contains(nameof(InternalFunctionContext.Status)) && ctx.Status != TickerStatus.Skipped)
             {
                 u = Combine(u, defs.Set(x => x.Status, ctx.Status));
@@ -47,19 +61,45 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 u = Combine(u, defs.Set(x => x.LockHolder, (string)null));
                 u = Combine(u, defs.Set(x => x.LockedAt, (DateTime?)null));
+                u = Combine(u, defs.Set(x => x.LeaseUntil, (DateTime?)null));
             }
 
             u = Combine(u, defs.Set(x => x.UpdatedAt, updatedAt));
             return u;
         }
 
+        private static bool StampsAcquisitionToken(System.Collections.Generic.HashSet<string> props, InternalFunctionContext ctx)
+            => props.Contains(nameof(InternalFunctionContext.AcquisitionToken)) &&
+               props.Contains(nameof(InternalFunctionContext.Status)) &&
+               ctx.Status == TickerStatus.InProgress;
+
+        private static bool ClearsAcquisitionToken(System.Collections.Generic.HashSet<string> props, InternalFunctionContext ctx)
+            => (props.Contains(nameof(InternalFunctionContext.Status)) &&
+                ctx.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
+                    or TickerStatus.Cancelled or TickerStatus.Skipped)
+               || props.Contains(nameof(InternalFunctionContext.ReleaseLock));
+
         public static UpdateDefinition<CronTickerOccurrenceEntity<TCronTicker>> BuildCronOccurrenceUpdate<TCronTicker>(
-            InternalFunctionContext ctx, DateTime updatedAt)
+            InternalFunctionContext ctx, DateTime updatedAt, DateTime? leaseUntil = null)
             where TCronTicker : CronTickerEntity, new()
         {
             var props = ctx.GetPropsToUpdate();
             var defs = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update;
             UpdateDefinition<CronTickerOccurrenceEntity<TCronTicker>> u = null;
+
+            if (ClearsAcquisitionToken(props, ctx))
+                u = Combine(u, defs.Set(x => x.LeaseUntil, (DateTime?)null));
+            else if (leaseUntil != null &&
+                     props.Contains(nameof(InternalFunctionContext.Status)) &&
+                     ctx.Status == TickerStatus.InProgress)
+                u = Combine(u, defs.Set(x => x.LeaseUntil, leaseUntil));
+
+            // ACQUISITION TOKEN (generation) — stamp on the InProgress transition, clear on
+            // any terminal write or lock release. Mirrors the EF setter helper.
+            if (StampsAcquisitionToken(props, ctx))
+                u = Combine(u, defs.Set(x => x.AcquisitionToken, ctx.AcquisitionToken));
+            else if (ClearsAcquisitionToken(props, ctx))
+                u = Combine(u, defs.Set(x => x.AcquisitionToken, (Guid?)null));
 
             if (props.Contains(nameof(InternalFunctionContext.Status)) && ctx.Status != TickerStatus.Skipped)
             {
@@ -87,6 +127,7 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 u = Combine(u, defs.Set(x => x.LockHolder, (string)null));
                 u = Combine(u, defs.Set(x => x.LockedAt, (DateTime?)null));
+                u = Combine(u, defs.Set(x => x.LeaseUntil, (DateTime?)null));
             }
 
             if (props.Contains(nameof(InternalFunctionContext.ExecutionTime)))

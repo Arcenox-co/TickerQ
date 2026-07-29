@@ -45,11 +45,7 @@ export class TickerQSdkHttpClient {
         const headers = this.buildHeaders(url, 'PUT', body);
         headers['Content-Type'] = 'application/json';
 
-        const responseBody = await this.rawRequest(url, 'PUT', headers, body, signal);
-
-        if (responseBody === null) {
-            throw new Error(`TickerQ HTTP PUT ${path} failed: no response`);
-        }
+        await this.rawRequest(url, 'PUT', headers, body, signal);
     }
 
     async deleteAsync(path: string, signal?: AbortSignal): Promise<void> {
@@ -61,9 +57,8 @@ export class TickerQSdkHttpClient {
         const headers = this.buildHeaders(url, 'GET', '');
 
         try {
-            const result = await this.rawRequest(url, 'GET', headers, undefined, signal);
-            if (result === null) return null;
-            return Buffer.from(result, 'utf-8');
+            const response = await this.rawRequest(url, 'GET', headers, undefined, signal);
+            return response.body;
         } catch (err) {
             this.logger?.error(`TickerQ HTTP GET ${path} error:`, err);
             return null;
@@ -85,9 +80,9 @@ export class TickerQSdkHttpClient {
         }
 
         try {
-            const responseBody = await this.rawRequest(url, method, headers, body || undefined, signal);
-            if (!responseBody) return null;
-            return JSON.parse(responseBody) as TResponse;
+            const response = await this.rawRequest(url, method, headers, body || undefined, signal);
+            if (response.body.length === 0) return null;
+            return JSON.parse(response.body.toString('utf-8')) as TResponse;
         } catch (err) {
             this.logger?.error(`TickerQ HTTP ${method} ${path} error:`, err);
             return null;
@@ -105,7 +100,7 @@ export class TickerQSdkHttpClient {
         headers: Record<string, string>,
         body?: string,
         signal?: AbortSignal,
-    ): Promise<string | null> {
+    ): Promise<{ statusCode: number; body: Buffer }> {
         return new Promise((resolve, reject) => {
             const isHttps = url.protocol === 'https:';
             const transport = isHttps ? https : http;
@@ -128,16 +123,16 @@ export class TickerQSdkHttpClient {
                 const chunks: Buffer[] = [];
                 res.on('data', (chunk: Buffer) => chunks.push(chunk));
                 res.on('end', () => {
-                    const responseBody = Buffer.concat(chunks).toString('utf-8');
+                    const responseBody = Buffer.concat(chunks);
 
-                    if (!res.statusCode || res.statusCode >= 400) {
-                        const errMsg = `TickerQ HTTP ${method} ${url.pathname} failed: ${res.statusCode} ${responseBody}`;
+                    if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+                        const errMsg = `TickerQ HTTP ${method} ${url.pathname} failed: ${res.statusCode} ${responseBody.toString('utf-8')}`;
                         this.logger?.error(errMsg);
                         reject(new Error(errMsg));
                         return;
                     }
 
-                    resolve(responseBody || null);
+                    resolve({ statusCode: res.statusCode, body: responseBody });
                 });
             });
 
@@ -163,10 +158,17 @@ export class TickerQSdkHttpClient {
     }
 
     private buildUrl(path: string): URL {
-        const baseUri = this.isHubPath(path)
-            ? this.options.hubUri
-            : (this.options.apiUri ?? this.options.hubUri);
-        return new URL(path, baseUri);
+        if (this.isHubPath(path)) {
+            return new URL(path, this.options.hubUri);
+        }
+
+        const schedulerBase = new URL(this.options.apiUri ?? this.options.hubUri);
+        schedulerBase.pathname = `${schedulerBase.pathname.replace(/\/+$/, '')}/`;
+        schedulerBase.search = '';
+        schedulerBase.hash = '';
+        // Scheduler paths are relative to the explicitly configured compatibility prefix.
+        // A leading slash would otherwise discard `/tickerq/node/` under WHATWG URL rules.
+        return new URL(path.replace(/^\/+/, ''), schedulerBase);
     }
 
     private isHubPath(path: string): boolean {

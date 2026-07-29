@@ -18,5 +18,11 @@ namespace TickerQ.Utilities.DashboardDtos
         public bool IsEnabled { get; set; }
         /// <summary>True when the SDK node owning this cron's function is currently offline.</summary>
         public bool IsSystemPaused { get; set; }
+        /// <summary>Per-retry delay schedule (seconds). Surfaced so edit forms can prefill correctly.</summary>
+        public int[] RetryIntervalsSeconds { get; set; }
+        /// <summary>What the stale-job watchdog does with occurrences whose executing node dies mid-run.</summary>
+        public StaleAction OnStale { get; set; }
+        /// <summary>Max execution time per attempt (seconds); null inherits the global default.</summary>
+        public int? TimeoutSeconds { get; set; }
     }
 }

@@ -1,3 +1,4 @@
+using MongoDB.Bson;
 using MongoDB.Driver;
 using TickerQ.Utilities.Entities;
 
@@ -11,5 +12,7 @@ namespace TickerQ.MongoDB.Infrastructure
         IMongoCollection<TTimeTicker> TimeTickers { get; }
         IMongoCollection<TCronTicker> CronTickers { get; }
         IMongoCollection<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrences { get; }
+        IMongoCollection<BsonDocument> TickerResults { get; }
+        IMongoCollection<BsonDocument> NodeFinalizations { get; }
     }
 }

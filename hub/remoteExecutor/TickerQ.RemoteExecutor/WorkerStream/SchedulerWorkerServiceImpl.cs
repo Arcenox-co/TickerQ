@@ -46,6 +46,8 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
     private readonly TickerQRemoteExecutionOptions _options;
     private readonly WorkerStreamRegistry _registry;
     private readonly IInternalTickerManager _internalTickerManager;
+    private readonly ITimeTickerManager<TTimeTicker> _timeTickerManager;
+    private readonly ICronTickerManager<TCronTicker> _cronTickerManager;
     private readonly ITickerPersistenceProvider<TTimeTicker, TCronTicker> _provider;
     private readonly TickerLogRingBuffer _logBuffer;
     // Optional: only set when tunnel is enabled (NoOp sender otherwise).
@@ -56,6 +58,8 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
         TickerQRemoteExecutionOptions options,
         WorkerStreamRegistry registry,
         IInternalTickerManager internalTickerManager,
+        ITimeTickerManager<TTimeTicker> timeTickerManager,
+        ICronTickerManager<TCronTicker> cronTickerManager,
         ITickerPersistenceProvider<TTimeTicker, TCronTicker> provider,
         TickerLogRingBuffer logBuffer,
         ITickerQNotificationHubSender notificationSender,
@@ -64,6 +68,8 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
         _options = options;
         _registry = registry;
         _internalTickerManager = internalTickerManager;
+        _timeTickerManager = timeTickerManager;
+        _cronTickerManager = cronTickerManager;
         _provider = provider;
         _logBuffer = logBuffer;
         _tunnelSender = notificationSender as TunnelTickerQNotificationHubSender;
@@ -235,43 +241,43 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
     private async Task HandleAddTimeTickers(SchedulerWorkerConnection conn, AddTimeTickersRequest req, System.Threading.CancellationToken ct)
     {
         var entities = JsonSerializer.Deserialize<TTimeTicker[]>(req.EntitiesJson.ToByteArray(), Json) ?? Array.Empty<TTimeTicker>();
-        var affected = await _provider.AddTimeTickers(entities, ct).ConfigureAwait(false);
-        await SendOperationResult(conn, req.RequestId, affected, ct).ConfigureAwait(false);
+        var result = await _timeTickerManager.AddBatchAsync(entities.ToList(), ct).ConfigureAwait(false);
+        await SendManagerResult(conn, req.RequestId, result, entities.Length, ct).ConfigureAwait(false);
     }
 
     private async Task HandleUpdateTimeTickers(SchedulerWorkerConnection conn, UpdateTimeTickersRequest req, System.Threading.CancellationToken ct)
     {
         var entities = JsonSerializer.Deserialize<TTimeTicker[]>(req.EntitiesJson.ToByteArray(), Json) ?? Array.Empty<TTimeTicker>();
-        var affected = await _provider.UpdateTimeTickers(entities, ct).ConfigureAwait(false);
-        await SendOperationResult(conn, req.RequestId, affected, ct).ConfigureAwait(false);
+        var result = await _timeTickerManager.UpdateBatchAsync(entities.ToList(), ct).ConfigureAwait(false);
+        await SendManagerResult(conn, req.RequestId, result, entities.Length, ct).ConfigureAwait(false);
     }
 
     private async Task HandleRemoveTimeTickers(SchedulerWorkerConnection conn, RemoveTimeTickersRequest req, System.Threading.CancellationToken ct)
     {
-        var ids = req.Ids.Select(Guid.Parse).ToArray();
-        var affected = await _provider.RemoveTimeTickers(ids, ct).ConfigureAwait(false);
-        await SendOperationResult(conn, req.RequestId, affected, ct).ConfigureAwait(false);
+        var ids = req.Ids.Select(Guid.Parse).ToList();
+        var result = await _timeTickerManager.DeleteBatchAsync(ids, ct).ConfigureAwait(false);
+        await SendManagerResult(conn, req.RequestId, result, ids.Count, ct).ConfigureAwait(false);
     }
 
     private async Task HandleInsertCronTickers(SchedulerWorkerConnection conn, InsertCronTickersRequest req, System.Threading.CancellationToken ct)
     {
         var entities = JsonSerializer.Deserialize<TCronTicker[]>(req.EntitiesJson.ToByteArray(), Json) ?? Array.Empty<TCronTicker>();
-        var affected = await _provider.InsertCronTickers(entities, ct).ConfigureAwait(false);
-        await SendOperationResult(conn, req.RequestId, affected, ct).ConfigureAwait(false);
+        var result = await _cronTickerManager.AddBatchAsync(entities.ToList(), ct).ConfigureAwait(false);
+        await SendManagerResult(conn, req.RequestId, result, entities.Length, ct).ConfigureAwait(false);
     }
 
     private async Task HandleUpdateCronTickers(SchedulerWorkerConnection conn, UpdateCronTickersRequest req, System.Threading.CancellationToken ct)
     {
         var entities = JsonSerializer.Deserialize<TCronTicker[]>(req.EntitiesJson.ToByteArray(), Json) ?? Array.Empty<TCronTicker>();
-        var affected = await _provider.UpdateCronTickers(entities, ct).ConfigureAwait(false);
-        await SendOperationResult(conn, req.RequestId, affected, ct).ConfigureAwait(false);
+        var result = await _cronTickerManager.UpdateBatchAsync(entities.ToList(), ct).ConfigureAwait(false);
+        await SendManagerResult(conn, req.RequestId, result, entities.Length, ct).ConfigureAwait(false);
     }
 
     private async Task HandleRemoveCronTickers(SchedulerWorkerConnection conn, RemoveCronTickersRequest req, System.Threading.CancellationToken ct)
     {
-        var ids = req.Ids.Select(Guid.Parse).ToArray();
-        var affected = await _provider.RemoveCronTickers(ids, ct).ConfigureAwait(false);
-        await SendOperationResult(conn, req.RequestId, affected, ct).ConfigureAwait(false);
+        var ids = req.Ids.Select(Guid.Parse).ToList();
+        var result = await _cronTickerManager.DeleteBatchAsync(ids, ct).ConfigureAwait(false);
+        await SendManagerResult(conn, req.RequestId, result, ids.Count, ct).ConfigureAwait(false);
     }
 
     private async Task HandleUpdateTimeTicker(SchedulerWorkerConnection conn, UpdateTimeTickerRequest req, System.Threading.CancellationToken ct)
@@ -381,6 +387,17 @@ internal sealed class SchedulerWorkerServiceImpl<TTimeTicker, TCronTicker>
     }
 
     // ── Helpers ──
+
+    private static Task SendManagerResult<TResult>(
+        SchedulerWorkerConnection conn,
+        string requestId,
+        TickerResult<TResult> result,
+        int affected,
+        System.Threading.CancellationToken ct)
+        where TResult : class
+        => result.IsSucceeded
+            ? SendOperationResult(conn, requestId, affected, ct)
+            : SendErrorResult(conn, requestId, result.Exception?.Message ?? "Ticker operation failed", ct);
 
     private static Task SendOperationResult(SchedulerWorkerConnection conn, string requestId, int affected, System.Threading.CancellationToken ct)
         => conn.WriteAsync(new SchedulerCommand

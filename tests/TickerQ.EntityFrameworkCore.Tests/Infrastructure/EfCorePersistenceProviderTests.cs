@@ -32,6 +32,9 @@ public class TestTickerQDbContext : DbContext
         modelBuilder.ApplyConfiguration(new TimeTickerConfigurations<TimeTickerEntity>("ticker"));
         modelBuilder.ApplyConfiguration(new CronTickerConfigurations<CronTickerEntity>("ticker"));
         modelBuilder.ApplyConfiguration(new CronTickerOccurrenceConfigurations<CronTickerEntity>("ticker"));
+        modelBuilder.ApplyConfiguration(new TimeTickerResultConfigurations<TimeTickerEntity>("ticker"));
+        modelBuilder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<CronTickerEntity>("ticker"));
+        modelBuilder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations("ticker"));
         base.OnModelCreating(modelBuilder);
     }
 }
@@ -62,7 +65,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     private TestableProvider _provider;
     private ITickerClock _clock;
     private ITickerQRedisContext _redisContext;
-    private const string NodeId = "test-node-1";
+    private const string LogicalNodeId = "test-node-1";
+    private string NodeId;
     private DateTime _fixedNow;
 
     public async Task InitializeAsync()
@@ -96,7 +100,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         _seedContext = new TestTickerQDbContext(_options);
         await _seedContext.Database.EnsureCreatedAsync();
 
-        var schedulerOptions = new SchedulerOptionsBuilder { NodeIdentifier = NodeId };
+        var schedulerOptions = new SchedulerOptionsBuilder { NodeIdentifier = LogicalNodeId };
+        NodeId = schedulerOptions.ExecutionOwnerId;
 
         var services = new ServiceCollection();
         services.AddSingleton<IDbContextFactory<TestTickerQDbContext>>(
@@ -111,6 +116,45 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         await _seedContext.DisposeAsync();
         await _connection.DisposeAsync();
     }
+
+    [Fact]
+    public void SchedulerOptions_SameLogicalNode_UsesDistinctExecutionOwners()
+    {
+        var first = new SchedulerOptionsBuilder { NodeIdentifier = LogicalNodeId };
+        var second = new SchedulerOptionsBuilder { NodeIdentifier = LogicalNodeId };
+
+        Assert.Equal(first.NodeIdentifier, second.NodeIdentifier);
+        Assert.NotEqual(first.ExecutionOwnerId, second.ExecutionOwnerId);
+        Assert.StartsWith($"{LogicalNodeId}:{Environment.ProcessId}:", first.ExecutionOwnerId);
+    }
+
+    [Fact]
+    public async Task SameLogicalNode_SecondProviderCannotReleaseLiveSiblingOwnership()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Idle);
+        await SeedTimeTickers(ticker);
+        await _provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None);
+
+        var secondOptions = new SchedulerOptionsBuilder { NodeIdentifier = LogicalNodeId };
+        Assert.NotEqual(NodeId, secondOptions.ExecutionOwnerId);
+        var services = new ServiceCollection();
+        services.AddSingleton<IDbContextFactory<TestTickerQDbContext>>(
+            new PooledDbContextFactory<TestTickerQDbContext>(_options));
+        using var secondServiceProvider = services.BuildServiceProvider();
+        var secondProvider = new TestableProvider(secondServiceProvider, _clock, secondOptions, _redisContext);
+
+        await secondProvider.ReleaseDeadNodeTimeTickerResources(secondOptions.ExecutionOwnerId, CancellationToken.None);
+
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == ticker.Id);
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+        Assert.Equal(NodeId, persisted.LockHolder);
+    }
+
+    [Fact]
+    public void EfProvider_SupportsLeaseBasedRecovery()
+        => Assert.True(_provider.SupportsLeaseBasedRecovery);
 
     private TestTickerQDbContext CreateVerifyContext() => new(_options);
 
@@ -213,6 +257,118 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     }
 
     #endregion
+
+    [Fact]
+    public async Task AddTimeTickers_FlatThreeLevelChain_PersistsTrueRootIdentity()
+    {
+        var root = CreateTimeTicker();
+        var child = CreateTimeTicker();
+        child.ParentId = root.Id;
+        var grandchild = CreateTimeTicker();
+        grandchild.ParentId = child.Id;
+
+        Assert.Equal(3, await _provider.AddTimeTickers([grandchild, root, child], CancellationToken.None));
+
+        await using var verify = CreateVerifyContext();
+        var persisted = await verify.Set<TimeTickerEntity>().AsNoTracking().ToDictionaryAsync(x => x.Id);
+        Assert.Equal(root.Id, persisted[root.Id].ChainRootId);
+        Assert.Equal(root.Id, persisted[child.Id].ChainRootId);
+        Assert.Equal(root.Id, persisted[grandchild.Id].ChainRootId);
+    }
+
+    [Fact]
+    public async Task AddTimeTickers_FlatBatchWithOrphan_RejectsWithoutPersistence()
+    {
+        var orphan = CreateTimeTicker();
+        orphan.ParentId = Guid.NewGuid();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _provider.AddTimeTickers([orphan], CancellationToken.None));
+
+        await using var verify = CreateVerifyContext();
+        Assert.Empty(await verify.Set<TimeTickerEntity>().AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task AddTimeTickers_FlatBatchWithParentCycle_RejectsWithoutPersistence()
+    {
+        var first = CreateTimeTicker();
+        var second = CreateTimeTicker();
+        first.ParentId = second.Id;
+        second.ParentId = first.Id;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _provider.AddTimeTickers([first, second], CancellationToken.None));
+
+        await using var verify = CreateVerifyContext();
+        Assert.Empty(await verify.Set<TimeTickerEntity>().AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task ReplaceTimeTickerChainAsync_WhenReplacementInsertFails_OriginalAggregateRemainsUnchanged()
+    {
+        var root = CreateTimeTicker(function: "OriginalRoot");
+        root.Description = "root-description";
+        root.Request = System.Text.Encoding.UTF8.GetBytes("{\"message\":\"héllo\"}");
+        root.Retries = 3;
+        root.RetryIntervals = [5, 13, 21];
+        root.OnStale = StaleAction.Restart;
+        root.TimeoutSeconds = 47;
+        root.RunCondition = RunCondition.OnSuccess;
+
+        var child = CreateTimeTicker(function: "OriginalChild");
+        child.ParentId = root.Id;
+        child.Description = "child-description";
+        child.Request = System.Text.Encoding.UTF8.GetBytes("{\"child\":true}");
+        child.Retries = 2;
+        child.RetryIntervals = [8, 34];
+        child.OnStale = StaleAction.Cancel;
+        child.TimeoutSeconds = 59;
+        child.RunCondition = RunCondition.OnFailure;
+        root.Children = [child];
+
+        // Reusing this unrelated row's primary key forces the replacement insert to fail
+        // before the old aggregate is removed.
+        var collision = CreateTimeTicker(function: "UnrelatedCollision");
+        await SeedTimeTickers(root, collision);
+
+        var replacement = CreateTimeTicker(id: collision.Id, function: "InvalidReplacement");
+        replacement.Children = [CreateTimeTicker(function: "ReplacementChild")];
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            _provider.ReplaceTimeTickerChainAsync(root.Id, replacement, CancellationToken.None));
+
+        await using var verify = CreateVerifyContext();
+        var persisted = await verify.Set<TimeTickerEntity>()
+            .AsNoTracking()
+            .Where(x => x.Id == root.Id || x.Id == child.Id || x.Id == collision.Id)
+            .OrderBy(x => x.Function)
+            .ToListAsync();
+
+        Assert.Equal(3, persisted.Count);
+        var persistedRoot = Assert.Single(persisted, x => x.Id == root.Id);
+        var persistedChild = Assert.Single(persisted, x => x.Id == child.Id);
+        Assert.Single(persisted, x => x.Id == collision.Id);
+
+        Assert.Equal("OriginalRoot", persistedRoot.Function);
+        Assert.Equal("root-description", persistedRoot.Description);
+        Assert.Equal(root.Request, persistedRoot.Request);
+        Assert.Equal(3, persistedRoot.Retries);
+        Assert.Equal([5, 13, 21], persistedRoot.RetryIntervals);
+        Assert.Equal(StaleAction.Restart, persistedRoot.OnStale);
+        Assert.Equal(47, persistedRoot.TimeoutSeconds);
+        Assert.Equal(RunCondition.OnSuccess, persistedRoot.RunCondition);
+
+        Assert.Equal(root.Id, persistedChild.ParentId);
+        Assert.Equal("OriginalChild", persistedChild.Function);
+        Assert.Equal("child-description", persistedChild.Description);
+        Assert.Equal(child.Request, persistedChild.Request);
+        Assert.Equal(2, persistedChild.Retries);
+        Assert.Equal([8, 34], persistedChild.RetryIntervals);
+        Assert.Equal(StaleAction.Cancel, persistedChild.OnStale);
+        Assert.Equal(59, persistedChild.TimeoutSeconds);
+        Assert.Equal(RunCondition.OnFailure, persistedChild.RunCondition);
+    }
 
     // =========================================================================
     // 1. AddTimeTickers
@@ -372,12 +528,14 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
 
         Assert.Single(results);
         Assert.Equal(ticker.Id, results[0].Id);
+        Assert.NotNull(results[0].AcquisitionToken);
 
         // Verify DB: status should be InProgress (fallback sets InProgress)
         using var ctx = CreateVerifyContext();
         var dbTicker = await ctx.Set<TimeTickerEntity>().AsNoTracking().FirstAsync(t => t.Id == ticker.Id);
         Assert.Equal(TickerStatus.InProgress, dbTicker.Status);
         Assert.Equal(NodeId, dbTicker.LockHolder);
+        Assert.Equal(results[0].AcquisitionToken, dbTicker.AcquisitionToken);
     }
 
     [Fact]
@@ -419,6 +577,159 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_UsesUniqueTokenPerInvocation()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Idle);
+        await SeedTimeTickers(ticker);
+
+        await _provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None);
+        Guid? firstToken;
+        using (var ctx = CreateVerifyContext())
+            firstToken = await ctx.Set<TimeTickerEntity>()
+                .Where(x => x.Id == ticker.Id)
+                .Select(x => x.AcquisitionToken)
+                .SingleAsync();
+
+        await _provider.ReleaseDeadNodeTimeTickerResources(NodeId, CancellationToken.None);
+        await _provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None);
+        Guid? secondToken;
+        using (var ctx = CreateVerifyContext())
+            secondToken = await ctx.Set<TimeTickerEntity>()
+                .Where(x => x.Id == ticker.Id)
+                .Select(x => x.AcquisitionToken)
+                .SingleAsync();
+
+        Assert.NotNull(firstToken);
+        Assert.NotNull(secondToken);
+        Assert.NotEqual(firstToken, secondToken);
+    }
+
+    [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_HydratesBeyondGrandchildren()
+    {
+        var root = CreateTimeTicker(status: TickerStatus.Idle);
+        var child = CreateTimeTicker(executionTime: null, status: TickerStatus.Idle);
+        var grandchild = CreateTimeTicker(executionTime: null, status: TickerStatus.Idle);
+        var greatGrandchild = CreateTimeTicker(executionTime: null, status: TickerStatus.Idle);
+        greatGrandchild.TimeoutSeconds = 37;
+        child.ParentId = root.Id;
+        grandchild.ParentId = child.Id;
+        greatGrandchild.ParentId = grandchild.Id;
+        root.Children = [child];
+        child.Children = [grandchild];
+        grandchild.Children = [greatGrandchild];
+        await SeedTimeTickers(root);
+
+        var acquired = await _provider.AcquireImmediateTimeTickersAsync([root.Id], CancellationToken.None);
+
+        var acquiredRoot = Assert.Single(acquired);
+        var acquiredChild = Assert.Single(acquiredRoot.Children);
+        var acquiredGrandchild = Assert.Single(acquiredChild.Children);
+        var acquiredGreatGrandchild = Assert.Single(acquiredGrandchild.Children);
+        Assert.Equal(root.Id, acquiredChild.ParentId);
+        Assert.Equal(child.Id, acquiredGrandchild.ParentId);
+        Assert.Equal(greatGrandchild.Id, acquiredGreatGrandchild.Id);
+        Assert.Equal(grandchild.Id, acquiredGreatGrandchild.ParentId);
+        Assert.Equal(37, acquiredGreatGrandchild.TimeoutSeconds);
+    }
+
+    // -------------------------------------------------------------------------
+    // Contract identity must survive the BFS extension below grandchild depth for
+    // every deep-chain acquisition path (normal / immediate / timed-out). The fast
+    // projection loads root+child+grandchild; the BFS hydrates great-grandchild and
+    // deeper and must carry RequestContractVersion/Fingerprint or those descendants
+    // execute under legacy compatibility, bypassing drift checks.
+    // -------------------------------------------------------------------------
+
+    private (TimeTickerEntity Root, Guid GreatGrandchildId, Guid GreatGreatGrandchildId) BuildIdentityChain(
+        TickerStatus status, DateTime? rootExecutionTime)
+    {
+        var root = CreateTimeTicker(executionTime: rootExecutionTime, status: status);
+        var child = CreateTimeTicker(executionTime: null, status: status);
+        var grandchild = CreateTimeTicker(executionTime: null, status: status);
+        var greatGrandchild = CreateTimeTicker(executionTime: null, status: status);
+        var greatGreatGrandchild = CreateTimeTicker(executionTime: null, status: status);
+
+        greatGrandchild.RequestContractVersion = 42;
+        greatGrandchild.RequestContractFingerprint = "sha256:great-grandchild";
+        greatGreatGrandchild.RequestContractVersion = 43;
+        greatGreatGrandchild.RequestContractFingerprint = "sha256:great-great-grandchild";
+
+        child.ParentId = root.Id;
+        grandchild.ParentId = child.Id;
+        greatGrandchild.ParentId = grandchild.Id;
+        greatGreatGrandchild.ParentId = greatGrandchild.Id;
+        root.Children = [child];
+        child.Children = [grandchild];
+        grandchild.Children = [greatGrandchild];
+        greatGrandchild.Children = [greatGreatGrandchild];
+
+        return (root, greatGrandchild.Id, greatGreatGrandchild.Id);
+    }
+
+    private static TimeTickerEntity FindById(TimeTickerEntity node, Guid id)
+    {
+        if (node.Id == id) return node;
+        if (node.Children == null) return null;
+        foreach (var child in node.Children)
+        {
+            var found = FindById(child, id);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static void AssertDeepContractIdentity(TimeTickerEntity acquiredRoot, Guid ggcId, Guid gggcId)
+    {
+        var greatGrandchild = FindById(acquiredRoot, ggcId);
+        Assert.NotNull(greatGrandchild);
+        Assert.Equal(42, greatGrandchild.RequestContractVersion);
+        Assert.Equal("sha256:great-grandchild", greatGrandchild.RequestContractFingerprint);
+
+        var greatGreatGrandchild = FindById(acquiredRoot, gggcId);
+        Assert.NotNull(greatGreatGrandchild);
+        Assert.Equal(43, greatGreatGrandchild.RequestContractVersion);
+        Assert.Equal("sha256:great-great-grandchild", greatGreatGrandchild.RequestContractFingerprint);
+    }
+
+    [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_PreservesContractIdentityBeyondGrandchild()
+    {
+        var (root, ggcId, gggcId) = BuildIdentityChain(TickerStatus.Idle, rootExecutionTime: null);
+        await SeedTimeTickers(root);
+
+        var acquired = await _provider.AcquireImmediateTimeTickersAsync([root.Id], CancellationToken.None);
+
+        AssertDeepContractIdentity(Assert.Single(acquired), ggcId, gggcId);
+    }
+
+    [Fact]
+    public async Task GetEarliestTimeTickers_PreservesContractIdentityBeyondGrandchild()
+    {
+        // Root within the 1-second normal-scheduling window.
+        var (root, ggcId, gggcId) = BuildIdentityChain(TickerStatus.Idle, rootExecutionTime: _fixedNow);
+        await SeedTimeTickers(root);
+
+        var earliest = await _provider.GetEarliestTimeTickers(CancellationToken.None);
+
+        var acquiredRoot = Assert.Single(earliest.Where(t => t.Id == root.Id));
+        AssertDeepContractIdentity(acquiredRoot, ggcId, gggcId);
+    }
+
+    [Fact]
+    public async Task QueueTimedOutTimeTickers_PreservesContractIdentityBeyondGrandchild()
+    {
+        // Root older than the 1-second window, so the timed-out fallback path hydrates it.
+        var (root, ggcId, gggcId) = BuildIdentityChain(TickerStatus.Idle, rootExecutionTime: _fixedNow.AddSeconds(-5));
+        await SeedTimeTickers(root);
+
+        var results = await ToListAsync(_provider.QueueTimedOutTimeTickers(CancellationToken.None));
+
+        var acquiredRoot = Assert.Single(results.Where(t => t.Id == root.Id));
+        AssertDeepContractIdentity(acquiredRoot, ggcId, gggcId);
+    }
+
+    [Fact]
     public async Task AcquireImmediateTimeTickersAsync_EmptyIds_ReturnsEmpty()
     {
         var results = await _provider.AcquireImmediateTimeTickersAsync(Array.Empty<Guid>(), CancellationToken.None);
@@ -455,6 +766,80 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Single(results);
     }
 
+    [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_SkipsRowAlreadyInProgressUnderSameNode()
+    {
+        // One row this invocation can legitimately acquire...
+        var idle = CreateTimeTicker(
+            status: TickerStatus.Idle,
+            lockHolder: null,
+            lockedAt: null);
+        // ...and one this same node already holds from an earlier acquisition.
+        // WhereCanAcquire cannot transition it, so this call did NOT acquire it —
+        // the read-back must not resurface it (that would re-dispatch a running job).
+        var alreadyRunning = CreateTimeTicker(
+            status: TickerStatus.InProgress,
+            lockHolder: NodeId,
+            lockedAt: _fixedNow.AddMinutes(-5),
+            updatedAt: _fixedNow.AddMinutes(-5));
+        await SeedTimeTickers(idle, alreadyRunning);
+
+        var results = await _provider.AcquireImmediateTimeTickersAsync(
+            new[] { idle.Id, alreadyRunning.Id }, CancellationToken.None);
+
+        // Only the Idle row was acquired by this invocation.
+        Assert.Single(results);
+        Assert.Equal(idle.Id, results[0].Id);
+
+        using var ctx = CreateVerifyContext();
+        var idleRow = await ctx.Set<TimeTickerEntity>().AsNoTracking().FirstAsync(t => t.Id == idle.Id);
+        Assert.Equal(TickerStatus.InProgress, idleRow.Status);
+        Assert.Equal(_fixedNow, idleRow.LockedAt);
+
+        // The pre-existing InProgress row was left untouched by this invocation.
+        var runningRow = await ctx.Set<TimeTickerEntity>().AsNoTracking().FirstAsync(t => t.Id == alreadyRunning.Id);
+        Assert.Equal(TickerStatus.InProgress, runningRow.Status);
+        Assert.Equal(_fixedNow.AddMinutes(-5), runningRow.LockedAt);
+    }
+
+    [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_RollsBackEarlierRows_WhenLaterUpdateFails()
+    {
+        var first = CreateTimeTicker(status: TickerStatus.Idle);
+        var second = CreateTimeTicker(status: TickerStatus.Idle);
+        await SeedTimeTickers(first, second);
+
+        await _seedContext.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE AcquisitionUpdateCount (Value INTEGER NOT NULL);
+            INSERT INTO AcquisitionUpdateCount VALUES (0);
+            CREATE TRIGGER FailSecondAcquisition
+            BEFORE UPDATE ON TimeTickers
+            BEGIN
+                UPDATE AcquisitionUpdateCount SET Value = Value + 1;
+                SELECT CASE WHEN (SELECT Value FROM AcquisitionUpdateCount) = 2
+                    THEN RAISE(ABORT, 'forced acquisition failure') END;
+            END;
+            """);
+
+        await Assert.ThrowsAsync<SqliteException>(() =>
+            _provider.AcquireImmediateTimeTickersAsync([first.Id, second.Id], CancellationToken.None));
+
+        using var ctx = CreateVerifyContext();
+        var rows = await ctx.Set<TimeTickerEntity>()
+            .AsNoTracking()
+            .Where(x => x.Id == first.Id || x.Id == second.Id)
+            .ToArrayAsync();
+
+        Assert.Equal(2, rows.Length);
+        Assert.All(rows, row =>
+        {
+            Assert.Equal(TickerStatus.Idle, row.Status);
+            Assert.Null(row.LockHolder);
+            Assert.Null(row.LockedAt);
+            Assert.Null(row.AcquisitionToken);
+        });
+    }
+
     // =========================================================================
     // 8. ReleaseAcquiredTimeTickers
     // =========================================================================
@@ -466,6 +851,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
             status: TickerStatus.Queued,
             lockHolder: NodeId,
             lockedAt: _fixedNow);
+        ticker.LeaseUntil = _fixedNow.AddMinutes(5);
+        ticker.AcquisitionToken = Guid.NewGuid();
         await SeedTimeTickers(ticker);
 
         await _provider.ReleaseAcquiredTimeTickers(new[] { ticker.Id }, CancellationToken.None);
@@ -475,6 +862,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Equal(TickerStatus.Idle, dbTicker.Status);
         Assert.Null(dbTicker.LockHolder);
         Assert.Null(dbTicker.LockedAt);
+        Assert.Null(dbTicker.LeaseUntil);
+        Assert.Null(dbTicker.AcquisitionToken);
     }
 
     [Fact]
@@ -509,12 +898,16 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
             status: TickerStatus.Idle,
             lockHolder: null,
             lockedAt: null);
+        ticker.RequestContractVersion = 21;
+        ticker.RequestContractFingerprint = "sha256:ef-time-contract";
         await SeedTimeTickers(ticker);
 
         var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
 
         Assert.Single(results);
         Assert.Equal(ticker.Id, results[0].Id);
+        Assert.Equal(ticker.RequestContractVersion, results[0].RequestContractVersion);
+        Assert.Equal(ticker.RequestContractFingerprint, results[0].RequestContractFingerprint);
     }
 
     [Fact]
@@ -626,6 +1019,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     public async Task QueueCronTickerOccurrences_NewOccurrence_InsertsWithUpsert()
     {
         var cron = CreateCronTicker();
+        cron.RequestContractVersion = 12;
+        cron.RequestContractFingerprint = "sha256:ef-queued-contract";
         await SeedCronTickers(cron);
 
         var executionTime = _fixedNow.AddMinutes(5);
@@ -633,6 +1028,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         {
             FunctionName = cron.Function,
             Expression = cron.Expression,
+            RequestContractVersion = cron.RequestContractVersion,
+            RequestContractFingerprint = cron.RequestContractFingerprint,
             NextCronOccurrence = null // signals new insert path
         };
 
@@ -647,6 +1044,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Equal(NodeId, results[0].LockHolder);
         Assert.NotNull(results[0].CronTicker);
         Assert.Equal(cron.Function, results[0].CronTicker.Function);
+        Assert.Equal(cron.RequestContractVersion, results[0].CronTicker.RequestContractVersion);
+        Assert.Equal(cron.RequestContractFingerprint, results[0].CronTicker.RequestContractFingerprint);
 
         // Verify in DB
         using var ctx = CreateVerifyContext();
@@ -743,6 +1142,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     public async Task GetEarliestAvailableCronOccurrence_ReturnsEarliestAcquirable()
     {
         var cron = CreateCronTicker();
+        cron.RequestContractVersion = 11;
+        cron.RequestContractFingerprint = "sha256:ef-cron-contract";
         await SeedCronTickers(cron);
 
         // Within the 1-second main scheduler window: >= now.AddSeconds(-1)
@@ -762,6 +1163,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Equal(cron.Id, result.CronTickerId);
         Assert.NotNull(result.CronTicker);
         Assert.Equal(cron.Function, result.CronTicker.Function);
+        Assert.Equal(11, result.CronTicker.RequestContractVersion);
+        Assert.Equal("sha256:ef-cron-contract", result.CronTicker.RequestContractFingerprint);
     }
 
     [Fact]
@@ -803,6 +1206,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Single(results);
         Assert.Equal(occ.Id, results[0].Id);
         Assert.Equal(oldTime, results[0].ExecutionTime);
+        Assert.NotNull(results[0].AcquisitionToken);
 
         // Verify DB
         using var ctx = CreateVerifyContext();
@@ -811,6 +1215,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
             .FirstAsync(o => o.Id == occ.Id);
         Assert.Equal(TickerStatus.InProgress, dbOcc.Status);
         Assert.Equal(NodeId, dbOcc.LockHolder);
+        Assert.Equal(results[0].AcquisitionToken, dbOcc.AcquisitionToken);
     }
 
     [Fact]
@@ -942,6 +1347,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
             status: TickerStatus.Queued,
             lockHolder: NodeId,
             lockedAt: _fixedNow);
+        occ.LeaseUntil = _fixedNow.AddMinutes(5);
+        occ.AcquisitionToken = Guid.NewGuid();
         await SeedCronOccurrences(occ);
 
         await _provider.ReleaseAcquiredCronTickerOccurrences(new[] { occ.Id }, CancellationToken.None);
@@ -953,6 +1360,8 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Equal(TickerStatus.Idle, dbOcc.Status);
         Assert.Null(dbOcc.LockHolder);
         Assert.Null(dbOcc.LockedAt);
+        Assert.Null(dbOcc.LeaseUntil);
+        Assert.Null(dbOcc.AcquisitionToken);
     }
 
     [Fact]
@@ -1122,6 +1531,144 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Equal("healthy-node", dbOcc.LockHolder);
     }
 
+    [Fact]
+    public async Task RecoverStaleTickers_ReleasesOnlyAgedIdleOrQueuedOwnership()
+    {
+        var stale = CreateTimeTicker(
+            status: TickerStatus.Queued,
+            lockHolder: "test-node-1:123:predecessor",
+            lockedAt: _fixedNow.AddMinutes(-3));
+        var liveSibling = CreateTimeTicker(
+            status: TickerStatus.Queued,
+            lockHolder: "test-node-1:456:live-sibling",
+            lockedAt: _fixedNow.AddMinutes(-1));
+        var staleLegacyIdle = CreateTimeTicker(
+            status: TickerStatus.Idle,
+            lockHolder: "test-node-1:789:legacy",
+            lockedAt: _fixedNow.AddMinutes(-3));
+        await SeedTimeTickers(stale, liveSibling, staleLegacyIdle);
+
+        await _provider.RecoverStaleTickers(3, CancellationToken.None);
+
+        using var ctx = CreateVerifyContext();
+        var recovered = await ctx.Set<TimeTickerEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == stale.Id);
+        Assert.Equal(TickerStatus.Idle, recovered.Status);
+        Assert.Null(recovered.LockHolder);
+        Assert.Null(recovered.LockedAt);
+        Assert.Null(recovered.AcquisitionToken);
+
+        var recoveredLegacyIdle = await ctx.Set<TimeTickerEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == staleLegacyIdle.Id);
+        Assert.Equal(TickerStatus.Idle, recoveredLegacyIdle.Status);
+        Assert.Null(recoveredLegacyIdle.LockHolder);
+        Assert.Null(recoveredLegacyIdle.LockedAt);
+
+        var preserved = await ctx.Set<TimeTickerEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == liveSibling.Id);
+        Assert.Equal(TickerStatus.Queued, preserved.Status);
+        Assert.Equal("test-node-1:456:live-sibling", preserved.LockHolder);
+    }
+
+    [Fact]
+    public async Task TransitionQueuedTimeTicker_RejectsStaleGenerationAndReturnsOnlyExactWinner()
+    {
+        var currentToken = Guid.NewGuid();
+        var staleToken = Guid.NewGuid();
+        var ticker = CreateTimeTicker(
+            status: TickerStatus.Queued,
+            lockHolder: NodeId,
+            lockedAt: _fixedNow.AddSeconds(-10));
+        ticker.AcquisitionToken = currentToken;
+        await SeedTimeTickers(ticker);
+
+        var staleWinners = await _provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(ticker.Id, staleToken)], CancellationToken.None);
+
+        Assert.Empty(staleWinners);
+        using (var ctx = CreateVerifyContext())
+        {
+            var unchanged = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == ticker.Id);
+            Assert.Equal(TickerStatus.Queued, unchanged.Status);
+            Assert.Equal(currentToken, unchanged.AcquisitionToken);
+        }
+
+        var winners = await _provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(ticker.Id, currentToken)], CancellationToken.None);
+
+        Assert.Equal([ticker.Id], winners);
+        using var verify = CreateVerifyContext();
+        var transitioned = await verify.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == ticker.Id);
+        Assert.Equal(TickerStatus.InProgress, transitioned.Status);
+        Assert.Equal(currentToken, transitioned.AcquisitionToken);
+    }
+
+    [Theory]
+    [InlineData(TickerStatus.Failed)]
+    [InlineData(TickerStatus.Done)]
+    [InlineData(TickerStatus.DueDone)]
+    [InlineData(TickerStatus.Cancelled)]
+    [InlineData(TickerStatus.Skipped)]
+    public async Task AcquireTimeTickerOnDemand_RevivesTerminalAndResetsExecutionMetadata(TickerStatus status)
+    {
+        var ticker = CreateTimeTicker(status: status, lockHolder: "old-owner", lockedAt: _fixedNow.AddMinutes(-5));
+        ticker.RetryCount = 2;
+        ticker.ExceptionMessage = "old failure";
+        ticker.SkippedReason = "old skip";
+        ticker.ExecutedAt = _fixedNow.AddMinutes(-4);
+        ticker.ElapsedTime = 1234;
+        ticker.StaleRestartCount = 2;
+        ticker.LeaseUntil = _fixedNow.AddMinutes(-3);
+        ticker.AcquisitionToken = Guid.NewGuid();
+        await SeedTimeTickers(ticker);
+
+        var acquired = await _provider.AcquireTimeTickerOnDemandAsync(
+            ticker.Id, _fixedNow, CancellationToken.None);
+
+        Assert.NotNull(acquired);
+        Assert.NotNull(acquired.AcquisitionToken);
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == ticker.Id);
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+        Assert.Equal(NodeId, persisted.LockHolder);
+        Assert.Equal(0, persisted.RetryCount);
+        Assert.Null(persisted.ExceptionMessage);
+        Assert.Null(persisted.SkippedReason);
+        Assert.Null(persisted.ExecutedAt);
+        Assert.Equal(0, persisted.ElapsedTime);
+        Assert.Equal(0, persisted.StaleRestartCount);
+        Assert.Equal(acquired.AcquisitionToken, persisted.AcquisitionToken);
+    }
+
+    [Fact]
+    public async Task AcquireTimeTickerOnDemand_ConcurrentCalls_ExactlyOneWins()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Failed);
+        await SeedTimeTickers(ticker);
+
+        var results = await Task.WhenAll(
+            _provider.AcquireTimeTickerOnDemandAsync(ticker.Id, _fixedNow, CancellationToken.None),
+            _provider.AcquireTimeTickerOnDemandAsync(ticker.Id, _fixedNow, CancellationToken.None));
+
+        Assert.Single(results, result => result != null);
+    }
+
+    [Fact]
+    public async Task AcquireTimeTickerOnDemand_InProgress_IsRejected()
+    {
+        var ticker = CreateTimeTicker(
+            status: TickerStatus.InProgress, lockHolder: "live-owner", lockedAt: _fixedNow);
+        await SeedTimeTickers(ticker);
+
+        var result = await _provider.AcquireTimeTickerOnDemandAsync(
+            ticker.Id, _fixedNow, CancellationToken.None);
+
+        Assert.Null(result);
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == ticker.Id);
+        Assert.Equal("live-owner", persisted.LockHolder);
+    }
+
     // =========================================================================
     // Additional edge cases
     // =========================================================================
@@ -1261,6 +1808,48 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GenerationFence_RejectsStaleSameNodeRenewalAndTerminalWrite()
+    {
+        var ticker = CreateTimeTicker(status: TickerStatus.Idle);
+        await SeedTimeTickers(ticker);
+
+        var first = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None));
+        Assert.NotNull(first.AcquisitionToken);
+
+        await _provider.ReleaseDeadNodeTimeTickerResources(NodeId, CancellationToken.None);
+        using (var releasedContext = CreateVerifyContext())
+        {
+            var released = await releasedContext.Set<TimeTickerEntity>().AsNoTracking()
+                .SingleAsync(x => x.Id == ticker.Id);
+            Assert.Null(released.AcquisitionToken);
+        }
+
+        var second = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([ticker.Id], CancellationToken.None));
+        Assert.NotNull(second.AcquisitionToken);
+        Assert.NotEqual(first.AcquisitionToken, second.AcquisitionToken);
+
+        var renewedUntil = _fixedNow.AddHours(1);
+        var renewed = await _provider.RenewTimeTickerLeases(
+            [new AcquisitionLease(ticker.Id, first.AcquisitionToken)], renewedUntil, CancellationToken.None);
+        Assert.Equal(0, renewed);
+
+        var staleCompletion = new InternalFunctionContext()
+            .SetProperty(x => x.TickerId, ticker.Id)
+            .SetProperty(x => x.Type, TickerType.TimeTicker)
+            .SetProperty(x => x.AcquisitionToken, first.AcquisitionToken)
+            .SetProperty(x => x.Status, TickerStatus.Done);
+        var terminalWrites = await _provider.UpdateTimeTicker(staleCompletion, CancellationToken.None);
+        Assert.Equal(0, terminalWrites);
+
+        using var verifyContext = CreateVerifyContext();
+        var persisted = await verifyContext.Set<TimeTickerEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == ticker.Id);
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+        Assert.Equal(second.AcquisitionToken, persisted.AcquisitionToken);
+        Assert.NotEqual(renewedUntil, persisted.LeaseUntil);
+    }
+
+    [Fact]
     public async Task AcquireImmediateCronOccurrencesAsync_MultipleMixed_AcquiresOnlyAcquirable()
     {
         var cron = CreateCronTicker();
@@ -1285,5 +1874,217 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
 
         Assert.Single(results);
         Assert.Equal(acquirable.Id, results[0].Id);
+    }
+
+    // =========================================================================
+    // Retry-count-only updates must not touch Status / SkippedReason
+    // =========================================================================
+
+    [Fact]
+    public async Task UpdateTimeTicker_RetryCountOnly_LeavesStatusAndSkippedReasonUntouched()
+    {
+        // A live, in-progress row that already carries a skip reason from an earlier attempt.
+        var ticker = CreateTimeTicker(
+            status: TickerStatus.InProgress, lockHolder: NodeId, lockedAt: _fixedNow);
+        ticker.SkippedReason = "prior-skip-reason";
+        ticker.RetryCount = 1;
+        await SeedTimeTickers(ticker);
+
+        // Retry-count-only context: Status is deliberately absent from the update set.
+        var retryOnly = new InternalFunctionContext { TickerId = ticker.Id }
+            .SetProperty(x => x.RetryCount, 2);
+        Assert.DoesNotContain(nameof(InternalFunctionContext.Status), retryOnly.GetPropsToUpdate());
+
+        var affected = await _provider.UpdateTimeTicker(retryOnly, CancellationToken.None);
+        Assert.Equal(1, affected);
+
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == ticker.Id);
+        Assert.Equal(2, persisted.RetryCount);
+        // Status absent from the update ⇒ status and skip reason must be untouched.
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+        Assert.Equal("prior-skip-reason", persisted.SkippedReason);
+    }
+
+    [Fact]
+    public async Task UpdateCronTickerOccurrence_RetryCountOnly_LeavesStatusAndSkippedReasonUntouched()
+    {
+        var cron = CreateCronTicker();
+        await SeedCronTickers(cron);
+        var occ = CreateCronOccurrence(
+            cron.Id, status: TickerStatus.InProgress, lockHolder: NodeId, lockedAt: _fixedNow);
+        occ.SkippedReason = "prior-skip-reason";
+        occ.RetryCount = 1;
+        await SeedCronOccurrences(occ);
+
+        var retryOnly = new InternalFunctionContext { TickerId = occ.Id }
+            .SetProperty(x => x.RetryCount, 2);
+        Assert.DoesNotContain(nameof(InternalFunctionContext.Status), retryOnly.GetPropsToUpdate());
+
+        await _provider.UpdateCronTickerOccurrence(retryOnly, CancellationToken.None);
+
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<CronTickerOccurrenceEntity<CronTickerEntity>>()
+            .AsNoTracking().SingleAsync(x => x.Id == occ.Id);
+        Assert.Equal(2, persisted.RetryCount);
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+        Assert.Equal("prior-skip-reason", persisted.SkippedReason);
+    }
+
+    [Fact]
+    public async Task UpdateTimeTicker_SkippedStatus_StampsSkippedReason()
+    {
+        // Guards the other side of the contract: SkippedReason IS written when the update
+        // carries a Skipped status transition.
+        var token = Guid.NewGuid();
+        var ticker = CreateTimeTicker(
+            status: TickerStatus.InProgress, lockHolder: NodeId, lockedAt: _fixedNow);
+        ticker.AcquisitionToken = token;
+        await SeedTimeTickers(ticker);
+
+        var skip = new InternalFunctionContext { TickerId = ticker.Id, AcquisitionToken = token }
+            .SetProperty(x => x.Status, TickerStatus.Skipped)
+            .SetProperty(x => x.ExceptionDetails, "cron overlap skip");
+
+        var affected = await _provider.UpdateTimeTicker(skip, CancellationToken.None);
+        Assert.Equal(1, affected);
+
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == ticker.Id);
+        Assert.Equal(TickerStatus.Skipped, persisted.Status);
+        Assert.Equal("cron overlap skip", persisted.SkippedReason);
+    }
+
+    [Fact]
+    public async Task UpdateTimeTicker_ChildInProgress_DoesNotCreateStandaloneLease()
+    {
+        var parent = CreateTimeTicker();
+        var child = CreateTimeTicker(status: TickerStatus.Idle);
+        child.ParentId = parent.Id;
+        var generation = Guid.NewGuid();
+        parent.ChainRootId = parent.Id;
+        parent.ChainGeneration = generation;
+        child.ChainRootId = parent.Id;
+        child.ChainGeneration = generation;
+        await SeedTimeTickers(parent, child);
+
+        var update = new InternalFunctionContext
+        {
+            TickerId = child.Id,
+            ParentId = child.ParentId,
+            ChainRootId = parent.Id,
+            ChainGeneration = generation,
+            Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.InProgress);
+
+        Assert.Equal(1, await _provider.UpdateTimeTicker(update, CancellationToken.None));
+
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id);
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+        Assert.Null(persisted.LeaseUntil);
+        Assert.Null(persisted.AcquisitionToken);
+        Assert.Null(persisted.LockHolder);
+    }
+
+    [Fact]
+    public async Task UpdateTimeTicker_ChildTerminalWrite_ClearsLegacyLease()
+    {
+        var parent = CreateTimeTicker();
+        var child = CreateTimeTicker(
+            status: TickerStatus.InProgress,
+            lockHolder: null,
+            lockedAt: null);
+        child.ParentId = parent.Id;
+        child.LeaseUntil = _fixedNow.AddMinutes(-1);
+        var generation = Guid.NewGuid();
+        parent.ChainRootId = parent.Id;
+        parent.ChainGeneration = generation;
+        child.ChainRootId = parent.Id;
+        child.ChainGeneration = generation;
+        await SeedTimeTickers(parent, child);
+
+        var update = new InternalFunctionContext
+        {
+            TickerId = child.Id,
+            ParentId = child.ParentId,
+            ChainRootId = parent.Id,
+            ChainGeneration = generation,
+            Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.Done);
+
+        Assert.Equal(1, await _provider.UpdateTimeTicker(update, CancellationToken.None));
+
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id);
+        Assert.Equal(TickerStatus.Done, persisted.Status);
+        Assert.Null(persisted.LeaseUntil);
+    }
+
+    [Fact]
+    public async Task StaleChildGeneration_CannotOverwriteRerunStatusOrResult()
+    {
+        var child = CreateTimeTicker(status: TickerStatus.Idle);
+        child.ExecutionTime = null;
+        var root = CreateTimeTicker(status: TickerStatus.Idle);
+        root.Children.Add(child);
+        Assert.Equal(2, await _provider.AddTimeTickers([root], CancellationToken.None));
+
+        var runA = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [root.Id], CancellationToken.None));
+        var generationA = runA.ChainGeneration!.Value;
+        var rootDone = new InternalFunctionContext
+        {
+            TickerId = root.Id, ChainRootId = root.Id, ChainGeneration = generationA,
+            AcquisitionToken = runA.AcquisitionToken, Type = TickerType.TimeTicker
+        }.SetProperty(x => x.Status, TickerStatus.Done)
+         .SetProperty(x => x.ReleaseLock, true);
+        Assert.Equal(1, await _provider.UpdateTimeTicker(rootDone, CancellationToken.None));
+
+        var runB = await _provider.AcquireTimeTickerOnDemandAsync(
+            root.Id, _fixedNow, CancellationToken.None);
+        Assert.NotNull(runB);
+        var generationB = runB!.ChainGeneration!.Value;
+        Assert.NotEqual(generationA, generationB);
+
+        InternalFunctionContext Success(Guid generation, byte value) =>
+            new InternalFunctionContext
+            {
+                TickerId = child.Id, ParentId = root.Id, ChainRootId = root.Id,
+                ChainGeneration = generation, Type = TickerType.TimeTicker
+            }.SetProperty(x => x.Status, TickerStatus.Done)
+             .SetProperty(x => x.ResultEnvelope,
+                 new TickerResultEnvelope([value], 1, "application/octet-stream"));
+
+        Assert.True(await _provider.CommitSuccessfulTickerAsync(Success(generationB, 2)));
+        Assert.False(await _provider.CommitSuccessfulTickerAsync(Success(generationA, 1)));
+
+        using var verify = CreateVerifyContext();
+        Assert.Equal(TickerStatus.Done,
+            (await verify.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id)).Status);
+        Assert.Equal([2], (await _provider.GetTimeTickerResultAsync(child.Id))!.ToPayloadArray());
+    }
+
+    [Fact]
+    public async Task RecoverStaleTickers_DoesNotRecoverChainChildrenIndependently()
+    {
+        var parent = CreateTimeTicker();
+        var child = CreateTimeTicker(
+            status: TickerStatus.InProgress,
+            lockHolder: "dead-node",
+            lockedAt: _fixedNow.AddMinutes(-2));
+        child.ParentId = parent.Id;
+        child.LeaseUntil = _fixedNow.AddSeconds(-1);
+        child.OnStale = StaleAction.Restart;
+        await SeedTimeTickers(parent, child);
+
+        var result = await _provider.RecoverStaleTickers(2, CancellationToken.None);
+
+        Assert.Equal(0, result.RestartedTimeTickers);
+        Assert.Equal(0, result.CancelledTimeTickers);
+        using var ctx = CreateVerifyContext();
+        var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id);
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+        Assert.Equal("dead-node", persisted.LockHolder);
     }
 }

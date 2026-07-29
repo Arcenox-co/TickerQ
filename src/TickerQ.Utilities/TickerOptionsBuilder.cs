@@ -2,6 +2,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
@@ -35,7 +36,7 @@ namespace TickerQ.Utilities
         /// Defaults to true.
         /// </summary>
         internal bool SeedDefinedCronTickers { get; set; } = true;
-
+        
         /// <summary>
         /// Controls whether background services (job processors) should be registered.
         /// Defaults to true. Set to false to only register managers for queuing jobs.
@@ -60,10 +61,28 @@ namespace TickerQ.Utilities
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
         internal Type TickerExceptionHandlerType { get; private set; }
-
+        
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureScheduler(Action<SchedulerOptionsBuilder> schedulerOptionsBuilder)
         {
             schedulerOptionsBuilder?.Invoke(_schedulerOptions);
+            return this;
+        }
+
+        /// <summary>
+        /// Retention policy for historical terminal ticker records. Disabled by default; configure a
+        /// window via <see cref="ConfigureJobRetention"/> to opt in. Never null.
+        /// </summary>
+        public JobRetentionOptions JobRetention { get; } = new JobRetentionOptions();
+
+        /// <summary>
+        /// Enable and configure the built-in job-retention maintenance loop, which periodically deletes
+        /// historical terminal ticker records older than the per-status windows you set. Cron definitions
+        /// are never deleted. Retention stays disabled unless at least one window is configured.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureJobRetention(Action<JobRetentionOptions> configure)
+        {
+            configure?.Invoke(JobRetention);
+            JobRetention.Validate();
             return this;
         }
 
@@ -77,12 +96,13 @@ namespace TickerQ.Utilities
             set => _schedulerOptions.MinPollingInterval = value;
         }
 
+              
         /// <summary>
         /// JsonSerializerOptions specifically for serializing/deserializing ticker requests.
         /// If not set, default JsonSerializerOptions will be used.
         /// </summary>
         internal JsonSerializerOptions RequestJsonSerializerOptions { get; set; }
-
+        
         /// <summary>
         /// Configures a JsonSerializerContext for AOT-compatible ticker request serialization/deserialization.
         /// Use this when publishing with Native AOT or when trimming is enabled.
@@ -145,9 +165,9 @@ namespace TickerQ.Utilities
             SeedDefinedCronTickers = false;
             return this;
         }
-
+        
         /// <summary>
-        /// Disables background services registration.
+        /// Disables background services registration. 
         /// Use this when you only want to queue jobs without processing them in this application.
         /// Only the managers (ITimeTickerManager, ICronTickerManager) will be available for queuing jobs.
         /// </summary>
@@ -165,8 +185,7 @@ namespace TickerQ.Utilities
         {
             ExternalProviderConfigServiceAction += services =>
             {
-              // Replace any existing instrumentation with OpenTelemetry version
-              services.AddSingleton<ITickerQInstrumentation, ActivitySourceInstrumentation>();
+                services.AddSingleton<ITickerQInstrumentation, ActivitySourceInstrumentation>();
             };
             return this;
         }
@@ -216,23 +235,60 @@ namespace TickerQ.Utilities
             UseTickerSeeder(cronSeeder);
             return this;
         }
-
+        
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> SetExceptionHandler<THandler>() where THandler : ITickerExceptionHandler
         {
             TickerExceptionHandlerType = typeof(THandler);
             return this;
         }
 
+        internal Models.FailureWebhookOptions FailureWebhook { get; set; }
+
+        /// <summary>
+        /// POST a JSON event to <paramref name="url"/> whenever a job fails
+        /// terminally (retries exhausted), exceeds its execution timeout, or the
+        /// stale watchdog recovers jobs from a dead node. Delivery is async and
+        /// buffered — it never blocks execution — with a couple of send retries.
+        /// For Slack/email/custom sinks, register your own
+        /// <see cref="Interfaces.ITickerQFailureNotifier"/> instead.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> NotifyFailuresViaWebhook(
+            string url, System.Collections.Generic.IDictionary<string, string> headers = null,
+            Func<string, string> reasonSanitizer = null)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                throw new ArgumentException("Webhook URL must be provided.", nameof(url));
+
+            var options = new Models.FailureWebhookOptions
+            {
+                Url = url,
+                Headers = headers
+            };
+            if (reasonSanitizer != null)
+                options.ReasonSanitizer = reasonSanitizer;
+            FailureWebhook = options;
+            return this;
+        }
+        
         internal void UseExternalProviderApplication(Action<IServiceProvider> action)
             => _tickerExecutionContext.ExternalProviderApplicationAction = action;
-
+        
         internal void UseDashboardApplication(Action<object> action)
             => _tickerExecutionContext.DashboardApplicationAction = action;
     }
 
     public class SchedulerOptionsBuilder
     {
+        private readonly string _executionOwnerNonce = Guid.NewGuid().ToString("N");
+
+        /// <summary>Human-readable logical node label used by dashboards, metrics, and heartbeat providers.</summary>
         public string NodeIdentifier { get; set; } = Environment.MachineName;
+
+        /// <summary>
+        /// Process-instance-unique persistence owner used for LockHolder fencing. Two scheduler
+        /// processes may intentionally share NodeIdentifier, but must never share row ownership.
+        /// </summary>
+        public string ExecutionOwnerId => $"{NodeIdentifier}:{Environment.ProcessId}:{_executionOwnerNonce}";
         public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
         public TimeSpan IdleWorkerTimeOut { get; set; } = TimeSpan.FromMinutes(1);
         public TimeSpan FallbackIntervalChecker { get; set; } = TimeSpan.FromSeconds(30);
@@ -253,5 +309,61 @@ namespace TickerQ.Utilities
         /// </summary>
         public TimeSpan StaleCronOccurrenceThreshold { get; set; } = TimeSpan.Zero;
         public TimeZoneInfo SchedulerTimeZone = TimeZoneInfo.Local;
+
+        /// <summary>
+        /// Runtime stale-job recovery: while a ticker executes, the owning node
+        /// renews a lease on the row; if the node dies (crash, OOM, eviction) the
+        /// lease expires and a watchdog applies the ticker's <c>OnStale</c> action
+        /// (Restart by default, Cancel opt-in per job). Disable to keep the
+        /// previous behavior where a dead node leaves rows InProgress forever.
+        /// </summary>
+        public bool StaleJobRecoveryEnabled { get; set; } = true;
+
+        /// <summary>
+        /// How long a lease lasts from each renewal. Must be comfortably larger
+        /// than <see cref="LeaseRenewalInterval"/> (3× or more) so a transient DB
+        /// hiccup or GC pause doesn't get a live job treated as stale.
+        /// </summary>
+        public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromSeconds(45);
+
+        /// <summary>How often the running node renews leases for its active jobs.</summary>
+        public TimeSpan LeaseRenewalInterval { get; set; } = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// Maximum age of the short persisted Queued handoff lock before recovery resets it to Idle.
+        /// Normal accepted work transitions to InProgress immediately; this protects the crash window
+        /// between queue acquisition and that transition without releasing a live sibling on startup.
+        /// </summary>
+        public TimeSpan QueuedLockTimeout { get; set; } = TimeSpan.FromMinutes(2);
+
+        /// <summary>
+        /// Poison-job guard: after this many stale Restarts the ticker is Cancelled
+        /// instead, so a job that kills its host can't crash-loop the cluster.
+        /// </summary>
+        public int MaxStaleRestarts { get; set; } = 3;
+
+        /// <summary>
+        /// Global per-attempt execution timeout applied to every ticker that doesn't
+        /// set its own <c>TimeoutSeconds</c>. Null (default) means no timeout.
+        /// Exceeding it cancels the execution (Cancelled with a timeout reason);
+        /// functions that don't honor their CancellationToken are abandoned and
+        /// logged — their thread keeps running until it finishes on its own.
+        /// </summary>
+        public TimeSpan? DefaultExecutionTimeout { get; set; }
+
+        /// <summary>
+        /// Grace after cooperative timeout cancellation before a still-running delegate is logged
+        /// as timeout-pending. The delegate remains tracked, leased, and scoped until it actually exits.
+        /// In-process delegates cannot be terminated safely.
+        /// </summary>
+        public TimeSpan TimeoutGracePeriod { get; set; } = TimeSpan.FromSeconds(5);
+
+        /// <summary>
+        /// On graceful shutdown, how long to wait for in-flight ticker executions
+        /// to finish before letting the host exit. Zero disables draining (jobs are
+        /// abandoned and later healed by stale-job recovery). Bounded additionally
+        /// by the host's own shutdown timeout (<c>HostOptions.ShutdownTimeout</c>).
+        /// </summary>
+        public TimeSpan ShutdownDrainTimeout { get; set; } = TimeSpan.FromSeconds(30);
     }
 }

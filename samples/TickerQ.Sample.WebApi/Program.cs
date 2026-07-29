@@ -21,7 +21,7 @@ builder.Services.AddTickerQ(options =>
                 b => b.MigrationsAssembly("TickerQ.Sample.WebApi"));
         });
     });
-    options.AddDashboard();
+    options.AddDashboard(dashboard => dashboard.AllowAnonymousDashboard());
 });
 
 var app = builder.Build();

@@ -1,8 +1,11 @@
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
+
 using TickerQ.Exceptions;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -13,6 +16,16 @@ namespace TickerQ.Tests;
 [Collection("TickerCancellationTokenState")]
 public class TickerExecutionTaskHandlerTests : IDisposable
 {
+    private sealed class ScopedProbe : IDisposable
+    {
+        public bool IsDisposed { get; private set; }
+        public void ThrowIfDisposed()
+        {
+            if (IsDisposed) throw new ObjectDisposedException(nameof(ScopedProbe));
+        }
+        public void Dispose() => IsDisposed = true;
+    }
+
     public void Dispose()
     {
         TickerCancellationTokenManager.CleanUpTickerCancellationTokens();
@@ -36,7 +49,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         _serviceProvider = services.BuildServiceProvider();
 
-        _handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, _internalManager);
+        _handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
     }
 
     #region Success Path
@@ -74,6 +87,82 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteTaskAsync_Unregisters_When_Terminal_Persistence_Throws()
+    {
+        var context = CreateContext(ct: (_, _, _) => Task.CompletedTask);
+        _internalManager.UpdateTickerAsync(
+                Arg.Is<InternalFunctionContext>(candidate => candidate.TickerId == context.TickerId),
+                Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new InvalidOperationException("terminal persistence failed"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _handler.ExecuteTaskAsync(context, isDue: false));
+
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+        Assert.False(TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId));
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_DoesNotReleaseDeferredChild_WhenTerminalOwnershipIsStale()
+    {
+        var childCalls = 0;
+        var root = CreateContext(ct: (_, _, _) => Task.CompletedTask, type: TickerType.TimeTicker);
+        var child = CreateContext(ct: (_, _, _) =>
+        {
+            childCalls++;
+            return Task.CompletedTask;
+        }, type: TickerType.TimeTicker);
+        child.RunCondition = RunCondition.OnSuccess;
+        root.TimeTickerChildren.Add(child);
+        _internalManager.UpdateTickerAsync(
+                Arg.Is<InternalFunctionContext>(candidate => ReferenceEquals(candidate, root)
+                    && candidate.Status == TickerStatus.Done),
+                Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new TickerQ.Utilities.Exceptions.TickerTerminalUpdateNotAcknowledgedException("stale"));
+
+        await Assert.ThrowsAsync<TickerQ.Utilities.Exceptions.TickerTerminalUpdateNotAcknowledgedException>(() =>
+            _handler.ExecuteTaskAsync(root, isDue: false));
+
+        Assert.Equal(0, childCalls);
+        await _internalManager.DidNotReceive().UpdateTickerAsync(
+            Arg.Is<InternalFunctionContext>(candidate => ReferenceEquals(candidate, child)),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_WithPreRegisteredSource_ReusesIt_NoDuplicate_AndRequestCancelHitsSameSource()
+    {
+        var delegateStarted = new TaskCompletionSource();
+        var context = CreateContext(ct: async (token, _, _) =>
+        {
+            delegateStarted.SetResult();
+            await Task.Delay(Timeout.Infinite, token); // cancelled via the shared registered source
+        });
+
+        // Acquisition-time registration owned by the caller (mirrors the scheduler).
+        var registered = TickerCancellationTokenManager.TryRegisterAcquired(context, isDue: false);
+        Assert.NotNull(registered);
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+
+        var execTask = _handler.ExecuteRegisteredTaskAsync(context, isDue: false, registered, CancellationToken.None);
+        await delegateStarted.Task;
+
+        // Reused the supplied source — no second registration was created.
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+
+        // Request-cancel by id fires the SAME source the running delegate observes.
+        Assert.True(TickerCancellationTokenManager.RequestTickerCancellationById(context.TickerId));
+
+        await execTask;
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
+
+        // The handler did not remove the pre-registered source — the caller still owns it.
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+        Assert.True(TickerCancellationTokenManager.RemoveTickerCancellationToken(context.TickerId, registered));
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+    }
+
+    [Fact]
     public async Task ExecuteTaskAsync_SetsElapsedTime_OnSuccess()
     {
         var context = CreateContext(ct: async (_, _, _) => await Task.Delay(10));
@@ -98,6 +187,110 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     #endregion
 
     #region Failure Path
+
+    [Fact]
+    public async Task ExecuteTaskAsync_ContractIdentityMismatch_FailsBeforeDelegateWithoutRetry()
+    {
+        var delegateCalls = 0;
+        var descriptor = new TickerFunctionDescriptor("TestFunction", contractVersion: 2);
+        var handler = new TickerExecutionTaskHandler(
+            _serviceProvider, _clock, _instrumentation, _internalManager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            _ => descriptor);
+        var context = CreateContext(ct: (_, _, _) =>
+        {
+            delegateCalls++;
+            return Task.CompletedTask;
+        });
+        context.Retries = 3;
+        context.RequestContractVersion = 1;
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(0, delegateCalls);
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Contains("contract drift", context.ExceptionDetails, StringComparison.OrdinalIgnoreCase);
+        await _internalManager.Received(1).UpdateTickerAsync(context, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_PersistedIdentityWithMissingDescriptor_FailsBeforeDelegateWithoutRetry()
+    {
+        var delegateCalls = 0;
+        var handler = new TickerExecutionTaskHandler(
+            _serviceProvider, _clock, _instrumentation, _internalManager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            _ => null);
+        var context = CreateContext(ct: (_, _, _) =>
+        {
+            delegateCalls++;
+            return Task.CompletedTask;
+        });
+        context.Retries = 3;
+        context.RequestContractVersion = 2;
+        context.RequestContractFingerprint = "persisted-fingerprint";
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(0, delegateCalls);
+        Assert.Equal(0, context.RetryCount);
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Contains("contract drift", context.ExceptionDetails, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("descriptor", context.ExceptionDetails, StringComparison.OrdinalIgnoreCase);
+        await _internalManager.Received(1).UpdateTickerAsync(context, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_ExactContractIdentity_ExecutesDelegate()
+    {
+        var delegateCalls = 0;
+        var descriptor = new TickerFunctionDescriptor("TestFunction", contractVersion: 2);
+        var handler = new TickerExecutionTaskHandler(
+            _serviceProvider, _clock, _instrumentation, _internalManager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            _ => descriptor);
+        var context = CreateContext(ct: (_, _, _) =>
+        {
+            delegateCalls++;
+            return Task.CompletedTask;
+        });
+        context.RequestContractVersion = 2;
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(1, delegateCalls);
+        Assert.Equal(TickerStatus.Done, context.Status);
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_FingerprintMismatchWithSameVersion_FailsBeforeDelegate()
+    {
+        var delegateCalls = 0;
+        var contract = new TickerRequestContract(
+            "Test.Request",
+            TickerRequestContractConstants.DefaultMediaType,
+            required: true,
+            TickerRequestContractConstants.SchemaDialect2020_12,
+            "{\"type\":\"object\",\"additionalProperties\":false}");
+        var descriptor = new TickerFunctionDescriptor("TestFunction", contractVersion: 2, request: contract);
+        var handler = new TickerExecutionTaskHandler(
+            _serviceProvider, _clock, _instrumentation, _internalManager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            _ => descriptor);
+        var context = CreateContext(ct: (_, _, _) =>
+        {
+            delegateCalls++;
+            return Task.CompletedTask;
+        });
+        context.RequestContractVersion = 2;
+        context.RequestContractFingerprint = "stale-fingerprint";
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(0, delegateCalls);
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Contains("fingerprint changed=True", context.ExceptionDetails, StringComparison.Ordinal);
+    }
 
     [Fact]
     public async Task ExecuteTaskAsync_SetsStatusFailed_WhenDelegateThrows()
@@ -129,7 +322,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager);
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
 
@@ -150,7 +343,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager);
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
         context.Retries = 2;
@@ -162,6 +355,26 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             Arg.Any<Exception>(),
             Arg.Is(context.TickerId),
             Arg.Is(context.Type));
+    }
+
+    [Fact]
+    public async Task ExecuteTaskAsync_QualifiedRemoteDelegate_DoesNotApplyCoreRetries()
+    {
+        var calls = 0;
+        var context = CreateContext(ct: (_, _, _) =>
+        {
+            calls++;
+            throw new InvalidOperationException("remote final failure");
+        });
+        context.FunctionName = "RemoteJob@node-a";
+        context.Retries = 3;
+        context.RetryIntervals = [0, 0, 0];
+
+        await _handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(1, calls);
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Equal(0, context.RetryCount);
     }
 
     [Fact]
@@ -210,7 +423,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager);
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
 
         var context = CreateContext(ct: (_, _, _) => throw new TaskCanceledException("cancelled"));
 
@@ -288,6 +501,35 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     #endregion
 
     #region Parent-Child Execution (TimeTicker)
+
+    [Fact]
+    public async Task ExecuteTaskAsync_ChildPersistsInProgressBeforeTerminalState()
+    {
+        var parentContext = CreateContext(
+            type: TickerType.TimeTicker,
+            ct: (_, _, _) => Task.CompletedTask);
+        parentContext.AcquisitionToken = Guid.NewGuid();
+        var childContext = CreateContext(
+            type: TickerType.TimeTicker,
+            ct: (_, _, _) => Task.CompletedTask);
+        childContext.ParentId = parentContext.TickerId;
+        childContext.RunCondition = RunCondition.OnSuccess;
+        parentContext.TimeTickerChildren.Add(childContext);
+
+        var childStatuses = new List<TickerStatus>();
+        _internalManager.UpdateTickerAsync(
+                Arg.Is<InternalFunctionContext>(candidate => candidate.TickerId == childContext.TickerId),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                childStatuses.Add(call.ArgAt<InternalFunctionContext>(0).Status);
+                return Task.CompletedTask;
+            });
+
+        await _handler.ExecuteTaskAsync(parentContext, isDue: false);
+
+        Assert.Equal([TickerStatus.InProgress, TickerStatus.Done], childStatuses);
+    }
 
     [Fact]
     public async Task ExecuteTaskAsync_RunsInProgressChildren_ConcurrentlyWithParent()
@@ -477,9 +719,10 @@ public class TickerExecutionTaskHandlerTests : IDisposable
 
         await _handler.ExecuteTaskAsync(parentContext, isDue: false);
 
-        // The skipped children should be bulk-updated
         await _internalManager.Received().UpdateSkipTimeTickersWithUnifiedContextAsync(
-            Arg.Any<InternalFunctionContext[]>(),
+            Arg.Is<InternalFunctionContext[]>(resources =>
+                resources.Length == 2 &&
+                resources.All(resource => resource.ChainRootId == parentContext.TickerId)),
             Arg.Any<CancellationToken>());
     }
 
@@ -526,6 +769,310 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     #endregion
 
     #region Instrumentation
+
+    [Fact]
+    public async Task NonCooperativeTimeout_RemainsTrackedScopedAndUnpersisted_UntilDelegateActuallyExits()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var timeoutPending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        instrumentation.When(x => x.LogJobTimeoutPending(
+                Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<TimeSpan>()))
+            .Do(_ => timeoutPending.TrySetResult());
+
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        services.AddScoped<ScopedProbe>();
+        await using var serviceProvider = services.BuildServiceProvider();
+        var options = new SchedulerOptionsBuilder
+        {
+            DefaultExecutionTimeout = TimeSpan.FromMilliseconds(30),
+            TimeoutGracePeriod = TimeSpan.FromMilliseconds(30)
+        };
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager, options,
+            Substitute.For<ITickerQFailureNotifier>());
+
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ScopedProbe capturedProbe = null;
+        var context = CreateContext(type: TickerType.TimeTicker, ct: async (_, sp, _) =>
+        {
+            capturedProbe = sp.GetRequiredService<ScopedProbe>();
+            capturedProbe.ThrowIfDisposed();
+            await release.Task; // deliberately ignores cancellation
+            capturedProbe.ThrowIfDisposed();
+        });
+        context.AcquisitionToken = Guid.NewGuid();
+
+        var execution = handler.ExecuteTaskAsync(context, isDue: false);
+        await timeoutPending.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(execution.IsCompleted);
+        Assert.NotNull(capturedProbe);
+        Assert.False(capturedProbe.IsDisposed);
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+        var timeLeases = new List<AcquisitionLease>();
+        var cronLeases = new List<AcquisitionLease>();
+        TickerCancellationTokenManager.SnapshotRunningForLeaseRenewal(timeLeases, cronLeases);
+        Assert.Contains(timeLeases, lease =>
+            lease.TickerId == context.TickerId && lease.AcquisitionToken == context.AcquisitionToken);
+        await manager.DidNotReceive().UpdateTickerAsync(
+            Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>());
+
+        release.SetResult();
+        await execution.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(capturedProbe.IsDisposed);
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
+        Assert.Equal(0, context.RetryCount);
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+        await manager.Received(1).UpdateTickerAsync(
+            Arg.Is<InternalFunctionContext>(candidate =>
+                candidate.TickerId == context.TickerId && candidate.Status == TickerStatus.Cancelled),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task FailureNotifierThrows_TerminalFailurePersistenceStillOccursExactlyOnce()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var terminalWrites = 0;
+        manager.When(x => x.UpdateTickerAsync(
+                Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>()))
+            .Do(call =>
+            {
+                if (call.ArgAt<InternalFunctionContext>(0).Status == TickerStatus.Failed)
+                    terminalWrites++;
+            });
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var notifier = Substitute.For<ITickerQFailureNotifier>();
+        notifier.When(x => x.Notify(Arg.Any<TickerFailureEvent>()))
+            .Do(_ => throw new InvalidOperationException("notifier failed"));
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        await using var serviceProvider = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager,
+            new SchedulerOptionsBuilder(), notifier);
+        var context = CreateContext(ct: (_, _, _) =>
+            throw new InvalidOperationException("delegate failed"));
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(TickerStatus.Failed, context.Status);
+        Assert.Equal(1, terminalWrites);
+    }
+
+    [Fact]
+    public async Task FaultAfterTimeoutWithinGrace_RemainsAuthoritativeTimeoutAndDoesNotRetry()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        await using var serviceProvider = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager,
+            new SchedulerOptionsBuilder
+            {
+                DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
+                TimeoutGracePeriod = TimeSpan.FromMilliseconds(200),
+            }, Substitute.For<ITickerQFailureNotifier>());
+        var attempts = 0;
+        var context = CreateContext(ct: async (_, _, _) =>
+        {
+            attempts++;
+            await Task.Delay(60);
+            throw new InvalidOperationException("fault after deadline");
+        });
+        context.Retries = 1;
+        context.RetryIntervals = [0];
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(1, attempts);
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
+        Assert.Contains("Exceeded execution timeout", context.ExceptionDetails);
+        await manager.Received(1).UpdateTickerAsync(
+            Arg.Is<InternalFunctionContext>(x => x.Status == TickerStatus.Cancelled),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TimeoutHooksThrow_TerminalPersistenceStillOccurs()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var exceptionHandler = Substitute.For<ITickerExceptionHandler>();
+        exceptionHandler.HandleCanceledExceptionAsync(
+                Arg.Any<Exception>(), Arg.Any<Guid>(), Arg.Any<TickerType>())
+            .Returns<Task>(_ => throw new InvalidOperationException("hook failed"));
+        var notifier = Substitute.For<ITickerQFailureNotifier>();
+        notifier.When(x => x.Notify(Arg.Any<TickerFailureEvent>()))
+            .Do(_ => throw new InvalidOperationException("notifier failed"));
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        services.AddSingleton(exceptionHandler);
+        await using var serviceProvider = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager,
+            new SchedulerOptionsBuilder
+            {
+                DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
+                TimeoutGracePeriod = TimeSpan.FromMilliseconds(50),
+            }, notifier);
+        var context = CreateContext(ct: async (token, _, _) =>
+            await Task.Delay(Timeout.InfiniteTimeSpan, token));
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
+        await manager.Received(1).UpdateTickerAsync(
+            Arg.Is<InternalFunctionContext>(x => x.Status == TickerStatus.Cancelled),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RemoteTimeoutRejectedCommit_PropagatesAndDoesNotReleaseCancelledChild()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        manager.UpdateTickerFromRemoteAsync(
+                Arg.Any<InternalFunctionContext>(), Arg.Any<NodeFinalizationIntent>(), Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new TickerTerminalUpdateNotAcknowledgedException("stale generation"));
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var wake = Substitute.For<INodeFinalizationWakeSignal>();
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        services.AddSingleton(wake);
+        await using var serviceProvider = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager,
+            new SchedulerOptionsBuilder
+            {
+                DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
+                TimeoutGracePeriod = TimeSpan.FromMilliseconds(50),
+            }, Substitute.For<ITickerQFailureNotifier>());
+        var childRan = false;
+        var parent = CreateContext(async (token, _, execution) =>
+        {
+            execution.IsRemoteCallbackExecution = true;
+            execution.RemoteFinalizationIntent = FinalizationIntent(execution);
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        }, TickerType.TimeTicker);
+        parent.AcquisitionToken = Guid.NewGuid();
+        parent.TimeTickerChildren =
+        [
+            CreateContext((_, _, _) => { childRan = true; return Task.CompletedTask; }, TickerType.TimeTicker)
+        ];
+        parent.TimeTickerChildren[0].RunCondition = RunCondition.OnCancelled;
+
+        await Assert.ThrowsAsync<TickerTerminalUpdateNotAcknowledgedException>(() =>
+            handler.ExecuteTaskAsync(parent, isDue: false));
+
+        Assert.False(childRan);
+        wake.DidNotReceive().Wake();
+        await manager.Received(1).UpdateTickerFromRemoteAsync(
+            parent, Arg.Any<NodeFinalizationIntent>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RemoteNodeTerminalWakesOnlyAfterDurableCommitAcknowledges()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var commitEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.UpdateTickerFromRemoteAsync(
+                Arg.Any<InternalFunctionContext>(), Arg.Any<NodeFinalizationIntent>(), Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                commitEntered.TrySetResult();
+                await releaseCommit.Task;
+            });
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var wake = Substitute.For<INodeFinalizationWakeSignal>();
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        services.AddSingleton(wake);
+        await using var serviceProvider = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager, new SchedulerOptionsBuilder(),
+            Substitute.For<ITickerQFailureNotifier>());
+        var parent = CreateContext((_, _, executionContext) =>
+        {
+            executionContext.IsRemoteCallbackExecution = true;
+            executionContext.RemoteFinalizationIntent = FinalizationIntent(executionContext);
+            return Task.CompletedTask;
+        }, TickerType.TimeTicker);
+        parent.AcquisitionToken = Guid.NewGuid();
+
+        var execution = handler.ExecuteTaskAsync(parent, isDue: false);
+        await commitEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        wake.DidNotReceive().Wake();
+        releaseCommit.TrySetResult();
+        await execution;
+
+        wake.Received(1).Wake();
+        await manager.DidNotReceiveWithAnyArgs().UpdateTickerAsync(default!, default);
+        await manager.DidNotReceiveWithAnyArgs()
+            .UpdateTickerFromRemoteAsync(default!, default(CancellationToken));
+    }
+
+    [Fact]
+    public async Task RemoteExecutionProvenNotStarted_UsesAcknowledgedCommitAndSuppressesAllDeferredChildren()
+    {
+        var childCalls = 0;
+        var parent = CreateContext((_, _, execution) =>
+        {
+            execution.IsRemoteCallbackExecution = true;
+            throw new RemoteExecutionNotStartedException("authenticated node_epoch_mismatch");
+        }, TickerType.TimeTicker);
+        parent.AcquisitionToken = Guid.NewGuid();
+        foreach (var condition in new[]
+                 {
+                     RunCondition.OnFailure, RunCondition.OnCancelled,
+                     RunCondition.OnFailureOrCancelled, RunCondition.OnAnyCompletedStatus
+                 })
+        {
+            var child = CreateContext((_, _, _) => { childCalls++; return Task.CompletedTask; }, TickerType.TimeTicker);
+            child.RunCondition = condition;
+            parent.TimeTickerChildren.Add(child);
+        }
+
+        await _handler.ExecuteTaskAsync(parent, isDue: false);
+
+        Assert.Equal(TickerStatus.Skipped, parent.Status);
+        Assert.Equal(0, childCalls);
+        await _internalManager.Received(1).UpdateTickerFromRemoteAsync(parent, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Worker_RemoteExecutionNotStarted_FollowsOrdinaryFailurePathWithoutManagerPersistence()
+    {
+        var context = CreateContext((_, _, _) =>
+            throw new RemoteExecutionNotStartedException("worker user exception"), TickerType.TimeTicker);
+
+        var result = await _handler.ExecuteWorkerTaskAsync(context, isDue: false);
+
+        Assert.Equal(TickerStatus.Failed, result.Status);
+        await _internalManager.DidNotReceiveWithAnyArgs().UpdateTickerAsync(default!, default);
+        await _internalManager.DidNotReceiveWithAnyArgs().UpdateTickerFromRemoteAsync(default!, default(CancellationToken));
+        await _internalManager.DidNotReceiveWithAnyArgs()
+            .UpdateTickerFromRemoteAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public void RemoteExecutionNotStartedException_HasNoPublicConstructor()
+    {
+        Assert.Empty(typeof(RemoteExecutionNotStartedException).GetConstructors());
+        Assert.True(typeof(RemoteExecutionNotStartedException).IsPublic);
+        Assert.True(typeof(RemoteExecutionNotStartedException).IsSealed);
+    }
 
     [Fact]
     public async Task ExecuteTaskAsync_LogsJobEnqueued_OnExecution()
@@ -609,6 +1156,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             TickerId = Guid.NewGuid(),
             FunctionName = "TestFunction",
             Type = type,
+            ChainGeneration = type == TickerType.TimeTicker ? Guid.NewGuid() : null,
             ExecutionTime = DateTime.UtcNow,
             RetryIntervals = [],
             Retries = 0,
@@ -617,6 +1165,27 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             CachedDelegate = ct,
             TimeTickerChildren = []
         };
+    }
+
+    private static NodeFinalizationIntent FinalizationIntent(TickerFunctionContext context)
+    {
+        var dispatchId = Guid.NewGuid();
+        var nodeEpoch = Guid.Parse("8fef33e7-826b-49e4-a36d-8eb0aa570ef1");
+        var controlNonce = Guid.NewGuid();
+        var body = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            tickerType = context.Type,
+            tickerId = context.Id,
+            acquisitionToken = context.AcquisitionToken!.Value,
+            dispatchId,
+            nodeEpoch,
+            controlNonce
+        });
+        return new NodeFinalizationIntent(
+            NodeFinalizationIntent.CurrentSchemaVersion, dispatchId, context.Type, context.Id,
+            context.AcquisitionToken.Value, dispatchId, nodeEpoch,
+            "https://node.example/finalize", "/finalize", false,
+            Guid.NewGuid(), controlNonce, body, DateTime.UtcNow);
     }
 
     #endregion

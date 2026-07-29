@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
 using System.Threading;
@@ -13,13 +14,22 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
 
-public class TickerQSchedulerBackgroundServiceTests
+[Collection("TickerCancellationTokenState")]
+public class TickerQSchedulerBackgroundServiceTests : IDisposable
 {
+    public void Dispose()
+    {
+        TickerCancellationTokenManager.CleanUpTickerCancellationTokens();
+    }
+
     [Fact]
     public async Task RunScheduler_UsesMinPollingInterval_WhenTimeRemainingIsZero()
     {
         var executionContext = new TickerExecutionContext();
         var internalManager = Substitute.For<IInternalTickerManager>();
+        internalManager.SetTickersInProgress(
+                Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<InternalFunctionContext[]>(0));
         internalManager.GetNextTickers(Arg.Any<CancellationToken>())
             .Returns((TimeSpan.Zero, Array.Empty<InternalFunctionContext>()));
 
@@ -79,6 +89,9 @@ public class TickerQSchedulerBackgroundServiceTests
     {
         var executionContext = new TickerExecutionContext();
         var internalManager = Substitute.For<IInternalTickerManager>();
+        internalManager.SetTickersInProgress(
+                Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<InternalFunctionContext[]>(0));
         var taskHandler = Substitute.For<ITickerExecutionTaskHandler>();
         var taskScheduler = Substitute.For<ITickerQTaskScheduler>();
         var gate = new TickerFunctionConcurrencyGate();
@@ -146,8 +159,8 @@ public class TickerQSchedulerBackgroundServiceTests
         await capturedWork!(CancellationToken.None);
         Assert.Equal(1, semaphore.CurrentCount);
 
-        await taskHandler.Received(1).ExecuteTaskAsync(
-            Arg.Any<InternalFunctionContext>(), false, Arg.Any<CancellationToken>());
+        await taskHandler.Received(1).ExecuteRegisteredTaskAsync(
+            Arg.Any<InternalFunctionContext>(), false, Arg.Any<CancellationTokenSource>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -155,13 +168,17 @@ public class TickerQSchedulerBackgroundServiceTests
     {
         var executionContext = new TickerExecutionContext();
         var internalManager = Substitute.For<IInternalTickerManager>();
+        internalManager.SetTickersInProgress(
+                Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<InternalFunctionContext[]>(0));
         var taskHandler = Substitute.For<ITickerExecutionTaskHandler>();
         var taskScheduler = Substitute.For<ITickerQTaskScheduler>();
         var gate = new TickerFunctionConcurrencyGate();
 
-        taskHandler.ExecuteTaskAsync(
+        taskHandler.ExecuteRegisteredTaskAsync(
             Arg.Any<InternalFunctionContext>(),
             Arg.Any<bool>(),
+            Arg.Any<CancellationTokenSource>(),
             Arg.Any<CancellationToken>())
             .Returns<Task>(_ => throw new InvalidOperationException("boom"));
 
@@ -218,6 +235,9 @@ public class TickerQSchedulerBackgroundServiceTests
     {
         var executionContext = new TickerExecutionContext();
         var internalManager = Substitute.For<IInternalTickerManager>();
+        internalManager.SetTickersInProgress(
+                Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<InternalFunctionContext[]>(0));
         var taskHandler = Substitute.For<ITickerExecutionTaskHandler>();
         var taskScheduler = Substitute.For<ITickerQTaskScheduler>();
         var gate = new TickerFunctionConcurrencyGate();
@@ -266,8 +286,263 @@ public class TickerQSchedulerBackgroundServiceTests
         // No semaphore should exist for maxConcurrency=0
         Assert.Null(gate.GetSemaphoreOrNull("UnlimitedFunc", 0));
 
-        await taskHandler.Received(1).ExecuteTaskAsync(
-            Arg.Any<InternalFunctionContext>(), false, Arg.Any<CancellationToken>());
+        await taskHandler.Received(1).ExecuteRegisteredTaskAsync(
+            Arg.Any<InternalFunctionContext>(), false, Arg.Any<CancellationTokenSource>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void AcquiredButNotYetExecuted_RootAndCron_AppearInLeaseRenewalSnapshot()
+    {
+        var (service, _) = BuildCapturingService(out _);
+
+        var timeRoot = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            FunctionName = "TimeRoot",
+            Type = TickerType.TimeTicker,
+            CachedPriority = TickerTaskPriority.Normal,
+            TimeTickerChildren = []
+        };
+        var cronOcc = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            FunctionName = "CronOcc",
+            Type = TickerType.CronTickerOccurrence,
+            CachedPriority = TickerTaskPriority.Normal,
+            TimeTickerChildren = []
+        };
+
+        // Register + queue, but the capturing scheduler never runs the delegate — so both stay in the
+        // "acquired, queued, not yet executed" state that lease renewal must keep alive.
+        InvokeQueueAcquired(service, timeRoot, CancellationToken.None);
+        InvokeQueueAcquired(service, cronOcc, CancellationToken.None);
+
+        var timeIds = new List<Guid>();
+        var cronIds = new List<Guid>();
+        TickerCancellationTokenManager.SnapshotRunningForLeaseRenewal(timeIds, cronIds);
+
+        Assert.Contains(timeRoot.TickerId, timeIds);
+        Assert.Contains(cronOcc.TickerId, cronIds);
+    }
+
+    [Fact]
+    public async Task PublicationFailure_AfterExecutionBegins_DoesNotUnregisterRunningWork()
+    {
+        var executionContext = new TickerExecutionContext();
+        var internalManager = Substitute.For<IInternalTickerManager>();
+        internalManager.SetTickersInProgress(
+                Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<InternalFunctionContext[]>(0));
+        var taskHandler = Substitute.For<ITickerExecutionTaskHandler>();
+        var taskScheduler = Substitute.For<ITickerQTaskScheduler>();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? executionTask = null;
+
+        taskHandler.ExecuteRegisteredTaskAsync(
+                Arg.Any<InternalFunctionContext>(), Arg.Any<bool>(),
+                Arg.Any<CancellationTokenSource>(), Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                started.TrySetResult();
+                await release.Task;
+            });
+
+        taskScheduler.QueueAsync(
+                Arg.Any<Func<CancellationToken, Task>>(),
+                Arg.Any<TickerTaskPriority>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                executionTask = ci.ArgAt<Func<CancellationToken, Task>>(0)(CancellationToken.None);
+                return new ValueTask(Task.FromException(new InvalidOperationException("publication failed")));
+            });
+
+        var service = new TickerQSchedulerBackgroundService(
+            executionContext, taskHandler, taskScheduler, internalManager,
+            new SchedulerOptionsBuilder(), new TickerFunctionConcurrencyGate());
+        var function = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            FunctionName = "PublicationRaceFunc",
+            Type = TickerType.TimeTicker,
+            CachedPriority = TickerTaskPriority.Normal,
+            TimeTickerChildren = []
+        };
+
+        try
+        {
+            InvokeQueueAcquired(service, function, CancellationToken.None);
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+            Assert.NotNull(executionTask);
+            Assert.False(executionTask!.IsCompleted);
+            Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+            Assert.True(TickerCancellationTokenManager.RequestTickerCancellationById(function.TickerId));
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (executionTask != null)
+                await executionTask;
+        }
+
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+    }
+
+    [Fact]
+    public async Task StoppingWhileQueued_UnregistersBeforeDelegateCanBeDropped()
+    {
+        var (service, taskHandler) = BuildCapturingService(out var capturedWorkRef);
+        var function = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            FunctionName = "StoppingQueuedFunc",
+            Type = TickerType.TimeTicker,
+            CachedPriority = TickerTaskPriority.Normal,
+            TimeTickerChildren = []
+        };
+        using var stopping = new CancellationTokenSource();
+
+        InvokeQueueAcquired(service, function, stopping.Token);
+        Assert.NotNull(capturedWorkRef());
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+
+        stopping.Cancel();
+
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+        await taskHandler.DidNotReceiveWithAnyArgs()
+            .ExecuteRegisteredTaskAsync(default!, default, default!, default);
+    }
+
+    [Fact]
+    public async Task IdentityCancellation_InterruptsBlockedSemaphoreWait_WithoutCallingHandler_AndUnregistersOnce()
+    {
+        var (service, taskHandler) = BuildCapturingService(out var capturedWorkRef, gate: out var gate);
+
+        var function = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            FunctionName = "BlockedFunc",
+            Type = TickerType.CronTickerOccurrence,
+            CachedPriority = TickerTaskPriority.Normal,
+            CachedMaxConcurrency = 1,
+            TimeTickerChildren = []
+        };
+
+        // Exhaust the single permit so the queued delegate blocks on WaitAsync.
+        var semaphore = gate.GetSemaphoreOrNull("BlockedFunc", 1);
+        Assert.NotNull(semaphore);
+        await semaphore!.WaitAsync();
+
+        InvokeQueueAcquired(service, function, CancellationToken.None);
+        var capturedWork = capturedWorkRef();
+        Assert.NotNull(capturedWork);
+
+        // Registration is visible while the delegate is queued/blocked on the semaphore.
+        Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+
+        var workTask = capturedWork!(CancellationToken.None);
+        Assert.False(workTask.IsCompleted); // genuinely blocked on the exhausted semaphore
+
+        // Identity cancellation signals the shared registered source, interrupting the wait.
+        Assert.True(TickerCancellationTokenManager.RequestTickerCancellationById(function.TickerId));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => workTask);
+
+        // Handler was never invoked — the wait was interrupted before execution began.
+        await taskHandler.DidNotReceiveWithAnyArgs()
+            .ExecuteRegisteredTaskAsync(default!, default, default!, default);
+
+        // Unregistered exactly once by the delegate's finally; the permit we hold was never taken.
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+        Assert.False(TickerCancellationTokenManager.RemoveTickerCancellationToken(function.TickerId));
+        Assert.Equal(0, semaphore.CurrentCount);
+    }
+
+    [Fact]
+    public async Task BlockedOnSemaphore_RemainsVisibleAcrossTwoLeaseRenewals_ThenUnregistersOnCancel()
+    {
+        var (service, _) = BuildCapturingService(out var capturedWorkRef, gate: out var gate);
+
+        var function = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(),
+            FunctionName = "TwoRenewalFunc",
+            Type = TickerType.CronTickerOccurrence,
+            CachedPriority = TickerTaskPriority.Normal,
+            CachedMaxConcurrency = 1,
+            TimeTickerChildren = []
+        };
+
+        var semaphore = gate.GetSemaphoreOrNull("TwoRenewalFunc", 1);
+        Assert.NotNull(semaphore);
+        await semaphore!.WaitAsync(); // exhaust so the delegate blocks
+
+        InvokeQueueAcquired(service, function, CancellationToken.None);
+        var capturedWork = capturedWorkRef();
+        Assert.NotNull(capturedWork);
+
+        var workTask = capturedWork!(CancellationToken.None);
+        Assert.False(workTask.IsCompleted);
+
+        // Two back-to-back lease-renewal snapshots (no sleeps) both see the still-blocked occurrence.
+        for (var renewal = 0; renewal < 2; renewal++)
+        {
+            var timeIds = new List<Guid>();
+            var cronIds = new List<Guid>();
+            TickerCancellationTokenManager.SnapshotRunningForLeaseRenewal(timeIds, cronIds);
+            Assert.Contains(function.TickerId, cronIds);
+        }
+
+        // Cancel unblocks the wait and the delegate's finally unregisters exactly once.
+        Assert.True(TickerCancellationTokenManager.RequestTickerCancellationById(function.TickerId));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => workTask);
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+    }
+
+    private static (TickerQSchedulerBackgroundService Service, ITickerExecutionTaskHandler Handler) BuildCapturingService(
+        out Func<Func<CancellationToken, Task>?> capturedWork)
+        => BuildCapturingService(out capturedWork, out _);
+
+    private static (TickerQSchedulerBackgroundService Service, ITickerExecutionTaskHandler Handler) BuildCapturingService(
+        out Func<Func<CancellationToken, Task>?> capturedWork, out TickerFunctionConcurrencyGate gate)
+    {
+        var executionContext = new TickerExecutionContext();
+        var internalManager = Substitute.For<IInternalTickerManager>();
+        internalManager.SetTickersInProgress(
+                Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<InternalFunctionContext[]>(0));
+        var taskHandler = Substitute.For<ITickerExecutionTaskHandler>();
+        var taskScheduler = Substitute.For<ITickerQTaskScheduler>();
+        var localGate = new TickerFunctionConcurrencyGate();
+
+        Func<CancellationToken, Task>? captured = null;
+        taskScheduler.QueueAsync(
+            Arg.Any<Func<CancellationToken, Task>>(),
+            Arg.Any<TickerTaskPriority>(),
+            Arg.Any<CancellationToken>())
+            .ReturnsForAnyArgs(ci =>
+            {
+                captured = ci.ArgAt<Func<CancellationToken, Task>>(0);
+                return ValueTask.CompletedTask;
+            });
+
+        var service = new TickerQSchedulerBackgroundService(
+            executionContext, taskHandler, taskScheduler,
+            internalManager, new SchedulerOptionsBuilder(), localGate);
+
+        gate = localGate;
+        capturedWork = () => captured;
+        return (service, taskHandler);
+    }
+
+    private static void InvokeQueueAcquired(
+        TickerQSchedulerBackgroundService service, InternalFunctionContext function, CancellationToken stoppingToken)
+    {
+        var method = typeof(TickerQSchedulerBackgroundService)
+            .GetMethod("QueueAcquiredExecution", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        method!.Invoke(service, new object[] { function, stoppingToken });
     }
 
     private static async Task<DateTime?> WaitForNextOccurrenceAsync(

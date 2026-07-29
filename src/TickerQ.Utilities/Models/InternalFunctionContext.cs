@@ -22,8 +22,20 @@ namespace TickerQ.Utilities.Models
         public TickerTaskPriority CachedPriority { get; set; }
         public int CachedMaxConcurrency { get; set; }
         public string FunctionName { get; set; }
+        public int? RequestContractVersion { get; set; }
+        public string RequestContractFingerprint { get; set; }
         public Guid TickerId { get; set; }
         public Guid? ParentId { get; set; }
+        /// <summary>
+        /// Root aggregate that durably owns this execution. Equal to <see cref="TickerId"/>
+        /// for roots and propagated unchanged to every chain descendant. Execution-only;
+        /// providers such as Redis use it to update children embedded in the root document.
+        /// </summary>
+        [JsonIgnore]
+        public Guid? ChainRootId { get; set; }
+        /// <summary>Authoritative generation of <see cref="ChainRootId"/> for this execution.</summary>
+        [JsonIgnore]
+        public Guid? ChainGeneration { get; set; }
         public TickerType Type { get; set; }
         public int Retries { get; set; }
         public int RetryCount { get; set; }
@@ -34,7 +46,35 @@ namespace TickerQ.Utilities.Models
         public int[] RetryIntervals { get; set; }
         public bool ReleaseLock { get; set; }
         public DateTime ExecutionTime { get; set; }
+        /// <summary>
+        /// Per-attempt execution timeout carried from the ticker row (cron template
+        /// for occurrences). Null inherits the global default; &lt;= 0 disables.
+        /// </summary>
+        public int? TimeoutSeconds { get; set; }
+        /// <summary>
+        /// Current InProgress generation of the root row this context executes under. Set at
+        /// acquisition (minted fresh on every transition to InProgress) and carried through
+        /// execution so the terminal write and lease renewal can be fenced on it. Null for
+        /// chain children (they run under their root's lease; <see cref="ChainGeneration"/>
+        /// fences their writes).
+        /// </summary>
+        public Guid? AcquisitionToken { get; set; }
         public RunCondition RunCondition { get; set; }
+        /// <summary>
+        /// Optional result published by a successful terminal execution, carried to the persistence
+        /// write so it commits atomically with the terminal status. Execution-only: it is never part
+        /// of the persisted wire row itself and never serialized on this context. Set only via the
+        /// success path so failed/retried/cancelled/skipped attempts never publish a result.
+        /// </summary>
+        [JsonIgnore]
+        public TickerResultEnvelope ResultEnvelope { get; set; }
+        /// <summary>
+        /// Direct parent's already-validated committed result supplied by an execution transport.
+        /// When present, the runtime consumes this snapshot instead of querying local persistence.
+        /// Execution-only and never serialized as part of the function context.
+        /// </summary>
+        [JsonIgnore]
+        public TickerResultEnvelope ParentResultEnvelope { get; set; }
         public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 
         [DynamicDependency(DynamicallyAccessedMemberTypes.PublicProperties, typeof(InternalFunctionContext))]

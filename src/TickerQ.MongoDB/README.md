@@ -40,6 +40,6 @@ builder.Services.AddTickerQ(options =>
 
 ## Notes
 
-- Concurrency uses single-document atomic `findAndModify` with an `UpdatedAt` CAS guard. No MongoDB transactions needed — works on standalone Mongo, replica sets, and Atlas free tier.
-- Indexes are created idempotently on startup, including a unique index on `(CronTickerId, ExecutionTime)` for cron occurrence deduplication.
-- Collection names default to `ticker_TimeTickers`, `ticker_CronTickers`, `ticker_CronTickerOccurrences`. Override with `SetCollectionPrefix`.
+- Single-document operations use atomic `findAndModify`. Atomic graph fencing, terminal result publication, retention, and the durable Node finalization outbox require multi-document transactions on a replica set. Standalone or topology-ambiguous clients fail closed and do not advertise durable Node callback support.
+- Indexes are created idempotently on startup, including a unique index on `(CronTickerId, ExecutionTime)` for cron occurrence deduplication and the unique identity/due indexes for the Node finalization outbox.
+- Collection names default to `ticker_TimeTickers`, `ticker_CronTickers`, `ticker_CronTickerOccurrences`, `ticker_TickerResults`, and `ticker_NodeFinalizationOutbox`. Override with `SetCollectionPrefix`.

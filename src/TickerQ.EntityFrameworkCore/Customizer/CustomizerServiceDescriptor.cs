@@ -25,6 +25,10 @@ public static class ServiceBuilder
             }
 
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
+            RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(builder, services);
+            // Bootstrapper enumeration preserves registration order: migrate before probing.
+            RegisterAutoMigrate<TContext, TTimeTicker, TCronTicker>(builder, services);
+            RegisterNodeFinalizationReadiness<TContext>(services);
         };
     }
 
@@ -44,7 +48,50 @@ public static class ServiceBuilder
             });
             services.TryAddScoped<TContext>(sp => sp.GetRequiredService<IDbContextFactory<TContext>>().CreateDbContext());
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
+            RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(builder, services);
+            // Bootstrapper enumeration preserves registration order: migrate before probing.
+            RegisterAutoMigrate<TContext, TTimeTicker, TCronTicker>(builder, services);
+            RegisterNodeFinalizationReadiness<TContext>(services);
         };
+    }
+
+    // Auto-migration is opt-in via builder.AutoMigrateDatabase(); registered inside
+    // ConfigureServices so it applies regardless of builder method call order.
+    private static void RegisterAutoMigrate<TContext, TTimeTicker, TCronTicker>(
+        TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> builder, IServiceCollection services)
+        where TContext : DbContext
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        if (!builder.AutoMigrate) return;
+
+        services.AddSingleton<ITickerQPersistenceBootstrapper, EfCoreAutoMigrateBootstrapper<TContext>>();
+    }
+
+    private static void RegisterNodeFinalizationReadiness<TContext>(IServiceCollection services)
+        where TContext : DbContext
+    {
+        services.TryAddSingleton<EfCoreNodeFinalizationOutboxReadiness>();
+        services.TryAddSingleton<IEfCoreNodeFinalizationOutboxReadiness>(sp =>
+            sp.GetRequiredService<EfCoreNodeFinalizationOutboxReadiness>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<ITickerQPersistenceBootstrapper,
+            EfCoreNodeFinalizationOutboxReadinessProbe<TContext>>());
+    }
+
+    // Assistant chat history is strictly opt-in: nothing is registered (and
+    // no tables are mapped) unless AddAssistantHistory() was called on the
+    // builder. Runs inside ConfigureServices so it works regardless of the
+    // order builder methods were called in.
+    private static void RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(
+        TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> builder, IServiceCollection services)
+        where TContext : DbContext
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        if (builder.AssistantHistory == null) return;
+
+        services.AddSingleton(builder.AssistantHistory);
+        services.AddScoped<IAssistantHistoryStore, EfAssistantHistoryStore<TContext>>();
     }
 
     public class TickerQOptionsConfiguration<TContext, TTimeTicker, TCronTicker>

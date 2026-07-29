@@ -33,12 +33,11 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
     public TickerInMemoryPersistenceProviderTests()
     {
         _now = new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc);
-        _nodeId = "test-node-1";
-
         _clock = Substitute.For<ITickerClock>();
         _clock.UtcNow.Returns(_now);
 
-        var optionsBuilder = new SchedulerOptionsBuilder { NodeIdentifier = _nodeId };
+        var optionsBuilder = new SchedulerOptionsBuilder { NodeIdentifier = "test-node-1" };
+        _nodeId = optionsBuilder.ExecutionOwnerId;
 
         var services = new ServiceCollection();
         services.AddSingleton(_clock);
@@ -440,6 +439,8 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
         Assert.Equal(TickerStatus.InProgress, result[0].Status);
         Assert.Equal(_nodeId, result[0].LockHolder);
         Assert.Equal(_now, result[0].LockedAt);
+        Assert.NotNull(result[0].LeaseUntil);
+        Assert.NotNull(result[0].AcquisitionToken);
         Assert.Equal(_now, result[0].UpdatedAt);
     }
 

@@ -51,10 +51,11 @@ public static class ServiceExtension
             {
                 Task.Run(async () =>
                 {
-                    // Release resources held by dead nodes before the scheduler starts processing.
-                    await internalTickerManager.ReleaseDeadNodeResources(schedulerOptions.NodeIdentifier);
-                                        
-                    // After cleanup, restart the host scheduler so it immediately
+                    // Ownership is process-instance unique. Do not release current-label rows on
+                    // startup: a sibling process with the same logical NodeIdentifier may still be
+                    // live. Expired predecessors are handled by lease/stale recovery.
+
+                    // After startup, restart the host scheduler so it immediately
                     // picks up newly seeded cron tickers and jobs configured via the core pipeline.
                     if (hostScheduler != null && hostScheduler.IsRunning)
                     {

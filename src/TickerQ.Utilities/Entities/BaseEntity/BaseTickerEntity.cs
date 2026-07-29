@@ -14,5 +14,16 @@ namespace TickerQ.Utilities.Entities.BaseEntity
         public virtual DateTime CreatedAt { get; internal set; } = DateTime.UtcNow;
         [JsonInclude]
         public virtual DateTime UpdatedAt { get; internal set; } = DateTime.UtcNow;
+
+        /// <summary>
+        /// Contract version accepted when this ticker's request payload was persisted. Nullable so
+        /// rows written by older TickerQ versions remain readable and can follow the legacy drift policy.
+        /// </summary>
+        [JsonInclude]
+        public virtual int? RequestContractVersion { get; set; }
+
+        /// <summary>Canonical request-schema fingerprint accepted at persistence time, when available.</summary>
+        [JsonInclude]
+        public virtual string RequestContractFingerprint { get; set; }
     }
 }

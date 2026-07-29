@@ -17,6 +17,8 @@ public class TickerQRemoteExecutionOptions
 
     internal string? WebHookSignature { get; set; }
 
+    internal bool AllowPrivateNodeCallbackAddressesForLocalDevelopment { get; private set; }
+
     /// <summary>
     /// Display name for this scheduler instance, shown in the Hub dashboard. Defaults to
     /// <see cref="Environment.MachineName"/>; override when running multiple instances per host.
@@ -66,6 +68,14 @@ public class TickerQRemoteExecutionOptions
             throw new ArgumentException("Application URL must use http or https.", nameof(url));
         ApplicationUrl = url.TrimEnd('/');
     }
+
+    /// <summary>
+    /// Allows Node callback URLs to resolve to loopback or private network addresses.
+    /// This weakens SSRF protection and is intended only for explicitly controlled local
+    /// development and test environments. The default is <see langword="false"/>.
+    /// </summary>
+    public void EnablePrivateNodeCallbackAddressesForLocalDevelopment()
+        => AllowPrivateNodeCallbackAddressesForLocalDevelopment = true;
 
     /// <summary>
     /// Validates that all required configuration options are set.

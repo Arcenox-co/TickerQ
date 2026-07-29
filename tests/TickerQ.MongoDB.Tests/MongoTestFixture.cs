@@ -1,3 +1,4 @@
+using MongoDB.Bson;
 using MongoDB.Driver;
 using NSubstitute;
 using Testcontainers.MongoDb;
@@ -16,19 +17,29 @@ namespace TickerQ.MongoDB.Tests;
 /// </summary>
 public class MongoTestFixture : IAsyncLifetime
 {
-    public MongoDbContainer Container { get; } = new MongoDbBuilder()
-        .WithImage("mongo:7")
+    public MongoDbContainer Container { get; } = new MongoDbBuilder("mongo:7")
+        .WithReplicaSet()
         .Build();
 
     public IMongoClient Client { get; private set; } = null!;
     public IMongoDatabase Database { get; private set; } = null!;
+    public bool UsesDirectConnection { get; private set; }
+    public bool ProviderBeforeReadinessProbe { get; private set; }
     public IMongoCollection<TimeTickerEntity> TimeTickers => _context.TimeTickers;
     public IMongoCollection<CronTickerEntity> CronTickers => _context.CronTickers;
     public IMongoCollection<CronTickerOccurrenceEntity<CronTickerEntity>> CronTickerOccurrences => _context.CronTickerOccurrences;
-    public ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity> Provider { get; private set; } = null!;
+    public IMongoCollection<BsonDocument> NodeFinalizations => _context.NodeFinalizations;
+    public ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity> Provider => ConcreteProvider;
+    internal TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity> ConcreteProvider { get; private set; } = null!;
     public ITickerClock Clock { get; private set; } = null!;
     public DateTime FixedNow { get; } = new(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc);
     public const string NodeId = "test-node-1";
+
+    /// <summary>The scheduler options the provider was constructed with.</summary>
+    public SchedulerOptionsBuilder Options { get; private set; } = null!;
+
+    /// <summary>The execution owner id the provider stamps as <c>LockHolder</c> when it acquires a row.</summary>
+    public string OwnerId => Options.ExecutionOwnerId;
 
     private ITickerMongoContext<TimeTickerEntity, CronTickerEntity> _context = null!;
 
@@ -38,17 +49,20 @@ public class MongoTestFixture : IAsyncLifetime
 
         TickerClassMaps.RegisterOnce<TimeTickerEntity, CronTickerEntity>();
 
-        Client = new MongoClient(Container.GetConnectionString());
+        var connectionString = Container.GetConnectionString();
+        UsesDirectConnection = MongoClientSettings.FromConnectionString(connectionString).DirectConnection == true;
+        Client = new MongoClient(connectionString);
         Database = Client.GetDatabase("tickerq_test");
         _context = new TickerMongoContext<TimeTickerEntity, CronTickerEntity>(Database, "ticker_");
 
         Clock = Substitute.For<ITickerClock>();
         Clock.UtcNow.Returns(FixedNow);
 
-        var options = new SchedulerOptionsBuilder { NodeIdentifier = NodeId };
-        Provider = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(_context, Clock, options);
+        Options = new SchedulerOptionsBuilder { NodeIdentifier = NodeId };
+        ConcreteProvider = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(_context, Clock, Options);
+        ProviderBeforeReadinessProbe = ConcreteProvider.SupportsDurableNodeFinalizationOutbox;
 
-        var provisioner = new TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity>(_context);
+        var provisioner = new TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity>(_context, ConcreteProvider);
         await provisioner.StartAsync(CancellationToken.None);
     }
 
@@ -62,9 +76,15 @@ public class MongoTestFixture : IAsyncLifetime
         await TimeTickers.DeleteManyAsync(Builders<TimeTickerEntity>.Filter.Empty);
         await CronTickers.DeleteManyAsync(Builders<CronTickerEntity>.Filter.Empty);
         await CronTickerOccurrences.DeleteManyAsync(Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Filter.Empty);
+        await Database.GetCollection<BsonDocument>("ticker_TickerResults")
+            .DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
+        await NodeFinalizations.DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
     }
 
     /// <summary>Internal helper to instantiate a fresh provisioner for idempotency tests.</summary>
     internal TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity> NewProvisioner()
-        => new(_context);
+        => new(_context, ConcreteProvider);
+
+    internal TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity> NewProvider()
+        => new(_context, Clock, Options);
 }

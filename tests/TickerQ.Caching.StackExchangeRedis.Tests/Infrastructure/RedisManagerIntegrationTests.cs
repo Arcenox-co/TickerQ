@@ -34,6 +34,10 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
     private DateTime _fixedNow;
     private const string NodeId = "test-node-1";
     private const string ValidFunction = "TestFunction";
+    private static Task NoOpDelegate(
+        CancellationToken cancellationToken,
+        IServiceProvider serviceProvider,
+        TickerQ.Utilities.Base.TickerFunctionContext context) => Task.CompletedTask;
     private const string Prefix = "tq";
 
     // In-memory stores backing the mock
@@ -74,7 +78,7 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         TickerFunctionProvider.RegisterFunctions(
             new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
             {
-                [ValidFunction] = ("", TickerTaskPriority.Normal, (_, _, _) => Task.CompletedTask, 0)
+                [ValidFunction] = ("", TickerTaskPriority.Normal, NoOpDelegate, 0)
             });
         TickerFunctionProvider.Build();
 
@@ -96,7 +100,7 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         _cronTickerManager = tickerManager;
 
         _internalManager = new InternalTickerManager<TimeTickerEntity, CronTickerEntity>(
-            _provider, _clock, notificationHub);
+            _provider, _clock, notificationHub, schedulerOptions);
 
         return Task.CompletedTask;
     }
@@ -541,7 +545,7 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         var stored = VerifyInStore<TimeTickerEntity>($"{Prefix}:tt:{result.Result.Id}");
         Assert.NotNull(stored);
         Assert.Equal(TickerStatus.InProgress, stored!.Status);
-        Assert.Equal(NodeId, stored.LockHolder);
+        Assert.StartsWith(NodeId + ":", stored.LockHolder);
 
         // Verify dispatcher was called
         await _dispatcher.Received(1).DispatchAsync(
@@ -567,7 +571,7 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         var stored = VerifyInStore<TimeTickerEntity>($"{Prefix}:tt:{result.Result.Id}");
         Assert.NotNull(stored);
         Assert.Equal(TickerStatus.InProgress, stored!.Status);
-        Assert.Equal(NodeId, stored.LockHolder);
+        Assert.StartsWith(NodeId + ":", stored.LockHolder);
 
         await _dispatcher.Received(1).DispatchAsync(
             Arg.Is<InternalFunctionContext[]>(c => c.Length > 0),

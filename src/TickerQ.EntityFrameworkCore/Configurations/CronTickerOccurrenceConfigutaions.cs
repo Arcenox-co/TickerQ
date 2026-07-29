@@ -21,7 +21,10 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             
             builder.Property(x => x.LockHolder)
                 .IsRequired(false);
-            
+
+            builder.Property(x => x.AcquisitionToken)
+                .IsRequired(false);
+
             builder.HasIndex("CronTickerId")
                 .HasDatabaseName("IX_CronTickerOccurrence_CronTickerId");
 
@@ -30,6 +33,10 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
             builder.HasIndex("Status", "ExecutionTime")
                 .HasDatabaseName("IX_CronTickerOccurrence_Status_ExecutionTime");
+
+            // Index for retention sweeps: eligibility filters on terminal Status + ExecutedAt cutoff.
+            builder.HasIndex("Status", "ExecutedAt")
+                .HasDatabaseName("IX_CronTickerOccurrence_Status_ExecutedAt");
 
             builder.HasOne(x => x.CronTicker)
                 .WithMany()

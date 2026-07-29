@@ -1,5 +1,6 @@
 ﻿using System.Text.Json.Serialization;
 using TickerQ.Utilities.Entities.BaseEntity;
+using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.Entities
 {
@@ -20,5 +21,19 @@ namespace TickerQ.Utilities.Entities
         /// when this is true even if IsEnabled is true.
         /// </summary>
         public virtual bool IsSystemPaused { get; set; }
+
+        /// <summary>
+        /// What the stale-job watchdog does with an occurrence of this cron whose
+        /// executing node died mid-run (lease expired while InProgress). Template
+        /// level — applies to every occurrence.
+        /// </summary>
+        public virtual StaleAction OnStale { get; set; }
+
+        /// <summary>
+        /// Max execution time per attempt, in seconds — template level, applies to
+        /// every occurrence. Null inherits the global default; zero or negative
+        /// disables the timeout explicitly.
+        /// </summary>
+        public virtual int? TimeoutSeconds { get; set; }
     }
 }

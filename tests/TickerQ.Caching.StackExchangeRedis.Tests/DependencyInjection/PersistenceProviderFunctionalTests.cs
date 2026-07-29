@@ -34,14 +34,18 @@ public class FunctionalTestDbContext : DbContext
 [Collection("PersistenceProviderFunctional")]
 public class PersistenceProviderFunctionalTests : IDisposable
 {
-    private const string TestFunction = "TestFunction";
+    private const string TestFunction = "FunctionalTestFunction";
+    private static Task NoOpDelegate(
+        CancellationToken cancellationToken,
+        IServiceProvider serviceProvider,
+        TickerQ.Utilities.Base.TickerFunctionContext context) => Task.CompletedTask;
 
     public PersistenceProviderFunctionalTests()
     {
         TickerFunctionProvider.RegisterFunctions(
             new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
             {
-                [TestFunction] = ("", TickerTaskPriority.Normal, (_, _, _) => Task.CompletedTask, 0)
+                [TestFunction] = ("", TickerTaskPriority.Normal, NoOpDelegate, 0)
             });
         TickerFunctionProvider.Build();
     }

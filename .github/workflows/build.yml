@@ -14,13 +14,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Read version from file
         id: get-version
         run: |
           VERSION=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:Version)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Check if all NuGet packages already exist
         id: check
@@ -43,9 +43,9 @@ jobs:
           done
 
           if [ "$MISSING" = "0" ]; then
-            echo "all_exist=true" >> $GITHUB_OUTPUT
+            echo "all_exist=true" >> "$GITHUB_OUTPUT"
           else
-            echo "all_exist=false" >> $GITHUB_OUTPUT
+            echo "all_exist=false" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -57,13 +57,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Detect .NET version
         id: detect
         run: |
           DOTNET_VER=$(grep -oP '<TargetFramework>net\K[0-9]+' src/Directory.Build.props)
-          echo "dotnet_version=${DOTNET_VER}.0.x" >> $GITHUB_OUTPUT
+          echo "dotnet_version=${DOTNET_VER}.0.x" >> "$GITHUB_OUTPUT"
 
       - name: Setup .NET SDKs
         uses: actions/setup-dotnet@v4
@@ -105,6 +105,7 @@ jobs:
           dotnet restore tests/TickerQ.Tests/TickerQ.Tests.csproj
           dotnet restore tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj
           dotnet restore tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj
+          dotnet restore tests/TickerQ.SourceGenerator.Tests/TickerQ.SourceGenerator.Tests.csproj
 
       - name: Build TickerQ.SourceGenerator
         run: dotnet build src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
@@ -122,12 +123,14 @@ jobs:
           dotnet build tests/TickerQ.Tests/TickerQ.Tests.csproj --configuration Release
           dotnet build tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj --configuration Release
           dotnet build tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj --configuration Release
+          dotnet build tests/TickerQ.SourceGenerator.Tests/TickerQ.SourceGenerator.Tests.csproj --configuration Release
 
       - name: Run tests
         run: |
           dotnet test tests/TickerQ.Tests/ --configuration Release --no-build
           dotnet test tests/TickerQ.EntityFrameworkCore.Tests/ --configuration Release --no-build
           dotnet test tests/TickerQ.Caching.StackExchangeRedis.Tests/ --configuration Release --no-build
+          dotnet test tests/TickerQ.SourceGenerator.Tests/ --configuration Release --no-build
 
       - name: Pack other projects
         run: |
@@ -153,12 +156,79 @@ jobs:
           name: nupkgs
           path: ./nupkgs
 
+  mongo-verify:
+    name: MongoDB runtime verification
+    # Runtime verification is deliberately independent of the package-existence
+    # publishing optimization: it has no dependency on check-nuget/build, so the
+    # MongoDB Testcontainers suite runs on every release/dispatch even when the
+    # build job is skipped because all packages already exist on NuGet.
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_NOLOGO: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect .NET version
+        id: detect
+        run: |
+          DOTNET_VER=$(grep -oP '<TargetFramework>net\K[0-9]+' src/Directory.Build.props)
+          echo "dotnet_version=${DOTNET_VER}.0.x" >> "$GITHUB_OUTPUT"
+
+      - name: Setup .NET SDKs
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ steps.detect.outputs.dotnet_version }}
+
+      - name: Docker info preflight
+        run: docker info
+
+      - name: Build TickerQ.Utilities
+        run: dotnet build src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release
+
+      - name: Pack TickerQ.Utilities
+        run: dotnet pack src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs
+
+      - name: Add local nupkgs source
+        run: dotnet nuget add source "$(pwd)/nupkgs" --name LocalNupkgs
+
+      - name: Restore MongoDB tests
+        run: dotnet restore tests/TickerQ.MongoDB.Tests/TickerQ.MongoDB.Tests.csproj
+
+      - name: Build MongoDB tests
+        run: dotnet build tests/TickerQ.MongoDB.Tests/TickerQ.MongoDB.Tests.csproj --configuration Release
+
+      - name: Run MongoDB tests
+        run: |
+          dotnet test tests/TickerQ.MongoDB.Tests/ --configuration Release --no-build --logger "trx;LogFileName=mongo.trx" --results-directory TestResults/Mongo
+
+      - name: Capture Docker diagnostics on failure
+        # Runs only when a prior step failed; the '|| true' guards keep this step
+        # green so it never masks the underlying test failure that already marked
+        # the job as failed.
+        if: failure()
+        run: |
+          mkdir -p TestResults/Mongo
+          docker info > TestResults/Mongo/docker-info.txt 2>&1 || true
+          docker ps -a > TestResults/Mongo/docker-ps.txt 2>&1 || true
+
+      - name: Upload MongoDB test diagnostics and results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mongo-test-results
+          path: TestResults/Mongo
+          if-no-files-found: warn
+
   trigger-publish:
     needs:
       - check-nuget
       - build
-    # Allow this job to run even if build is skipped
-    if: always() && needs.check-nuget.result == 'success'
+      - mongo-verify
+    # Allow package build to be skipped when everything already exists, but never
+    # publish from a run whose unconditional MongoDB runtime verification failed.
+    if: always() && needs.check-nuget.result == 'success' && needs.mongo-verify.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
@@ -169,7 +239,7 @@ jobs:
         run: |
           artifacts=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)
           id=$(echo "$artifacts" | jq '.artifacts[] | select(.name=="nupkgs") | .id')
-          echo "ARTIFACT_ID=$id" >> $GITHUB_ENV
+          echo "ARTIFACT_ID=$id" >> "$GITHUB_ENV"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       

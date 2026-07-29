@@ -16,15 +16,18 @@ namespace TickerQ.Dashboard.Hubs
         private readonly IConfiguration _config;
         private readonly ILogger<TickerQNotificationHub> _logger;
         private readonly IAuthService _authService;
+        private readonly Infrastructure.Metrics.ITickerQDashboardMetrics _metrics;
 
         public TickerQNotificationHub(
-            IConfiguration config, 
+            IConfiguration config,
             ILogger<TickerQNotificationHub> logger,
-            IAuthService authService)
+            IAuthService authService,
+            Infrastructure.Metrics.ITickerQDashboardMetrics metrics)
         {
             _config = config;
             _logger = logger;
             _authService = authService;
+            _metrics = metrics;
         }
 
         public override async Task OnConnectedAsync()
@@ -49,6 +52,7 @@ namespace TickerQ.Dashboard.Hubs
             // Store user info in connection
             Context.Items["username"] = authResult.Username;
             Context.Items["authenticated"] = true;
+            _metrics.SignalRConnected();
 
             await base.OnConnectedAsync();
         }
@@ -57,9 +61,14 @@ namespace TickerQ.Dashboard.Hubs
         {
             var connectionId = Context.ConnectionId;
             var username = Context.Items["username"]?.ToString() ?? "unknown";
-            
-            _logger.LogInformation("SignalR connection disconnected: {ConnectionId} - User: {Username}", 
+
+            _logger.LogInformation("SignalR connection disconnected: {ConnectionId} - User: {Username}",
                 connectionId, username);
+
+            // Only counted when the connection passed auth — aborted
+            // connections never incremented.
+            if (IsAuthenticated())
+                _metrics.SignalRDisconnected();
 
             await base.OnDisconnectedAsync(exception);
         }
