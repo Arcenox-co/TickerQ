@@ -25,6 +25,10 @@ internal static class RedisKeyBuilder
     internal const string RetentionReconciliationPhaseKey = $"{Prefix}:retention:reconcile:phase";
     internal const string RetentionReconciliationCursorKey = $"{Prefix}:retention:reconcile:cursor";
     internal const string RetentionReconciliationPendingKey = $"{Prefix}:retention:reconcile:pending";
+    // These intentionally remain additive legacy-style keys. Because ticker and result keys also
+    // lack a shared hash tag, the durable outbox capability is advertised only on standalone Redis.
+    internal const string NodeFinalizationRecordsKey = $"{Prefix}:node-finalize:records";
+    internal const string NodeFinalizationDueKey = $"{Prefix}:node-finalize:due";
 
     internal static string TimeTickerKey(Guid id) => $"{Prefix}:tt:{id}";
     internal static string TimeTickerResultKey(Guid id) => $"{Prefix}:tt:{id}:result";

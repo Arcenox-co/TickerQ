@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Caching.StackExchangeRedis.DependencyInjection;
+using TickerQ.Caching.StackExchangeRedis.Infrastructure;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -189,4 +190,5 @@ internal sealed class NodeHeartbeatPayload
 [JsonSerializable(typeof(int[]))]
 [JsonSerializable(typeof(long))]
 [JsonSerializable(typeof(bool))]
+[JsonSerializable(typeof(RedisNodeFinalizationRecord))]
 internal partial class RedisContextJsonSerializerContext : JsonSerializerContext;

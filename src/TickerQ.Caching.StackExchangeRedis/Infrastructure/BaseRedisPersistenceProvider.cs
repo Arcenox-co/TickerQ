@@ -41,6 +41,10 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     private static readonly string CheckLeaseScript = LuaScriptLoader.Load("CheckLease");
     private static readonly string RecoverStaleScript = LuaScriptLoader.Load("RecoverStale");
     private static readonly string AcquireOnDemandScript = LuaScriptLoader.Load("AcquireOnDemand");
+    private static readonly string ClaimNodeFinalizationsScript = LuaScriptLoader.Load("ClaimNodeFinalizations");
+    private static readonly string CompleteNodeFinalizationScript = LuaScriptLoader.Load("CompleteNodeFinalization");
+    private static readonly string RescheduleNodeFinalizationScript = LuaScriptLoader.Load("RescheduleNodeFinalization");
+    private readonly bool _supportsDurableNodeFinalizationOutbox;
 
     protected BaseRedisPersistenceProvider(
         IDatabase db,
@@ -75,9 +79,41 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
         Serializer = new RedisSerializer(db, jsonOptions, logger ?? throw new ArgumentNullException(nameof(logger)));
         IndexManager = new RedisIndexManager<TTimeTicker, TCronTicker>(db, LockHolder, Clock);
+        _supportsDurableNodeFinalizationOutbox = IsStandaloneTopology(db);
     }
 
     public bool SupportsLeaseBasedRecovery => true;
+
+    /// <summary>
+    /// Durable finalization is intentionally fail-closed on Redis Cluster. Existing ticker,
+    /// result, and outbox keys have no common hash tag, so a multi-key script would CROSSSLOT.
+    /// Standalone Redis (including ordinary primary/replica deployments) supports the atomic script.
+    /// </summary>
+    public bool SupportsDurableNodeFinalizationOutbox => _supportsDurableNodeFinalizationOutbox;
+
+    private static bool IsStandaloneTopology(IDatabase db)
+    {
+        try
+        {
+            var multiplexer = db.Multiplexer;
+            if (multiplexer == null) return false;
+            var endpoints = multiplexer.GetEndPoints();
+            if (endpoints.Length == 0) return false;
+            var observed = false;
+            foreach (var endpoint in endpoints)
+            {
+                var server = multiplexer.GetServer(endpoint);
+                if (!server.IsConnected) continue;
+                observed = true;
+                if (server.ServerType != ServerType.Standalone) return false;
+            }
+            return observed;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     #region Lua script operations
     protected async Task<T> TryAcquireAsync<T>(string key, string resultKey, TickerStatus targetStatus, string expectedUpdatedAt = "") where T : class
@@ -156,11 +192,11 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     private async Task<bool> TryAcknowledgeCasReplaceAsync<T>(string key, string resultKey, T replacement,
         DateTime expectedUpdatedAt, string expectedHolder, Guid? expectedToken, int expectedStatus,
         string resultAction, byte[] resultEnvelope, Guid? embeddedTargetId = null,
-        Guid? expectedChainGeneration = null) where T : class
+        Guid? expectedChainGeneration = null, RedisNodeFinalizationRecord outboxRecord = null) where T : class
     {
         var result = await EvaluateCasReplaceAsync(key, resultKey, replacement, expectedUpdatedAt,
             expectedHolder, expectedToken, expectedStatus, resultAction, resultEnvelope, embeddedTargetId,
-            expectedChainGeneration)
+            expectedChainGeneration, outboxRecord)
             .ConfigureAwait(false);
         return !result.IsNull;
     }
@@ -168,14 +204,22 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     private Task<RedisResult> EvaluateCasReplaceAsync<T>(string key, string resultKey, T replacement,
         DateTime expectedUpdatedAt, string expectedHolder, Guid? expectedToken, int expectedStatus,
         string resultAction, byte[] resultEnvelope, Guid? embeddedTargetId,
-        Guid? expectedChainGeneration) where T : class
-        => Db.ScriptEvaluateAsync(CasReplaceScript, [(RedisKey)key, (RedisKey)resultKey],
+        Guid? expectedChainGeneration, RedisNodeFinalizationRecord outboxRecord = null) where T : class
+        => Db.ScriptEvaluateAsync(CasReplaceScript,
+            outboxRecord == null
+                ? [(RedisKey)key, (RedisKey)resultKey]
+                : [(RedisKey)key, (RedisKey)resultKey, NodeFinalizationRecordsKey, NodeFinalizationDueKey],
             [(RedisValue)expectedHolder, (RedisValue)(expectedToken?.ToString() ?? ""),
              (RedisValue)expectedStatus, (RedisValue)expectedUpdatedAt.ToString("O"),
              (RedisValue)Serializer.Serialize(replacement), (RedisValue)resultAction,
              (RedisValue)(resultEnvelope ?? []),
              (RedisValue)(embeddedTargetId?.ToString() ?? ""),
-             (RedisValue)(expectedChainGeneration?.ToString() ?? "")]);
+             (RedisValue)(expectedChainGeneration?.ToString() ?? ""),
+             (RedisValue)(outboxRecord == null ? "" : Serializer.Serialize(outboxRecord)),
+             (RedisValue)(outboxRecord?.OutboxId ?? ""),
+             (RedisValue)(outboxRecord?.ImmutableDigest ?? ""),
+             (RedisValue)(outboxRecord == null ? "" :
+                 ToScore(outboxRecord.AvailableAtUtc).ToString(System.Globalization.CultureInfo.InvariantCulture))]);
 
     private static bool IsFencedTerminalWrite(InternalFunctionContext context)
         => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ReleaseLock)) ||
@@ -217,9 +261,25 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         => CommitTerminalTickerCoreAsync(
             functionContext, enforceRemoteChildToken: true, cancellationToken);
 
+    public Task<bool> CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+        InternalFunctionContext functionContext, NodeFinalizationIntent intent,
+        CancellationToken cancellationToken = default)
+    {
+        if (!SupportsDurableNodeFinalizationOutbox)
+            throw new NotSupportedException(
+                "Durable Node finalization requires standalone Redis. Redis Cluster is unsupported because existing terminal/result/outbox keys do not share one hash slot.");
+        ArgumentNullException.ThrowIfNull(functionContext);
+        ArgumentNullException.ThrowIfNull(intent);
+        if (intent.TickerType != functionContext.Type || intent.TickerId != functionContext.TickerId ||
+            !functionContext.AcquisitionToken.HasValue || intent.AcquisitionToken != functionContext.AcquisitionToken.Value)
+            throw new InvalidOperationException("Node finalization intent identity must match the terminal execution context.");
+        return CommitTerminalTickerCoreAsync(functionContext, enforceRemoteChildToken: true,
+            cancellationToken, RedisNodeFinalizationRecord.Create(intent));
+    }
+
     private async Task<bool> CommitTerminalTickerCoreAsync(
         InternalFunctionContext functionContext, bool enforceRemoteChildToken,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, RedisNodeFinalizationRecord outboxRecord = null)
     {
         if (functionContext == null)
             throw new ArgumentNullException(nameof(functionContext));
@@ -240,20 +300,21 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
         return functionContext.Type == TickerType.CronTickerOccurrence
             ? await CommitSuccessfulCronOccurrenceAsync(
-                functionContext, resultAction, encodedEnvelope, cancellationToken).ConfigureAwait(false)
+                functionContext, resultAction, encodedEnvelope, cancellationToken, outboxRecord).ConfigureAwait(false)
             : await CommitSuccessfulTimeTickerAsync(
                 functionContext, resultAction, encodedEnvelope, cancellationToken,
-                enforceRemoteChildToken).ConfigureAwait(false);
+                enforceRemoteChildToken, outboxRecord).ConfigureAwait(false);
     }
 
     private async Task<bool> CommitSuccessfulTimeTickerAsync(
         InternalFunctionContext functionContext, string resultAction, byte[] encodedEnvelope,
-        CancellationToken cancellationToken, bool enforceRemoteChildToken)
+        CancellationToken cancellationToken, bool enforceRemoteChildToken,
+        RedisNodeFinalizationRecord outboxRecord = null)
     {
         if (functionContext.ParentId != null)
             return await CommitSuccessfulEmbeddedTimeTickerAsync(
                 functionContext, resultAction, encodedEnvelope, cancellationToken,
-                enforceRemoteChildToken).ConfigureAwait(false);
+                enforceRemoteChildToken, outboxRecord).ConfigureAwait(false);
 
         var ticker = await Serializer.GetAsync<TTimeTicker>(
             TimeTickerKey(functionContext.TickerId)).ConfigureAwait(false);
@@ -267,7 +328,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         ticker.UpdatedAt = NextAggregateUpdatedAt(expectedUpdatedAt);
         var acknowledged = await TryAcknowledgeCasReplaceAsync(
             TimeTickerKey(ticker.Id), TimeTickerResultKey(ticker.Id), ticker, expectedUpdatedAt,
-            LockHolder, functionContext.AcquisitionToken, expectedStatus, resultAction, encodedEnvelope)
+            LockHolder, functionContext.AcquisitionToken, expectedStatus, resultAction, encodedEnvelope,
+            outboxRecord: outboxRecord)
             .ConfigureAwait(false);
         if (!acknowledged)
             return false;
@@ -278,7 +340,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
     private async Task<bool> CommitSuccessfulEmbeddedTimeTickerAsync(
         InternalFunctionContext functionContext, string resultAction, byte[] encodedEnvelope,
-        CancellationToken cancellationToken, bool enforceRemoteChildToken = false)
+        CancellationToken cancellationToken, bool enforceRemoteChildToken = false,
+        RedisNodeFinalizationRecord outboxRecord = null)
     {
         var rootId = functionContext.ChainRootId;
         if (!rootId.HasValue || !functionContext.ChainGeneration.HasValue)
@@ -304,7 +367,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         var acknowledged = await TryAcknowledgeCasReplaceAsync(
             TimeTickerKey(root.Id), TimeTickerResultKey(functionContext.TickerId), root, expectedUpdatedAt,
             "", null, expectedStatus, resultAction, encodedEnvelope,
-            functionContext.TickerId, functionContext.ChainGeneration).ConfigureAwait(false);
+            functionContext.TickerId, functionContext.ChainGeneration, outboxRecord).ConfigureAwait(false);
         if (!acknowledged)
             return false;
 
@@ -314,7 +377,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
     private async Task<bool> CommitSuccessfulCronOccurrenceAsync(
         InternalFunctionContext functionContext, string resultAction, byte[] encodedEnvelope,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, RedisNodeFinalizationRecord outboxRecord = null)
     {
         var occurrence = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(
             CronOccurrenceKey(functionContext.TickerId)).ConfigureAwait(false);
@@ -328,12 +391,100 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         var acknowledged = await TryAcknowledgeCasReplaceAsync(
             CronOccurrenceKey(occurrence.Id), CronOccurrenceResultKey(occurrence.Id), occurrence,
             expectedUpdatedAt, LockHolder, functionContext.AcquisitionToken, expectedStatus,
-            resultAction, encodedEnvelope).ConfigureAwait(false);
+            resultAction, encodedEnvelope, outboxRecord: outboxRecord).ConfigureAwait(false);
         if (!acknowledged)
             return false;
 
         await IndexManager.AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
         return true;
+    }
+
+    public async Task<IReadOnlyList<NodeFinalizationClaim>> ClaimDueNodeFinalizationsAsync(
+        string workerId, int maxCount, DateTime nowUtc, DateTime leaseUntilUtc,
+        CancellationToken cancellationToken = default)
+    {
+        if (!SupportsDurableNodeFinalizationOutbox || maxCount <= 0)
+            return Array.Empty<NodeFinalizationClaim>();
+        if (string.IsNullOrWhiteSpace(workerId) || workerId.Length > NodeFinalizationClaim.MaxClaimedByLength)
+            throw new ArgumentException("Worker ID is required and must fit the claim owner bound.", nameof(workerId));
+        if (nowUtc.Kind != DateTimeKind.Utc || leaseUntilUtc.Kind != DateTimeKind.Utc || leaseUntilUtc <= nowUtc)
+            throw new ArgumentException("Claim timestamps must be UTC and lease expiry must follow now.");
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var tokens = Enumerable.Range(0, maxCount).Select(_ => Guid.NewGuid()).ToArray();
+        var arguments = new RedisValue[6 + tokens.Length];
+        arguments[0] = ToScore(nowUtc).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        arguments[1] = maxCount;
+        arguments[2] = workerId;
+        arguments[3] = ToScore(leaseUntilUtc).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        arguments[4] = nowUtc.ToString("O");
+        arguments[5] = leaseUntilUtc.ToString("O");
+        for (var i = 0; i < tokens.Length; i++) arguments[6 + i] = tokens[i].ToString("D");
+
+        var result = await Db.ScriptEvaluateAsync(ClaimNodeFinalizationsScript,
+            [(RedisKey)NodeFinalizationRecordsKey, NodeFinalizationDueKey], arguments).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var rows = (RedisResult[])result;
+        var claims = new List<NodeFinalizationClaim>(Math.Min(rows.Length, maxCount));
+        foreach (var row in rows)
+        {
+            var record = Serializer.DeserializeOrNull<RedisNodeFinalizationRecord>(row.ToString());
+            if (record == null || !record.HasValidIntegrity() || !Guid.TryParse(record.ClaimToken, out var token) ||
+                !string.Equals(record.ClaimedBy, workerId, StringComparison.Ordinal) ||
+                record.LeaseUntilUtc != leaseUntilUtc || record.AttemptCount < 1)
+                continue;
+            try
+            {
+                claims.Add(new NodeFinalizationClaim(record.ToIntent(), token, workerId,
+                    leaseUntilUtc, record.AttemptCount));
+            }
+            catch (Exception exception) when (exception is ArgumentException or FormatException)
+            {
+                // Persisted corruption is never returned as claimed work. The bounded Lua page has
+                // already repaired structurally corrupt index entries; semantic corruption fails closed.
+            }
+        }
+        return claims;
+    }
+
+    public Task<bool> CompleteNodeFinalizationAsync(
+        NodeFinalizationClaim claim, CancellationToken cancellationToken = default)
+        => MutateClaimAsync(CompleteNodeFinalizationScript, claim, null, null, cancellationToken);
+
+    public Task<bool> RescheduleNodeFinalizationAsync(
+        NodeFinalizationClaim claim, DateTime availableAtUtc, string errorCode,
+        CancellationToken cancellationToken = default)
+    {
+        if (availableAtUtc.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("AvailableAtUtc must be UTC.", nameof(availableAtUtc));
+        if (errorCode is { Length: > NodeFinalizationOperationalState.MaxErrorCodeLength })
+            throw new ArgumentException("Error code is too long.", nameof(errorCode));
+        return MutateClaimAsync(RescheduleNodeFinalizationScript, claim, availableAtUtc,
+            errorCode ?? string.Empty, cancellationToken);
+    }
+
+    private async Task<bool> MutateClaimAsync(string script, NodeFinalizationClaim claim,
+        DateTime? availableAtUtc, string errorCode, CancellationToken cancellationToken)
+    {
+        if (!SupportsDurableNodeFinalizationOutbox || claim == null) return false;
+        cancellationToken.ThrowIfCancellationRequested();
+        var record = RedisNodeFinalizationRecord.Create(claim.Intent);
+        var values = new List<RedisValue>
+        {
+            record.OutboxId, record.ImmutableDigest, record.TickerType, record.TickerId,
+            record.AcquisitionToken, record.DispatchId, record.NodeEpoch,
+            claim.ClaimToken.ToString("D"), claim.ClaimedBy
+        };
+        if (availableAtUtc.HasValue)
+        {
+            values.Add(ToScore(availableAtUtc.Value).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            values.Add(availableAtUtc.Value.ToString("O"));
+            values.Add(errorCode);
+        }
+        var result = await Db.ScriptEvaluateAsync(script,
+            [(RedisKey)NodeFinalizationRecordsKey, NodeFinalizationDueKey], values.ToArray()).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return (long)result == 1;
     }
     #endregion
 
