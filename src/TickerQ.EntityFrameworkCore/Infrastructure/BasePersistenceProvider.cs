@@ -143,6 +143,13 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 }
                 else
                 {
+                    if (functionContext.ParentId != null &&
+                        !await LockCurrentChainGenerationAsync(
+                            dbContext, functionContext, ct).ConfigureAwait(false))
+                    {
+                        await transaction.RollbackAsync(ct).ConfigureAwait(false);
+                        return false;
+                    }
                     var query = dbContext.Set<TTimeTicker>().Where(x => x.Id == functionContext.TickerId);
                     query = ApplyTimeTickerGenerationFence(dbContext, query, functionContext);
                     if (functionContext.ParentId == null)
@@ -362,23 +369,74 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var dbContext = session.Context;
         var now = _clock.UtcNow;
 
-        var query = dbContext.Set<TTimeTicker>()
-            .Where(x => x.Id == functionContexts.TickerId);
+        // Child mutations and root generation changes use the same root-first lock order.
+        // Own a transaction only when the caller/context does not already have one.
+        // This keeps the root CAS lock alive through the child update without committing
+        // or rolling back transaction state owned by an ambient caller.
+        var ownsTransaction = functionContexts.ParentId != null &&
+                              dbContext.Database.CurrentTransaction == null;
+        await using var transaction = ownsTransaction
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
 
-        query = ApplyTimeTickerGenerationFence(dbContext, query, functionContexts);
+        try
+        {
+            if (functionContexts.ParentId != null &&
+                !await LockCurrentChainGenerationAsync(
+                    dbContext, functionContexts, cancellationToken).ConfigureAwait(false))
+            {
+                if (transaction != null)
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return 0;
+            }
 
-        // Fencing: a terminal write from this node must not overwrite a row the
-        // stale watchdog already recovered (lock cleared / re-acquired elsewhere).
-        // Only root tickers carry a lock — chain children execute under their
-        // root's lock and are written unfenced, as before.
-        if (IsFencedTerminalWrite(functionContexts) && functionContexts.ParentId == null)
-            query = functionContexts.AcquisitionToken.HasValue
-                ? query.Where(x => x.LockHolder == _lockHolder &&
-                                   x.AcquisitionToken == functionContexts.AcquisitionToken)
-                : query.Where(_ => false);
+            var query = dbContext.Set<TTimeTicker>()
+                .Where(x => x.Id == functionContexts.TickerId);
 
-        return await query
-            .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(functionContexts, now, NextLeaseUntil(now)), cancellationToken).ConfigureAwait(false);
+            query = ApplyTimeTickerGenerationFence(dbContext, query, functionContexts);
+
+            // Fencing: a terminal write from this node must not overwrite a row the
+            // stale watchdog already recovered (lock cleared / re-acquired elsewhere).
+            // Roots use acquisition ownership below; children are serialized above by
+            // the authoritative root generation CAS.
+            if (IsFencedTerminalWrite(functionContexts) && functionContexts.ParentId == null)
+                query = functionContexts.AcquisitionToken.HasValue
+                    ? query.Where(x => x.LockHolder == _lockHolder &&
+                                       x.AcquisitionToken == functionContexts.AcquisitionToken)
+                    : query.Where(_ => false);
+
+            var affected = await query.ExecuteUpdateAsync(
+                setter => setter.UpdateTimeTicker<TTimeTicker>(
+                    functionContexts, now, NextLeaseUntil(now)), cancellationToken).ConfigureAwait(false);
+            if (transaction != null)
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return affected;
+        }
+        catch
+        {
+            if (transaction != null)
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async Task<bool> LockCurrentChainGenerationAsync(
+        TDbContext dbContext, InternalFunctionContext context, CancellationToken cancellationToken)
+    {
+        if (!context.ChainRootId.HasValue || !context.ChainGeneration.HasValue)
+            return false;
+
+        var rootId = context.ChainRootId.Value;
+        var generation = context.ChainGeneration.Value;
+        var affected = await dbContext.Set<TTimeTicker>()
+            .Where(root => root.Id == rootId && root.ParentId == null &&
+                           root.ChainRootId == root.Id && root.ChainGeneration == generation)
+            // A conditional no-op write is intentional: MVCC providers take a row write lock,
+            // serializing this child mutation with every root reacquisition.
+            .ExecuteUpdateAsync(
+                setter => setter.SetProperty(root => root.ChainGeneration, generation),
+                cancellationToken).ConfigureAwait(false);
+        return affected == 1;
     }
 
     private static IQueryable<TTimeTicker> ApplyTimeTickerGenerationFence(

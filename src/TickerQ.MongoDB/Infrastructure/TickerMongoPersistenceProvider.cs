@@ -118,25 +118,46 @@ namespace TickerQ.MongoDB.Infrastructure
 
         private async Task NormalizeChainDescendantsAsync(
             IClientSessionHandle session, Guid rootId, Guid generation, CancellationToken cancellationToken)
+            => await NormalizeChainDescendantsAsync(
+                session, new Dictionary<Guid, Guid> { [rootId] = generation }, cancellationToken)
+                .ConfigureAwait(false);
+
+        private sealed class ChainNodeProjection
         {
-            var frontier = new[] { rootId };
+            public Guid Id { get; set; }
+            public Guid? ParentId { get; set; }
+        }
+
+        private async Task NormalizeChainDescendantsAsync(
+            IClientSessionHandle session, IReadOnlyDictionary<Guid, Guid> generations,
+            CancellationToken cancellationToken)
+        {
+            var frontier = generations.Keys.ToDictionary(id => id, id => id);
             var fb = Builders<TTimeTicker>.Filter;
-            while (frontier.Length > 0)
+            while (frontier.Count > 0)
             {
                 var children = await _context.TimeTickers.Find(
-                        session, fb.In(x => x.ParentId, frontier.Select(x => (Guid?)x)))
-                    .Project(x => x.Id)
+                        session, fb.In(x => x.ParentId, frontier.Keys.Select(x => (Guid?)x)))
+                    .Project(x => new ChainNodeProjection { Id = x.Id, ParentId = x.ParentId })
                     .ToListAsync(cancellationToken).ConfigureAwait(false);
                 if (children.Count == 0)
                     return;
 
-                await _context.TimeTickers.UpdateManyAsync(
-                    session, fb.In(x => x.Id, children),
-                    Builders<TTimeTicker>.Update
-                        .Set(x => x.ChainRootId, rootId)
-                        .Set(x => x.ChainGeneration, generation),
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
-                frontier = children.ToArray();
+                var next = children.ToDictionary(
+                    child => child.Id,
+                    child => frontier[child.ParentId!.Value]);
+                var updates = next.GroupBy(x => x.Value).Select(group =>
+                {
+                    var rootId = group.Key;
+                    return new UpdateManyModel<TTimeTicker>(
+                        fb.In(x => x.Id, group.Select(x => x.Key)),
+                        Builders<TTimeTicker>.Update
+                            .Set(x => x.ChainRootId, rootId)
+                            .Set(x => x.ChainGeneration, generations[rootId]));
+                }).Cast<WriteModel<TTimeTicker>>().ToList();
+                await _context.TimeTickers.BulkWriteAsync(
+                    session, updates, cancellationToken: cancellationToken).ConfigureAwait(false);
+                frontier = next;
             }
         }
 
@@ -423,41 +444,64 @@ namespace TickerQ.MongoDB.Infrastructure
             TimeTickerEntity[] timeTickers,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            if (timeTickers == null || timeTickers.Length == 0)
+                yield break;
+            if (TransactionsKnownUnavailable)
+                throw new NotSupportedException(
+                    "Atomic Mongo scheduler chain acquisition requires a replica set transaction.");
+
             var now = _clock.UtcNow;
             var coll = _context.TimeTickers;
             var fb = Builders<TTimeTicker>.Filter;
-
-            foreach (var ticker in timeTickers)
+            var acquired = new List<(TimeTickerEntity Input, TTimeTicker Row, Guid Generation)>();
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var acquisitionToken = Guid.NewGuid();
+                acquired = await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                    var winners = new List<(TimeTickerEntity, TTimeTicker, Guid)>();
+                    foreach (var ticker in timeTickers)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var generation = Guid.NewGuid();
+                        var filter = fb.And(
+                            fb.Eq(x => x.Id, ticker.Id),
+                            fb.Eq(x => x.UpdatedAt, ticker.UpdatedAt),
+                            fb.Eq(x => x.AcquisitionToken, ticker.AcquisitionToken));
+                        var update = Builders<TTimeTicker>.Update
+                            .Set(x => x.LockHolder, _lockHolder)
+                            .Set(x => x.LockedAt, now)
+                            .Set(x => x.AcquisitionToken, generation)
+                            .Set(x => x.ChainRootId, ticker.Id)
+                            .Set(x => x.ChainGeneration, generation)
+                            .Set(x => x.UpdatedAt, now)
+                            .Set(x => x.Status, TickerStatus.Queued);
+                        var row = await coll.FindOneAndUpdateAsync(
+                            s, filter, update,
+                            new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After }, ct)
+                            .ConfigureAwait(false);
+                        if (row != null) winners.Add((ticker, row, generation));
+                    }
+                    await NormalizeChainDescendantsAsync(
+                        s, winners.ToDictionary(x => x.Item2.Id, x => x.Item3), ct).ConfigureAwait(false);
+                    return winners;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+            {
+                throw new NotSupportedException(
+                    "Atomic Mongo scheduler chain acquisition requires a replica set transaction.", ex);
+            }
 
-                // Fence the queue CAS on both the observed timestamp and generation. A clock can
-                // legitimately return the same value for two writes (or Mongo can truncate it),
-                // so UpdatedAt alone permits the same stale snapshot to acquire twice.
-                var filter = fb.And(
-                    fb.Eq(x => x.Id, ticker.Id),
-                    fb.Eq(x => x.UpdatedAt, ticker.UpdatedAt),
-                    fb.Eq(x => x.AcquisitionToken, ticker.AcquisitionToken));
-                var update = Builders<TTimeTicker>.Update
-                    .Set(x => x.LockHolder, _lockHolder)
-                    .Set(x => x.LockedAt, now)
-                    .Set(x => x.AcquisitionToken, acquisitionToken)
-                    .Set(x => x.ChainRootId, ticker.Id)
-                    .Set(x => x.ChainGeneration, acquisitionToken)
-                    .Set(x => x.UpdatedAt, now)
-                    .Set(x => x.Status, TickerStatus.Queued);
-
-                var result = await coll.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-                if (result.ModifiedCount <= 0)
-                    continue;
-
+            foreach (var (ticker, _, generation) in acquired)
+            {
                 ticker.UpdatedAt = now;
                 ticker.LockHolder = _lockHolder;
                 ticker.LockedAt = now;
-                ticker.AcquisitionToken = acquisitionToken;
-                ticker.ChainRootId = ticker.Id;
-                ticker.ChainGeneration = acquisitionToken;
+                ticker.AcquisitionToken = generation;
+                StampQueueGeneration(ticker, ticker.Id, generation);
                 ticker.Status = TickerStatus.Queued;
                 yield return ticker;
             }
@@ -466,6 +510,10 @@ namespace TickerQ.MongoDB.Infrastructure
         public async IAsyncEnumerable<TimeTickerEntity> QueueTimedOutTimeTickers(
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            if (TransactionsKnownUnavailable)
+                throw new NotSupportedException(
+                    "Atomic Mongo scheduler chain acquisition requires a replica set transaction.");
+
             var now = _clock.UtcNow;
             var fallbackThreshold = now.AddSeconds(-1);
             var coll = _context.TimeTickers;
@@ -477,36 +525,53 @@ namespace TickerQ.MongoDB.Infrastructure
                 fb.Lte(x => x.ExecutionTime, fallbackThreshold));
 
             var candidates = await coll.Find(candidatesFilter).ToListAsync(cancellationToken).ConfigureAwait(false);
-            var byParent = await LoadChildrenLookup(candidates.Select(c => c.Id).ToArray(), cancellationToken).ConfigureAwait(false);
-
-            foreach (var candidate in candidates)
+            var acquired = new List<TTimeTicker>();
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var acquisitionToken = Guid.NewGuid();
-
-                var filter = fb.And(
-                    fb.Eq(x => x.Id, candidate.Id),
-                    fb.Lte(x => x.UpdatedAt, candidate.UpdatedAt));
-
-                var update = Builders<TTimeTicker>.Update
-                    .Set(x => x.LockHolder, _lockHolder)
-                    .Set(x => x.LockedAt, now)
-                    .Set(x => x.LeaseUntil, NextLeaseUntil(now))
-                    .Set(x => x.AcquisitionToken, acquisitionToken)
-                    .Set(x => x.ChainRootId, candidate.Id)
-                    .Set(x => x.ChainGeneration, acquisitionToken)
-                    .Set(x => x.UpdatedAt, now)
-                    .Set(x => x.Status, TickerStatus.InProgress);
-
-                var result = await coll.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-                if (result.ModifiedCount <= 0)
-                    continue;
-
-                candidate.AcquisitionToken = acquisitionToken;
-                candidate.ChainRootId = candidate.Id;
-                candidate.ChainGeneration = acquisitionToken;
-                yield return BuildQueuedEntity(candidate, byParent);
+                acquired = await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                    var winners = new List<TTimeTicker>();
+                    foreach (var candidate in candidates)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var generation = Guid.NewGuid();
+                        var filter = fb.And(
+                            fb.Eq(x => x.Id, candidate.Id),
+                            fb.Lte(x => x.UpdatedAt, candidate.UpdatedAt));
+                        var update = Builders<TTimeTicker>.Update
+                            .Set(x => x.LockHolder, _lockHolder)
+                            .Set(x => x.LockedAt, now)
+                            .Set(x => x.LeaseUntil, NextLeaseUntil(now))
+                            .Set(x => x.AcquisitionToken, generation)
+                            .Set(x => x.ChainRootId, candidate.Id)
+                            .Set(x => x.ChainGeneration, generation)
+                            .Set(x => x.UpdatedAt, now)
+                            .Set(x => x.Status, TickerStatus.InProgress);
+                        var row = await coll.FindOneAndUpdateAsync(
+                            s, filter, update,
+                            new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After }, ct)
+                            .ConfigureAwait(false);
+                        if (row != null) winners.Add(row);
+                    }
+                    await NormalizeChainDescendantsAsync(
+                        s, winners.ToDictionary(x => x.Id, x => x.ChainGeneration!.Value), ct)
+                        .ConfigureAwait(false);
+                    return winners;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
             }
+            catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+            {
+                throw new NotSupportedException(
+                    "Atomic Mongo scheduler chain acquisition requires a replica set transaction.", ex);
+            }
+
+            var byParent = await LoadChildrenLookup(
+                acquired.Select(c => c.Id).ToArray(), cancellationToken).ConfigureAwait(false);
+            foreach (var candidate in acquired)
+                yield return BuildQueuedEntity(candidate, byParent);
         }
 
         public async Task ReleaseAcquiredTimeTickers(Guid[] timeTickerIds, CancellationToken cancellationToken = default)
@@ -2559,6 +2624,14 @@ namespace TickerQ.MongoDB.Infrastructure
             var projected = ProjectTimeTicker(ticker);
             ExtendProjectedChainsBeyondGrandchildren(projected, byParent);
             return projected;
+        }
+
+        private static void StampQueueGeneration(TimeTickerEntity node, Guid rootId, Guid generation)
+        {
+            node.ChainRootId = rootId;
+            node.ChainGeneration = generation;
+            foreach (var child in node.Children ?? [])
+                StampQueueGeneration(child, rootId, generation);
         }
 
         /// <summary>Attaches up to <paramref name="depth"/> raw child levels onto <paramref name="node"/>.</summary>

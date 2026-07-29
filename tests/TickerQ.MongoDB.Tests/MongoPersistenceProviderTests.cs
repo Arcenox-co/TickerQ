@@ -368,22 +368,75 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
         var child = NewTimeTicker();
         typeof(TimeTickerEntity).GetProperty(nameof(child.ParentId))!.SetValue(child, root.Id);
         await _f.Provider.AddTimeTickers([root, child], CancellationToken.None);
-        await _f.TimeTickers.UpdateManyAsync(
-            Builders<TimeTickerEntity>.Filter.In(x => x.Id, new[] { root.Id, child.Id }),
-            Builders<TimeTickerEntity>.Update.Unset(nameof(TimeTickerEntity.ChainRootId))
-                .Unset(nameof(TimeTickerEntity.ChainGeneration)));
+        await RemoveChainFenceFieldsAsync(root, child);
 
         var acquired = Assert.Single(await _f.Provider.AcquireImmediateTimeTickersAsync(
             [root.Id], CancellationToken.None));
+
+        await AssertChildTerminalWriteAcceptedAsync(root, child, acquired.ChainGeneration!.Value);
+    }
+
+    [Fact]
+    public async Task QueueTimeTickers_PreUpgradeAggregate_NormalizesDescendantsBeforeFencedWrite()
+    {
+        var root = NewTimeTicker();
+        var child = NewTimeTicker();
+        typeof(TimeTickerEntity).GetProperty(nameof(child.ParentId))!.SetValue(child, root.Id);
+        await _f.Provider.AddTimeTickers([root, child], CancellationToken.None);
+        await RemoveChainFenceFieldsAsync(root, child);
+        var observed = await _f.Provider.GetTimeTickerById(root.Id, CancellationToken.None);
+
+        var queued = new List<TimeTickerEntity>();
+        await foreach (var item in _f.Provider.QueueTimeTickers(
+                           [new TimeTickerEntity
+                           {
+                               Id = root.Id,
+                               UpdatedAt = observed!.UpdatedAt,
+                               AcquisitionToken = observed.AcquisitionToken
+                           }], CancellationToken.None))
+            queued.Add(item);
+
+        var acquired = Assert.Single(queued);
+        await AssertChildTerminalWriteAcceptedAsync(root, child, acquired.ChainGeneration!.Value);
+    }
+
+    [Fact]
+    public async Task QueueTimedOutTimeTickers_PreUpgradeAggregate_NormalizesDescendantsBeforeFencedWrite()
+    {
+        var root = NewTimeTicker(_f.FixedNow.AddSeconds(-5));
+        var child = NewTimeTicker();
+        typeof(TimeTickerEntity).GetProperty(nameof(child.ParentId))!.SetValue(child, root.Id);
+        await _f.Provider.AddTimeTickers([root, child], CancellationToken.None);
+        await RemoveChainFenceFieldsAsync(root, child);
+
+        var queued = new List<TimeTickerEntity>();
+        await foreach (var item in _f.Provider.QueueTimedOutTimeTickers(CancellationToken.None))
+            queued.Add(item);
+
+        var acquired = Assert.Single(queued);
+        await AssertChildTerminalWriteAcceptedAsync(root, child, acquired.ChainGeneration!.Value);
+    }
+
+    private Task RemoveChainFenceFieldsAsync(params TimeTickerEntity[] tickers)
+        => _f.TimeTickers.UpdateManyAsync(
+            Builders<TimeTickerEntity>.Filter.In(x => x.Id, tickers.Select(x => x.Id)),
+            Builders<TimeTickerEntity>.Update.Unset(nameof(TimeTickerEntity.ChainRootId))
+                .Unset(nameof(TimeTickerEntity.ChainGeneration)));
+
+    private async Task AssertChildTerminalWriteAcceptedAsync(
+        TimeTickerEntity root, TimeTickerEntity child, Guid generation)
+    {
         var update = new InternalFunctionContext
         {
             TickerId = child.Id, ParentId = root.Id, ChainRootId = root.Id,
-            ChainGeneration = acquired.ChainGeneration, Type = TickerType.TimeTicker
+            ChainGeneration = generation, Type = TickerType.TimeTicker
         }.SetProperty(x => x.Status, TickerStatus.Done);
 
         Assert.Equal(1, await _f.Provider.UpdateTimeTicker(update, CancellationToken.None));
         var persistedChild = await _f.Provider.GetTimeTickerById(child.Id, CancellationToken.None);
         Assert.Equal(root.Id, persistedChild!.ChainRootId);
+        Assert.Equal(generation, persistedChild.ChainGeneration);
+        Assert.Equal(TickerStatus.Done, persistedChild.Status);
     }
 
     [Fact]
