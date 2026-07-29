@@ -95,13 +95,12 @@ internal sealed class EfCoreNodeFinalizationOutboxReadinessProbe<TContext> : ITi
                 "does not contain the required NodeFinalizationOutbox mapping. Apply the TickerQ model customizer/configuration.");
         }
 
-        // A bounded key lookup references the exact mapped table while returning no row for a valid
-        // outbox (empty GUID keys are rejected by NodeFinalizationIntent). This proves schema access
-        // without scanning or draining operational data.
+        // A bounded key lookup materializes the complete mapped entity while returning no row for a valid
+        // outbox (empty GUID keys are rejected by NodeFinalizationIntent). Referencing every mapped column
+        // proves the installed schema matches the delivery record, not merely that the table/primary key exists.
         await context.Set<NodeFinalizationOutboxEntity>()
             .AsNoTracking()
             .Where(x => x.OutboxId == Guid.Empty)
-            .Select(x => x.OutboxId)
             .Take(1)
             .ToArrayAsync(cancellationToken)
             .ConfigureAwait(false);

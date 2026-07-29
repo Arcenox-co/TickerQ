@@ -143,6 +143,43 @@ public sealed class EfCoreNodeFinalizationOutboxTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Partial_outbox_schema_logs_error_and_leaves_readiness_false()
+    {
+        var partialPath = Path.Combine(Path.GetTempPath(), $"tickerq-node-outbox-partial-{Guid.NewGuid():N}.db");
+        try
+        {
+            var options = new DbContextOptionsBuilder<TestTickerQDbContext>()
+                .UseSqlite($"Data Source={partialPath}").Options;
+            var readiness = new EfCoreNodeFinalizationOutboxReadiness();
+            var logger = new RecordingLogger<EfCoreNodeFinalizationOutboxReadinessProbe<TestTickerQDbContext>>();
+            await using var services = new ServiceCollection()
+                .AddSingleton<IDbContextFactory<TestTickerQDbContext>>(
+                    new PooledDbContextFactory<TestTickerQDbContext>(options))
+                .BuildServiceProvider();
+
+            await using (var context = new TestTickerQDbContext(options))
+            {
+                await context.Database.EnsureCreatedAsync();
+                await context.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE NodeFinalizationOutbox DROP COLUMN TerminalMutationDigest");
+            }
+
+            var probe = new EfCoreNodeFinalizationOutboxReadinessProbe<TestTickerQDbContext>(
+                services, readiness, logger);
+            await probe.BootstrapAsync();
+
+            Assert.False(readiness.IsReady);
+            var error = Assert.Single(logger.Entries, x => x.Level == LogLevel.Error);
+            Assert.Contains("NodeFinalizationOutbox", error.Message);
+            Assert.Contains("migration", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(partialPath)) File.Delete(partialPath);
+        }
+    }
+
+    [Fact]
     public async Task Missing_outbox_model_logs_error_and_leaves_readiness_false()
     {
         var options = new DbContextOptionsBuilder<MissingOutboxDbContext>()
