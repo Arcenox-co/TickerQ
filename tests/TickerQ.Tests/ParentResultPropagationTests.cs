@@ -492,7 +492,7 @@ public sealed class ParentResultPropagationTests : IDisposable
     [Theory]
     [InlineData(TickerStatus.Failed, RunCondition.OnFailure)]
     [InlineData(TickerStatus.Cancelled, RunCondition.OnCancelled)]
-    public async Task StaleToken_NonSuccessTerminal_DoesNotNotifyOrReleaseDeferredChild(
+    public async Task NodeNonSuccessTerminal_UnsupportedDurableOutbox_DoesNotNotifyOrReleaseDeferredChild(
         TickerStatus terminalStatus, RunCondition childCondition)
     {
         var parentId = await AddOwnedTicker();
@@ -523,21 +523,44 @@ public sealed class ParentResultPropagationTests : IDisposable
                 ? (_, _, executionContext) =>
                 {
                     executionContext.IsRemoteCallbackExecution = true;
+                    executionContext.RemoteFinalizationIntent = FinalizationIntent(executionContext);
                     throw new TaskCanceledException();
                 }
                 : (_, _, executionContext) =>
                 {
                     executionContext.IsRemoteCallbackExecution = true;
+                    executionContext.RemoteFinalizationIntent = FinalizationIntent(executionContext);
                     throw new InvalidOperationException("remote failure");
                 },
             TimeTickerChildren = [child]
         };
 
-        await Assert.ThrowsAsync<TickerTerminalUpdateNotAcknowledgedException>(() => Run(parent));
+        var exception = await Assert.ThrowsAsync<NotSupportedException>(() => Run(parent));
 
+        Assert.Contains("durable Node finalization outbox", exception.Message);
         Assert.False(childRan);
         await _notificationHub.DidNotReceive()
             .UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(Arg.Any<InternalFunctionContext>());
+    }
+
+    private static NodeFinalizationIntent FinalizationIntent(TickerFunctionContext context)
+    {
+        var dispatchId = Guid.NewGuid();
+        var nodeEpoch = Guid.Parse("8fef33e7-826b-49e4-a36d-8eb0aa570ef1");
+        var controlNonce = Guid.NewGuid();
+        var body = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            tickerType = context.Type,
+            tickerId = context.Id,
+            acquisitionToken = context.AcquisitionToken!.Value,
+            dispatchId,
+            nodeEpoch,
+            controlNonce
+        });
+        return new NodeFinalizationIntent(1, dispatchId, context.Type, context.Id,
+            context.AcquisitionToken.Value, dispatchId, nodeEpoch,
+            "https://node.example/finalize", "/finalize", false,
+            Guid.NewGuid(), controlNonce, body, DateTime.UtcNow);
     }
 
     // ---- immutable bytes end-to-end ------------------------------------------------------------

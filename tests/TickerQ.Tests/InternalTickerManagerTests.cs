@@ -1334,6 +1334,93 @@ public class InternalTickerManagerTests
         });
     }
 
+    [Fact]
+    public async Task Node_remote_terminal_fails_closed_without_durable_outbox_capability()
+    {
+        _persistence.SupportsAcknowledgedTerminalUpdates.Returns(true);
+        var context = TerminalContext(TickerStatus.Done);
+        var intent = FinalizationIntent(context);
+
+        var exception = await Assert.ThrowsAsync<NotSupportedException>(() =>
+            _manager.UpdateTickerFromRemoteAsync(context, intent));
+
+        Assert.Contains("durable Node finalization outbox", exception.Message);
+        await _persistence.DidNotReceiveWithAnyArgs()
+            .CommitTerminalTickerAndEnqueueNodeFinalizationAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task Node_remote_terminal_rejects_intent_identity_mismatch_before_provider_call()
+    {
+        _persistence.SupportsAcknowledgedTerminalUpdates.Returns(true);
+        _persistence.SupportsDurableNodeFinalizationOutbox.Returns(true);
+        var context = TerminalContext(TickerStatus.Done);
+        var intent = FinalizationIntent(context, tickerId: Guid.NewGuid());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _manager.UpdateTickerFromRemoteAsync(context, intent));
+
+        await _persistence.DidNotReceiveWithAnyArgs()
+            .CommitTerminalTickerAndEnqueueNodeFinalizationAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task Node_remote_terminal_uses_single_atomic_provider_call_and_notifies_only_after_ack()
+    {
+        _persistence.SupportsAcknowledgedTerminalUpdates.Returns(true);
+        _persistence.SupportsDurableNodeFinalizationOutbox.Returns(true);
+        _persistence.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+                Arg.Any<InternalFunctionContext>(), Arg.Any<NodeFinalizationIntent>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+        var context = TerminalContext(TickerStatus.Done);
+        var intent = FinalizationIntent(context);
+
+        await _manager.UpdateTickerFromRemoteAsync(context, intent);
+
+        Received.InOrder(() =>
+        {
+            _persistence.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+                context, intent, Arg.Any<CancellationToken>());
+            _notificationHub.UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(context);
+        });
+        await _persistence.DidNotReceiveWithAnyArgs().CommitTerminalTickerAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task Node_remote_terminal_false_ack_suppresses_notification()
+    {
+        _persistence.SupportsAcknowledgedTerminalUpdates.Returns(true);
+        _persistence.SupportsDurableNodeFinalizationOutbox.Returns(true);
+        _persistence.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+                Arg.Any<InternalFunctionContext>(), Arg.Any<NodeFinalizationIntent>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        var context = TerminalContext(TickerStatus.Cancelled);
+
+        await Assert.ThrowsAsync<TickerQ.Utilities.Exceptions.TickerTerminalUpdateNotAcknowledgedException>(() =>
+            _manager.UpdateTickerFromRemoteAsync(context, FinalizationIntent(context)));
+
+        await _notificationHub.DidNotReceiveWithAnyArgs()
+            .UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(default!);
+    }
+
+    private static NodeFinalizationIntent FinalizationIntent(InternalFunctionContext context, Guid? tickerId = null)
+    {
+        var dispatchId = Guid.NewGuid();
+        var nodeEpoch = Guid.NewGuid();
+        var controlNonce = Guid.NewGuid();
+        var uri = "https://node.example.test/tickerq/finalize";
+        var actualTickerId = tickerId ?? context.TickerId;
+        var body = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            tickerType = context.Type, tickerId = actualTickerId, acquisitionToken = context.AcquisitionToken!.Value,
+            dispatchId, nodeEpoch, controlNonce
+        });
+        return new NodeFinalizationIntent(NodeFinalizationIntent.CurrentSchemaVersion, dispatchId,
+            context.Type, actualTickerId, context.AcquisitionToken!.Value, dispatchId,
+            nodeEpoch, uri, "/tickerq/finalize", false, Guid.NewGuid(), controlNonce,
+            body, DateTime.UtcNow);
+    }
+
     private static InternalFunctionContext TerminalContext(TickerStatus status)
         => new()
         {

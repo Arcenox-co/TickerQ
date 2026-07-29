@@ -1,7 +1,14 @@
 using System.Text.Json;
+using System.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
+using NSubstitute;
+using TickerQ.RemoteExecutor.WorkerStream;
 using TickerQ.RemoteExecutor.Hub;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 using Xunit;
 
@@ -17,13 +24,14 @@ public sealed class RemoteFunctionsSyncServiceTests
 {
     private const string Dialect2020_12 = "https://json-schema.org/draft/2020-12/schema";
 
-    private sealed class NullServiceProvider : IServiceProvider
+    private static RemoteFunctionsSyncService NewService(bool supportsNodeCallbacks = false)
     {
-        public object? GetService(Type serviceType) => null;
+        var options = new TickerQRemoteExecutionOptions();
+        options.EnablePrivateNodeCallbackAddressesForLocalDevelopment();
+        options.WebHookSignature = "dotnet-node-e2e-secret";
+        return new(options, (_, _) => Task.CompletedTask,
+            capabilities: new RemoteExecutorPersistenceCapabilities(supportsNodeCallbacks, supportsNodeCallbacks));
     }
-
-    private static RemoteFunctionsSyncService NewService()
-        => new(new TickerQRemoteExecutionOptions(), new NullServiceProvider());
 
     private static GetRegisteredFunctionsResponse ResponseWith(HubFunction function, string nodeName)
     {
@@ -46,7 +54,97 @@ public sealed class RemoteFunctionsSyncServiceTests
             {
                 calls.Add(seeds);
                 return Task.CompletedTask;
-            }), calls);
+            }, capabilities: new RemoteExecutorPersistenceCapabilities(true, true)), calls);
+    }
+
+    [Fact]
+    public void CapabilitySnapshot_IsLazilyDerivedFromTheFinalSingletonProviderRegistration()
+    {
+        var builder = new TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>(
+            new TickerExecutionContext(), new SchedulerOptionsBuilder());
+        builder.AddTickerRemoteExecutor<TimeTickerEntity, CronTickerEntity>(options => options.SetApiKey("test-key"));
+        var services = new ServiceCollection();
+        builder.ExternalProviderConfigServiceAction(services);
+        var provider = Substitute.For<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
+        provider.SupportsAcknowledgedTerminalUpdates.Returns(true);
+        provider.SupportsDurableNodeFinalizationOutbox.Returns(true);
+        services.AddSingleton(provider);
+
+        using var serviceProvider = services.BuildServiceProvider();
+        var snapshot = serviceProvider.GetRequiredService<RemoteExecutorPersistenceCapabilities>();
+
+        Assert.True(snapshot.SupportsNodeCallbacks);
+        Assert.Same(provider, serviceProvider.GetRequiredService<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>());
+    }
+
+    [Fact]
+    public async Task NodeRegistration_IsFailClosedWithoutDurableProviderCapabilities_AndSupportedSnapshotInvokesCallback()
+    {
+        var root = FindRepositoryRoot();
+        var sdkRoot = Path.Combine(root, "hub", "sdks", "node");
+        var fixture = Path.Combine(root, "hub", "remoteExecutor", "TickerQ.RemoteExecutor.Tests", "Fixtures", "node-callback-server.mjs");
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "node", ArgumentList = { fixture, sdkRoot }, RedirectStandardOutput = true,
+            RedirectStandardError = true, UseShellExecute = false
+        }) ?? throw new InvalidOperationException("Could not start Node callback fixture.");
+        try
+        {
+            var startup = await process.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            var port = int.Parse(startup!["PORT:".Length..]);
+            const string functionName = "dotnet-cancel-first";
+            const string nodeName = "capability-node";
+            var node = new HubNode
+            {
+                NodeName = nodeName, SdkType = "nodejs", CallbackUrl = $"http://127.0.0.1:{port}",
+                NodeEpoch = "8fef33e7-826b-49e4-a36d-8eb0aa570ef1"
+            };
+            node.Functions.Add(new HubFunction { FunctionName = functionName, IsActive = true });
+            var response = new GetRegisteredFunctionsResponse { WebhookSignature = "dotnet-node-e2e-secret" };
+            response.Nodes.Add(node);
+
+            await NewService().RegisterFunctionsFromResponse(response, CancellationToken.None);
+            var key = $"{functionName}@{nodeName}";
+            Assert.False(TickerFunctionProvider.TickerFunctions.ContainsKey(key));
+            Assert.False(RemoteFunctionRegistry.IsRemote(functionName));
+            using var client = new HttpClient();
+            using (var before = await JsonDocument.ParseAsync(await client.GetStreamAsync($"http://127.0.0.1:{port}/stats")))
+                Assert.Equal(0, before.RootElement.GetProperty("invocationCount").GetInt32());
+
+            var supported = NewService(supportsNodeCallbacks: true);
+            await supported.RegisterFunctionsFromResponse(response, CancellationToken.None);
+            var callback = TickerFunctionProvider.TickerFunctions[key].Delegate;
+            await using var services = new ServiceCollection()
+                .AddSingleton<IRemotePayloadLoader>(new NullPayloadLoader()).BuildServiceProvider();
+            var context = new TickerFunctionContext
+            {
+                Id = Guid.NewGuid(), AcquisitionToken = Guid.NewGuid(), FunctionName = key,
+                Type = TickerType.TimeTicker, ScheduledFor = DateTime.UtcNow, ResultSink = new TickerResultSink()
+            };
+            await callback(CancellationToken.None, services, context).WaitAsync(TimeSpan.FromSeconds(10));
+            using var after = await JsonDocument.ParseAsync(await client.GetStreamAsync($"http://127.0.0.1:{port}/stats"));
+            Assert.Equal(1, after.RootElement.GetProperty("invocationCount").GetInt32());
+            RemoteFunctionRegistry.Remove(functionName);
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+        }
+    }
+
+
+    private sealed class NullPayloadLoader : IRemotePayloadLoader
+    {
+        public Task<byte[]?> LoadPayloadAsync(Guid tickerId, TickerType type, CancellationToken ct)
+            => Task.FromResult<byte[]?>(null);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(Directory.GetCurrentDirectory()); directory is not null; directory = directory.Parent)
+            if (File.Exists(Path.Combine(directory.FullName, "hub", "sdks", "node", "package.json"))) return directory.FullName;
+        throw new DirectoryNotFoundException("Could not locate repository root.");
     }
 
     // ── Request-less registration works: descriptor with a null request contract. ──

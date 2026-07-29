@@ -556,6 +556,21 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
                 return;
             }
+            catch (RemoteExecutionNotStartedException ex) when (
+                mode == ExecutionMode.Scheduler && ex.HasAuthenticatedNotStartedProof)
+            {
+                // The signed remote endpoint proved this exact generation never entered user code.
+                // Skipped is terminal, consumes no user retry budget, and releases no failure/cancel descendants.
+                context.SetProperty(x => x.Status, TickerStatus.Skipped)
+                    .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
+                    .SetProperty(x => x.ElapsedTime, stopWatch.ElapsedMilliseconds)
+                    .SetProperty(x => x.ExceptionDetails, ex.Message);
+                jobActivity?.SetTag("tickerq.job.final_status", context.Status.ToString());
+                _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, ex.Message);
+                tickerFunctionContext.IsRemoteCallbackExecution = true;
+                await PersistExecutionUpdateAsync(context, tickerFunctionContext);
+                return;
+            }
             catch (SdkOfflineSkipException ex)
             {
                 // SDK node is offline and the transport-retry window
@@ -690,13 +705,12 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             if (mode == ExecutionMode.Scheduler)
             {
                 // The terminal write must ignore the surrounding cancelled token and must be
-                // durably acknowledged before notification or remote finalize.
+                // durably acknowledged before notification or remote finalization.
                 await PersistExecutionUpdateAsync(context, tickerFunctionContext);
                 terminalPersisted = true;
             }
 
-            // Notifications and user hooks are best-effort side effects. Neither may prevent
-            // the authoritative terminal row from being persisted, nor suppress the other.
+            // Notifications and user hooks are best-effort side effects after persistence.
             TryNotifyFailure(context, "timeout_cancelled", reason);
 
             if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
@@ -735,9 +749,23 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             return;
         }
 
-        await _internalTickerManager.UpdateTickerFromRemoteAsync(context, CancellationToken.None).ConfigureAwait(false);
-        if (executionContext.ConfirmRemoteCommitAsync is not null)
-            await executionContext.ConfirmRemoteCommitAsync(CancellationToken.None).ConfigureAwait(false);
+        var intent = executionContext.RemoteFinalizationIntent;
+        if (intent is null)
+        {
+            if (context.Status != TickerStatus.Skipped)
+                throw new InvalidOperationException(
+                    "An authenticated remote callback terminal outcome did not carry a durable Node finalization intent.");
+
+            // An authenticated no-start proof has no retained Node execution record to finalize,
+            // but its local skipped mutation is still generation-fenced and acknowledged.
+            await _internalTickerManager.UpdateTickerFromRemoteAsync(context, CancellationToken.None)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        await _internalTickerManager.UpdateTickerFromRemoteAsync(context, intent, CancellationToken.None)
+            .ConfigureAwait(false);
+        (_serviceProvider.GetService(typeof(INodeFinalizationWakeSignal)) as INodeFinalizationWakeSignal)?.Wake();
     }
 
     private bool TryGetContractDriftReason(InternalFunctionContext context, out string reason)

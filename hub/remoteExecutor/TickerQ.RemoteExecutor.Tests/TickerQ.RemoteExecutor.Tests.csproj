@@ -15,5 +15,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TickerQ.RemoteExecutor\TickerQ.RemoteExecutor.csproj" />
+    <ProjectReference Include="..\..\..\src\TickerQ\TickerQ.csproj" />
   </ItemGroup>
 </Project>

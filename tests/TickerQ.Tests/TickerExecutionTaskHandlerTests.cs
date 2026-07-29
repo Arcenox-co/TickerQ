@@ -3,7 +3,9 @@ using NSubstitute;
 
 using TickerQ.Exceptions;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -935,6 +937,144 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     }
 
     [Fact]
+    public async Task RemoteTimeoutRejectedCommit_PropagatesAndDoesNotReleaseCancelledChild()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        manager.UpdateTickerFromRemoteAsync(
+                Arg.Any<InternalFunctionContext>(), Arg.Any<NodeFinalizationIntent>(), Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new TickerTerminalUpdateNotAcknowledgedException("stale generation"));
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var wake = Substitute.For<INodeFinalizationWakeSignal>();
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        services.AddSingleton(wake);
+        await using var serviceProvider = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager,
+            new SchedulerOptionsBuilder
+            {
+                DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
+                TimeoutGracePeriod = TimeSpan.FromMilliseconds(50),
+            }, Substitute.For<ITickerQFailureNotifier>());
+        var childRan = false;
+        var parent = CreateContext(async (token, _, execution) =>
+        {
+            execution.IsRemoteCallbackExecution = true;
+            execution.RemoteFinalizationIntent = FinalizationIntent(execution);
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        }, TickerType.TimeTicker);
+        parent.AcquisitionToken = Guid.NewGuid();
+        parent.TimeTickerChildren =
+        [
+            CreateContext((_, _, _) => { childRan = true; return Task.CompletedTask; }, TickerType.TimeTicker)
+        ];
+        parent.TimeTickerChildren[0].RunCondition = RunCondition.OnCancelled;
+
+        await Assert.ThrowsAsync<TickerTerminalUpdateNotAcknowledgedException>(() =>
+            handler.ExecuteTaskAsync(parent, isDue: false));
+
+        Assert.False(childRan);
+        wake.DidNotReceive().Wake();
+        await manager.Received(1).UpdateTickerFromRemoteAsync(
+            parent, Arg.Any<NodeFinalizationIntent>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RemoteNodeTerminalWakesOnlyAfterDurableCommitAcknowledges()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var commitEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.UpdateTickerFromRemoteAsync(
+                Arg.Any<InternalFunctionContext>(), Arg.Any<NodeFinalizationIntent>(), Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                commitEntered.TrySetResult();
+                await releaseCommit.Task;
+            });
+        var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var wake = Substitute.For<INodeFinalizationWakeSignal>();
+        var services = new ServiceCollection();
+        services.AddSingleton(manager);
+        services.AddSingleton(instrumentation);
+        services.AddSingleton(wake);
+        await using var serviceProvider = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(
+            serviceProvider, _clock, instrumentation, manager, new SchedulerOptionsBuilder(),
+            Substitute.For<ITickerQFailureNotifier>());
+        var parent = CreateContext((_, _, executionContext) =>
+        {
+            executionContext.IsRemoteCallbackExecution = true;
+            executionContext.RemoteFinalizationIntent = FinalizationIntent(executionContext);
+            return Task.CompletedTask;
+        }, TickerType.TimeTicker);
+        parent.AcquisitionToken = Guid.NewGuid();
+
+        var execution = handler.ExecuteTaskAsync(parent, isDue: false);
+        await commitEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        wake.DidNotReceive().Wake();
+        releaseCommit.TrySetResult();
+        await execution;
+
+        wake.Received(1).Wake();
+        await manager.DidNotReceiveWithAnyArgs().UpdateTickerAsync(default!, default);
+        await manager.DidNotReceiveWithAnyArgs()
+            .UpdateTickerFromRemoteAsync(default!, default(CancellationToken));
+    }
+
+    [Fact]
+    public async Task RemoteExecutionProvenNotStarted_UsesAcknowledgedCommitAndSuppressesAllDeferredChildren()
+    {
+        var childCalls = 0;
+        var parent = CreateContext((_, _, execution) =>
+        {
+            execution.IsRemoteCallbackExecution = true;
+            throw new RemoteExecutionNotStartedException("authenticated node_epoch_mismatch");
+        }, TickerType.TimeTicker);
+        parent.AcquisitionToken = Guid.NewGuid();
+        foreach (var condition in new[]
+                 {
+                     RunCondition.OnFailure, RunCondition.OnCancelled,
+                     RunCondition.OnFailureOrCancelled, RunCondition.OnAnyCompletedStatus
+                 })
+        {
+            var child = CreateContext((_, _, _) => { childCalls++; return Task.CompletedTask; }, TickerType.TimeTicker);
+            child.RunCondition = condition;
+            parent.TimeTickerChildren.Add(child);
+        }
+
+        await _handler.ExecuteTaskAsync(parent, isDue: false);
+
+        Assert.Equal(TickerStatus.Skipped, parent.Status);
+        Assert.Equal(0, childCalls);
+        await _internalManager.Received(1).UpdateTickerFromRemoteAsync(parent, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Worker_RemoteExecutionNotStarted_FollowsOrdinaryFailurePathWithoutManagerPersistence()
+    {
+        var context = CreateContext((_, _, _) =>
+            throw new RemoteExecutionNotStartedException("worker user exception"), TickerType.TimeTicker);
+
+        var result = await _handler.ExecuteWorkerTaskAsync(context, isDue: false);
+
+        Assert.Equal(TickerStatus.Failed, result.Status);
+        await _internalManager.DidNotReceiveWithAnyArgs().UpdateTickerAsync(default!, default);
+        await _internalManager.DidNotReceiveWithAnyArgs().UpdateTickerFromRemoteAsync(default!, default(CancellationToken));
+        await _internalManager.DidNotReceiveWithAnyArgs()
+            .UpdateTickerFromRemoteAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public void RemoteExecutionNotStartedException_HasNoPublicConstructor()
+    {
+        Assert.Empty(typeof(RemoteExecutionNotStartedException).GetConstructors());
+        Assert.True(typeof(RemoteExecutionNotStartedException).IsPublic);
+        Assert.True(typeof(RemoteExecutionNotStartedException).IsSealed);
+    }
+
+    [Fact]
     public async Task ExecuteTaskAsync_LogsJobEnqueued_OnExecution()
     {
         var context = CreateContext(ct: (_, _, _) => Task.CompletedTask);
@@ -1025,6 +1165,27 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             CachedDelegate = ct,
             TimeTickerChildren = []
         };
+    }
+
+    private static NodeFinalizationIntent FinalizationIntent(TickerFunctionContext context)
+    {
+        var dispatchId = Guid.NewGuid();
+        var nodeEpoch = Guid.Parse("8fef33e7-826b-49e4-a36d-8eb0aa570ef1");
+        var controlNonce = Guid.NewGuid();
+        var body = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            tickerType = context.Type,
+            tickerId = context.Id,
+            acquisitionToken = context.AcquisitionToken!.Value,
+            dispatchId,
+            nodeEpoch,
+            controlNonce
+        });
+        return new NodeFinalizationIntent(
+            NodeFinalizationIntent.CurrentSchemaVersion, dispatchId, context.Type, context.Id,
+            context.AcquisitionToken.Value, dispatchId, nodeEpoch,
+            "https://node.example/finalize", "/finalize", false,
+            Guid.NewGuid(), controlNonce, body, DateTime.UtcNow);
     }
 
     #endregion

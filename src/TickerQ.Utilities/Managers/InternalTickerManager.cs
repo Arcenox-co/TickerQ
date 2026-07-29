@@ -440,6 +440,47 @@ namespace TickerQ.Utilities.Managers
             await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);
         }
 
+        public async Task UpdateTickerFromRemoteAsync(
+            InternalFunctionContext functionContext,
+            NodeFinalizationIntent finalizationIntent,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(functionContext);
+            ArgumentNullException.ThrowIfNull(finalizationIntent);
+
+            if (!IsTerminalMutation(functionContext))
+                throw new InvalidOperationException("A Node finalization intent may only accompany a terminal ticker mutation.");
+            if (!_persistenceProvider.SupportsAcknowledgedTerminalUpdates)
+                throw new NotSupportedException(
+                    "The configured persistence provider does not support acknowledged terminal updates required by remote callbacks.");
+            if (!_persistenceProvider.SupportsDurableNodeFinalizationOutbox)
+                throw new NotSupportedException(
+                    "The configured persistence provider does not support the durable Node finalization outbox required by Node callbacks.");
+
+            var acquisitionToken = functionContext.AcquisitionToken;
+            if (!acquisitionToken.HasValue || acquisitionToken == Guid.Empty ||
+                finalizationIntent.TickerType != functionContext.Type ||
+                finalizationIntent.TickerId != functionContext.TickerId ||
+                finalizationIntent.AcquisitionToken != acquisitionToken.Value ||
+                finalizationIntent.OutboxId != finalizationIntent.DispatchId)
+                throw new InvalidOperationException(
+                    "Node finalization intent identity does not match the acquired ticker context.");
+
+            var acknowledged = await _persistenceProvider
+                .CommitTerminalTickerAndEnqueueNodeFinalizationAsync(functionContext, finalizationIntent, cancellationToken)
+                .ConfigureAwait(false);
+            if (!acknowledged)
+            {
+                var message = $"Terminal completion for TickerFunction '{functionContext.FunctionName}' " +
+                              $"(ticker {functionContext.TickerId}) and its Node finalization intent were not acknowledged by the exact acquisition generation.";
+                if (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope)))
+                    throw new TickerResultNotAcknowledgedException(message);
+                throw new TickerTerminalUpdateNotAcknowledgedException(message);
+            }
+
+            await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);
+        }
+
         private static bool IsTerminalMutation(InternalFunctionContext context)
             => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
                context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed

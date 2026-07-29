@@ -94,8 +94,12 @@ try {
   assert.equal(recovered.status, 200);
   assert.equal(invocationCount, 1, 'settled outcome must be recoverable without reinvocation');
 
-  const finalize = await send('/finalize', JSON.stringify({ ...id, controlNonce: crypto.randomUUID() }));
-  assert.equal(finalize.status, 200);
+  const finalizeBody = JSON.stringify({ ...id, controlNonce: crypto.randomUUID() });
+  await assert.rejects(send('/finalize', finalizeBody, crypto.randomUUID(), true), /response loss/);
+  const finalize = await send('/finalize', finalizeBody);
+  assert.equal(finalize.status, 200, 'lost finalize response must be idempotently recoverable');
+  assert.equal(endpoint.executions.size, 0, 'finalized tombstones must not consume active/settled registry capacity');
+  assert.equal(endpoint.finalized.size, 1);
   const finalizedReplay = await send('/execute', body, crypto.randomUUID());
   assert.equal(finalizedReplay.status, 410, 'finalized generation must retain a replay-safe tombstone');
   assert.equal(invocationCount, 1);
@@ -109,17 +113,59 @@ try {
 
   const pre = identity();
   const controlNonce = crypto.randomUUID();
-  const cancel = send('/cancel', JSON.stringify({ ...pre, controlNonce }));
-  await new Promise(resolve => setImmediate(resolve));
+  const cancel = await send('/cancel', JSON.stringify({ ...pre, controlNonce }));
+  assert.equal(cancel.status, 202);
+  assert.equal(JSON.parse(cancel.body).state, 'cancellation_registered');
   const preExecute = send('/execute', executeBody(pre), crypto.randomUUID());
-  const [cancelAck, cancelOutcome] = await Promise.all([cancel, preExecute]);
+  const [cancelAck, cancelOutcome] = await Promise.all([
+    send('/cancel', JSON.stringify({ ...pre, controlNonce })), preExecute,
+  ]);
   assert.equal(cancelAck.status, 200);
   assert.equal(JSON.parse(cancelAck.body).state, 'stopped');
   assert.equal(JSON.parse(cancelOutcome.body).status, TickerStatus.Cancelled);
   assert.equal(invocationCount, 2, 'pre-cancelled execution must never invoke user code');
 
+  for (const [label, overrides, expectedStatus, expectedError] of [
+    ['missing function', { functionName: `missing-${crypto.randomUUID()}` }, 404, 'function_not_found'],
+    ['invalid execution', { hasRequest: 'not-a-boolean' }, 400, 'invalid_execution'],
+  ]) {
+    const rejected = identity();
+    const rejectedControlNonce = crypto.randomUUID();
+    const rejectedCancelBody = JSON.stringify({ ...rejected, controlNonce: rejectedControlNonce });
+    assert.equal((await send('/cancel', rejectedCancelBody)).status, 202);
+    const rejectedBody = executeBody(rejected, overrides);
+    await assert.rejects(send('/execute', rejectedBody, crypto.randomUUID(), true), /response loss/);
+    assert.equal([...endpoint.executions.values()].some(record => record.identity.dispatchId === rejected.dispatchId), false,
+      `${label}: rejected cancelPending record must be removed even when the response is lost`);
+
+    // A lost proof followed by the identical cancel+execute pair must deterministically recreate
+    // and reject the pending record without invoking user code or retaining finalize work.
+    assert.equal((await send('/cancel', rejectedCancelBody)).status, 202);
+    const rejection = await send('/execute', rejectedBody);
+    assert.equal(rejection.status, expectedStatus, label);
+    const rejectionProof = JSON.parse(rejection.body);
+    assert.equal(rejectionProof.error, expectedError);
+    assert.equal(rejectionProof.state, 'rejected_not_started');
+    assert.deepEqual(rejectionProof.identity, rejected);
+    assert.equal(invocationCount, 2, `${label}: cancel-first rejection must prove zero invocation`);
+    assert.equal([...endpoint.executions.values()].some(record => record.identity.dispatchId === rejected.dispatchId), false,
+      `${label}: no rejected record may remain for finalize`);
+    const unknownFinalize = await send('/finalize', JSON.stringify({ ...rejected, controlNonce: crypto.randomUUID() }));
+    assert.equal(unknownFinalize.status, 404, `${label}: finalize must be unnecessary when no record is retained`);
+  }
+
   const wrongEpoch = identity(); wrongEpoch.nodeEpoch = crypto.randomUUID();
   assert.equal((await send('/execute', executeBody(wrongEpoch), crypto.randomUUID())).status, 409);
+
+  const aliases = identity();
+  assert.equal((await send('/execute', executeBody(aliases, { type: TickerType.CronTickerOccurrence }), crypto.randomUUID())).status, 400,
+    'contradictory ticker type alias must be rejected');
+  assert.equal((await send('/execute', executeBody(aliases, { id: crypto.randomUUID() }), crypto.randomUUID())).status, 400,
+    'contradictory ticker id alias must be rejected');
+  assert.equal((await send('/execute', executeBody(aliases, { executionId: crypto.randomUUID() }), crypto.randomUUID())).status, 400,
+    'contradictory dispatch alias must be rejected');
+  assert.equal((await send('/execute', executeBody(aliases, { TickerId: crypto.randomUUID() }), crypto.randomUUID())).status, 400,
+    'contradictory duplicate-casing alias must be rejected');
 
   const blocker = new TickerQTaskScheduler(1);
   let blockerRelease;
@@ -133,9 +179,42 @@ try {
   assert.equal(queuedInvoked, false, 'aborted queued work must be removed before invocation');
   blocker.dispose();
 
-  endpoint.beginShutdown();
+  const retainedRecord = [...endpoint.executions.values()].find(record => record.identity.dispatchId === lost.dispatchId);
+  assert.ok(retainedRecord && retainedRecord.state === 'settled');
+  for (let i = 0; i < 10_001; i++) endpoint.finalized.set(`capacity-${i}`, { identity: id, expiresAt: Date.now() + 60_000 });
+  const afterTombstoneCapacity = await send('/execute', executeBody(identity()), crypto.randomUUID());
+  assert.equal(afterTombstoneCapacity.status, 200, 'more than 10k finalized tombstones must not block new work');
+  assert.ok([...endpoint.executions.values()].includes(retainedRecord), 'unfinalized settled outcomes must never be capacity-evicted');
+
+  const drainPending = identity();
+  const drainControlNonce = crypto.randomUUID();
+  const drainCancel = await send('/cancel', JSON.stringify({ ...drainPending, controlNonce: drainControlNonce }));
+  assert.equal(drainCancel.status, 202);
+  assert.equal(await endpoint.shutdown(20), false, 'cancelPending must prevent a clean shutdown');
+  const drainExecute = await send('/execute', executeBody(drainPending), crypto.randomUUID());
+  assert.equal(drainExecute.status, 200, 'matching execute must reconcile cancelPending during drain');
+  assert.equal(JSON.parse(drainExecute.body).status, TickerStatus.Cancelled);
+  assert.equal(invocationCount, 3, 'matching execute for cancelPending must not invoke user code');
+
+  const duplicateDuringDrain = await send('/execute', lostBody, crypto.randomUUID());
+  assert.equal(duplicateDuringDrain.status, 200, 'settled duplicate execute remains recoverable during drain');
   assert.equal((await send('/execute', executeBody(identity()), crypto.randomUUID())).status, 503,
     'shutdown must reject new executions');
+
+  // Capacity pressure must never delete a nonce or finalized tombstone that is still inside
+  // the five-minute signature-validity window. New admission fails closed instead.
+  const protectedAt = Date.now();
+  while (endpoint.replay.size < 20_000)
+    endpoint.replay.set(crypto.randomUUID(), { digest: crypto.randomBytes(32).toString('hex'), identityKey: crypto.randomUUID(), at: protectedAt });
+  for (let i = endpoint.finalized.size; i < 20_001; i++)
+    endpoint.finalized.set(`protected-finalized-${i}`, { identity: id, expiresAt: protectedAt + 300_000 });
+  const overCapacity = await send('/execute', executeBody(identity()), crypto.randomUUID());
+  assert.equal(overCapacity.status, 429, 'protected replay capacity must rate-limit new admission');
+  assert.equal(endpoint.replay.has(nonce), true, 'capacity pressure must retain the captured execute nonce');
+  const protectedReplay = await send('/execute', body, nonce);
+  assert.equal(protectedReplay.status, 410, 'captured execute remains fenced after finalized throughput exceeds capacity');
+  assert.equal(invocationCount, 3, 'capacity pressure must never permit replayed user-code invocation');
+
   assert.equal(await endpoint.shutdown(1000), true);
 } finally {
   server.close(); await once(server, 'close');

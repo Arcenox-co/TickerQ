@@ -217,6 +217,44 @@ namespace TickerQ.Utilities.Interfaces
             => throw new NotSupportedException(
                 "This persistence provider does not implement acknowledged terminal updates.");
 
+        /// <summary>Whether this provider implements the complete durable Node finalization outbox protocol.</summary>
+        bool SupportsDurableNodeFinalizationOutbox => false;
+
+        /// <summary>
+        /// Atomically commits the exact-generation terminal mutation (including optional result) and
+        /// inserts the immutable finalization intent. Node callback execution never falls back to a
+        /// separate terminal write and enqueue.
+        /// </summary>
+        Task<bool> CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            InternalFunctionContext functionContext,
+            NodeFinalizationIntent intent,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(
+                "This persistence provider does not implement durable Node finalization.");
+
+        /// <summary>Claims at most <paramref name="maxCount"/> due records under provider-native leases.</summary>
+        Task<IReadOnlyList<NodeFinalizationClaim>> ClaimDueNodeFinalizationsAsync(
+            string workerId,
+            int maxCount,
+            DateTime nowUtc,
+            DateTime leaseUntilUtc,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<NodeFinalizationClaim>>(Array.Empty<NodeFinalizationClaim>());
+
+        /// <summary>Deletes only the exact identity and claim owner represented by <paramref name="claim"/>.</summary>
+        Task<bool> CompleteNodeFinalizationAsync(
+            NodeFinalizationClaim claim,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(false);
+
+        /// <summary>Reschedules only the exact identity and claim owner represented by <paramref name="claim"/>.</summary>
+        Task<bool> RescheduleNodeFinalizationAsync(
+            NodeFinalizationClaim claim,
+            DateTime availableAtUtc,
+            string errorCode,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(false);
+
         /// <summary>
         /// Commits an accepted successful terminal status and its optional result envelope as one
         /// provider mutation. A null envelope is meaningful and clears a result from an earlier run.

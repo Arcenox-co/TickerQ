@@ -9,6 +9,7 @@ using TickerQ.RemoteExecutor.WorkerStream;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.RemoteExecutor;
@@ -25,23 +26,25 @@ internal static class NodeCallbackExecutionDelegateFactory
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static TickerFunctionDelegate Create(string callbackUrl, Func<string?> signatureResolver,
-        Guid nodeEpoch, bool allowPrivateCallbackAddressesForLocalDevelopment = false)
+        Guid nodeEpoch, bool allowPrivateCallbackAddressesForLocalDevelopment = false,
+        HttpClient? transportOverride = null)
     {
         if (nodeEpoch == Guid.Empty) throw new ArgumentException("A non-empty Node process epoch is required.", nameof(nodeEpoch));
         if (!Uri.TryCreate(callbackUrl, UriKind.Absolute, out var baseUri)) throw new ArgumentException("A valid absolute callback URL is required.", nameof(callbackUrl));
         if (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps) throw new ArgumentException("Node callback URLs must use http or https.", nameof(callbackUrl));
         if (!string.IsNullOrEmpty(baseUri.UserInfo)) throw new ArgumentException("Node callback URLs must not contain credentials.", nameof(callbackUrl));
+        if (!string.IsNullOrEmpty(baseUri.Query)) throw new ArgumentException("Node callback URLs must not contain query strings.", nameof(callbackUrl));
         if (!string.IsNullOrEmpty(baseUri.Fragment)) throw new ArgumentException("Node callback URLs must not contain fragments.", nameof(callbackUrl));
         ArgumentNullException.ThrowIfNull(signatureResolver);
         var root = baseUri.ToString().TrimEnd('/');
         var executeUri = new Uri(root + "/execute"); var cancelUri = new Uri(root + "/cancel"); var finalizeUri = new Uri(root + "/finalize");
-        var client = allowPrivateCallbackAddressesForLocalDevelopment ? LocalDevelopmentClient : PublicAddressClient;
+        var client = transportOverride ??
+            (allowPrivateCallbackAddressesForLocalDevelopment ? LocalDevelopmentClient : PublicAddressClient);
 
         return async (ct, serviceProvider, context) =>
         {
             if (!context.AcquisitionToken.HasValue || context.AcquisitionToken == Guid.Empty) throw new InvalidOperationException("Node callback dispatch requires an acquisition token.");
-            var secret = signatureResolver();
-            if (string.IsNullOrWhiteSpace(secret)) throw new InvalidOperationException("Webhook signature is not configured for Node callback dispatch.");
+            _ = ResolveSecret(signatureResolver);
             var payload = await serviceProvider.GetRequiredService<IRemotePayloadLoader>().LoadPayloadAsync(context.Id, context.Type, ct).ConfigureAwait(false);
             if (payload is { Length: > MaxRequestPayloadBytes }) throw new InvalidOperationException("Node callback request payload exceeded the 1 MiB limit.");
             if (payload is not null) try { using var _ = JsonDocument.Parse(payload); } catch (JsonException ex) { throw new InvalidOperationException("Node callback request payload must contain exactly one valid JSON value.", ex); }
@@ -56,27 +59,96 @@ internal static class NodeCallbackExecutionDelegateFactory
             var cancellationSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             using var cancellationRegistration = ct.Register(static state => ((TaskCompletionSource)state!).TrySetResult(), cancellationSignal);
             NodeExecutionOutcome outcome;
+            var allPriorExecuteAttemptsProvedNotStarted = true;
 
             while (true)
             {
-                var executeAttempt = SendAuthenticatedAsync(client, executeUri, secret, executeNonce, executeBody);
+                if (ct.IsCancellationRequested)
+                {
+                    try
+                    {
+                        outcome = await ReconcileCancellationAsync(client, executeUri, cancelUri, signatureResolver, identity,
+                            executeNonce, executeBody, initialExecute: null,
+                            allPriorExecuteAttemptsProvedNotStarted).ConfigureAwait(false);
+                    }
+                    catch (RemoteExecutionNotStartedException)
+                    {
+                        context.IsRemoteCallbackExecution = true;
+                        throw;
+                    }
+                    break;
+                }
+
+                Task<AuthenticatedReply> executeAttempt;
+                try
+                {
+                    executeAttempt = SendAuthenticatedAsync(client, executeUri, ResolveSecret(signatureResolver), executeNonce, executeBody);
+                }
+                catch when (!allPriorExecuteAttemptsProvedNotStarted)
+                {
+                    await Task.Delay(250, CancellationToken.None).ConfigureAwait(false);
+                    continue;
+                }
                 var winner = ct.CanBeCanceled ? await Task.WhenAny(executeAttempt, cancellationSignal.Task).ConfigureAwait(false) : executeAttempt;
                 if (winner == cancellationSignal.Task)
                 {
-                    outcome = await ReconcileCancellationAsync(client, cancelUri, secret, identity).ConfigureAwait(false);
+                    try
+                    {
+                        outcome = await ReconcileCancellationAsync(client, executeUri, cancelUri, signatureResolver, identity,
+                            executeNonce, executeBody, executeAttempt,
+                            allPriorExecuteAttemptsProvedNotStarted).ConfigureAwait(false);
+                    }
+                    catch (RemoteExecutionNotStartedException)
+                    {
+                        context.IsRemoteCallbackExecution = true;
+                        throw;
+                    }
                     break;
                 }
                 try
                 {
                     var reply = await executeAttempt.ConfigureAwait(false);
-                    if (reply.StatusCode is HttpStatusCode.ServiceUnavailable or HttpStatusCode.RequestTimeout)
-                    { await Task.Delay(250, CancellationToken.None).ConfigureAwait(false); continue; }
-                    if (reply.StatusCode != HttpStatusCode.OK) throw new HttpRequestException($"Node callback returned authenticated HTTP {(int)reply.StatusCode}.", null, reply.StatusCode);
-                    outcome = ParseOutcome(reply.Body, identity);
+                    var proof = ClassifyNotStartedProof(reply, identity, registrationDependentCodesAreSafe: true);
+                    if (proof == NotStartedProof.Permanent)
+                    {
+                        if (allPriorExecuteAttemptsProvedNotStarted) ThrowPermanentlyNotStarted(reply);
+                        await Task.Delay(250, CancellationToken.None).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (proof == NotStartedProof.Transient)
+                    {
+                        await Task.Delay(250, CancellationToken.None).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (reply.StatusCode != HttpStatusCode.OK)
+                    {
+                        allPriorExecuteAttemptsProvedNotStarted = false;
+                        await Task.Delay(250, CancellationToken.None).ConfigureAwait(false);
+                        continue;
+                    }
+                    try { outcome = ParseOutcome(reply.Body, identity); }
+                    catch
+                    {
+                        allPriorExecuteAttemptsProvedNotStarted = false;
+                        throw;
+                    }
                     break;
                 }
-                catch (Exception ex) when (IsTransient(ex))
+                catch (RemoteExecutionNotStartedException)
                 {
+                    context.IsRemoteCallbackExecution = true;
+                    throw;
+                }
+                catch (HttpRequestException ex) when (IsForbiddenNetwork(ex))
+                {
+                    if (allPriorExecuteAttemptsProvedNotStarted) throw;
+                    await QuarantineAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Once an execute may have left this process, every transport/auth/body/identity
+                    // uncertainty is reconciled with the exact same identity, bytes and nonce.
+                    allPriorExecuteAttemptsProvedNotStarted = false;
                     await Task.Delay(250, CancellationToken.None).ConfigureAwait(false);
                 }
             }
@@ -86,47 +158,171 @@ internal static class NodeCallbackExecutionDelegateFactory
             var controlNonce = Guid.NewGuid();
             var finalizeBody = JsonSerializer.SerializeToUtf8Bytes(new NodeControlRequest(identity.TickerType, identity.TickerId,
                 identity.AcquisitionToken, identity.DispatchId, identity.NodeEpoch, controlNonce), JsonOptions);
-            context.ConfirmRemoteCommitAsync = async _ =>
-            {
-                try
-                {
-                    var reply = await SendAuthenticatedAsync(client, finalizeUri, secret, finalizeNonce, finalizeBody).ConfigureAwait(false);
-                    if (reply.StatusCode != HttpStatusCode.OK) throw new HttpRequestException($"Node finalize returned authenticated HTTP {(int)reply.StatusCode}.");
-                }
-                catch
-                {
-                    // The durable exact-generation commit already succeeded. Failure to forget is safe:
-                    // Node retains the authenticated settled outcome and its bounded tombstone fallback.
-                }
-            };
+            context.RemoteFinalizationIntent = new NodeFinalizationIntent(
+                NodeFinalizationIntent.CurrentSchemaVersion,
+                identity.DispatchId,
+                identity.TickerType,
+                identity.TickerId,
+                identity.AcquisitionToken,
+                identity.DispatchId,
+                identity.NodeEpoch,
+                finalizeUri.AbsoluteUri,
+                finalizeUri.PathAndQuery,
+                allowPrivateCallbackAddressesForLocalDevelopment,
+                finalizeNonce,
+                controlNonce,
+                finalizeBody,
+                DateTime.UtcNow);
 
             ApplyOutcome(context, outcome);
         };
     }
 
-    private static async Task<NodeExecutionOutcome> ReconcileCancellationAsync(HttpClient client, Uri uri, string secret, NodeIdentity identity)
+    private static async Task<NodeExecutionOutcome> ReconcileCancellationAsync(HttpClient client, Uri executeUri, Uri cancelUri,
+        Func<string?> signatureResolver, NodeIdentity identity, Guid executeNonce, byte[] executeBody,
+        Task<AuthenticatedReply>? initialExecute, bool allPriorExecuteAttemptsProvedNotStarted)
     {
-        var requestNonce = Guid.NewGuid(); var controlNonce = Guid.NewGuid();
-        var body = JsonSerializer.SerializeToUtf8Bytes(new NodeControlRequest(identity.TickerType, identity.TickerId,
+        var cancelNonce = Guid.NewGuid(); var controlNonce = Guid.NewGuid();
+        var cancelBody = JsonSerializer.SerializeToUtf8Bytes(new NodeControlRequest(identity.TickerType, identity.TickerId,
             identity.AcquisitionToken, identity.DispatchId, identity.NodeEpoch, controlNonce), JsonOptions);
+        Task<AuthenticatedReply>? execute = initialExecute;
+        Task<AuthenticatedReply>? cancel = null;
+        try { cancel = SendAuthenticatedAsync(client, cancelUri, ResolveSecret(signatureResolver), cancelNonce, cancelBody); }
+        catch { }
+        if (execute is null)
+        {
+            // For an already-cancelled invocation, give the cancellation tombstone request a
+            // deterministic head start before issuing the exact execute identity. The execute is
+            // still required for response-loss recovery, but it must not win the cancel-first race.
+            await Task.Delay(25, CancellationToken.None).ConfigureAwait(false);
+            try { execute = SendAuthenticatedAsync(client, executeUri, ResolveSecret(signatureResolver), executeNonce, executeBody); }
+            catch { }
+        }
+        NodeExecutionOutcome? settledOutcome = null;
+        var exactRejectedProofCount = 0;
+
+        // This cancellation can stop the already-issued execute, but its delayed 202 is not proof
+        // that cancelPending still exists: the concurrent execute may have deleted that record.
+        // Observe both operations before starting serialized proof cycles.
+        while (execute is not null || cancel is not null)
+        {
+            var pending = new[] { execute, cancel }.Where(task => task is not null).Cast<Task<AuthenticatedReply>>().ToArray();
+            await Task.WhenAny(pending).ConfigureAwait(false);
+            if (cancel is { IsCompleted: true })
+            {
+                try
+                {
+                    var reply = await cancel.ConfigureAwait(false);
+                    if (reply.StatusCode is HttpStatusCode.OK or HttpStatusCode.Accepted)
+                    {
+                        var ack = JsonSerializer.Deserialize<NodeCancelAcknowledgement>(reply.Body, JsonOptions)
+                            ?? throw new InvalidOperationException("Node cancellation returned an empty acknowledgement.");
+                        ValidateIdentity(ack.Identity, identity);
+                        if (ack.ControlNonce != controlNonce) throw new InvalidOperationException("Node cancellation control nonce did not match.");
+                        if (reply.StatusCode == HttpStatusCode.Accepted)
+                        {
+                            if (!string.Equals(ack.State, "cancellation_registered", StringComparison.Ordinal))
+                                throw new InvalidOperationException("Node cancellation registration acknowledgement was invalid.");
+                        }
+                        else
+                        {
+                            settledOutcome = ValidateOutcome(ack.Outcome ?? throw new InvalidOperationException("Node cancellation did not carry a settled outcome."), identity);
+                        }
+                    }
+                }
+                catch (HttpRequestException ex) when (IsForbiddenNetwork(ex))
+                {
+                    await QuarantineAsync().ConfigureAwait(false);
+                }
+                catch { }
+                cancel = null;
+            }
+
+            if (execute is { IsCompleted: true })
+            {
+                try
+                {
+                    var reply = await execute.ConfigureAwait(false);
+                    if (IsExactCancelPendingRejection(reply, identity)) exactRejectedProofCount++;
+                    else if (ClassifyNotStartedProof(reply, identity, registrationDependentCodesAreSafe: false) == NotStartedProof.None)
+                        allPriorExecuteAttemptsProvedNotStarted = false;
+                    if (reply.StatusCode == HttpStatusCode.OK) settledOutcome = ParseOutcome(reply.Body, identity);
+                }
+                catch (HttpRequestException ex) when (IsForbiddenNetwork(ex))
+                {
+                    await QuarantineAsync().ConfigureAwait(false);
+                }
+                catch { allPriorExecuteAttemptsProvedNotStarted = false; }
+                execute = null;
+            }
+        }
+
+        if (settledOutcome is not null) return settledOutcome;
+
         while (true)
         {
+            await Task.Delay(250, CancellationToken.None).ConfigureAwait(false);
             try
             {
-                var reply = await SendAuthenticatedAsync(client, uri, secret, requestNonce, body).ConfigureAwait(false);
-                if (reply.StatusCode == HttpStatusCode.OK)
-                {
-                    var ack = JsonSerializer.Deserialize<NodeCancelAcknowledgement>(reply.Body, JsonOptions)
-                        ?? throw new InvalidOperationException("Node cancellation returned an empty acknowledgement.");
-                    ValidateIdentity(ack.Identity, identity);
-                    if (ack.ControlNonce != controlNonce) throw new InvalidOperationException("Node cancellation control nonce did not match.");
-                    return ack.Outcome ?? throw new InvalidOperationException("Node cancellation did not carry a settled outcome.");
-                }
+                var cancelReply = await SendAuthenticatedAsync(client, cancelUri, ResolveSecret(signatureResolver), cancelNonce, cancelBody)
+                    .ConfigureAwait(false);
+                if (cancelReply.StatusCode is not (HttpStatusCode.OK or HttpStatusCode.Accepted)) continue;
+                var ack = JsonSerializer.Deserialize<NodeCancelAcknowledgement>(cancelReply.Body, JsonOptions)
+                    ?? throw new InvalidOperationException("Node cancellation returned an empty acknowledgement.");
+                ValidateIdentity(ack.Identity, identity);
+                if (ack.ControlNonce != controlNonce) throw new InvalidOperationException("Node cancellation control nonce did not match.");
+                if (cancelReply.StatusCode == HttpStatusCode.OK)
+                    return ValidateOutcome(ack.Outcome ?? throw new InvalidOperationException("Node cancellation did not carry a settled outcome."), identity);
+                if (!string.Equals(ack.State, "cancellation_registered", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Node cancellation registration acknowledgement was invalid.");
             }
-            catch (Exception ex) when (IsTransient(ex)) { }
-            await Task.Delay(250, CancellationToken.None).ConfigureAwait(false);
+            catch (HttpRequestException ex) when (IsForbiddenNetwork(ex))
+            {
+                await QuarantineAsync().ConfigureAwait(false);
+                continue;
+            }
+            catch { continue; }
+
+            // A fresh exact 202 completed before this execute starts. No cancellation request is
+            // in flight that can recreate state after rejected_not_started deletes the record.
+            try
+            {
+                var reply = await SendAuthenticatedAsync(client, executeUri, ResolveSecret(signatureResolver), executeNonce, executeBody)
+                    .ConfigureAwait(false);
+                if (reply.StatusCode == HttpStatusCode.OK) return ParseOutcome(reply.Body, identity);
+                if (IsExactCancelPendingRejection(reply, identity))
+                {
+                    exactRejectedProofCount++;
+                    if (exactRejectedProofCount >= 2) ThrowPermanentlyNotStarted(reply);
+                    continue;
+                }
+                var proof = ClassifyNotStartedProof(reply, identity, registrationDependentCodesAreSafe: false);
+                if (proof == NotStartedProof.Permanent && allPriorExecuteAttemptsProvedNotStarted)
+                    ThrowPermanentlyNotStarted(reply);
+                if (proof == NotStartedProof.None)
+                    allPriorExecuteAttemptsProvedNotStarted = false;
+            }
+            catch (RemoteExecutionNotStartedException) { throw; }
+            catch (HttpRequestException ex) when (IsForbiddenNetwork(ex))
+            {
+                await QuarantineAsync().ConfigureAwait(false);
+            }
+            catch { allPriorExecuteAttemptsProvedNotStarted = false; }
         }
     }
+
+    private static string ResolveSecret(Func<string?> signatureResolver)
+    {
+        var secret = signatureResolver();
+        return string.IsNullOrWhiteSpace(secret)
+            ? throw new InvalidOperationException("Webhook signature is not configured for Node callback dispatch.")
+            : secret;
+    }
+
+    private static bool IsForbiddenNetwork(HttpRequestException exception)
+        => exception.Message.Contains("forbidden network address", StringComparison.OrdinalIgnoreCase);
+
+    private static Task QuarantineAsync() => Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
 
     private static void ApplyOutcome(TickerFunctionContext context, NodeExecutionOutcome outcome)
     {
@@ -141,16 +337,144 @@ internal static class NodeCallbackExecutionDelegateFactory
     private static NodeExecutionOutcome ParseOutcome(byte[] body, NodeIdentity expected)
     {
         var outcome = JsonSerializer.Deserialize<NodeExecutionOutcome>(body, JsonOptions) ?? throw new InvalidOperationException("Node callback returned an empty terminal outcome.");
+        return ValidateOutcome(outcome, expected);
+    }
+    private static NodeExecutionOutcome ValidateOutcome(NodeExecutionOutcome outcome, NodeIdentity expected)
+    {
         ValidateIdentity(outcome.Identity, expected);
         if (outcome.TickerId != expected.TickerId || outcome.AcquisitionToken != expected.AcquisitionToken) throw new InvalidOperationException("Node outcome projection did not match its signed identity.");
+        if (outcome.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed or TickerStatus.Cancelled))
+            throw new InvalidOperationException($"Node callback returned non-terminal status '{outcome.Status}'.");
+        if (outcome.ResultEnvelope?.Payload is { } payload && payload.Length > MaxResultPayloadBytes)
+            throw new InvalidOperationException("Node callback result payload exceeded the 1 MiB limit.");
         return outcome;
+    }
+    private static NotStartedProof ClassifyNotStartedProof(AuthenticatedReply reply, NodeIdentity identity,
+        bool registrationDependentCodesAreSafe)
+    {
+        if (reply.StatusCode == HttpStatusCode.OK) return NotStartedProof.None;
+        string? code = null;
+        try
+        {
+            using var json = JsonDocument.Parse(reply.Body);
+            if (json.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+                code = error.GetString();
+        }
+        catch (JsonException) { return NotStartedProof.None; }
+        if (IsExactCancelPendingRejection(reply, identity)) return NotStartedProof.Permanent;
+        return (reply.StatusCode, code) switch
+        {
+            (HttpStatusCode.BadRequest, "invalid_json" or "invalid_identity") => NotStartedProof.Permanent,
+            (HttpStatusCode.BadRequest, "invalid_execution" or "missing_request" or "unexpected_request")
+                when registrationDependentCodesAreSafe => NotStartedProof.Permanent,
+            (HttpStatusCode.NotFound, "function_not_found") when registrationDependentCodesAreSafe
+                => NotStartedProof.Permanent,
+            (HttpStatusCode.Conflict, "node_epoch_mismatch") => NotStartedProof.Permanent,
+            (HttpStatusCode.ServiceUnavailable, "shutting_down") => NotStartedProof.Permanent,
+            (HttpStatusCode.ServiceUnavailable, "registry_full") => NotStartedProof.Transient,
+            ((HttpStatusCode)429, "replay_capacity") => NotStartedProof.Transient,
+            _ => NotStartedProof.None
+        };
+    }
+
+    private static bool IsExactCancelPendingRejection(AuthenticatedReply reply, NodeIdentity identity)
+    {
+        if (reply.StatusCode is not (HttpStatusCode.BadRequest or HttpStatusCode.NotFound)) return false;
+        try
+        {
+            var proof = JsonSerializer.Deserialize<NodeRejectedAcknowledgement>(reply.Body, JsonOptions);
+            var exactStatusAndCode =
+                (reply.StatusCode == HttpStatusCode.BadRequest && proof?.Error == "invalid_execution") ||
+                (reply.StatusCode == HttpStatusCode.NotFound && proof?.Error == "function_not_found");
+            return exactStatusAndCode && string.Equals(proof!.State, "rejected_not_started", StringComparison.Ordinal) &&
+                   proof.Identity == identity;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    private static void ThrowPermanentlyNotStarted(AuthenticatedReply reply)
+    {
+        string code = "not_started";
+        try
+        {
+            using var json = JsonDocument.Parse(reply.Body);
+            if (json.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+                code = error.GetString() ?? code;
+        }
+        catch (JsonException) { }
+        throw new RemoteExecutionNotStartedException(
+            $"Node rejected the exact dispatch before execution ({(int)reply.StatusCode} {code}).");
+    }
+
+    internal static async Task<NodeFinalizationAttemptResult> TryFinalizeAsync(
+        NodeFinalizationIntent intent,
+        Func<string?> signatureResolver,
+        HttpClient? transportOverride,
+        CancellationToken stoppingToken)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        ArgumentNullException.ThrowIfNull(signatureResolver);
+        if (!Uri.TryCreate(intent.FinalizeUri, UriKind.Absolute, out var finalizeUri) ||
+            (finalizeUri.Scheme != Uri.UriSchemeHttp && finalizeUri.Scheme != Uri.UriSchemeHttps) ||
+            !string.IsNullOrEmpty(finalizeUri.UserInfo) || !string.IsNullOrEmpty(finalizeUri.Query) ||
+            !string.IsNullOrEmpty(finalizeUri.Fragment) ||
+            !string.Equals(finalizeUri.PathAndQuery, intent.FinalizePathAndQuery, StringComparison.Ordinal))
+            return NodeFinalizationAttemptResult.Retry;
+
+        var identity = new NodeIdentity(intent.TickerType, intent.TickerId, intent.AcquisitionToken,
+            intent.DispatchId, intent.NodeEpoch);
+        var currentSecret = signatureResolver();
+        if (string.IsNullOrWhiteSpace(currentSecret)) return NodeFinalizationAttemptResult.Retry;
+        var client = transportOverride ?? (intent.AllowPrivateCallbackAddressesForLocalDevelopment
+            ? LocalDevelopmentClient
+            : PublicAddressClient);
+        var reply = await SendAuthenticatedAsync(client, finalizeUri, currentSecret, intent.RequestNonce,
+            intent.ExactBody, stoppingToken).ConfigureAwait(false);
+        if (reply.StatusCode == HttpStatusCode.Conflict)
+        {
+            try
+            {
+                var ack = JsonSerializer.Deserialize<NodeFinalizeConflictAcknowledgement>(reply.Body, JsonOptions);
+                if (ack is not null &&
+                    string.Equals(ack.Error, "node_epoch_mismatch", StringComparison.Ordinal) &&
+                    ack.ControlNonce == intent.ControlNonce && ack.Identity == identity)
+                    return NodeFinalizationAttemptResult.Completed;
+            }
+            catch (JsonException) { }
+            return NodeFinalizationAttemptResult.Retry;
+        }
+        if (reply.StatusCode is HttpStatusCode.OK or HttpStatusCode.NotFound or HttpStatusCode.Gone)
+        {
+            var ack = JsonSerializer.Deserialize<NodeFinalizeAcknowledgement>(reply.Body, JsonOptions)
+                ?? throw new InvalidOperationException("Node finalize returned an empty acknowledgement.");
+            ValidateIdentity(ack.Identity, identity);
+            if (ack.ControlNonce != intent.ControlNonce)
+                throw new InvalidOperationException("Node finalize acknowledgement did not match the exact control request.");
+            if ((reply.StatusCode == HttpStatusCode.OK && string.Equals(ack.State, "finalized", StringComparison.Ordinal)) ||
+                (reply.StatusCode == HttpStatusCode.NotFound && string.Equals(ack.State, "unknown", StringComparison.Ordinal)) ||
+                (reply.StatusCode == HttpStatusCode.Gone && string.Equals(ack.State, "finalized", StringComparison.Ordinal)))
+                return NodeFinalizationAttemptResult.Completed;
+        }
+        return NodeFinalizationAttemptResult.Retry;
+    }
+
+    private static bool HasErrorCode(byte[] body, string expected)
+    {
+        try
+        {
+            using var json = JsonDocument.Parse(body);
+            return json.RootElement.TryGetProperty("error", out var error) &&
+                   error.ValueKind == JsonValueKind.String && string.Equals(error.GetString(), expected, StringComparison.Ordinal);
+        }
+        catch (JsonException) { return false; }
     }
     private static void ValidateIdentity(NodeIdentity actual, NodeIdentity expected)
     {
         if (actual != expected) throw new InvalidOperationException("Node response identity did not match the exact dispatch generation.");
     }
 
-    private static async Task<AuthenticatedReply> SendAuthenticatedAsync(HttpClient client, Uri uri, string secret, Guid nonce, byte[] body)
+    private static async Task<AuthenticatedReply> SendAuthenticatedAsync(HttpClient client, Uri uri, string secret, Guid nonce, byte[] body,
+        CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, uri) { Content = new ByteArrayContent(body) };
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
@@ -158,7 +482,8 @@ internal static class NodeCallbackExecutionDelegateFactory
         request.Headers.TryAddWithoutValidation("x-timestamp", timestamp.ToString());
         request.Headers.TryAddWithoutValidation("x-request-nonce", nonceText);
         request.Headers.TryAddWithoutValidation("x-tickerq-signature", SignRequest(secret, uri.PathAndQuery, timestamp, nonceText, body));
-        using var attempt = new CancellationTokenSource(TransportAttemptTimeout);
+        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        attempt.CancelAfter(TransportAttemptTimeout);
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, attempt.Token).ConfigureAwait(false);
         var bytes = await ReadBoundedAsync(response, attempt.Token).ConfigureAwait(false);
         VerifyResponse(secret, response, uri.PathAndQuery, nonceText, bytes);
@@ -189,16 +514,11 @@ internal static class NodeCallbackExecutionDelegateFactory
         while ((read = await stream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0) { if (output.Length + read > MaxResponseBodyBytes) throw new InvalidOperationException("Node callback response exceeded the 2 MiB limit."); output.Write(buffer, 0, read); }
         return output.ToArray();
     }
-    private static bool IsTransient(Exception ex) => ex switch
-    {
-        HttpRequestException http => !http.Message.Contains("forbidden network address", StringComparison.OrdinalIgnoreCase),
-        TaskCanceledException or IOException => true,
-        _ => false
-    };
 
     internal static SocketsHttpHandler CreateHandler(bool allowPrivateAddressesForLocalDevelopment) => new()
     {
-        AllowAutoRedirect = false, UseProxy = false,
+        AllowAutoRedirect = false,
+        UseProxy = false,
         ConnectCallback = async (context, ct) =>
         {
             var addresses = await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, ct).ConfigureAwait(false);
@@ -232,7 +552,11 @@ internal static class NodeCallbackExecutionDelegateFactory
         Guid? ParentId, bool HasRequest, byte[]? RequestPayload, NodeResultEnvelope? ParentResult);
     private sealed record NodeControlRequest(TickerType TickerType, Guid TickerId, Guid AcquisitionToken, Guid DispatchId, Guid NodeEpoch, Guid ControlNonce);
     private sealed record NodeCancelAcknowledgement(string State, Guid ControlNonce, NodeIdentity Identity, NodeExecutionOutcome? Outcome);
+    private sealed record NodeFinalizeAcknowledgement(string State, Guid ControlNonce, NodeIdentity Identity);
+    private sealed record NodeFinalizeConflictAcknowledgement(string Error, Guid ControlNonce, NodeIdentity Identity);
+    private sealed record NodeRejectedAcknowledgement(string Error, string State, NodeIdentity Identity);
     private sealed record NodeExecutionOutcome(NodeIdentity Identity, Guid TickerId, Guid? AcquisitionToken, TickerStatus Status, string? ExceptionDetails, NodeResultEnvelope? ResultEnvelope);
+    private enum NotStartedProof { None, Transient, Permanent }
     private sealed record NodeResultEnvelope(byte[] Payload, int EnvelopeVersion, string MediaType, string? ContractId, string? ContractType)
     {
         public static NodeResultEnvelope From(TickerResultEnvelope value) => new(value.ToPayloadArray(), value.Version, value.MediaType, value.ContractId, value.ContractType);

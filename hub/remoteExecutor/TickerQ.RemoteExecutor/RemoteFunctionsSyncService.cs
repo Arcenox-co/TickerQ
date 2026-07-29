@@ -28,6 +28,7 @@ public class RemoteFunctionsSyncService : BackgroundService
     private readonly TickerQRemoteExecutionOptions _options;
     private readonly Func<DefinedCronTickerSeed[], CancellationToken, Task>? _migrateDefinedCronTickers;
     private readonly ILogger<RemoteFunctionsSyncService>? _logger;
+    private readonly RemoteExecutorPersistenceCapabilities _capabilities;
 
     public RemoteFunctionsSyncService(
         TickerQRemoteExecutionOptions options,
@@ -39,17 +40,21 @@ public class RemoteFunctionsSyncService : BackgroundService
         _migrateDefinedCronTickers = internalTickerManager == null
             ? null
             : internalTickerManager.MigrateDefinedCronTickers;
+        _capabilities = serviceProvider.GetService<RemoteExecutorPersistenceCapabilities>()
+            ?? new RemoteExecutorPersistenceCapabilities(false, false);
         _logger = logger;
     }
 
     internal RemoteFunctionsSyncService(
         TickerQRemoteExecutionOptions options,
         Func<DefinedCronTickerSeed[], CancellationToken, Task> migrateDefinedCronTickers,
-        ILogger<RemoteFunctionsSyncService>? logger = null)
+        ILogger<RemoteFunctionsSyncService>? logger = null,
+        RemoteExecutorPersistenceCapabilities? capabilities = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _migrateDefinedCronTickers = migrateDefinedCronTickers
             ?? throw new ArgumentNullException(nameof(migrateDefinedCronTickers));
+        _capabilities = capabilities ?? new RemoteExecutorPersistenceCapabilities(false, false);
         _logger = logger;
     }
 
@@ -274,6 +279,13 @@ public class RemoteFunctionsSyncService : BackgroundService
                 TickerFunctionDelegate functionDelegate;
                 if (IsNodeSdk(node.SdkType))
                 {
+                    if (!_capabilities.SupportsNodeCallbacks)
+                    {
+                        _logger?.LogError(
+                            "Skipping Node function {FunctionName}@{NodeName}: the configured persistence provider must support acknowledged terminal updates and the durable Node finalization outbox.",
+                            function.FunctionName, node.NodeName);
+                        continue;
+                    }
                     if (!Guid.TryParse(node.NodeEpoch, out var nodeEpoch) || nodeEpoch == Guid.Empty)
                     {
                         _logger?.LogWarning(

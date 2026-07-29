@@ -199,9 +199,12 @@ try {
   await new Promise(resolve => setTimeout(resolve, 20));
   const earlyExecution = send('/execute', executionBody(earlyIdentity, cancellationFunctionName));
   const [earlyCancelResponse, earlyExecutionResponse] = await Promise.all([earlyCancel, earlyExecution]);
-  assert.equal(earlyCancelResponse.status, 200, 'cancel-before-registration must be retained and acknowledged after settlement');
-  assert.equal(JSON.parse(earlyCancelResponse.body).outcome.status, TickerStatus.Cancelled);
+  assert.equal(earlyCancelResponse.status, 202, 'cancel-before-registration must be durably acknowledged before execute retry');
+  assert.equal(JSON.parse(earlyCancelResponse.body).state, 'cancellation_registered');
   assert.equal(earlyExecutionResponse.status, 200);
+  const earlySettledCancel = await send('/cancel', controlBody(earlyIdentity));
+  assert.equal(earlySettledCancel.status, 200);
+  assert.equal(JSON.parse(earlySettledCancel.body).outcome.status, TickerStatus.Cancelled);
 
   const oversized = await send('/execute', 'x'.repeat(2 * 1024 * 1024 + 1));
   assert.equal(oversized.status, 413);

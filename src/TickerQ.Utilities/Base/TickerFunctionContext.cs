@@ -19,7 +19,7 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
         Id = tickerFunctionContext.Id;
         AcquisitionToken = tickerFunctionContext.AcquisitionToken;
         IsRemoteCallbackExecution = tickerFunctionContext.IsRemoteCallbackExecution;
-        ConfirmRemoteCommitAsync = tickerFunctionContext.ConfirmRemoteCommitAsync;
+        RemoteFinalizationIntent = tickerFunctionContext.RemoteFinalizationIntent;
         ParentId = tickerFunctionContext.ParentId;
         Type = tickerFunctionContext.Type;
         RetryCount = tickerFunctionContext.RetryCount;
@@ -47,8 +47,8 @@ public class TickerFunctionContext
     internal Guid? AcquisitionToken { get; set; }
     /// <summary>True only after an authenticated remote callback outcome was accepted.</summary>
     internal bool IsRemoteCallbackExecution { get; set; }
-    /// <summary>Sent only after Core's exact-generation terminal commit succeeds.</summary>
-    internal Func<CancellationToken, Task> ConfirmRemoteCommitAsync { get; set; }
+    /// <summary>Immutable durable cleanup intent attached only after an authenticated Node outcome.</summary>
+    internal NodeFinalizationIntent RemoteFinalizationIntent { get; set; }
     /// <summary>
     /// The parent ticker identifier.
     /// For cron ticker occurrences, this is the owning CronTicker's Id.

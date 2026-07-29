@@ -17,12 +17,16 @@ import type { TickerQLogger } from '../client/TickerQSdkHttpClient';
 const MaxRequestBodyBytes = 2 * 1024 * 1024;
 const MaxRegistryEntries = 10_000;
 const MaxReplayEntries = 20_000;
-const FinalizedTtlMs = 24 * 60 * 60 * 1000;
+const AuthenticationSkewMs = 5 * 60 * 1000;
+// A request timestamp may be one skew interval in the future when first accepted and remains
+// valid until one skew interval after that timestamp. Retain from admission for the full span.
+const ReplayRetentionMs = 2 * AuthenticationSkewMs;
+const FinalizedTtlMs = ReplayRetentionMs;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 class RequestBodyTooLargeError extends Error {}
 
 type ExecutionIdentity = { tickerType: TickerType; tickerId: string; acquisitionToken: string; dispatchId: string; nodeEpoch: string };
-type RegistryState = 'cancelPending' | 'active' | 'settled' | 'finalized';
+type RegistryState = 'cancelPending' | 'active' | 'settled';
 interface ExecutionRecord {
     identity: ExecutionIdentity;
     requestDigest?: string;
@@ -31,9 +35,9 @@ interface ExecutionRecord {
     completion: Promise<InternalFunctionContext>;
     resolve: (value: InternalFunctionContext) => void;
     outcome?: InternalFunctionContext;
-    expiresAt?: number;
 }
 interface ReplayEntry { digest: string; identityKey: string; at: number }
+interface FinalizedTombstone { identity: ExecutionIdentity; expiresAt: number }
 
 function buildFunctionContext(context: RemoteExecutionContext, resultContract?: TickerFunctionResultContractInfo): TickerFunctionContext<unknown> & { readonly resultSink: FunctionResultSink } {
     return createFunctionContext(context, context.hasRequest ? context.request : undefined,
@@ -55,6 +59,7 @@ function serializeException(err: unknown): string {
 /** Exact-byte authenticated callback endpoint with replay-safe retained execution outcomes. */
 export class SdkExecutionEndpoint {
     private readonly executions = new Map<string, ExecutionRecord>();
+    private readonly finalized = new Map<string, FinalizedTombstone>();
     private readonly replay = new Map<string, ReplayEntry>();
     private stopping = false;
     constructor(private readonly options: TickerSdkOptions, private readonly syncService: TickerQFunctionSyncService,
@@ -101,7 +106,9 @@ export class SdkExecutionEndpoint {
     async shutdown(timeoutMs = 30_000): Promise<boolean> {
         this.beginShutdown();
         const deadline = Date.now() + Math.max(0, timeoutMs);
-        const active = [...this.executions.values()].filter(x => x.state === 'active').map(x => x.completion.catch(() => undefined));
+        const active = [...this.executions.values()]
+            .filter(x => x.state === 'active' || x.state === 'cancelPending')
+            .map(x => x.completion.catch(() => undefined));
         const settled = await Promise.race([
             Promise.all(active).then(() => true),
             new Promise<boolean>(resolve => setTimeout(() => resolve(false), Math.max(0, deadline - Date.now()))),
@@ -153,12 +160,23 @@ export class SdkExecutionEndpoint {
         try { raw = JSON.parse(body.toString('utf8')); } catch { return response(400, { error: 'invalid_json' }); }
         let identity: ExecutionIdentity;
         try { identity = normalizeIdentity(raw); } catch { return response(400, { error: 'invalid_identity' }); }
-        if (identity.nodeEpoch !== this.options.nodeEpoch.toLowerCase()) return response(409, { error: 'node_epoch_mismatch' });
+        if (identity.nodeEpoch !== this.options.nodeEpoch.toLowerCase()) {
+            if (kind === 'finalize') {
+                let requestedControlNonce: string;
+                try { requestedControlNonce = readUuid(raw, 'controlNonce', 'ControlNonce'); }
+                catch { return response(400, { error: 'invalid_control_nonce' }); }
+                return response(409, { error: 'node_epoch_mismatch', controlNonce: requestedControlNonce, identity });
+            }
+            return response(409, { error: 'node_epoch_mismatch' });
+        }
         const key = identityKey(identity); const digest = createHash('sha256').update(body).digest('hex');
         const seen = this.replay.get(nonce);
         if (seen && (seen.digest !== digest || seen.identityKey !== key)) return response(409, { error: 'replay_conflict' });
         if (!seen) {
-            if (this.replay.size >= MaxReplayEntries) this.replay.delete(this.replay.keys().next().value!);
+            // Never create a false negative inside the signature-validity window. Cleanup ran
+            // before this check, so a full map consists only of protected nonces and new
+            // admission must fail closed rather than evicting one a captured request can reuse.
+            if (this.replay.size >= MaxReplayEntries) return response(429, { error: 'replay_capacity' });
             this.replay.set(nonce, { digest, identityKey: key, at: Date.now() });
         }
         if (kind === 'execute') return this.execute(raw, identity, key, digest);
@@ -169,22 +187,23 @@ export class SdkExecutionEndpoint {
     }
 
     private async execute(raw: Record<string, unknown>, identity: ExecutionIdentity, key: string, digest: string): Promise<{status:number;body:Buffer}> {
-        if (this.stopping) return response(503, { error: 'shutting_down' });
         const existing = this.executions.get(key);
         if (existing) {
-            if (existing.state === 'finalized') return response(410, { state: 'finalized', identity });
             if (existing.requestDigest && existing.requestDigest !== digest) return response(409, { error: 'execution_body_conflict' });
             if (!existing.requestDigest) existing.requestDigest = digest;
             if (existing.state === 'cancelPending') {
                 let cancelledContext: RemoteExecutionContext;
-                try { cancelledContext = normalizeExecutionContext(raw); } catch { return response(400, { error: 'invalid_execution' }); }
+                try { cancelledContext = normalizeExecutionContext(raw); }
+                catch { return this.rejectCancelPending(key, existing, identity, 400, 'invalid_execution'); }
                 const registration = TickerFunctionProvider.getFunction(cancelledContext.functionName);
-                if (!registration) return response(404, { error: 'function_not_found' });
+                if (!registration) return this.rejectCancelPending(key, existing, identity, 404, 'function_not_found');
                 this.settle(existing, cancelledOutcome(cancelledContext, registration, abortError()));
             }
             const outcome = await existing.completion;
             return response(200, { identity, ...outcome });
         }
+        if (this.finalized.has(key)) return response(410, { state: 'finalized', identity });
+        if (this.stopping) return response(503, { error: 'shutting_down' });
         if (this.executions.size >= MaxRegistryEntries) return response(503, { error: 'registry_full' });
         let context: RemoteExecutionContext;
         try { context = normalizeExecutionContext(raw); } catch { return response(400, { error: 'invalid_execution' }); }
@@ -205,27 +224,45 @@ export class SdkExecutionEndpoint {
     private async cancel(identity: ExecutionIdentity, key: string, controlNonce: string): Promise<{status:number;body:Buffer}> {
         let record = this.executions.get(key);
         if (!record) {
+            if (this.finalized.has(key)) return response(410, { state: 'finalized', controlNonce, identity });
+            if (this.stopping) return response(503, { error: 'shutting_down' });
             if (this.executions.size >= MaxRegistryEntries) return response(503, { error: 'registry_full' });
             record = createRecord(identity, 'cancelPending'); this.executions.set(key, record);
+            return response(202, { state: 'cancellation_registered', controlNonce, identity });
         }
-        if (record.state === 'finalized') return response(410, { state: 'finalized', controlNonce, identity });
+        if (record.state === 'cancelPending') return response(202, { state: 'cancellation_registered', controlNonce, identity });
         if (record.state === 'settled') return response(200, { state: record.outcome?.status === TickerStatus.Cancelled ? 'stopped' : 'completed', controlNonce, identity, outcome: record.outcome });
         if (record.state === 'active') record.controller.abort();
-        // cancelPending intentionally waits for a matching execute, proving pre-cancel cannot be mistaken for settlement.
         const outcome = await record.completion;
         return response(200, { state: outcome.status === TickerStatus.Cancelled ? 'stopped' : 'completed', controlNonce, identity, outcome });
     }
 
     private finalize(identity: ExecutionIdentity, key: string, controlNonce: string): {status:number;body:Buffer} {
         const record = this.executions.get(key);
-        if (!record) return response(404, { state: 'unknown', controlNonce, identity });
+        if (!record) return this.finalized.has(key)
+            ? response(200, { state: 'finalized', controlNonce, identity })
+            : response(404, { state: 'unknown', controlNonce, identity });
         if (record.state === 'active' || record.state === 'cancelPending') return response(409, { state: 'not_settled', controlNonce, identity });
-        record.state = 'finalized'; record.outcome = undefined; record.expiresAt = Date.now() + FinalizedTtlMs;
+        // Cleanup ran before dispatch. A full tombstone map therefore contains only entries
+        // whose replay protection is still live; retain the settled record and retry later.
+        if (!this.finalized.has(key) && this.finalized.size >= MaxReplayEntries)
+            return response(503, { error: 'finalized_capacity' });
+        this.executions.delete(key);
+        this.finalized.set(key, { identity, expiresAt: Date.now() + FinalizedTtlMs });
         return response(200, { state: 'finalized', controlNonce, identity });
     }
 
+    private rejectCancelPending(key: string, record: ExecutionRecord, identity: ExecutionIdentity,
+        status: number, error: string): {status:number;body:Buffer} {
+        // The pending record itself is same-epoch proof that execution never started. Remove it
+        // before producing the signed rejection so response loss leaves no unresolved registry
+        // state; an identical cancel+execute retry safely recreates and rejects it again.
+        if (this.executions.get(key) === record) this.executions.delete(key);
+        return response(status, { error, state: 'rejected_not_started', identity });
+    }
+
     private settle(record: ExecutionRecord, outcome: InternalFunctionContext): void {
-        if (record.state === 'settled' || record.state === 'finalized') return;
+        if (record.state === 'settled') return;
         record.state = 'settled'; record.outcome = outcome; record.resolve(outcome);
     }
     private executeInScheduler(context: RemoteExecutionContext, registration: any, functionContext: any, semaphore: any, signal: AbortSignal): Promise<InternalFunctionContext> {
@@ -264,8 +301,8 @@ export class SdkExecutionEndpoint {
     }
     private cleanup(): void {
         const now = Date.now();
-        for (const [key, value] of this.executions) if (value.state === 'finalized' && (value.expiresAt ?? 0) <= now) this.executions.delete(key);
-        const replayCutoff = now - FinalizedTtlMs;
+        for (const [key, value] of this.finalized) if (value.expiresAt <= now) this.finalized.delete(key);
+        const replayCutoff = now - ReplayRetentionMs;
         for (const [key, value] of this.replay) if (value.at < replayCutoff) this.replay.delete(key);
     }
 
@@ -285,14 +322,24 @@ function createRecord(identity: ExecutionIdentity, state: RegistryState): Execut
 }
 function response(status: number, value: unknown): {status:number;body:Buffer} { return { status, body: Buffer.from(JSON.stringify(value),'utf8') }; }
 function normalizeIdentity(raw: Record<string, unknown>): ExecutionIdentity {
-    const tickerType = Number(raw.tickerType ?? raw.TickerType ?? raw.type ?? raw.Type);
+    const tickerType = readConsistentNumber(raw, 'tickerType', 'TickerType', 'type', 'Type');
     if (tickerType !== TickerType.TimeTicker && tickerType !== TickerType.CronTickerOccurrence) throw new TypeError('tickerType');
-    return { tickerType, tickerId: readUuid(raw,'tickerId','TickerId','id','Id'), acquisitionToken: readUuid(raw,'acquisitionToken','AcquisitionToken'),
-        dispatchId: readUuid(raw,'dispatchId','DispatchId','executionId','ExecutionId'), nodeEpoch: readUuid(raw,'nodeEpoch','NodeEpoch') };
+    return { tickerType, tickerId: readConsistentUuid(raw,'tickerId','TickerId','id','Id'), acquisitionToken: readConsistentUuid(raw,'acquisitionToken','AcquisitionToken'),
+        dispatchId: readConsistentUuid(raw,'dispatchId','DispatchId','executionId','ExecutionId'), nodeEpoch: readConsistentUuid(raw,'nodeEpoch','NodeEpoch') };
 }
 function readUuid(raw: Record<string, unknown>, ...keys: string[]): string {
     let value: unknown; for (const key of keys) if (raw[key] !== undefined) { value = raw[key]; break; }
     if (typeof value !== 'string' || !uuid.test(value) || zeroUuid(value)) throw new TypeError(keys[0]); return value.toLowerCase();
+}
+function readConsistentUuid(raw: Record<string, unknown>, ...keys: string[]): string {
+    const values = keys.filter(key => raw[key] !== undefined).map(key => readUuid(raw, key));
+    if (values.length === 0 || values.some(value => value !== values[0])) throw new TypeError(keys[0]);
+    return values[0];
+}
+function readConsistentNumber(raw: Record<string, unknown>, ...keys: string[]): number {
+    const values = keys.filter(key => raw[key] !== undefined).map(key => Number(raw[key]));
+    if (values.length === 0 || values.some(value => !Number.isInteger(value) || value !== values[0])) throw new TypeError(keys[0]);
+    return values[0];
 }
 function zeroUuid(value: string): boolean { return value.toLowerCase() === '00000000-0000-0000-0000-000000000000'; }
 function identityKey(i: ExecutionIdentity): string { return `${i.tickerType}:${i.tickerId}:${i.acquisitionToken}:${i.dispatchId}:${i.nodeEpoch}`; }

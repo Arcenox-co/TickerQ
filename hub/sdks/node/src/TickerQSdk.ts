@@ -190,9 +190,9 @@ export class TickerQSdk {
      */
     async stop(timeoutMs = 30_000): Promise<void> {
         this.logger?.info('TickerQ SDK: Stopping...');
-        this.taskScheduler.freeze();
-        await this.taskScheduler.waitForRunningTasks(timeoutMs);
-        this.taskScheduler.dispose();
+        if (!await this.endpoint.shutdown(timeoutMs)) {
+            throw new Error(`TickerQ SDK: Remote executions did not settle within ${timeoutMs}ms; scheduler was not disposed.`);
+        }
         this.logger?.info('TickerQ SDK: Stopped.');
     }
 
