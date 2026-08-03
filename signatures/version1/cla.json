@@ -135,6 +135,14 @@
       "created_at": "2026-06-10T18:45:55Z",
       "repoId": 630568472,
       "pullRequestNo": 868
+    },
+    {
+      "name": "KonstantinKritsin",
+      "id": 15649762,
+      "comment_id": 5163962141,
+      "created_at": "2026-08-03T08:19:48Z",
+      "repoId": 630568472,
+      "pullRequestNo": 884
     }
   ]
 }
