@@ -4,7 +4,6 @@
 
     <PropertyGroup>
         <IsPackable>false</IsPackable>
-        <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
         <DotNetAbstractionsVersion>[8.0.0,)</DotNetAbstractionsVersion>
     </PropertyGroup>
 

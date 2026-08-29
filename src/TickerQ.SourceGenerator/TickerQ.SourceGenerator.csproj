@@ -4,7 +4,6 @@
         <LangVersion>8.0</LangVersion>
         <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
         <AssemblyName>TickerQ.SourceGenerator</AssemblyName>
-        <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     </PropertyGroup>
 
     <ItemGroup>

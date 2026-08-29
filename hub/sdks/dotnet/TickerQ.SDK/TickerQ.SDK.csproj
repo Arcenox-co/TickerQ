@@ -2,7 +2,6 @@
 
   <PropertyGroup>
     <OutputType>Library</OutputType>
-    <IsPackable>true</IsPackable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>TickerQ.SDK</AssemblyName>
     <PackageId>TickerQ.SDK</PackageId>

@@ -12,7 +12,6 @@
         <Copyright>Copyright 2025-present Arcenox LLC</Copyright>
         <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
         <PackageIcon>icon.jpg</PackageIcon>
-        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
         <LangVersion>default</LangVersion>
 
         <!-- Source Link -->

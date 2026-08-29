@@ -1,6 +1,10 @@
 <Project>
     <Import Project="../src/Directory.Build.props" />
 
+    <PropertyGroup>
+        <IsPackable>true</IsPackable>
+    </PropertyGroup>
+
     <!-- Override icon path: src/Directory.Build.props uses ../../icon.jpg relative to project,
          which is wrong for hub/ projects. Use absolute path based on this file's location. -->
     <ItemGroup>
