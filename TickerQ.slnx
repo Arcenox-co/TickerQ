@@ -13,9 +13,11 @@
     <File Path=".github/workflows/publish.yml" />
   </Folder>
   <Folder Name="/benchmarks/">
+    <File Path="benchmarks/Directory.Build.props" />
     <Project Path="benchmarks/TickerQ.Benchmarks/TickerQ.Benchmarks.csproj" />
   </Folder>
   <Folder Name="/samples/">
+    <File Path="samples/Directory.Build.props" />
     <Project Path="samples/TickerQ.Sample.ApplicationDbContext/TickerQ.Sample.ApplicationDbContext.csproj" />
     <Project Path="samples/TickerQ.Sample.Console/TickerQ.Sample.Console.csproj" />
     <Project Path="samples/TickerQ.Sample.MongoDB/TickerQ.Sample.MongoDB.csproj" />
@@ -39,6 +41,7 @@
     <Project Path="hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <File Path="tests/Directory.Build.props" />
     <Project Path="tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj" />
     <Project Path="tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj" />
     <Project Path="tests/TickerQ.MongoDB.Tests/TickerQ.MongoDB.Tests.csproj" />

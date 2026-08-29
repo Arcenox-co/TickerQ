@@ -9,13 +9,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="OpenTelemetry" Version="[1.15.3,)" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="[1.15.3,)" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(DotNetAbstractionsVersion)" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(DotNetAbstractionsVersion)" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
   </ItemGroup>
 </Project>

@@ -83,62 +83,14 @@ jobs:
         run: npm run build
         working-directory: src/TickerQ.Dashboard/wwwroot
 
-      - name: Build TickerQ.Utilities
-        run: dotnet build src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release
-
-      - name: Pack TickerQ.Utilities
-        run: dotnet pack src/TickerQ.Utilities/TickerQ.Utilities.csproj --configuration Release --output ./nupkgs
-
-      - name: Add local nupkgs source
-        run: dotnet nuget add source "$(pwd)/nupkgs" --name LocalNupkgs
-
-      - name: Restore packages with local source
-        run: |
-          dotnet restore src/TickerQ/TickerQ.csproj
-          dotnet restore src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj
-          dotnet restore src/TickerQ.Dashboard/TickerQ.Dashboard.csproj
-          dotnet restore src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj
-          dotnet restore src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj
-          dotnet restore src/TickerQ.MongoDB/TickerQ.MongoDB.csproj
-          dotnet restore hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj
-          dotnet restore hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj
-          dotnet restore tests/TickerQ.Tests/TickerQ.Tests.csproj
-          dotnet restore tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj
-          dotnet restore tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj
-
-      - name: Build TickerQ.SourceGenerator
-        run: dotnet build src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release
-
-      - name: Build other projects
-        run: |
-          dotnet build src/TickerQ/TickerQ.csproj --configuration Release
-          dotnet build src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release
-          dotnet build src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release
-          dotnet build src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj --configuration Release
-          dotnet build src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release
-          dotnet build src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release
-          dotnet build hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release
-          dotnet build hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release
-          dotnet build tests/TickerQ.Tests/TickerQ.Tests.csproj --configuration Release
-          dotnet build tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj --configuration Release
-          dotnet build tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj --configuration Release
+      - name: Build solution
+        run: dotnet build TickerQ.slnx --configuration Release
 
       - name: Run tests
-        run: |
-          dotnet test tests/TickerQ.Tests/ --configuration Release --no-build
-          dotnet test tests/TickerQ.EntityFrameworkCore.Tests/ --configuration Release --no-build
-          dotnet test tests/TickerQ.Caching.StackExchangeRedis.Tests/ --configuration Release --no-build
+        run: dotnet test TickerQ.slnx --configuration Release --no-build
 
-      - name: Pack other projects
-        run: |
-          dotnet pack src/TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs
-          dotnet pack src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs
-          dotnet pack src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs
-          dotnet pack src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj --configuration Release --output ./nupkgs
-          dotnet pack src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release --output ./nupkgs
-          dotnet pack src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release --output ./nupkgs
-          dotnet pack hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release --output ./nupkgs
-          dotnet pack hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release --output ./nupkgs
+      - name: Create NuGet packages
+        run: dotnet pack TickerQ.slnx --configuration Release --no-build --output ./nupkgs
 
       - name: Show package file sizes
         run: |
