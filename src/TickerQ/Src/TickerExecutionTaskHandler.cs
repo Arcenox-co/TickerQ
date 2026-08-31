@@ -15,6 +15,7 @@ using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ;
@@ -31,11 +32,12 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     private readonly IInternalTickerManager _internalTickerManager;
     private readonly SchedulerOptionsBuilder _schedulerOptions;
     private readonly ITickerQFailureNotifier _failureNotifier;
+    private readonly TickerQLicenseStateProvider _licenseState;
     private readonly Func<string, TickerFunctionDescriptor> _descriptorResolver;
 
-    public TickerExecutionTaskHandler(IServiceProvider serviceProvider, ITickerClock clock, ITickerQInstrumentation tickerQInstrumentation, IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerQFailureNotifier failureNotifier)
+    public TickerExecutionTaskHandler(IServiceProvider serviceProvider, ITickerClock clock, ITickerQInstrumentation tickerQInstrumentation, IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerQFailureNotifier failureNotifier, TickerQLicenseStateProvider licenseState)
         : this(
-            serviceProvider, clock, tickerQInstrumentation, internalTickerManager, schedulerOptions, failureNotifier,
+            serviceProvider, clock, tickerQInstrumentation, internalTickerManager, schedulerOptions, failureNotifier, licenseState,
             functionName => TickerFunctionProvider.TickerFunctionDescriptors.TryGetValue(functionName, out var descriptor)
                 ? descriptor
                 : null)
@@ -49,6 +51,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         IInternalTickerManager internalTickerManager,
         SchedulerOptionsBuilder schedulerOptions,
         ITickerQFailureNotifier failureNotifier,
+        TickerQLicenseStateProvider licenseState,
         Func<string, TickerFunctionDescriptor> descriptorResolver)
     {
         _serviceProvider = serviceProvider;
@@ -57,6 +60,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         _internalTickerManager = internalTickerManager;
         _schedulerOptions = schedulerOptions;
         _failureNotifier = failureNotifier;
+        _licenseState = licenseState;
         _descriptorResolver = descriptorResolver ?? throw new ArgumentNullException(nameof(descriptorResolver));
     }
 
@@ -101,12 +105,27 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             : (TimeSpan?)null;
     }
 
+    // Defense in depth: the offline license must permit execution before any registration, status
+    // mutation, persistence, or delegate invocation. Enforced at every public entry so work that was
+    // already queued before the license blocked cannot execute afterward.
+    private void EnsureLicensedForExecution()
+    {
+        var license = _licenseState.Current;
+        if (!license.ExecutionAllowed)
+            throw new InvalidOperationException(license.Message);
+    }
+
     public Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
-        => ExecuteRegisteredTaskAsync(context, isDue, registeredSource: null, cancellationToken);
+    {
+        EnsureLicensedForExecution();
+        return ExecuteRegisteredTaskAsync(context, isDue, registeredSource: null, cancellationToken);
+    }
 
     public async Task ExecuteRegisteredTaskAsync(InternalFunctionContext context, bool isDue,
         CancellationTokenSource registeredSource, CancellationToken cancellationToken = default)
     {
+        EnsureLicensedForExecution();
+
         if (context.Type == TickerType.CronTickerOccurrence)
         {
             // Root occurrence: reuse the acquisition-time registration if the caller supplied one.

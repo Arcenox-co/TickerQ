@@ -14,6 +14,7 @@ using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Managers;
 using TickerQ.Utilities.Temps;
 
@@ -49,6 +50,18 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerQNotificationHubSender, NoOpTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
 
+            // Shared, single source of truth for the offline license verdict. Consumed by the Core
+            // enforcement path and the Dashboard alike.
+            services.AddSingleton<TickerQLicenseStateProvider>();
+
+            // Validate the offline license certificate FIRST — before the initializer and every
+            // operational hosted service — so nothing discovers, seeds, schedules, or executes until the
+            // license verdict is known. It fails closed and never stops the host.
+            services.AddHostedService<TickerQLicenseHostedService>();
+
+            if (optionInstance.RegisterBackgroundServices && optionInstance.JobRetention.IsEnabled)
+                services.AddHostedService<TickerQRetentionCapabilityValidator>();
+
             // Register the initializer hosted service BEFORE scheduler services
             // to guarantee seeding completes before the scheduler starts polling.
             // Registered as a singleton so UseTickerQ can resolve it to set the initialization flag.
@@ -72,6 +85,11 @@ namespace TickerQ.DependencyInjection
                     provider.GetRequiredService<TickerQSchedulerBackgroundService>());
                 services.AddHostedService(provider => provider.GetRequiredService<TickerQFallbackBackgroundService>());
                 services.AddSingleton<TickerQFallbackBackgroundService>();
+
+                // Registered after the scheduler so retention stops first during reverse-order shutdown.
+                if (optionInstance.JobRetention.IsEnabled)
+                    services.AddHostedService<TickerQRetentionBackgroundService>();
+
                 services.AddSingleton<ITickerQDispatcher, TickerQDispatcher>();
                 services.AddSingleton<ITickerQTaskScheduler>(sp =>
                 {
@@ -122,6 +140,8 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton(_ => optionInstance);
             services.AddSingleton(_ => tickerExecutionContext);
             services.AddSingleton(_ => schedulerOptionsBuilder);
+            optionInstance.JobRetention.Validate();
+            services.AddSingleton(optionInstance.JobRetention);
 
             // Register AFTER initializer and scheduler to ensure it runs last
             services.AddHostedService<TickerQStartupValidator>();

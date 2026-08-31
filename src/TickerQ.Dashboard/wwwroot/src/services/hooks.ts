@@ -33,6 +33,7 @@ import type {
 // ===== Query keys =====
 export const qk = {
   options: ["options"] as const,
+  license: ["license"] as const,
   hostStatus: ["host", "status"] as const,
   nextTicker: ["host", "next-ticker"] as const,
   overallStatuses: ["stats", "overall-statuses"] as const,
@@ -73,6 +74,14 @@ export function useDashboardOptions() {
   return useQuery({
     queryKey: qk.options,
     queryFn: ({ signal }) => dashboardApi.getOptions(signal),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useLicense() {
+  return useQuery({
+    queryKey: qk.license,
+    queryFn: ({ signal }) => dashboardApi.getLicense(signal),
     staleTime: 5 * 60_000,
   });
 }

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.BackgroundServices;
@@ -28,21 +29,29 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
     private readonly SchedulerOptionsBuilder _schedulerOptions;
     private readonly ILogger<TickerQStaleJobRecoveryBackgroundService> _logger;
     private readonly Utilities.Interfaces.ITickerQFailureNotifier _notifier;
+    private readonly TickerQLicenseStateProvider _licenseState;
 
     public TickerQStaleJobRecoveryBackgroundService(
         IInternalTickerManager internalTickerManager,
         SchedulerOptionsBuilder schedulerOptions,
         ILogger<TickerQStaleJobRecoveryBackgroundService> logger,
-        Utilities.Interfaces.ITickerQFailureNotifier notifier)
+        Utilities.Interfaces.ITickerQFailureNotifier notifier,
+        TickerQLicenseStateProvider licenseState)
     {
         _internalTickerManager = internalTickerManager;
         _schedulerOptions = schedulerOptions;
         _logger = logger;
         _notifier = notifier;
+        _licenseState = licenseState;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Fail closed: when the offline license blocks execution, run neither lease renewal nor the
+        // watchdog sweep, and touch no provider. The license hosted service has already warned once.
+        if (!_licenseState.ExecutionAllowed)
+            return;
+
         if (!_internalTickerManager.SupportsLeaseBasedRecovery)
         {
             // Fail closed: providers that have not implemented the full lease/recovery
@@ -58,6 +67,9 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
             try
             {
                 await Task.Delay(_schedulerOptions.LeaseRenewalInterval, stoppingToken);
+
+                if (!_licenseState.ExecutionAllowed)
+                    return;
 
                 await RenewLeasesAsync(stoppingToken);
                 await SweepStaleAsync(stoppingToken);

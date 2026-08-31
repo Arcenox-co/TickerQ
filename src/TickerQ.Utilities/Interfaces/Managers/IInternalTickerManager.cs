@@ -42,5 +42,16 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task<TickerExecutionLease[]> GetLostLeaseTickerIdsAsync(IReadOnlyCollection<AcquisitionLease> timeTickerLeases, IReadOnlyCollection<AcquisitionLease> occurrenceLeases, CancellationToken cancellationToken = default);
         /// <summary>One watchdog sweep: applies OnStale to expired-lease InProgress tickers.</summary>
         Task<StaleTickerRecoveryResult> RecoverStaleTickersAsync(CancellationToken cancellationToken = default);
+
+        bool SupportsRetention => false;
+        Task<RetentionChainBatchResult> SweepTimeChainsAsync(
+            RetentionCutoffs cutoffs,
+            int batchSize,
+            RetentionCursor cursor,
+            CancellationToken cancellationToken = default);
+        Task<RetentionBatchResult> SweepCronOccurrencesAsync(
+            RetentionCutoffs cutoffs,
+            int batchSize,
+            CancellationToken cancellationToken = default);
     }
 }

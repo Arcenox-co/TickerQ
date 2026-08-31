@@ -19,6 +19,12 @@ internal class TickerExecutionContext
    private long _nextOccurrenceTicks;
    internal Action<IServiceProvider> ExternalProviderApplicationAction { get; set; }
    internal Action<object> DashboardApplicationAction { get; set; }
+   /// <summary>
+   /// Configured path to the offline license certificate (<c>.tqlicense</c>). Null means "not configured",
+   /// which resolves to the default <c>tickerq.tqlicense</c> in the content root and, if absent, a Missing
+   /// license state rather than an error.
+   /// </summary>
+   internal string LicenseCertificatePath { get; set; }
    public Action<object, CoreNotifyActionType> NotifyCoreAction { get; set; }
    public string LastHostExceptionMessage { get; set; }
    internal ITickerOptionsSeeding OptionsSeeding { get; set; }

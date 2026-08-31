@@ -1,11 +1,13 @@
-import { Activity, Eye, LogOut, UserCircle2 } from "lucide-react";
+import { Eye, LogOut, UserCircle2 } from "lucide-react";
 import { TimezoneSelector } from "@/components/layout/TimezoneSelector";
 import { useAuth } from "@/lib/auth/auth-context";
-import { getRuntimeConfig } from "@/lib/runtime-config";
+import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
 
 export function TopBar() {
   const auth = useAuth();
   const cfg = getRuntimeConfig();
+  const basePath = normalizeBasePath(cfg.basePath);
+  const tickerQLogo = `${basePath === "/" ? "" : basePath}/tickerq-logo.svg`;
   const showUser =
     auth.status === "authenticated" && auth.info?.loginAvailable === true;
 
@@ -16,7 +18,7 @@ export function TopBar() {
           {cfg.logoUrl ? (
             <img src={cfg.logoUrl} alt="" className="h-4 w-auto" />
           ) : (
-            <Activity className="h-3.5 w-3.5 text-primary" />
+            <img src={tickerQLogo} alt="TickerQ" className="h-4 w-auto" />
           )}
           <span className="font-semibold text-foreground">{cfg.title}</span>
           {cfg.version && (

@@ -9,6 +9,7 @@ using Microsoft.Extensions.Hosting;
 using TickerQ.Provider;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 
 namespace TickerQ.BackgroundServices;
 
@@ -26,6 +27,7 @@ internal sealed class TickerQInitializerHostedService : IHostedService
     private readonly TickerExecutionContext _executionContext;
     private readonly IServiceProvider _serviceProvider;
     private readonly IConfiguration _configuration;
+    private readonly TickerQLicenseStateProvider _licenseState;
 
     /// <summary>
     /// Set to true by <c>UseTickerQ</c> to signal that this hosted service
@@ -38,16 +40,23 @@ internal sealed class TickerQInitializerHostedService : IHostedService
     public TickerQInitializerHostedService(
         TickerExecutionContext executionContext,
         IServiceProvider serviceProvider,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        TickerQLicenseStateProvider licenseState)
     {
         _executionContext = executionContext;
         _serviceProvider = serviceProvider;
         _configuration = configuration;
+        _licenseState = licenseState;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (!InitializationRequested)
+            return;
+
+        // Fail closed: when the offline license blocks execution, perform zero discovery, bootstrap,
+        // seeding, or external-provider work. The license hosted service has already warned once.
+        if (!_licenseState.ExecutionAllowed)
             return;
 
         TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(_configuration);

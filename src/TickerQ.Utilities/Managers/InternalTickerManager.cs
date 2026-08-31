@@ -553,5 +553,20 @@ namespace TickerQ.Utilities.Managers
 
         public async Task<StaleTickerRecoveryResult> RecoverStaleTickersAsync(CancellationToken cancellationToken = default)
             => await _persistenceProvider.RecoverStaleTickers(_schedulerOptions.MaxStaleRestarts, cancellationToken).ConfigureAwait(false);
+
+        public bool SupportsRetention => _persistenceProvider.SupportsRetention;
+
+        public Task<RetentionChainBatchResult> SweepTimeChainsAsync(
+            RetentionCutoffs cutoffs,
+            int batchSize,
+            RetentionCursor cursor,
+            CancellationToken cancellationToken = default)
+            => _persistenceProvider.DeleteEligibleTimeTickerChainsAsync(cutoffs, batchSize, cursor, cancellationToken);
+
+        public Task<RetentionBatchResult> SweepCronOccurrencesAsync(
+            RetentionCutoffs cutoffs,
+            int batchSize,
+            CancellationToken cancellationToken = default)
+            => _persistenceProvider.DeleteEligibleCronTickerOccurrencesAsync(cutoffs, batchSize, cancellationToken);
     }
 }

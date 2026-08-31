@@ -21,6 +21,9 @@ namespace TickerQ.Utilities.DashboardDtos
 
         public TickerTaskPriority Priority { get; set; }
         public string CronExpression { get; set; }
+
+        /// <summary>Per-function concurrency limit. Zero means unlimited.</summary>
+        public int MaxConcurrency { get; set; }
     }
 
     public class FunctionRequestContractDto

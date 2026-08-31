@@ -20,6 +20,7 @@ import type {
   FunctionInfoDto,
   GraphBucketDto,
   HostStatusDto,
+  LicenseResponse,
   NextTickerDto,
   NodeDto,
   NodeJobCount,
@@ -169,6 +170,10 @@ export const dashboardApi = {
   // Scheduler options (root-level under /api/, not /api/dashboard/)
   getOptions: (signal?: AbortSignal) =>
     rootRequest<DashboardOptionsResponse>("/api/options", signal),
+
+  // Offline license status (root-level under /api/, not /api/dashboard/)
+  getLicense: (signal?: AbortSignal) =>
+    rootRequest<LicenseResponse>("/api/license", signal),
 
   // Time tickers
   queryTimeTickers: (f: TimeTickerQueryFilter, signal?: AbortSignal) =>

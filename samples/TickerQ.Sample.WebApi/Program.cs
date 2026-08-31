@@ -12,6 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 // TickerQ setup with SQLite operational store (file-based)
 builder.Services.AddTickerQ(options =>
 {
+    options.UseLicense("asd/tes/");
     options.AddOperationalStore(efOptions =>
     {
         efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>
@@ -30,7 +31,7 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<TickerQDbContext>();
-    db.Database.Migrate();
+    db.Database.EnsureCreated();
 }
 
 // Activate TickerQ job processor (mirrors docs' minimal setup)

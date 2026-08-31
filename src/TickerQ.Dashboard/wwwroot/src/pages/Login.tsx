@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import { LogIn, Lock, User, Activity } from "lucide-react";
+import { LogIn, Lock, User } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth/auth-context";
 import { AuthApiError } from "@/lib/auth/auth-api";
+import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
 
 interface LocationState {
   from?: string;
@@ -18,6 +19,9 @@ interface LocationState {
 export default function LoginPage() {
   const auth = useAuth();
   const location = useLocation();
+  const cfg = getRuntimeConfig();
+  const basePath = normalizeBasePath(cfg.basePath);
+  const logo = cfg.logoUrl || `${basePath === "/" ? "" : basePath}/tickerq-logo.svg`;
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +57,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-surface-0 p-4">
       <div className="w-full max-w-sm">
         <div className="flex items-center justify-center gap-2 mb-6">
-          <Activity className="h-5 w-5 text-primary" />
+          <img src={logo} alt="TickerQ" className="h-5 w-auto" />
           <span className="font-semibold text-lg">TickerQ</span>
           <span className="text-muted-foreground text-sm">Scheduler Dashboard</span>
         </div>

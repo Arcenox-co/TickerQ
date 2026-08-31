@@ -12,6 +12,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces.Managers;
 
 var builder = WebApplication.CreateBuilder(args);
+var licensePath = Environment.GetEnvironmentVariable("TICKERQ_LICENSE_PATH");
 
 // ── Assistant chat history ──
 // Per-user, server-side chat history (the SPA shows the conversation list
@@ -35,6 +36,9 @@ if (useOpenAIHistory)
 // every startup, so a fresh DB avoids duplicate one-off tickers).
 builder.Services.AddTickerQ(options =>
 {
+    if (!string.IsNullOrWhiteSpace(licensePath))
+        options.UseLicense(licensePath);
+
     options.AddOperationalStore(efOptions =>
     {
         efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>
@@ -74,6 +78,19 @@ builder.Services.AddTickerQ(options =>
         });
     });
 
+    // Fast, visible demo policy: terminal history is pruned by outcome, with a ten-second sweep.
+    options.ConfigureJobRetention(retention =>
+    {
+        retention.DeleteSucceededAfter = TimeSpan.FromMinutes(1);
+        retention.DeleteFailedAfter = TimeSpan.FromMinutes(3);
+        retention.DeleteCancelledAfter = TimeSpan.FromMinutes(2);
+        retention.DeleteSkippedAfter = TimeSpan.FromMinutes(2);
+        retention.SweepInterval = TimeSpan.FromSeconds(10);
+        retention.BatchSize = 50;
+        retention.MaxBatchesPerSweep = 4;
+        retention.MaxNodesPerChain = 100;
+    });
+
     // Failure notifications: POSTs a JSON event for terminal failures, execution
     // timeouts, and stale recoveries. Point at any HTTP sink (here: a local test
     // listener; in production a Slack webhook proxy, PagerDuty, etc.).
@@ -88,10 +105,9 @@ builder.Services.AddTickerQ(options =>
     options.AddDashboard(dash =>
     {
         // Branding + defaults (new in this release). The logo resolves
-        // relative to the dashboard base path — favicon.svg ships in dist,
-        // so this works offline.
-        dash.SetTitle("Acme Jobs — Local Test");
-        dash.SetLogoUrl("favicon.svg");
+        // relative to the dashboard base path and ships in dist.
+        dash.SetTitle("TickerQ Full Demo");
+        dash.SetLogoUrl("tickerq-logo.svg");
         dash.SetTimeZone(TimeZoneInfo.FindSystemTimeZoneById("Europe/Tirane"));
 
         dash.WithAuthentication(auth =>

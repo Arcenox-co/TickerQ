@@ -130,6 +130,24 @@ namespace TickerQ.Utilities.Interfaces
         Task<StaleTickerRecoveryResult> RecoverStaleTickers(int maxStaleRestarts, CancellationToken cancellationToken = default)
             => Task.FromResult(new StaleTickerRecoveryResult());
         #endregion
+
+        #region Retention
+        /// <summary>Whether this provider implements bounded, concurrency-safe job retention.</summary>
+        bool SupportsRetention => false;
+
+        Task<RetentionChainBatchResult> DeleteEligibleTimeTickerChainsAsync(
+            RetentionCutoffs cutoffs,
+            int batchSize,
+            RetentionCursor cursor,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This persistence provider does not support built-in job retention.");
+
+        Task<RetentionBatchResult> DeleteEligibleCronTickerOccurrencesAsync(
+            RetentionCutoffs cutoffs,
+            int batchSize,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This persistence provider does not support built-in job retention.");
+        #endregion
         
         #region Queryable
         ITickerQueryable<TTimeTicker> TimeTickersQuery();

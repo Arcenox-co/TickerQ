@@ -68,6 +68,17 @@ namespace TickerQ.Utilities
             return this;
         }
 
+        /// <summary>Retention policy for historical terminal ticker records. Disabled by default.</summary>
+        public JobRetentionOptions JobRetention { get; } = new JobRetentionOptions();
+
+        /// <summary>Configures automatic cleanup of historical terminal ticker records.</summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureJobRetention(Action<JobRetentionOptions> configure)
+        {
+            configure?.Invoke(JobRetention);
+            JobRetention.Validate();
+            return this;
+        }
+
         /// <summary>
         /// Gets or sets the minimum interval between database polls.
         /// Prevents tight loops when tasks are due or when the database is empty.
@@ -252,6 +263,21 @@ namespace TickerQ.Utilities
             return this;
         }
         
+        /// <summary>
+        /// Points TickerQ at an offline license certificate (<c>.tqlicense</c>). A relative path is resolved
+        /// from <see cref="Microsoft.Extensions.Hosting.IHostEnvironment.ContentRootPath"/>. When not called,
+        /// TickerQ looks for <c>tickerq.tqlicense</c> in the content root; if it is absent the license state
+        /// is Missing (which blocks execution) rather than a startup error. The certificate is verified
+        /// offline against a source-pinned trusted key — the path only locates the artifact.
+        /// </summary>
+        /// <param name="certificatePath">Absolute or content-root-relative path to the certificate file.</param>
+        /// <returns>The TickerOptionsBuilder for method chaining.</returns>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseLicense(string certificatePath)
+        {
+            _tickerExecutionContext.LicenseCertificatePath = certificatePath;
+            return this;
+        }
+
         internal void UseExternalProviderApplication(Action<IServiceProvider> action)
             => _tickerExecutionContext.ExternalProviderApplicationAction = action;
         

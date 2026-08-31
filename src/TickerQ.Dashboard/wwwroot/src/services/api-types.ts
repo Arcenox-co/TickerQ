@@ -39,13 +39,68 @@ export type NodeHealthStatus = "Healthy" | "Degraded" | "Down";
  *  scheduler's configured timezone — used as the dashboard's default. */
 export interface DashboardOptionsResponse {
   maxConcurrency: number;
-  /** TimeSpan as ISO 8601 duration ("00:01:00"). */
+  /** .NET TimeSpan string ("00:01:00"). */
   idleWorkerTimeOut: string;
   /** The host machine identifier (e.g. NodeIdentifier). */
   currentMachine: string;
   lastHostExceptionMessage: string | null;
   /** IANA timezone name (e.g. "Europe/Ljubljana") configured on the scheduler. */
   schedulerTimeZone: string;
+  /** Minimum interval between database polls. .NET TimeSpan string. */
+  minPollingInterval: string;
+  /** Interval of the fallback due-work checker. .NET TimeSpan string. */
+  fallbackIntervalChecker: string;
+  /** Global per-attempt execution timeout (.NET TimeSpan string). Null → no timeout. */
+  defaultExecutionTimeout: string | null;
+  /** True when the stale-job watchdog recovers jobs abandoned by a dead node. */
+  staleJobRecoveryEnabled: boolean;
+  /** Effective historical-record retention policy. */
+  retention: RetentionConfig;
+}
+
+/** Non-secret view of the job-retention maintenance settings. A null window means
+ *  "retain forever" for that terminal status. Windows are .NET TimeSpan strings. */
+export interface RetentionConfig {
+  enabled: boolean;
+  deleteSucceededAfter: string | null;
+  deleteFailedAfter: string | null;
+  deleteCancelledAfter: string | null;
+  deleteSkippedAfter: string | null;
+  sweepInterval: string;
+  batchSize: number;
+  maxBatchesPerSweep: number;
+  maxNodesPerChain: number;
+}
+
+/** Coarse license state, mirrors TickerQ.Utilities.Licensing.TickerQLicenseStatus. */
+export type LicenseStatus =
+  | "Missing"
+  | "Invalid"
+  | "Active"
+  | "Expiring"
+  | "Expired";
+
+/** Safe, read-only license projection served by /api/license. Mirrors the C#
+ *  LicenseResponse — never carries the raw certificate, payload, signature, or key. */
+export interface LicenseResponse {
+  status: LicenseStatus;
+  executionAllowed: boolean;
+  message: string;
+  actionLabel: string | null;
+  actionUrl: string | null;
+  workspaceId: string | null;
+  workspaceName: string | null;
+  plan: string | null;
+  kind: string | null;
+  isEvaluation: boolean;
+  licenseId: string | null;
+  issuedAt: string | null;
+  expiresAt: string | null;
+  daysRemaining: number | null;
+  schemaVersion: number | null;
+  algorithm: string | null;
+  keyId: string | null;
+  anchoredMinorLine: string | null;
 }
 
 export interface PaginationResult<T> {
@@ -182,6 +237,8 @@ export interface FunctionInfoDto {
   requestExample: string | null;
   priority: TickerTaskPriority;
   cronExpression: string | null;
+  /** Per-function concurrency limit. Zero means unlimited. */
+  maxConcurrency: number;
 }
 
 export interface GraphBucketCountDto {

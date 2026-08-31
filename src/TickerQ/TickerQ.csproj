@@ -17,6 +17,11 @@
        <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
    </ItemGroup>
 
+   <ItemGroup>
+       <!-- Offline Ed25519 verification of license certificates. -->
+       <PackageReference Include="NSec.Cryptography" Version="26.4.0" />
+   </ItemGroup>
+
     <Target Name="CopyAnalyzer" AfterTargets="Build">
         <MakeDir Directories="$(OutputPath)analyzers/dotnet/cs" />
     </Target>

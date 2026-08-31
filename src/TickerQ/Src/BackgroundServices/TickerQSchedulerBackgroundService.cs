@@ -10,6 +10,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.BackgroundServices;
@@ -24,6 +25,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private readonly ITickerQTaskScheduler  _taskScheduler;
     private readonly ITickerExecutionTaskHandler  _taskHandler;
     private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
+    private readonly TickerQLicenseStateProvider _licenseState;
     private readonly SemaphoreSlim _acquisitionPublicationGate = new(1, 1);
     private int _started;
     private int _stopping;
@@ -38,6 +40,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         IInternalTickerManager  internalTickerManager,
         SchedulerOptionsBuilder schedulerOptions,
         ITickerFunctionConcurrencyGate concurrencyGate,
+        TickerQLicenseStateProvider licenseState,
         ILogger<TickerQSchedulerBackgroundService> logger = null)
     {
         _executionContext = executionContext;
@@ -45,6 +48,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         _taskScheduler = taskScheduler;
         _internalTickerManager = internalTickerManager ?? throw new ArgumentNullException(nameof(internalTickerManager));
         _concurrencyGate = concurrencyGate;
+        _licenseState = licenseState;
         _schedulerOptions = schedulerOptions;
         _logger = logger ?? NullLogger<TickerQSchedulerBackgroundService>.Instance;
         _minPollingInterval = ResolveMinPollingInterval(schedulerOptions);
@@ -56,6 +60,11 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     
     public override Task StartAsync(CancellationToken ct)
     {
+        // Fail closed: when the offline license blocks execution, never start the scheduler. Leave it
+        // stopped (IsRunning stays false) and touch no task scheduler. The license hosted service warned once.
+        if (!_licenseState.ExecutionAllowed)
+            return Task.CompletedTask;
+
         if (SkipFirstRun)
         {
             _taskScheduler.Freeze();
@@ -73,7 +82,12 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        while (!stoppingToken.IsCancellationRequested)
+        // Fail closed: when the offline license blocks execution, never poll or touch the manager,
+        // provider, or task scheduler. The license hosted service has already warned once.
+        if (!_licenseState.ExecutionAllowed)
+            return;
+
+        while (!stoppingToken.IsCancellationRequested && _licenseState.ExecutionAllowed)
         {
             _schedulerLoopCancellationTokenSource = SafeCancellationTokenSource.CreateLinked(stoppingToken);
 
@@ -112,7 +126,9 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     private async Task RunTickerQSchedulerAsync(CancellationToken stoppingToken, CancellationToken cancellationToken)
     {
-        while (!stoppingToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        while (!stoppingToken.IsCancellationRequested
+               && !cancellationToken.IsCancellationRequested
+               && _licenseState.ExecutionAllowed)
         {
             if (_executionContext.Functions.Length != 0)
             {

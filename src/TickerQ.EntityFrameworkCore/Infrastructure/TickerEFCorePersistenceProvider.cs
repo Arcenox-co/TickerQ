@@ -12,6 +12,7 @@ using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 using System.Collections.Generic;
+using System.Data;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
@@ -268,6 +269,203 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 },
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
+        #endregion
+
+        #region Retention
+
+        public bool SupportsRetention => true;
+
+        private static Expression<Func<TTimeTicker, bool>> TimeEligible(RetentionCutoffs cutoffs, DateTime now)
+        {
+            var succeeded = cutoffs.SucceededBefore;
+            var failed = cutoffs.FailedBefore;
+            var cancelled = cutoffs.CancelledBefore;
+            var skipped = cutoffs.SkippedBefore;
+            return ticker =>
+                (((ticker.Status == TickerStatus.Done || ticker.Status == TickerStatus.DueDone) && ticker.ExecutedAt < succeeded)
+                 || (ticker.Status == TickerStatus.Failed && ticker.ExecutedAt < failed)
+                 || (ticker.Status == TickerStatus.Cancelled && ticker.ExecutedAt < cancelled)
+                 || (ticker.Status == TickerStatus.Skipped && ticker.ExecutedAt < skipped))
+                && ticker.AcquisitionToken == null
+                && (ticker.LeaseUntil == null || ticker.LeaseUntil <= now);
+        }
+
+        private static Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> OccurrenceEligible(
+            RetentionCutoffs cutoffs,
+            DateTime now)
+        {
+            var succeeded = cutoffs.SucceededBefore;
+            var failed = cutoffs.FailedBefore;
+            var cancelled = cutoffs.CancelledBefore;
+            var skipped = cutoffs.SkippedBefore;
+            return occurrence =>
+                (((occurrence.Status == TickerStatus.Done || occurrence.Status == TickerStatus.DueDone) && occurrence.ExecutedAt < succeeded)
+                 || (occurrence.Status == TickerStatus.Failed && occurrence.ExecutedAt < failed)
+                 || (occurrence.Status == TickerStatus.Cancelled && occurrence.ExecutedAt < cancelled)
+                 || (occurrence.Status == TickerStatus.Skipped && occurrence.ExecutedAt < skipped))
+                && occurrence.AcquisitionToken == null
+                && (occurrence.LeaseUntil == null || occurrence.LeaseUntil <= now);
+        }
+
+        public async Task<RetentionBatchResult> DeleteEligibleCronTickerOccurrencesAsync(
+            RetentionCutoffs cutoffs,
+            int batchSize,
+            CancellationToken cancellationToken = default)
+        {
+            if (batchSize <= 0 || cutoffs is null || !cutoffs.HasAny)
+                return RetentionBatchResult.Empty;
+
+            using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            var set = session.Context.Set<CronTickerOccurrenceEntity<TCronTicker>>();
+            var eligible = OccurrenceEligible(cutoffs, _clock.UtcNow);
+            var ids = await set.AsNoTracking()
+                .Where(eligible)
+                .OrderBy(x => x.ExecutedAt)
+                .Select(x => x.Id)
+                .Take(batchSize + 1)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+            var hasMore = ids.Count > batchSize;
+            if (hasMore)
+                ids.RemoveAt(ids.Count - 1);
+            if (ids.Count == 0)
+                return RetentionBatchResult.Empty;
+
+            var deleted = await set
+                .Where(x => ids.Contains(x.Id))
+                .Where(eligible)
+                .ExecuteDeleteAsync(cancellationToken)
+                .ConfigureAwait(false);
+            return new RetentionBatchResult(deleted, hasMore);
+        }
+
+        public async Task<RetentionChainBatchResult> DeleteEligibleTimeTickerChainsAsync(
+            RetentionCutoffs cutoffs,
+            int batchSize,
+            RetentionCursor cursor,
+            CancellationToken cancellationToken = default)
+        {
+            if (batchSize <= 0 || cutoffs is null || !cutoffs.HasAny)
+                return RetentionChainBatchResult.Empty;
+
+            using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            var dbContext = session.Context;
+            var set = dbContext.Set<TTimeTicker>();
+            var eligible = TimeEligible(cutoffs, _clock.UtcNow);
+            var query = set.AsNoTracking().Where(x => x.ParentId == null).Where(eligible);
+            if (cursor.HasValue)
+            {
+                var executedAt = cursor.ExecutedAt;
+                var id = cursor.Id;
+                query = query.Where(x => x.ExecutedAt > executedAt || x.ExecutedAt == executedAt && x.Id.CompareTo(id) > 0);
+            }
+
+            var candidates = await query
+                .OrderBy(x => x.ExecutedAt)
+                .ThenBy(x => x.Id)
+                .Select(x => new { x.Id, x.ExecutedAt })
+                .Take(batchSize + 1)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+            var hasMore = candidates.Count > batchSize;
+            var totalDeleted = 0;
+            var nextCursor = RetentionCursor.Start;
+
+            foreach (var root in candidates.Take(batchSize))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (hasMore && root.ExecutedAt.HasValue)
+                    nextCursor = RetentionCursor.After(root.ExecutedAt.Value, root.Id);
+                totalDeleted += await DeleteChainIfEligibleAsync(
+                    dbContext,
+                    set,
+                    root.Id,
+                    cutoffs.MaxNodesPerChain,
+                    eligible,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            return new RetentionChainBatchResult(totalDeleted, hasMore, nextCursor);
+        }
+
+        private static async Task<int> DeleteChainIfEligibleAsync(
+            TDbContext dbContext,
+            DbSet<TTimeTicker> set,
+            Guid rootId,
+            int maxNodesPerChain,
+            Expression<Func<TTimeTicker, bool>> eligible,
+            CancellationToken cancellationToken)
+        {
+            if (maxNodesPerChain < 1)
+                return 0;
+
+            var strategy = dbContext.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                await using var transaction = await dbContext.Database
+                    .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                    .ConfigureAwait(false);
+                var levels = new List<List<Guid>> { new() { rootId } };
+                var allIds = new HashSet<Guid> { rootId };
+                var frontier = levels[0];
+
+                while (frontier.Count > 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var remaining = maxNodesPerChain - allIds.Count;
+                    var childIds = await set.AsNoTracking()
+                        .Where(x => x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                        .OrderBy(x => x.Id)
+                        .Select(x => x.Id)
+                        .Take(remaining + 1)
+                        .ToListAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                    if (childIds.Count == 0)
+                        break;
+                    if (childIds.Count > remaining)
+                    {
+                        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                        return 0;
+                    }
+                    levels.Add(childIds);
+                    frontier = childIds;
+                    foreach (var childId in childIds)
+                        allIds.Add(childId);
+                }
+
+                var ids = allIds.ToList();
+                var eligibleCount = await set.AsNoTracking()
+                    .Where(x => ids.Contains(x.Id))
+                    .Where(eligible)
+                    .CountAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (eligibleCount != ids.Count)
+                {
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    return 0;
+                }
+
+                var deleted = 0;
+                for (var i = levels.Count - 1; i >= 0; i--)
+                {
+                    var levelIds = levels[i];
+                    deleted += await set
+                        .Where(x => levelIds.Contains(x.Id))
+                        .Where(eligible)
+                        .ExecuteDeleteAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                if (deleted != ids.Count)
+                {
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    return 0;
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return deleted;
+            }).ConfigureAwait(false);
+        }
+
         #endregion
 
         #region Cron_Ticker_Implementations

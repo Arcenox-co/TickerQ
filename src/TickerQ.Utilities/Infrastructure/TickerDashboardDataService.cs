@@ -671,8 +671,8 @@ namespace TickerQ.Utilities.Infrastructure
 
         public Task<IList<FunctionInfoDto>> GetAllFunctionsAsync(CancellationToken cancellationToken = default)
         {
-            var descriptors = TickerFunctionProvider.TickerFunctionDescriptors;
-            var result = descriptors.Values.Select(descriptor =>
+            var registry = TickerFunctionProvider.Snapshot;
+            var result = registry.Descriptors.Values.Select(descriptor =>
             {
                 var request = descriptor.Request;
                 FunctionRequestContractDto requestDto = null;
@@ -703,7 +703,10 @@ namespace TickerQ.Utilities.Infrastructure
                     RequestType = request?.TypeName,
                     RequestExample = request?.Examples.FirstOrDefault()?.Value.GetRawText(),
                     Priority = descriptor.Priority,
-                    CronExpression = descriptor.CronExpression
+                    CronExpression = descriptor.CronExpression,
+                    MaxConcurrency = registry.Functions.TryGetValue(descriptor.FunctionName, out var function)
+                        ? function.MaxConcurrency
+                        : 0
                 };
             }).ToList();
 

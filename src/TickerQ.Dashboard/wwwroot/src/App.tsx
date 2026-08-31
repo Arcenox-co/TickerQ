@@ -10,6 +10,8 @@ import CronTickerDetailPage from "@/pages/CronTickerDetail";
 import ChainBuilderPage from "@/pages/ChainBuilder";
 import ChainFlowchartPage from "@/pages/ChainFlowchart";
 import AssistantChatPage from "@/pages/AssistantChat";
+import AboutPage from "@/pages/About";
+import LicensePage from "@/pages/License";
 import LoginPage from "@/pages/Login";
 import { startTickerHub } from "@/services/ticker-hub";
 import { RequireAuth } from "@/lib/auth/RequireAuth";
@@ -40,6 +42,8 @@ export default function App() {
           <Route path="cron-tickers" element={<CronTickersPage />} />
           <Route path="cron-tickers/:id" element={<CronTickerDetailPage />} />
           <Route path="assistant" element={<AssistantChatPage />} />
+          <Route path="about" element={<AboutPage />} />
+          <Route path="license" element={<LicensePage />} />
         </Route>
       </Route>
     </Routes>

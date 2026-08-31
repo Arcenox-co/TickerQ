@@ -34,6 +34,9 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.HasIndex("Status", "ExecutionTime")
                 .HasDatabaseName("IX_CronTickerOccurrence_Status_ExecutionTime");
 
+            builder.HasIndex("Status", "ExecutedAt")
+                .HasDatabaseName("IX_CronTickerOccurrence_Status_ExecutedAt");
+
             builder.HasOne(x => x.CronTicker)
                 .WithMany()
                 .HasForeignKey(x => x.CronTickerId)

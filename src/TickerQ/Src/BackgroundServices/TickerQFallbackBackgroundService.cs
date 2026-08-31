@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 
 namespace TickerQ.BackgroundServices;
 
@@ -15,15 +16,17 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
     private readonly ITickerExecutionTaskHandler _tickerExecutionTaskHandler;
     private readonly ITickerQTaskScheduler _tickerQTaskScheduler;
     private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
+    private readonly TickerQLicenseStateProvider _licenseState;
     private readonly TimeSpan _fallbackJobPeriod;
 
-    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, ITickerFunctionConcurrencyGate concurrencyGate)
+    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, ITickerFunctionConcurrencyGate concurrencyGate, TickerQLicenseStateProvider licenseState)
     {
         _internalTickerManager = internalTickerManager;
         _fallbackJobPeriod = schedulerOptions.FallbackIntervalChecker;
         _tickerExecutionTaskHandler = tickerExecutionTaskHandler;
         _tickerQTaskScheduler = tickerQTaskScheduler;
         _concurrencyGate = concurrencyGate;
+        _licenseState = licenseState;
     }
 
     public override Task StartAsync(CancellationToken ct)
@@ -34,8 +37,16 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Fail closed: when the offline license blocks execution, never sweep timed-out tickers or touch
+        // the manager, provider, or task scheduler. The license hosted service has already warned once.
+        if (!_licenseState.ExecutionAllowed)
+            return;
+
         while (!stoppingToken.IsCancellationRequested)
         {
+            if (!_licenseState.ExecutionAllowed)
+                return;
+
             try
             {
                 // If the scheduler is frozen or disposed (e.g., manual start mode or shutdown),
