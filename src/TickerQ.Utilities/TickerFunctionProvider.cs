@@ -314,8 +314,14 @@ namespace TickerQ.Utilities
                             var configKey = value.cronExpression.Trim('%');
                             var mappedCronExpression = configuration[configKey];
 
-                            if (!string.IsNullOrEmpty(mappedCronExpression))
+                            if (!string.IsNullOrWhiteSpace(mappedCronExpression))
                             {
+                                // Parse (not bare NormalizeToSixPart): validates AND upgrades
+                                // 5-part standard cron to the 6-part (with-seconds) form that
+                                // CronScheduleCache/NCrontab require. Throws on junk instead
+                                // of storing a silent never-fire value.
+                                mappedCronExpression = CronExpression.Parse(mappedCronExpression).Value;
+
                                 dict[key] = (mappedCronExpression, value.Priority, value.Delegate,
                                              value.MaxConcurrency);
                             }
