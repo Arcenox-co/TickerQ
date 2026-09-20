@@ -221,14 +221,15 @@ public class TickerFunctionProviderTests : IDisposable
         TickerFunctionProvider.RegisterFunctions(functions);
 
         var configuration = Substitute.For<IConfiguration>();
-        configuration["CronSettings:Schedule"].Returns("0 30 * * *");
+        configuration["CronSettings:Schedule"].Returns("*/5 * * * *");   // valid 5-part
 
         TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
         TickerFunctionProvider.Build();
 
-        Assert.Equal("0 30 * * *", TickerFunctionProvider.TickerFunctions["CronFunc"].cronExpression);
+        // 5-part config value gets normalized to 6-part (with-seconds) so NCrontab accepts it.
+        Assert.Equal("0 */5 * * * *", TickerFunctionProvider.TickerFunctions["CronFunc"].cronExpression);
     }
-    
+
     [Fact]
     public void UpdateCronExpressionsFromIConfiguration_AfterInitialBuild_UpdatesExpressions()
     {
@@ -242,15 +243,15 @@ public class TickerFunctionProviderTests : IDisposable
 
         // Simulate another host that contributes config-based cron update callback.
         var configuration = Substitute.For<IConfiguration>();
-        configuration["CronSettings:Schedule"].Returns("0 30 * * *");
+        configuration["CronSettings:Schedule"].Returns("*/5 * * * *");
 
         TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
-       
+
         // Second Build should not throw and data should still be present
         TickerFunctionProvider.Build();
 
         Assert.True(TickerFunctionProvider.TickerFunctions.ContainsKey("CronRaceFunc"));
-        Assert.Equal("0 30 * * *", TickerFunctionProvider.TickerFunctions["CronRaceFunc"].cronExpression);
+        Assert.Equal("0 */5 * * * *", TickerFunctionProvider.TickerFunctions["CronRaceFunc"].cronExpression);
     }
 
     [Fact]
@@ -336,5 +337,65 @@ public class TickerFunctionProviderTests : IDisposable
         Assert.Empty(TickerFunctionProvider.TickerFunctionRequestTypes);
         Assert.NotNull(TickerFunctionProvider.TickerFunctionRequestInfos);
         Assert.Empty(TickerFunctionProvider.TickerFunctionRequestInfos);
+    }
+
+    // ---------------------------------------------------------------
+    // Cron expression resolution from IConfiguration – 5-part upgrade
+    // Regression: 5-part cron ("*/5 * * * *") used to be stored raw and
+    // rejected at runtime by NCrontab (IncludingSeconds=true → 6 fields).
+    // ---------------------------------------------------------------
+    [Fact]
+    public void UpdateCronExpressionsFromIConfiguration_FivePartExpression_NormalizedAndSchedulable()
+    {
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
+        {
+            ["FivePartFunc"] = ("%CronSettings:Schedule%", TickerTaskPriority.Normal, NoOpDelegate, 0)
+        };
+        TickerFunctionProvider.RegisterFunctions(functions);
+
+        var configuration = Substitute.For<IConfiguration>();
+        configuration["CronSettings:Schedule"].Returns("*/5 * * * *");   // 5-part, raw
+
+        TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
+        TickerFunctionProvider.Build();
+
+        var stored = TickerFunctionProvider.TickerFunctions["FivePartFunc"].cronExpression;
+        Assert.Equal("0 */5 * * * *", stored);
+        Assert.NotNull(CronScheduleCache.GetNextOccurrenceOrDefault(stored, DateTime.UtcNow));
+    }
+
+    [Fact]
+    public void UpdateCronExpressionsFromIConfiguration_SixPartExpression_LeftAsIs()
+    {
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
+        {
+            ["SixPartFunc"] = ("%CronSettings:Schedule%", TickerTaskPriority.Normal, NoOpDelegate, 0)
+        };
+        TickerFunctionProvider.RegisterFunctions(functions);
+
+        var configuration = Substitute.For<IConfiguration>();
+        configuration["CronSettings:Schedule"].Returns("0 */5 * * * *");  // already 6-part
+
+        TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
+        TickerFunctionProvider.Build();
+
+        Assert.Equal("0 */5 * * * *", TickerFunctionProvider.TickerFunctions["SixPartFunc"].cronExpression);
+    }
+
+    [Fact]
+    public void UpdateCronExpressionsFromIConfiguration_InvalidExpression_Throws()
+    {
+        var functions = new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
+        {
+            ["JunkFunc"] = ("%CronSettings:Schedule%", TickerTaskPriority.Normal, NoOpDelegate, 0)
+        };
+        TickerFunctionProvider.RegisterFunctions(functions);
+
+        var configuration = Substitute.For<IConfiguration>();
+        configuration["CronSettings:Schedule"].Returns("not a cron");
+
+        TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
+
+        Assert.Throws<ArgumentException>(() => TickerFunctionProvider.Build());
     }
 }
