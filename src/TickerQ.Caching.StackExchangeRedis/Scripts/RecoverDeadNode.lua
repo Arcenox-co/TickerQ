@@ -19,6 +19,13 @@ obj['Status'] = tonumber(ARGV[3])
 obj['status'] = nil
 obj['UpdatedAt'] = ARGV[2]
 obj['updatedAt'] = nil
-local updated = cjson.encode(obj)
+-- Redis's bundled cjson can't tell an empty JSON array from an empty JSON
+-- object once decoded (both become an empty Lua table), so it always
+-- re-encodes an empty table as {}. TimeTickerEntity.Children (at any
+-- nesting depth, since children are themselves TimeTickerEntity) is always
+-- a JSON array, so any "Children":{} in the freshly re-encoded object is
+-- always a corrupted empty array, never a legitimate empty object. (No-op
+-- for entity types with no Children field, e.g. CronTickerOccurrenceEntity.)
+local updated = cjson.encode(obj):gsub('"Children":{}', '"Children":[]')
 redis.call('SET', KEYS[1], updated)
 return updated
