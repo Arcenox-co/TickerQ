@@ -22,6 +22,7 @@ namespace TickerQ.Utilities.Managers
         private readonly ITickerClock _clock;
         private readonly ITickerQNotificationHubSender _notificationHubSender;
         private readonly SchedulerOptionsBuilder _schedulerOptions;
+        private readonly string _runtimePartitionKey;
 
         public InternalTickerManager(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
@@ -33,7 +34,48 @@ namespace TickerQ.Utilities.Managers
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _notificationHubSender = notificationHubSender;
             _schedulerOptions = schedulerOptions;
+            _runtimePartitionKey = (schedulerOptions.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal).StorageKey;
         }
+
+        public bool SupportsReconciliationActivationEpoch =>
+            _persistenceProvider.SupportsReconciliationActivationEpoch;
+        public bool SupportsAuthoritativeCronReconciliation =>
+            _persistenceProvider.SupportsAuthoritativeCronReconciliation;
+        public bool SupportsLegacyRuntimePartitionAdoption =>
+            _persistenceProvider.SupportsLegacyRuntimePartitionAdoption;
+        public Task AdoptLegacyRuntimePartitionAsync(LegacyRuntimePartitionAdoption adoption,
+            CancellationToken cancellationToken = default)
+            => _persistenceProvider.AdoptLegacyRuntimePartitionAsync(adoption, cancellationToken);
+
+        public Task<ActivationEpochState> GetReconciliationActivationStateAsync(
+            ReconciliationActivationScope scope, CancellationToken cancellationToken = default)
+            => _persistenceProvider.GetReconciliationActivationStateAsync(scope, cancellationToken);
+        public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+            => _persistenceProvider.BeginReconciliationActivationEpochAsync(scope, targetEpoch, cancellationToken);
+        public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
+            ReconciliationActivationScope scope, long targetEpoch, string checkpoint,
+            CancellationToken cancellationToken = default)
+            => _persistenceProvider.AdvanceReconciliationCheckpointAsync(scope, targetEpoch, checkpoint, cancellationToken);
+        public Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+            => _persistenceProvider.CommitReconciliationActivationEpochAsync(scope, targetEpoch, cancellationToken);
+        public Task<ActivationEpochState> GetReconciliationActivationStateAsync(
+            CancellationToken cancellationToken = default)
+            => _persistenceProvider.GetReconciliationActivationStateAsync(cancellationToken);
+        public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            long targetEpoch, CancellationToken cancellationToken = default)
+            => _persistenceProvider.BeginReconciliationActivationEpochAsync(targetEpoch, cancellationToken);
+        public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
+            long targetEpoch, string checkpoint, CancellationToken cancellationToken = default)
+            => _persistenceProvider.AdvanceReconciliationCheckpointAsync(targetEpoch, checkpoint, cancellationToken);
+        public Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(
+            long targetEpoch, CancellationToken cancellationToken = default)
+            => _persistenceProvider.CommitReconciliationActivationEpochAsync(targetEpoch, cancellationToken);
+
+        public Task<TimeTickerChainRepairResult> RepairTimeTickerChainsAsync(
+            CancellationToken cancellationToken = default)
+            => _persistenceProvider.RepairTimeTickerChainsAsync(cancellationToken);
         
         public async Task<(TimeSpan TimeRemaining, InternalFunctionContext[] Functions)> GetNextTickers(CancellationToken cancellationToken = default)
         {
@@ -129,7 +171,7 @@ namespace TickerQ.Utilities.Managers
             return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
         }
 
-        private static InternalFunctionContext BuildTimeTickerContext(
+        private InternalFunctionContext BuildTimeTickerContext(
             TimeTickerEntity ticker, Guid? chainRootId = null, Guid? chainGeneration = null)
         {
             chainRootId ??= ticker.ChainRootId ?? ticker.Id;
@@ -137,6 +179,7 @@ namespace TickerQ.Utilities.Managers
             return new InternalFunctionContext
             {
                 FunctionName = ticker.Function,
+                RuntimePartitionKey = _runtimePartitionKey,
                 RequestContractVersion = ticker.RequestContractVersion,
                 RequestContractFingerprint = ticker.RequestContractFingerprint,
                 TickerId = ticker.Id,
@@ -180,6 +223,7 @@ namespace TickerQ.Utilities.Managers
                 results.Add(new InternalFunctionContext
                 {
                     ParentId = occurrence.CronTickerId,
+                    RuntimePartitionKey = _runtimePartitionKey,
                     FunctionName = occurrence.CronTicker.Function,
                     RequestContractVersion = occurrence.CronTicker.RequestContractVersion,
                     RequestContractFingerprint = occurrence.CronTicker.RequestContractFingerprint,
@@ -241,6 +285,7 @@ namespace TickerQ.Utilities.Managers
                         FunctionName = cronTicker.Function,
                         RequestContractVersion = cronTicker.RequestContractVersion,
                         RequestContractFingerprint = cronTicker.RequestContractFingerprint,
+                        DefinitionRevision = cronTicker.DefinitionRevision,
                         Expression = cronTicker.Expression,
                         Retries = cronTicker.Retries,
                         RetryIntervals = cronTicker.RetryIntervals,
@@ -257,6 +302,7 @@ namespace TickerQ.Utilities.Managers
                         FunctionName = cronTicker.Function,
                         RequestContractVersion = cronTicker.RequestContractVersion,
                         RequestContractFingerprint = cronTicker.RequestContractFingerprint,
+                        DefinitionRevision = cronTicker.DefinitionRevision,
                         Expression = cronTicker.Expression,
                         Retries = cronTicker.Retries,
                         RetryIntervals = cronTicker.RetryIntervals,
@@ -274,6 +320,7 @@ namespace TickerQ.Utilities.Managers
                     FunctionName = earliestStored.CronTicker.Function,
                     RequestContractVersion = earliestStored.CronTicker.RequestContractVersion,
                     RequestContractFingerprint = earliestStored.CronTicker.RequestContractFingerprint,
+                    DefinitionRevision = earliestStored.CronTicker.DefinitionRevision,
                     Expression = earliestStored.CronTicker.Expression,
                     Retries = earliestStored.CronTicker.Retries,
                     RetryIntervals = earliestStored.CronTicker.RetryIntervals,
@@ -310,6 +357,7 @@ namespace TickerQ.Utilities.Managers
 
         public async Task<InternalFunctionContext[]> SetTickersInProgress(InternalFunctionContext[] resources, CancellationToken cancellationToken = default)
         {
+            EnsureExactRuntimePartition(resources);
             var cronResources = resources.Where(x => x.Type == TickerType.CronTickerOccurrence).ToArray();
             var timeResources = resources.Where(x => x.Type == TickerType.TimeTicker).ToArray();
             var cronTask = cronResources.Length == 0
@@ -352,6 +400,7 @@ namespace TickerQ.Utilities.Managers
             }
             foreach (var resource in resources)
             {
+                EnsureExactRuntimePartition(resource);
                 resource.ResetUpdateProps()
                     .SetProperty(x => x.Status, TickerStatus.Idle)
                     .SetProperty(x => x.ReleaseLock, true);
@@ -368,6 +417,7 @@ namespace TickerQ.Utilities.Managers
         public async Task UpdateTickerAsync(
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         {
+            EnsureExactRuntimePartition(functionContext);
             var props = functionContext.GetPropsToUpdate();
             var carriesResultMutation = props.Contains(nameof(InternalFunctionContext.ResultEnvelope));
             var publishesResult = functionContext.ResultEnvelope != null && carriesResultMutation;
@@ -416,6 +466,7 @@ namespace TickerQ.Utilities.Managers
         public async Task UpdateTickerFromRemoteAsync(
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         {
+            EnsureExactRuntimePartition(functionContext);
             if (!IsTerminalMutation(functionContext))
             {
                 await UpdateTickerAsync(functionContext, cancellationToken).ConfigureAwait(false);
@@ -447,6 +498,7 @@ namespace TickerQ.Utilities.Managers
         {
             ArgumentNullException.ThrowIfNull(functionContext);
             ArgumentNullException.ThrowIfNull(finalizationIntent);
+            EnsureExactRuntimePartition(functionContext);
 
             if (!IsTerminalMutation(functionContext))
                 throw new InvalidOperationException("A Node finalization intent may only accompany a terminal ticker mutation.");
@@ -462,6 +514,8 @@ namespace TickerQ.Utilities.Managers
                 finalizationIntent.TickerType != functionContext.Type ||
                 finalizationIntent.TickerId != functionContext.TickerId ||
                 finalizationIntent.AcquisitionToken != acquisitionToken.Value ||
+                !StringComparer.Ordinal.Equals(finalizationIntent.RuntimePartitionKey, _runtimePartitionKey) ||
+                !StringComparer.Ordinal.Equals(finalizationIntent.RuntimePartitionKey, functionContext.RuntimePartitionKey) ||
                 finalizationIntent.OutboxId != finalizationIntent.DispatchId)
                 throw new InvalidOperationException(
                     "Node finalization intent identity does not match the acquired ticker context.");
@@ -485,6 +539,32 @@ namespace TickerQ.Utilities.Managers
             => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
                context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                    or TickerStatus.Cancelled or TickerStatus.Skipped;
+
+        private void EnsureExactRuntimePartition(IEnumerable<InternalFunctionContext> contexts)
+        {
+            ArgumentNullException.ThrowIfNull(contexts);
+            foreach (var context in contexts)
+                EnsureExactRuntimePartition(context);
+        }
+
+        private void EnsureExactRuntimePartition(InternalFunctionContext context)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            var supplied = context.RuntimePartitionKey;
+            if (string.IsNullOrWhiteSpace(supplied))
+            {
+                if (_runtimePartitionKey == TickerQRuntimePartition.LegacyGlobal.StorageKey)
+                {
+                    context.RuntimePartitionKey = _runtimePartitionKey;
+                    return;
+                }
+                throw new InvalidOperationException(
+                    "A scoped runtime mutation requires an exact runtime partition identity.");
+            }
+            if (!StringComparer.Ordinal.Equals(supplied, _runtimePartitionKey))
+                throw new InvalidOperationException(
+                    "The execution context runtime partition does not match this scheduler instance.");
+        }
 
         private Task NotifyTickerUpdateAsync(InternalFunctionContext functionContext)
             => functionContext.Type == TickerType.CronTickerOccurrence
@@ -561,6 +641,7 @@ namespace TickerQ.Utilities.Managers
                 var functionContext = new InternalFunctionContext
                 {
                     FunctionName = timedOutCronTicker.CronTicker.Function,
+                    RuntimePartitionKey = _runtimePartitionKey,
                     TickerId = timedOutCronTicker.Id,
                     Type = TickerType.CronTickerOccurrence,
                     Retries = timedOutCronTicker.CronTicker.Retries,
@@ -582,6 +663,9 @@ namespace TickerQ.Utilities.Managers
         
         public async Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
             => await _persistenceProvider.MigrateDefinedCronTickers(cronTickers, cancellationToken).ConfigureAwait(false);
+
+        public Task MigrateDefinedCronTickers(DefinedCronSeedManifest manifest, CancellationToken cancellationToken = default)
+            => _persistenceProvider.MigrateDefinedCronTickers(manifest, cancellationToken);
 
         public async Task DeleteTicker(Guid tickerId, TickerType type, CancellationToken cancellationToken = default)
         {

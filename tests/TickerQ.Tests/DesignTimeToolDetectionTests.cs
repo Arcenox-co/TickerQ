@@ -10,6 +10,7 @@ using TickerQ.BackgroundServices;
 using TickerQ.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
 
@@ -37,7 +38,8 @@ public class DesignTimeToolDetectionTests
     public void UseTickerQ_Sets_InitializationRequested_On_Initializer()
     {
         var services = new ServiceCollection();
-        services.AddTickerQ();
+        services.AddTickerQ(options =>
+            options.UseDefinedCronApplicationNamespace("design-time-tests"));
 
         var host = BuildMinimalHost(services);
         host.UseTickerQ();
@@ -51,7 +53,8 @@ public class DesignTimeToolDetectionTests
     {
         // UseTickerQ should complete without touching the database or building functions.
         var services = new ServiceCollection();
-        services.AddTickerQ();
+        services.AddTickerQ(options =>
+            options.UseDefinedCronApplicationNamespace("design-time-tests"));
 
         var host = BuildMinimalHost(services);
 
@@ -64,7 +67,8 @@ public class DesignTimeToolDetectionTests
     public async Task Initializer_Runs_Seeding_When_InitializationRequested()
     {
         var internalManager = Substitute.For<IInternalTickerManager>();
-        var context = new TickerExecutionContext();
+        ActivationEpochTestDouble.Configure(internalManager);
+        var context = SchedulerContext();
         var configuration = Substitute.For<IConfiguration>();
 
         var services = new ServiceCollection();
@@ -80,16 +84,21 @@ public class DesignTimeToolDetectionTests
         await initializer.StartAsync(CancellationToken.None);
 
         // MigrateDefinedCronTickers should have been called (even if with empty list)
-        await internalManager.Received(1).MigrateDefinedCronTickers(Arg.Any<DefinedCronTickerSeed[]>());
+        await internalManager.Received(1).MigrateDefinedCronTickers(
+            Arg.Any<DefinedCronSeedManifest>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task Initializer_Respects_IgnoreSeedDefinedCronTickers()
     {
         var internalManager = Substitute.For<IInternalTickerManager>();
+        ActivationEpochTestDouble.Configure(internalManager);
 
         var services = new ServiceCollection();
-        services.AddTickerQ(options => options.IgnoreSeedDefinedCronTickers());
+        services.AddTickerQ(options => options
+            .IgnoreSeedDefinedCronTickers()
+            .UseDefinedCronApplicationNamespace("design-time-tests")
+            .UseReconciliationEpoch(1));
 
         var host = BuildMinimalHost(services);
         host.UseTickerQ();
@@ -112,13 +121,81 @@ public class DesignTimeToolDetectionTests
     }
 
     [Fact]
+    public async Task Initializer_FinalizesPersistence_AfterDefinitionReconciliation_BeforeUserSeeding()
+    {
+        var events = new List<string>();
+        var internalManager = Substitute.For<IInternalTickerManager>();
+        ActivationEpochTestDouble.Configure(internalManager);
+        internalManager
+            .RepairTimeTickerChainsAsync(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                events.Add("time-repair");
+                return Task.FromResult(TimeTickerChainRepairResult.Empty);
+            });
+        internalManager
+            .MigrateDefinedCronTickers(
+                Arg.Any<DefinedCronSeedManifest>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                events.Add("reconcile");
+                return Task.CompletedTask;
+            });
+
+        var bootstrapper = Substitute.For<ITickerQPersistenceBootstrapper>();
+        bootstrapper.BootstrapAsync(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                events.Add("bootstrap");
+                return Task.CompletedTask;
+            });
+
+        var finalizer = Substitute.For<ITickerQPersistenceFinalizer>();
+        finalizer.FinalizeAsync(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                events.Add("finalize");
+                return Task.CompletedTask;
+            });
+
+        var context = new TickerExecutionContext
+        {
+            OptionsSeeding = new RecordingOptionsSeeding(
+                seedDefinedCronTickers: true,
+                timeSeederAction: _ =>
+                {
+                    events.Add("user-seed");
+                    return Task.CompletedTask;
+                })
+        };
+        var configuration = Substitute.For<IConfiguration>();
+        var services = new ServiceCollection();
+        services.AddSingleton(context);
+        services.AddSingleton(configuration);
+        services.AddSingleton(internalManager);
+        services.AddSingleton(bootstrapper);
+        services.AddSingleton(finalizer);
+        services.AddSingleton(new SchedulerOptionsBuilder());
+
+        var initializer = new TickerQInitializerHostedService(context, services.BuildServiceProvider(), configuration)
+        {
+            InitializationRequested = true
+        };
+
+        await initializer.StartAsync(CancellationToken.None);
+
+        Assert.Equal(["bootstrap", "time-repair", "reconcile", "finalize", "user-seed"], events);
+    }
+
+    [Fact]
     public async Task Initializer_Runs_External_Provider_Action()
     {
         var actionCalled = false;
-        var context = new TickerExecutionContext();
+        var context = SchedulerContext();
         context.ExternalProviderApplicationAction = _ => actionCalled = true;
 
         var internalManager = Substitute.For<IInternalTickerManager>();
+        ActivationEpochTestDouble.Configure(internalManager);
         var configuration = Substitute.For<IConfiguration>();
 
         var services = new ServiceCollection();
@@ -151,10 +228,22 @@ public class DesignTimeToolDetectionTests
     }
 
     [Fact]
+    public void QueueOnlyHost_DoesNotRequire_ReconciliationActivationCapability()
+    {
+        var services = new ServiceCollection();
+        services.AddTickerQ(options => options.DisableBackgroundServices());
+
+        Assert.DoesNotContain(services, descriptor =>
+            descriptor.ServiceType == typeof(IHostedService)
+            && descriptor.ImplementationType == typeof(TickerQReconciliationActivationCapabilityValidator));
+    }
+
+    [Fact]
     public void Initializer_Registered_Before_Scheduler_Services()
     {
         var services = new ServiceCollection();
-        services.AddTickerQ();
+        services.AddTickerQ(options =>
+            options.UseDefinedCronApplicationNamespace("design-time-tests"));
 
         // Verify registration order: initializer should appear before scheduler
         var hostedServiceDescriptors = services
@@ -192,6 +281,23 @@ public class DesignTimeToolDetectionTests
         services.TryAddSingleton(Substitute.For<IHostEnvironment>());
         services.AddLogging();
         return new MinimalHost(services.BuildServiceProvider());
+    }
+
+    private static TickerExecutionContext SchedulerContext() => new()
+    {
+        OptionsSeeding = new RecordingOptionsSeeding(true, _ => Task.CompletedTask)
+    };
+
+    private sealed class RecordingOptionsSeeding(
+        bool seedDefinedCronTickers,
+        Func<IServiceProvider, Task> timeSeederAction) : ITickerOptionsSeeding
+    {
+        public bool SeedDefinedCronTickers { get; } = seedDefinedCronTickers;
+        public long ReconciliationEpoch => 1;
+        public string DefinedCronApplicationNamespace => "design-time-tests";
+        public Func<IServiceProvider, CancellationToken, Task> TimeSeederAction { get; } =
+            (serviceProvider, _) => timeSeederAction(serviceProvider);
+        public Func<IServiceProvider, CancellationToken, Task> CronSeederAction { get; } = null;
     }
 
     /// <summary>

@@ -28,6 +28,7 @@ internal sealed class TickerQRetentionBackgroundService : BackgroundService
     private readonly JobRetentionOptions _options;
     private readonly ITickerClock _clock;
     private readonly ILogger<TickerQRetentionBackgroundService> _logger;
+    private readonly ITickerQActivationGate _activationGate;
 
     // Keyset continuation for time-chain traversal, carried across sweeps so blocked (retained) chains are
     // passed over rather than reselected — they cannot starve later eligible chains. Reset to Start when a
@@ -39,12 +40,14 @@ internal sealed class TickerQRetentionBackgroundService : BackgroundService
         IInternalTickerManager internalTickerManager,
         JobRetentionOptions options,
         ITickerClock clock,
-        ILogger<TickerQRetentionBackgroundService> logger)
+        ILogger<TickerQRetentionBackgroundService> logger,
+        ITickerQActivationGate activationGate)
     {
         _internalTickerManager = internalTickerManager;
         _options = options;
         _clock = clock;
         _logger = logger;
+        _activationGate = activationGate ?? throw new ArgumentNullException(nameof(activationGate));
     }
 
     public override Task StartAsync(CancellationToken cancellationToken)
@@ -65,6 +68,9 @@ internal sealed class TickerQRetentionBackgroundService : BackgroundService
         // Defensive: the service is only registered when enabled, but never spin if it is not.
         if (!_options.IsEnabled)
             return;
+
+        // No delay, cutoff calculation, or provider call may precede activation.
+        await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
 
         while (!stoppingToken.IsCancellationRequested)
         {

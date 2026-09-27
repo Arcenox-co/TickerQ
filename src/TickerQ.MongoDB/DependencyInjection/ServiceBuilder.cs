@@ -61,9 +61,15 @@ namespace TickerQ.MongoDB.DependencyInjection
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>(sp =>
                 sp.GetRequiredService<TickerMongoPersistenceProvider<TTimeTicker, TCronTicker>>());
 
-            services.AddHostedService(sp => new TickerIndexProvisioner<TTimeTicker, TCronTicker>(
+            services.AddSingleton(sp => new TickerIndexProvisioner<TTimeTicker, TCronTicker>(
                 sp.GetRequiredService<ITickerMongoContext<TTimeTicker, TCronTicker>>(),
                 sp.GetRequiredService<TickerMongoPersistenceProvider<TTimeTicker, TCronTicker>>()));
+            services.AddSingleton<ITickerQPersistenceBootstrapper>(sp =>
+                sp.GetRequiredService<TickerIndexProvisioner<TTimeTicker, TCronTicker>>());
+            services.AddSingleton<ITickerQPersistenceFinalizer>(sp =>
+                sp.GetRequiredService<TickerIndexProvisioner<TTimeTicker, TCronTicker>>());
+            services.AddSingleton<ITickerQPersistenceReadinessProbe>(sp =>
+                sp.GetRequiredService<TickerIndexProvisioner<TTimeTicker, TCronTicker>>());
         }
     }
 }

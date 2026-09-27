@@ -19,7 +19,8 @@ namespace TickerQ.Utilities.Infrastructure
                 RetryIntervals = e.RetryIntervals,
                 Retries = e.Retries,
                 TimeoutSeconds = e.TimeoutSeconds,
-                IsEnabled = e.IsEnabled
+                IsEnabled = e.IsEnabled,
+                DefinitionRevision = e.DefinitionRevision
             };
 
         public static Expression<Func<TTimeTicker, TimeTickerEntity>> ForQueueTimeTickers<TTimeTicker>()
@@ -88,6 +89,7 @@ namespace TickerQ.Utilities.Infrastructure
                 Id = e.Id,
                 UpdatedAt = e.UpdatedAt,
                 CronTickerId = e.CronTickerId,
+                DefinitionRevision = e.DefinitionRevision,
                 ExecutionTime = e.ExecutionTime,
                 AcquisitionToken = e.AcquisitionToken,
                 CronTicker = new TCronTicker
@@ -98,7 +100,8 @@ namespace TickerQ.Utilities.Infrastructure
                     RequestContractFingerprint = e.CronTicker.RequestContractFingerprint,
                     RetryIntervals = e.CronTicker.RetryIntervals,
                     Retries = e.CronTicker.Retries,
-                    TimeoutSeconds = e.CronTicker.TimeoutSeconds
+                    TimeoutSeconds = e.CronTicker.TimeoutSeconds,
+                    DefinitionRevision = e.CronTicker.DefinitionRevision
                 }
             };
 
@@ -111,6 +114,7 @@ namespace TickerQ.Utilities.Infrastructure
                 Id = e.Id,
                 CreatedAt = e.CreatedAt,
                 CronTickerId = e.CronTickerId,
+                DefinitionRevision = e.DefinitionRevision,
                 ExecutionTime = e.ExecutionTime,
                 AcquisitionToken = e.AcquisitionToken,
                 CronTicker = new TCronTicker
@@ -122,7 +126,8 @@ namespace TickerQ.Utilities.Infrastructure
                     Expression = e.CronTicker.Expression,
                     RetryIntervals = e.CronTicker.RetryIntervals,
                     Retries = e.CronTicker.Retries,
-                    TimeoutSeconds = e.CronTicker.TimeoutSeconds
+                    TimeoutSeconds = e.CronTicker.TimeoutSeconds,
+                    DefinitionRevision = e.CronTicker.DefinitionRevision
                 }
             };
     }

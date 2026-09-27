@@ -28,7 +28,7 @@
 | **Your database** | EF Core (PostgreSQL, SQL Server, SQLite, MySQL) or Redis. No separate storage. |
 | **Real-time dashboard** | Built-in SignalR dashboard. Monitor, inspect, manage — no paid add-ons. |
 | **Multi-node** | Redis heartbeats, dead-node cleanup, lock-based coordination. Just add instances. |
-| **Minimal setup** | `AddTickerQ()` → decorate a method → schedule. Minutes, not hours. |
+| **Explicit, safe setup** | Name the application, set its deployment epoch, decorate a method, then schedule. Minutes, not hours. |
 
 ## Features
 
@@ -52,12 +52,58 @@ dotnet add package TickerQ
 ```csharp
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddTickerQ();
+builder.Services.AddTickerQ(options =>
+{
+    // Physical runtime partition. Stable across replicas; use a distinct value per application.
+    options.UseDefinedCronApplicationNamespace("orders-api");
+    // Keep stable for identical replicas/restarts; increment for each reconciliation-changing deployment.
+    options.UseReconciliationEpoch(1);
+});
 
 var app = builder.Build();
 app.UseTickerQ();
 app.Run();
 ```
+
+The application namespace is not merely a code-defined Cron seed prefix. It physically owns runtime
+definitions, occurrences, TimeTickers, results, outboxes, evidence, locks, recovery state, and
+maintenance work. Two applications may safely use identical public GUIDs in one backend only when
+both configure distinct stable namespaces. A scheduler-enabled host without a namespace is invalid.
+
+Queue-only producers call `DisableBackgroundServices()`. They should still configure the namespace
+of the scheduler they feed. They do not activate an epoch, but their writes remain physically
+isolated. Omitting the namespace is supported only as an explicit compatibility choice targeting the
+single `LegacyGlobal` partition; an owner is never inferred.
+
+```csharp
+builder.Services.AddTickerQ(options =>
+{
+    options.DisableBackgroundServices();
+    options.UseDefinedCronApplicationNamespace("orders-api");
+    options.AddOperationalStore(store => { /* configure the same backend as the scheduler */ });
+});
+```
+
+### Adopting a pre-partition runtime store
+
+After proving one application is the sole owner of all namespace-less runtime state, bind the target
+namespace and a positive deployment epoch explicitly:
+
+```csharp
+options.UseLegacyRuntimePartitionAdoption("orders-api", reconciliationEpoch: 7);
+```
+
+Before activation, the provider acquires a store-global adoption lease, rejects a competing or
+previously completed different owner, and moves legacy state into the target partition. Repeating the
+same owner and epoch is idempotent; interrupted supported-provider adoption is atomic or resumable.
+Two applications cannot both claim the legacy partition. Redis Cluster cannot safely move keys
+between the legacy and target slots, and MongoDB adoption requires replica-set or mongos transactions.
+
+Upgrading a store that already contains code-defined Cron rows requires an explicit legacy owner.
+Shared stores should configure `MapLegacyDefinedCronOwnership(function, ownerNamespace)` consistently
+in every application. `AdoptLegacyDefinedCronTickers()` is a catch-all only for a provably
+single-application store; it can claim the wrong schedule in a shared store. Unclaimed legacy rows fail
+closed. See [Upgrading CronTicker and TimeTicker storage](docs/upgrading-cron-time-tickers.md#explicit-legacy-ownership-migration).
 
 ### 2. Create a job
 
@@ -173,6 +219,10 @@ contracts worth understanding before you deploy:
 - **[Reliability & execution contracts](docs/reliability.md)** — at-least-once execution and
   lease fencing, `NodeIdentifier` vs. `ExecutionOwnerId`, provider reliability capabilities,
   cooperative timeout semantics, graceful drain, and run-now/bulk-retry.
+- **[CronTicker and TimeTicker storage upgrades](docs/upgrading-cron-time-tickers.md)** —
+  schema-first rolling rollout, application-owned EF migrations, legacy chain repair,
+  namespaced code-defined cron ownership/retirement, `SeedOwnerNamespace` migration and
+  legacy-adoption rollout, provider prerequisites, and rollback limits.
 - **[Dashboard security & deployment hardening](docs/security.md)** — explicit CORS
   allow-lists, trusted forwarded proxies, the anonymous-dashboard opt-in, JWT signing keys,
   and sliding token-renewal semantics.

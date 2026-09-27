@@ -27,6 +27,7 @@ namespace TickerQ.Utilities.Managers
         private readonly ITickerQNotificationHubSender _notificationHubSender;
         private readonly ITickerQDispatcher _dispatcher;
         private readonly TickerExecutionContext _executionContext;
+        private static readonly SemaphoreSlim AddOnceGate = new(1, 1);
         public TickerManager(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerQHostScheduler tickerQHostScheduler,
@@ -56,15 +57,33 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TTimeTicker>(
                     new TickerValidatorException("AddOnceAsync requires a non-empty initIdentifier."));
 
-            var existing = await _persistenceProvider
-                .GetTimeTickers(x => x.InitIdentifier == initIdentifier, cancellationToken)
-                .ConfigureAwait(false);
+            await AddOnceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var existing = await _persistenceProvider
+                    .GetTimeTickers(x => x.InitIdentifier == initIdentifier, cancellationToken)
+                    .ConfigureAwait(false);
+                if (existing is { Length: > 0 })
+                    return new TickerResult<TTimeTicker>(existing.OrderBy(x => x.Id).First());
 
-            if (existing is { Length: > 0 })
-                return new TickerResult<TTimeTicker>(existing[0]);
+                entity.InitIdentifier = initIdentifier;
+                entity.Id = TimeTickerInitIdentity.DeterministicId(initIdentifier);
+                var inserted = await AddTimeTickerAsync(entity, cancellationToken).ConfigureAwait(false);
+                if (inserted.IsSucceeded) return inserted;
 
-            entity.InitIdentifier = initIdentifier;
-            return await AddTimeTickerAsync(entity, cancellationToken).ConfigureAwait(false);
+                // Another node can win between discovery and insert. Deterministic ids make that
+                // conflict convergent; return the committed winner rather than surfacing a false error.
+                existing = await _persistenceProvider
+                    .GetTimeTickers(x => x.InitIdentifier == initIdentifier, cancellationToken)
+                    .ConfigureAwait(false);
+                return existing is { Length: > 0 }
+                    ? new TickerResult<TTimeTicker>(existing.OrderBy(x => x.Id).First())
+                    : inserted;
+            }
+            finally
+            {
+                AddOnceGate.Release();
+            }
         }
 
         Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.UpdateAsync(TCronTicker cronTicker, CancellationToken cancellationToken)
@@ -144,7 +163,10 @@ namespace TickerQ.Utilities.Managers
                 var executionTime = entity.ExecutionTime!.Value;
 
                 // Persist first
-                await _persistenceProvider.AddTimeTickers([entity], cancellationToken: cancellationToken);
+                var affected = await _persistenceProvider.AddTimeTickers([entity], cancellationToken: cancellationToken);
+                if (affected <= 0)
+                    return new TickerResult<TTimeTicker>(new TickerValidatorException(
+                        $"TimeTicker '{entity.Id}' was not inserted because it already exists."));
 
                 // Notify the dashboard BEFORE the dispatch path — for tickers
                 // scheduled at "now" the dispatcher acquires + runs immediately
@@ -490,16 +512,17 @@ namespace TickerQ.Utilities.Managers
             }
         }
 
-        private static InternalFunctionContext[] BuildImmediateContextsFromNonGeneric(IEnumerable<TimeTickerEntity> tickers)
+        private InternalFunctionContext[] BuildImmediateContextsFromNonGeneric(IEnumerable<TimeTickerEntity> tickers)
         {
             return tickers.Select(BuildContextFromNonGeneric).ToArray();
         }
 
-        private static InternalFunctionContext BuildContextFromNonGeneric(TimeTickerEntity ticker)
+        private InternalFunctionContext BuildContextFromNonGeneric(TimeTickerEntity ticker)
         {
             return new InternalFunctionContext
             {
                 FunctionName = ticker.Function,
+                RuntimePartitionKey = _executionContext.RuntimePartition.StorageKey,
                 RequestContractVersion = ticker.RequestContractVersion,
                 RequestContractFingerprint = ticker.RequestContractFingerprint,
                 TickerId = ticker.Id,

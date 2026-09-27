@@ -28,21 +28,27 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
     private readonly SchedulerOptionsBuilder _schedulerOptions;
     private readonly ILogger<TickerQStaleJobRecoveryBackgroundService> _logger;
     private readonly Utilities.Interfaces.ITickerQFailureNotifier _notifier;
+    private readonly Utilities.Interfaces.ITickerQActivationGate _activationGate;
 
     public TickerQStaleJobRecoveryBackgroundService(
         IInternalTickerManager internalTickerManager,
         SchedulerOptionsBuilder schedulerOptions,
         ILogger<TickerQStaleJobRecoveryBackgroundService> logger,
-        Utilities.Interfaces.ITickerQFailureNotifier notifier)
+        Utilities.Interfaces.ITickerQFailureNotifier notifier,
+        Utilities.Interfaces.ITickerQActivationGate activationGate = null)
     {
         _internalTickerManager = internalTickerManager;
         _schedulerOptions = schedulerOptions;
         _logger = logger;
         _notifier = notifier;
+        _activationGate = activationGate;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (_activationGate != null)
+            await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
+
         if (!_internalTickerManager.SupportsLeaseBasedRecovery)
         {
             // Fail closed: providers that have not implemented the full lease/recovery
@@ -79,7 +85,9 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
     {
         var timeTickerLeases = new List<AcquisitionLease>();
         var occurrenceLeases = new List<AcquisitionLease>();
-        TickerCancellationTokenManager.SnapshotRunningForLeaseRenewal(timeTickerLeases, occurrenceLeases);
+        var partitionKey = (_schedulerOptions.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal).StorageKey;
+        TickerCancellationTokenManager.SnapshotRunningForLeaseRenewal(
+            partitionKey, timeTickerLeases, occurrenceLeases);
 
         if (timeTickerLeases.Count == 0 && occurrenceLeases.Count == 0)
             return;
@@ -97,7 +105,7 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
         var lost = await _internalTickerManager.GetLostLeaseTickerIdsAsync(timeTickerLeases, occurrenceLeases, ct);
         foreach (var key in lost)
         {
-            if (TickerCancellationTokenManager.RequestTickerCancellation(key))
+            if (TickerCancellationTokenManager.RequestTickerCancellation(partitionKey, key))
                 _logger.LogWarning(
                     "{TickerType} {TickerId} lost its lease (recovered by another node while this one was unresponsive); cancelling the local execution — its result would be discarded by fencing",
                     key.Type, key.TickerId);

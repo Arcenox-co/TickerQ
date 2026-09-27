@@ -134,6 +134,51 @@ public class PersistenceReliabilityCapabilityTests
     }
 
     [Fact]
+    public void Minimal_provider_does_not_support_time_ticker_chain_repair()
+        => Assert.False(MinimalProvider().SupportsTimeTickerChainRepair);
+
+    [Fact]
+    public async Task Minimal_provider_default_time_ticker_chain_repair_fails_closed()
+    {
+        var error = await Assert.ThrowsAsync<NotSupportedException>(
+            () => MinimalProvider().RepairTimeTickerChainsAsync());
+        Assert.Contains(nameof(ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker>.RepairTimeTickerChainsAsync),
+            error.Message);
+    }
+
+    [Fact]
+    public void Legacy_tuple_overload_remains_defaulted_for_provider_compatibility()
+    {
+        var methods = typeof(ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker>)
+            .GetMethods().Where(x => x.Name == nameof(ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker>.MigrateDefinedCronTickers))
+            .ToArray();
+        var legacy = Assert.Single(methods, x => x.GetParameters()[0].ParameterType ==
+            typeof((string Function, string Expression)[]));
+        var seedAdapter = Assert.Single(methods, x => x.GetParameters()[0].ParameterType ==
+            typeof(DefinedCronTickerSeed[]));
+
+        Assert.False(legacy.IsAbstract);
+        Assert.False(seedAdapter.IsAbstract);
+    }
+
+    [Fact]
+    public async Task Legacy_provider_receives_seed_projection_and_richer_manifest_fails_closed()
+    {
+        var legacy = new MinimalStubProvider();
+        ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker> provider = legacy;
+
+        await provider.MigrateDefinedCronTickers(
+            [new DefinedCronTickerSeed("legacy", "*/7 * * * *", 2, "sha256:v2", false)],
+            CancellationToken.None);
+
+        Assert.Equal(new[] { ("legacy", "*/7 * * * *") }, legacy.LastLegacySeeds);
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            provider.MigrateDefinedCronTickers(
+                new DefinedCronSeedManifest("third-party", Array.Empty<DefinedCronTickerSeed>()),
+                CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Advertising_result_support_without_atomic_override_fails_closed()
     {
         ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker> provider =
@@ -177,6 +222,8 @@ public class PersistenceReliabilityCapabilityTests
     // Stale_Job_Recovery region is intentionally left to the interface defaults.
     private class MinimalStubProvider : ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker>
     {
+        public (string Function, string Expression)[] LastLegacySeeds { get; private set; } = [];
+
         private static NotSupportedException NotUsed() => new("Not needed for capability tests");
 
         public IAsyncEnumerable<TimeTickerEntity> QueueTimeTickers(TimeTickerEntity[] timeTickers, CancellationToken cancellationToken = default) => throw NotUsed();
@@ -188,7 +235,11 @@ public class PersistenceReliabilityCapabilityTests
         public Task UpdateTimeTickersWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default) => throw NotUsed();
         public Task<TimeTickerEntity[]> AcquireImmediateTimeTickersAsync(Guid[] ids, CancellationToken cancellationToken = default) => throw NotUsed();
 
-        public Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default) => throw NotUsed();
+        public Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
+        {
+            LastLegacySeeds = cronTickers;
+            return Task.CompletedTask;
+        }
         public Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken) => throw NotUsed();
         public Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default) => throw NotUsed();
 
@@ -225,6 +276,7 @@ public class PersistenceReliabilityCapabilityTests
         public Task<int> RemoveCronTickerOccurrences(Guid[] cronTickerOccurrences, CancellationToken cancellationToken) => throw NotUsed();
         public Task<CronTickerOccurrenceEntity<FakeCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default) => throw NotUsed();
     }
+
 
     private sealed class FalseAdvertisingResultProvider : MinimalStubProvider,
         ITickerPersistenceProvider<FakeTimeTicker, FakeCronTicker>

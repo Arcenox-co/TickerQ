@@ -17,12 +17,31 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
     private readonly IDatabase _db;
     private readonly string _lockHolder;
     private readonly ITickerClock _clock;
+    private readonly RedisKeyBuilder _keys;
 
-    internal RedisIndexManager(IDatabase db, string lockHolder, ITickerClock clock)
+    private string TimeTickerIdsKey => _keys.TimeTickerIds;
+    private string TimeTickerPendingKey => _keys.TimeTickerPending;
+    private string CronIdsKey => _keys.CronIds;
+    private string CronOccurrenceIdsKey => _keys.CronOccurrenceIds;
+    private string CronOccurrencePendingKey => _keys.CronOccurrencePending;
+    private string TimeTickerRetentionSucceededKey => _keys.TimeTickerRetentionSucceeded;
+    private string TimeTickerRetentionFailedKey => _keys.TimeTickerRetentionFailed;
+    private string TimeTickerRetentionCancelledKey => _keys.TimeTickerRetentionCancelled;
+    private string TimeTickerRetentionSkippedKey => _keys.TimeTickerRetentionSkipped;
+    private string CronOccurrenceRetentionSucceededKey => _keys.CronOccurrenceRetentionSucceeded;
+    private string CronOccurrenceRetentionFailedKey => _keys.CronOccurrenceRetentionFailed;
+    private string CronOccurrenceRetentionCancelledKey => _keys.CronOccurrenceRetentionCancelled;
+    private string CronOccurrenceRetentionSkippedKey => _keys.CronOccurrenceRetentionSkipped;
+    private string CronOccurrenceKey(Guid id) => _keys.CronOccurrence(id);
+    private string CronOccurrenceResultKey(Guid id) => _keys.CronOccurrenceResult(id);
+    private string CronOccurrencesByCronKey(Guid id) => _keys.CronOccurrencesByCron(id);
+
+    internal RedisIndexManager(IDatabase db, string lockHolder, ITickerClock clock, RedisKeyBuilder keys)
     {
         _db = db;
         _lockHolder = lockHolder;
         _clock = clock;
+        _keys = keys;
     }
 
     internal Task AddTimeTickerIndexesAsync(TTimeTicker ticker)
@@ -102,7 +121,7 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
         await _db.KeyDeleteAsync(reverseKey).ConfigureAwait(false);
     }
 
-    private static Task[] UpdateTimeRetentionIndexes(
+    private Task[] UpdateTimeRetentionIndexes(
         IBatch batch, TTimeTicker ticker, RedisValue id, DateTime now)
     {
         var tasks = RemoveTimeRetentionIndexes(batch, id);
@@ -119,7 +138,7 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
             : tasks.Append((Task)batch.SortedSetAddAsync(key, id, ToScore(executedAt))).ToArray();
     }
 
-    private static Task[] UpdateOccurrenceRetentionIndexes(
+    private Task[] UpdateOccurrenceRetentionIndexes(
         IBatch batch, CronTickerOccurrenceEntity<TCronTicker> occurrence, RedisValue id, DateTime now)
     {
         var tasks = RemoveOccurrenceRetentionIndexes(batch, id);
@@ -133,7 +152,7 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
             : tasks.Append((Task)batch.SortedSetAddAsync(key, id, ToScore(executedAt))).ToArray();
     }
 
-    private static Task[] RemoveTimeRetentionIndexes(IBatch batch, RedisValue id) =>
+    private Task[] RemoveTimeRetentionIndexes(IBatch batch, RedisValue id) =>
     [
         batch.SortedSetRemoveAsync(TimeTickerRetentionSucceededKey, id),
         batch.SortedSetRemoveAsync(TimeTickerRetentionFailedKey, id),
@@ -141,7 +160,7 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
         batch.SortedSetRemoveAsync(TimeTickerRetentionSkippedKey, id)
     ];
 
-    private static Task[] RemoveOccurrenceRetentionIndexes(IBatch batch, RedisValue id) =>
+    private Task[] RemoveOccurrenceRetentionIndexes(IBatch batch, RedisValue id) =>
     [
         batch.SortedSetRemoveAsync(CronOccurrenceRetentionSucceededKey, id),
         batch.SortedSetRemoveAsync(CronOccurrenceRetentionFailedKey, id),
@@ -149,7 +168,7 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
         batch.SortedSetRemoveAsync(CronOccurrenceRetentionSkippedKey, id)
     ];
 
-    private static string TimeRetentionKey(TickerStatus status) => status switch
+    private string TimeRetentionKey(TickerStatus status) => status switch
     {
         TickerStatus.Done or TickerStatus.DueDone => TimeTickerRetentionSucceededKey,
         TickerStatus.Failed => TimeTickerRetentionFailedKey,
@@ -158,7 +177,7 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
         _ => null
     };
 
-    private static string OccurrenceRetentionKey(TickerStatus status) => status switch
+    private string OccurrenceRetentionKey(TickerStatus status) => status switch
     {
         TickerStatus.Done or TickerStatus.DueDone => CronOccurrenceRetentionSucceededKey,
         TickerStatus.Failed => CronOccurrenceRetentionFailedKey,

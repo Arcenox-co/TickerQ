@@ -15,6 +15,23 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     public Task InitializeAsync() => _f.DropAllAsync();
     public Task DisposeAsync() => Task.CompletedTask;
 
+    [Fact]
+    public async Task DropAllAsync_CreatesFreshProviderAndSchedulerOptions()
+    {
+        var originalProvider = _f.ConcreteProvider;
+        var originalOptions = _f.Options;
+        originalOptions.ReconciliationEpoch = 42;
+        originalProvider.AfterRunnableAdmissionFenceForTestAsync = _ => Task.CompletedTask;
+
+        await _f.DropAllAsync();
+
+        Assert.NotSame(originalProvider, _f.ConcreteProvider);
+        Assert.NotSame(originalOptions, _f.Options);
+        Assert.Equal(1, _f.Options.ReconciliationEpoch);
+        Assert.Null(_f.ConcreteProvider.AfterRunnableAdmissionFenceForTestAsync);
+        Assert.True(_f.Provider.SupportsDurableNodeFinalizationOutbox);
+    }
+
     private TimeTickerEntity NewTimeTicker(DateTime? executionTime = null, TickerStatus status = TickerStatus.Idle)
     {
         var t = new TimeTickerEntity
@@ -50,6 +67,39 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
         Assert.NotNull(fetched);
         Assert.Equal(ticker.Function, fetched!.Function);
         Assert.Equal(TickerStatus.Idle, fetched.Status);
+    }
+
+    [Fact]
+    public async Task RepairTimeTickerChains_PersistsGeneration_AndRejectsMalformedBeforeMutation()
+    {
+        var generation = Guid.NewGuid();
+        var root = NewTimeTicker();
+        root.ChainRootId = Guid.NewGuid();
+        root.ChainGeneration = generation;
+        var child = NewTimeTicker();
+        child.ParentId = root.Id;
+        child.ChainRootId = child.Id;
+        child.ChainGeneration = Guid.NewGuid();
+        await _f.TimeTickers.InsertManyAsync([child, root]);
+
+        Assert.Equal(new TimeTickerChainRepairResult(2, 2, 0),
+            await _f.Provider.RepairTimeTickerChainsAsync());
+        var persisted = (await _f.TimeTickers.Find(Builders<TimeTickerEntity>.Filter.Empty).ToListAsync())
+            .ToDictionary(x => x.Id);
+        Assert.Equal((root.Id, generation),
+            (persisted[root.Id].ChainRootId, persisted[root.Id].ChainGeneration));
+        Assert.Equal((root.Id, generation),
+            (persisted[child.Id].ChainRootId, persisted[child.Id].ChainGeneration));
+
+        var orphan = NewTimeTicker();
+        orphan.ParentId = Guid.NewGuid();
+        await _f.TimeTickers.InsertOneAsync(orphan);
+        var before = persisted[root.Id].UpdatedAt;
+
+        var error = await Assert.ThrowsAsync<TimeTickerChainRepairException>(
+            () => _f.Provider.RepairTimeTickerChainsAsync());
+        Assert.Equal(TimeTickerChainMalformedKind.Orphan, error.Kind);
+        Assert.Equal(before, (await _f.TimeTickers.Find(x => x.Id == root.Id).SingleAsync()).UpdatedAt);
     }
 
     [Fact]

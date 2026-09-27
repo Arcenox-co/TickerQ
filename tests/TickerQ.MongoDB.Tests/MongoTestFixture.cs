@@ -58,8 +58,7 @@ public class MongoTestFixture : IAsyncLifetime
         Clock = Substitute.For<ITickerClock>();
         Clock.UtcNow.Returns(FixedNow);
 
-        Options = new SchedulerOptionsBuilder { NodeIdentifier = NodeId };
-        ConcreteProvider = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(_context, Clock, Options);
+        CreateRuntimeProvider();
         ProviderBeforeReadinessProbe = ConcreteProvider.SupportsDurableNodeFinalizationOutbox;
 
         var provisioner = new TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity>(_context, ConcreteProvider);
@@ -79,12 +78,32 @@ public class MongoTestFixture : IAsyncLifetime
         await Database.GetCollection<BsonDocument>("ticker_TickerResults")
             .DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
         await NodeFinalizations.DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
+        await Database.GetCollection<BsonDocument>("ticker_StoreMetadata")
+            .DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
+
+        CreateRuntimeProvider();
+        await NewProvisioner().StartAsync(CancellationToken.None);
+    }
+
+    private void CreateRuntimeProvider()
+    {
+        Options = new SchedulerOptionsBuilder { NodeIdentifier = NodeId };
+        ConcreteProvider = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(
+            _context, Clock, Options);
     }
 
     /// <summary>Internal helper to instantiate a fresh provisioner for idempotency tests.</summary>
     internal TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity> NewProvisioner()
         => new(_context, ConcreteProvider);
 
+    internal TickerIndexProvisioner<TimeTickerEntity, CronTickerEntity> NewProvisioner(
+        TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity> provider)
+        => new(_context, provider);
+
     internal TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity> NewProvider()
         => new(_context, Clock, Options);
+
+    internal TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity> NewProvider(
+        SchedulerOptionsBuilder options)
+        => new(_context, Clock, options);
 }

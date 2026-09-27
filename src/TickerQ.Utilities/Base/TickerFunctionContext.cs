@@ -19,6 +19,7 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
         Id = tickerFunctionContext.Id;
         AcquisitionToken = tickerFunctionContext.AcquisitionToken;
         IsRemoteCallbackExecution = tickerFunctionContext.IsRemoteCallbackExecution;
+        RuntimePartitionKey = tickerFunctionContext.RuntimePartitionKey;
         RemoteFinalizationIntent = tickerFunctionContext.RemoteFinalizationIntent;
         ParentId = tickerFunctionContext.ParentId;
         Type = tickerFunctionContext.Type;
@@ -47,6 +48,7 @@ public class TickerFunctionContext
     internal Guid? AcquisitionToken { get; set; }
     /// <summary>True only after an authenticated remote callback outcome was accepted.</summary>
     internal bool IsRemoteCallbackExecution { get; set; }
+    internal string RuntimePartitionKey { get; set; }
     /// <summary>Immutable durable cleanup intent attached only after an authenticated Node outcome.</summary>
     internal NodeFinalizationIntent RemoteFinalizationIntent { get; set; }
     /// <summary>

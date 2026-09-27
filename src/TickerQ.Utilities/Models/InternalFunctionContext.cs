@@ -22,6 +22,12 @@ namespace TickerQ.Utilities.Models
         public TickerTaskPriority CachedPriority { get; set; }
         public int CachedMaxConcurrency { get; set; }
         public string FunctionName { get; set; }
+        /// <summary>
+        /// Immutable physical runtime partition carried with this execution. Runtime-produced
+        /// contexts always set this value; namespace-less compatibility contexts are admitted only
+        /// by an explicitly LegacyGlobal queue-only runtime.
+        /// </summary>
+        public string RuntimePartitionKey { get; set; }
         public int? RequestContractVersion { get; set; }
         public string RequestContractFingerprint { get; set; }
         public Guid TickerId { get; set; }

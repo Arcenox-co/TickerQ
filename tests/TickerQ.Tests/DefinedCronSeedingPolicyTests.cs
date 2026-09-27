@@ -34,6 +34,21 @@ public class DefinedCronSeedingPolicyTests : IDisposable
     public void Dispose() => ResetProvider();
 
     [Fact]
+    public void Defined_cron_seed_retains_exact_legacy_five_parameter_constructor()
+    {
+        var constructor = typeof(DefinedCronTickerSeed).GetConstructor(
+            [typeof(string), typeof(string), typeof(int?), typeof(string), typeof(bool)]);
+
+        Assert.NotNull(constructor);
+        var seed = (DefinedCronTickerSeed)constructor!.Invoke(
+            new object?[] { "legacy", "*/5 * * * *", 3, "sha256:legacy", false });
+        Assert.Equal("legacy", seed.StableDefinitionId);
+        Assert.Equal(0, seed.Retries);
+        Assert.Null(seed.RetryIntervals);
+        Assert.Null(seed.TimeoutSeconds);
+    }
+
+    [Fact]
     public async Task Seeding_BlocksRequired_And_CarriesIdentity_ForRequestlessAndOptional()
     {
         RegisterFunction("Reqless");
@@ -49,8 +64,8 @@ public class DefinedCronSeedingPolicyTests : IDisposable
         var internalManager = Substitute.For<IInternalTickerManager>();
         DefinedCronTickerSeed[] captured = null;
         internalManager
-            .When(m => m.MigrateDefinedCronTickers(Arg.Any<DefinedCronTickerSeed[]>(), Arg.Any<CancellationToken>()))
-            .Do(ci => captured = ci.Arg<DefinedCronTickerSeed[]>());
+            .When(m => m.MigrateDefinedCronTickers(Arg.Any<DefinedCronSeedManifest>(), Arg.Any<CancellationToken>()))
+            .Do(ci => captured = ci.Arg<DefinedCronSeedManifest>().Seeds.ToArray());
 
         await RunInitializer(internalManager);
 
@@ -79,9 +94,68 @@ public class DefinedCronSeedingPolicyTests : IDisposable
         Assert.Equal(optionalDescriptor.Request!.Fingerprint, optional.RequestContractFingerprint);
     }
 
-    private static async Task RunInitializer(IInternalTickerManager internalManager)
+    [Fact]
+    public void SeedIdentity_IsNamespaced_AndStableAcrossSemanticChanges()
     {
-        var context = new TickerExecutionContext();
+        var appA = CronSeedIdentity.SeedKey("orders", "Reqless");
+        var appB = CronSeedIdentity.SeedKey("billing", "Reqless");
+
+        Assert.NotEqual(appA, appB);
+        Assert.Equal(appA, CronSeedIdentity.SeedKey("orders", "Reqless"));
+        Assert.Throws<ArgumentException>(() => CronSeedIdentity.SeedKey(" ", "Reqless"));
+    }
+
+    [Fact]
+    public void SeedIdentity_UsesBoundedFixedSizeInjectiveFraming_AndExposesLegacyAdoptionKeys()
+    {
+        var left = CronSeedIdentity.SeedKey("a:b", "c");
+        var right = CronSeedIdentity.SeedKey("a", "b:c");
+
+        Assert.NotEqual(left, right);
+        Assert.Equal(CronSeedIdentity.PersistedKeyLength, left.Length);
+        Assert.StartsWith("tq:cron-seed:v2:", left, StringComparison.Ordinal);
+        Assert.Equal(new[] { "a:b:c", "c" },
+            CronSeedIdentity.LegacyAdoptionKeys("a:b", "c"));
+        Assert.Throws<ArgumentException>(() => CronSeedIdentity.SeedKey(
+            new string('n', CronSeedIdentity.MaxIdentityUtf8Bytes + 1), "id"));
+    }
+
+    [Fact]
+    public async Task Seeding_ForwardsHostCancellationToken_ToMigrate()
+    {
+        RegisterFunction("Reqless");
+        RegisterDescriptors(
+            new TickerFunctionDescriptor("Reqless", TickerTaskPriority.Normal, "* * * * *"));
+
+        var internalManager = Substitute.For<IInternalTickerManager>();
+        CancellationToken observed = default;
+        var wasObserved = false;
+        internalManager
+            .When(m => m.MigrateDefinedCronTickers(Arg.Any<DefinedCronSeedManifest>(), Arg.Any<CancellationToken>()))
+            .Do(ci =>
+            {
+                observed = ci.Arg<CancellationToken>();
+                wasObserved = true;
+            });
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // The initializer must thread the host's shutdown token into startup seeding rather than
+        // silently swallowing it (the previous code passed a default CancellationToken), so a
+        // cancelled host propagates cancellation into provider seeding I/O.
+        await RunInitializer(internalManager, cts.Token);
+
+        Assert.True(wasObserved, "MigrateDefinedCronTickers was never invoked.");
+        Assert.True(observed.IsCancellationRequested,
+            "Host cancellation token was not forwarded to MigrateDefinedCronTickers.");
+    }
+
+    private static async Task RunInitializer(
+        IInternalTickerManager internalManager, CancellationToken cancellationToken = default)
+    {
+        ActivationEpochTestDouble.Configure(internalManager);
+        var context = new TickerExecutionContext { OptionsSeeding = new TestOptionsSeeding() };
         var configuration = Substitute.For<IConfiguration>();
 
         var services = new ServiceCollection();
@@ -95,7 +169,16 @@ public class DefinedCronSeedingPolicyTests : IDisposable
         {
             InitializationRequested = true
         };
-        await initializer.StartAsync(CancellationToken.None);
+        await initializer.StartAsync(cancellationToken);
+    }
+
+    private sealed class TestOptionsSeeding : ITickerOptionsSeeding
+    {
+        public bool SeedDefinedCronTickers => true;
+        public long ReconciliationEpoch => 1;
+        public string DefinedCronApplicationNamespace => "defined-cron-policy-tests";
+        public Func<IServiceProvider, CancellationToken, Task> TimeSeederAction => null;
+        public Func<IServiceProvider, CancellationToken, Task> CronSeederAction => null;
     }
 
     private static void RegisterFunction(string name)

@@ -24,6 +24,17 @@ public sealed class MongoNodeFinalizationOutboxTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Same_epoch_fresh_provider_repeats_process_local_transaction_capability_probe()
+    {
+        var follower = _fixture.NewProvider();
+        Assert.False(follower.SupportsDurableNodeFinalizationOutbox);
+
+        await _fixture.NewProvisioner(follower).ProbeAsync(CancellationToken.None);
+
+        Assert.True(follower.SupportsDurableNodeFinalizationOutbox);
+    }
+
+    [Fact]
     public async Task AcceptedCommitAtomicallyPersistsStatusResultAndExactSecretFreeIntent()
     {
         var (ticker, acquired) = await AddAcquiredTimeTickerAsync();
@@ -36,6 +47,37 @@ public sealed class MongoNodeFinalizationOutboxTests : IAsyncLifetime
         var stored = Assert.Single(await _fixture.NodeFinalizations.Find(FilterDefinition<BsonDocument>.Empty).ToListAsync());
         Assert.Equal(intent.ExactBody, stored["ExactBody"].AsBsonBinaryData.Bytes);
         Assert.DoesNotContain("secret", stored.ToJson(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AcceptedCommitTransactionallyReplacesMatchingLegacyScalarResultWithTypedEvidence()
+    {
+        var (ticker, acquired) = await AddAcquiredTimeTickerAsync();
+        var results = _fixture.Database.GetCollection<BsonDocument>("ticker_TickerResults");
+        var legacyId = new BsonBinaryData(ticker.Id, GuidRepresentation.Standard);
+        await results.InsertOneAsync(new BsonDocument
+        {
+            ["_id"] = legacyId,
+            ["Kind"] = "time",
+            ["Payload"] = new BsonBinaryData(new byte[] { 99 }),
+            ["Version"] = TickerResultEnvelope.CurrentVersion,
+            ["MediaType"] = "application/octet-stream"
+        });
+        var intent = Intent(ticker.Id, acquired.AcquisitionToken!.Value);
+
+        Assert.True(await _fixture.Provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            Terminal(ticker.Id, acquired.AcquisitionToken,
+                new TickerResultEnvelope([7], 1, "application/json")), intent));
+
+        Assert.Equal(0, await results.CountDocumentsAsync(
+            Builders<BsonDocument>.Filter.Eq("_id", legacyId)));
+        var stored = Assert.Single(await results.Find(FilterDefinition<BsonDocument>.Empty).ToListAsync());
+        Assert.True(stored["_id"].IsBsonDocument);
+        Assert.Equal("time", stored["_id"].AsBsonDocument["Kind"].AsString);
+        Assert.Equal(ticker.Id,
+            stored["_id"].AsBsonDocument["TickerId"].AsBsonBinaryData.ToGuid(GuidRepresentation.Standard));
+        Assert.Equal(7, (await _fixture.Provider.GetTimeTickerResultAsync(ticker.Id))!.ToPayloadArray()[0]);
+        Assert.Single(await _fixture.NodeFinalizations.Find(FilterDefinition<BsonDocument>.Empty).ToListAsync());
     }
 
     [Fact]

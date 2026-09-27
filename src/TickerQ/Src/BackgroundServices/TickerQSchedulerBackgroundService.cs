@@ -24,6 +24,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private readonly ITickerQTaskScheduler  _taskScheduler;
     private readonly ITickerExecutionTaskHandler  _taskHandler;
     private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
+    private readonly ITickerQActivationGate _activationGate;
     private readonly SemaphoreSlim _acquisitionPublicationGate = new(1, 1);
     private int _started;
     private int _stopping;
@@ -38,13 +39,15 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         IInternalTickerManager  internalTickerManager,
         SchedulerOptionsBuilder schedulerOptions,
         ITickerFunctionConcurrencyGate concurrencyGate,
-        ILogger<TickerQSchedulerBackgroundService> logger = null)
+        ILogger<TickerQSchedulerBackgroundService> logger = null,
+        ITickerQActivationGate activationGate = null)
     {
         _executionContext = executionContext;
         _taskHandler = taskHandler;
         _taskScheduler = taskScheduler;
         _internalTickerManager = internalTickerManager ?? throw new ArgumentNullException(nameof(internalTickerManager));
         _concurrencyGate = concurrencyGate;
+        _activationGate = activationGate;
         _schedulerOptions = schedulerOptions;
         _logger = logger ?? NullLogger<TickerQSchedulerBackgroundService>.Instance;
         _minPollingInterval = ResolveMinPollingInterval(schedulerOptions);
@@ -73,6 +76,9 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (_activationGate != null)
+            await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             _schedulerLoopCancellationTokenSource = SafeCancellationTokenSource.CreateLinked(stoppingToken);
@@ -204,7 +210,9 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         }
 
         var lifecycle = new AcquiredExecutionLifecycle(
-            new TickerExecutionKey(function.Type, function.TickerId), registeredSource, stoppingToken,
+            new TickerExecutionKey(
+                function.RuntimePartitionKey ?? TickerQRuntimePartition.LegacyGlobal.StorageKey,
+                function.Type, function.TickerId), registeredSource, stoppingToken,
             async owner =>
             {
                 try

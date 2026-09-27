@@ -50,13 +50,17 @@ public sealed class EfCoreNodeFinalizationOutboxTests : IAsyncLifetime
         Assert.NotNull(entity);
         Assert.Equal("NodeFinalizationOutbox", entity!.GetTableName());
         Assert.Empty(entity.GetForeignKeys());
-        Assert.Equal(nameof(NodeFinalizationOutboxEntity.OutboxId), Assert.Single(entity.FindPrimaryKey()!.Properties).Name);
+        Assert.Equal(
+            [nameof(NodeFinalizationOutboxEntity.ApplicationNamespaceKey), nameof(NodeFinalizationOutboxEntity.OutboxId)],
+            entity.FindPrimaryKey()!.Properties.Select(x => x.Name));
         Assert.Contains(entity.GetIndexes(), x => x.IsUnique && x.Properties.Select(p => p.Name).SequenceEqual(
-            [nameof(NodeFinalizationOutboxEntity.TickerType), nameof(NodeFinalizationOutboxEntity.TickerId),
+            [nameof(NodeFinalizationOutboxEntity.ApplicationNamespaceKey),
+             nameof(NodeFinalizationOutboxEntity.TickerType), nameof(NodeFinalizationOutboxEntity.TickerId),
              nameof(NodeFinalizationOutboxEntity.AcquisitionToken), nameof(NodeFinalizationOutboxEntity.DispatchId),
              nameof(NodeFinalizationOutboxEntity.NodeEpoch)]));
         Assert.Contains(entity.GetIndexes(), x => x.Properties.Select(p => p.Name).SequenceEqual(
-            [nameof(NodeFinalizationOutboxEntity.AvailableAtUtc), nameof(NodeFinalizationOutboxEntity.OutboxId)]));
+            [nameof(NodeFinalizationOutboxEntity.ApplicationNamespaceKey),
+             nameof(NodeFinalizationOutboxEntity.AvailableAtUtc), nameof(NodeFinalizationOutboxEntity.OutboxId)]));
         Assert.Equal(NodeFinalizationIntent.MaxExactBodyBytes,
             entity.FindProperty(nameof(NodeFinalizationOutboxEntity.ExactBody))!.GetMaxLength());
         Assert.Equal(typeof(long),

@@ -35,6 +35,9 @@ if (useOpenAIHistory)
 // every startup, so a fresh DB avoids duplicate one-off tickers).
 builder.Services.AddTickerQ(options =>
 {
+    // Physical runtime partition + exact deployment epoch; keep both stable across replicas.
+    options.UseDefinedCronApplicationNamespace("dashboard-test-sample");
+    options.UseReconciliationEpoch(1);
     options.AddOperationalStore(efOptions =>
     {
         efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>
@@ -343,4 +346,3 @@ public enum OrderPriority
     Normal,
     High
 }
-

@@ -59,7 +59,7 @@ public class PersistenceProviderFunctionalTests : IDisposable
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddTickerQ();
+        services.AddTickerQ(options => options.DisableBackgroundServices());
         return services.BuildServiceProvider();
     }
 
@@ -83,6 +83,7 @@ public class PersistenceProviderFunctionalTests : IDisposable
 
         services.AddTickerQ(options =>
         {
+            options.DisableBackgroundServices();
             options.AddOperationalStore(ef =>
             {
                 ef.UseApplicationDbContext<FunctionalTestDbContext>(ConfigurationType.UseModelCustomizer);
@@ -115,6 +116,7 @@ public class PersistenceProviderFunctionalTests : IDisposable
 
         services.AddTickerQ(options =>
         {
+            options.DisableBackgroundServices();
             options.AddOperationalStore(ef =>
             {
                 ef.UseApplicationDbContext<FunctionalTestDbContext>(ConfigurationType.UseModelCustomizer);
@@ -399,6 +401,7 @@ public class PersistenceProviderFunctionalTests : IDisposable
         try
         {
             var persistence = sp.GetRequiredService<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
+            var executionOwner = sp.GetRequiredService<SchedulerOptionsBuilder>().ExecutionOwnerId;
 
             var ticker = new TimeTickerEntity
             {
@@ -406,6 +409,8 @@ public class PersistenceProviderFunctionalTests : IDisposable
                 Function = TestFunction,
                 ExecutionTime = DateTime.UtcNow.AddMinutes(5),
                 Status = TickerStatus.Idle,
+                LockHolder = executionOwner,
+                AcquisitionToken = Guid.NewGuid(),
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
                 Request = Array.Empty<byte>()

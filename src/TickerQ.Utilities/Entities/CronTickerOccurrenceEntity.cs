@@ -1,15 +1,22 @@
 ﻿using System;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Entities
 {
     public class CronTickerOccurrenceEntity<TCronTicker> where TCronTicker : CronTickerEntity
     {
+        public virtual string ApplicationNamespaceKey { get; set; } = TickerQRuntimePartition.LegacyGlobal.StorageKey;
         public virtual Guid Id { get; set; }
         public virtual TickerStatus Status { get; set; }
         public virtual string LockHolder { get; set; }
         public virtual DateTime ExecutionTime { get; set; }
         public virtual Guid CronTickerId { get; set; }
+        /// <summary>
+        /// Definition revision used to publish this logical recurring slot. A stale revision remains
+        /// queryable as history but must never be acquired or executed.
+        /// </summary>
+        public virtual long DefinitionRevision { get; set; }
         public virtual DateTime? LockedAt { get; set; }
         public virtual DateTime? ExecutedAt { get; set; }
         public virtual TCronTicker CronTicker { get; set; }

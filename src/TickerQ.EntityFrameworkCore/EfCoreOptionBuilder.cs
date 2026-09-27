@@ -6,6 +6,7 @@ using TickerQ.EntityFrameworkCore.Customizer;
 using TickerQ.EntityFrameworkCore.DbContextFactory;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore
 {
@@ -18,6 +19,31 @@ namespace TickerQ.EntityFrameworkCore
         internal string Schema { get; set; } = "ticker";
         internal AssistantHistoryOptions AssistantHistory { get; set; }
         internal bool AutoMigrate { get; set; }
+        internal TickerQRuntimePartition LegacyRuntimeOwner { get; private set; }
+        internal long? LegacyRuntimeAdoptionEpoch { get; private set; }
+
+        /// <summary>
+        /// Explicitly identifies the sole namespace permitted to claim pre-partition runtime rows.
+        /// This is only an adoption prerequisite; legacy rows are never inferred or reassigned merely
+        /// because a scheduler is configured with an application namespace.
+        /// </summary>
+        public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> UseLegacyRuntimePartitionAdoption(
+            string ownerApplicationNamespace, long epoch)
+        {
+            if (epoch <= 0)
+                throw new ArgumentOutOfRangeException(nameof(epoch), epoch,
+                    "The legacy runtime adoption epoch must be positive.");
+
+            var owner = new TickerQRuntimePartition(ownerApplicationNamespace);
+            if (LegacyRuntimeOwner != null &&
+                (!LegacyRuntimeOwner.Equals(owner) || LegacyRuntimeAdoptionEpoch != epoch))
+                throw new InvalidOperationException(
+                    "Legacy runtime partition ownership is already configured and cannot be redirected.");
+
+            LegacyRuntimeOwner = owner;
+            LegacyRuntimeAdoptionEpoch = epoch;
+            return this;
+        }
 
         /// <summary>
         /// Apply pending EF Core migrations for the TickerQ DbContext automatically

@@ -1,10 +1,13 @@
 ﻿using System;
 using System.Text.Json.Serialization;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Entities.BaseEntity
 {
     public class BaseTickerEntity
     {
+        [JsonIgnore]
+        public virtual string ApplicationNamespaceKey { get; set; } = TickerQRuntimePartition.LegacyGlobal.StorageKey;
         public virtual Guid Id { get; set; } = Guid.NewGuid();
         public virtual string Function { get; set; }
         public virtual string Description { get; set; }

@@ -15,6 +15,9 @@ var builder = WebApplication.CreateBuilder(args);
 // No auth on purpose so the read-only behaviour is isolated from login flows.
 builder.Services.AddTickerQ(options =>
 {
+    // Physical runtime partition + exact deployment epoch; both are required in scheduler mode.
+    options.UseDefinedCronApplicationNamespace("dashboard-readonly-sample");
+    options.UseReconciliationEpoch(1);
     options.AddOperationalStore(efOptions =>
     {
         efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>

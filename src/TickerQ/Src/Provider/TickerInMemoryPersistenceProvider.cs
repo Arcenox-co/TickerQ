@@ -22,31 +22,91 @@ namespace TickerQ.Provider
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        private static readonly ConcurrentDictionary<Guid, TTimeTicker> TimeTickers =
-            new(new Dictionary<Guid, TTimeTicker>());
+        private sealed class PartitionState
+        {
+            internal readonly ConcurrentDictionary<Guid, TTimeTicker> TimeTickers = new();
+            internal readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, byte>> ChildrenIndex = new();
+            internal readonly ConcurrentDictionary<Guid, TCronTicker> CronTickers = new();
+            internal readonly ConcurrentDictionary<Guid, CronTickerOccurrenceEntity<TCronTicker>> CronOccurrences = new();
+            internal readonly ConcurrentDictionary<(DateTime ExecutionTime, Guid CronTickerId), Guid> CronOccurrenceIndex = new();
+            internal readonly ConcurrentDictionary<Guid, TickerResultEnvelope> TimeTickerResults = new();
+            internal readonly ConcurrentDictionary<Guid, TickerResultEnvelope> CronOccurrenceResults = new();
+            internal readonly Dictionary<string, ActivationEpochState> ScopedActivationEpochs = new(StringComparer.Ordinal);
+            internal readonly ReaderWriterLockSlim GraphLock = new(LockRecursionPolicy.NoRecursion);
+            internal ActivationEpochState ActivationEpoch = ActivationEpochState.PreEpoch;
+        }
 
-        // Index of parent -> child ids for fast hierarchy lookup in memory
-        private static readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, byte>> ChildrenIndex =
-            new(new Dictionary<Guid, ConcurrentDictionary<Guid, byte>>());
+        private static readonly ConcurrentDictionary<string, PartitionState> Partitions =
+            new(StringComparer.Ordinal);
+        private static readonly object LegacyAdoptionGate = new();
+        private static string _legacyAdoptionOwner;
+        private static long _legacyAdoptionEpoch;
+        private static bool _legacyAdoptionCompleted;
+        private readonly PartitionState _partitionState;
+        private readonly string _runtimePartitionKey;
+        private ConcurrentDictionary<Guid, TTimeTicker> TimeTickers => _partitionState.TimeTickers;
+        private ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, byte>> ChildrenIndex => _partitionState.ChildrenIndex;
+        private ConcurrentDictionary<Guid, TCronTicker> CronTickers => _partitionState.CronTickers;
+        private ConcurrentDictionary<Guid, CronTickerOccurrenceEntity<TCronTicker>> CronOccurrences => _partitionState.CronOccurrences;
+        private ConcurrentDictionary<(DateTime ExecutionTime, Guid CronTickerId), Guid> CronOccurrenceIndex => _partitionState.CronOccurrenceIndex;
+        private ConcurrentDictionary<Guid, TickerResultEnvelope> TimeTickerResults => _partitionState.TimeTickerResults;
+        private ConcurrentDictionary<Guid, TickerResultEnvelope> CronOccurrenceResults => _partitionState.CronOccurrenceResults;
+        private Dictionary<string, ActivationEpochState> ScopedActivationEpochs => _partitionState.ScopedActivationEpochs;
+        private ReaderWriterLockSlim GraphLock => _partitionState.GraphLock;
+        private ActivationEpochState _activationEpoch
+        {
+            get => _partitionState.ActivationEpoch;
+            set => _partitionState.ActivationEpoch = value;
+        }
+        private ActivationEpochState DefaultActivationEpoch
+        {
+            get => _runtimeScopeBindingConfigured && _runtimeActivationScopeKey != null
+                ? ScopedActivationEpochs.TryGetValue(_runtimeActivationScopeKey, out var state)
+                    ? state
+                    : ActivationEpochState.PreEpoch
+                : _activationEpoch;
+            set
+            {
+                if (_runtimeScopeBindingConfigured && _runtimeActivationScopeKey != null)
+                    ScopedActivationEpochs[_runtimeActivationScopeKey] = value;
+                else
+                    _activationEpoch = value;
+            }
+        }
+        internal ConcurrentDictionary<Guid, TTimeTicker> TimeTickersForTests => TimeTickers;
+        internal ConcurrentDictionary<Guid, TCronTicker> CronTickersForTests => CronTickers;
+        internal ConcurrentDictionary<Guid, CronTickerOccurrenceEntity<TCronTicker>> CronOccurrencesForTests => CronOccurrences;
+        internal ConcurrentDictionary<Guid, TickerResultEnvelope> CronOccurrenceResultsForTests => CronOccurrenceResults;
 
-        private static readonly ConcurrentDictionary<Guid, TCronTicker> CronTickers =
-            new(new Dictionary<Guid, TCronTicker>());
-
-        private static readonly ConcurrentDictionary<Guid, CronTickerOccurrenceEntity<TCronTicker>> CronOccurrences =
-            new(new Dictionary<Guid, CronTickerOccurrenceEntity<TCronTicker>>());
-
-        // Unique index on (ExecutionTime, CronTickerId) to prevent duplicate cron occurrences - mirrors EF Core's Upsert constraint
-        private static readonly ConcurrentDictionary<(DateTime ExecutionTime, Guid CronTickerId), Guid> CronOccurrenceIndex = new();
-
-        // Committed parent-result envelopes keyed by ticker/occurrence id. Populated only by a winning
-        // successful terminal write and read by a child fetching its direct parent's result. Kept in a
-        // side store (never on the shared entity) so the wire row and EF/Mongo mappings stay untouched.
-        private static readonly ConcurrentDictionary<Guid, TickerResultEnvelope> TimeTickerResults = new();
-        private static readonly ConcurrentDictionary<Guid, TickerResultEnvelope> CronOccurrenceResults = new();
+        /// <summary>Test-only reset of the process-wide activation epoch latch.</summary>
+        internal static void ResetActivationEpochForTests()
+        {
+            lock (LegacyAdoptionGate)
+            {
+                _legacyAdoptionOwner = null;
+                _legacyAdoptionEpoch = 0;
+                _legacyAdoptionCompleted = false;
+            }
+            foreach (var state in Partitions.Values)
+            {
+                state.GraphLock.EnterWriteLock();
+                try
+                {
+                    state.ActivationEpoch = ActivationEpochState.PreEpoch;
+                    state.ScopedActivationEpochs.Clear();
+                }
+                finally { state.GraphLock.ExitWriteLock(); }
+            }
+        }
 
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
         private readonly TimeSpan _leaseDuration;
+        private readonly TimeSpan _retirementGracePeriod;
+        private readonly long _reconciliationEpoch;
+        private readonly string _runtimeActivationScopeKey;
+        private readonly bool _runtimeScopeBindingConfigured;
+        private readonly bool _runtimeSchedulerEnabled;
 
         public TickerInMemoryPersistenceProvider(IServiceProvider serviceProvider)
         {
@@ -54,11 +114,233 @@ namespace TickerQ.Provider
             var optionsBuilder = serviceProvider.GetService<SchedulerOptionsBuilder>();
             _lockHolder = optionsBuilder?.ExecutionOwnerId ?? $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
             _leaseDuration = optionsBuilder?.LeaseDuration ?? TimeSpan.FromMinutes(1);
+            _retirementGracePeriod = optionsBuilder?.DefinedCronRetirementGracePeriod ?? TimeSpan.FromHours(24);
+            _reconciliationEpoch = optionsBuilder?.ReconciliationEpoch ?? 1;
+            _runtimeScopeBindingConfigured = optionsBuilder?.HasRuntimeActivationScopeBinding ?? false;
+            _runtimeSchedulerEnabled = optionsBuilder?.RuntimeSchedulerEnabled ?? true;
+            _runtimeActivationScopeKey = optionsBuilder?.RuntimeActivationScope?.ScopeKey;
+            var partition = optionsBuilder?.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal;
+            _runtimePartitionKey = partition.StorageKey;
+            _partitionState = Partitions.GetOrAdd(partition.StorageKey, _ => new PartitionState());
         }
 
         // In-memory persistence has no lease/stale-recovery contract, so it opts out
         // explicitly and inherits the compatibility-safe (fail-closed) interface defaults.
         public bool SupportsLeaseBasedRecovery => false;
+        public bool SupportsLegacyRuntimePartitionAdoption => true;
+
+        public Task AdoptLegacyRuntimePartitionAsync(
+            LegacyRuntimePartitionAdoption adoption, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(adoption);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!StringComparer.Ordinal.Equals(adoption.TargetPartition.StorageKey, _runtimePartitionKey))
+                throw new InvalidOperationException("Legacy adoption target does not match this provider's runtime partition.");
+
+            lock (LegacyAdoptionGate)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_legacyAdoptionOwner != null &&
+                    (!StringComparer.Ordinal.Equals(_legacyAdoptionOwner, _runtimePartitionKey) ||
+                     _legacyAdoptionEpoch != adoption.Epoch))
+                    throw new InvalidOperationException(
+                        "Legacy runtime state is already held or completed by a different adoption owner or epoch.");
+                if (_legacyAdoptionCompleted)
+                    return Task.CompletedTask;
+
+                var foreignOwners = Partitions.Where(pair =>
+                    pair.Key != TickerQRuntimePartition.LegacyGlobal.StorageKey &&
+                    pair.Key != _runtimePartitionKey && HasRuntimeState(pair.Value)).Select(pair => pair.Key).ToArray();
+                if (foreignOwners.Length > 0)
+                    throw new InvalidOperationException(
+                        "Legacy runtime adoption is ambiguous because runtime rows already exist for another namespace.");
+
+                _legacyAdoptionOwner = _runtimePartitionKey;
+                _legacyAdoptionEpoch = adoption.Epoch;
+                var legacy = Partitions.GetOrAdd(
+                    TickerQRuntimePartition.LegacyGlobal.StorageKey, _ => new PartitionState());
+                CopyLegacyState(legacy, _partitionState, _runtimePartitionKey);
+                _legacyAdoptionCompleted = true;
+                return Task.CompletedTask;
+            }
+        }
+
+        private static bool HasRuntimeState(PartitionState state)
+            => !state.TimeTickers.IsEmpty || !state.CronTickers.IsEmpty ||
+               !state.CronOccurrences.IsEmpty || !state.TimeTickerResults.IsEmpty ||
+               !state.CronOccurrenceResults.IsEmpty;
+
+        private static void CopyLegacyState(PartitionState source, PartitionState target, string targetKey)
+        {
+            foreach (var pair in source.TimeTickers)
+            {
+                StampTimeTickerPartition(pair.Value, targetKey);
+                if (!target.TimeTickers.TryAdd(pair.Key, pair.Value))
+                    throw new InvalidOperationException("The target partition already contains a conflicting TimeTicker ID.");
+            }
+            foreach (var pair in source.CronTickers)
+            {
+                pair.Value.ApplicationNamespaceKey = targetKey;
+                if (!target.CronTickers.TryAdd(pair.Key, pair.Value))
+                    throw new InvalidOperationException("The target partition already contains a conflicting CronTicker ID.");
+            }
+            foreach (var pair in source.CronOccurrences)
+            {
+                pair.Value.ApplicationNamespaceKey = targetKey;
+                if (!target.CronOccurrences.TryAdd(pair.Key, pair.Value))
+                    throw new InvalidOperationException("The target partition already contains a conflicting Cron occurrence ID.");
+            }
+            foreach (var pair in source.ChildrenIndex) target.ChildrenIndex.TryAdd(pair.Key, pair.Value);
+            foreach (var pair in source.CronOccurrenceIndex) target.CronOccurrenceIndex.TryAdd(pair.Key, pair.Value);
+            foreach (var pair in source.TimeTickerResults) target.TimeTickerResults.TryAdd(pair.Key, pair.Value);
+            foreach (var pair in source.CronOccurrenceResults) target.CronOccurrenceResults.TryAdd(pair.Key, pair.Value);
+            source.TimeTickers.Clear(); source.CronTickers.Clear(); source.CronOccurrences.Clear();
+            source.ChildrenIndex.Clear(); source.CronOccurrenceIndex.Clear();
+            source.TimeTickerResults.Clear(); source.CronOccurrenceResults.Clear();
+        }
+
+        private static void StampTimeTickerPartition(TTimeTicker ticker, string targetKey)
+        {
+            ticker.ApplicationNamespaceKey = targetKey;
+            if (ticker.Children == null) return;
+            foreach (var child in ticker.Children) StampTimeTickerPartition(child, targetKey);
+        }
+
+        #region Reconciliation_Activation_Epoch
+        public bool SupportsReconciliationActivationEpoch => true;
+        public bool SupportsAuthoritativeCronReconciliation => true;
+
+        public Task<ActivationEpochState> GetReconciliationActivationStateAsync(
+            ReconciliationActivationScope scope, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(ReadGraph(() => ScopedActivationEpochs.TryGetValue(scope.ScopeKey, out var state)
+                ? state : ActivationEpochState.PreEpoch));
+        }
+
+        public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                var state = ScopedActivationEpochs.TryGetValue(scope.ScopeKey, out var current)
+                    ? current : ActivationEpochState.PreEpoch;
+                if (state.Epoch > targetEpoch ||
+                    (state.Epoch == targetEpoch && state.Phase is ActivationEpochPhase.Activating or ActivationEpochPhase.Activated))
+                    return state;
+                state = new ActivationEpochState { Epoch = targetEpoch, Phase = ActivationEpochPhase.Activating };
+                ScopedActivationEpochs[scope.ScopeKey] = state;
+                return state;
+            }));
+        }
+
+        public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
+            ReconciliationActivationScope scope, long targetEpoch, string checkpoint,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                var state = ScopedActivationEpochs.TryGetValue(scope.ScopeKey, out var current)
+                    ? current : ActivationEpochState.PreEpoch;
+                if (state.Epoch == targetEpoch && state.Phase == ActivationEpochPhase.Activating)
+                {
+                    state = new ActivationEpochState
+                    {
+                        Epoch = targetEpoch, Phase = ActivationEpochPhase.Activating, Checkpoint = checkpoint
+                    };
+                    ScopedActivationEpochs[scope.ScopeKey] = state;
+                }
+                return state;
+            }));
+        }
+
+        public Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                var state = ScopedActivationEpochs.TryGetValue(scope.ScopeKey, out var current)
+                    ? current : ActivationEpochState.PreEpoch;
+                if (state.Phase == ActivationEpochPhase.Activated && state.Epoch >= targetEpoch)
+                    return state;
+                if (state.Epoch != targetEpoch || state.Phase != ActivationEpochPhase.Activating)
+                    return state;
+                state = new ActivationEpochState
+                {
+                    Epoch = targetEpoch, Phase = ActivationEpochPhase.Activated, Checkpoint = state.Checkpoint
+                };
+                ScopedActivationEpochs[scope.ScopeKey] = state;
+                return state;
+            }));
+        }
+
+        public Task<ActivationEpochState> GetReconciliationActivationStateAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(ReadGraph(() => DefaultActivationEpoch));
+        }
+
+        public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(long targetEpoch, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                var state = DefaultActivationEpoch;
+                if (state.Epoch > targetEpoch ||
+                    (state.Epoch == targetEpoch && state.Phase is ActivationEpochPhase.Activating or ActivationEpochPhase.Activated))
+                    return state;
+
+                DefaultActivationEpoch = new ActivationEpochState
+                {
+                    Epoch = targetEpoch,
+                    Phase = ActivationEpochPhase.Activating,
+                    Checkpoint = null
+                };
+                return DefaultActivationEpoch;
+            }));
+        }
+
+        public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(long targetEpoch, string checkpoint, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                var state = DefaultActivationEpoch;
+                if (state.Epoch == targetEpoch && state.Phase == ActivationEpochPhase.Activating)
+                    DefaultActivationEpoch = new ActivationEpochState
+                    {
+                        Epoch = targetEpoch,
+                        Phase = ActivationEpochPhase.Activating,
+                        Checkpoint = checkpoint
+                    };
+                return DefaultActivationEpoch;
+            }));
+        }
+
+        public Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(long targetEpoch, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                var state = DefaultActivationEpoch;
+                if (state.Phase == ActivationEpochPhase.Activated && state.Epoch >= targetEpoch)
+                    return state;
+                if (state.Epoch != targetEpoch || state.Phase != ActivationEpochPhase.Activating)
+                    return state;
+
+                DefaultActivationEpoch = new ActivationEpochState
+                {
+                    Epoch = targetEpoch,
+                    Phase = ActivationEpochPhase.Activated,
+                    Checkpoint = state.Checkpoint
+                };
+                return DefaultActivationEpoch;
+            }));
+        }
+        #endregion
 
         // Built-in provider: implements job retention with whole-chain, all-or-nothing semantics.
         public bool SupportsRetention => true;
@@ -66,6 +348,29 @@ namespace TickerQ.Provider
         // Built-in provider: durably stores per-ticker result envelopes for parent-result propagation.
         public bool SupportsResultPublication => true;
         public bool SupportsAcknowledgedTerminalUpdates => true;
+        public bool SupportsTimeTickerChainRepair => true;
+
+        public Task<TimeTickerChainRepairResult> RepairTimeTickerChainsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                if (!IsStructuralMutationActivationState())
+                    return TimeTickerChainRepairResult.Empty;
+                DuringGlobalRepairMutationHook?.Invoke();
+                var plan = TimeTickerChainRepairPlanner.Create(
+                    TimeTickers.Values.ToArray(), cancellationToken);
+                plan.ThrowIfMalformed();
+                foreach (var update in plan.Updates)
+                {
+                    update.Row.ChainRootId = update.ChainRootId;
+                    update.Row.ChainGeneration = update.ChainGeneration;
+                    update.Row.UpdatedAt = _clock.UtcNow;
+                }
+                return plan.Result;
+            }));
+        }
 
         // A result becomes visible only on the final successful terminal write: a present result envelope
         // on a Done/DueDone terminal update. Failed/cancelled/skipped/retry writes never carry one (the
@@ -98,10 +403,11 @@ namespace TickerQ.Provider
             return CommitTerminalTickerCoreAsync(functionContext, enforceRemoteChildToken: true, cancellationToken);
         }
 
-        private static void ValidateTerminalCommit(InternalFunctionContext context, bool requireSuccessful)
+        private void ValidateTerminalCommit(InternalFunctionContext context, bool requireSuccessful)
         {
             if (context == null)
                 throw new ArgumentNullException(nameof(context));
+            EnsureExactTerminalPartition(context);
             var successful = context.Status is TickerStatus.Done or TickerStatus.DueDone;
             if (!context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) ||
                 context.Status is not (TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
@@ -110,6 +416,21 @@ namespace TickerQ.Provider
                 (successful && !context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ResultEnvelope))))
                 throw new InvalidOperationException(
                     "Acknowledged persistence accepts only a terminal mutation; success requires an explicit optional result envelope.");
+        }
+
+        private void EnsureExactTerminalPartition(InternalFunctionContext context)
+        {
+            if (string.IsNullOrWhiteSpace(context.RuntimePartitionKey))
+            {
+                if (_runtimePartitionKey == TickerQRuntimePartition.LegacyGlobal.StorageKey)
+                {
+                    context.RuntimePartitionKey = _runtimePartitionKey;
+                    return;
+                }
+                throw new InvalidOperationException("A terminal mutation requires an exact runtime partition identity.");
+            }
+            if (!StringComparer.Ordinal.Equals(context.RuntimePartitionKey, _runtimePartitionKey))
+                throw new InvalidOperationException("Terminal mutation runtime partition mismatch.");
         }
 
         private Task<bool> CommitTerminalTickerCoreAsync(
@@ -130,7 +451,8 @@ namespace TickerQ.Provider
 
                     var updatedOccurrence = CloneCronOccurrence(occurrence);
                     ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
-                    if (!TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence))
+                    if (!TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence,
+                            requireRunnableActivation: false))
                         return false;
                     if (successful)
                         ReplaceCommittedResult(CronOccurrenceResults, functionContext);
@@ -162,7 +484,8 @@ namespace TickerQ.Provider
 
                 var updatedTicker = CloneTicker(ticker);
                 ApplyFunctionContextToTicker(updatedTicker, functionContext);
-                if (!TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker))
+                if (!TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker,
+                        requireRunnableActivation: false))
                     return false;
                 if (successful)
                     ReplaceCommittedResult(TimeTickerResults, functionContext);
@@ -299,6 +622,9 @@ namespace TickerQ.Provider
 
         public Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken = default)
         {
+            if (!ReadGraph(IsRunnableActivationState))
+                return Task.FromResult(Array.Empty<TimeTickerEntity>());
+
             var now = _clock.UtcNow;
             var oneSecondAgo = now.AddSeconds(-1);
 
@@ -358,7 +684,8 @@ namespace TickerQ.Provider
                 ApplyFunctionContextToTicker(updatedTicker, functionContext);
 
                 EligibilityMutationLockHook?.Invoke(functionContext.TickerId);
-                if (!TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker))
+                if (!TryUpdateTimeTicker(functionContext.TickerId, updatedTicker, ticker,
+                        requireRunnableActivation: !IsFencedTerminalWrite(functionContext)))
                     return 0;
 
                 if (IsSuccessfulResultWrite(functionContext))
@@ -367,7 +694,7 @@ namespace TickerQ.Provider
             }));
         }
 
-        private static bool HasCurrentChainGeneration(
+        private bool HasCurrentChainGeneration(
             InternalFunctionContext context, TTimeTicker target)
         {
             if (context.ParentId == null)
@@ -404,7 +731,8 @@ namespace TickerQ.Provider
                 {
                     var updatedTicker = CloneTicker(ticker);
                     ApplyFunctionContextToTicker(updatedTicker, functionContext);
-                    TryUpdateTimeTicker(id, updatedTicker, ticker);
+                    TryUpdateTimeTicker(id, updatedTicker, ticker,
+                        requireRunnableActivation: !IsFencedTerminalWrite(functionContext));
                 }
             }
             
@@ -595,6 +923,8 @@ namespace TickerQ.Provider
             // added root/children set. Matches ReplaceTimeTickerChainAsync fencing.
             var count = WriteGraph(() =>
             {
+                if (!IsStructuralMutationActivationState())
+                    return 0;
                 var added = 0;
                 foreach (var ticker in tickers)
                 {
@@ -609,7 +939,7 @@ namespace TickerQ.Provider
             return Task.FromResult(count);
         }
         
-        private static (Guid RootId, Guid? Generation) ResolveInsertedChainIdentity(
+        private (Guid RootId, Guid? Generation) ResolveInsertedChainIdentity(
             TTimeTicker ticker, IReadOnlyCollection<TTimeTicker> supplied)
         {
             var suppliedById = supplied.ToDictionary(x => x.Id);
@@ -681,6 +1011,8 @@ namespace TickerQ.Provider
             // aggregate, and it must not interleave with a concurrent chain replacement.
             var count = WriteGraph(() =>
             {
+                if (!IsStructuralMutationActivationState())
+                    return 0;
                 var updated = 0;
                 foreach (var ticker in tickers)
                 {
@@ -749,6 +1081,8 @@ namespace TickerQ.Provider
             // and so it cannot interleave with a concurrent chain replacement.
             var count = WriteGraph(() =>
             {
+                if (!IsStructuralMutationActivationState())
+                    return 0;
                 var removedCount = 0;
                 foreach (var id in tickerIds)
                 {
@@ -791,22 +1125,62 @@ namespace TickerQ.Provider
         // torn aggregate); a structural writer takes the write lock for its whole span.
         // The per-node CAS status writers keep operating lock-free on ConcurrentDictionary
         // entries — they never restructure the parent/child graph — so they are unaffected.
-        private static readonly ReaderWriterLockSlim GraphLock = new(LockRecursionPolicy.NoRecursion);
-
         // Test-only seam invoked while an eligibility-changing CAS holds the read lock.
         // Retention's write lock cannot pass this point until the mutation completes.
         internal static Action<Guid> EligibilityMutationLockHook;
+        internal static Action<Guid> BeforeCronOccurrenceMutationLockHook;
+        internal static Action DuringGlobalRepairMutationHook;
 
-        private static bool TryUpdateTimeTicker(Guid id, TTimeTicker updated, TTimeTicker expected)
+        private bool IsRunnableActivationState()
+        {
+            if (_runtimeScopeBindingConfigured)
+            {
+                if (!_runtimeSchedulerEnabled)
+                    return true;
+                if (_runtimeActivationScopeKey == null || _reconciliationEpoch <= 0
+                    || !ScopedActivationEpochs.TryGetValue(_runtimeActivationScopeKey, out var runtimeState))
+                    return false;
+                return runtimeState.Epoch == _reconciliationEpoch
+                       && (runtimeState.Phase == ActivationEpochPhase.Activated
+                           || (runtimeState.Phase == ActivationEpochPhase.Activating
+                               && StartupSeederAdmissionContext.Matches(
+                                   _runtimeActivationScopeKey, _reconciliationEpoch)));
+            }
+
+            var state = _activationEpoch;
+            return state == ActivationEpochState.PreEpoch
+                   || (state.Epoch == 0 && state.Phase == ActivationEpochPhase.Pending)
+                   || (state.Epoch == _reconciliationEpoch
+                       && state.Phase == ActivationEpochPhase.Activated);
+        }
+
+        private bool IsStructuralMutationActivationState()
+        {
+            if (!_runtimeScopeBindingConfigured || !_runtimeSchedulerEnabled)
+                return true;
+            if (_runtimeActivationScopeKey == null || _reconciliationEpoch <= 0
+                || !ScopedActivationEpochs.TryGetValue(_runtimeActivationScopeKey, out var state))
+                return false;
+            return state.Epoch == _reconciliationEpoch
+                   && (state.Phase == ActivationEpochPhase.Activated
+                       || (state.Phase == ActivationEpochPhase.Activating
+                           && StartupSeederAdmissionContext.Matches(
+                               _runtimeActivationScopeKey, _reconciliationEpoch)));
+        }
+
+        private bool TryUpdateTimeTicker(
+            Guid id, TTimeTicker updated, TTimeTicker expected, bool requireRunnableActivation = true)
         {
             if (GraphLock.IsReadLockHeld || GraphLock.IsWriteLockHeld)
-                return TimeTickers.TryUpdate(id, updated, expected);
+                return (!requireRunnableActivation || IsRunnableActivationState())
+                       && TimeTickers.TryUpdate(id, updated, expected);
 
             GraphLock.EnterReadLock();
             try
             {
                 EligibilityMutationLockHook?.Invoke(id);
-                return TimeTickers.TryUpdate(id, updated, expected);
+                return (!requireRunnableActivation || IsRunnableActivationState())
+                       && TimeTickers.TryUpdate(id, updated, expected);
             }
             finally
             {
@@ -814,19 +1188,26 @@ namespace TickerQ.Provider
             }
         }
 
-        private static bool TryUpdateCronOccurrence(
+        private bool TryUpdateCronOccurrence(
             Guid id,
             CronTickerOccurrenceEntity<TCronTicker> updated,
-            CronTickerOccurrenceEntity<TCronTicker> expected)
+            CronTickerOccurrenceEntity<TCronTicker> expected,
+            bool requireCurrentDefinition = true,
+            bool requireRunnableActivation = true)
         {
             if (GraphLock.IsReadLockHeld || GraphLock.IsWriteLockHeld)
-                return CronOccurrences.TryUpdate(id, updated, expected);
+                return (!requireRunnableActivation || IsRunnableActivationState())
+                       && (!requireCurrentDefinition || IsCurrentCronOccurrence(expected))
+                       && CronOccurrences.TryUpdate(id, updated, expected);
 
+            BeforeCronOccurrenceMutationLockHook?.Invoke(id);
             GraphLock.EnterReadLock();
             try
             {
                 EligibilityMutationLockHook?.Invoke(id);
-                return CronOccurrences.TryUpdate(id, updated, expected);
+                return (!requireRunnableActivation || IsRunnableActivationState())
+                       && (!requireCurrentDefinition || IsCurrentCronOccurrence(expected))
+                       && CronOccurrences.TryUpdate(id, updated, expected);
             }
             finally
             {
@@ -836,7 +1217,7 @@ namespace TickerQ.Provider
 
         // Runs a graph read under the shared read lock. Callees must be lock-free (they
         // are: BuildTickerHierarchy / ForQueueTimeTickers and their private helpers).
-        private static T ReadGraph<T>(Func<T> read)
+        private T ReadGraph<T>(Func<T> read)
         {
             GraphLock.EnterReadLock();
             try
@@ -850,7 +1231,7 @@ namespace TickerQ.Provider
         }
 
         // Runs a structural graph mutation under the exclusive write lock.
-        private static T WriteGraph<T>(Func<T> write)
+        private T WriteGraph<T>(Func<T> write)
         {
             GraphLock.EnterWriteLock();
             try
@@ -878,6 +1259,8 @@ namespace TickerQ.Provider
 
             return WriteGraph(() =>
             {
+                if (!IsStructuralMutationActivationState())
+                    return Task.FromResult(0);
                 // Persist the COMPLETE replacement first. Fail closed on any id collision
                 // BEFORE removing anything, so the original aggregate is never lost.
                 var replacementIds = new HashSet<Guid>();
@@ -928,7 +1311,7 @@ namespace TickerQ.Provider
                     CollectChainIds(typedChild, ids);
         }
 
-        private static void AddReplacementWithChildren(
+        private void AddReplacementWithChildren(
             TTimeTicker ticker,
             Guid? parentId,
             List<Guid> insertedIds)
@@ -952,7 +1335,7 @@ namespace TickerQ.Provider
                     AddReplacementWithChildren(typedChild, ticker.Id, insertedIds);
         }
 
-        private static void RemoveAggregateCascade(Guid rootId)
+        private void RemoveAggregateCascade(Guid rootId)
         {
             // Depth-first so descendants at every level are removed, not just direct children.
             foreach (var childId in GetChildrenIds(rootId))
@@ -1003,7 +1386,8 @@ namespace TickerQ.Provider
                 updatedTicker.ExecutedAt = now;
                 updatedTicker.UpdatedAt = now;
 
-                TryUpdateTimeTicker(ticker.Id, updatedTicker, currentTicker);
+                TryUpdateTimeTicker(ticker.Id, updatedTicker, currentTicker,
+                    requireRunnableActivation: false);
             }
 
             return Task.CompletedTask;
@@ -1013,83 +1397,276 @@ namespace TickerQ.Provider
 
         #region Cron Ticker Methods
 
+        public Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
+            => MigrateDefinedCronTickers(
+                Array.ConvertAll(cronTickers, static ticker => new DefinedCronTickerSeed(ticker.Function, ticker.Expression)),
+                cancellationToken);
+
         public Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
+            => MigrateDefinedCronTickers(new DefinedCronSeedManifest(cronTickers), cancellationToken);
+
+        public Task MigrateDefinedCronTickers(DefinedCronSeedManifest manifest, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            RuntimeManifestAdmission.Validate(manifest, _runtimeScopeBindingConfigured,
+                _runtimeSchedulerEnabled, _runtimeActivationScopeKey, _reconciliationEpoch);
             var now = _clock.UtcNow;
+            var grace = _retirementGracePeriod;
 
-            // Remove orphaned cron tickers whose function no longer exists in the
-            // code definitions (#517). Limited to *seeded* crons (non-empty
-            // InitIdentifier) so dashboard-created crons targeting SDK / remote
-            // functions aren't wiped on scheduler restart — at boot the SDK
-            // hasn't synced its functions yet, so the registry wouldn't contain
-            // qualified `name@node` entries. See the EF provider's mirror
-            // comment for the full rationale.
-            var allRegisteredFunctions = TickerFunctionProvider.TickerFunctions.Keys
-                .ToHashSet(StringComparer.Ordinal);
-            var blockedFunctions = cronTickers.Where(x => !x.CanSeed)
-                .Select(x => x.Function).ToHashSet(StringComparer.Ordinal);
+            // Orphan detection compares persisted SEEDED rows (non-empty InitIdentifier) to the DESIRED
+            // SEED MANIFEST — the local code-owned schedules this pass wants — never to the global runtime
+            // function registry. Comparing to the registry conflated "function still registered" with
+            // "code still wants a seeded schedule", so removing only a cron expression left the stale
+            // seeded row firing forever (Slice 1). Dashboard-created crons (null/empty InitIdentifier),
+            // including those targeting SDK/remote `name@node` functions the initializer never seeds, are
+            // never candidates. See the EF provider's mirror comment for the full rationale.
+            var blockedFunctions = manifest.Seeds.Where(s => !s.CanSeed)
+                .Select(s => s.Function).ToHashSet(StringComparer.Ordinal);
 
-            var snapshot = CronTickers.ToArray();
-            foreach (var (id, ticker) in snapshot)
+            // The whole reconcile runs under the exclusive graph write lock so duplicate selection and the
+            // retirement/adoption mutations are safe under concurrent reconciliation (the store is
+            // process-wide static state shared by every provider instance in this process).
+            WriteGraph<object>(() =>
             {
-                if (!string.IsNullOrEmpty(ticker.InitIdentifier)
-                    && (!allRegisteredFunctions.Contains(ticker.Function)
-                        || blockedFunctions.Contains(ticker.Function)))
-                    CronTickers.TryRemove(id, out _);
-            }
-
-            foreach (var seed in cronTickers)
-            {
-                if (!seed.CanSeed)
-                    continue;
-
-                // Match only a SEEDED row for this function (snapshot for thread safety):
-                // reconcile the seeded row's expression/contract-identity in place, and
-                // never touch a user/dashboard-created row that shares the function name
-                // but carries a null/non-seed InitIdentifier.
-                var existing = CronTickers.Values.ToArray()
-                    .FirstOrDefault(x => string.Equals(x.Function, seed.Function, StringComparison.Ordinal)
-                        && !string.IsNullOrEmpty(x.InitIdentifier));
-
-                if (existing != null)
+                // A pre-namespace row can be transferred only when both the persisted candidate and the
+                // local definition are singular. This check happens before any retirement/adoption write.
+                if (!manifest.IsLegacyGlobal)
                 {
-                    if (!string.Equals(existing.Expression, seed.Expression, StringComparison.Ordinal))
+                    foreach (var functionGroup in manifest.Seeds.Where(s => s.CanSeed).GroupBy(s => s.Function))
                     {
-                        existing.Expression = seed.Expression;
-                        existing.UpdatedAt = now;
-                    }
-
-                    // Reconcile authoritative contract identity onto seeded rows only; legacy/dashboard
-                    // rows (no seed InitIdentifier) keep their own identity.
-                    if (!string.IsNullOrEmpty(existing.InitIdentifier)
-                        && !seed.MatchesIdentity(existing.RequestContractVersion, existing.RequestContractFingerprint))
-                    {
-                        existing.RequestContractVersion = seed.RequestContractVersion;
-                        existing.RequestContractFingerprint = seed.RequestContractFingerprint;
-                        existing.UpdatedAt = now;
+                        var documentedLegacyKeys = functionGroup
+                            .SelectMany(seed => CronSeedIdentity.LegacyAdoptionKeys(
+                                manifest.ApplicationNamespace, seed.StableDefinitionId))
+                            .ToHashSet(StringComparer.Ordinal);
+                        var legacy = CronTickers.Values.Where(x =>
+                                !string.IsNullOrEmpty(x.InitIdentifier)
+                                && string.Equals(x.Function, functionGroup.Key, StringComparison.Ordinal)
+                                && x.SeedOwnerNamespace == null
+                                && (x.SeedKey == null || string.Equals(x.SeedKey, x.Function, StringComparison.Ordinal)
+                                    || documentedLegacyKeys.Contains(x.SeedKey)))
+                            .ToArray();
+                        if (legacy.Length == 0)
+                            continue;
+                        if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
+                            throw new InvalidOperationException(
+                                $"Legacy defined-Cron function '{functionGroup.Key}' requires an explicit legacy ownership mapping before any application may mutate it.");
+                        if (!string.Equals(explicitOwner, manifest.ApplicationNamespace, StringComparison.Ordinal))
+                            continue;
+                        if (legacy.Length != 1 || functionGroup.Count() != 1)
+                            throw new InvalidOperationException(
+                                $"Ambiguous legacy defined-Cron ownership for function '{functionGroup.Key}' while application namespace " +
+                                $"'{manifest.ApplicationNamespace}' attempted adoption. No rows were mutated; resolve ownership explicitly.");
                     }
                 }
-                else
-                {
-                    var id = Guid.NewGuid();
-                    var cronTicker = new TCronTicker
-                    {
-                        Id = id,
-                        Function = seed.Function,
-                        Expression = seed.Expression,
-                        InitIdentifier = $"MemoryTicker_Seeded_{id}",
-                        CreatedAt = now,
-                        UpdatedAt = now,
-                        Request = Array.Empty<byte>(),
-                        RequestContractVersion = seed.RequestContractVersion,
-                        RequestContractFingerprint = seed.RequestContractFingerprint
-                    };
 
-                    CronTickers.TryAdd(id, cronTicker);
+                // Phase A — non-destructive retirement of seeded rows no longer desired. A blocked
+                // required-contract seed retires immediately; an absent seed honors the grace window. Rows
+                // are NEVER removed here (Slice 3) — only their retirement bookkeeping is updated.
+                foreach (var ticker in CronTickers.Values.ToArray())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (string.IsNullOrEmpty(ticker.InitIdentifier)
+                        || (manifest.IsLegacyGlobal
+                            ? !manifest.IsOrphanedSeedFunction(ticker.Function)
+                            : !string.Equals(ticker.SeedOwnerNamespace, manifest.ApplicationNamespace, StringComparison.Ordinal)
+                              || !manifest.IsOrphanedSeedKey(ticker.SeedKey)))
+                        continue;
+
+                    var immediate = blockedFunctions.Contains(ticker.Function);
+                    if (CronSeedRetirement.ApplyRetirement(ticker, now, grace, immediate))
+                        ticker.UpdatedAt = now;
+                    if (ticker.RetiredAt.HasValue)
+                        RemoveUnleasedPendingCronOccurrences(ticker.Id, now);
                 }
-            }
+
+                foreach (var seed in manifest.Seeds)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!seed.CanSeed)
+                        continue;
+
+                    var seedKey = manifest.SeedKeyFor(seed);
+                    var documentedLegacyKeys = manifest.IsLegacyGlobal
+                        ? Array.Empty<string>()
+                        : CronSeedIdentity.LegacyAdoptionKeys(
+                            manifest.ApplicationNamespace, seed.StableDefinitionId);
+
+                    // Phase B — reconcile the seeded rows for this function keyed by the stable SeedKey.
+                    // Duplicate legacy seeded rows are duplicate-tolerant: the deterministic canonical row
+                    // (lowest id) reconciles IN PLACE while every redundant duplicate is disabled and
+                    // marked retired IN PLACE (never deleted). A user/dashboard row sharing the function
+                    // name (null/non-seed InitIdentifier) is never touched.
+                    var group = CronTickers.Values.ToArray()
+                        .Where(x => !string.IsNullOrEmpty(x.InitIdentifier)
+                            && (manifest.IsLegacyGlobal
+                                ? string.Equals(x.Function, seed.Function, StringComparison.Ordinal)
+                                : (string.Equals(x.SeedKey, seedKey, StringComparison.Ordinal)
+                                   && string.Equals(x.SeedOwnerNamespace, manifest.ApplicationNamespace, StringComparison.Ordinal))
+                                  || (string.Equals(x.Function, seed.Function, StringComparison.Ordinal)
+                                      && x.SeedOwnerNamespace == null
+                                      && manifest.MayAdoptLegacy(seed.Function)
+                                      && (x.SeedKey == null || string.Equals(x.SeedKey, x.Function, StringComparison.Ordinal)
+                                          || documentedLegacyKeys.Contains(x.SeedKey, StringComparer.Ordinal)))))
+                        .OrderBy(x => x.Id)
+                        .ToArray();
+
+                    if (group.Length > 0)
+                    {
+                        // Prefer the row that already owns this SeedKey, then an active row, then lowest id;
+                        // picking the lowest id blindly would move an already-owned SeedKey onto a legacy
+                        // null-key duplicate and produce two enabled keyed owners.
+                        var (canonical, duplicates) = CronSeedCanonical.Select(group, seedKey);
+                        var definitionChanged = false;
+
+                        // Adopt the stable SeedKey onto a legacy row IN PLACE (never re-keys the row).
+                        if (canonical.SeedKey == null)
+                        {
+                            canonical.SeedKey = seedKey;
+                            canonical.UpdatedAt = now;
+                        }
+                        else if (!manifest.IsLegacyGlobal && !string.Equals(canonical.SeedKey, seedKey, StringComparison.Ordinal))
+                        {
+                            canonical.SeedKey = seedKey;
+                            canonical.UpdatedAt = now;
+                        }
+
+                        if (!manifest.IsLegacyGlobal
+                            && !string.Equals(canonical.SeedOwnerNamespace, manifest.ApplicationNamespace, StringComparison.Ordinal))
+                        {
+                            canonical.SeedOwnerNamespace = manifest.ApplicationNamespace;
+                            canonical.UpdatedAt = now;
+                        }
+
+                        if (!string.Equals(canonical.Expression, seed.Expression, StringComparison.Ordinal))
+                        {
+                            canonical.Expression = seed.Expression;
+                            canonical.UpdatedAt = now;
+                            definitionChanged = true;
+                        }
+
+                        // Reconcile authoritative contract identity onto seeded rows only; legacy/dashboard
+                        // rows (no seed InitIdentifier) keep their own identity.
+                        if (!string.IsNullOrEmpty(canonical.InitIdentifier)
+                            && !seed.MatchesIdentity(canonical.RequestContractVersion, canonical.RequestContractFingerprint))
+                        {
+                            canonical.RequestContractVersion = seed.RequestContractVersion;
+                            canonical.RequestContractFingerprint = seed.RequestContractFingerprint;
+                            canonical.UpdatedAt = now;
+                            definitionChanged = true;
+                        }
+
+                        if (canonical.Retries != seed.Retries)
+                        {
+                            canonical.Retries = seed.Retries;
+                            definitionChanged = true;
+                        }
+                        if (!(canonical.RetryIntervals ?? Array.Empty<int>()).SequenceEqual(
+                                seed.RetryIntervals ?? Array.Empty<int>()))
+                        {
+                            canonical.RetryIntervals = seed.RetryIntervals;
+                            definitionChanged = true;
+                        }
+                        if (canonical.TimeoutSeconds != seed.TimeoutSeconds)
+                        {
+                            canonical.TimeoutSeconds = seed.TimeoutSeconds;
+                            definitionChanged = true;
+                        }
+
+                        if (definitionChanged)
+                        {
+                            canonical.DefinitionRevision = Math.Max(1, canonical.DefinitionRevision + 1);
+                            canonical.UpdatedAt = now;
+                        }
+                        else if (canonical.DefinitionRevision <= 0)
+                        {
+                            canonical.DefinitionRevision = 1;
+                            canonical.UpdatedAt = now;
+                        }
+
+                        // Desired-active seed: clear any framework retirement, restoring only framework-disabled state.
+                        if (CronSeedRetirement.ClearRetirement(canonical))
+                            canonical.UpdatedAt = now;
+
+                        // Advisory heartbeat for retirement grace accounting.
+                        canonical.SeedLastSeenAt = now;
+                        if (definitionChanged)
+                            RemoveUnleasedPendingCronOccurrences(canonical.Id, now);
+
+                        // Retire redundant duplicates in place (canonical already chosen); never delete.
+                        foreach (var dup in duplicates)
+                        {
+                            if (CronSeedRetirement.RetireDuplicate(dup, now))
+                                dup.UpdatedAt = now;
+                            if (dup.RetiredAt.HasValue)
+                                RemoveUnleasedPendingCronOccurrences(dup.Id, now);
+                        }
+                    }
+                    else
+                    {
+                        var id = CronSeedIdentity.DeterministicId(seedKey);
+                        var cronTicker = new TCronTicker
+                        {
+                            Id = id,
+                            Function = seed.Function,
+                            Expression = seed.Expression,
+                            DefinitionRevision = 1,
+                            SeedKey = seedKey,
+                            SeedOwnerNamespace = manifest.ApplicationNamespace,
+                            SeedLastSeenAt = now,
+                            InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
+                            CreatedAt = now,
+                            UpdatedAt = now,
+                            Request = Array.Empty<byte>(),
+                            RequestContractVersion = seed.RequestContractVersion,
+                            RequestContractFingerprint = seed.RequestContractFingerprint,
+                            Retries = seed.Retries,
+                            RetryIntervals = seed.RetryIntervals,
+                            TimeoutSeconds = seed.TimeoutSeconds
+                        };
+
+                        // Atomic converge: a concurrent reconcile computing the same deterministic id wins
+                        // the slot and both observers see exactly one row.
+                        CronTickers.GetOrAdd(id, cronTicker);
+                    }
+                }
+
+                return null;
+            });
 
             return Task.CompletedTask;
+        }
+
+        private void RemoveUnleasedPendingCronOccurrences(Guid cronTickerId, DateTime now)
+        {
+            foreach (var occurrence in CronOccurrences.Values
+                         .Where(x => x.CronTickerId == cronTickerId
+                                     && x.Status is TickerStatus.Idle or TickerStatus.Queued
+                                     && string.IsNullOrEmpty(x.LockHolder)
+                                     && !x.AcquisitionToken.HasValue
+                                     && (!x.LeaseUntil.HasValue || x.LeaseUntil <= now))
+                         .ToArray())
+            {
+                if (!CronOccurrences.TryGetValue(occurrence.Id, out var current))
+                    continue;
+                var quarantined = CloneCronOccurrence(current);
+                quarantined.Status = TickerStatus.Skipped;
+                quarantined.SkippedReason =
+                    "Quarantined because its Cron definition revision is stale after reconciliation.";
+                quarantined.ExecutedAt ??= now;
+                quarantined.LockHolder = null;
+                quarantined.LockedAt = null;
+                quarantined.LeaseUntil = null;
+                quarantined.AcquisitionToken = null;
+                quarantined.UpdatedAt = now;
+                if (TryUpdateCronOccurrence(occurrence.Id, quarantined, current,
+                        requireCurrentDefinition: false, requireRunnableActivation: false))
+                {
+                    var indexKey = (current.ExecutionTime, current.CronTickerId);
+                    if (CronOccurrenceIndex.TryGetValue(indexKey, out var ownerId)
+                        && ownerId == current.Id)
+                        CronOccurrenceIndex.TryRemove(indexKey, out _);
+                }
+            }
         }
 
         public Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken)
@@ -1151,41 +1728,42 @@ namespace TickerQ.Provider
 
         public Task<int> InsertCronTickers(TCronTicker[] tickers, CancellationToken cancellationToken)
         {
-            var count = 0;
-            foreach (var ticker in tickers)
+            return Task.FromResult(WriteGraph(() =>
             {
-                if (CronTickers.TryAdd(ticker.Id, ticker))
-                    count++;
-            }
-            
-            return Task.FromResult(count);
+                if (!IsStructuralMutationActivationState()) return 0;
+                var count = 0;
+                foreach (var ticker in tickers)
+                    if (CronTickers.TryAdd(ticker.Id, ticker)) count++;
+                return count;
+            }));
         }
 
         public Task<int> UpdateCronTickers(TCronTicker[] cronTicker, CancellationToken cancellationToken)
         {
-            var count = 0;
-            foreach (var ticker in cronTicker)
+            return Task.FromResult(WriteGraph(() =>
             {
-                if (CronTickers.TryGetValue(ticker.Id, out var existing))
+                if (!IsStructuralMutationActivationState()) return 0;
+                var count = 0;
+                foreach (var ticker in cronTicker)
                 {
-                    if (CronTickers.TryUpdate(ticker.Id, ticker, existing))
+                    if (CronTickers.TryGetValue(ticker.Id, out var existing)
+                        && CronTickers.TryUpdate(ticker.Id, ticker, existing))
                         count++;
                 }
-            }
-            
-            return Task.FromResult(count);
+                return count;
+            }));
         }
 
         public Task<int> RemoveCronTickers(Guid[] cronTickerIds, CancellationToken cancellationToken)
         {
-            var count = 0;
-            foreach (var id in cronTickerIds)
+            return Task.FromResult(WriteGraph(() =>
             {
-                if (CronTickers.TryRemove(id, out _))
-                    count++;
-            }
-            
-            return Task.FromResult(count);
+                if (!IsStructuralMutationActivationState()) return 0;
+                var count = 0;
+                foreach (var id in cronTickerIds)
+                    if (CronTickers.TryRemove(id, out _)) count++;
+                return count;
+            }));
         }
 
         #endregion
@@ -1194,6 +1772,9 @@ namespace TickerQ.Provider
 
         public Task<CronTickerOccurrenceEntity<TCronTicker>> GetEarliestAvailableCronOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
         {
+            if (!ReadGraph(IsRunnableActivationState))
+                return Task.FromResult<CronTickerOccurrenceEntity<TCronTicker>>(null);
+
             var now = _clock.UtcNow;
             var mainSchedulerThreshold = now.AddSeconds(-1);  // Main scheduler handles items within the 1-second window
             
@@ -1201,9 +1782,13 @@ namespace TickerQ.Provider
             
             if (ids != null && ids.Length > 0)
                 query = query.Where(x => ids.Contains(x.CronTickerId));
+
+            foreach (var stale in query.Where(x => !IsCurrentCronOccurrence(x)).ToArray())
+                QuarantineStaleCronOccurrence(stale, now);
                 
             var occurrence = query
                 .Where(x => CanAcquireCronOccurrence(x))
+                .Where(IsCurrentCronOccurrence)
                 .Where(x => x.ExecutionTime >= mainSchedulerThreshold)  // Only recent/upcoming tasks (not heavily overdue)
                 .OrderBy(x => x.ExecutionTime)
                 .FirstOrDefault();
@@ -1214,66 +1799,76 @@ namespace TickerQ.Provider
         public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueCronTickerOccurrences((DateTime Key, InternalManagerContext[] Items) cronTickerOccurrences, [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
-            
+
             foreach (var context in cronTickerOccurrences.Items)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                
-                // Each cron occurrence should have a unique ID
                 var occurrenceId = context.NextCronOccurrence?.Id ?? Guid.NewGuid();
-                
-                // Check if this specific occurrence already exists
-                if (CronOccurrences.TryGetValue(occurrenceId, out var existingOccurrence))
-                {
-                    // Update existing occurrence (should be rare - only if re-queuing)
-                    var updatedOccurrence = CloneCronOccurrence(existingOccurrence);
-                    updatedOccurrence.LockHolder = _lockHolder;
-                    updatedOccurrence.LockedAt = now;
-                    updatedOccurrence.AcquisitionToken = Guid.NewGuid();
-                    updatedOccurrence.UpdatedAt = now;
-                    updatedOccurrence.Status = TickerStatus.Queued;
-                    
-                    if (TryUpdateCronOccurrence(occurrenceId, updatedOccurrence, existingOccurrence))
-                    {
-                        yield return updatedOccurrence;
-                    }
-                }
-                else
-                {
-                    var indexKey = (cronTickerOccurrences.Key, context.Id);
+                CronTickerOccurrenceEntity<TCronTicker> queued = null;
 
-                    // Atomically check uniqueness on (ExecutionTime, CronTickerId) - mirrors EF Core's Upsert .On() constraint
-                    if (!CronOccurrenceIndex.TryAdd(indexKey, occurrenceId))
+                BeforeCronOccurrenceMutationLockHook?.Invoke(occurrenceId);
+                GraphLock.EnterReadLock();
+                try
+                {
+                    // Activation, authoritative parent revision, uniqueness, and graph mutation share one
+                    // boundary. No activation or definition publication can become visible between them.
+                    if (!IsRunnableActivationState()
+                        || !CronTickers.TryGetValue(context.Id, out var authoritative)
+                        || context.DefinitionRevision != authoritative.DefinitionRevision)
                         continue;
 
-                    var newOccurrence = new CronTickerOccurrenceEntity<TCronTicker>
+                    if (CronOccurrences.TryGetValue(occurrenceId, out var existingOccurrence))
                     {
-                        Id = occurrenceId,
-                        CronTickerId = context.Id,
-                        ExecutionTime = cronTickerOccurrences.Key,
-                        Status = TickerStatus.Queued,
-                        LockHolder = _lockHolder,
-                        LockedAt = now,
-                        AcquisitionToken = Guid.NewGuid(),
-                        CreatedAt = context.NextCronOccurrence?.CreatedAt ?? now,
-                        UpdatedAt = now,
-                        RetryCount = 0
-                    };
+                        if (!IsCurrentCronOccurrence(existingOccurrence))
+                        {
+                            QuarantineStaleCronOccurrence(existingOccurrence, now);
+                            continue;
+                        }
 
-                    if (CronTickers.TryGetValue(context.Id, out var cronTicker))
-                    {
-                        newOccurrence.CronTicker = cronTicker;
-                    }
-
-                    if (CronOccurrences.TryAdd(newOccurrence.Id, newOccurrence))
-                    {
-                        yield return newOccurrence;
+                        var updatedOccurrence = CloneCronOccurrence(existingOccurrence);
+                        updatedOccurrence.LockHolder = _lockHolder;
+                        updatedOccurrence.LockedAt = now;
+                        updatedOccurrence.AcquisitionToken = Guid.NewGuid();
+                        updatedOccurrence.UpdatedAt = now;
+                        updatedOccurrence.Status = TickerStatus.Queued;
+                        if (TryUpdateCronOccurrence(occurrenceId, updatedOccurrence, existingOccurrence))
+                            queued = updatedOccurrence;
                     }
                     else
                     {
-                        CronOccurrenceIndex.TryRemove(indexKey, out _);
+                        var indexKey = (cronTickerOccurrences.Key, context.Id);
+                        if (!CronOccurrenceIndex.TryAdd(indexKey, occurrenceId))
+                            continue;
+
+                        var newOccurrence = new CronTickerOccurrenceEntity<TCronTicker>
+                        {
+                            Id = occurrenceId,
+                            CronTickerId = context.Id,
+                            DefinitionRevision = authoritative.DefinitionRevision,
+                            ExecutionTime = cronTickerOccurrences.Key,
+                            Status = TickerStatus.Queued,
+                            LockHolder = _lockHolder,
+                            LockedAt = now,
+                            AcquisitionToken = Guid.NewGuid(),
+                            CreatedAt = context.NextCronOccurrence?.CreatedAt ?? now,
+                            UpdatedAt = now,
+                            RetryCount = 0,
+                            CronTicker = authoritative
+                        };
+
+                        if (CronOccurrences.TryAdd(newOccurrence.Id, newOccurrence))
+                            queued = newOccurrence;
+                        else
+                            CronOccurrenceIndex.TryRemove(indexKey, out _);
                     }
                 }
+                finally
+                {
+                    GraphLock.ExitReadLock();
+                }
+
+                if (queued != null)
+                    yield return queued;
             }
         }
 
@@ -1290,6 +1885,11 @@ namespace TickerQ.Provider
             foreach (var occurrence in occurrencesToUpdate)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (!IsCurrentCronOccurrence(occurrence))
+                {
+                    QuarantineStaleCronOccurrence(occurrence, now);
+                    continue;
+                }
 
                 if (CronOccurrences.TryGetValue(occurrence.Id, out var existingOccurrence))
                 {
@@ -1323,7 +1923,8 @@ namespace TickerQ.Provider
                 var updatedOccurrence = CloneCronOccurrence(occurrence);
                 ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
 
-                if (TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence)
+                if (TryUpdateCronOccurrence(functionContext.TickerId, updatedOccurrence, occurrence,
+                        requireRunnableActivation: !IsFencedTerminalWrite(functionContext))
                     && IsSuccessfulResultWrite(functionContext))
                     CronOccurrenceResults[functionContext.TickerId] = functionContext.ResultEnvelope;
             }
@@ -1381,7 +1982,8 @@ namespace TickerQ.Provider
                 {
                     var updatedOccurrence = CloneCronOccurrence(occurrence);
                     ApplyFunctionContextToCronOccurrence(updatedOccurrence, functionContext);
-                    TryUpdateCronOccurrence(id, updatedOccurrence, occurrence);
+                    TryUpdateCronOccurrence(id, updatedOccurrence, occurrence,
+                        requireRunnableActivation: !IsFencedTerminalWrite(functionContext));
                 }
             }
             
@@ -1401,6 +2003,11 @@ namespace TickerQ.Provider
                     if (current.Status != TickerStatus.Queued || current.LockHolder != _lockHolder ||
                         current.AcquisitionToken != lease.AcquisitionToken)
                         break;
+                    if (!IsCurrentCronOccurrence(current))
+                    {
+                        QuarantineStaleCronOccurrence(current, now);
+                        break;
+                    }
                     var updated = CloneCronOccurrence(current);
                     updated.Status = TickerStatus.InProgress;
                     updated.UpdatedAt = now;
@@ -1453,7 +2060,8 @@ namespace TickerQ.Provider
                 updatedOccurrence.ExecutedAt = now;
                 updatedOccurrence.UpdatedAt = now;
 
-                TryUpdateCronOccurrence(occurrence.Id, updatedOccurrence, currentOccurrence);
+                TryUpdateCronOccurrence(occurrence.Id, updatedOccurrence, currentOccurrence,
+                    requireRunnableActivation: false);
             }
 
             return Task.CompletedTask;
@@ -1502,43 +2110,62 @@ namespace TickerQ.Provider
 
         public Task<int> InsertCronTickerOccurrences(CronTickerOccurrenceEntity<TCronTicker>[] cronTickerOccurrences, CancellationToken cancellationToken)
         {
-            var count = 0;
-            foreach (var occurrence in cronTickerOccurrences)
+            var now = _clock.UtcNow;
+            var count = WriteGraph(() =>
             {
-                // Ensure navigation is populated for in-memory usage
-                if (occurrence.CronTicker == null && CronTickers.TryGetValue(occurrence.CronTickerId, out var cronTicker))
-                {
-                    occurrence.CronTicker = cronTicker;
-                }
+                if (!IsStructuralMutationActivationState())
+                    return 0;
 
-                var indexKey = (occurrence.ExecutionTime, occurrence.CronTickerId);
-                if (CronOccurrenceIndex.TryAdd(indexKey, occurrence.Id) && CronOccurrences.TryAdd(occurrence.Id, occurrence))
+                var inserted = 0;
+                foreach (var occurrence in cronTickerOccurrences)
                 {
-                    count++;
+                    if (!CronTickers.TryGetValue(occurrence.CronTickerId, out var cronTicker))
+                        continue;
+                    occurrence.CronTicker = cronTicker;
+                    if (occurrence.DefinitionRevision <= 0)
+                        occurrence.DefinitionRevision = cronTicker.DefinitionRevision;
+                    if (occurrence.DefinitionRevision != cronTicker.DefinitionRevision &&
+                        occurrence.Status is TickerStatus.Idle or TickerStatus.Queued)
+                    {
+                        occurrence.Status = TickerStatus.Skipped;
+                        occurrence.SkippedReason = "Quarantined because its Cron definition revision is stale.";
+                        occurrence.ExecutedAt ??= now;
+                        occurrence.LockHolder = null;
+                        occurrence.LockedAt = null;
+                        occurrence.LeaseUntil = null;
+                        occurrence.AcquisitionToken = null;
+                        occurrence.UpdatedAt = now;
+                    }
+
+                    var indexKey = (occurrence.ExecutionTime, occurrence.CronTickerId);
+                    if (CronOccurrenceIndex.TryAdd(indexKey, occurrence.Id) && CronOccurrences.TryAdd(occurrence.Id, occurrence))
+                        inserted++;
+                    else
+                        CronOccurrenceIndex.TryRemove(indexKey, out _);
                 }
-                else
-                {
-                    CronOccurrenceIndex.TryRemove(indexKey, out _);
-                }
-            }
+                return inserted;
+            });
 
             return Task.FromResult(count);
         }
 
         public Task<int> RemoveCronTickerOccurrences(Guid[] cronTickerOccurrences, CancellationToken cancellationToken)
         {
-            var count = 0;
-            foreach (var id in cronTickerOccurrences)
+            return Task.FromResult(WriteGraph(() =>
             {
-                if (CronOccurrences.TryRemove(id, out var removed))
+                if (!IsStructuralMutationActivationState()) return 0;
+                var count = 0;
+                foreach (var id in cronTickerOccurrences)
                 {
-                    CronOccurrenceIndex.TryRemove((removed.ExecutionTime, removed.CronTickerId), out _);
-                    CronOccurrenceResults.TryRemove(id, out _);
-                    count++;
+                    if (CronOccurrences.TryRemove(id, out var removed))
+                    {
+                        CronOccurrenceIndex.TryRemove((removed.ExecutionTime, removed.CronTickerId), out _);
+                        CronOccurrenceResults.TryRemove(id, out _);
+                        count++;
+                    }
                 }
-            }
-
-            return Task.FromResult(count);
+                return count;
+            }));
         }
 
         #region Retention
@@ -1556,6 +2183,8 @@ namespace TickerQ.Provider
             // node values at the moment of deletion.
             var result = WriteGraph(() =>
             {
+                if (!IsRunnableActivationState())
+                    return RetentionChainBatchResult.Empty;
                 // Candidate ROOTS: no parent, root node itself eligible (a necessary condition for the whole
                 // chain), strictly after the keyset cursor, ordered by (ExecutedAt, Id). Bounded by Take:
                 // deletion work never exceeds batchSize chains, and one extra candidate detects HasMore.
@@ -1662,6 +2291,8 @@ namespace TickerQ.Provider
 
             var result = WriteGraph(() =>
             {
+                if (!IsRunnableActivationState())
+                    return RetentionBatchResult.Empty;
                 var now = _clock.UtcNow;
                 var deleted = 0;
                 var hasMore = false;
@@ -1738,6 +2369,11 @@ namespace TickerQ.Provider
 
                 if (!CanAcquireCronOccurrence(occurrence))
                     continue;
+                if (!IsCurrentCronOccurrence(occurrence))
+                {
+                    QuarantineStaleCronOccurrence(occurrence, now);
+                    continue;
+                }
 
                 var updated = CloneCronOccurrence(occurrence);
                 updated.LockHolder = _lockHolder;
@@ -1793,6 +2429,36 @@ namespace TickerQ.Provider
 
         #region Helper Methods
 
+        private bool IsCurrentCronOccurrence(CronTickerOccurrenceEntity<TCronTicker> occurrence)
+            => CronTickers.TryGetValue(occurrence.CronTickerId, out var definition)
+               && occurrence.DefinitionRevision == definition.DefinitionRevision;
+
+        private void QuarantineStaleCronOccurrence(
+            CronTickerOccurrenceEntity<TCronTicker> occurrence, DateTime now)
+        {
+            if (!CronOccurrences.TryGetValue(occurrence.Id, out var current) ||
+                current.Status is not (TickerStatus.Idle or TickerStatus.Queued))
+                return;
+
+            // A live owner is evidence of an in-flight old generation. Revision fencing rejects its
+            // queued-to-running transition, but quarantine waits until lease/lock recovery makes mutation safe.
+            if (current.LeaseUntil > now ||
+                (!string.IsNullOrEmpty(current.LockHolder) && current.AcquisitionToken.HasValue &&
+                 !current.LeaseUntil.HasValue))
+                return;
+
+            var quarantined = CloneCronOccurrence(current);
+            quarantined.Status = TickerStatus.Skipped;
+            quarantined.SkippedReason = "Quarantined because its Cron definition revision is stale.";
+            quarantined.ExecutedAt ??= now;
+            quarantined.LockHolder = null;
+            quarantined.LockedAt = null;
+            quarantined.LeaseUntil = null;
+            quarantined.AcquisitionToken = null;
+            quarantined.UpdatedAt = now;
+            TryUpdateCronOccurrence(current.Id, quarantined, current, requireCurrentDefinition: false);
+        }
+
         private TTimeTicker BuildTickerHierarchy(TTimeTicker ticker)
         {
             var root = CloneTicker(ticker);
@@ -1823,7 +2489,7 @@ namespace TickerQ.Provider
         // Matches EF Core's MappingExtensions.ForQueueTimeTickers but uses an in-memory
         // children index. Walks the chain recursively to unbounded depth (matching the
         // probe-and-extend behavior in the EF provider) so deep chains aren't truncated.
-        private static TimeTickerEntity ForQueueTimeTickers(TTimeTicker ticker)
+        private TimeTickerEntity ForQueueTimeTickers(TTimeTicker ticker)
         {
             var root = new TimeTickerEntity
             {
@@ -1849,7 +2515,7 @@ namespace TickerQ.Provider
         // Recursive descendants walker for the queue projection. Mirrors the EF
         // provider's probe-and-extend semantics: unbounded depth, only includes
         // chain children (ExecutionTime == null) for the direct-children layer.
-        private static List<TimeTickerEntity> BuildQueueDescendants(
+        private List<TimeTickerEntity> BuildQueueDescendants(
             Guid parentId, Guid chainRootId, Guid? chainGeneration)
         {
             if (!ChildrenIndex.TryGetValue(parentId, out var directChildren) || directChildren.IsEmpty)
@@ -1889,7 +2555,7 @@ namespace TickerQ.Provider
 
         // Same as BuildQueueDescendants but without the ExecutionTime filter — once
         // we're past the direct-children layer, every descendant is a chain node.
-        private static List<TimeTickerEntity> BuildQueueDescendantsAtAnyDepth(
+        private List<TimeTickerEntity> BuildQueueDescendantsAtAnyDepth(
             Guid parentId, Guid chainRootId, Guid? chainGeneration)
         {
             if (!ChildrenIndex.TryGetValue(parentId, out var directChildren) || directChildren.IsEmpty)
@@ -1920,13 +2586,13 @@ namespace TickerQ.Provider
             return children;
         }
 
-        private static void AddChildIndex(Guid parentId, Guid childId)
+        private void AddChildIndex(Guid parentId, Guid childId)
         {
             var children = ChildrenIndex.GetOrAdd(parentId, _ => new ConcurrentDictionary<Guid, byte>());
             children.TryAdd(childId, 0);
         }
 
-        private static void RemoveChildIndex(Guid parentId, Guid childId)
+        private void RemoveChildIndex(Guid parentId, Guid childId)
         {
             if (!ChildrenIndex.TryGetValue(parentId, out var children))
                 return;
@@ -1940,7 +2606,7 @@ namespace TickerQ.Provider
             }
         }
 
-        private static Guid[] GetChildrenIds(Guid parentId)
+        private Guid[] GetChildrenIds(Guid parentId)
         {
             if (!ChildrenIndex.TryGetValue(parentId, out var children))
                 return Array.Empty<Guid>();
@@ -2016,6 +2682,7 @@ namespace TickerQ.Provider
                 Id = occurrence.Id,
                 CronTicker = occurrence.CronTicker,
                 CronTickerId = occurrence.CronTickerId,
+                DefinitionRevision = occurrence.DefinitionRevision,
                 Status = occurrence.Status,
                 RetryCount = occurrence.RetryCount,
                 ExecutionTime = occurrence.ExecutionTime,

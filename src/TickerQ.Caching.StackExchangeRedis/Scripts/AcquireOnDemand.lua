@@ -1,6 +1,27 @@
 -- Atomically revive one non-running ticker for on-demand execution.
--- KEYS: entity, result side key
--- ARGV: holder, now, leaseUntil, token, inProgressStatus, executionTime, queuedStatus
+-- KEYS: entity, result side key, terminal evidence hash, activation metadata
+-- ARGV: holder, now, leaseUntil, token, inProgressStatus, executionTime, queuedStatus, exact supported epoch,
+--       scoped | legacy | invalid runtime admission mode
+local activationType = ARGV[9] == 'scoped' and redis.call('TYPE', KEYS[4])['ok'] or 'none'
+if ARGV[9] == 'invalid' then return nil end
+if ARGV[9] ~= 'scoped' and ARGV[9] ~= 'legacy' then return redis.error_reply('invalid runtime admission mode') end
+if activationType ~= 'none' and activationType ~= 'hash' then
+  return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type')
+end
+if ARGV[9] == 'scoped' and activationType == 'none' then return nil end
+if ARGV[9] == 'scoped' and activationType == 'hash' then
+  local metadata = redis.call('HGETALL', KEYS[4])
+  if #metadata ~= 6 then return redis.error_reply('reconciliation activation metadata is corrupt') end
+  local fields = {}
+  for i = 1, #metadata, 2 do fields[metadata[i]] = metadata[i + 1] end
+  local phase = fields['phase']
+  if not fields['epoch'] or not phase or fields['checkpoint'] == nil or
+     not string.match(fields['epoch'], '^[0-9]+$') or #fields['epoch'] > 19 or #fields['checkpoint'] > 200 then
+    return redis.error_reply('reconciliation activation metadata is corrupt')
+  end
+  if phase ~= '0' and phase ~= '1' and phase ~= '2' then return redis.error_reply('reconciliation activation metadata is corrupt') end
+  if phase ~= '2' or fields['epoch'] ~= ARGV[8] then return nil end
+end
 local json = redis.call('GET', KEYS[1])
 if not json then return nil end
 local obj = cjson.decode(json)
@@ -14,6 +35,7 @@ obj['LeaseUntil'] = ARGV[3]; obj['leaseUntil'] = nil
 obj['AcquisitionToken'] = ARGV[4]; obj['acquisitionToken'] = nil
 local rootId = obj['Id'] or obj['id']
 if not rootId or rootId == cjson.null then return nil end
+redis.call('HDEL', KEYS[3], '1:' .. string.lower(tostring(rootId)))
 obj['ChainRootId'] = tostring(rootId); obj['chainRootId'] = nil
 obj['ChainGeneration'] = ARGV[4]; obj['chainGeneration'] = nil
 obj['Status'] = tonumber(ARGV[5]); obj['status'] = nil
@@ -38,6 +60,7 @@ local function fenceChildren(children)
     local id = child['Id'] or child['id']
     if resultPrefix and id and id ~= cjson.null then
       redis.call('DEL', resultPrefix .. tostring(id) .. ':result')
+      redis.call('HDEL', KEYS[3], '1:' .. string.lower(tostring(id)))
     end
     fenceChildren(child['Children'] or child['children'])
   end

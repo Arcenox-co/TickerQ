@@ -17,8 +17,8 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// ticker only if no time ticker with that identifier exists yet, otherwise
         /// returns the existing one untouched. Made for startup seeding
         /// (<c>UseTickerSeeder</c>) so re-running the seeder on every app start
-        /// doesn't create duplicate one-off tickers. Best-effort check-then-insert —
-        /// concurrent first-time seeding from multiple nodes can still race.
+        /// doesn't create duplicate one-off tickers. Built-in durable providers converge concurrent
+        /// first-time seeding on a deterministic identity and return the committed winner.
         /// </summary>
         Task<TickerResult<TTimeTicker>> AddOnceAsync(string initIdentifier, TTimeTicker entity, CancellationToken cancellationToken = default);
         Task<TickerResult<TTimeTicker>> UpdateAsync(TTimeTicker timeTicker, CancellationToken cancellationToken = default);

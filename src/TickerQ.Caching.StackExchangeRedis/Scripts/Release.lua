@@ -1,6 +1,23 @@
--- KEYS[1] = ticker key, KEYS[2] = result side key
--- ARGV[1] = lockHolder, ARGV[2] = now (ISO), ARGV[3] = statusIdle, ARGV[4] = statusQueued
+-- KEYS[1] = ticker key, KEYS[2] = result side key, KEYS[3] = activation metadata
+-- ARGV[1] = lockHolder, ARGV[2] = now (ISO), ARGV[3] = statusIdle, ARGV[4] = statusQueued,
+-- ARGV[5] = exact supported epoch, ARGV[6] = scoped | legacy | invalid runtime admission mode
 -- Returns: updated JSON on success, nil on failure
+local activationType = ARGV[6] == 'scoped' and redis.call('TYPE', KEYS[3])['ok'] or 'none'
+if ARGV[6] == 'invalid' then return nil end
+if ARGV[6] ~= 'scoped' and ARGV[6] ~= 'legacy' then return redis.error_reply('invalid runtime admission mode') end
+if activationType ~= 'none' and activationType ~= 'hash' then return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type') end
+if ARGV[6] == 'scoped' and activationType == 'none' then return nil end
+if ARGV[6] == 'scoped' and activationType == 'hash' then
+  local metadata = redis.call('HGETALL', KEYS[3])
+  if #metadata ~= 6 then return redis.error_reply('reconciliation activation metadata is corrupt') end
+  local fields = {}; for i = 1, #metadata, 2 do fields[metadata[i]] = metadata[i + 1] end
+  local phase = fields['phase']
+  if not fields['epoch'] or not phase or fields['checkpoint'] == nil or not string.match(fields['epoch'], '^[0-9]+$')
+    or #fields['epoch'] > 19 or #fields['checkpoint'] > 200 or (phase ~= '0' and phase ~= '1' and phase ~= '2') then
+    return redis.error_reply('reconciliation activation metadata is corrupt')
+  end
+  if phase ~= '2' or fields['epoch'] ~= ARGV[5] then return nil end
+end
 local json = redis.call('GET', KEYS[1])
 if not json then return nil end
 local obj = cjson.decode(json)

@@ -1,5 +1,6 @@
 using System;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore.Entities;
 
@@ -10,6 +11,7 @@ namespace TickerQ.EntityFrameworkCore.Entities;
 public sealed class TimeTickerResultEntity<TTimeTicker>
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
 {
+    public string ApplicationNamespaceKey { get; set; } = TickerQRuntimePartition.LegacyGlobal.StorageKey;
     public Guid TickerId { get; set; }
     public byte[] Payload { get; set; }
     public int EnvelopeVersion { get; set; }
@@ -23,6 +25,7 @@ public sealed class TimeTickerResultEntity<TTimeTicker>
 public sealed class CronTickerOccurrenceResultEntity<TCronTicker>
     where TCronTicker : CronTickerEntity, new()
 {
+    public string ApplicationNamespaceKey { get; set; } = TickerQRuntimePartition.LegacyGlobal.StorageKey;
     public Guid TickerId { get; set; }
     public byte[] Payload { get; set; }
     public int EnvelopeVersion { get; set; }

@@ -7,10 +7,15 @@ using TickerQ.Utilities.Interfaces.Managers;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// TickerQ setup with MongoDB operational store.
-// Start a local Mongo with: docker run -d -p 27017:27017 mongo:7
+// TickerQ scheduler mode requires MongoDB transaction support (replica set or mongos).
+// A standalone server is suitable only for explicitly documented non-transactional operations.
 builder.Services.AddTickerQ(options =>
 {
+    // Physical document/lock/result partition + exact activated deployment epoch.
+    options.UseDefinedCronApplicationNamespace("mongodb-sample");
+    options.UseReconciliationEpoch(1);
+    // Existing verified single-owner replica-set/mongos stores only:
+    // options.UseLegacyRuntimePartitionAdoption("mongodb-sample", 1);
     options.AddOperationalStore(mongoOptions =>
     {
         mongoOptions.UseTickerQMongoClient(

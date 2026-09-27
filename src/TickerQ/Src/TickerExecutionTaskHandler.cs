@@ -99,12 +99,17 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     /// </summary>
     private TimeSpan? GetEffectiveTimeout(InternalFunctionContext context)
     {
+        TimeSpan? configured;
         if (context.TimeoutSeconds is { } seconds)
-            return seconds > 0 ? TimeSpan.FromSeconds(seconds) : (TimeSpan?)null;
+            configured = seconds > 0 ? TimeSpan.FromSeconds(seconds) : (TimeSpan?)null;
+        else
+            configured = _schedulerOptions.DefaultExecutionTimeout is { } fallback && fallback > TimeSpan.Zero
+                ? fallback
+                : (TimeSpan?)null;
 
-        return _schedulerOptions.DefaultExecutionTimeout is { } fallback && fallback > TimeSpan.Zero
-            ? fallback
-            : (TimeSpan?)null;
+        return configured > DefinedCronExecutionLimits.MaxTimeout
+            ? DefinedCronExecutionLimits.MaxTimeout
+            : configured;
     }
 
     public Task ExecuteTaskAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
@@ -279,7 +284,9 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         finally
         {
             TickerCancellationTokenManager.RemoveTickerCancellationToken(
-                new TickerExecutionKey(context.Type, context.TickerId), cancellationTokenSource);
+                new TickerExecutionKey(
+                    context.RuntimePartitionKey ?? TickerQRuntimePartition.LegacyGlobal.StorageKey,
+                    context.Type, context.TickerId), cancellationTokenSource);
         }
     }
 
@@ -342,6 +349,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             FunctionName = context.FunctionName,
             Id = context.TickerId,
             AcquisitionToken = context.AcquisitionToken,
+            RuntimePartitionKey = context.RuntimePartitionKey,
             ParentId = context.ParentId,
             Type = context.Type,
             IsDue = isDue,
@@ -366,7 +374,9 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     // Check for other running occurrences of the same parent (excluding self)
                     // Since we're already registered, we need to exclude ourselves from the check
                     var isRunning = context.ParentId.HasValue &&
-                                    TickerCancellationTokenManager.IsParentRunningExcludingSelf(context.ParentId.Value, context.TickerId);
+                                    TickerCancellationTokenManager.IsParentRunningExcludingSelf(
+                                        context.RuntimePartitionKey ?? TickerQRuntimePartition.LegacyGlobal.StorageKey,
+                                        context.ParentId.Value, context.TickerId);
 
                     if (isRunning)
                         throw new TerminateExecutionException("Another CronOccurrence is already running!");
@@ -383,7 +393,9 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         // the remote delegate only once or both layers multiply the configured retries.
         var usesRemoteRetryPolicy = !string.IsNullOrEmpty(context.FunctionName) &&
                                     context.FunctionName.Contains('@');
-        var finalAttempt = usesRemoteRetryPolicy ? context.RetryCount : context.Retries;
+        var finalAttempt = Math.Min(
+            usesRemoteRetryPolicy ? context.RetryCount : context.Retries,
+            DefinedCronExecutionLimits.MaxRetries);
 
         for (var attempt = context.RetryCount; attempt <= finalAttempt; attempt++)
         {
@@ -450,6 +462,9 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                         var grace = _schedulerOptions.TimeoutGracePeriod < TimeSpan.Zero
                             ? TimeSpan.Zero
                             : _schedulerOptions.TimeoutGracePeriod;
+                        var remainingTimerDelay = DefinedCronExecutionLimits.MaxTimerDelay - t;
+                        if (grace > remainingTimerDelay)
+                            grace = remainingTimerDelay;
                         using var graceDelayCts = new CancellationTokenSource();
                         var winner = await Task.WhenAny(execTask, Task.Delay(t + grace, graceDelayCts.Token));
                         if (winner != execTask)
@@ -833,7 +848,9 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         _tickerQInstrumentation.LogJobRetryScheduled(
             context.TickerId, context.FunctionName, attempt, context.Retries, retryInterval);
 
-        await Task.Delay(TimeSpan.FromSeconds(retryInterval), cancellationTokenSource.Token);
+        var executableRetryInterval = Math.Min(
+            retryInterval, DefinedCronExecutionLimits.MaxRetryIntervalSeconds);
+        await Task.Delay(TimeSpan.FromSeconds(executableRetryInterval), cancellationTokenSource.Token);
 
         return false;
     }

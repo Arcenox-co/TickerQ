@@ -11,6 +11,7 @@ using MongoDB.Driver;
 using MongoDB.Driver.Core.Servers;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Entities.BaseEntity;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
@@ -27,10 +28,19 @@ namespace TickerQ.MongoDB.Infrastructure
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
         private readonly SchedulerOptionsBuilder _schedulerOptions;
+        private readonly long _runtimeActivationEpoch;
+        private readonly bool _requiresActivatedRuntimeAdmission;
+        private readonly bool _runtimeAdmissionMisconfigured;
+        private readonly string _runtimeActivationScopeKey;
+        private readonly string _runtimePartitionKey;
         private readonly IMongoCollection<BsonDocument> _graphFence;
+        private readonly IMongoCollection<BsonDocument> _storeMetadata;
         private int _durableNodeFinalizationSupported;
 
         private const string GraphFenceId = "time-ticker-graph";
+        private const string LegacyActivationMetadataId = "reconciliation-activation";
+        private readonly string _runtimeActivationMetadataId;
+        private string RuntimeActivationMetadataId => _runtimeActivationMetadataId;
         private static readonly TransactionOptions GraphTransactionOptions = new(
             readConcern: ReadConcern.Snapshot,
             writeConcern: WriteConcern.WMajority);
@@ -41,8 +51,15 @@ namespace TickerQ.MongoDB.Infrastructure
         internal Func<CancellationToken, Task> BeforeRetentionFenceForTestAsync { get; set; }
         internal Func<Guid, CancellationToken, Task> AfterRetentionDiscoveryForTestAsync { get; set; }
         internal Func<CancellationToken, Task> AfterResultMutationForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> AfterTerminalReplayAuthorityForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> AfterLegacyResultAuthorityForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> AfterTerminalTransactionForTestAsync { get; set; }
         internal Func<CancellationToken, Task> AfterNodeFinalizationInsertForTestAsync { get; set; }
         internal Func<CancellationToken, Task> AfterNodeFinalizationTransactionForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> BeforeActivationTransactionCommitForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> AfterActivationTransactionCommitForTestAsync { get; set; }
+        internal Func<CancellationToken, Task> AfterRunnableAdmissionFenceForTestAsync { get; set; }
+        internal Func<IClientSessionHandle, Task> CommitActivationTransactionForTestAsync { get; set; }
 
         internal const string RetentionLockHolder = "__tickerq_retention__";
         private static readonly TickerStatus[] TerminalStatuses =
@@ -63,8 +80,21 @@ namespace TickerQ.MongoDB.Infrastructure
             _clock = clock;
             _lockHolder = optionsBuilder.ExecutionOwnerId;
             _schedulerOptions = optionsBuilder;
+            _runtimePartitionKey = (optionsBuilder.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal).StorageKey;
+            _requiresActivatedRuntimeAdmission = optionsBuilder.RuntimeSchedulerEnabled &&
+                                                  optionsBuilder.RuntimeActivationScope != null;
+            _runtimeAdmissionMisconfigured = optionsBuilder.RuntimeSchedulerEnabled &&
+                                             optionsBuilder.RuntimeActivationScope == null;
+            _runtimeActivationEpoch = _requiresActivatedRuntimeAdmission
+                ? optionsBuilder.RuntimeActivationEpoch
+                : optionsBuilder.ReconciliationEpoch;
+            _runtimeActivationMetadataId = _requiresActivatedRuntimeAdmission
+                ? ActivationMetadataId(optionsBuilder.RuntimeActivationScope)
+                : LegacyActivationMetadataId;
+            _runtimeActivationScopeKey = optionsBuilder.RuntimeActivationScope?.ScopeKey;
             _graphFence = context.Database.GetCollection<BsonDocument>(
                 context.TimeTickers.CollectionNamespace.CollectionName + "_GraphFence");
+            _storeMetadata = context.StoreMetadata;
         }
 
         // A directConnection=true client deliberately reports ClusterType.Standalone even when the
@@ -79,20 +109,266 @@ namespace TickerQ.MongoDB.Infrastructure
             }
         }
 
+        public bool SupportsLegacyRuntimePartitionAdoption => true;
+
+        public async Task AdoptLegacyRuntimePartitionAsync(
+            LegacyRuntimePartitionAdoption adoption, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(adoption);
+            if (!StringComparer.Ordinal.Equals(adoption.TargetPartition.StorageKey, _runtimePartitionKey))
+                throw new InvalidOperationException("Legacy adoption target does not match this provider's runtime partition.");
+            if (TransactionsKnownUnavailable)
+                throw new NotSupportedException(
+                    "MongoDB legacy runtime adoption requires replica-set or mongos transaction support; standalone topology is unsafe.");
+            var leaseId = new BsonDocument { ["Kind"] = "legacy-runtime-adoption" };
+            var authority = $"{_runtimePartitionKey}|{adoption.Epoch}";
+            var leaseFilter = Builders<BsonDocument>.Filter.Eq("_id", leaseId);
+            try
+            {
+                await _storeMetadata.UpdateOneAsync(
+                    Builders<BsonDocument>.Filter.And(leaseFilter,
+                        Builders<BsonDocument>.Filter.Or(
+                            Builders<BsonDocument>.Filter.Exists("Authority", false),
+                            Builders<BsonDocument>.Filter.Eq("Authority", authority))),
+                    Builders<BsonDocument>.Update
+                        .SetOnInsert("Authority", authority)
+                        .SetOnInsert("State", "adopting")
+                        .Set("UpdatedAtUtc", _clock.UtcNow),
+                    new UpdateOptions { IsUpsert = true }, cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoWriteException ex) when (ex.WriteError?.Category == ServerErrorCategory.DuplicateKey)
+            {
+                throw new InvalidOperationException(
+                    "Legacy runtime adoption is already held or completed by a different owner or epoch.", ex);
+            }
+            var lease = await _storeMetadata.Find(leaseFilter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (lease == null || lease.GetValue("Authority", "").AsString != authority)
+                throw new InvalidOperationException(
+                    "Legacy runtime adoption is already held or completed by a different owner or epoch.");
+            if (lease.GetValue("State", "").AsString == "completed") return;
+            if (AfterLegacyAdoptionLeaseForTestAsync != null)
+                await AfterLegacyAdoptionLeaseForTestAsync(cancellationToken).ConfigureAwait(false);
+
+            using var session = await _context.Database.Client.StartSessionAsync(
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            await session.WithTransactionAsync(async (s, ct) =>
+            {
+                var legacyKey = TickerQRuntimePartition.LegacyGlobal.StorageKey;
+                var owners = new HashSet<string>(StringComparer.Ordinal);
+                owners.UnionWith(await _context.TimeTickers.Distinct<string>(s, "ApplicationNamespaceKey",
+                    FilterDefinition<TTimeTicker>.Empty, cancellationToken: ct).ToListAsync(ct));
+                owners.UnionWith(await _context.CronTickers.Distinct<string>(s, "ApplicationNamespaceKey",
+                    FilterDefinition<TCronTicker>.Empty, cancellationToken: ct).ToListAsync(ct));
+                owners.UnionWith(await _context.CronTickerOccurrences.Distinct<string>(s, "ApplicationNamespaceKey",
+                    FilterDefinition<CronTickerOccurrenceEntity<TCronTicker>>.Empty, cancellationToken: ct).ToListAsync(ct));
+                await AddDocumentOwnersAsync(s, _context.TickerResults, owners, ct);
+                await AddDocumentOwnersAsync(s, _context.NodeFinalizations, owners, ct);
+                await AddDocumentOwnersAsync(s, _graphFence, owners, ct);
+                await AddDocumentOwnersAsync(s, _storeMetadata, owners, ct);
+                owners.Remove(legacyKey); owners.Remove(_runtimePartitionKey); owners.Remove(null);
+                if (owners.Count > 0)
+                    throw new InvalidOperationException(
+                        "Legacy runtime adoption is ambiguous because runtime rows exist for another namespace.");
+
+                await _context.TimeTickers.UpdateManyAsync(s,
+                    Builders<TTimeTicker>.Filter.Eq(x => x.ApplicationNamespaceKey, legacyKey),
+                    Builders<TTimeTicker>.Update.Set(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                    cancellationToken: ct);
+                await _context.CronTickers.UpdateManyAsync(s,
+                    Builders<TCronTicker>.Filter.Eq(x => x.ApplicationNamespaceKey, legacyKey),
+                    Builders<TCronTicker>.Update.Set(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                    cancellationToken: ct);
+                await _context.CronTickerOccurrences.UpdateManyAsync(s,
+                    Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(x => x.ApplicationNamespaceKey, legacyKey),
+                    Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update.Set(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                    cancellationToken: ct);
+                await MoveLegacyDocumentsAsync(s, _context.TickerResults, legacyKey, ct,
+                    includePrePartitionDocuments: true);
+                await MoveLegacyDocumentsAsync(s, _context.NodeFinalizations, legacyKey, ct);
+                await MoveLegacyDocumentsAsync(s, _storeMetadata, legacyKey, ct, leaseId);
+                await MoveLegacyDocumentsAsync(s, _graphFence, legacyKey, ct);
+                await _storeMetadata.UpdateOneAsync(s, leaseFilter,
+                    Builders<BsonDocument>.Update.Set("State", "completed").Set("UpdatedAtUtc", _clock.UtcNow),
+                    cancellationToken: ct);
+                return true;
+            }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static async Task AddDocumentOwnersAsync(IClientSessionHandle session,
+            IMongoCollection<BsonDocument> collection, HashSet<string> owners,
+            CancellationToken cancellationToken)
+        {
+            var values = await collection.Distinct<string>(session, "ApplicationNamespaceKey",
+                Builders<BsonDocument>.Filter.Exists("ApplicationNamespaceKey", true),
+                cancellationToken: cancellationToken).ToListAsync(cancellationToken).ConfigureAwait(false);
+            owners.UnionWith(values);
+        }
+
+        private async Task MoveLegacyDocumentsAsync(IClientSessionHandle session,
+            IMongoCollection<BsonDocument> collection, string legacyKey, CancellationToken cancellationToken,
+            BsonValue excludedId = null, bool includePrePartitionDocuments = false)
+        {
+            var filter = Builders<BsonDocument>.Filter.Eq("ApplicationNamespaceKey", legacyKey);
+            if (includePrePartitionDocuments)
+                filter |= Builders<BsonDocument>.Filter.Exists("ApplicationNamespaceKey", false);
+            if (excludedId != null)
+                filter &= Builders<BsonDocument>.Filter.Ne("_id", excludedId);
+            var documents = await collection.Find(session, filter).ToListAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var source in documents)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var moved = source.DeepClone().AsBsonDocument;
+                moved["ApplicationNamespaceKey"] = _runtimePartitionKey;
+                if (moved["_id"].IsBsonDocument && moved["_id"].AsBsonDocument.Contains("ApplicationNamespaceKey"))
+                    moved["_id"].AsBsonDocument["ApplicationNamespaceKey"] = _runtimePartitionKey;
+                else if (includePrePartitionDocuments && moved["_id"].IsGuid &&
+                         moved.TryGetValue("Kind", out var kind) && kind.IsString)
+                {
+                    moved["_id"] = new BsonDocument
+                    {
+                        ["ApplicationNamespaceKey"] = _runtimePartitionKey,
+                        ["Kind"] = kind.AsString,
+                        ["TickerId"] = moved["_id"]
+                    };
+                }
+                else if (includePrePartitionDocuments && !source.Contains("ApplicationNamespaceKey"))
+                    throw new InvalidOperationException(
+                        "A pre-partition MongoDB result has no canonical ticker identity and cannot be safely adopted.");
+                await collection.InsertOneAsync(session, moved, cancellationToken: cancellationToken).ConfigureAwait(false);
+                await collection.DeleteOneAsync(session,
+                    Builders<BsonDocument>.Filter.Eq("_id", source["_id"]),
+                    new DeleteOptions(), cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         private static bool IsCanonicalTransactionsUnsupported(MongoCommandException exception)
             => exception.Code == 20 &&
                exception.Message.Contains(
                    "Transaction numbers are only allowed on a replica set member or mongos",
                    StringComparison.OrdinalIgnoreCase);
 
+        internal Func<CancellationToken, Task> AfterLegacyAdoptionLeaseForTestAsync { get; set; }
+
         private async Task TouchGraphFenceAsync(IClientSessionHandle session, CancellationToken cancellationToken)
         {
             await _graphFence.UpdateOneAsync(
                 session,
-                Builders<BsonDocument>.Filter.Eq("_id", GraphFenceId),
-                Builders<BsonDocument>.Update.Inc("Version", 1L),
+                Builders<BsonDocument>.Filter.Eq("_id", PartitionedDocumentId(GraphFenceId)),
+                Builders<BsonDocument>.Update
+                    .SetOnInsert("ApplicationNamespaceKey", _runtimePartitionKey)
+                    .Inc("Version", 1L),
                 new UpdateOptions { IsUpsert = true },
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        private FilterDefinition<TDocument> InPartition<TDocument>()
+            => Builders<TDocument>.Filter.Eq("ApplicationNamespaceKey", _runtimePartitionKey);
+
+        private FilterDefinition<TDocument> InPartition<TDocument>(FilterDefinition<TDocument> filter)
+            => Builders<TDocument>.Filter.And(InPartition<TDocument>(), filter);
+
+        private BsonDocument PartitionedDocumentId(string kind, Guid? id = null)
+        {
+            var value = new BsonDocument
+            {
+                ["ApplicationNamespaceKey"] = _runtimePartitionKey,
+                ["Kind"] = kind
+            };
+            if (id.HasValue) value["TickerId"] = GuidValue(id.Value);
+            return value;
+        }
+
+        private BsonDocument PartitionedMetadataId(string metadataId) => new()
+        {
+            ["ApplicationNamespaceKey"] = _runtimePartitionKey,
+            ["Kind"] = "store-metadata",
+            ["MetadataId"] = metadataId
+        };
+
+        private void Stamp(BaseTickerEntity entity)
+        {
+            if (!string.IsNullOrEmpty(entity.ApplicationNamespaceKey) &&
+                entity.ApplicationNamespaceKey != TickerQRuntimePartition.LegacyGlobal.StorageKey &&
+                !StringComparer.Ordinal.Equals(entity.ApplicationNamespaceKey, _runtimePartitionKey))
+                throw new InvalidOperationException(
+                    "A Mongo runtime document cannot be redirected to another application partition.");
+            entity.ApplicationNamespaceKey = _runtimePartitionKey;
+        }
+
+        private void Stamp(CronTickerOccurrenceEntity<TCronTicker> entity)
+        {
+            if (!string.IsNullOrEmpty(entity.ApplicationNamespaceKey) &&
+                entity.ApplicationNamespaceKey != TickerQRuntimePartition.LegacyGlobal.StorageKey &&
+                !StringComparer.Ordinal.Equals(entity.ApplicationNamespaceKey, _runtimePartitionKey))
+                throw new InvalidOperationException(
+                    "A Mongo runtime document cannot be redirected to another application partition.");
+            entity.ApplicationNamespaceKey = _runtimePartitionKey;
+        }
+
+        private async Task<bool> LockRunnableAdmissionAsync(
+            IClientSessionHandle session, CancellationToken cancellationToken)
+        {
+            if (_runtimeAdmissionMisconfigured) return false;
+            // Queue-only producers are intentionally outside activation. In particular, administering
+            // either the legacy or a scoped protocol record must never redirect or pause enqueue.
+            if (!_requiresActivatedRuntimeAdmission) return true;
+            var id = Builders<BsonDocument>.Filter.Eq("_id", PartitionedMetadataId(RuntimeActivationMetadataId));
+            await _storeMetadata.UpdateOneAsync(session, id,
+                Builders<BsonDocument>.Update
+                    .SetOnInsert("ApplicationNamespaceKey", _runtimePartitionKey)
+                    .SetOnInsert("ActivationEpoch", 0L)
+                    .SetOnInsert("ActivationPhase", (int)ActivationEpochPhase.Pending)
+                    .SetOnInsert("ActivationCheckpoint", BsonNull.Value)
+                    .SetOnInsert("Version", 0L)
+                    .SetOnInsert("UpdatedAtUtc", _clock.UtcNow),
+                new UpdateOptions { IsUpsert = true }, cancellationToken).ConfigureAwait(false);
+
+            var phase = Builders<BsonDocument>.Filter.Eq(
+                "ActivationPhase", (int)ActivationEpochPhase.Activated);
+            if (StartupSeederAdmissionContext.Matches(
+                    _runtimeActivationScopeKey, _runtimeActivationEpoch))
+                phase = Builders<BsonDocument>.Filter.Or(phase,
+                    Builders<BsonDocument>.Filter.Eq(
+                        "ActivationPhase", (int)ActivationEpochPhase.Activating));
+            var allowed = Builders<BsonDocument>.Filter.And(id, phase,
+                Builders<BsonDocument>.Filter.Eq("ActivationEpoch", _runtimeActivationEpoch));
+            var locked = await _storeMetadata.UpdateOneAsync(
+                session, allowed, Builders<BsonDocument>.Update.Inc("AdmissionFence", 1L),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (locked.MatchedCount != 1) return false;
+            if (AfterRunnableAdmissionFenceForTestAsync != null)
+                await AfterRunnableAdmissionFenceForTestAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        private async Task<bool> IsRunnableAdmissionAllowedStandaloneAsync(CancellationToken cancellationToken)
+        {
+            if (_runtimeAdmissionMisconfigured) return false;
+            if (!_requiresActivatedRuntimeAdmission) return true;
+            var document = await _storeMetadata.Find(
+                    Builders<BsonDocument>.Filter.Eq("_id", PartitionedMetadataId(RuntimeActivationMetadataId)))
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            // Once the activation protocol exists, a standalone cannot atomically couple this document
+            // to a runnable mutation and therefore fails closed. Configured scheduler hosts also fail
+            // closed before their scoped activation document exists; unbound queue-only producers retain
+            // the legacy absent-document behavior.
+            return false;
+        }
+
+        private async Task<bool> IsRunnableAdmissionAllowedAsync(CancellationToken cancellationToken)
+        {
+            if (_runtimeAdmissionMisconfigured) return false;
+            if (!_requiresActivatedRuntimeAdmission) return true;
+            var document = await _storeMetadata.Find(
+                    Builders<BsonDocument>.Filter.Eq("_id", PartitionedMetadataId(RuntimeActivationMetadataId)))
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (document == null) return false;
+            var state = ToActivationState(document);
+            return state.Epoch == _runtimeActivationEpoch &&
+                   (state.Phase == ActivationEpochPhase.Activated ||
+                    (state.Phase == ActivationEpochPhase.Activating &&
+                     StartupSeederAdmissionContext.Matches(
+                         _runtimeActivationScopeKey, _runtimeActivationEpoch)));
         }
 
         private async Task<bool> LockCurrentChainGenerationAsync(
@@ -104,6 +380,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var generation = context.ChainGeneration.Value;
             var fb = Builders<TTimeTicker>.Filter;
             var filter = fb.And(
+                fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 fb.Eq(x => x.Id, rootId),
                 fb.Eq(x => x.ParentId, (Guid?)null),
                 fb.Eq(x => x.ChainRootId, rootId),
@@ -141,7 +418,7 @@ namespace TickerQ.MongoDB.Infrastructure
             while (frontier.Count > 0)
             {
                 var children = await _context.TimeTickers.Find(
-                        session, fb.In(x => x.ParentId, frontier.Keys.Select(x => (Guid?)x)))
+                        session, InPartition(fb.In(x => x.ParentId, frontier.Keys.Select(x => (Guid?)x))))
                     .Project(x => new ChainNodeProjection { Id = x.Id, ParentId = x.ParentId })
                     .ToListAsync(cancellationToken).ConfigureAwait(false);
                 if (children.Count == 0)
@@ -154,7 +431,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 {
                     var rootId = group.Key;
                     return new UpdateManyModel<TTimeTicker>(
-                        fb.In(x => x.Id, group.Select(x => x.Key)),
+                        InPartition(fb.In(x => x.Id, group.Select(x => x.Key))),
                         Builders<TTimeTicker>.Update
                             .Set(x => x.ChainRootId, rootId)
                             .Set(x => x.ChainGeneration, generations[rootId]));
@@ -203,6 +480,43 @@ namespace TickerQ.MongoDB.Infrastructure
             }
         }
 
+        private async Task<int> ExecuteAdmittedGraphMutationAsync(
+            Func<IClientSessionHandle, CancellationToken, Task<int>> transactionalOperation,
+            Func<CancellationToken, Task<int>> standaloneOperation,
+            CancellationToken cancellationToken)
+        {
+            if (TransactionsKnownUnavailable)
+            {
+                if (!await IsRunnableAdmissionAllowedStandaloneAsync(cancellationToken).ConfigureAwait(false))
+                    return 0;
+                return await standaloneOperation(cancellationToken).ConfigureAwait(false);
+            }
+
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    // Global lock order for runnable publication: exact activation metadata, graph,
+                    // then definition/root/entity authority.
+                    if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false)) return 0;
+                    if (BeforeGraphMutationFenceForTestAsync != null)
+                        await BeforeGraphMutationFenceForTestAsync(ct).ConfigureAwait(false);
+                    await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                    if (AfterGraphMutationFenceForTestAsync != null)
+                        await AfterGraphMutationFenceForTestAsync(ct).ConfigureAwait(false);
+                    return await transactionalOperation(s, ct).ConfigureAwait(false);
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+            {
+                if (!await IsRunnableAdmissionAllowedStandaloneAsync(cancellationToken).ConfigureAwait(false))
+                    return 0;
+                return await standaloneOperation(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         private DateTime? NextLeaseUntil(DateTime now)
             => _schedulerOptions.StaleJobRecoveryEnabled
                 ? now.Add(_schedulerOptions.LeaseDuration)
@@ -220,14 +534,354 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public bool SupportsResultPublication => true;
         public bool SupportsAcknowledgedTerminalUpdates => true;
+        public bool SupportsTimeTickerChainRepair => true;
+
+        #region Reconciliation_Activation_Epoch
+
+        public bool SupportsReconciliationActivationEpoch => true;
+        public bool SupportsAuthoritativeCronReconciliation => true;
+
+        private static string ActivationMetadataId(ReconciliationActivationScope scope)
+        {
+            ArgumentNullException.ThrowIfNull(scope);
+            return $"reconciliation-activation:{scope.ScopeKey}";
+        }
+
+        public Task<ActivationEpochState> GetReconciliationActivationStateAsync(
+            ReconciliationActivationScope scope, CancellationToken cancellationToken = default)
+            => GetCurrentActivationStateAsync(ActivationMetadataId(scope), cancellationToken);
+
+        public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+        {
+            if (targetEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(targetEpoch));
+            return MutateActivationStateAsync(
+                ActivationMetadataId(scope), targetEpoch, null, ActivationMutation.Begin, cancellationToken);
+        }
+
+        public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
+            ReconciliationActivationScope scope, long targetEpoch, string checkpoint,
+            CancellationToken cancellationToken = default)
+        {
+            if (targetEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(targetEpoch));
+            if (string.IsNullOrWhiteSpace(checkpoint) || checkpoint.Length > 200)
+                throw new ArgumentException(
+                    "Activation checkpoint must be non-empty and at most 200 characters.", nameof(checkpoint));
+            return MutateActivationStateAsync(
+                ActivationMetadataId(scope), targetEpoch, checkpoint, ActivationMutation.Checkpoint, cancellationToken);
+        }
+
+        public Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+        {
+            if (targetEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(targetEpoch));
+            return MutateActivationStateAsync(
+                ActivationMetadataId(scope), targetEpoch, null, ActivationMutation.Commit, cancellationToken);
+        }
+
+        public Task<ActivationEpochState> GetReconciliationActivationStateAsync(
+            CancellationToken cancellationToken = default)
+            => GetCurrentActivationStateAsync(RuntimeActivationMetadataId, cancellationToken);
+
+        private async Task<ActivationEpochState> GetCurrentActivationStateAsync(
+            string activationMetadataId, CancellationToken cancellationToken)
+        {
+            var document = await _storeMetadata.Find(
+                    Builders<BsonDocument>.Filter.Eq("_id", PartitionedMetadataId(activationMetadataId)))
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            return ToActivationState(document);
+        }
+
+        public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            long targetEpoch, CancellationToken cancellationToken = default)
+        {
+            if (targetEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(targetEpoch));
+            return MutateActivationStateAsync(
+                RuntimeActivationMetadataId, targetEpoch, null, ActivationMutation.Begin, cancellationToken);
+        }
+
+        public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
+            long targetEpoch, string checkpoint, CancellationToken cancellationToken = default)
+        {
+            if (targetEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(targetEpoch));
+            if (string.IsNullOrWhiteSpace(checkpoint) || checkpoint.Length > 200)
+                throw new ArgumentException(
+                    "Activation checkpoint must be non-empty and at most 200 characters.", nameof(checkpoint));
+            return MutateActivationStateAsync(
+                RuntimeActivationMetadataId, targetEpoch, checkpoint, ActivationMutation.Checkpoint, cancellationToken);
+        }
+
+        public Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(
+            long targetEpoch, CancellationToken cancellationToken = default)
+        {
+            if (targetEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(targetEpoch));
+            return MutateActivationStateAsync(
+                RuntimeActivationMetadataId, targetEpoch, null, ActivationMutation.Commit, cancellationToken);
+        }
+
+        private async Task<ActivationEpochState> MutateActivationStateAsync(
+            string activationMetadataId, long targetEpoch, string checkpoint, ActivationMutation mutation,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (TransactionsKnownUnavailable)
+                throw ActivationTransactionsUnavailable();
+
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                // Every protocol-aware state transition writes this singleton in a transaction. It is
+                // both the CAS record and the authoritative publication lock: a transaction publishing
+                // related store changes must touch the same document before those changes. Mongo then
+                // retries write-conflict losers against a fresh snapshot, so starters converge.
+                // Commit publication has an explicit final caller-cancellation boundary below. Once that
+                // boundary is crossed, all durable transaction/acknowledgement work is non-cancellable so
+                // a committed activation can never be surfaced as caller cancellation.
+                var transactionCancellation = mutation == ActivationMutation.Commit
+                    ? CancellationToken.None
+                    : cancellationToken;
+                var committedState = await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    var idFilter = Builders<BsonDocument>.Filter.Eq(
+                        "_id", PartitionedMetadataId(activationMetadataId));
+                    await _storeMetadata.UpdateOneAsync(s, idFilter,
+                        Builders<BsonDocument>.Update
+                            .SetOnInsert("ApplicationNamespaceKey", _runtimePartitionKey)
+                            .SetOnInsert("ActivationEpoch", 0L)
+                            .SetOnInsert("ActivationPhase", (int)ActivationEpochPhase.Pending)
+                            .SetOnInsert("ActivationCheckpoint", BsonNull.Value)
+                            .SetOnInsert("Version", 0L)
+                            .SetOnInsert("UpdatedAtUtc", _clock.UtcNow),
+                        new UpdateOptions { IsUpsert = true }, ct).ConfigureAwait(false);
+
+                    var current = await _storeMetadata.Find(s, idFilter)
+                        .FirstAsync(ct).ConfigureAwait(false);
+                    var epoch = current["ActivationEpoch"].AsInt64;
+                    var phase = (ActivationEpochPhase)current["ActivationPhase"].AsInt32;
+                    var currentCheckpoint = ReadOptionalString(current, "ActivationCheckpoint");
+                    var version = current["Version"].AsInt64;
+
+                    var nextEpoch = epoch;
+                    var nextPhase = phase;
+                    var nextCheckpoint = currentCheckpoint;
+                    var shouldUpdate = false;
+                    switch (mutation)
+                    {
+                        case ActivationMutation.Begin when targetEpoch > epoch:
+                            shouldUpdate = true;
+                            nextEpoch = targetEpoch;
+                            nextPhase = ActivationEpochPhase.Activating;
+                            nextCheckpoint = null;
+                            break;
+                        case ActivationMutation.Begin when targetEpoch == epoch &&
+                                                           phase == ActivationEpochPhase.Pending:
+                            shouldUpdate = true;
+                            nextPhase = ActivationEpochPhase.Activating;
+                            break;
+                        case ActivationMutation.Checkpoint when targetEpoch == epoch &&
+                                                                phase == ActivationEpochPhase.Activating &&
+                                                                CanAdvanceCheckpoint(currentCheckpoint, checkpoint):
+                            shouldUpdate = true;
+                            nextCheckpoint = checkpoint;
+                            break;
+                        case ActivationMutation.Commit when targetEpoch == epoch &&
+                                                            phase == ActivationEpochPhase.Activating:
+                            shouldUpdate = true;
+                            nextPhase = ActivationEpochPhase.Activated;
+                            break;
+                    }
+
+                    if (!shouldUpdate) return ToActivationState(current);
+
+                    var cas = Builders<BsonDocument>.Filter.And(idFilter,
+                        Builders<BsonDocument>.Filter.Eq("Version", version));
+                    var result = await _storeMetadata.UpdateOneAsync(s, cas,
+                        Builders<BsonDocument>.Update
+                            .Set("ActivationEpoch", nextEpoch)
+                            .Set("ActivationPhase", (int)nextPhase)
+                            .Set("ActivationCheckpoint", nextCheckpoint == null
+                                ? BsonNull.Value : (BsonValue)nextCheckpoint)
+                            .Set("UpdatedAtUtc", _clock.UtcNow)
+                            .Inc("Version", 1L), cancellationToken: ct).ConfigureAwait(false);
+                    if (result.MatchedCount != 1)
+                        throw new MongoException("TickerQ activation metadata CAS lost its transaction lock.");
+
+                    var state = new ActivationEpochState
+                    {
+                        Epoch = nextEpoch, Phase = nextPhase, Checkpoint = nextCheckpoint
+                    };
+                    if (mutation == ActivationMutation.Commit &&
+                        BeforeActivationTransactionCommitForTestAsync != null)
+                        await BeforeActivationTransactionCommitForTestAsync(ct).ConfigureAwait(false);
+                    if (mutation == ActivationMutation.Commit)
+                        cancellationToken.ThrowIfCancellationRequested();
+                    return state;
+                }, GraphTransactionOptions, transactionCancellation).ConfigureAwait(false);
+                // Commit has succeeded. Do not inspect the caller's token again: cancellation arriving
+                // after this boundary belongs to shutdown/the next phase, not this successful commit.
+                if (mutation == ActivationMutation.Commit &&
+                    CommitActivationTransactionForTestAsync != null)
+                    await CommitActivationTransactionForTestAsync(session).ConfigureAwait(false);
+                if (mutation == ActivationMutation.Commit &&
+                    AfterActivationTransactionCommitForTestAsync != null)
+                    await AfterActivationTransactionCommitForTestAsync(CancellationToken.None).ConfigureAwait(false);
+                return committedState;
+            }
+            catch (Exception ex) when (mutation == ActivationMutation.Commit &&
+                                       (ex is OperationCanceledException || IsAmbiguousCommitFailure(ex)))
+            {
+                using var readbackTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var durable = await GetCurrentActivationStateAsync(activationMetadataId, readbackTimeout.Token)
+                    .ConfigureAwait(false);
+                if (durable.Epoch == targetEpoch && durable.Phase == ActivationEpochPhase.Activated)
+                    return durable;
+                throw;
+            }
+            catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+            {
+                throw ActivationTransactionsUnavailable(ex);
+            }
+            catch (NotSupportedException ex) when (ex.Message.Contains(
+                       "Standalone servers do not support transactions", StringComparison.OrdinalIgnoreCase))
+            {
+                throw ActivationTransactionsUnavailable(ex);
+            }
+        }
+
+        private static NotSupportedException ActivationTransactionsUnavailable(Exception inner = null)
+            => new(
+                "Durable Mongo reconciliation activation requires replica-set transactions; standalone MongoDB cannot atomically publish cross-collection reconciliation. Activation was not claimed and the scheduler gate must remain closed.",
+                inner);
+
+        private static string ReadOptionalString(BsonDocument document, string name)
+            => document.TryGetValue(name, out var value) && value.IsString ? value.AsString : null;
+
+        private static ActivationEpochState ToActivationState(BsonDocument document)
+            => document == null
+                ? ActivationEpochState.PreEpoch
+                : new ActivationEpochState
+                {
+                    Epoch = document.GetValue("ActivationEpoch", 0L).ToInt64(),
+                    Phase = (ActivationEpochPhase)document.GetValue(
+                        "ActivationPhase", (int)ActivationEpochPhase.Pending).ToInt32(),
+                    Checkpoint = ReadOptionalString(document, "ActivationCheckpoint")
+                };
+
+        private static bool CanAdvanceCheckpoint(string current, string requested)
+        {
+            if (string.Equals(current, requested, StringComparison.Ordinal)) return false;
+            if (current == null) return true;
+            var currentRank = StartupCheckpointRank(current);
+            var requestedRank = StartupCheckpointRank(requested);
+            return currentRank == 0 || requestedRank > currentRank;
+        }
+
+        private static int StartupCheckpointRank(string checkpoint)
+            => checkpoint is { Length: >= 3 } && checkpoint[2] == '-' &&
+               int.TryParse(checkpoint.AsSpan(0, 2), out var rank)
+                ? rank
+                : 0;
+
+        private enum ActivationMutation { Begin, Checkpoint, Commit }
+
+        #endregion
+
+        public async Task<TimeTickerChainRepairResult> RepairTimeTickerChainsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            var summary = TimeTickerChainRepairResult.Empty;
+
+            async Task<int> RepairAsync(IClientSessionHandle session, CancellationToken ct)
+            {
+                var rows = session == null
+                    ? await _context.TimeTickers.Find(InPartition<TTimeTicker>())
+                        .ToListAsync(ct).ConfigureAwait(false)
+                    : await _context.TimeTickers.Find(session, InPartition<TTimeTicker>())
+                        .ToListAsync(ct).ConfigureAwait(false);
+                var plan = TimeTickerChainRepairPlanner.Create(rows, ct);
+                plan.ThrowIfMalformed();
+                summary = plan.Result;
+                if (plan.Updates.Count == 0) return 0;
+                var updatedAt = _clock.UtcNow;
+                var writes = plan.Updates.Select(update => (WriteModel<TTimeTicker>)
+                    new UpdateOneModel<TTimeTicker>(
+                        Builders<TTimeTicker>.Filter.Eq(x => x.Id, update.Row.Id),
+                        Builders<TTimeTicker>.Update
+                            .Set(x => x.ChainRootId, update.ChainRootId)
+                            .Set(x => x.ChainGeneration, update.ChainGeneration)
+                            .Set(x => x.UpdatedAt, updatedAt))).ToList();
+                if (session == null)
+                    await _context.TimeTickers.BulkWriteAsync(writes, cancellationToken: ct).ConfigureAwait(false);
+                else
+                    await _context.TimeTickers.BulkWriteAsync(session, writes, cancellationToken: ct).ConfigureAwait(false);
+                return writes.Count;
+            }
+
+            await ExecuteGraphMutationAsync(
+                (session, ct) => RepairAsync(session, ct),
+                ct => RepairAsync(null, ct),
+                cancellationToken).ConfigureAwait(false);
+            return summary;
+        }
+
         public bool SupportsDurableNodeFinalizationOutbox
             => Volatile.Read(ref _durableNodeFinalizationSupported) == 1;
 
         internal void MarkDurableNodeFinalizationOutboxReady()
             => Interlocked.Exchange(ref _durableNodeFinalizationSupported, 1);
 
-        private static BsonBinaryData ResultId(Guid id)
+        internal void MarkDurableNodeFinalizationOutboxUnavailable()
+            => Interlocked.Exchange(ref _durableNodeFinalizationSupported, 0);
+
+        private static BsonBinaryData LegacyResultId(Guid id)
             => new(id, GuidRepresentation.Standard);
+
+        private BsonDocument ResultId(Guid id, string kind)
+            => new()
+            {
+                ["ApplicationNamespaceKey"] = _runtimePartitionKey,
+                ["Kind"] = kind,
+                ["TickerId"] = LegacyResultId(id)
+            };
+
+        private FilterDefinition<BsonDocument> ResultFilter(Guid id, string kind)
+        {
+            var filters = Builders<BsonDocument>.Filter;
+            var legacyOwnership = _runtimePartitionKey == TickerQRuntimePartition.LegacyGlobal.StorageKey
+                ? filters.Or(filters.Eq("ApplicationNamespaceKey", _runtimePartitionKey),
+                    filters.Exists("ApplicationNamespaceKey", false))
+                : filters.Eq("ApplicationNamespaceKey", _runtimePartitionKey);
+            return filters.Or(
+                filters.Eq("_id", ResultId(id, kind)),
+                filters.And(legacyOwnership,
+                    filters.Eq("_id", LegacyResultId(id)), filters.Eq("Kind", kind)));
+        }
+
+        private FilterDefinition<BsonDocument> ResultFilter(IEnumerable<Guid> ids, string kind)
+        {
+            var values = ids.Distinct().ToArray();
+            if (values.Length == 0) return Builders<BsonDocument>.Filter.Where(_ => false);
+            var filters = Builders<BsonDocument>.Filter;
+            var legacyOwnership = _runtimePartitionKey == TickerQRuntimePartition.LegacyGlobal.StorageKey
+                ? filters.Or(filters.Eq("ApplicationNamespaceKey", _runtimePartitionKey),
+                    filters.Exists("ApplicationNamespaceKey", false))
+                : filters.Eq("ApplicationNamespaceKey", _runtimePartitionKey);
+            return filters.Or(
+                filters.In("_id", values.Select(id => ResultId(id, kind))),
+                filters.And(legacyOwnership,
+                    filters.In("_id", values.Select(LegacyResultId)), filters.Eq("Kind", kind)));
+        }
+
+        private FilterDefinition<BsonDocument> LegacyScalarResultFilter(Guid id, string kind)
+        {
+            var filters = Builders<BsonDocument>.Filter;
+            var ownership = _runtimePartitionKey == TickerQRuntimePartition.LegacyGlobal.StorageKey
+                ? filters.Or(filters.Eq("ApplicationNamespaceKey", _runtimePartitionKey),
+                    filters.Exists("ApplicationNamespaceKey", false))
+                : filters.Eq("ApplicationNamespaceKey", _runtimePartitionKey);
+            return filters.And(ownership, filters.Eq("_id", LegacyResultId(id)), filters.Eq("Kind", kind));
+        }
 
         private static void ValidateResult(TickerResultEnvelope envelope)
         {
@@ -238,13 +892,14 @@ namespace TickerQ.MongoDB.Infrastructure
                     $"Ticker result payloads cannot exceed {MaxResultPayloadBytes} bytes.");
         }
 
-        private static BsonDocument ToResultDocument(
+        private BsonDocument ToResultDocument(
             Guid id, string kind, TickerResultEnvelope envelope)
         {
             ValidateResult(envelope);
             var document = new BsonDocument
             {
-                ["_id"] = ResultId(id),
+                ["_id"] = ResultId(id, kind),
+                ["ApplicationNamespaceKey"] = _runtimePartitionKey,
                 ["Kind"] = kind,
                 ["Payload"] = new BsonBinaryData(envelope.ToPayloadArray()),
                 ["Version"] = envelope.Version,
@@ -259,7 +914,7 @@ namespace TickerQ.MongoDB.Infrastructure
             IClientSessionHandle session, Guid id, string kind,
             TickerResultEnvelope envelope, CancellationToken cancellationToken)
         {
-            var filter = Builders<BsonDocument>.Filter.Eq("_id", ResultId(id));
+            var filter = ResultFilter(id, kind);
             if (envelope == null)
             {
                 await _context.TickerResults.DeleteOneAsync(
@@ -267,17 +922,136 @@ namespace TickerQ.MongoDB.Infrastructure
                 return;
             }
 
+            // A legacy scalar _id cannot be changed by ReplaceOne: MongoDB rejects that as an
+            // immutable-key mutation. Remove only the matching legacy kind in this same transaction,
+            // then upsert the typed composite identity. A rollback restores the scalar row exactly.
+            await _context.TickerResults.DeleteOneAsync(session,
+                LegacyScalarResultFilter(id, kind),
+                new DeleteOptions(), cancellationToken).ConfigureAwait(false);
             await _context.TickerResults.ReplaceOneAsync(
-                session, filter, ToResultDocument(id, kind, envelope),
+                session, Builders<BsonDocument>.Filter.Eq("_id", ResultId(id, kind)),
+                ToResultDocument(id, kind, envelope),
                 new ReplaceOptions { IsUpsert = true }, cancellationToken).ConfigureAwait(false);
+        }
+
+        private BsonDocument ToTerminalEvidenceDocument(
+            Guid id, string kind, InternalFunctionContext context)
+        {
+            var result = context.Status is TickerStatus.Done or TickerStatus.DueDone
+                ? context.ResultEnvelope
+                : null;
+            var identity = new BsonDocument
+            {
+                ["TickerType"] = (int)context.Type,
+                ["TickerId"] = GuidValue(context.TickerId),
+                ["ParentId"] = context.ParentId.HasValue ? GuidValue(context.ParentId.Value) : BsonNull.Value,
+                ["ChainRootId"] = context.ChainRootId.HasValue ? GuidValue(context.ChainRootId.Value) : BsonNull.Value,
+                ["ChainGeneration"] = context.ChainGeneration.HasValue
+                    ? GuidValue(context.ChainGeneration.Value) : BsonNull.Value,
+                ["AcquisitionToken"] = context.AcquisitionToken.HasValue
+                    ? GuidValue(context.AcquisitionToken.Value) : BsonNull.Value,
+                ["Mutation"] = new BsonBinaryData(TerminalMutationDigest(context))
+            };
+            var document = new BsonDocument
+            {
+                ["_id"] = ResultId(id, kind),
+                ["ApplicationNamespaceKey"] = _runtimePartitionKey,
+                ["Kind"] = kind,
+                ["TerminalMutationDigest"] = new BsonBinaryData(SHA256.HashData(identity.ToBson()))
+            };
+            if (result == null) return document;
+
+            ValidateResult(result);
+            document["Payload"] = new BsonBinaryData(result.ToPayloadArray());
+            document["Version"] = result.Version;
+            document["MediaType"] = result.MediaType;
+            if (result.ContractId != null) document["ContractId"] = result.ContractId;
+            if (result.ContractType != null) document["ContractType"] = result.ContractType;
+            return document;
+        }
+
+        private async Task StoreTerminalEvidenceAsync(
+            IClientSessionHandle session, BsonDocument expected, CancellationToken cancellationToken)
+        {
+            var kind = expected["Kind"].AsString;
+            var tickerId = expected["_id"].AsBsonDocument["TickerId"].AsBsonBinaryData;
+            await _context.TickerResults.DeleteOneAsync(session,
+                LegacyScalarResultFilter(tickerId.ToGuid(GuidRepresentation.Standard), kind),
+                new DeleteOptions(), cancellationToken).ConfigureAwait(false);
+            await _context.TickerResults.ReplaceOneAsync(
+                session,
+                Builders<BsonDocument>.Filter.Eq("_id", expected["_id"]),
+                expected,
+                new ReplaceOptions { IsUpsert = true }, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<bool> HasExactTerminalEvidenceAsync(
+            BsonDocument expected, InternalFunctionContext context, CancellationToken cancellationToken = default)
+        {
+            if (TransactionsKnownUnavailable) return false;
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            return await session.WithTransactionAsync(async (s, ct) =>
+            {
+                await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                if (!await LockTerminalReplayAuthorityAsync(s, context, ct).ConfigureAwait(false))
+                    return false;
+                var stored = await _context.TickerResults.Find(
+                        s, Builders<BsonDocument>.Filter.Eq("_id", expected["_id"]))
+                    .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                var matches = stored != null &&
+                    stored.GetValue("Kind", BsonNull.Value).Equals(expected["Kind"]) &&
+                    stored.GetValue("TerminalMutationDigest", BsonNull.Value)
+                        .Equals(expected["TerminalMutationDigest"]);
+                if (AfterTerminalReplayAuthorityForTestAsync != null)
+                    await AfterTerminalReplayAuthorityForTestAsync(ct).ConfigureAwait(false);
+                return matches;
+            }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<bool> LockTerminalReplayAuthorityAsync(
+            IClientSessionHandle session, InternalFunctionContext context, CancellationToken cancellationToken)
+        {
+            if (context.Type == TickerType.CronTickerOccurrence)
+            {
+                var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+                var authority = fb.And(fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                    fb.Eq(x => x.Id, context.TickerId),
+                    fb.Or(fb.Eq(x => x.AcquisitionToken, (Guid?)null),
+                        fb.Eq(x => x.AcquisitionToken, context.AcquisitionToken)));
+                var locked = await _context.CronTickerOccurrences.UpdateOneAsync(
+                    session, authority,
+                    Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update.Inc(x => x.ElapsedTime, 0L),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (locked.MatchedCount == 1) return true;
+                return !await _context.CronTickerOccurrences.Find(
+                        session, InPartition(fb.Eq(x => x.Id, context.TickerId)))
+                    .AnyAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var time = Builders<TTimeTicker>.Filter;
+            var generationAuthority = context.ParentId.HasValue
+                ? time.Eq(x => x.ChainGeneration, context.ChainGeneration)
+                : time.Or(time.Eq(x => x.AcquisitionToken, (Guid?)null),
+                    time.Eq(x => x.AcquisitionToken, context.AcquisitionToken));
+            var result = await _context.TimeTickers.UpdateOneAsync(
+                session, time.And(time.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                    time.Eq(x => x.Id, context.TickerId), generationAuthority),
+                Builders<TTimeTicker>.Update.Inc(x => x.ElapsedTime, 0L),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (result.MatchedCount == 1) return true;
+            return !await _context.TimeTickers.Find(session, InPartition(time.Eq(x => x.Id, context.TickerId)))
+                .AnyAsync(cancellationToken).ConfigureAwait(false);
         }
 
         private async Task<TickerResultEnvelope> GetResultAsync(
             Guid id, string expectedKind, CancellationToken cancellationToken)
         {
             var document = await _context.TickerResults.Find(
-                    Builders<BsonDocument>.Filter.Eq("_id", ResultId(id)))
+                    Builders<BsonDocument>.Filter.Eq("_id", ResultId(id, expectedKind)))
                 .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (document == null)
+                document = await AdoptLegacyResultAsync(id, expectedKind, cancellationToken).ConfigureAwait(false);
             if (document == null
                 || !document.TryGetValue("Kind", out var kind) || !kind.IsString || kind.AsString != expectedKind
                 || !document.TryGetValue("Payload", out var payload) || !payload.IsBsonBinaryData
@@ -308,6 +1082,79 @@ namespace TickerQ.MongoDB.Infrastructure
                 bytes, version.AsInt32, mediaType.AsString, contractId, contractType);
         }
 
+        private async Task<BsonDocument> AdoptLegacyResultAsync(
+            Guid id, string expectedKind, CancellationToken cancellationToken)
+        {
+            var legacyFilter = Builders<BsonDocument>.Filter.And(
+                _runtimePartitionKey == TickerQRuntimePartition.LegacyGlobal.StorageKey
+                    ? Builders<BsonDocument>.Filter.Or(
+                        Builders<BsonDocument>.Filter.Eq("ApplicationNamespaceKey", _runtimePartitionKey),
+                        Builders<BsonDocument>.Filter.Exists("ApplicationNamespaceKey", false))
+                    : Builders<BsonDocument>.Filter.Eq("ApplicationNamespaceKey", _runtimePartitionKey),
+                Builders<BsonDocument>.Filter.Eq("_id", LegacyResultId(id)),
+                Builders<BsonDocument>.Filter.Eq("Kind", expectedKind));
+            if (TransactionsKnownUnavailable) return null;
+
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            return await session.WithTransactionAsync(async (s, ct) =>
+            {
+                await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                if (!await LockLegacyResultAuthorityAsync(s, id, expectedKind, ct).ConfigureAwait(false))
+                    return null;
+                if (AfterLegacyResultAuthorityForTestAsync != null)
+                    await AfterLegacyResultAuthorityForTestAsync(ct).ConfigureAwait(false);
+                var typedFilter = Builders<BsonDocument>.Filter.Eq("_id", ResultId(id, expectedKind));
+                var typed = await _context.TickerResults.Find(s, typedFilter)
+                    .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                if (typed != null)
+                {
+                    await _context.TickerResults.DeleteOneAsync(s, legacyFilter,
+                        new DeleteOptions(), ct).ConfigureAwait(false);
+                    return typed;
+                }
+
+                var legacy = await _context.TickerResults.Find(s, legacyFilter)
+                    .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                if (legacy == null) return null;
+                var adopted = legacy.DeepClone().AsBsonDocument;
+                adopted["_id"] = ResultId(id, expectedKind);
+                adopted["ApplicationNamespaceKey"] = _runtimePartitionKey;
+                await _context.TickerResults.DeleteOneAsync(s, legacyFilter,
+                    new DeleteOptions(), ct).ConfigureAwait(false);
+                await _context.TickerResults.InsertOneAsync(s, adopted,
+                    cancellationToken: ct).ConfigureAwait(false);
+                return adopted;
+            }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<bool> LockLegacyResultAuthorityAsync(
+            IClientSessionHandle session, Guid id, string kind, CancellationToken cancellationToken)
+        {
+            if (kind == CronOccurrenceResultKind)
+            {
+                var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+                var result = await _context.CronTickerOccurrences.UpdateOneAsync(
+                    session, InPartition(fb.And(fb.Eq(x => x.Id, id), fb.In(x => x.Status, TerminalStatuses),
+                        fb.Eq(x => x.AcquisitionToken, (Guid?)null))),
+                    Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update.Inc(x => x.ElapsedTime, 0L),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (result.MatchedCount == 1) return true;
+                return !await _context.CronTickerOccurrences.Find(session, InPartition(fb.Eq(x => x.Id, id)))
+                    .AnyAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var time = Builders<TTimeTicker>.Filter;
+            var locked = await _context.TimeTickers.UpdateOneAsync(
+                session, InPartition(time.And(time.Eq(x => x.Id, id), time.In(x => x.Status, TerminalStatuses),
+                    time.Eq(x => x.AcquisitionToken, (Guid?)null))),
+                Builders<TTimeTicker>.Update.Inc(x => x.ElapsedTime, 0L),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (locked.MatchedCount == 1) return true;
+            return !await _context.TimeTickers.Find(session, InPartition(time.Eq(x => x.Id, id)))
+                .AnyAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         public Task<TickerResultEnvelope> GetTimeTickerResultAsync(
             Guid id, CancellationToken cancellationToken = default)
             => GetResultAsync(id, TimeResultKind, cancellationToken);
@@ -319,6 +1166,7 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<bool> CommitSuccessfulTickerAsync(
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         {
+            EnsureExactTerminalPartition(functionContext);
             ValidateSuccessfulCommit(functionContext);
             return await CommitTerminalTickerCoreAsync(
                 functionContext, enforceRemoteChildToken: false, cancellationToken).ConfigureAwait(false);
@@ -336,8 +1184,11 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public Task<bool> CommitTerminalTickerAsync(
             InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
-            => CommitTerminalTickerCoreAsync(
+        {
+            EnsureExactTerminalPartition(functionContext);
+            return CommitTerminalTickerCoreAsync(
                 functionContext, enforceRemoteChildToken: true, cancellationToken);
+        }
 
         private static BsonBinaryData GuidValue(Guid value)
             => new(value, GuidRepresentation.Standard);
@@ -374,10 +1225,12 @@ namespace TickerQ.MongoDB.Infrastructure
             return SHA256.HashData(canonical.ToBson());
         }
 
-        private static BsonDocument ToNodeFinalizationDocument(
+        private BsonDocument ToNodeFinalizationDocument(
             NodeFinalizationIntent intent, InternalFunctionContext context) => new()
         {
-            ["_id"] = GuidValue(intent.OutboxId),
+            ["_id"] = PartitionedDocumentId("node-finalization", intent.OutboxId),
+            ["ApplicationNamespaceKey"] = _runtimePartitionKey,
+            ["OutboxId"] = GuidValue(intent.OutboxId),
             ["SchemaVersion"] = intent.SchemaVersion,
             ["TickerType"] = (int)intent.TickerType,
             ["TickerId"] = GuidValue(intent.TickerId),
@@ -414,7 +1267,7 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             var stored = await _context.NodeFinalizations.Find(
-                    Builders<BsonDocument>.Filter.Eq("_id", GuidValue(outboxId)))
+                    Builders<BsonDocument>.Filter.Eq("_id", PartitionedDocumentId("node-finalization", outboxId)))
                 .FirstOrDefaultAsync(timeout.Token).ConfigureAwait(false);
             if (stored == null) return false;
             if (HasExactImmutableIntent(stored, expected)) return true;
@@ -428,7 +1281,7 @@ namespace TickerQ.MongoDB.Infrastructure
         private static NodeFinalizationIntent ReadNodeFinalizationIntent(BsonDocument document)
             => new(
                 document["SchemaVersion"].AsInt32,
-                ReadGuid(document, "_id"),
+                ReadGuid(document, "OutboxId"),
                 (TickerType)document["TickerType"].AsInt32,
                 ReadGuid(document, "TickerId"),
                 ReadGuid(document, "AcquisitionToken"),
@@ -440,7 +1293,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 ReadGuid(document, "RequestNonce"),
                 ReadGuid(document, "ControlNonce"),
                 document["ExactBody"].AsBsonBinaryData.Bytes,
-                document["CreatedAtUtc"].ToUniversalTime());
+                document["CreatedAtUtc"].ToUniversalTime(),
+                document["ApplicationNamespaceKey"].AsString);
 
         private static void ValidateNodeFinalizationCommit(
             InternalFunctionContext context, NodeFinalizationIntent intent)
@@ -464,6 +1318,9 @@ namespace TickerQ.MongoDB.Infrastructure
             InternalFunctionContext functionContext, NodeFinalizationIntent intent,
             CancellationToken cancellationToken = default)
         {
+            EnsureExactTerminalPartition(functionContext);
+            if (!StringComparer.Ordinal.Equals(intent?.RuntimePartitionKey, _runtimePartitionKey))
+                throw new InvalidOperationException("Node finalization intent runtime partition mismatch.");
             ValidateNodeFinalizationCommit(functionContext, intent);
             if (!SupportsDurableNodeFinalizationOutbox)
                 throw new NotSupportedException(
@@ -477,7 +1334,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 var committed = await session.WithTransactionAsync(async (s, ct) =>
                 {
                     await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
-                    var idFilter = Builders<BsonDocument>.Filter.Eq("_id", GuidValue(intent.OutboxId));
+                    var idFilter = Builders<BsonDocument>.Filter.Eq(
+                        "_id", PartitionedDocumentId("node-finalization", intent.OutboxId));
                     var existing = await _context.NodeFinalizations.Find(s, idFilter)
                         .FirstOrDefaultAsync(ct).ConfigureAwait(false);
                     if (existing != null)
@@ -494,9 +1352,9 @@ namespace TickerQ.MongoDB.Infrastructure
                     {
                         var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
                         var filter = functionContext.AcquisitionToken.HasValue
-                            ? fb.And(fb.Eq(x => x.Id, functionContext.TickerId),
+                            ? InPartition(fb.And(fb.Eq(x => x.Id, functionContext.TickerId),
                                 fb.Eq(x => x.LockHolder, _lockHolder),
-                                fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
+                                fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken)))
                             : fb.Where(_ => false);
                         acknowledged = await _context.CronTickerOccurrences.UpdateOneAsync(
                             s, filter, MongoUpdateBuilders.BuildCronOccurrenceUpdate<TCronTicker>(
@@ -513,8 +1371,8 @@ namespace TickerQ.MongoDB.Infrastructure
                              functionContext.AcquisitionToken != functionContext.ChainGeneration))
                             return false;
                         var fb = Builders<TTimeTicker>.Filter;
-                        var filter = fb.And(fb.Eq(x => x.Id, functionContext.TickerId),
-                            fb.Ne(x => x.LockHolder, RetentionLockHolder));
+                        var filter = InPartition(fb.And(fb.Eq(x => x.Id, functionContext.TickerId),
+                            fb.Ne(x => x.LockHolder, RetentionLockHolder)));
                         if (functionContext.ParentId != null)
                             filter &= fb.And(
                                 fb.Eq(x => x.ParentId, functionContext.ParentId),
@@ -562,12 +1420,29 @@ namespace TickerQ.MongoDB.Infrastructure
             }
         }
 
-        private static FilterDefinition<BsonDocument> ExactNodeFinalizationClaimFilter(NodeFinalizationClaim claim)
+        private void EnsureExactTerminalPartition(InternalFunctionContext context)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            if (string.IsNullOrWhiteSpace(context.RuntimePartitionKey))
+            {
+                if (_runtimePartitionKey == TickerQRuntimePartition.LegacyGlobal.StorageKey)
+                {
+                    context.RuntimePartitionKey = _runtimePartitionKey;
+                    return;
+                }
+                throw new InvalidOperationException("A terminal mutation requires an exact runtime partition identity.");
+            }
+            if (!StringComparer.Ordinal.Equals(context.RuntimePartitionKey, _runtimePartitionKey))
+                throw new InvalidOperationException("Terminal mutation runtime partition mismatch.");
+        }
+
+        private FilterDefinition<BsonDocument> ExactNodeFinalizationClaimFilter(NodeFinalizationClaim claim)
         {
             var intent = claim.Intent;
             var fb = Builders<BsonDocument>.Filter;
             return fb.And(
-                fb.Eq("_id", GuidValue(intent.OutboxId)),
+                fb.Eq("_id", PartitionedDocumentId("node-finalization", intent.OutboxId)),
+                fb.Eq("ApplicationNamespaceKey", _runtimePartitionKey),
                 fb.Eq("TickerType", (int)intent.TickerType),
                 fb.Eq("TickerId", GuidValue(intent.TickerId)),
                 fb.Eq("AcquisitionToken", GuidValue(intent.AcquisitionToken)),
@@ -594,7 +1469,9 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 var token = Guid.NewGuid();
                 var document = await _context.NodeFinalizations.FindOneAndUpdateAsync(
-                    Builders<BsonDocument>.Filter.Lte("AvailableAtUtc", nowUtc),
+                    Builders<BsonDocument>.Filter.And(
+                        Builders<BsonDocument>.Filter.Eq("ApplicationNamespaceKey", _runtimePartitionKey),
+                        Builders<BsonDocument>.Filter.Lte("AvailableAtUtc", nowUtc)),
                     Builders<BsonDocument>.Update
                         .Set("ClaimToken", GuidValue(token)).Set("ClaimedBy", workerId)
                         .Set("AvailableAtUtc", leaseUntilUtc).Set("LastAttemptAtUtc", nowUtc)
@@ -659,23 +1536,31 @@ namespace TickerQ.MongoDB.Infrastructure
                 throw new NotSupportedException(
                     "Atomic Mongo result publication requires a replica set transaction.");
 
+            var resultKind = functionContext.Type == TickerType.CronTickerOccurrence
+                ? CronOccurrenceResultKind
+                : TimeResultKind;
+            var expectedEvidence = ToTerminalEvidenceDocument(
+                functionContext.TickerId, resultKind, functionContext);
+            if (await HasExactTerminalEvidenceAsync(expectedEvidence, functionContext).ConfigureAwait(false))
+                return true;
+
             using var session = await _context.Database.Client
                 .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
             try
             {
-                return await session.WithTransactionAsync(
+                var committed = await session.WithTransactionAsync(
                     async (s, ct) =>
                     {
                         await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
                         var now = _clock.UtcNow;
                         UpdateResult acknowledged;
-                        string resultKind;
 
                         if (functionContext.Type == TickerType.CronTickerOccurrence)
                         {
                             var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
                             var filter = functionContext.AcquisitionToken.HasValue
                                 ? fb.And(
+                                    fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                                     fb.Eq(x => x.Id, functionContext.TickerId),
                                     fb.Eq(x => x.LockHolder, _lockHolder),
                                     fb.Eq(x => x.AcquisitionToken, functionContext.AcquisitionToken))
@@ -685,7 +1570,6 @@ namespace TickerQ.MongoDB.Infrastructure
                                 MongoUpdateBuilders.BuildCronOccurrenceUpdate<TCronTicker>(
                                     functionContext, now, NextLeaseUntil(now)),
                                 cancellationToken: ct).ConfigureAwait(false);
-                            resultKind = CronOccurrenceResultKind;
                         }
                         else
                         {
@@ -698,6 +1582,7 @@ namespace TickerQ.MongoDB.Infrastructure
                                 return false;
                             var fb = Builders<TTimeTicker>.Filter;
                             var filter = fb.And(
+                                fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                                 fb.Eq(x => x.Id, functionContext.TickerId),
                                 fb.Ne(x => x.LockHolder, RetentionLockHolder));
                             if (functionContext.ParentId != null)
@@ -713,27 +1598,30 @@ namespace TickerQ.MongoDB.Infrastructure
                                 MongoUpdateBuilders.BuildTimeTickerUpdate<TTimeTicker>(
                                     functionContext, now, NextLeaseUntil(now)),
                                 cancellationToken: ct).ConfigureAwait(false);
-                            resultKind = TimeResultKind;
                         }
 
                         if (acknowledged.MatchedCount != 1)
                             return false;
 
-                        if (successful)
-                        {
-                            await StoreOrClearResultAsync(
-                                s, functionContext.TickerId, resultKind,
-                                functionContext.ResultEnvelope, ct).ConfigureAwait(false);
-                            if (AfterResultMutationForTestAsync != null)
-                                await AfterResultMutationForTestAsync(ct).ConfigureAwait(false);
-                        }
+                        await StoreTerminalEvidenceAsync(s, expectedEvidence, ct).ConfigureAwait(false);
+                        if (successful && AfterResultMutationForTestAsync != null)
+                            await AfterResultMutationForTestAsync(ct).ConfigureAwait(false);
                         return true;
                     }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+                if (AfterTerminalTransactionForTestAsync != null)
+                    await AfterTerminalTransactionForTestAsync(CancellationToken.None).ConfigureAwait(false);
+                return committed;
             }
             catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
             {
                 throw new NotSupportedException(
                     "Atomic Mongo result publication requires a replica set transaction.", ex);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException || IsAmbiguousCommitFailure(ex))
+            {
+                if (await HasExactTerminalEvidenceAsync(expectedEvidence, functionContext).ConfigureAwait(false))
+                    return true;
+                throw;
             }
         }
 
@@ -761,6 +1649,8 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 acquired = await session.WithTransactionAsync(async (s, ct) =>
                 {
+                    if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false))
+                        return new List<(TimeTickerEntity, TTimeTicker, Guid)>();
                     await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
                     var winners = new List<(TimeTickerEntity, TTimeTicker, Guid)>();
                     foreach (var ticker in timeTickers)
@@ -768,6 +1658,7 @@ namespace TickerQ.MongoDB.Infrastructure
                         ct.ThrowIfCancellationRequested();
                         var generation = Guid.NewGuid();
                         var filter = fb.And(
+                            fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                             fb.Eq(x => x.Id, ticker.Id),
                             fb.Eq(x => x.UpdatedAt, ticker.UpdatedAt),
                             fb.Eq(x => x.AcquisitionToken, ticker.AcquisitionToken));
@@ -821,6 +1712,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var fb = Builders<TTimeTicker>.Filter;
 
             var candidatesFilter = fb.And(
+                fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 fb.Ne(x => x.ExecutionTime, null),
                 fb.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
                 fb.Lte(x => x.ExecutionTime, fallbackThreshold));
@@ -833,6 +1725,8 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 acquired = await session.WithTransactionAsync(async (s, ct) =>
                 {
+                    if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false))
+                        return new List<TTimeTicker>();
                     await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
                     var winners = new List<TTimeTicker>();
                     foreach (var candidate in candidates)
@@ -840,6 +1734,7 @@ namespace TickerQ.MongoDB.Infrastructure
                         ct.ThrowIfCancellationRequested();
                         var generation = Guid.NewGuid();
                         var filter = fb.And(
+                            fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                             fb.Eq(x => x.Id, candidate.Id),
                             fb.Lte(x => x.UpdatedAt, candidate.UpdatedAt));
                         var update = Builders<TTimeTicker>.Update
@@ -883,8 +1778,8 @@ namespace TickerQ.MongoDB.Infrastructure
 
             var canAcquire = MongoUpdateBuilders.CanAcquireTimeTicker<TTimeTicker>(_lockHolder);
             var filter = timeTickerIds.Length == 0
-                ? canAcquire
-                : fb.And(fb.In(x => x.Id, timeTickerIds), canAcquire);
+                ? InPartition(canAcquire)
+                : InPartition(fb.And(fb.In(x => x.Id, timeTickerIds), canAcquire));
 
             var update = Builders<TTimeTicker>.Update
                 .Set(x => x.LockHolder, (string)null)
@@ -894,17 +1789,25 @@ namespace TickerQ.MongoDB.Infrastructure
                 .Set(x => x.Status, TickerStatus.Idle)
                 .Set(x => x.UpdatedAt, now);
 
-            await coll.UpdateManyAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await ExecuteAdmittedGraphMutationAsync(
+                async (session, ct) => (int)(await coll.UpdateManyAsync(
+                    session, filter, update, cancellationToken: ct).ConfigureAwait(false)).ModifiedCount,
+                async ct => (int)(await coll.UpdateManyAsync(
+                    filter, update, cancellationToken: ct).ConfigureAwait(false)).ModifiedCount,
+                cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken = default)
         {
+            if (!await IsRunnableAdmissionAllowedAsync(cancellationToken).ConfigureAwait(false))
+                return Array.Empty<TimeTickerEntity>();
             var now = _clock.UtcNow;
             var oneSecondAgo = now.AddSeconds(-1);
             var coll = _context.TimeTickers;
             var fb = Builders<TTimeTicker>.Filter;
 
             var baseFilter = fb.And(
+                fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 fb.Ne(x => x.ExecutionTime, null),
                 fb.Gte(x => x.ExecutionTime, oneSecondAgo),
                 MongoUpdateBuilders.CanAcquireTimeTicker<TTimeTicker>(_lockHolder));
@@ -943,6 +1846,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var now = _clock.UtcNow;
             var update = MongoUpdateBuilders.BuildTimeTickerUpdate<TTimeTicker>(functionContext, now, NextLeaseUntil(now));
             var filter = Builders<TTimeTicker>.Filter.And(
+                Builders<TTimeTicker>.Filter.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 Builders<TTimeTicker>.Filter.Eq(x => x.Id, functionContext.TickerId),
                 Builders<TTimeTicker>.Filter.Ne(x => x.LockHolder, RetentionLockHolder));
             if (IsFencedTerminalWrite(functionContext) && functionContext.ParentId == null)
@@ -988,7 +1892,7 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<byte[]> GetTimeTickerRequest(Guid id, CancellationToken cancellationToken)
         {
             var ticker = await _context.TimeTickers
-                .Find(Builders<TTimeTicker>.Filter.Eq(x => x.Id, id))
+                .Find(InPartition(Builders<TTimeTicker>.Filter.Eq(x => x.Id, id)))
                 .Project(x => x.Request)
                 .FirstOrDefaultAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -1002,9 +1906,9 @@ namespace TickerQ.MongoDB.Infrastructure
             var update = MongoUpdateBuilders.BuildTimeTickerUpdate<TTimeTicker>(functionContext, now, NextLeaseUntil(now));
             await _context.TimeTickers
                 .UpdateManyAsync(
-                    Builders<TTimeTicker>.Filter.And(
+                    InPartition(Builders<TTimeTicker>.Filter.And(
                         Builders<TTimeTicker>.Filter.In(x => x.Id, timeTickerIds),
-                        Builders<TTimeTicker>.Filter.Ne(x => x.LockHolder, RetentionLockHolder)),
+                        Builders<TTimeTicker>.Filter.Ne(x => x.LockHolder, RetentionLockHolder))),
                     update,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
@@ -1013,25 +1917,33 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<Guid[]> TransitionQueuedTimeTickersToInProgressAsync(
             IReadOnlyCollection<AcquisitionLease> leases, CancellationToken cancellationToken = default)
         {
+            if (TransactionsKnownUnavailable) return Array.Empty<Guid>();
             var now = _clock.UtcNow;
             var fb = Builders<TTimeTicker>.Filter;
             var update = Builders<TTimeTicker>.Update
                 .Set(x => x.Status, TickerStatus.InProgress)
                 .Set(x => x.LeaseUntil, NextLeaseUntil(now))
                 .Set(x => x.UpdatedAt, now);
-            var winners = new List<Guid>(leases.Count);
-            foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            return await session.WithTransactionAsync(async (s, ct) =>
             {
-                var filter = fb.And(
-                    fb.Eq(x => x.Id, lease.TickerId),
-                    fb.Eq(x => x.Status, TickerStatus.Queued),
-                    fb.Eq(x => x.LockHolder, _lockHolder),
-                    fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken));
-                var result = await _context.TimeTickers.UpdateOneAsync(
-                    filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-                if (result.ModifiedCount == 1) winners.Add(lease.TickerId);
-            }
-            return winners.ToArray();
+                if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false))
+                    return Array.Empty<Guid>();
+                var winners = new List<Guid>(leases.Count);
+                foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
+                {
+                    var filter = InPartition(fb.And(
+                        fb.Eq(x => x.Id, lease.TickerId),
+                        fb.Eq(x => x.Status, TickerStatus.Queued),
+                        fb.Eq(x => x.LockHolder, _lockHolder),
+                        fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken)));
+                    var result = await _context.TimeTickers.UpdateOneAsync(
+                        s, filter, update, cancellationToken: ct).ConfigureAwait(false);
+                    if (result.ModifiedCount == 1) winners.Add(lease.TickerId);
+                }
+                return winners.ToArray();
+            }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<TimeTickerEntity[]> AcquireImmediateTimeTickersAsync(Guid[] ids, CancellationToken cancellationToken = default)
@@ -1063,10 +1975,12 @@ namespace TickerQ.MongoDB.Infrastructure
                 {
                     var acquired = await session.WithTransactionAsync(async (s, ct) =>
                     {
+                        if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false))
+                            return null;
                         await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
-                        var filter = fb.And(
+                        var filter = InPartition(fb.And(
                             fb.Eq(x => x.Id, id),
-                            MongoUpdateBuilders.CanAcquireTimeTicker<TTimeTicker>(_lockHolder));
+                            MongoUpdateBuilders.CanAcquireTimeTicker<TTimeTicker>(_lockHolder)));
                         var row = await coll.FindOneAndUpdateAsync(
                             s, filter, update.Set(x => x.ChainRootId, id),
                             new FindOneAndUpdateOptions<TTimeTicker> { ReturnDocument = ReturnDocument.After }, ct)
@@ -1107,7 +2021,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 fb.And(fb.Eq(x => x.Status, TickerStatus.Queued),
                     fb.Or(fb.Eq(x => x.LockHolder, null), fb.Eq(x => x.LockHolder, _lockHolder))),
                 fb.And(terminal, terminalOwnershipAvailable));
-            var filter = fb.And(fb.Eq(x => x.Id, id), eligible);
+            var filter = InPartition(fb.And(fb.Eq(x => x.Id, id), eligible));
             var update = Builders<TTimeTicker>.Update
                 .Set(x => x.ExecutionTime, executionTime)
                 .Set(x => x.Status, TickerStatus.InProgress)
@@ -1136,6 +2050,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 row = await session.WithTransactionAsync(
                     async (s, ct) =>
                     {
+                        if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false))
+                            return null;
                         await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
                         var acquired = await _context.TimeTickers.FindOneAndUpdateAsync(
                             s, filter, update,
@@ -1144,7 +2060,7 @@ namespace TickerQ.MongoDB.Infrastructure
                         if (acquired == null) return null;
                         await NormalizeChainDescendantsAsync(s, id, token, ct).ConfigureAwait(false);
                         await _context.TickerResults.DeleteOneAsync(
-                            s, Builders<BsonDocument>.Filter.Eq("_id", ResultId(id)),
+                            s, ResultFilter(id, TimeResultKind),
                             new DeleteOptions(), ct).ConfigureAwait(false);
                         return acquired;
                     }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
@@ -1164,177 +2080,475 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             var now = _clock.UtcNow;
             var coll = _context.TimeTickers;
-
-            await coll.UpdateManyAsync(
-                MongoUpdateBuilders.CanAcquireTimeTicker<TTimeTicker>(instanceIdentifier),
-                Builders<TTimeTicker>.Update
-                    .Set(x => x.LockHolder, (string)null)
-                    .Set(x => x.LockedAt, (DateTime?)null)
-                    .Set(x => x.LeaseUntil, (DateTime?)null)
-                .Set(x => x.AcquisitionToken, (Guid?)null)
-                    .Set(x => x.Status, TickerStatus.Idle)
-                    .Set(x => x.UpdatedAt, now),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-
             var fb = Builders<TTimeTicker>.Filter;
-            await coll.UpdateManyAsync(
-                fb.And(fb.Eq(x => x.LockHolder, instanceIdentifier), fb.Eq(x => x.Status, TickerStatus.InProgress)),
-                Builders<TTimeTicker>.Update
+            var firstFilter = MongoUpdateBuilders.CanAcquireTimeTicker<TTimeTicker>(instanceIdentifier);
+            var secondFilter = fb.And(fb.Eq(x => x.LockHolder, instanceIdentifier),
+                fb.Eq(x => x.Status, TickerStatus.InProgress));
+            var update = Builders<TTimeTicker>.Update
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
-                .Set(x => x.AcquisitionToken, (Guid?)null)
+                    .Set(x => x.AcquisitionToken, (Guid?)null)
                     .Set(x => x.Status, TickerStatus.Idle)
-                    .Set(x => x.UpdatedAt, now),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                    .Set(x => x.UpdatedAt, now);
+            await ExecuteAdmittedGraphMutationAsync(
+                async (session, ct) =>
+                {
+                    var first = await coll.UpdateManyAsync(session, firstFilter, update,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    var second = await coll.UpdateManyAsync(session, secondFilter, update,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    return (int)(first.ModifiedCount + second.ModifiedCount);
+                },
+                async ct =>
+                {
+                    var first = await coll.UpdateManyAsync(firstFilter, update,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    var second = await coll.UpdateManyAsync(secondFilter, update,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    return (int)(first.ModifiedCount + second.ModifiedCount);
+                }, cancellationToken).ConfigureAwait(false);
         }
 
         // ===================================================================
         // Cron Ticker — core methods
         // ===================================================================
 
-        public async Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
+        public Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
+            => MigrateDefinedCronTickers(
+                Array.ConvertAll(cronTickers, static ticker => new DefinedCronTickerSeed(ticker.Function, ticker.Expression)),
+                cancellationToken);
+
+        public Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
+            => MigrateDefinedCronTickers(new DefinedCronSeedManifest(cronTickers), cancellationToken);
+
+        public Task MigrateDefinedCronTickers(DefinedCronSeedManifest manifest, CancellationToken cancellationToken = default)
+            => MigrateDefinedCronTickers(manifest, 0, cancellationToken);
+
+        private async Task MigrateDefinedCronTickers(
+            DefinedCronSeedManifest manifest, int concurrencyAttempt, CancellationToken cancellationToken)
         {
+            RuntimeManifestAdmission.Validate(manifest,
+                _schedulerOptions.HasRuntimeActivationScopeBinding,
+                _schedulerOptions.RuntimeSchedulerEnabled,
+                _runtimeActivationScopeKey, _runtimeActivationEpoch);
             var now = _clock.UtcNow;
+            var grace = _schedulerOptions.DefinedCronRetirementGracePeriod;
             var cronSet = _context.CronTickers;
-            var occSet = _context.CronTickerOccurrences;
 
-            var registeredFunctions = TickerFunctionProvider.TickerFunctions.Keys.ToHashSet(StringComparer.Ordinal);
-            var blockedFunctions = cronTickers.Where(x => !x.CanSeed)
-                .Select(x => x.Function).ToHashSet(StringComparer.Ordinal);
+            // Blocked seeds (canSeed == false) are present in the manifest but excluded from the desired
+            // set, so they are handled by the retirement path below and retired IMMEDIATELY (no grace)
+            // because continuing to schedule an unsatisfiable request is unsafe.
+            var blockedFunctions = manifest.Seeds.Where(s => !s.CanSeed)
+                .Select(s => s.Function).ToHashSet(StringComparer.Ordinal);
 
-            // Orphan cleanup is intentionally narrowed to *seeded* crons (those with a non-empty
-            // InitIdentifier set by the code-defined-cron migration). Dashboard-created crons
-            // targeting SDK / RemoteExecutor functions have InitIdentifier == empty; the SDK may
-            // not have synced its qualified `name@node` keys into TickerFunctionProvider yet at
-            // boot, so wiping non-seeded crons would destroy user data. Mirrors the EF rationale.
+            // Phase A — non-destructive retirement of seeded rows no longer desired. Compared to the
+            // DESIRED SEED MANIFEST (never the global runtime registry): comparing to the registry
+            // conflated "function still registered" with "code still wants a seeded schedule", so removing
+            // only a cron expression left the stale seeded row firing forever (Slice 1). Rows and their
+            // occurrences/results are NEVER deleted here — retirement is a set of atomic per-row field
+            // updates and does NOT depend on destructive orphan cleanup; retention owns history.
+            // Dashboard-created crons (empty InitIdentifier), including those targeting SDK/remote
+            // `name@node` functions the initializer never seeds, carry a non-seed identity and are never
+            // candidates.
             var fb = Builders<TCronTicker>.Filter;
             var orphans = await cronSet
-                .Find(fb.And(
+                .Find(InPartition(fb.And(
                     fb.Ne(x => x.InitIdentifier, null),
-                    fb.Ne(x => x.InitIdentifier, string.Empty)))
-                .Project(x => new { x.Id, x.Function })
+                    fb.Ne(x => x.InitIdentifier, string.Empty))))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            var orphanIds = orphans
-                .Where(o => !registeredFunctions.Contains(o.Function)
-                    || blockedFunctions.Contains(o.Function))
-                .Select(o => o.Id)
-                .ToArray();
-
-            if (orphanIds.Length > 0)
+            if (!manifest.IsLegacyGlobal)
             {
-                var occurrenceFilter = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter
-                    .In(x => x.CronTickerId, orphanIds);
-                var occurrenceIds = await occSet.Find(occurrenceFilter)
-                    .Project(x => x.Id).ToListAsync(cancellationToken).ConfigureAwait(false);
-                var resultFilter = Builders<BsonDocument>.Filter.In(
-                    "_id", occurrenceIds.Select(ResultId));
-
-                if (TransactionsKnownUnavailable)
+                foreach (var functionGroup in manifest.Seeds.Where(s => s.CanSeed).GroupBy(s => s.Function))
                 {
-                    await occSet.DeleteManyAsync(occurrenceFilter, cancellationToken).ConfigureAwait(false);
-                    if (occurrenceIds.Count > 0)
-                        await _context.TickerResults.DeleteManyAsync(
-                            resultFilter, cancellationToken).ConfigureAwait(false);
-                    await cronSet.DeleteManyAsync(
-                        fb.In(x => x.Id, orphanIds), cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    using var session = await _context.Database.Client
-                        .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-                    await session.WithTransactionAsync(
-                        async (s, ct) =>
-                        {
-                            await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
-                            await occSet.DeleteManyAsync(
-                                s, occurrenceFilter, cancellationToken: ct).ConfigureAwait(false);
-                            if (occurrenceIds.Count > 0)
-                                await _context.TickerResults.DeleteManyAsync(
-                                    s, resultFilter, cancellationToken: ct).ConfigureAwait(false);
-                            await cronSet.DeleteManyAsync(
-                                s, fb.In(x => x.Id, orphanIds), cancellationToken: ct).ConfigureAwait(false);
-                            return true;
-                        }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+                    var documentedLegacyKeys = functionGroup
+                        .SelectMany(seed => CronSeedIdentity.LegacyAdoptionKeys(
+                            manifest.ApplicationNamespace, seed.StableDefinitionId))
+                        .ToHashSet(StringComparer.Ordinal);
+                    var legacy = orphans.Where(x => x.Function == functionGroup.Key
+                        && x.SeedOwnerNamespace == null
+                        && (x.SeedKey == null || x.SeedKey == x.Function
+                            || documentedLegacyKeys.Contains(x.SeedKey))).ToArray();
+                    if (legacy.Length == 0) continue;
+                    if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
+                        throw new InvalidOperationException(
+                            $"Legacy defined-Cron function '{functionGroup.Key}' requires an explicit legacy ownership mapping before any application may mutate it.");
+                    if (!string.Equals(explicitOwner, manifest.ApplicationNamespace, StringComparison.Ordinal))
+                        continue;
+                    if (legacy.Length != 1 || functionGroup.Count() != 1)
+                        throw new InvalidOperationException(
+                            $"Ambiguous legacy defined-Cron ownership for function '{functionGroup.Key}' while application namespace " +
+                            $"'{manifest.ApplicationNamespace}' attempted adoption. No rows were mutated; resolve ownership explicitly.");
                 }
             }
 
-            // Match only SEEDED rows (non-empty InitIdentifier). A user/dashboard-created
-            // row that shares a function name carries a null/non-seed identity and must
-            // never be matched, expression-overwritten, or identity-stamped by seed
-            // reconciliation. Seeds reconcile only their own rows.
-            var functions = cronTickers.Where(x => x.CanSeed).Select(x => x.Function).ToArray();
-            var existing = await cronSet
-                .Find(fb.And(
-                    fb.In(x => x.Function, functions),
-                    fb.Ne(x => x.InitIdentifier, null),
-                    fb.Ne(x => x.InitIdentifier, string.Empty)))
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false);
+            foreach (var row in orphans.Where(o => manifest.IsLegacyGlobal
+                         ? manifest.IsOrphanedSeedFunction(o.Function)
+                         : o.SeedOwnerNamespace == manifest.ApplicationNamespace && manifest.IsOrphanedSeedKey(o.SeedKey)))
+            {
+                var immediate = blockedFunctions.Contains(row.Function);
+                if (!TryBuildRetirementUpdate(row, r => CronSeedRetirement.ApplyRetirement(r, now, grace, immediate), now, out var update))
+                {
+                    if (row.RetiredAt.HasValue)
+                        await RemoveUnleasedPendingCronOccurrencesAsync(
+                            null, row.Id, now, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                if (row.RetiredAt.HasValue)
+                    await UpdateCronAndCleanupPendingAsync(
+                        InPartition(fb.And(fb.Eq(x => x.Id, row.Id),
+                            fb.Eq(x => x.DefinitionRevision, row.DefinitionRevision),
+                            fb.Eq(x => x.SeedOwnerNamespace, row.SeedOwnerNamespace),
+                            fb.Eq(x => x.SeedKey, row.SeedKey))),
+                        row.Id, update, now, cancellationToken).ConfigureAwait(false);
+                else
+                    await cronSet.UpdateOneAsync(
+                        InPartition(fb.Eq(x => x.Id, row.Id)), update, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
 
-            var existingByFunction = existing
+            // Phase B — reconcile desired seeds into code-owned rows keyed by the stable SeedKey. Matching
+            // is restricted to seeded rows (non-empty InitIdentifier) so a user/dashboard row sharing a
+            // function name — carrying a null/non-seed identity — is never matched or mutated. A legacy
+            // seeded row (null SeedKey) adopts its SeedKey IN PLACE (its _id, which occurrences reference,
+            // never changes); a brand-new row uses the deterministic _id derived from the SeedKey so
+            // concurrent first-time reconciles converge via a duplicate-key collision. Duplicate legacy
+            // rows: a deterministic canonical row (lowest _id) adopts the SeedKey and stays enabled while
+            // every redundant duplicate is disabled and marked retired IN PLACE (kept null-keyed so the
+            // unique SeedKey index stays satisfied) but never deleted. A desired seed that (re)appeared has
+            // any framework retirement state cleared, restoring only a framework-disabled row.
+            var functions = manifest.DesiredSeedFunctions.ToArray();
+            var existing = orphans.Where(x => functions.Contains(x.Function)).ToList();
+
+            var byFunction = existing
                 .GroupBy(c => c.Function)
-                .ToDictionary(g => g.Key, g => g.First());
+                .ToDictionary(g => g.Key, g => g.OrderBy(c => c.Id).ToList());
 
-            foreach (var seed in cronTickers)
+            foreach (var seed in manifest.Seeds)
             {
                 if (!seed.CanSeed)
                     continue;
 
-                if (existingByFunction.TryGetValue(seed.Function, out var cron))
+                var seedKey = manifest.SeedKeyFor(seed);
+                var documentedLegacyKeys = manifest.IsLegacyGlobal
+                    ? Array.Empty<string>()
+                    : CronSeedIdentity.LegacyAdoptionKeys(
+                        manifest.ApplicationNamespace, seed.StableDefinitionId);
+
+                var group = manifest.IsLegacyGlobal
+                    ? (byFunction.TryGetValue(seed.Function, out var legacyGroup) ? legacyGroup : null)
+                    : existing.Where(x =>
+                            (x.SeedKey == seedKey && x.SeedOwnerNamespace == manifest.ApplicationNamespace)
+                            || (x.Function == seed.Function && x.SeedOwnerNamespace == null
+                                && manifest.MayAdoptLegacy(seed.Function)
+                                && (x.SeedKey == null || x.SeedKey == x.Function
+                                    || documentedLegacyKeys.Contains(x.SeedKey, StringComparer.Ordinal))))
+                        .OrderBy(x => x.Id).ToList();
+                if (group is { Count: > 0 })
                 {
-                    var expressionChanged = !string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal);
+                    // Prefer the row that already owns this SeedKey, then an active row, then lowest _id —
+                    // picking the lowest _id blindly would re-assign an already-owned SeedKey to a legacy
+                    // null-key duplicate and violate the unique SeedKey index.
+                    var (cron, duplicates) = CronSeedCanonical.Select(group, seedKey);
 
-                    // Reconcile authoritative contract identity onto seeded rows only; legacy/dashboard
-                    // rows (no seed InitIdentifier) keep their own identity.
-                    var identityChanged = !string.IsNullOrEmpty(cron.InitIdentifier)
-                        && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint);
-
-                    if (expressionChanged || identityChanged)
+                    var sets = new List<UpdateDefinition<TCronTicker>>
                     {
-                        var update = Builders<TCronTicker>.Update
-                            .Set(x => x.Expression, seed.Expression)
-                            .Set(x => x.UpdatedAt, now);
+                        Builders<TCronTicker>.Update.Set(x => x.SeedLastSeenAt, now)
+                    };
+                    var materiallyChanged = false;
+                    var definitionChanged = false;
 
-                        if (identityChanged)
+                    if (cron.SeedKey == null)
+                    {
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.SeedKey, seedKey)); // adopt in place
+                        materiallyChanged = true;
+                    }
+                    else if (!manifest.IsLegacyGlobal && cron.SeedKey != seedKey)
+                    {
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.SeedKey, seedKey));
+                        materiallyChanged = true;
+                    }
+                    if (!manifest.IsLegacyGlobal && cron.SeedOwnerNamespace != manifest.ApplicationNamespace)
+                    {
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.SeedOwnerNamespace, manifest.ApplicationNamespace));
+                        materiallyChanged = true;
+                    }
+
+                    if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
+                    {
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.Expression, seed.Expression));
+                        materiallyChanged = true;
+                        definitionChanged = true;
+                    }
+
+                    if (!string.IsNullOrEmpty(cron.InitIdentifier)
+                        && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
+                    {
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.RequestContractVersion, seed.RequestContractVersion));
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.RequestContractFingerprint, seed.RequestContractFingerprint));
+                        materiallyChanged = true;
+                        definitionChanged = true;
+                    }
+
+                    if (cron.Retries != seed.Retries)
+                    {
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.Retries, seed.Retries));
+                        materiallyChanged = true;
+                        definitionChanged = true;
+                    }
+                    if (!(cron.RetryIntervals ?? Array.Empty<int>()).SequenceEqual(
+                            seed.RetryIntervals ?? Array.Empty<int>()))
+                    {
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.RetryIntervals, seed.RetryIntervals));
+                        materiallyChanged = true;
+                        definitionChanged = true;
+                    }
+                    if (cron.TimeoutSeconds != seed.TimeoutSeconds)
+                    {
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.TimeoutSeconds, seed.TimeoutSeconds));
+                        materiallyChanged = true;
+                        definitionChanged = true;
+                    }
+
+                    if (definitionChanged)
+                    {
+                        sets.Add(Builders<TCronTicker>.Update.Set(
+                            x => x.DefinitionRevision, Math.Max(1, cron.DefinitionRevision + 1)));
+                        materiallyChanged = true;
+                    }
+                    else if (cron.DefinitionRevision <= 0)
+                    {
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.DefinitionRevision, 1));
+                        materiallyChanged = true;
+                    }
+
+                    // Desired-active seed: clear any framework retirement, restoring only framework-disabled state.
+                    if (AddRetirementSets(cron, CronSeedRetirement.ClearRetirement, sets))
+                        materiallyChanged = true;
+
+                    if (materiallyChanged)
+                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.UpdatedAt, now));
+
+                    var combinedUpdate = Builders<TCronTicker>.Update.Combine(sets);
+                    var expectedFilter = InPartition(fb.And(
+                        fb.Eq(x => x.Id, cron.Id),
+                        fb.Eq(x => x.DefinitionRevision, cron.DefinitionRevision),
+                        fb.Eq(x => x.SeedOwnerNamespace, cron.SeedOwnerNamespace),
+                        fb.Eq(x => x.SeedKey, cron.SeedKey)));
+                    var published = definitionChanged
+                        ? await UpdateCronAndCleanupPendingAsync(
+                            expectedFilter, cron.Id, combinedUpdate, now, cancellationToken).ConfigureAwait(false)
+                        : (await cronSet.UpdateOneAsync(
+                            expectedFilter, combinedUpdate,
+                            cancellationToken: cancellationToken).ConfigureAwait(false)).MatchedCount == 1;
+                    if (!published)
+                    {
+                        if (concurrencyAttempt >= 4)
+                            throw new InvalidOperationException(
+                                $"Cron definition '{cron.Id}' kept changing during reconciliation.");
+                        await MigrateDefinedCronTickers(manifest, concurrencyAttempt + 1, cancellationToken)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+
+                    // Retire redundant duplicates in place (canonical already chosen); never delete.
+                    foreach (var dup in duplicates)
+                    {
+                        if (!TryBuildRetirementUpdate(dup, r => CronSeedRetirement.RetireDuplicate(r, now), now, out var dupUpdate))
                         {
-                            update = update
-                                .Set(x => x.RequestContractVersion, seed.RequestContractVersion)
-                                .Set(x => x.RequestContractFingerprint, seed.RequestContractFingerprint);
+                            // A prior interrupted pass may already have persisted retirement while leaving
+                            // pending rows behind; reconciliation remains a repair operation on every retry.
+                            if (dup.RetiredAt.HasValue)
+                                await RemoveUnleasedPendingCronOccurrencesAsync(
+                                    null, dup.Id, now, cancellationToken).ConfigureAwait(false);
+                            continue;
                         }
-
-                        await cronSet.UpdateOneAsync(
-                            fb.Eq(x => x.Id, cron.Id),
-                            update,
-                            cancellationToken: cancellationToken).ConfigureAwait(false);
+                        if (dup.RetiredAt.HasValue)
+                            await UpdateCronAndCleanupPendingAsync(
+                                InPartition(fb.And(fb.Eq(x => x.Id, dup.Id),
+                                    fb.Eq(x => x.DefinitionRevision, dup.DefinitionRevision),
+                                    fb.Eq(x => x.SeedOwnerNamespace, dup.SeedOwnerNamespace),
+                                    fb.Eq(x => x.SeedKey, dup.SeedKey))),
+                                dup.Id, dupUpdate, now, cancellationToken).ConfigureAwait(false);
+                        else
+                            await cronSet.UpdateOneAsync(
+                                InPartition(fb.Eq(x => x.Id, dup.Id)), dupUpdate, cancellationToken: cancellationToken).ConfigureAwait(false);
                     }
                 }
                 else
                 {
                     var entity = new TCronTicker
                     {
-                        Id = Guid.NewGuid(),
+                        Id = CronSeedIdentity.DeterministicId(seedKey),
                         Function = seed.Function,
                         Expression = seed.Expression,
+                        DefinitionRevision = 1,
+                        SeedKey = seedKey,
+                        SeedOwnerNamespace = manifest.ApplicationNamespace,
+                        SeedLastSeenAt = now,
                         InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
                         CreatedAt = now,
                         UpdatedAt = now,
                         Request = Array.Empty<byte>(),
                         RequestContractVersion = seed.RequestContractVersion,
-                        RequestContractFingerprint = seed.RequestContractFingerprint
+                        RequestContractFingerprint = seed.RequestContractFingerprint,
+                        Retries = seed.Retries,
+                        RetryIntervals = seed.RetryIntervals,
+                        TimeoutSeconds = seed.TimeoutSeconds
                     };
-                    await cronSet.InsertOneAsync(entity, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    Stamp(entity);
+
+                    try
+                    {
+                        await cronSet.InsertOneAsync(entity, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (MongoWriteException ex) when (ex.WriteError?.Category == ServerErrorCategory.DuplicateKey)
+                    {
+                        // A concurrent reconcile inserted the same deterministic row (or the unique partial
+                        // SeedKey index already claims this key). Converge: if the winning row exists but
+                        // predates seed ownership, adopt the key in place; otherwise it is already owned.
+                        var winner = await cronSet.Find(InPartition(fb.Eq(x => x.Id, entity.Id)))
+                            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                        if (winner is { SeedKey: null })
+                            await cronSet.UpdateOneAsync(
+                                InPartition(fb.Eq(x => x.Id, entity.Id)),
+                                Builders<TCronTicker>.Update
+                                    .Set(x => x.SeedKey, seedKey)
+                                    .Set(x => x.SeedLastSeenAt, now),
+                                cancellationToken: cancellationToken).ConfigureAwait(false);
+                    }
                 }
             }
+        }
+
+        private async Task<bool> UpdateCronAndCleanupPendingAsync(
+            FilterDefinition<TCronTicker> expectedFilter, Guid cronTickerId,
+            UpdateDefinition<TCronTicker> update, DateTime now,
+            CancellationToken cancellationToken)
+        {
+            if (TransactionsKnownUnavailable)
+            {
+                // Standalone MongoDB cannot make the definition write and cross-collection cleanup atomic.
+                // Clean first so an interruption leaves the old definition visible; a retry still detects
+                // the change and repeats cleanup before publishing the authoritative definition.
+                await RemoveUnleasedPendingCronOccurrencesAsync(
+                    null, cronTickerId, now, cancellationToken).ConfigureAwait(false);
+                var result = await _context.CronTickers.UpdateOneAsync(
+                    expectedFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+                return result.MatchedCount == 1;
+            }
+
+            using var session = await _context.Database.Client
+                .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    var result = await _context.CronTickers.UpdateOneAsync(
+                        s, expectedFilter, update,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    if (result.MatchedCount != 1) return false;
+                    await RemoveUnleasedPendingCronOccurrencesAsync(s, cronTickerId, now, ct)
+                        .ConfigureAwait(false);
+                    return true;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
+            {
+                // Transaction capability was discovered only after the attempt. Preserve the same
+                // cleanup-first retry contract as the known-standalone path.
+                await RemoveUnleasedPendingCronOccurrencesAsync(
+                    null, cronTickerId, now, cancellationToken).ConfigureAwait(false);
+                var result = await _context.CronTickers.UpdateOneAsync(
+                    expectedFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+                return result.MatchedCount == 1;
+            }
+        }
+
+        private async Task RemoveUnleasedPendingCronOccurrencesAsync(
+            IClientSessionHandle session, Guid cronTickerId, DateTime now,
+            CancellationToken cancellationToken)
+        {
+            var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+            // Revision publication fences every not-yet-running occurrence. Quarantine in place so
+            // payload, timestamps, and result sidecars remain available as durable evidence.
+            var removable = InPartition(fb.And(
+                fb.Eq(x => x.CronTickerId, cronTickerId),
+                fb.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
+                fb.Or(fb.Eq(x => x.LockHolder, null), fb.Eq(x => x.LockHolder, string.Empty)),
+                fb.Eq(x => x.AcquisitionToken, null),
+                fb.Or(fb.Eq(x => x.LeaseUntil, null), fb.Lte(x => x.LeaseUntil, now))));
+            var quarantine = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
+                .Set(x => x.Status, TickerStatus.Skipped)
+                .Set(x => x.SkippedReason,
+                    "Quarantined because its Cron definition revision is stale.")
+                .Set(x => x.ExecutedAt, now)
+                .Set(x => x.LockHolder, (string)null)
+                .Set(x => x.LockedAt, (DateTime?)null)
+                .Set(x => x.LeaseUntil, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, (Guid?)null)
+                .Set(x => x.UpdatedAt, now);
+
+            if (session == null)
+                await _context.CronTickerOccurrences.UpdateManyAsync(
+                    removable, quarantine, cancellationToken: cancellationToken).ConfigureAwait(false);
+            else
+                await _context.CronTickerOccurrences.UpdateManyAsync(
+                    session, removable, quarantine, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
+        // Translates a retirement state transition applied to a loaded entity into a minimal, atomic
+        // per-row Mongo update: the shared CronSeedRetirement helper mutates the in-memory copy, then only
+        // the fields it actually changed are $set (plus UpdatedAt). Returns false — and no update — when
+        // the transition is a no-op, so an already-settled row is never rewritten.
+        private static bool TryBuildRetirementUpdate(
+            TCronTicker row, Func<CronTickerEntity, bool> transition, DateTime now,
+            out UpdateDefinition<TCronTicker> update)
+        {
+            var sets = new List<UpdateDefinition<TCronTicker>>();
+            if (!AddRetirementSets(row, transition, sets))
+            {
+                update = null;
+                return false;
+            }
+
+            sets.Add(Builders<TCronTicker>.Update.Set(x => x.UpdatedAt, now));
+            update = Builders<TCronTicker>.Update.Combine(sets);
+            return true;
+        }
+
+        // Applies a retirement state transition and appends a $set for each retirement field it changed
+        // to the supplied list; returns whether anything changed. Shared by orphan retirement, duplicate
+        // retirement, and the desired-seed clear so all three stay consistent with the other providers.
+        private static bool AddRetirementSets(
+            TCronTicker row, Func<CronTickerEntity, bool> transition, List<UpdateDefinition<TCronTicker>> sets)
+        {
+            var beforeReq = row.RetirementRequestedAt;
+            var beforeRet = row.RetiredAt;
+            var beforeEnabled = row.IsEnabled;
+            var beforeWas = row.SeedWasEnabledBeforeRetirement;
+
+            if (!transition(row))
+                return false;
+
+            var u = Builders<TCronTicker>.Update;
+            if (row.RetirementRequestedAt != beforeReq)
+                sets.Add(u.Set(x => x.RetirementRequestedAt, row.RetirementRequestedAt));
+            if (row.RetiredAt != beforeRet)
+                sets.Add(u.Set(x => x.RetiredAt, row.RetiredAt));
+            if (row.IsEnabled != beforeEnabled)
+                sets.Add(u.Set(x => x.IsEnabled, row.IsEnabled));
+            if (row.SeedWasEnabledBeforeRetirement != beforeWas)
+                sets.Add(u.Set(x => x.SeedWasEnabledBeforeRetirement, row.SeedWasEnabledBeforeRetirement));
+            return true;
         }
 
         public async Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken)
         {
             var fb = Builders<TCronTicker>.Filter;
             var rows = await _context.CronTickers
-                .Find(fb.And(fb.Eq(x => x.IsEnabled, true), fb.Eq(x => x.IsSystemPaused, false)))
+                .Find(InPartition(fb.And(fb.Eq(x => x.IsEnabled, true), fb.Eq(x => x.IsSystemPaused, false))))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -1348,35 +2562,44 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public async Task<CronTickerOccurrenceEntity<TCronTicker>> GetEarliestAvailableCronOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
         {
+            if (TransactionsKnownUnavailable) return null;
+            if (!await IsRunnableAdmissionAllowedAsync(cancellationToken).ConfigureAwait(false))
+                return null;
             var now = _clock.UtcNow;
             var mainSchedulerThreshold = now.AddSeconds(-1);
             var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
 
-            var filter = fb.And(
+            var filter = InPartition(fb.And(
                 fb.In(x => x.CronTickerId, ids),
                 fb.Gte(x => x.ExecutionTime, mainSchedulerThreshold),
-                MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(_lockHolder));
+                MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(_lockHolder)));
 
-            var occurrence = await _context.CronTickerOccurrences
+            var candidates = await _context.CronTickerOccurrences
                 .Find(filter)
                 .Sort(Builders<CronTickerOccurrenceEntity<TCronTicker>>.Sort.Ascending(x => x.ExecutionTime))
-                .Limit(1)
-                .FirstOrDefaultAsync(cancellationToken)
+                .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
+            foreach (var occurrence in candidates)
+            {
+                occurrence.CronTicker = await _context.CronTickers
+                    .Find(InPartition(Builders<TCronTicker>.Filter.Eq(x => x.Id, occurrence.CronTickerId)))
+                    .FirstOrDefaultAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (occurrence.CronTicker != null &&
+                    occurrence.DefinitionRevision == occurrence.CronTicker.DefinitionRevision)
+                    return occurrence;
 
-            if (occurrence == null) return null;
-
-            occurrence.CronTicker = await _context.CronTickers
-                .Find(Builders<TCronTicker>.Filter.Eq(x => x.Id, occurrence.CronTickerId))
-                .FirstOrDefaultAsync(cancellationToken)
-                .ConfigureAwait(false);
-            return occurrence;
+                await QuarantineStalePendingOccurrenceAsync(occurrence, now, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            return null;
         }
 
         public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueCronTickerOccurrences(
             (DateTime Key, InternalManagerContext[] Items) cronTickerOccurrences,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            if (TransactionsKnownUnavailable) yield break;
             var now = _clock.UtcNow;
             var executionTime = cronTickerOccurrences.Key;
             var coll = _context.CronTickerOccurrences;
@@ -1386,109 +2609,91 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var acquisitionToken = Guid.NewGuid();
-
-                if (item.NextCronOccurrence is null)
+                using var session = await _context.Database.Client
+                    .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                var queued = await session.WithTransactionAsync(async (s, ct) =>
                 {
-                    // INSERT path. Unique index on (CronTickerId, ExecutionTime) is our dedup — a
-                    // duplicate-key error here means another scheduler already claimed this slot,
-                    // so skip silently (mirrors EF's Upsert.NoUpdate() returning 0).
-                    var toAdd = new CronTickerOccurrenceEntity<TCronTicker>
-                    {
-                        Id = Guid.NewGuid(),
-                        Status = TickerStatus.Queued,
-                        LockHolder = _lockHolder,
-                        ExecutionTime = executionTime,
-                        CronTickerId = item.Id,
-                        LockedAt = now,
-                        AcquisitionToken = acquisitionToken,
-                        CreatedAt = now,
-                        UpdatedAt = now
-                    };
+                    // All runnable publication uses one parent-first lock order: activation metadata,
+                    // authoritative Cron revision, then occurrence/slot. This makes a revision publication
+                    // or activation transition conflict with the old writer before its child can commit.
+                    if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false) ||
+                        item.DefinitionRevision <= 0 ||
+                        !await LockCronRevisionAsync(s, item.Id, item.DefinitionRevision, ct).ConfigureAwait(false))
+                        return null;
 
-                    bool inserted;
-                    try
+                    if (item.NextCronOccurrence is null)
                     {
-                        await coll.InsertOneAsync(toAdd, cancellationToken: cancellationToken).ConfigureAwait(false);
-                        inserted = true;
+                        var slotFilter = InPartition(fb.And(
+                            fb.Eq(x => x.CronTickerId, item.Id),
+                            fb.Eq(x => x.ExecutionTime, executionTime)));
+                        if (await coll.Find(s, slotFilter).AnyAsync(ct).ConfigureAwait(false))
+                            return null;
+
+                        var toAdd = new CronTickerOccurrenceEntity<TCronTicker>
+                        {
+                            Id = Guid.NewGuid(),
+                            Status = TickerStatus.Queued,
+                            LockHolder = _lockHolder,
+                            ExecutionTime = executionTime,
+                            CronTickerId = item.Id,
+                            DefinitionRevision = item.DefinitionRevision,
+                            LockedAt = now,
+                            AcquisitionToken = acquisitionToken,
+                            CreatedAt = now,
+                            UpdatedAt = now
+                        };
+                        Stamp(toAdd);
+                        await coll.InsertOneAsync(s, toAdd, cancellationToken: ct).ConfigureAwait(false);
+                        return toAdd;
                     }
-                    catch (MongoWriteException ex) when (ex.WriteError?.Category == ServerErrorCategory.DuplicateKey)
-                    {
-                        inserted = false;
-                    }
 
-                    if (!inserted) continue;
-
-                    toAdd.CronTicker = new TCronTicker
-                    {
-                        Id = item.Id,
-                        Function = item.FunctionName,
-                        RequestContractVersion = item.RequestContractVersion,
-                        RequestContractFingerprint = item.RequestContractFingerprint,
-                        InitIdentifier = _lockHolder,
-                        Expression = item.Expression,
-                        Retries = item.Retries,
-                        RetryIntervals = item.RetryIntervals,
-                        TimeoutSeconds = item.TimeoutSeconds
-                    };
-                    yield return toAdd;
-                }
-                else
-                {
-                    // UPDATE path — claim an existing occurrence row
-                    var filter = fb.And(
+                    var filter = InPartition(fb.And(
                         fb.Eq(x => x.Id, item.NextCronOccurrence.Id),
                         fb.Eq(x => x.ExecutionTime, executionTime),
-                        MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(_lockHolder));
-
+                        fb.Eq(x => x.DefinitionRevision, item.DefinitionRevision),
+                        MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(_lockHolder)));
                     var update = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
                         .Set(x => x.LockHolder, _lockHolder)
                         .Set(x => x.LockedAt, now)
                         .Set(x => x.AcquisitionToken, acquisitionToken)
                         .Set(x => x.UpdatedAt, now)
                         .Set(x => x.Status, TickerStatus.Queued);
+                    return await coll.FindOneAndUpdateAsync(
+                        s, filter, update,
+                        new FindOneAndUpdateOptions<CronTickerOccurrenceEntity<TCronTicker>>
+                            { ReturnDocument = ReturnDocument.After }, ct).ConfigureAwait(false);
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
 
-                    var result = await coll.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-                    if (result.ModifiedCount <= 0) continue;
-
-                    yield return new CronTickerOccurrenceEntity<TCronTicker>
-                    {
-                        Id = item.NextCronOccurrence.Id,
-                        CronTickerId = item.Id,
-                        ExecutionTime = executionTime,
-                        Status = TickerStatus.Queued,
-                        LockHolder = _lockHolder,
-                        LockedAt = now,
-                        AcquisitionToken = acquisitionToken,
-                        UpdatedAt = now,
-                        CreatedAt = item.NextCronOccurrence.CreatedAt,
-                        CronTicker = new TCronTicker
-                        {
-                            Id = item.Id,
-                            Function = item.FunctionName,
-                            RequestContractVersion = item.RequestContractVersion,
-                            RequestContractFingerprint = item.RequestContractFingerprint,
-                            InitIdentifier = _lockHolder,
-                            Expression = item.Expression,
-                            Retries = item.Retries,
-                            RetryIntervals = item.RetryIntervals,
-                            TimeoutSeconds = item.TimeoutSeconds
-                        }
-                    };
-                }
+                if (queued == null) continue;
+                queued.CronTicker = new TCronTicker
+                {
+                    Id = item.Id,
+                    Function = item.FunctionName,
+                    RequestContractVersion = item.RequestContractVersion,
+                    RequestContractFingerprint = item.RequestContractFingerprint,
+                    InitIdentifier = _lockHolder,
+                    Expression = item.Expression,
+                    Retries = item.Retries,
+                    RetryIntervals = item.RetryIntervals,
+                    TimeoutSeconds = item.TimeoutSeconds,
+                    DefinitionRevision = item.DefinitionRevision
+                };
+                yield return queued;
             }
         }
 
         public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueTimedOutCronTickerOccurrences(
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            if (!await IsRunnableAdmissionAllowedAsync(cancellationToken).ConfigureAwait(false)) yield break;
             var now = _clock.UtcNow;
             var fallbackThreshold = now.AddSeconds(-1);
             var coll = _context.CronTickerOccurrences;
             var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
 
-            var candidatesFilter = fb.And(
+            var candidatesFilter = InPartition(fb.And(
                 fb.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
-                fb.Lte(x => x.ExecutionTime, fallbackThreshold));
+                fb.Lte(x => x.ExecutionTime, fallbackThreshold)));
 
             var candidates = await coll.Find(candidatesFilter).ToListAsync(cancellationToken).ConfigureAwait(false);
             if (candidates.Count == 0) yield break;
@@ -1500,9 +2705,23 @@ namespace TickerQ.MongoDB.Infrastructure
                 cancellationToken.ThrowIfCancellationRequested();
                 var acquisitionToken = Guid.NewGuid();
 
-                var filter = fb.And(
+                if (!cronById.TryGetValue(occ.CronTickerId, out var authoritative) ||
+                    occ.DefinitionRevision != authoritative.DefinitionRevision)
+                {
+                    await QuarantineStalePendingOccurrenceAsync(occ, now, cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+                // Starting work requires cross-collection activation and authoritative-revision locks.
+                // A standalone cannot serialize those checks with this occurrence update, so it fails closed.
+                if (TransactionsKnownUnavailable || !CanAcquirePendingOccurrence(occ, now))
+                    continue;
+
+                var filter = InPartition(fb.And(
                     fb.Eq(x => x.Id, occ.Id),
-                    fb.Eq(x => x.UpdatedAt, occ.UpdatedAt));
+                    fb.Eq(x => x.UpdatedAt, occ.UpdatedAt),
+                    fb.Eq(x => x.DefinitionRevision, authoritative.DefinitionRevision),
+                    MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(_lockHolder)));
 
                 var update = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
                     .Set(x => x.LockHolder, _lockHolder)
@@ -1512,24 +2731,33 @@ namespace TickerQ.MongoDB.Infrastructure
                     .Set(x => x.UpdatedAt, now)
                     .Set(x => x.Status, TickerStatus.InProgress);
 
-                var result = await coll.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-                if (result.ModifiedCount <= 0) continue;
-
-                occ.AcquisitionToken = acquisitionToken;
-                if (cronById.TryGetValue(occ.CronTickerId, out var cron))
+                using var session = await _context.Database.Client
+                    .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                var acquired = await session.WithTransactionAsync(async (s, ct) =>
                 {
-                    occ.CronTicker = new TCronTicker
-                    {
-                        Id = cron.Id,
-                        Function = cron.Function,
-                        RequestContractVersion = cron.RequestContractVersion,
-                        RequestContractFingerprint = cron.RequestContractFingerprint,
-                        RetryIntervals = cron.RetryIntervals,
-                        Retries = cron.Retries,
-                        TimeoutSeconds = cron.TimeoutSeconds
-                    };
-                }
-                yield return occ;
+                    if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false) ||
+                        !await LockCronRevisionAsync(s, occ.CronTickerId,
+                            authoritative.DefinitionRevision, ct).ConfigureAwait(false))
+                        return null;
+                    return await coll.FindOneAndUpdateAsync(
+                        s, filter, update,
+                        new FindOneAndUpdateOptions<CronTickerOccurrenceEntity<TCronTicker>>
+                            { ReturnDocument = ReturnDocument.After }, ct).ConfigureAwait(false);
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+                if (acquired == null) continue;
+
+                acquired.CronTicker = new TCronTicker
+                {
+                    Id = authoritative.Id,
+                    Function = authoritative.Function,
+                    RequestContractVersion = authoritative.RequestContractVersion,
+                    RequestContractFingerprint = authoritative.RequestContractFingerprint,
+                    RetryIntervals = authoritative.RetryIntervals,
+                    Retries = authoritative.Retries,
+                    TimeoutSeconds = authoritative.TimeoutSeconds,
+                    DefinitionRevision = authoritative.DefinitionRevision
+                };
+                yield return acquired;
             }
         }
 
@@ -1537,7 +2765,7 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             var now = _clock.UtcNow;
             var update = MongoUpdateBuilders.BuildCronOccurrenceUpdate<TCronTicker>(functionContext, now, NextLeaseUntil(now));
-            var filter = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(x => x.Id, functionContext.TickerId);
+            var filter = InPartition(Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(x => x.Id, functionContext.TickerId));
             if (IsFencedTerminalWrite(functionContext))
             {
                 var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
@@ -1559,8 +2787,8 @@ namespace TickerQ.MongoDB.Infrastructure
 
             var canAcquire = MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(_lockHolder);
             var filter = occurrenceIds.Length == 0
-                ? canAcquire
-                : fb.And(fb.In(x => x.Id, occurrenceIds), canAcquire);
+                ? InPartition(canAcquire)
+                : InPartition(fb.And(fb.In(x => x.Id, occurrenceIds), canAcquire));
 
             var update = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
                 .Set(x => x.LockHolder, (string)null)
@@ -1570,19 +2798,24 @@ namespace TickerQ.MongoDB.Infrastructure
                 .Set(x => x.Status, TickerStatus.Idle)
                 .Set(x => x.UpdatedAt, now);
 
-            await coll.UpdateManyAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await ExecuteAdmittedGraphMutationAsync(
+                async (session, ct) => (int)(await coll.UpdateManyAsync(
+                    session, filter, update, cancellationToken: ct).ConfigureAwait(false)).ModifiedCount,
+                async ct => (int)(await coll.UpdateManyAsync(
+                    filter, update, cancellationToken: ct).ConfigureAwait(false)).ModifiedCount,
+                cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<byte[]> GetCronTickerOccurrenceRequest(Guid tickerId, CancellationToken cancellationToken = default)
         {
             var occ = await _context.CronTickerOccurrences
-                .Find(Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(x => x.Id, tickerId))
+                .Find(InPartition(Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(x => x.Id, tickerId)))
                 .FirstOrDefaultAsync(cancellationToken)
                 .ConfigureAwait(false);
             if (occ == null) return null;
 
             var cron = await _context.CronTickers
-                .Find(Builders<TCronTicker>.Filter.Eq(x => x.Id, occ.CronTickerId))
+                .Find(InPartition(Builders<TCronTicker>.Filter.Eq(x => x.Id, occ.CronTickerId)))
                 .FirstOrDefaultAsync(cancellationToken)
                 .ConfigureAwait(false);
             return cron?.Request;
@@ -1595,7 +2828,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var update = MongoUpdateBuilders.BuildCronOccurrenceUpdate<TCronTicker>(functionContext, now, NextLeaseUntil(now));
             await _context.CronTickerOccurrences
                 .UpdateManyAsync(
-                    Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.In(x => x.Id, cronOccurrenceIds),
+                    InPartition(Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.In(x => x.Id, cronOccurrenceIds)),
                     update,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
@@ -1604,6 +2837,7 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<Guid[]> TransitionQueuedCronOccurrencesToInProgressAsync(
             IReadOnlyCollection<AcquisitionLease> leases, CancellationToken cancellationToken = default)
         {
+            if (TransactionsKnownUnavailable) return Array.Empty<Guid>();
             var now = _clock.UtcNow;
             var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
             var update = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
@@ -1613,14 +2847,34 @@ namespace TickerQ.MongoDB.Infrastructure
             var winners = new List<Guid>(leases.Count);
             foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
             {
-                var filter = fb.And(
-                    fb.Eq(x => x.Id, lease.TickerId),
-                    fb.Eq(x => x.Status, TickerStatus.Queued),
-                    fb.Eq(x => x.LockHolder, _lockHolder),
-                    fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken));
-                var result = await _context.CronTickerOccurrences.UpdateOneAsync(
-                    filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-                if (result.ModifiedCount == 1) winners.Add(lease.TickerId);
+                using var session = await _context.Database.Client
+                    .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                var won = await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false))
+                        return false;
+                    var candidate = await _context.CronTickerOccurrences.Find(s, fb.And(
+                            fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                            fb.Eq(x => x.Id, lease.TickerId),
+                            fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken)))
+                        .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                    if (candidate == null ||
+                        !await LockCronRevisionAsync(s, candidate.CronTickerId,
+                            candidate.DefinitionRevision, ct).ConfigureAwait(false))
+                        return false;
+
+                    var filter = fb.And(
+                        fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                        fb.Eq(x => x.Id, lease.TickerId),
+                        fb.Eq(x => x.Status, TickerStatus.Queued),
+                        fb.Eq(x => x.LockHolder, _lockHolder),
+                        fb.Eq(x => x.AcquisitionToken, lease.AcquisitionToken),
+                        fb.Eq(x => x.DefinitionRevision, candidate.DefinitionRevision));
+                    var result = await _context.CronTickerOccurrences.UpdateOneAsync(
+                        s, filter, update, cancellationToken: ct).ConfigureAwait(false);
+                    return result.ModifiedCount == 1;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+                if (won) winners.Add(lease.TickerId);
             }
             return winners.ToArray();
         }
@@ -1629,29 +2883,35 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             var now = _clock.UtcNow;
             var coll = _context.CronTickerOccurrences;
-
-            await coll.UpdateManyAsync(
-                MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(instanceIdentifier),
-                Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
-                    .Set(x => x.LockHolder, (string)null)
-                    .Set(x => x.LockedAt, (DateTime?)null)
-                    .Set(x => x.LeaseUntil, (DateTime?)null)
-                .Set(x => x.AcquisitionToken, (Guid?)null)
-                    .Set(x => x.Status, TickerStatus.Idle)
-                    .Set(x => x.UpdatedAt, now),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-
             var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
-            await coll.UpdateManyAsync(
-                fb.And(fb.Eq(x => x.LockHolder, instanceIdentifier), fb.Eq(x => x.Status, TickerStatus.InProgress)),
-                Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
+            var firstFilter = InPartition(MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(instanceIdentifier));
+            var secondFilter = fb.And(fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                fb.Eq(x => x.LockHolder, instanceIdentifier),
+                fb.Eq(x => x.Status, TickerStatus.InProgress));
+            var update = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
-                .Set(x => x.AcquisitionToken, (Guid?)null)
+                    .Set(x => x.AcquisitionToken, (Guid?)null)
                     .Set(x => x.Status, TickerStatus.Idle)
-                    .Set(x => x.UpdatedAt, now),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                    .Set(x => x.UpdatedAt, now);
+            await ExecuteAdmittedGraphMutationAsync(
+                async (session, ct) =>
+                {
+                    var first = await coll.UpdateManyAsync(session, firstFilter, update,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    var second = await coll.UpdateManyAsync(session, secondFilter, update,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    return (int)(first.ModifiedCount + second.ModifiedCount);
+                },
+                async ct =>
+                {
+                    var first = await coll.UpdateManyAsync(firstFilter, update,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    var second = await coll.UpdateManyAsync(secondFilter, update,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    return (int)(first.ModifiedCount + second.ModifiedCount);
+                }, cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
@@ -1662,6 +2922,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
 
             var filter = fb.And(
+                fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 fb.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
                 fb.Lt(x => x.ExecutionTime, cutoff));
 
@@ -1686,6 +2947,7 @@ namespace TickerQ.MongoDB.Infrastructure
             if (timeTickerIds == null || timeTickerIds.Length == 0) return 0;
             var fb = Builders<TTimeTicker>.Filter;
             var filter = fb.And(
+                fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 fb.In(x => x.Id, timeTickerIds),
                 fb.Eq(x => x.LockHolder, _lockHolder),
                 fb.Eq(x => x.Status, TickerStatus.InProgress));
@@ -1700,6 +2962,7 @@ namespace TickerQ.MongoDB.Infrastructure
             if (occurrenceIds == null || occurrenceIds.Length == 0) return 0;
             var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
             var filter = fb.And(
+                fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 fb.In(x => x.Id, occurrenceIds),
                 fb.Eq(x => x.LockHolder, _lockHolder),
                 fb.Eq(x => x.Status, TickerStatus.InProgress));
@@ -1720,6 +2983,7 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 if (!lease.AcquisitionToken.HasValue) continue;
                 var filter = fb.And(
+                    fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                     fb.Eq(x => x.Id, lease.TickerId),
                     fb.Eq(x => x.LockHolder, _lockHolder),
                     fb.Eq(x => x.Status, TickerStatus.InProgress),
@@ -1743,6 +3007,7 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 if (!lease.AcquisitionToken.HasValue) continue;
                 var filter = fb.And(
+                    fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                     fb.Eq(x => x.Id, lease.TickerId),
                     fb.Eq(x => x.LockHolder, _lockHolder),
                     fb.Eq(x => x.Status, TickerStatus.InProgress),
@@ -1766,6 +3031,7 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 if (!lease.AcquisitionToken.HasValue) continue;
                 var filter = timeFb.And(
+                    timeFb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                     timeFb.Eq(x => x.Id, lease.TickerId),
                     timeFb.Eq(x => x.LockHolder, _lockHolder),
                     timeFb.Eq(x => x.Status, TickerStatus.InProgress),
@@ -1779,6 +3045,7 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 if (!lease.AcquisitionToken.HasValue) continue;
                 var filter = cronFb.And(
+                    cronFb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                     cronFb.Eq(x => x.Id, lease.TickerId),
                     cronFb.Eq(x => x.LockHolder, _lockHolder),
                     cronFb.Eq(x => x.Status, TickerStatus.InProgress),
@@ -1797,6 +3064,7 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 var fb = Builders<TTimeTicker>.Filter;
                 var filter = fb.And(
+                    fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                     fb.In(x => x.Id, timeTickerIds),
                     fb.Eq(x => x.LockHolder, _lockHolder),
                     fb.Eq(x => x.Status, TickerStatus.InProgress));
@@ -1808,6 +3076,7 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
                 var filter = fb.And(
+                    fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                     fb.In(x => x.Id, occurrenceIds),
                     fb.Eq(x => x.LockHolder, _lockHolder),
                     fb.Eq(x => x.Status, TickerStatus.InProgress));
@@ -1828,41 +3097,60 @@ namespace TickerQ.MongoDB.Infrastructure
             var staleLockCutoff = now.Subtract(_schedulerOptions.QueuedLockTimeout);
             var timeQueuedFilters = Builders<TTimeTicker>.Filter;
             var staleQueuedTime = timeQueuedFilters.And(
+                timeQueuedFilters.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 timeQueuedFilters.Eq(x => x.ParentId, (Guid?)null),
                 timeQueuedFilters.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
                 timeQueuedFilters.Ne(x => x.LockHolder, null),
                 timeQueuedFilters.Ne(x => x.LockedAt, null),
                 timeQueuedFilters.Lt(x => x.LockedAt, staleLockCutoff));
-            await _context.TimeTickers.UpdateManyAsync(
-                staleQueuedTime,
-                Builders<TTimeTicker>.Update
+            var staleQueuedTimeUpdate = Builders<TTimeTicker>.Update
                     .Set(x => x.Status, TickerStatus.Idle)
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
                     .Set(x => x.AcquisitionToken, (Guid?)null)
-                    .Set(x => x.UpdatedAt, now),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                    .Set(x => x.UpdatedAt, now);
 
             var cronQueuedFilters = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
             var staleQueuedCron = cronQueuedFilters.And(
+                cronQueuedFilters.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 cronQueuedFilters.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
                 cronQueuedFilters.Ne(x => x.LockHolder, null),
                 cronQueuedFilters.Ne(x => x.LockedAt, null),
                 cronQueuedFilters.Lt(x => x.LockedAt, staleLockCutoff));
-            await _context.CronTickerOccurrences.UpdateManyAsync(
-                staleQueuedCron,
-                Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
+            var staleQueuedCronUpdate = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
                     .Set(x => x.Status, TickerStatus.Idle)
                     .Set(x => x.LockHolder, (string)null)
                     .Set(x => x.LockedAt, (DateTime?)null)
                     .Set(x => x.LeaseUntil, (DateTime?)null)
                     .Set(x => x.AcquisitionToken, (Guid?)null)
-                    .Set(x => x.UpdatedAt, now),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                    .Set(x => x.UpdatedAt, now);
+            var admittedQueuedRecovery = await ExecuteAdmittedGraphMutationAsync(
+                async (session, ct) =>
+                {
+                    var time = await _context.TimeTickers.UpdateManyAsync(
+                        session, staleQueuedTime, staleQueuedTimeUpdate,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    var cron = await _context.CronTickerOccurrences.UpdateManyAsync(
+                        session, staleQueuedCron, staleQueuedCronUpdate,
+                        cancellationToken: ct).ConfigureAwait(false);
+                    return (int)(time.ModifiedCount + cron.ModifiedCount);
+                },
+                async ct =>
+                {
+                    var time = await _context.TimeTickers.UpdateManyAsync(
+                        staleQueuedTime, staleQueuedTimeUpdate, cancellationToken: ct).ConfigureAwait(false);
+                    var cron = await _context.CronTickerOccurrences.UpdateManyAsync(
+                        staleQueuedCron, staleQueuedCronUpdate, cancellationToken: ct).ConfigureAwait(false);
+                    return (int)(time.ModifiedCount + cron.ModifiedCount);
+                }, cancellationToken).ConfigureAwait(false);
+            if (_requiresActivatedRuntimeAdmission && admittedQueuedRecovery == 0 &&
+                !await IsRunnableAdmissionAllowedAsync(cancellationToken).ConfigureAwait(false))
+                return result;
 
             var timeFilters = Builders<TTimeTicker>.Filter;
             var staleTime = timeFilters.And(
+                timeFilters.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 timeFilters.Eq(x => x.ParentId, (Guid?)null),
                 timeFilters.Eq(x => x.Status, TickerStatus.InProgress),
                 timeFilters.Ne(x => x.LeaseUntil, null),
@@ -1889,7 +3177,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     cancellationToken: cancellationToken).ConfigureAwait(false);
                 if (restartIds.Count > 0)
                     await _context.TickerResults.DeleteManyAsync(
-                        Builders<BsonDocument>.Filter.In("_id", restartIds.Select(ResultId)),
+                        ResultFilter(restartIds, TimeResultKind),
                         cancellationToken).ConfigureAwait(false);
                 result.RestartedTimeTickers = (int)restartTimeResult.ModifiedCount;
             }
@@ -1900,6 +3188,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 result.RestartedTimeTickers = await restartSession.WithTransactionAsync(
                     async (s, ct) =>
                     {
+                        if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false)) return 0;
                         await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
                         var restartIds = await _context.TimeTickers.Find(s, restartTime)
                             .Project(x => x.Id).ToListAsync(ct).ConfigureAwait(false);
@@ -1909,7 +3198,7 @@ namespace TickerQ.MongoDB.Infrastructure
                         if (restartIds.Count > 0)
                             await _context.TickerResults.DeleteManyAsync(
                                 s,
-                                Builders<BsonDocument>.Filter.In("_id", restartIds.Select(ResultId)),
+                                ResultFilter(restartIds, TimeResultKind),
                                 cancellationToken: ct).ConfigureAwait(false);
                         return (int)restarted.ModifiedCount;
                     }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
@@ -1931,6 +3220,7 @@ namespace TickerQ.MongoDB.Infrastructure
 
             var occurrenceFilters = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
             var staleOccurrences = occurrenceFilters.And(
+                occurrenceFilters.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 occurrenceFilters.Eq(x => x.Status, TickerStatus.InProgress),
                 occurrenceFilters.Ne(x => x.LeaseUntil, null),
                 occurrenceFilters.Lt(x => x.LeaseUntil, now));
@@ -1945,17 +3235,41 @@ namespace TickerQ.MongoDB.Infrastructure
                 // occurrence predicates below also pin the observed lease, owner,
                 // and restart count so a renewed or re-acquired row cannot be reset.
                 var parent = await _context.CronTickers
-                    .Find(Builders<TCronTicker>.Filter.Eq(x => x.Id, staleRow.CronTickerId))
-                    .Project(x => new { x.OnStale })
+                    .Find(InPartition(Builders<TCronTicker>.Filter.Eq(x => x.Id, staleRow.CronTickerId)))
+                    .Project(x => new { x.OnStale, x.DefinitionRevision })
                     .FirstOrDefaultAsync(cancellationToken)
                     .ConfigureAwait(false);
-                if (parent?.OnStale != StaleAction.Restart) continue;
+                if (parent == null || staleRow.DefinitionRevision != parent.DefinitionRevision)
+                {
+                    await _context.CronTickerOccurrences.UpdateOneAsync(
+                        occurrenceFilters.And(
+                            staleOccurrences,
+                            occurrenceFilters.Eq(x => x.Id, staleRow.Id),
+                            occurrenceFilters.Eq(x => x.DefinitionRevision, staleRow.DefinitionRevision),
+                            occurrenceFilters.Eq(x => x.LeaseUntil, staleRow.LeaseUntil),
+                            occurrenceFilters.Eq(x => x.AcquisitionToken, staleRow.AcquisitionToken)),
+                        Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
+                            .Set(x => x.Status, TickerStatus.Skipped)
+                            .Set(x => x.SkippedReason,
+                                "Quarantined because its Cron definition revision is stale during recovery.")
+                            .Set(x => x.ExecutedAt, now)
+                            .Set(x => x.LockHolder, (string)null)
+                            .Set(x => x.LockedAt, (DateTime?)null)
+                            .Set(x => x.LeaseUntil, (DateTime?)null)
+                            .Set(x => x.AcquisitionToken, (Guid?)null)
+                            .Set(x => x.UpdatedAt, now),
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                if (parent.OnStale != StaleAction.Restart) continue;
 
                 var restartOccurrenceFilter = occurrenceFilters.And(
                     staleOccurrences,
                     occurrenceFilters.Eq(x => x.Id, staleRow.Id),
+                    occurrenceFilters.Eq(x => x.DefinitionRevision, staleRow.DefinitionRevision),
                     occurrenceFilters.Eq(x => x.LeaseUntil, staleRow.LeaseUntil),
                     occurrenceFilters.Eq(x => x.LockHolder, staleRow.LockHolder),
+                    occurrenceFilters.Eq(x => x.AcquisitionToken, staleRow.AcquisitionToken),
                     occurrenceFilters.Eq(x => x.StaleRestartCount, staleRow.StaleRestartCount));
                 var restartOccurrenceUpdate = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
                     .Set(x => x.Status, TickerStatus.Idle)
@@ -1974,7 +3288,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     restartedCount = (int)restarted.ModifiedCount;
                     if (restartedCount == 1)
                         await _context.TickerResults.DeleteOneAsync(
-                            Builders<BsonDocument>.Filter.Eq("_id", ResultId(staleRow.Id)),
+                            ResultFilter(staleRow.Id, CronOccurrenceResultKind),
                             cancellationToken).ConfigureAwait(false);
                 }
                 else
@@ -1984,14 +3298,17 @@ namespace TickerQ.MongoDB.Infrastructure
                     restartedCount = await restartSession.WithTransactionAsync(
                         async (s, ct) =>
                         {
-                            await TouchGraphFenceAsync(s, ct).ConfigureAwait(false);
+                            if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false) ||
+                                !await LockCronRevisionAsync(s, staleRow.CronTickerId,
+                                    staleRow.DefinitionRevision, ct).ConfigureAwait(false))
+                                return 0;
                             var restarted = await _context.CronTickerOccurrences.UpdateOneAsync(
                                 s, restartOccurrenceFilter, restartOccurrenceUpdate,
                                 cancellationToken: ct).ConfigureAwait(false);
                             if (restarted.ModifiedCount == 1)
                                 await _context.TickerResults.DeleteOneAsync(
                                     s,
-                                    Builders<BsonDocument>.Filter.Eq("_id", ResultId(staleRow.Id)),
+                                    ResultFilter(staleRow.Id, CronOccurrenceResultKind),
                                     new DeleteOptions(), ct).ConfigureAwait(false);
                             return (int)restarted.ModifiedCount;
                         }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
@@ -2083,11 +3400,11 @@ namespace TickerQ.MongoDB.Infrastructure
         private async Task RecoverExpiredRetentionClaimsAsync(DateTime now, CancellationToken cancellationToken)
         {
             var fb = Builders<TTimeTicker>.Filter;
-            var expiredClaim = fb.And(
+            var expiredClaim = InPartition(fb.And(
                 fb.Eq(x => x.LockHolder, RetentionLockHolder),
                 fb.In(x => x.Status, TerminalStatuses),
                 fb.Ne(x => x.AcquisitionToken, (Guid?)null),
-                fb.Lte(x => x.LeaseUntil, now));
+                fb.Lte(x => x.LeaseUntil, now)));
             await _context.TimeTickers.UpdateManyAsync(
                 expiredClaim,
                 Builders<TTimeTicker>.Update
@@ -2114,7 +3431,7 @@ namespace TickerQ.MongoDB.Infrastructure
 
             var coll = _context.TimeTickers;
             var fb = Builders<TTimeTicker>.Filter;
-            var eligible = TimeRetentionEligible(cutoffs, now);
+            var eligible = InPartition(TimeRetentionEligible(cutoffs, now));
             var rootFilter = fb.And(fb.Eq(x => x.ParentId, (Guid?)null), eligible);
             if (cursor.HasValue)
             {
@@ -2213,7 +3530,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
-                var subtreeFilter = fb.In(x => x.Id, chainIds);
+                var subtreeFilter = InPartition(fb.In(x => x.Id, chainIds));
 
                 // Every node must still be eligible & unowned under the snapshot.
                 var eligibleCount = await coll.CountDocumentsAsync(
@@ -2229,7 +3546,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 // pinning this exact edge prevents a reparented candidate from being deleted as a root.
                 var rootStillRoot = await coll.CountDocumentsAsync(
                     session,
-                    fb.And(fb.Eq(x => x.Id, rootId), fb.Eq(x => x.ParentId, (Guid?)null), eligible),
+                    InPartition(fb.And(fb.Eq(x => x.Id, rootId),
+                        fb.Eq(x => x.ParentId, (Guid?)null), eligible)),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
                 if (rootStillRoot != 1)
                 {
@@ -2251,7 +3569,7 @@ namespace TickerQ.MongoDB.Infrastructure
 
                 await _context.TickerResults.DeleteManyAsync(
                     session,
-                    Builders<BsonDocument>.Filter.In("_id", chainIds.Select(ResultId)),
+                    ResultFilter(chainIds, TimeResultKind),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
 
                 await session.CommitTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -2285,7 +3603,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 cancellationToken.ThrowIfCancellationRequested();
                 var remaining = cap - all.Count;
                 var childIds = await _context.TimeTickers
-                    .Find(session, fb.In(x => x.ParentId, frontier.Select(p => (Guid?)p)))
+                    .Find(session, InPartition(fb.In(x => x.ParentId, frontier.Select(p => (Guid?)p))))
                     .Project(x => x.Id)
                     .Limit(remaining + 1)
                     .ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -2315,7 +3633,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var now = _clock.UtcNow;
             var coll = _context.CronTickerOccurrences;
             var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
-            var eligible = OccurrenceRetentionEligible(cutoffs, now);
+            var eligible = InPartition(OccurrenceRetentionEligible(cutoffs, now));
             var candidates = await coll.Find(eligible)
                 .Sort(Builders<CronTickerOccurrenceEntity<TCronTicker>>.Sort
                     .Ascending(x => x.ExecutedAt).Ascending(x => x.Id))
@@ -2329,7 +3647,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 return RetentionBatchResult.Empty;
 
             var rowFilter = fb.And(fb.In(x => x.Id, candidates), eligible);
-            var resultFilter = Builders<BsonDocument>.Filter.In("_id", candidates.Select(ResultId));
+            var resultFilter = ResultFilter(candidates, CronOccurrenceResultKind);
             if (TransactionsKnownUnavailable)
             {
                 var standalone = await coll.DeleteManyAsync(
@@ -2361,7 +3679,7 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default)
         {
             var row = await _context.TimeTickers
-                .Find(Builders<TTimeTicker>.Filter.Eq(x => x.Id, id))
+                .Find(InPartition(Builders<TTimeTicker>.Filter.Eq(x => x.Id, id)))
                 .FirstOrDefaultAsync(cancellationToken)
                 .ConfigureAwait(false);
             if (row == null) return null;
@@ -2372,7 +3690,7 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<TTimeTicker[]> GetTimeTickers(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken = default)
         {
             var fb = Builders<TTimeTicker>.Filter;
-            var filter = fb.And(fb.Eq(x => x.ParentId, (Guid?)null), predicate is null ? fb.Empty : fb.Where(predicate));
+            var filter = InPartition(fb.And(fb.Eq(x => x.ParentId, (Guid?)null), predicate is null ? fb.Empty : fb.Where(predicate)));
             var rows = await _context.TimeTickers
                 .Find(filter)
                 .Sort(Builders<TTimeTicker>.Sort.Descending(x => x.ExecutionTime))
@@ -2388,7 +3706,7 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(Expression<Func<TTimeTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
         {
             var fb = Builders<TTimeTicker>.Filter;
-            var filter = fb.And(fb.Eq(x => x.ParentId, (Guid?)null), predicate is null ? fb.Empty : fb.Where(predicate));
+            var filter = InPartition(fb.And(fb.Eq(x => x.ParentId, (Guid?)null), predicate is null ? fb.Empty : fb.Where(predicate)));
             var total = await _context.TimeTickers.CountDocumentsAsync(filter, cancellationToken: cancellationToken).ConfigureAwait(false);
             var rows = await _context.TimeTickers
                 .Find(filter)
@@ -2407,7 +3725,7 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
         {
             if (tickers == null || tickers.Length == 0) return 0;
-            return await ExecuteGraphMutationAsync(
+            return await ExecuteAdmittedGraphMutationAsync(
                 async (session, ct) =>
                 {
                     if (!await ReferencedParentsExistAsync(session, tickers, ct).ConfigureAwait(false))
@@ -2452,7 +3770,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     continue;
                 }
 
-                var filter = Builders<TTimeTicker>.Filter.Eq(x => x.Id, current.ParentId.Value);
+                var filter = InPartition(Builders<TTimeTicker>.Filter.Eq(x => x.Id, current.ParentId.Value));
                 var parent = session == null
                     ? await _context.TimeTickers.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false)
                     : await _context.TimeTickers.Find(session, filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
@@ -2468,6 +3786,7 @@ namespace TickerQ.MongoDB.Infrastructure
             IClientSessionHandle session, TTimeTicker ticker, Guid? parentId, Guid chainRootId,
             Guid? chainGeneration, CancellationToken ct)
         {
+            Stamp(ticker);
             if (parentId.HasValue) ticker.ParentId = parentId.Value;
             ticker.ChainRootId = chainRootId;
             ticker.ChainGeneration = chainGeneration;
@@ -2494,11 +3813,11 @@ namespace TickerQ.MongoDB.Infrastructure
             // rows before this transaction wins the fence, do not resurrect it from a stale replacement.
             var topLevelIds = tickers.Select(x => x.Id).Distinct().ToArray();
             var requiredExistingIds = (await _context.TimeTickers
-                    .Find(Builders<TTimeTicker>.Filter.In(x => x.Id, topLevelIds))
+                    .Find(InPartition(Builders<TTimeTicker>.Filter.In(x => x.Id, topLevelIds)))
                     .Project(x => x.Id)
                     .ToListAsync(cancellationToken).ConfigureAwait(false))
                 .ToHashSet();
-            return await ExecuteGraphMutationAsync(
+            return await ExecuteAdmittedGraphMutationAsync(
                 async (session, ct) =>
                 {
                     if (!await ReferencedParentsExistAsync(session, tickers, ct).ConfigureAwait(false))
@@ -2507,7 +3826,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     {
                         var stillExisting = await _context.TimeTickers.CountDocumentsAsync(
                             session,
-                            Builders<TTimeTicker>.Filter.In(x => x.Id, requiredExistingIds),
+                            InPartition(Builders<TTimeTicker>.Filter.In(x => x.Id, requiredExistingIds)),
                             cancellationToken: ct).ConfigureAwait(false);
                         if (stillExisting != requiredExistingIds.Count)
                             return 0;
@@ -2533,10 +3852,11 @@ namespace TickerQ.MongoDB.Infrastructure
             IClientSessionHandle session, TTimeTicker ticker, Guid? parentId, Guid chainRootId,
             Guid? chainGeneration, CancellationToken ct)
         {
+            Stamp(ticker);
             if (parentId.HasValue) ticker.ParentId = parentId.Value;
             ticker.ChainRootId = chainRootId;
             ticker.ChainGeneration = chainGeneration;
-            var filter = Builders<TTimeTicker>.Filter.Eq(x => x.Id, ticker.Id);
+            var filter = InPartition(Builders<TTimeTicker>.Filter.Eq(x => x.Id, ticker.Id));
             var options = new ReplaceOptions { IsUpsert = true };
             ReplaceOneResult result;
             if (session == null)
@@ -2577,7 +3897,7 @@ namespace TickerQ.MongoDB.Infrastructure
 
             var count = await _context.TimeTickers.CountDocumentsAsync(
                 session,
-                Builders<TTimeTicker>.Filter.In(x => x.Id, referencedParents),
+                InPartition(Builders<TTimeTicker>.Filter.In(x => x.Id, referencedParents)),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             return count == referencedParents.Count;
         }
@@ -2590,11 +3910,12 @@ namespace TickerQ.MongoDB.Infrastructure
                 throw new NotSupportedException(
                     "Atomic Mongo time-ticker chain replacement requires a replica set transaction.");
 
-            return await ExecuteGraphMutationAsync(
+            return await ExecuteAdmittedGraphMutationAsync(
                 async (session, ct) =>
                 {
                     var oldExists = await _context.TimeTickers.Find(
                             session, Builders<TTimeTicker>.Filter.And(
+                                Builders<TTimeTicker>.Filter.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                                 Builders<TTimeTicker>.Filter.Eq(x => x.Id, oldRootId),
                                 Builders<TTimeTicker>.Filter.Eq(x => x.ParentId, (Guid?)null)))
                         .AnyAsync(ct).ConfigureAwait(false);
@@ -2608,13 +3929,13 @@ namespace TickerQ.MongoDB.Infrastructure
                         throw new InvalidOperationException("The original chain exceeds the safe replacement bound.");
                     var deleted = await _context.TimeTickers.DeleteManyAsync(
                         session,
-                        Builders<TTimeTicker>.Filter.In(x => x.Id, oldIds),
+                        InPartition(Builders<TTimeTicker>.Filter.In(x => x.Id, oldIds)),
                         cancellationToken: ct).ConfigureAwait(false);
                     if (deleted.DeletedCount != oldIds.Count)
                         throw new InvalidOperationException("The original chain changed during replacement.");
                     await _context.TickerResults.DeleteManyAsync(
                         session,
-                        Builders<BsonDocument>.Filter.In("_id", oldIds.Select(ResultId)),
+                        ResultFilter(oldIds, TimeResultKind),
                         cancellationToken: ct).ConfigureAwait(false);
                     return inserted;
                 },
@@ -2626,7 +3947,7 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default)
         {
             if (tickerIds == null || tickerIds.Length == 0) return 0;
-            return await ExecuteGraphMutationAsync(
+            return await ExecuteAdmittedGraphMutationAsync(
                 (session, ct) => RemoveTimeTickersCoreAsync(session, tickerIds, ct),
                 ct => RemoveTimeTickersCoreAsync(null, tickerIds, ct),
                 cancellationToken).ConfigureAwait(false);
@@ -2640,14 +3961,14 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 var allIds = await CollectDescendantIds(session, id, cancellationToken).ConfigureAwait(false);
                 allIds.Add(id);
-                var filter = Builders<TTimeTicker>.Filter.In(x => x.Id, allIds);
+                var filter = InPartition(Builders<TTimeTicker>.Filter.In(x => x.Id, allIds));
                 DeleteResult result;
                 if (session == null)
                     result = await _context.TimeTickers.DeleteManyAsync(filter, cancellationToken).ConfigureAwait(false);
                 else
                     result = await _context.TimeTickers.DeleteManyAsync(
                         session, filter, cancellationToken: cancellationToken).ConfigureAwait(false);
-                var resultFilter = Builders<BsonDocument>.Filter.In("_id", allIds.Select(ResultId));
+                var resultFilter = ResultFilter(allIds, TimeResultKind);
                 if (session == null)
                     await _context.TickerResults.DeleteManyAsync(resultFilter, cancellationToken).ConfigureAwait(false);
                 else
@@ -2660,13 +3981,13 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public async Task<TCronTicker> GetCronTickerById(Guid id, CancellationToken cancellationToken)
             => await _context.CronTickers
-                .Find(Builders<TCronTicker>.Filter.Eq(x => x.Id, id))
+                .Find(InPartition(Builders<TCronTicker>.Filter.Eq(x => x.Id, id)))
                 .FirstOrDefaultAsync(cancellationToken)
                 .ConfigureAwait(false);
 
         public async Task<TCronTicker[]> GetCronTickers(Expression<Func<TCronTicker, bool>> predicate, CancellationToken cancellationToken)
         {
-            var filter = predicate is null ? Builders<TCronTicker>.Filter.Empty : Builders<TCronTicker>.Filter.Where(predicate);
+            var filter = InPartition(predicate is null ? Builders<TCronTicker>.Filter.Empty : Builders<TCronTicker>.Filter.Where(predicate));
             var rows = await _context.CronTickers
                 .Find(filter)
                 .Sort(Builders<TCronTicker>.Sort.Descending(x => x.CreatedAt))
@@ -2677,7 +3998,7 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public async Task<PaginationResult<TCronTicker>> GetCronTickersPaginated(Expression<Func<TCronTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
         {
-            var filter = predicate is null ? Builders<TCronTicker>.Filter.Empty : Builders<TCronTicker>.Filter.Where(predicate);
+            var filter = InPartition(predicate is null ? Builders<TCronTicker>.Filter.Empty : Builders<TCronTicker>.Filter.Where(predicate));
             var total = await _context.CronTickers.CountDocumentsAsync(filter, cancellationToken: cancellationToken).ConfigureAwait(false);
             var rows = await _context.CronTickers
                 .Find(filter)
@@ -2692,17 +4013,85 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<int> InsertCronTickers(TCronTicker[] tickers, CancellationToken cancellationToken)
         {
             if (tickers.Length == 0) return 0;
+            foreach (var ticker in tickers)
+            {
+                Stamp(ticker);
+                if (ticker.DefinitionRevision <= 0)
+                    ticker.DefinitionRevision = 1;
+            }
+            if (_requiresActivatedRuntimeAdmission)
+            {
+                if (TransactionsKnownUnavailable) return 0;
+                using var session = await _context.Database.Client
+                    .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                return await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false)) return 0;
+                    await _context.CronTickers.InsertManyAsync(
+                        s, tickers, cancellationToken: ct).ConfigureAwait(false);
+                    return tickers.Length;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            }
             await _context.CronTickers.InsertManyAsync(tickers, cancellationToken: cancellationToken).ConfigureAwait(false);
             return tickers.Length;
         }
 
         public async Task<int> UpdateCronTickers(TCronTicker[] cronTicker, CancellationToken cancellationToken)
         {
+            if (_requiresActivatedRuntimeAdmission)
+            {
+                if (TransactionsKnownUnavailable) return 0;
+                var updated = 0;
+                foreach (var ticker in cronTicker)
+                {
+                    using var session = await _context.Database.Client
+                        .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                    updated += await session.WithTransactionAsync(async (s, ct) =>
+                    {
+                        if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false)) return 0;
+                        var current = await _context.CronTickers.Find(s,
+                                InPartition(Builders<TCronTicker>.Filter.Eq(x => x.Id, ticker.Id)))
+                            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                        if (current == null) return 0;
+                        ticker.DefinitionRevision = Math.Max(1, current.DefinitionRevision + 1);
+                        ticker.UpdatedAt = _clock.UtcNow;
+                        var occurrenceFilter = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.And(
+                            Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(
+                                x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                            Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(
+                                x => x.CronTickerId, ticker.Id),
+                            Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(
+                                x => x.DefinitionRevision, current.DefinitionRevision),
+                            Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.In(
+                                x => x.Status, [TickerStatus.Idle, TickerStatus.Queued]),
+                            Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(
+                                x => x.LockHolder, null));
+                        await _context.CronTickerOccurrences.UpdateManyAsync(s, occurrenceFilter,
+                            Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
+                                .Set(x => x.Status, TickerStatus.Skipped)
+                                .Set(x => x.SkippedReason,
+                                    "Quarantined because its Cron definition revision is stale.")
+                                .Set(x => x.ExecutedAt, _clock.UtcNow)
+                                .Set(x => x.UpdatedAt, _clock.UtcNow),
+                            cancellationToken: ct).ConfigureAwait(false);
+                        var replace = await _context.CronTickers.ReplaceOneAsync(s,
+                            Builders<TCronTicker>.Filter.And(
+                                Builders<TCronTicker>.Filter.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                                Builders<TCronTicker>.Filter.Eq(x => x.Id, ticker.Id),
+                                Builders<TCronTicker>.Filter.Eq(
+                                    x => x.DefinitionRevision, current.DefinitionRevision)),
+                            ticker, new ReplaceOptions { IsUpsert = false }, ct).ConfigureAwait(false);
+                        return (int)replace.ModifiedCount;
+                    }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+                }
+                return updated;
+            }
             var count = 0;
             foreach (var t in cronTicker)
             {
+                Stamp(t);
                 var result = await _context.CronTickers.ReplaceOneAsync(
-                    Builders<TCronTicker>.Filter.Eq(x => x.Id, t.Id),
+                    InPartition(Builders<TCronTicker>.Filter.Eq(x => x.Id, t.Id)),
                     t,
                     new ReplaceOptions { IsUpsert = false },
                     cancellationToken).ConfigureAwait(false);
@@ -2713,8 +4102,23 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public async Task<int> RemoveCronTickers(Guid[] cronTickerIds, CancellationToken cancellationToken)
         {
+            if (_requiresActivatedRuntimeAdmission)
+            {
+                if (TransactionsKnownUnavailable) return 0;
+                using var session = await _context.Database.Client
+                    .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                return await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false)) return 0;
+                    var deleted = await _context.CronTickers.DeleteManyAsync(s,
+                        InPartition(Builders<TCronTicker>.Filter.In(x => x.Id, cronTickerIds)),
+                        cancellationToken: ct)
+                        .ConfigureAwait(false);
+                    return (int)deleted.DeletedCount;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
+            }
             var result = await _context.CronTickers.DeleteManyAsync(
-                Builders<TCronTicker>.Filter.In(x => x.Id, cronTickerIds),
+                InPartition(Builders<TCronTicker>.Filter.In(x => x.Id, cronTickerIds)),
                 cancellationToken).ConfigureAwait(false);
             return (int)result.DeletedCount;
         }
@@ -2724,6 +4128,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var filter = predicate is null
                 ? Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Empty
                 : Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Where(predicate);
+            filter = InPartition(filter);
             var rows = await _context.CronTickerOccurrences
                 .Find(filter)
                 .Sort(Builders<CronTickerOccurrenceEntity<TCronTicker>>.Sort.Descending(x => x.CreatedAt))
@@ -2737,6 +4142,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var filter = predicate is null
                 ? Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Empty
                 : Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Where(predicate);
+            filter = InPartition(filter);
             var total = await _context.CronTickerOccurrences.CountDocumentsAsync(filter, cancellationToken: cancellationToken).ConfigureAwait(false);
             var rows = await _context.CronTickerOccurrences
                 .Find(filter)
@@ -2750,18 +4156,71 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public async Task<int> InsertCronTickerOccurrences(CronTickerOccurrenceEntity<TCronTicker>[] cronTickerOccurrences, CancellationToken cancellationToken)
         {
+            if (cronTickerOccurrences.Length == 0) return 0;
+            var now = _clock.UtcNow;
             var count = 0;
             foreach (var occ in cronTickerOccurrences)
             {
-                try
+                Stamp(occ);
+                async Task<int> InsertAgainstRevisionAsync(
+                    IClientSessionHandle session, TCronTicker cron, CancellationToken ct)
                 {
-                    await _context.CronTickerOccurrences.InsertOneAsync(occ, cancellationToken: cancellationToken).ConfigureAwait(false);
-                    count++;
+                    if (cron == null) return 0;
+                    if (occ.DefinitionRevision <= 0)
+                        occ.DefinitionRevision = cron.DefinitionRevision;
+                    if (occ.DefinitionRevision != cron.DefinitionRevision &&
+                        occ.Status is TickerStatus.Idle or TickerStatus.Queued)
+                        QuarantineOccurrence(occ, now,
+                            "Quarantined because its Cron definition revision is stale.");
+                    try
+                    {
+                        if (session == null)
+                            await _context.CronTickerOccurrences.InsertOneAsync(
+                                occ, cancellationToken: ct).ConfigureAwait(false);
+                        else
+                            await _context.CronTickerOccurrences.InsertOneAsync(
+                                session, occ, cancellationToken: ct).ConfigureAwait(false);
+                        return 1;
+                    }
+                    catch (MongoWriteException ex) when (ex.WriteError?.Category == ServerErrorCategory.DuplicateKey)
+                    {
+                        return 0;
+                    }
                 }
-                catch (MongoWriteException ex) when (ex.WriteError?.Category == ServerErrorCategory.DuplicateKey)
+
+                if (TransactionsKnownUnavailable)
                 {
-                    // unique-index violation: another writer claimed the same (CronTickerId, ExecutionTime) slot
+                    throw new NotSupportedException(
+                        "MongoDB Cron occurrence insertion requires transactions so the parent revision fence and child insert commit atomically. Standalone MongoDB is unsupported for this operation.");
                 }
+
+                using var session = await _context.Database.Client
+                    .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                count += await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false))
+                        return 0;
+                    var cron = await _context.CronTickers.Find(
+                            s, InPartition(Builders<TCronTicker>.Filter.Eq(x => x.Id, occ.CronTickerId)))
+                        .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                    if (cron == null || !await LockCronRevisionAsync(
+                            s, cron.Id, cron.DefinitionRevision, ct).ConfigureAwait(false))
+                        return 0;
+
+                    // Duplicate-key errors abort a Mongo transaction even when caught. Because the
+                    // authoritative Cron row is locked above, inspect the unique logical slot inside
+                    // that serialized transaction and use the index only as a final integrity guard.
+                    var slotFilter = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.And(
+                        Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(
+                            x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                        Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(x => x.CronTickerId, occ.CronTickerId),
+                        Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.Eq(x => x.ExecutionTime, occ.ExecutionTime));
+                    if (await _context.CronTickerOccurrences.Find(s, slotFilter)
+                            .AnyAsync(ct).ConfigureAwait(false))
+                        return 0;
+
+                    return await InsertAgainstRevisionAsync(s, cron, ct).ConfigureAwait(false);
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
             }
             return count;
         }
@@ -2770,8 +4229,9 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             if (cronTickerOccurrences == null || cronTickerOccurrences.Length == 0) return 0;
             var ids = cronTickerOccurrences.Distinct().ToArray();
-            var rowFilter = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.In(x => x.Id, ids);
-            var resultFilter = Builders<BsonDocument>.Filter.In("_id", ids.Select(ResultId));
+            var rowFilter = InPartition(
+                Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter.In(x => x.Id, ids));
+            var resultFilter = ResultFilter(ids, CronOccurrenceResultKind);
 
             if (TransactionsKnownUnavailable)
             {
@@ -2799,6 +4259,8 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             if (occurrenceIds == null || occurrenceIds.Length == 0)
                 return Array.Empty<CronTickerOccurrenceEntity<TCronTicker>>();
+            if (TransactionsKnownUnavailable)
+                return Array.Empty<CronTickerOccurrenceEntity<TCronTicker>>();
 
             var now = _clock.UtcNow;
             var acquisitionToken = Guid.NewGuid();
@@ -2817,19 +4279,35 @@ namespace TickerQ.MongoDB.Infrastructure
 
             foreach (var id in occurrenceIds.Distinct())
             {
-                var filter = fb.And(
-                    fb.Eq(x => x.Id, id),
-                    MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(_lockHolder));
-                var acquired = await coll.FindOneAndUpdateAsync(filter, update, options, cancellationToken)
-                    .ConfigureAwait(false);
+                using var session = await _context.Database.Client
+                    .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                var acquired = await session.WithTransactionAsync(async (s, ct) =>
+                {
+                    if (!await LockRunnableAdmissionAsync(s, ct).ConfigureAwait(false))
+                        return null;
+                    var candidate = await coll.Find(s, InPartition(fb.Eq(x => x.Id, id)))
+                        .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                    if (candidate == null ||
+                        !await LockCronRevisionAsync(s, candidate.CronTickerId,
+                            candidate.DefinitionRevision, ct).ConfigureAwait(false))
+                        return null;
+
+                    var filter = fb.And(
+                        fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
+                        fb.Eq(x => x.Id, id),
+                        fb.Eq(x => x.DefinitionRevision, candidate.DefinitionRevision),
+                        MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(_lockHolder));
+                    var row = await coll.FindOneAndUpdateAsync(s, filter, update, options, ct)
+                        .ConfigureAwait(false);
+                    if (row == null) return null;
+                    row.CronTicker = await _context.CronTickers.Find(s,
+                            InPartition(Builders<TCronTicker>.Filter.Eq(x => x.Id, candidate.CronTickerId)))
+                        .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                    return row;
+                }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
                 if (acquired != null) rows.Add(acquired);
             }
 
-            if (rows.Count == 0) return Array.Empty<CronTickerOccurrenceEntity<TCronTicker>>();
-            var cronById = await LoadCronTickers(rows.Select(x => x.CronTickerId).Distinct().ToArray(), cancellationToken)
-                .ConfigureAwait(false);
-            foreach (var row in rows)
-                if (cronById.TryGetValue(row.CronTickerId, out var cron)) row.CronTicker = cron;
             return rows.ToArray();
         }
 
@@ -2840,6 +4318,7 @@ namespace TickerQ.MongoDB.Infrastructure
         public ITickerQueryable<TTimeTicker> TimeTickersQuery()
             => new MongoTickerQueryable<TTimeTicker>(
                 _context.TimeTickers,
+                x => x.ApplicationNamespaceKey == _runtimePartitionKey,
                 async (entity, relations, ct) =>
                 {
                     if (relations.Any(r => r == TickerRelation.Children || r == TickerRelation.ChildrenDeep))
@@ -2847,17 +4326,19 @@ namespace TickerQ.MongoDB.Infrastructure
                 });
 
         public ITickerQueryable<TCronTicker> CronTickersQuery()
-            => new MongoTickerQueryable<TCronTicker>(_context.CronTickers, null);
+            => new MongoTickerQueryable<TCronTicker>(
+                _context.CronTickers, x => x.ApplicationNamespaceKey == _runtimePartitionKey, null);
 
         public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
             => new MongoTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>(
                 _context.CronTickerOccurrences,
+                x => x.ApplicationNamespaceKey == _runtimePartitionKey,
                 async (occ, relations, ct) =>
                 {
                     if (relations.Any(r => r == TickerRelation.CronTicker))
                     {
                         occ.CronTicker = await _context.CronTickers
-                            .Find(Builders<TCronTicker>.Filter.Eq(x => x.Id, occ.CronTickerId))
+                            .Find(InPartition(Builders<TCronTicker>.Filter.Eq(x => x.Id, occ.CronTickerId)))
                             .FirstOrDefaultAsync(ct)
                             .ConfigureAwait(false);
                     }
@@ -2888,9 +4369,9 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 ct.ThrowIfCancellationRequested();
                 var rows = await _context.TimeTickers
-                    .Find(fb.And(
+                    .Find(InPartition(fb.And(
                         fb.In(x => x.ParentId, frontier.Select(p => (Guid?)p)),
-                        fb.Eq(x => x.ExecutionTime, null)))
+                        fb.Eq(x => x.ExecutionTime, null))))
                     .ToListAsync(ct)
                     .ConfigureAwait(false);
 
@@ -2993,11 +4474,69 @@ namespace TickerQ.MongoDB.Infrastructure
             }
         }
 
+        private async Task<bool> LockCronRevisionAsync(
+            IClientSessionHandle session, Guid cronId, long revision, CancellationToken ct)
+        {
+            var fb = Builders<TCronTicker>.Filter;
+            var result = await _context.CronTickers.UpdateOneAsync(
+                session,
+                InPartition(fb.And(fb.Eq(x => x.Id, cronId), fb.Eq(x => x.DefinitionRevision, revision))),
+                Builders<TCronTicker>.Update.Set(x => x.DefinitionRevision, revision),
+                cancellationToken: ct).ConfigureAwait(false);
+            return result.MatchedCount == 1;
+        }
+
+        private static bool CanAcquirePendingOccurrence(
+            CronTickerOccurrenceEntity<TCronTicker> occurrence, DateTime now)
+            => occurrence.Status is TickerStatus.Idle or TickerStatus.Queued
+               && (string.IsNullOrEmpty(occurrence.LockHolder))
+               && occurrence.AcquisitionToken == null
+               && (occurrence.LeaseUntil == null || occurrence.LeaseUntil <= now);
+
+        private static void QuarantineOccurrence(
+            CronTickerOccurrenceEntity<TCronTicker> occurrence, DateTime now, string reason)
+        {
+            occurrence.Status = TickerStatus.Skipped;
+            occurrence.SkippedReason = reason;
+            occurrence.ExecutedAt ??= now;
+            occurrence.LockHolder = null;
+            occurrence.LockedAt = null;
+            occurrence.LeaseUntil = null;
+            occurrence.AcquisitionToken = null;
+            occurrence.UpdatedAt = now;
+        }
+
+        private async Task QuarantineStalePendingOccurrenceAsync(
+            CronTickerOccurrenceEntity<TCronTicker> occurrence, DateTime now, CancellationToken ct)
+        {
+            var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
+            var filter = InPartition(fb.And(
+                fb.Eq(x => x.Id, occurrence.Id),
+                fb.Eq(x => x.DefinitionRevision, occurrence.DefinitionRevision),
+                fb.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
+                fb.Or(fb.Eq(x => x.LockHolder, null), fb.Eq(x => x.LockHolder, string.Empty)),
+                fb.Eq(x => x.AcquisitionToken, null),
+                fb.Or(fb.Eq(x => x.LeaseUntil, null), fb.Lte(x => x.LeaseUntil, now))));
+            await _context.CronTickerOccurrences.UpdateOneAsync(
+                filter,
+                Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
+                    .Set(x => x.Status, TickerStatus.Skipped)
+                    .Set(x => x.SkippedReason,
+                        "Quarantined because its Cron definition revision is stale.")
+                    .Set(x => x.ExecutedAt, now)
+                    .Set(x => x.LockHolder, (string)null)
+                    .Set(x => x.LockedAt, (DateTime?)null)
+                    .Set(x => x.LeaseUntil, (DateTime?)null)
+                    .Set(x => x.AcquisitionToken, (Guid?)null)
+                    .Set(x => x.UpdatedAt, now),
+                cancellationToken: ct).ConfigureAwait(false);
+        }
+
         private async Task<Dictionary<Guid, TCronTicker>> LoadCronTickers(Guid[] ids, CancellationToken ct)
         {
             if (ids.Length == 0) return new Dictionary<Guid, TCronTicker>();
             var rows = await _context.CronTickers
-                .Find(Builders<TCronTicker>.Filter.In(x => x.Id, ids))
+                .Find(InPartition(Builders<TCronTicker>.Filter.In(x => x.Id, ids)))
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
             return rows.ToDictionary(r => r.Id);
@@ -3006,7 +4545,7 @@ namespace TickerQ.MongoDB.Infrastructure
         private async Task<List<T>> LoadChildrenRecursive<T>(Guid parentId, CancellationToken ct) where T : TTimeTicker
         {
             var rows = await _context.TimeTickers
-                .Find(Builders<TTimeTicker>.Filter.Eq(x => x.ParentId, (Guid?)parentId))
+                .Find(InPartition(Builders<TTimeTicker>.Filter.Eq(x => x.ParentId, (Guid?)parentId)))
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
             var result = new List<T>(rows.Count);
@@ -3027,7 +4566,7 @@ namespace TickerQ.MongoDB.Infrastructure
             while (frontier.Count > 0)
             {
                 var id = frontier.Dequeue();
-                var filter = Builders<TTimeTicker>.Filter.Eq(x => x.ParentId, (Guid?)id);
+                var filter = InPartition(Builders<TTimeTicker>.Filter.Eq(x => x.ParentId, (Guid?)id));
                 var query = session == null
                     ? _context.TimeTickers.Find(filter)
                     : _context.TimeTickers.Find(session, filter);

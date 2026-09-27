@@ -226,7 +226,7 @@ public class TickerInMemoryPersistenceProviderCronDeduplicationTests : IAsyncLif
 
             // The seed owns a separate, freshly inserted seeded row.
             var seededRow = Assert.Single(rows.Where(r => r.Id != userId));
-            Assert.Equal("*/5 * * * *", seededRow.Expression);
+            Assert.Equal("0 */5 * * * *", seededRow.Expression);
             Assert.Equal(9, seededRow.RequestContractVersion);
             Assert.Equal("sha256:seed-only", seededRow.RequestContractFingerprint);
             Assert.StartsWith("MemoryTicker_Seeded_", seededRow.InitIdentifier);

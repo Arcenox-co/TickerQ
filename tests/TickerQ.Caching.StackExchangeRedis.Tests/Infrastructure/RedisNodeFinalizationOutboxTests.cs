@@ -88,6 +88,86 @@ public sealed class RedisNodeFinalizationOutboxTests
     }
 
     [Fact]
+    public async Task TerminalEvidenceIsBoundedAndSupersedingGenerationRejectsOldReplay()
+    {
+        var acquired = await AcquireTimeAsync();
+        var firstToken = acquired.AcquisitionToken!.Value;
+        var firstIntent = Intent(TickerType.TimeTicker, acquired.Id, firstToken);
+        var firstContext = Terminal(TickerType.TimeTicker, acquired.Id, firstToken, null);
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(firstContext, firstIntent));
+        var firstClaim = Assert.Single(await _provider.ClaimDueNodeFinalizationsAsync(
+            "first-worker", 1, Now, Now.AddMinutes(1)));
+        Assert.True(await _provider.CompleteNodeFinalizationAsync(firstClaim));
+
+        var reacquired = await _provider.AcquireTimeTickerOnDemandAsync(acquired.Id, Now.AddMinutes(2));
+        Assert.NotNull(reacquired);
+        var secondToken = reacquired.AcquisitionToken!.Value;
+        Assert.NotEqual(firstToken, secondToken);
+        var secondIntent = Intent(TickerType.TimeTicker, acquired.Id, secondToken);
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            Terminal(TickerType.TimeTicker, acquired.Id, secondToken, null), secondIntent));
+
+        Assert.Equal(1, await _db.HashLengthAsync(RedisKeyBuilder.TerminalMutationEvidenceKey));
+        Assert.False(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            firstContext, firstIntent));
+    }
+
+    [Fact]
+    public async Task DeletionCleansTerminalEvidenceSoRecreatedIdentityRejectsOldReplay()
+    {
+        var acquired = await AcquireTimeAsync();
+        var token = acquired.AcquisitionToken!.Value;
+        var intent = Intent(TickerType.TimeTicker, acquired.Id, token);
+        var context = Terminal(TickerType.TimeTicker, acquired.Id, token, null);
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(context, intent));
+        var claim = Assert.Single(await _provider.ClaimDueNodeFinalizationsAsync(
+            "delete-worker", 1, Now, Now.AddMinutes(1)));
+        Assert.True(await _provider.CompleteNodeFinalizationAsync(claim));
+        Assert.Equal(1, await _db.HashLengthAsync(RedisKeyBuilder.TerminalMutationEvidenceKey));
+
+        Assert.Equal(1, await _provider.RemoveTimeTickers([acquired.Id]));
+        Assert.Equal(0, await _db.HashLengthAsync(RedisKeyBuilder.TerminalMutationEvidenceKey));
+        var recreated = NewTicker();
+        recreated.Id = acquired.Id;
+        await _provider.AddTimeTickers([recreated]);
+
+        Assert.False(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(context, intent));
+        Assert.Equal(TickerStatus.Idle, (await _provider.GetTimeTickerById(acquired.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task CompletedOutbox_OnlyExactOriginalTerminalIntentIsAcknowledgedFromEvidence()
+    {
+        var acquired = await AcquireTimeAsync();
+        var token = acquired.AcquisitionToken!.Value;
+        var intent = Intent(TickerType.TimeTicker, acquired.Id, token);
+        var context = Terminal(TickerType.TimeTicker, acquired.Id, token, null);
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(context, intent));
+        var claim = Assert.Single(await _provider.ClaimDueNodeFinalizationsAsync(
+            "worker", 1, Now, Now.AddMinutes(1)));
+        Assert.True(await _provider.CompleteNodeFinalizationAsync(claim));
+        Assert.Equal(0, await _db.HashLengthAsync(RedisKeyBuilder.NodeFinalizationRecordsKey));
+
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(context, intent));
+        Assert.Equal(0, await _db.HashLengthAsync(RedisKeyBuilder.NodeFinalizationRecordsKey));
+
+        var differentOutboxId = Intent(TickerType.TimeTicker, acquired.Id, token);
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(context, differentOutboxId));
+
+        var differentIntent = Intent(TickerType.TimeTicker, acquired.Id, token,
+            intent.OutboxId, Guid.NewGuid());
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(context, differentIntent));
+
+        var differentToken = Guid.NewGuid();
+        Assert.False(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            Terminal(TickerType.TimeTicker, acquired.Id, differentToken, null),
+            Intent(TickerType.TimeTicker, acquired.Id, differentToken)));
+        Assert.Equal(0, await _db.HashLengthAsync(RedisKeyBuilder.NodeFinalizationRecordsKey));
+    }
+
+    [Fact]
     public async Task DuplicateWithDifferentExactBodyBytesAndCopiedDigestsFailsClosed()
     {
         var acquired = await AcquireTimeAsync();
@@ -289,11 +369,36 @@ public sealed class RedisNodeFinalizationOutboxTests
     }
 
     [Fact]
+    public async Task CancellationAfterCompleteEvalReturnsCommittedMutationWithoutFalseCancellation()
+    {
+        await EnqueueAndReadRecordAsync();
+        var claim = Assert.Single(await _provider.ClaimDueNodeFinalizationsAsync(
+            "worker", 1, Now, Now.AddMinutes(1)));
+        using var cancellation = new CancellationTokenSource();
+        _provider.AfterNodeFinalizationMutationScriptEvaluatedAsync = () =>
+        {
+            cancellation.Cancel();
+            return Task.CompletedTask;
+        };
+
+        Assert.True(await _provider.CompleteNodeFinalizationAsync(claim, cancellation.Token));
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.False(await _db.HashExistsAsync(
+            RedisKeyBuilder.NodeFinalizationRecordsKey, claim.Intent.OutboxId.ToString("D")));
+    }
+
+    [Fact]
     public async Task CronOccurrenceAndEmbeddedChildUseExactGenerationFence()
     {
+        var cronId = Guid.NewGuid();
+        await _provider.InsertCronTickers([new CronTickerEntity
+        {
+            Id = cronId, Function = "OutboxCron", Expression = "*/5 * * * *", Request = [],
+            CreatedAt = Now.AddHours(-1), UpdatedAt = Now.AddHours(-1)
+        }], CancellationToken.None);
         var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
         {
-            Id = Guid.NewGuid(), CronTickerId = Guid.NewGuid(), ExecutionTime = Now.AddMinutes(-1),
+            Id = Guid.NewGuid(), CronTickerId = cronId, ExecutionTime = Now.AddMinutes(-1),
             Status = TickerStatus.Idle, CreatedAt = Now.AddHours(-1), UpdatedAt = Now.AddHours(-1)
         };
         await _provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
@@ -420,7 +525,7 @@ public sealed class RedisNodeFinalizationTopologyTests
     }
 
     [Fact]
-    public void ClusterTopologyFailsClosedBeforeAnyCrossSlotScriptCanRun()
+    public async Task ClusterTopologyFailsClosedBeforeAnyCrossSlotMigrationScriptCanRun()
     {
         var db = Substitute.For<IDatabase>();
         var multiplexer = Substitute.For<IConnectionMultiplexer>();
@@ -440,5 +545,37 @@ public sealed class RedisNodeFinalizationTopologyTests
             NullLogger<TickerRedisPersistenceProvider<TimeTickerEntity, CronTickerEntity>>.Instance);
 
         Assert.False(provider.SupportsDurableNodeFinalizationOutbox);
+        var error = await Assert.ThrowsAsync<NotSupportedException>(() =>
+            provider.MigrateDefinedCronTickers(
+                [new DefinedCronTickerSeed("cluster-cron", "*/5 * * * *", 1, null)],
+                CancellationToken.None));
+        Assert.Contains("Redis Cluster", error.Message, StringComparison.Ordinal);
+        await db.DidNotReceive().ScriptEvaluateAsync(
+            Arg.Any<string>(), Arg.Any<RedisKey[]?>(), Arg.Any<RedisValue[]?>(), Arg.Any<CommandFlags>());
+    }
+
+    [Fact]
+    public async Task DisconnectedTopologyFailsClosedBeforeAnyMigrationScriptCanRun()
+    {
+        var db = Substitute.For<IDatabase>();
+        var multiplexer = Substitute.For<IConnectionMultiplexer>();
+        var server = Substitute.For<IServer>();
+        var endpoint = new DnsEndPoint("unknown.example", 6379);
+        db.Multiplexer.Returns(multiplexer);
+        multiplexer.GetEndPoints(Arg.Any<bool>()).Returns([endpoint]);
+        multiplexer.GetServer(endpoint, Arg.Any<object>()).Returns(server);
+        server.IsConnected.Returns(false);
+        var clock = Substitute.For<ITickerClock>();
+        clock.UtcNow.Returns(new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc));
+        var provider = new TickerRedisPersistenceProvider<TimeTickerEntity, CronTickerEntity>(
+            db, clock, new SchedulerOptionsBuilder { NodeIdentifier = "unknown-node" },
+            new TickerQRedisOptionBuilder { JsonSerializerContext = TestJsonSerializerContext.Default },
+            NullLogger<TickerRedisPersistenceProvider<TimeTickerEntity, CronTickerEntity>>.Instance);
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => provider.MigrateDefinedCronTickers(
+            [new DefinedCronTickerSeed("unknown-cron", "*/5 * * * *", 1, null)],
+            CancellationToken.None));
+        await db.DidNotReceive().ScriptEvaluateAsync(
+            Arg.Any<string>(), Arg.Any<RedisKey[]?>(), Arg.Any<RedisValue[]?>(), Arg.Any<CommandFlags>());
     }
 }

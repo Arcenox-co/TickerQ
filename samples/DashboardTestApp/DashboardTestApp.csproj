@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.0-rc.2.25502.107" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.13" PrivateAssets="All" />
     <PackageReference Include="Anthropic" Version="12.35.1" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.5.1" />
   </ItemGroup>

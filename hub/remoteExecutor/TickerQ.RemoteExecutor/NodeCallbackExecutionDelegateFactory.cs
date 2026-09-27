@@ -172,7 +172,8 @@ internal static class NodeCallbackExecutionDelegateFactory
                 finalizeNonce,
                 controlNonce,
                 finalizeBody,
-                DateTime.UtcNow);
+                DateTime.UtcNow,
+                context.RuntimePartitionKey);
 
             ApplyOutcome(context, outcome);
         };

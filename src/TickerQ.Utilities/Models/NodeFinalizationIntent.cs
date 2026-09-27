@@ -32,7 +32,8 @@ public sealed record NodeFinalizationIntent
         Guid requestNonce,
         Guid controlNonce,
         byte[] exactBody,
-        DateTime createdAtUtc)
+        DateTime createdAtUtc,
+        string runtimePartitionKey = null)
     {
         if (schemaVersion != CurrentSchemaVersion) throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         if (outboxId == Guid.Empty) throw new ArgumentException("Outbox ID is required.", nameof(outboxId));
@@ -74,6 +75,9 @@ public sealed record NodeFinalizationIntent
         ControlNonce = controlNonce;
         _exactBody = (byte[])exactBody.Clone();
         CreatedAtUtc = createdAtUtc;
+        RuntimePartitionKey = string.IsNullOrWhiteSpace(runtimePartitionKey)
+            ? TickerQRuntimePartition.LegacyGlobal.StorageKey
+            : runtimePartitionKey;
     }
 
     private static void ValidateExactBody(byte[] exactBody, TickerType tickerType, Guid tickerId,
@@ -147,6 +151,7 @@ public sealed record NodeFinalizationIntent
     public Guid ControlNonce { get; }
     public byte[] ExactBody => (byte[])_exactBody.Clone();
     public DateTime CreatedAtUtc { get; }
+    public string RuntimePartitionKey { get; }
 }
 
 /// <summary>A provider-issued, generation- and lease-fenced claim over one finalization intent.</summary>

@@ -25,7 +25,9 @@ namespace TickerQ.Utilities
                 AcquisitionToken = context.ParentId.HasValue ? context.ChainGeneration : context.AcquisitionToken
             };
 
-            var key = new TickerExecutionKey(context.Type, context.TickerId);
+            var partitionKey = NormalizePartition(context.RuntimePartitionKey);
+            details.RuntimePartitionKey = partitionKey;
+            var key = new TickerExecutionKey(partitionKey, context.Type, context.TickerId);
             if (!TickerCancellationTokens.TryAdd(key, details))
                 return;
 
@@ -63,7 +65,9 @@ namespace TickerQ.Utilities
                 AcquisitionToken = context.ParentId.HasValue ? context.ChainGeneration : context.AcquisitionToken
             };
 
-            var key = new TickerExecutionKey(context.Type, context.TickerId);
+            var partitionKey = NormalizePartition(context.RuntimePartitionKey);
+            details.RuntimePartitionKey = partitionKey;
+            var key = new TickerExecutionKey(partitionKey, context.Type, context.TickerId);
             while (true)
             {
                 if (TickerCancellationTokens.TryAdd(key, details))
@@ -96,9 +100,9 @@ namespace TickerQ.Utilities
         internal static bool RemoveTickerCancellationToken(Guid tickerId)
         {
             var removedTime = RemoveTickerCancellationToken(
-                new TickerExecutionKey(TickerType.TimeTicker, tickerId));
+                new TickerExecutionKey(TickerQRuntimePartition.LegacyGlobal.StorageKey, TickerType.TimeTicker, tickerId));
             var removedCron = RemoveTickerCancellationToken(
-                new TickerExecutionKey(TickerType.CronTickerOccurrence, tickerId));
+                new TickerExecutionKey(TickerQRuntimePartition.LegacyGlobal.StorageKey, TickerType.CronTickerOccurrence, tickerId));
             return removedTime || removedCron;
         }
 
@@ -135,7 +139,7 @@ namespace TickerQ.Utilities
 
             foreach (var type in new[] { TickerType.TimeTicker, TickerType.CronTickerOccurrence })
             {
-                var key = new TickerExecutionKey(type, tickerId);
+                var key = new TickerExecutionKey(TickerQRuntimePartition.LegacyGlobal.StorageKey, type, tickerId);
                 if (TickerCancellationTokens.TryGetValue(key, out var details)
                     && ReferenceEquals(details.CancellationSource, ownedSource)
                     && RemoveTickerCancellationToken(key, ownedSource))
@@ -234,6 +238,9 @@ namespace TickerQ.Utilities
         {
             foreach (var kvp in TickerCancellationTokens)
             {
+                if (!StringComparer.Ordinal.Equals(kvp.Key.RuntimePartitionKey,
+                        TickerQRuntimePartition.LegacyGlobal.StorageKey))
+                    continue;
                 if (kvp.Value.Type == TickerType.CronTickerOccurrence)
                     cronOccurrenceIds.Add(kvp.Key.TickerId);
                 else if (kvp.Value.ParentId == Guid.Empty)
@@ -245,9 +252,17 @@ namespace TickerQ.Utilities
         /// Generation-aware snapshot used by the reliability lease-renewal loop.
         /// </summary>
         internal static void SnapshotRunningForLeaseRenewal(List<AcquisitionLease> timeTickerLeases, List<AcquisitionLease> cronOccurrenceLeases)
+            => SnapshotRunningForLeaseRenewal(TickerQRuntimePartition.LegacyGlobal.StorageKey, timeTickerLeases, cronOccurrenceLeases);
+
+        internal static void SnapshotRunningForLeaseRenewal(string runtimePartitionKey,
+            List<AcquisitionLease> timeTickerLeases, List<AcquisitionLease> cronOccurrenceLeases)
         {
+            if (string.IsNullOrWhiteSpace(runtimePartitionKey))
+                throw new ArgumentException("Runtime partition key is required.", nameof(runtimePartitionKey));
             foreach (var kvp in TickerCancellationTokens)
             {
+                if (!StringComparer.Ordinal.Equals(kvp.Key.RuntimePartitionKey, runtimePartitionKey))
+                    continue;
                 if (kvp.Value.Type == TickerType.CronTickerOccurrence)
                     cronOccurrenceLeases.Add(new AcquisitionLease(kvp.Key.TickerId, kvp.Value.AcquisitionToken));
                 else if (kvp.Value.ParentId == Guid.Empty)
@@ -260,9 +275,9 @@ namespace TickerQ.Utilities
             // ID-only callers cannot distinguish persistence namespaces, so cancel every matching
             // local execution rather than arbitrarily selecting one.
             var cancelledTime = RequestTickerCancellation(
-                new TickerExecutionKey(TickerType.TimeTicker, tickerId));
+                new TickerExecutionKey(TickerQRuntimePartition.LegacyGlobal.StorageKey, TickerType.TimeTicker, tickerId));
             var cancelledCron = RequestTickerCancellation(
-                new TickerExecutionKey(TickerType.CronTickerOccurrence, tickerId));
+                new TickerExecutionKey(TickerQRuntimePartition.LegacyGlobal.StorageKey, TickerType.CronTickerOccurrence, tickerId));
             return cancelledTime || cancelledCron;
         }
 
@@ -285,8 +300,11 @@ namespace TickerQ.Utilities
         }
 
         internal static bool RequestTickerCancellation(TickerExecutionLease lease)
+            => RequestTickerCancellation(TickerQRuntimePartition.LegacyGlobal.StorageKey, lease);
+
+        internal static bool RequestTickerCancellation(string runtimePartitionKey, TickerExecutionLease lease)
         {
-            var key = new TickerExecutionKey(lease.Type, lease.TickerId);
+            var key = new TickerExecutionKey(runtimePartitionKey, lease.Type, lease.TickerId);
             if (!TickerCancellationTokens.TryGetValue(key, out var details)
                 || details.AcquisitionToken != lease.AcquisitionToken)
                 return false;
@@ -312,7 +330,7 @@ namespace TickerQ.Utilities
                     || current.ParentId != parentId)
                     return;
 
-                var parentKey = new TickerExecutionKey(key.Type, parentId);
+                var parentKey = new TickerExecutionKey(key.RuntimePartitionKey, key.Type, parentId);
                 var set = ParentIdIndex.GetOrAdd(parentKey, static _ => new ConcurrentHashSet<TickerExecutionKey>());
                 set.Add(key);
             }
@@ -323,7 +341,7 @@ namespace TickerQ.Utilities
         {
             lock (GetParentIndexLock(parentId))
             {
-                var parentKey = new TickerExecutionKey(key.Type, parentId);
+                var parentKey = new TickerExecutionKey(key.RuntimePartitionKey, key.Type, parentId);
                 if (TickerCancellationTokens.TryGetValue(key, out var current)
                     && current.ParentId == parentId
                     && !ReferenceEquals(current, removedDetails))
@@ -360,9 +378,12 @@ namespace TickerQ.Utilities
         /// <returns>True if any tickers are running for this parent ID</returns>
         public static bool IsParentRunning(Guid parentId)
         {
-            return ParentIdIndex.ContainsKey(new TickerExecutionKey(TickerType.TimeTicker, parentId))
-                || ParentIdIndex.ContainsKey(new TickerExecutionKey(TickerType.CronTickerOccurrence, parentId));
+            return IsParentRunning(TickerQRuntimePartition.LegacyGlobal.StorageKey, parentId);
         }
+
+        internal static bool IsParentRunning(string runtimePartitionKey, Guid parentId)
+            => ParentIdIndex.ContainsKey(new TickerExecutionKey(runtimePartitionKey, TickerType.TimeTicker, parentId))
+                || ParentIdIndex.ContainsKey(new TickerExecutionKey(runtimePartitionKey, TickerType.CronTickerOccurrence, parentId));
         
         /// <summary>
         /// Checks if any OTHER tickers (excluding the current one) are running for a given parent ID.
@@ -372,14 +393,25 @@ namespace TickerQ.Utilities
         /// <param name="excludeTickerId">The ticker ID to exclude from the check (usually the current ticker)</param>
         /// <returns>True if any other tickers are running for this parent ID</returns>
         public static bool IsParentRunningExcludingSelf(Guid parentId, Guid excludeTickerId)
+            => IsParentRunningExcludingSelf(
+                TickerQRuntimePartition.LegacyGlobal.StorageKey, parentId, excludeTickerId);
+
+        internal static bool IsParentRunningExcludingSelf(
+            string runtimePartitionKey, Guid parentId, Guid excludeTickerId)
         {
             if (!ParentIdIndex.TryGetValue(
-                    new TickerExecutionKey(TickerType.CronTickerOccurrence, parentId), out var tickerSet))
+                    new TickerExecutionKey(runtimePartitionKey, TickerType.CronTickerOccurrence, parentId), out var tickerSet))
                 return false;
             
             return tickerSet.HasOtherItemsBesides(
-                new TickerExecutionKey(TickerType.CronTickerOccurrence, excludeTickerId));
+                new TickerExecutionKey(runtimePartitionKey, TickerType.CronTickerOccurrence, excludeTickerId));
         }
+
+
+        private static string NormalizePartition(string runtimePartitionKey)
+            => string.IsNullOrWhiteSpace(runtimePartitionKey)
+                ? TickerQRuntimePartition.LegacyGlobal.StorageKey
+                : runtimePartitionKey;
     }
 
     public class TickerCancellationTokenDetails 
@@ -395,6 +427,7 @@ namespace TickerQ.Utilities
         /// Null for executions acquired by a provider that does not mint generation tokens.
         /// </summary>
         public Guid? AcquisitionToken { get; set; }
+        public string RuntimePartitionKey { get; set; }
     }
     
     /// <summary>

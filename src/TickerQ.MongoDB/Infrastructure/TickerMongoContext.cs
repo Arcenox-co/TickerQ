@@ -17,6 +17,7 @@ namespace TickerQ.MongoDB.Infrastructure
             CronTickerOccurrences = database.GetCollection<CronTickerOccurrenceEntity<TCronTicker>>(prefix + "CronTickerOccurrences");
             TickerResults = database.GetCollection<BsonDocument>(prefix + "TickerResults");
             NodeFinalizations = database.GetCollection<BsonDocument>(prefix + "NodeFinalizationOutbox");
+            StoreMetadata = database.GetCollection<BsonDocument>(prefix + "StoreMetadata");
         }
 
         public IMongoDatabase Database { get; }
@@ -25,5 +26,6 @@ namespace TickerQ.MongoDB.Infrastructure
         public IMongoCollection<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrences { get; }
         public IMongoCollection<BsonDocument> TickerResults { get; }
         public IMongoCollection<BsonDocument> NodeFinalizations { get; }
+        public IMongoCollection<BsonDocument> StoreMetadata { get; }
     }
 }

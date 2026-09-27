@@ -37,6 +37,15 @@ namespace TickerQ.Utilities.Interfaces
         /// </summary>
         Task<TimeTickerEntity> AcquireTimeTickerOnDemandAsync(Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
             => Task.FromResult<TimeTickerEntity>(null);
+        /// <summary>
+        /// Explicitly validates and repairs persisted TimeTicker chain root/generation metadata.
+        /// Malformed parent graphs must fail before any mutation. Providers predating this contract
+        /// remain binary/source compatible but advertise no support and fail closed at startup.
+        /// </summary>
+        bool SupportsTimeTickerChainRepair => false;
+        Task<TimeTickerChainRepairResult> RepairTimeTickerChainsAsync(CancellationToken cancellationToken = default)
+            => Task.FromException<TimeTickerChainRepairResult>(new NotSupportedException(
+                $"{nameof(RepairTimeTickerChainsAsync)} is required before scheduling but is not supported by this persistence provider."));
         #endregion
         
         #region Cron_Ticker_Core_Methods
@@ -46,10 +55,16 @@ namespace TickerQ.Utilities.Interfaces
         /// the function/expression projection through this default-interface bridge.
         /// </summary>
         Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
-            => MigrateDefinedCronTickers(
+        {
+            using var bridge = DefinedCronMigrationCompatibilityBridge.TryEnter();
+            if (bridge == null)
+                return Task.FromException(new NotSupportedException(
+                    "This persistence provider implements neither defined-Cron migration compatibility overload."));
+            return MigrateDefinedCronTickers(
                 Array.ConvertAll(cronTickers, static ticker =>
                     new DefinedCronTickerSeed(ticker.Function, ticker.Expression)),
                 cancellationToken);
+        }
 
         /// <summary>
         /// Seeds code-defined cron tickers with their request-contract identity. The default adapter
@@ -57,9 +72,18 @@ namespace TickerQ.Utilities.Interfaces
         /// remain usable; built-in and identity-aware providers override this overload directly.
         /// </summary>
         Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default)
-            => MigrateDefinedCronTickers(
+        {
+            using var bridge = DefinedCronMigrationCompatibilityBridge.TryEnter();
+            if (bridge == null)
+                return Task.FromException(new NotSupportedException(
+                    "This persistence provider implements neither defined-Cron migration compatibility overload."));
+            return MigrateDefinedCronTickers(
                 Array.ConvertAll(cronTickers, static ticker => (ticker.Function, ticker.Expression)),
                 cancellationToken);
+        }
+        Task MigrateDefinedCronTickers(DefinedCronSeedManifest manifest, CancellationToken cancellationToken = default)
+            => Task.FromException(new NotSupportedException(
+                "This persistence provider does not support namespaced defined-Cron reconciliation."));
         Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken);
         Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         #endregion
@@ -285,6 +309,85 @@ namespace TickerQ.Utilities.Interfaces
             => Task.FromResult<TickerResultEnvelope>(null);
         #endregion
 
+        #region Reconciliation_Activation_Epoch
+        bool SupportsLegacyRuntimePartitionAdoption => false;
+        Task AdoptLegacyRuntimePartitionAsync(
+            LegacyRuntimePartitionAdoption adoption, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(
+                "The configured persistence provider does not support explicit legacy runtime partition adoption.");
+        /// <summary>
+        /// Whether this provider durably persists the final reconciliation activation epoch and can fence
+        /// old/new rolling writers across the epoch boundary. Defaults to <c>false</c> so a third-party
+        /// provider compiled against the earlier contract stays source/binary compatible, yet <b>fails
+        /// closed</b> when an activation epoch is actually required — the initializer surfaces a clear
+        /// compatibility error instead of silently skipping the fence and letting the scheduler poll an
+        /// unreconciled store. All four built-in providers override this to <c>true</c>.
+        /// </summary>
+        bool SupportsReconciliationActivationEpoch => false;
+
+        Task<ActivationEpochState> GetReconciliationActivationStateAsync(
+            ReconciliationActivationScope scope, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(ReconciliationActivationScopeUnsupportedMessage);
+        Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(ReconciliationActivationScopeUnsupportedMessage);
+        Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
+            ReconciliationActivationScope scope, long targetEpoch, string checkpoint,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(ReconciliationActivationScopeUnsupportedMessage);
+        Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(ReconciliationActivationScopeUnsupportedMessage);
+
+        /// <summary>
+        /// Whether the rich defined-Cron manifest is authoritative for reconciliation. Providers must
+        /// advertise this only when they preserve namespace, stable identity, retirement, and revision data.
+        /// </summary>
+        bool SupportsAuthoritativeCronReconciliation => false;
+
+        /// <summary>
+        /// Reads the durable activation state and, when the store is not already activated at or beyond
+        /// <paramref name="targetEpoch"/>, atomically claims/advances it to
+        /// <see cref="ActivationEpochPhase.Activating"/> for that epoch under a provider-native fence.
+        /// Concurrent nodes converge on one epoch (no double-advance); a crash between begin and commit
+        /// leaves the store <see cref="ActivationEpochPhase.Activating"/> so a restart resumes from the
+        /// persisted checkpoint idempotently. Never moves the epoch backwards. Fails closed by default.
+        /// </summary>
+        Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(long targetEpoch, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(ReconciliationActivationEpochUnsupportedMessage);
+
+        /// <summary>
+        /// Durably records an opaque resume <paramref name="checkpoint"/> for the in-progress epoch so a
+        /// restart resumes bounded repair rather than restarting it. A no-op when the store is not
+        /// <see cref="ActivationEpochPhase.Activating"/> at <paramref name="targetEpoch"/>. Fails closed by default.
+        /// </summary>
+        Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(long targetEpoch, string checkpoint, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(ReconciliationActivationEpochUnsupportedMessage);
+
+        /// <summary>
+        /// Atomically flips the durable state to <see cref="ActivationEpochPhase.Activated"/> for
+        /// <paramref name="targetEpoch"/> under a provider-native atomic boundary (EF serializable
+        /// transaction + concurrency token, Mongo single-document CAS, Redis Lua/CAS, in-memory lock).
+        /// Idempotent: re-committing an already-activated epoch (or a higher one) is a no-op. This commit
+        /// is the single moment old rolling nodes observe as "fully activated". Fails closed by default.
+        /// </summary>
+        Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(long targetEpoch, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(ReconciliationActivationEpochUnsupportedMessage);
+
+        /// <summary>Reads the current durable activation state without mutating it. Fails closed by default.</summary>
+        Task<ActivationEpochState> GetReconciliationActivationStateAsync(CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(ReconciliationActivationEpochUnsupportedMessage);
+
+        private const string ReconciliationActivationEpochUnsupportedMessage =
+            "This persistence provider does not support the reconciliation activation epoch required to " +
+            "fence rolling deployments. Upgrade to a provider that implements " +
+            nameof(SupportsReconciliationActivationEpoch) + " = true, or drain old writers and run the " +
+            "migration in a controlled single-node window before activation.";
+        private const string ReconciliationActivationScopeUnsupportedMessage =
+            "This persistence provider does not implement application-scoped reconciliation activation. " +
+            "Upgrade the provider before using a shared ticker store.";
+        #endregion
+
         #region Queryable
         ITickerQueryable<TTimeTicker> TimeTickersQuery();
         ITickerQueryable<TCronTicker> CronTickersQuery();
@@ -334,5 +437,23 @@ namespace TickerQ.Utilities.Interfaces
         Task<int> RemoveCronTickerOccurrences(Guid[] cronTickerOccurrences, CancellationToken cancellationToken);
         Task<CronTickerOccurrenceEntity<TCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default);
         #endregion
+    }
+
+    internal static class DefinedCronMigrationCompatibilityBridge
+    {
+        private static readonly AsyncLocal<bool> Active = new();
+
+        internal static IDisposable TryEnter()
+        {
+            if (Active.Value)
+                return null;
+            Active.Value = true;
+            return new Scope();
+        }
+
+        private sealed class Scope : IDisposable
+        {
+            public void Dispose() => Active.Value = false;
+        }
     }
 }
