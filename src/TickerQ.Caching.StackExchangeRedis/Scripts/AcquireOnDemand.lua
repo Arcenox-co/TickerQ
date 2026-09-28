@@ -2,12 +2,14 @@
 -- KEYS: entity, result side key, terminal evidence hash, activation metadata
 -- ARGV: holder, now, leaseUntil, token, inProgressStatus, executionTime, queuedStatus, exact supported epoch,
 --       scoped | legacy | invalid runtime admission mode
-local activationType = ARGV[9] == 'scoped' and redis.call('TYPE', KEYS[4])['ok'] or 'none'
+local activationType = redis.call('TYPE', KEYS[4])['ok']
 if ARGV[9] == 'invalid' then return nil end
 if ARGV[9] ~= 'scoped' and ARGV[9] ~= 'legacy' then return redis.error_reply('invalid runtime admission mode') end
 if activationType ~= 'none' and activationType ~= 'hash' then
   return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type')
 end
+if ARGV[9] == 'legacy' and activationType == 'hash' and
+   redis.call('HGET', KEYS[4], 'legacyAdoptionState') then return nil end
 if ARGV[9] == 'scoped' and activationType == 'none' then return nil end
 if ARGV[9] == 'scoped' and activationType == 'hash' then
   local metadata = redis.call('HGETALL', KEYS[4])

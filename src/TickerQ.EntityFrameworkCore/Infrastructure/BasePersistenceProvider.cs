@@ -71,11 +71,11 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             var db = lease.Context;
             await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct)
                 .ConfigureAwait(false);
-            const string adoptionId = "TickerQ:LegacyRuntimeAdoption";
             var legacyKey = TickerQRuntimePartition.LegacyGlobal.StorageKey;
             var authority = $"{_runtimePartitionKey}|{adoption.Epoch}";
             var record = await db.Set<TickerQStoreMetadata>().SingleOrDefaultAsync(
-                x => x.ApplicationNamespaceKey == legacyKey && x.Id == adoptionId, ct).ConfigureAwait(false);
+                x => x.ApplicationNamespaceKey == legacyKey &&
+                     x.Id == TickerQStoreMetadata.LegacyRuntimeAdoptionId, ct).ConfigureAwait(false);
             if (record != null)
             {
                 if (!StringComparer.Ordinal.Equals(record.LastMigrationId, authority))
@@ -91,7 +91,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             {
                 record = new TickerQStoreMetadata
                 {
-                    ApplicationNamespaceKey = legacyKey, Id = adoptionId,
+                    ApplicationNamespaceKey = legacyKey, Id = TickerQStoreMetadata.LegacyRuntimeAdoptionId,
                     LastMigrationId = authority, ActivationCheckpoint = "adopting",
                     UpdatedAtUtc = _clock.UtcNow, Version = 1
                 };
@@ -109,34 +109,92 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             owners.UnionWith(await db.Set<CronTickerOccurrenceResultEntity<TCronTicker>>().Select(x => x.ApplicationNamespaceKey).Distinct().ToListAsync(ct));
             owners.UnionWith(await db.Set<NodeFinalizationOutboxEntity>().Select(x => x.ApplicationNamespaceKey).Distinct().ToListAsync(ct));
             owners.UnionWith(await db.Set<TickerQStoreMetadata>()
-                .Where(x => x.Id != TickerQStoreMetadata.SingletonId && x.Id != adoptionId)
+                .Where(x => x.Id != TickerQStoreMetadata.SingletonId &&
+                            x.Id != TickerQStoreMetadata.LegacyRuntimeAdoptionId)
                 .Select(x => x.ApplicationNamespaceKey).Distinct().ToListAsync(ct));
             owners.Remove(legacyKey); owners.Remove(_runtimePartitionKey);
             if (owners.Count > 0)
                 throw new InvalidOperationException(
                     "Legacy runtime adoption is ambiguous because runtime rows exist for another namespace.");
 
-            await db.Set<TTimeTicker>().Where(x => x.ApplicationNamespaceKey == legacyKey)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.ApplicationNamespaceKey, _runtimePartitionKey), ct);
-            await db.Set<TCronTicker>().Where(x => x.ApplicationNamespaceKey == legacyKey)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.ApplicationNamespaceKey, _runtimePartitionKey), ct);
-            await db.Set<CronTickerOccurrenceEntity<TCronTicker>>().Where(x => x.ApplicationNamespaceKey == legacyKey)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.ApplicationNamespaceKey, _runtimePartitionKey), ct);
+            // Composite foreign keys are immediate on SQLite/PostgreSQL and cannot be updated parent-first
+            // or child-first. Copy a complete target graph while the legacy graph still satisfies its FKs,
+            // then delete the legacy graph dependents-first in the same serializable transaction.
+            var legacyTimeTickers = await db.Set<TTimeTicker>().AsNoTracking()
+                .Where(x => x.ApplicationNamespaceKey == legacyKey).ToListAsync(ct).ConfigureAwait(false);
+            var legacyCronTickers = await db.Set<TCronTicker>().AsNoTracking()
+                .Where(x => x.ApplicationNamespaceKey == legacyKey).ToListAsync(ct).ConfigureAwait(false);
+            var legacyOccurrences = await db.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking()
+                .Where(x => x.ApplicationNamespaceKey == legacyKey).ToListAsync(ct).ConfigureAwait(false);
+            var legacyTimeResults = await db.Set<TimeTickerResultEntity<TTimeTicker>>().AsNoTracking()
+                .Where(x => x.ApplicationNamespaceKey == legacyKey).ToListAsync(ct).ConfigureAwait(false);
+            var legacyOccurrenceResults = await db.Set<CronTickerOccurrenceResultEntity<TCronTicker>>().AsNoTracking()
+                .Where(x => x.ApplicationNamespaceKey == legacyKey).ToListAsync(ct).ConfigureAwait(false);
+            var legacyOutbox = await db.Set<NodeFinalizationOutboxEntity>().AsNoTracking()
+                .Where(x => x.ApplicationNamespaceKey == legacyKey).ToListAsync(ct).ConfigureAwait(false);
+            var legacyMetadata = await db.Set<TickerQStoreMetadata>().AsNoTracking()
+                .Where(x => x.ApplicationNamespaceKey == legacyKey &&
+                            x.Id != TickerQStoreMetadata.LegacyRuntimeAdoptionId &&
+                            x.Id != TickerQStoreMetadata.SingletonId)
+                .ToListAsync(ct).ConfigureAwait(false);
+
+            var targetTimeTickers = legacyTimeTickers.Select(x => CloneScalar(db, x)).ToArray();
+            foreach (var row in targetTimeTickers) row.ApplicationNamespaceKey = _runtimePartitionKey;
+            var targetCronTickers = legacyCronTickers.Select(x => CloneScalar(db, x)).ToArray();
+            foreach (var row in targetCronTickers) row.ApplicationNamespaceKey = _runtimePartitionKey;
+            db.Set<TTimeTicker>().AddRange(targetTimeTickers);
+            db.Set<TCronTicker>().AddRange(targetCronTickers);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+            var targetOccurrences = legacyOccurrences.Select(x => CloneScalar(db, x)).ToArray();
+            foreach (var row in targetOccurrences) row.ApplicationNamespaceKey = _runtimePartitionKey;
+            db.Set<CronTickerOccurrenceEntity<TCronTicker>>().AddRange(targetOccurrences);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+            var targetTimeResults = legacyTimeResults.Select(x => CloneScalar(db, x)).ToArray();
+            foreach (var row in targetTimeResults) row.ApplicationNamespaceKey = _runtimePartitionKey;
+            var targetOccurrenceResults = legacyOccurrenceResults.Select(x => CloneScalar(db, x)).ToArray();
+            foreach (var row in targetOccurrenceResults) row.ApplicationNamespaceKey = _runtimePartitionKey;
+            var targetOutbox = legacyOutbox.Select(x => CloneScalar(db, x)).ToArray();
+            foreach (var row in targetOutbox) row.ApplicationNamespaceKey = _runtimePartitionKey;
+            var targetMetadata = legacyMetadata.Select(x => CloneScalar(db, x)).ToArray();
+            foreach (var row in targetMetadata) row.ApplicationNamespaceKey = _runtimePartitionKey;
+            db.Set<TimeTickerResultEntity<TTimeTicker>>().AddRange(targetTimeResults);
+            db.Set<CronTickerOccurrenceResultEntity<TCronTicker>>().AddRange(targetOccurrenceResults);
+            db.Set<NodeFinalizationOutboxEntity>().AddRange(targetOutbox);
+            db.Set<TickerQStoreMetadata>().AddRange(targetMetadata);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
             await db.Set<TimeTickerResultEntity<TTimeTicker>>().Where(x => x.ApplicationNamespaceKey == legacyKey)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.ApplicationNamespaceKey, _runtimePartitionKey), ct);
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
             await db.Set<CronTickerOccurrenceResultEntity<TCronTicker>>().Where(x => x.ApplicationNamespaceKey == legacyKey)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.ApplicationNamespaceKey, _runtimePartitionKey), ct);
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
             await db.Set<NodeFinalizationOutboxEntity>().Where(x => x.ApplicationNamespaceKey == legacyKey)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.ApplicationNamespaceKey, _runtimePartitionKey), ct);
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await db.Set<CronTickerOccurrenceEntity<TCronTicker>>().Where(x => x.ApplicationNamespaceKey == legacyKey)
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await db.Set<TTimeTicker>().Where(x => x.ApplicationNamespaceKey == legacyKey)
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await db.Set<TCronTicker>().Where(x => x.ApplicationNamespaceKey == legacyKey)
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
             await db.Set<TickerQStoreMetadata>().Where(x => x.ApplicationNamespaceKey == legacyKey &&
-                    x.Id != adoptionId && x.Id != TickerQStoreMetadata.SingletonId)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.ApplicationNamespaceKey, _runtimePartitionKey), ct);
+                    x.Id != TickerQStoreMetadata.LegacyRuntimeAdoptionId &&
+                    x.Id != TickerQStoreMetadata.SingletonId)
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
             record.ActivationCheckpoint = "completed";
             record.UpdatedAtUtc = _clock.UtcNow;
             record.Version++;
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
             await transaction.CommitAsync(ct).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static TEntity CloneScalar<TEntity>(DbContext dbContext, TEntity source)
+        where TEntity : class, new()
+    {
+        var clone = new TEntity();
+        dbContext.Entry(clone).CurrentValues.SetValues(source);
+        return clone;
     }
 
     /// <summary>
@@ -157,9 +215,24 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     private readonly bool _requiresActivatedRuntimeAdmission;
     private readonly long _runtimeActivationEpoch;
     protected readonly string _runtimePartitionKey;
+    protected string CronExpressionsCacheKey => $"cron:expressions:{_runtimePartitionKey}";
     protected internal Func<CancellationToken, Task> AfterRunnableAdmissionFenceForTestAsync { get; set; }
     protected internal Func<CancellationToken, Task> AfterLegacyAdoptionLeaseForTestAsync { get; set; }
     protected internal Func<CancellationToken, Task> AfterTimeTickerGraphMutationFenceForTestAsync { get; set; }
+
+    private async Task<bool> LockLegacyWriteAdmissionAsync(
+        TDbContext dbContext, CancellationToken cancellationToken)
+    {
+        if (_runtimePartitionKey != TickerQRuntimePartition.LegacyGlobal.StorageKey)
+            return true;
+        // This indexed predicate read and adoption's read/insert run under Serializable transactions.
+        // The absent-row range is therefore fenced during first adoption; once inserted, the durable
+        // tombstone rejects every later legacy creation/publication attempt.
+        return !await dbContext.Set<TickerQStoreMetadata>().AsNoTracking().AnyAsync(
+            x => x.ApplicationNamespaceKey == TickerQRuntimePartition.LegacyGlobal.StorageKey &&
+                 x.Id == TickerQStoreMetadata.LegacyRuntimeAdoptionId,
+            cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Executes a store-global TimeTicker graph mutation through the configured provider execution
@@ -180,6 +253,11 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             RunnableAdmissionContextCreatedForTest?.Invoke(dbContext.ContextId.InstanceId);
             await using var transaction = await dbContext.Database
                 .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            if (!await LockLegacyWriteAdmissionAsync(dbContext, cancellationToken).ConfigureAwait(false))
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                return deniedResult;
+            }
             await LockTimeTickerGraphMutationAsync(dbContext, cancellationToken).ConfigureAwait(false);
 
             if (requireRunnableAdmission &&
@@ -314,6 +392,11 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             RunnableAdmissionContextCreatedForTest?.Invoke(dbContext.ContextId.InstanceId);
             await using var transaction = await dbContext.Database
                 .BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
+            if (!await LockLegacyWriteAdmissionAsync(dbContext, ct).ConfigureAwait(false))
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                return deniedResult;
+            }
             if (!await LockRunnableAdmissionAsync(dbContext, ct, _runtimeActivationScopeKey).ConfigureAwait(false))
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
@@ -890,6 +973,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             {
                 dbContext.Set<CronTickerOccurrenceResultEntity<TCronTicker>>().Add(new()
                 {
+                    ApplicationNamespaceKey = _runtimePartitionKey,
                     TickerId = functionContext.TickerId,
                     Payload = functionContext.ResultEnvelope.ToPayloadArray(),
                     EnvelopeVersion = functionContext.ResultEnvelope.Version,
@@ -910,6 +994,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         {
             dbContext.Set<TimeTickerResultEntity<TTimeTicker>>().Add(new()
             {
+                ApplicationNamespaceKey = _runtimePartitionKey,
                 TickerId = functionContext.TickerId,
                 Payload = functionContext.ResultEnvelope.ToPayloadArray(),
                 EnvelopeVersion = functionContext.ResultEnvelope.Version,
@@ -1222,22 +1307,24 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
     public async Task ReleaseAcquiredTimeTickers(Guid[] timeTickerIds, CancellationToken cancellationToken)
     {
-        if (timeTickerIds == null || timeTickerIds.Length == 0)
-            return; // Empty is an explicit no-op; never interpret it as "release everything".
-
-        var ids = timeTickerIds.Distinct().ToArray();
+        var ids = timeTickerIds?.Distinct().ToArray() ?? [];
         await ExecuteRunnableAdmissionAsync(0, async (dbContext, ct) =>
         {
             var now = _clock.UtcNow;
-            var leases = await dbContext.Set<TTimeTicker>().AsNoTracking()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && ids.Contains(x.Id) &&
-                            x.LockHolder == _lockHolder && x.AcquisitionToken != null)
+            var leaseQuery = dbContext.Set<TTimeTicker>().AsNoTracking()
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                            (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
+                            x.LockHolder == _lockHolder && x.AcquisitionToken != null);
+            if (ids.Length > 0)
+                leaseQuery = leaseQuery.Where(x => ids.Contains(x.Id));
+            var leases = await leaseQuery
                 .Select(x => new { x.Id, Token = x.AcquisitionToken.Value })
                 .ToArrayAsync(ct).ConfigureAwait(false);
             var released = 0;
             foreach (var lease in leases)
                 released += await dbContext.Set<TTimeTicker>()
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == lease.Id &&
+                                (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
                                 x.LockHolder == _lockHolder &&
                                 x.AcquisitionToken == lease.Token)
                     .ExecuteUpdateAsync(setters => setters
@@ -1245,6 +1332,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                         .SetProperty(x => x.LockedAt, (DateTime?)null)
                         .SetProperty(x => x.LeaseUntil, (DateTime?)null)
                         .SetProperty(x => x.AcquisitionToken, (Guid?)null)
+                        .SetProperty(x => x.ChainGeneration, (Guid?)null)
                         .SetProperty(x => x.Status, TickerStatus.Idle)
                         .SetProperty(x => x.UpdatedAt, now), ct).ConfigureAwait(false);
             return released;
@@ -1334,7 +1422,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         }
     }
 
-    private static async Task<bool> LockCurrentChainGenerationAsync(
+    private async Task<bool> LockCurrentChainGenerationAsync(
         TDbContext dbContext, InternalFunctionContext context, CancellationToken cancellationToken)
     {
         if (!context.ChainRootId.HasValue || !context.ChainGeneration.HasValue)
@@ -1343,7 +1431,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var rootId = context.ChainRootId.Value;
         var generation = context.ChainGeneration.Value;
         var affected = await dbContext.Set<TTimeTicker>()
-            .Where(root => root.Id == rootId && root.ParentId == null &&
+            .Where(root => root.ApplicationNamespaceKey == _runtimePartitionKey &&
+                           root.Id == rootId && root.ParentId == null &&
                            root.ChainRootId == root.Id && root.ChainGeneration == generation)
             // A conditional no-op write is intentional: MVCC providers take a row write lock,
             // serializing this child mutation with every root reacquisition.
@@ -1353,7 +1442,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         return affected == 1;
     }
 
-    private static IQueryable<TTimeTicker> ApplyTimeTickerGenerationFence(
+    private IQueryable<TTimeTicker> ApplyTimeTickerGenerationFence(
         TDbContext dbContext, IQueryable<TTimeTicker> query, InternalFunctionContext context)
     {
         if (!context.ChainRootId.HasValue || !context.ChainGeneration.HasValue)
@@ -1362,7 +1451,9 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var rootId = context.ChainRootId.Value;
         var generation = context.ChainGeneration.Value;
         return query.Where(target => target.ChainRootId == rootId &&
-            dbContext.Set<TTimeTicker>().Any(root => root.Id == rootId && root.ParentId == null &&
+            dbContext.Set<TTimeTicker>().Any(root =>
+                root.ApplicationNamespaceKey == _runtimePartitionKey &&
+                root.Id == rootId && root.ParentId == null &&
                 root.ChainRootId == root.Id && root.ChainGeneration == generation));
     }
 
@@ -1709,6 +1800,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             var now = _clock.UtcNow;
             var leases = await dbContext.Set<TTimeTicker>().AsNoTracking()
                 .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                            (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued ||
+                             x.Status == TickerStatus.InProgress) &&
                             x.LockHolder == instanceIdentifier && x.AcquisitionToken != null)
                 .Select(x => new
                 {
@@ -1721,6 +1814,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             {
                 var query = dbContext.Set<TTimeTicker>()
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == lease.Id &&
+                                (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued ||
+                                 x.Status == TickerStatus.InProgress) &&
                                 x.LockHolder == instanceIdentifier &&
                                 x.AcquisitionToken == lease.Token);
                 if (lease.ParentId.HasValue)
@@ -1748,6 +1843,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                         .SetProperty(x => x.LockedAt, (DateTime?)null)
                         .SetProperty(x => x.LeaseUntil, (DateTime?)null)
                         .SetProperty(x => x.AcquisitionToken, (Guid?)null)
+                        .SetProperty(x => x.ChainGeneration, (Guid?)null)
                         .SetProperty(x => x.Status, TickerStatus.Idle)
                         .SetProperty(x => x.UpdatedAt, now), ct).ConfigureAwait(false);
             }
@@ -1943,6 +2039,9 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             dbContext.ChangeTracker.Clear();
             await using var transaction = await dbContext.Database
                 .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            if (!await LockLegacyWriteAdmissionAsync(dbContext, cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException(
+                    "Legacy runtime writes are fenced after legacy partition adoption begins.");
             var cronIdsRequiringPendingCleanup = new HashSet<Guid>();
 
             // Phase A — non-destructive retirement of seeded rows no longer desired. Compared to the
@@ -1954,7 +2053,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             // InitIdentifier) protects dashboard/user rows (including SDK/remote `name@node` functions the
             // initializer never seeds); they carry a null/empty seed identity and are never candidates.
             var allSeeded = await cronSet
-                .Where(c => !string.IsNullOrEmpty(c.InitIdentifier))
+                .Where(c => c.ApplicationNamespaceKey == _runtimePartitionKey &&
+                            !string.IsNullOrEmpty(c.InitIdentifier))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -1966,9 +2066,9 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                         .SelectMany(seed => CronSeedIdentity.LegacyAdoptionKeys(
                             manifest.ApplicationNamespace, seed.StableDefinitionId))
                         .ToHashSet(StringComparer.Ordinal);
-                    var legacy = allSeeded.Where(x => x.Function == functionGroup.Key
+                    var legacy = allSeeded.Where(x => CronSeedIdentity.CanonicallyEquals(x.Function, functionGroup.Key)
                         && x.SeedOwnerNamespace == null
-                        && (x.SeedKey == null || x.SeedKey == x.Function
+                        && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
                             || documentedLegacyKeys.Contains(x.SeedKey))).ToArray();
                     if (legacy.Length == 0) continue;
                     if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
@@ -1985,11 +2085,13 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
             var orphaned = allSeeded.Where(c => manifest.IsLegacyGlobal
                 ? !functions.Contains(c.Function)
-                : c.SeedOwnerNamespace == manifest.ApplicationNamespace && manifest.IsOrphanedSeedKey(c.SeedKey)).ToList();
+                : CronSeedIdentity.CanonicallyEquals(c.SeedOwnerNamespace, manifest.ApplicationNamespace)
+                  && manifest.IsOrphanedSeedKey(c.SeedKey)).ToList();
 
             foreach (var row in orphaned)
             {
-                var immediate = blockedFunctions.Contains(row.Function);
+                var immediate = blockedFunctions.Any(function =>
+                    CronSeedIdentity.CanonicallyEquals(function, row.Function));
                 if (CronSeedRetirement.ApplyRetirement(row, now, grace, immediate))
                     row.UpdatedAt = now;
                 if (row.RetiredAt.HasValue)
@@ -2010,7 +2112,9 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             //     enabled code-owned row per SeedKey results.
             //   * A desired seed that (re)appeared has any framework retirement state cleared, restoring
             //     only a framework-disabled row (a user-disabled row stays disabled).
-            var existing = allSeeded.Where(c => functions.Contains(c.Function)).ToList();
+            var existing = allSeeded.Where(c => manifest.IsLegacyGlobal
+                ? functions.Contains(c.Function)
+                : functions.Any(function => CronSeedIdentity.CanonicallyEquals(c.Function, function))).ToList();
 
             var byFunction = existing
                 .GroupBy(c => c.Function)
@@ -2026,14 +2130,19 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                     ? Array.Empty<string>()
                     : CronSeedIdentity.LegacyAdoptionKeys(
                         manifest.ApplicationNamespace, seed.StableDefinitionId);
+                var acceptedSeedKeys = manifest.IsLegacyGlobal
+                    ? Array.Empty<string>()
+                    : CronSeedIdentity.AcceptedSeedKeys(
+                        manifest.ApplicationNamespace, seed.StableDefinitionId);
 
                 var group = manifest.IsLegacyGlobal
                     ? (byFunction.TryGetValue(seed.Function, out var legacyGroup) ? legacyGroup : null)
                     : existing.Where(x =>
-                            (x.SeedKey == seedKey && x.SeedOwnerNamespace == manifest.ApplicationNamespace)
-                            || (x.Function == seed.Function && x.SeedOwnerNamespace == null
+                            (acceptedSeedKeys.Contains(x.SeedKey, StringComparer.Ordinal)
+                             && CronSeedIdentity.CanonicallyEquals(x.SeedOwnerNamespace, manifest.ApplicationNamespace))
+                            || (CronSeedIdentity.CanonicallyEquals(x.Function, seed.Function) && x.SeedOwnerNamespace == null
                                 && manifest.MayAdoptLegacy(seed.Function)
-                                && (x.SeedKey == null || x.SeedKey == x.Function
+                                && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
                                     || documentedLegacyKeys.Contains(x.SeedKey, StringComparer.Ordinal))))
                         .OrderBy(x => x.Id).ToList();
                 if (group is { Count: > 0 })
@@ -2190,17 +2299,17 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         }
 
         // A converged reconcile can add/update/retire seeded rows and so alter the visible cron
-        // definitions. Invalidate the shared "cron:expressions" cache exactly like Insert/Update/Delete —
+        // definitions. Invalidate this partition's "cron:expressions" cache exactly like Insert/Update/Delete —
         // only after a successful SaveChanges (a failed reconcile threw above and never reaches here, so a
         // stale reconcile never drops the coherent cached view).
         if (RedisContext.HasRedisConnection)
-            await RedisContext.DistributedCache.RemoveAsync("cron:expressions", cancellationToken).ConfigureAwait(false);
+            await RedisContext.DistributedCache.RemoveAsync(CronExpressionsCacheKey, cancellationToken).ConfigureAwait(false);
     }
         
     public async Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken = default)
     {
         var result = await RedisContext.GetOrSetArrayAsync(
-            cacheKey: "cron:expressions",
+            cacheKey: CronExpressionsCacheKey,
             factory: async (ct) =>
             {
                 using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
@@ -2355,6 +2464,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             var now = _clock.UtcNow;
             var leases = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking()
                 .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                            (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued ||
+                             x.Status == TickerStatus.InProgress) &&
                             x.LockHolder == instanceIdentifier && x.AcquisitionToken != null)
                 .Select(x => new { x.Id, Token = x.AcquisitionToken.Value })
                 .ToArrayAsync(ct).ConfigureAwait(false);
@@ -2362,6 +2473,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             foreach (var lease in leases)
                 released += await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == lease.Id &&
+                                (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued ||
+                                 x.Status == TickerStatus.InProgress) &&
                                 x.LockHolder == instanceIdentifier &&
                                 x.AcquisitionToken == lease.Token)
                     .ExecuteUpdateAsync(setter => setter
@@ -2380,22 +2493,24 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     
     public async Task ReleaseAcquiredCronTickerOccurrences(Guid[] occurrenceIds, CancellationToken cancellationToken = default)
     {
-        if (occurrenceIds == null || occurrenceIds.Length == 0)
-            return;
-
-        var ids = occurrenceIds.Distinct().ToArray();
+        var ids = occurrenceIds?.Distinct().ToArray() ?? [];
         await ExecuteRunnableAdmissionAsync(0, async (dbContext, ct) =>
         {
             var now = _clock.UtcNow;
-            var leases = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && ids.Contains(x.Id) &&
-                            x.LockHolder == _lockHolder && x.AcquisitionToken != null)
+            var leaseQuery = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking()
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                            (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
+                            x.LockHolder == _lockHolder && x.AcquisitionToken != null);
+            if (ids.Length > 0)
+                leaseQuery = leaseQuery.Where(x => ids.Contains(x.Id));
+            var leases = await leaseQuery
                 .Select(x => new { x.Id, Token = x.AcquisitionToken.Value })
                 .ToArrayAsync(ct).ConfigureAwait(false);
             var released = 0;
             foreach (var lease in leases)
                 released += await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == lease.Id &&
+                                (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
                                 x.LockHolder == _lockHolder &&
                                 x.AcquisitionToken == lease.Token)
                     .ExecuteUpdateAsync(setters => setters

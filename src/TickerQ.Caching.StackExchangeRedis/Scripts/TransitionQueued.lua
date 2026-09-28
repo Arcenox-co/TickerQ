@@ -7,12 +7,14 @@ local json = redis.call('GET', KEYS[1])
 if not json then return nil end
 local ok, obj = pcall(cjson.decode, json)
 if not ok or type(obj) ~= 'table' then return nil end
-local activationType = ARGV[8] == 'scoped' and redis.call('TYPE', KEYS[#KEYS])['ok'] or 'none'
+local activationType = redis.call('TYPE', KEYS[#KEYS])['ok']
 if ARGV[8] == 'invalid' then return nil end
 if ARGV[8] ~= 'scoped' and ARGV[8] ~= 'legacy' then return redis.error_reply('invalid runtime admission mode') end
 if activationType ~= 'none' and activationType ~= 'hash' then
     return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type')
 end
+if ARGV[8] == 'legacy' and activationType == 'hash' and
+   redis.call('HGET', KEYS[#KEYS], 'legacyAdoptionState') then return nil end
 if ARGV[8] == 'scoped' and activationType == 'none' then return nil end
 if ARGV[8] == 'scoped' and activationType == 'hash' then
     local metadata = redis.call('HGETALL', KEYS[#KEYS])

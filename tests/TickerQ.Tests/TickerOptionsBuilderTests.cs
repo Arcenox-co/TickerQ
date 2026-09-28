@@ -57,12 +57,25 @@ public class TickerOptionsBuilderTests
         var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
             executionContext, new SchedulerOptionsBuilder());
 
-        builder.UseLegacyRuntimePartitionAdoption("orders-api", 12);
+        builder.UseLegacyRuntimePartitionAdoption("orders-api", 12, legacyWritersDrained: true);
 
         Assert.Equal("orders-api", executionContext.OptionsSeeding.DefinedCronApplicationNamespace);
         Assert.Equal(12, executionContext.OptionsSeeding.ReconciliationEpoch);
         Assert.Equal(new TickerQRuntimePartition("orders-api").StorageKey,
             executionContext.OptionsSeeding.LegacyRuntimePartitionAdoption.TargetPartition.StorageKey);
+    }
+
+    [Fact]
+    public void UseLegacyRuntimePartitionAdoption_RejectsUnconfirmedLegacyWriterDrain()
+    {
+        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
+            new TickerExecutionContext(), new SchedulerOptionsBuilder());
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            builder.UseLegacyRuntimePartitionAdoption(
+                "orders-api", 12, legacyWritersDrained: false));
+
+        Assert.Equal("legacyWritersDrained", exception.ParamName);
     }
 
     [Theory]
@@ -77,7 +90,7 @@ public class TickerOptionsBuilderTests
             new TickerExecutionContext(), new SchedulerOptionsBuilder());
 
         Assert.ThrowsAny<ArgumentException>(() =>
-            builder.UseLegacyRuntimePartitionAdoption(owner, epoch));
+            builder.UseLegacyRuntimePartitionAdoption(owner, epoch, legacyWritersDrained: true));
     }
 
     [Fact]

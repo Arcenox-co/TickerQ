@@ -367,6 +367,23 @@ public class TickerCancellationTokenManagerTests : IDisposable
         Assert.False(sourceB!.IsCancellationRequested);
     }
 
+    [Fact]
+    public void RequestCancellationById_CancelsMatchingExecutionsAcrossPartitions()
+    {
+        var tickerId = Guid.NewGuid();
+        var contextA = MakeContext(tickerId);
+        contextA.RuntimePartitionKey = new TickerQRuntimePartition("dashboard-a").StorageKey;
+        var contextB = MakeContext(tickerId);
+        contextB.RuntimePartitionKey = new TickerQRuntimePartition("dashboard-b").StorageKey;
+
+        var sourceA = TickerCancellationTokenManager.TryRegisterAcquired(contextA, isDue: false)!;
+        var sourceB = TickerCancellationTokenManager.TryRegisterAcquired(contextB, isDue: false)!;
+
+        Assert.True(TickerCancellationTokenManager.RequestTickerCancellationById(tickerId));
+        Assert.True(sourceA.IsCancellationRequested);
+        Assert.True(sourceB.IsCancellationRequested);
+    }
+
     private static InternalFunctionContext MakeContext(Guid tickerId, Guid? parentId = null)
     {
         return new InternalFunctionContext

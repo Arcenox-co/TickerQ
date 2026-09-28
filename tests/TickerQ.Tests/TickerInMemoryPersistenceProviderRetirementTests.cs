@@ -202,6 +202,25 @@ public sealed class TickerInMemoryPersistenceProviderRetirementTests : IAsyncLif
     }
 
     [Fact]
+    public async Task CanonicallyEquivalentBlockedSeed_RetiresImmediately_WithoutDelete()
+    {
+        var storedFunction = Fn("blocked-canonical") + "a\u0315\u0300";
+        var manifestFunction = Fn("blocked-canonical") + "a\u0300\u0315";
+        var row = Seeded(storedFunction);
+        await _provider.InsertCronTickers([row], CancellationToken.None);
+
+        await _provider.MigrateDefinedCronTickers(
+            [new DefinedCronTickerSeed(manifestFunction, "*/5 * * * *", 2, "sha256:req", canSeed: false)],
+            CancellationToken.None);
+
+        var persisted = await Single(storedFunction);
+        Assert.False(persisted.IsEnabled);
+        Assert.Equal(_now, persisted.RetirementRequestedAt);
+        Assert.Equal(_now, persisted.RetiredAt);
+        Assert.True(persisted.SeedWasEnabledBeforeRetirement);
+    }
+
+    [Fact]
     public async Task DuplicateLegacyRows_LeaveExactlyOneEnabled_PreserveAll()
     {
         var fn = Fn("dup");

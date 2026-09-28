@@ -274,11 +274,14 @@ namespace TickerQ.Utilities
         {
             // ID-only callers cannot distinguish persistence namespaces, so cancel every matching
             // local execution rather than arbitrarily selecting one.
-            var cancelledTime = RequestTickerCancellation(
-                new TickerExecutionKey(TickerQRuntimePartition.LegacyGlobal.StorageKey, TickerType.TimeTicker, tickerId));
-            var cancelledCron = RequestTickerCancellation(
-                new TickerExecutionKey(TickerQRuntimePartition.LegacyGlobal.StorageKey, TickerType.CronTickerOccurrence, tickerId));
-            return cancelledTime || cancelledCron;
+            var cancelled = false;
+            foreach (var key in TickerCancellationTokens.Keys)
+            {
+                if (key.TickerId == tickerId)
+                    cancelled = RequestTickerCancellation(key) || cancelled;
+            }
+
+            return cancelled;
         }
 
         internal static bool RequestTickerCancellation(TickerExecutionKey key)

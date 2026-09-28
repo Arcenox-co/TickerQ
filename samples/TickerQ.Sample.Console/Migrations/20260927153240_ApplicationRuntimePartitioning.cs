@@ -403,6 +403,9 @@ namespace TickerQ.Sample.Console.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            throw new NotSupportedException(
+                "TickerQ application partitioning cannot be downgraded without losing namespace ownership. Restore from a pre-upgrade backup instead.");
+
             migrationBuilder.DropForeignKey(
                 name: "FK_CronTickerOccurrenceResults_CronTickerOccurrences_ApplicationNamespaceKey_TickerId",
                 schema: "ticker",

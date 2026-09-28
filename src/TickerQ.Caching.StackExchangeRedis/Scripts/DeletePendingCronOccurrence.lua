@@ -1,13 +1,18 @@
 -- Atomically quarantine one unleased pending occurrence while preserving its document,
 -- payload, timestamps, result sidecar, global/reverse evidence and terminal evidence.
 -- Corrupt JSON is preserved, quarantined, deindexed, and surfaced to the caller.
--- KEYS: document,result,allIds,pending,byCron,retention x4,quarantine,slot
+-- KEYS: document,result,allIds,pending,byCron,retention x4,quarantine,slot,activation metadata
 -- ARGV: occurrence id, cron id, now, idle, queued, skipped, reason, retention score
 local function type_ok(key, expected)
     local t = redis.call('TYPE', key)['ok']
     return t == 'none' or t == expected
 end
-if #KEYS ~= 11 or #ARGV ~= 8 then return redis.error_reply('invalid quarantine argument count') end
+if #KEYS ~= 12 or #ARGV ~= 8 then return redis.error_reply('invalid quarantine argument count') end
+local activationType = redis.call('TYPE', KEYS[12])['ok']
+if activationType ~= 'none' and activationType ~= 'hash' then
+    return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type')
+end
+if activationType == 'hash' and redis.call('HGET', KEYS[12], 'legacyAdoptionState') then return -3 end
 if not type_ok(KEYS[1], 'string') or not type_ok(KEYS[2], 'string') or
    not type_ok(KEYS[3], 'set') or not type_ok(KEYS[4], 'zset') or
    not type_ok(KEYS[5], 'set') or not type_ok(KEYS[6], 'zset') or

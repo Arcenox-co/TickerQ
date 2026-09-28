@@ -113,6 +113,37 @@ public sealed class RedisNodeFinalizationOutboxTests
     }
 
     [Fact]
+    public async Task PendingOutboxCannotAuthorizeReplayAfterNewerGenerationAcquiresOrCompletes()
+    {
+        var runA = await AcquireTimeAsync();
+        var tokenA = runA.AcquisitionToken!.Value;
+        var intentA = Intent(TickerType.TimeTicker, runA.Id, tokenA);
+        var terminalA = Terminal(TickerType.TimeTicker, runA.Id, tokenA, null);
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(terminalA, intentA));
+        Assert.Equal(1, await _db.HashLengthAsync(RedisKeyBuilder.NodeFinalizationRecordsKey));
+
+        var runB = await _provider.AcquireTimeTickerOnDemandAsync(runA.Id, Now.AddMinutes(2));
+        Assert.NotNull(runB);
+        var tokenB = runB!.AcquisitionToken!.Value;
+        Assert.NotEqual(tokenA, tokenB);
+        Assert.False(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            terminalA, intentA));
+
+        var intentB = Intent(TickerType.TimeTicker, runA.Id, tokenB);
+        Assert.True(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            Terminal(TickerType.TimeTicker, runA.Id, tokenB, null), intentB));
+        var evidenceField = $"{(int)TickerType.TimeTicker}:{runA.Id:D}";
+        var evidenceB = await _db.HashGetAsync(
+            RedisKeyBuilder.TerminalMutationEvidenceKey, evidenceField);
+
+        Assert.False(await _provider.CommitTerminalTickerAndEnqueueNodeFinalizationAsync(
+            terminalA, intentA));
+        Assert.Equal(evidenceB, await _db.HashGetAsync(
+            RedisKeyBuilder.TerminalMutationEvidenceKey, evidenceField));
+        Assert.Equal(2, await _db.HashLengthAsync(RedisKeyBuilder.NodeFinalizationRecordsKey));
+    }
+
+    [Fact]
     public async Task DeletionCleansTerminalEvidenceSoRecreatedIdentityRejectsOldReplay()
     {
         var acquired = await AcquireTimeAsync();

@@ -145,6 +145,39 @@ public sealed class TickerInMemoryPersistenceProviderSeedOwnershipTests : IAsync
     }
 
     [Fact]
+    public async Task CanonicallyEquivalentBareLegacyKey_WithDistinctStableId_IsAdoptedInPlace()
+    {
+        var canonicalFunction = Fn("job-\u00e0\u0315");
+        var rawFunction = Fn("job-a\u0315\u0300");
+        const string owner = "bare-key-owner";
+        const string stableId = "distinct-stable-definition";
+        var legacy = new FakeCronTicker
+        {
+            Id = Guid.NewGuid(),
+            Function = canonicalFunction,
+            Expression = "*/5 * * * *",
+            SeedKey = rawFunction,
+            InitIdentifier = $"MemoryTicker_Seeded_{canonicalFunction}",
+            CreatedAt = _now,
+            UpdatedAt = _now,
+            Request = Array.Empty<byte>()
+        };
+        await _provider.InsertCronTickers([legacy], CancellationToken.None);
+
+        await _provider.MigrateDefinedCronTickers(
+            AdoptionManifest(owner, new DefinedCronTickerSeed(canonicalFunction, "*/7 * * * *",
+                stableDefinitionId: stableId)), CancellationToken.None);
+
+        var rows = await _provider.GetCronTickers(
+            row => CronSeedIdentity.CanonicallyEquals(row.Function, canonicalFunction), CancellationToken.None);
+        var adopted = Assert.Single(rows);
+        Assert.Equal(legacy.Id, adopted.Id);
+        Assert.True(adopted.IsEnabled);
+        Assert.Equal(owner, adopted.SeedOwnerNamespace);
+        Assert.Equal(CronSeedIdentity.SeedKey(owner, stableId), adopted.SeedKey);
+    }
+
+    [Fact]
     public async Task AmbiguousLegacyCandidates_FailClosedWithoutMutation()
     {
         var fn = Fn("ambiguous");

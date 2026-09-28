@@ -25,6 +25,8 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     private static readonly string DeleteTimeTickerScript = LuaScriptLoader.Load("DeleteTimeTicker");
     private static readonly string UpdateCronDefinitionQueueOnlyScript =
         LuaScriptLoader.Load("UpdateCronDefinitionQueueOnly");
+    internal Func<CronTickerOccurrenceEntity<TCronTicker>, CancellationToken, Task>
+        BeforeCronOccurrenceDeleteForTestAsync { get; set; }
 
     public TickerRedisPersistenceProvider(
         [FromKeyedServices("tickerq")] IDatabase db,
@@ -326,14 +328,21 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         foreach (var id in tickerIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var ticker = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
+            var currentJson = await Db.StringGetAsync(TimeTickerKey(id)).ConfigureAwait(false);
+            var ticker = currentJson.IsNullOrEmpty
+                ? null
+                : Serializer.DeserializeOrNull<TTimeTicker>(currentJson.ToString());
+            if (ticker == null) continue;
             var aggregateIds = ticker == null ? [id] : EnumerateAggregateIds(ticker).Distinct().ToArray();
             var keys = new List<RedisKey>
             {
                 TimeTickerKey(id), TimeTickerIdsKey, TimeTickerPendingKey, TerminalMutationEvidenceKey
             };
             keys.AddRange(aggregateIds.Select(TimeTickerResultKey).Select(x => (RedisKey)x));
-            var arguments = new List<RedisValue> { id.ToString() };
+            var arguments = new List<RedisValue>
+            {
+                id.ToString(), currentJson, Clock.UtcNow.ToString("O"), (int)TickerStatus.InProgress
+            };
             arguments.AddRange(aggregateIds.Select(entityId =>
                 (RedisValue)$"{(int)TickerType.TimeTicker}:{entityId:D}"));
             var removed = await Db.ScriptEvaluateAsync(
@@ -527,6 +536,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
                 continue;
             var occurrenceIds = ParseGuidSet(await Db.SetMembersAsync(
                 CronOccurrencesByCronKey(id)).ConfigureAwait(false));
+            var canDeleteDefinition = true;
             foreach (var occurrenceId in occurrenceIds)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -537,10 +547,12 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
                     Id = occurrenceId, CronTickerId = id, ExecutionTime = default
                 };
                 if (occurrence.CronTickerId == id)
-                    await DeleteCronOccurrenceAtomicAsync(occurrence).ConfigureAwait(false);
+                    canDeleteDefinition &= await DeleteCronOccurrenceAtomicAsync(occurrence).ConfigureAwait(false);
                 else
-                    await Db.SetRemoveAsync(CronOccurrencesByCronKey(id), occurrenceId.ToString()).ConfigureAwait(false);
+                    await IndexManager.RemoveCronOccurrenceFromParentIndexAsync(occurrenceId, id)
+                        .ConfigureAwait(false);
             }
+            if (!canDeleteDefinition) continue;
             if (await DeleteCronDefinitionAtomicAsync(id, cancellationToken).ConfigureAwait(false))
                 removed++;
         }
@@ -601,6 +613,8 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         {
             cancellationToken.ThrowIfCancellationRequested();
             var occurrence = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(id)).ConfigureAwait(false);
+            if (occurrence != null && BeforeCronOccurrenceDeleteForTestAsync != null)
+                await BeforeCronOccurrenceDeleteForTestAsync(occurrence, cancellationToken).ConfigureAwait(false);
             if (occurrence != null && await DeleteCronOccurrenceAtomicAsync(occurrence).ConfigureAwait(false))
                 removed++;
         }
@@ -665,7 +679,8 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
                 CronOccurrenceRetentionFailedKey,
                 CronOccurrenceRetentionCancelledKey,
                 CronOccurrenceRetentionSkippedKey,
-                RetentionReconciliationPendingKey
+                RetentionReconciliationPendingKey,
+                ActivationMetadataKey
             ],
             [
                 batchSize,
@@ -681,6 +696,9 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         cancellationToken.ThrowIfCancellationRequested();
 
         var values = (RedisResult[])result;
+        if ((long)values[0] == -3)
+            throw new InvalidOperationException(
+                "Redis retention index reconciliation was rejected because legacy partition adoption has started.");
         var examined = (int)(long)values[0];
         var hasMore = (long)values[1] == 1;
         return new RetentionIndexReconciliationResult(examined, hasMore, values[2].ToString());
@@ -758,8 +776,23 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
                 continue;
             }
 
-            if (await DeleteCronOccurrenceAtomicAsync(occurrence, candidate.FirstStatus,
-                    candidate.SecondStatus, candidate.Cutoff, Clock.UtcNow).ConfigureAwait(false))
+            var result = await Db.ScriptEvaluateAsync(DeleteOccurrenceForRetentionScript,
+                [
+                    (RedisKey)CronOccurrenceKey(candidate.Id), CronOccurrenceResultKey(candidate.Id),
+                    CronOccurrenceIdsKey, CronOccurrencePendingKey,
+                    CronOccurrencesByCronKey(occurrence.CronTickerId),
+                    CronOccurrenceRetentionSucceededKey, CronOccurrenceRetentionFailedKey,
+                    CronOccurrenceRetentionCancelledKey, CronOccurrenceRetentionSkippedKey,
+                    (RedisKey)CronOccurrenceSlotKey(occurrence.CronTickerId, occurrence.ExecutionTime),
+                    TerminalMutationEvidenceKey
+                ],
+                [
+                    candidate.Id.ToString(), occurrence.CronTickerId.ToString(),
+                    candidate.FirstStatus, candidate.SecondStatus,
+                    candidate.Cutoff.ToUniversalTime().ToString("O"),
+                    Clock.UtcNow.ToUniversalTime().ToString("O")
+                ]).ConfigureAwait(false);
+            if ((long)result == 1)
             {
                 deleted++;
                 continue;
@@ -831,19 +864,7 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     }
 
     private async Task RemoveOccurrenceRetentionIndexesAsync(Guid id)
-    {
-        var value = (RedisValue)id.ToString();
-        var batch = Db.CreateBatch();
-        var tasks = new[]
-        {
-            batch.SortedSetRemoveAsync(CronOccurrenceRetentionSucceededKey, value),
-            batch.SortedSetRemoveAsync(CronOccurrenceRetentionFailedKey, value),
-            batch.SortedSetRemoveAsync(CronOccurrenceRetentionCancelledKey, value),
-            batch.SortedSetRemoveAsync(CronOccurrenceRetentionSkippedKey, value)
-        };
-        batch.Execute();
-        await Task.WhenAll(tasks).ConfigureAwait(false);
-    }
+        => await IndexManager.RemoveCronOccurrenceRetentionIndexesAsync(id).ConfigureAwait(false);
 
     private string TimeRetentionKey(TickerStatus status) => status switch
     {
@@ -871,22 +892,57 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     // crash recovery idempotent without an unbounded KEYS operation.
     private const string ReconcileRetentionIndexesScript = """
         -- retention index reconciliation
+        if #KEYS ~= 14 or #ARGV ~= 9 then
+            return redis.error_reply('invalid retention reconciliation shape')
+        end
+        local maxRecords = tonumber(ARGV[1])
+        if not maxRecords or maxRecords <= 0 or maxRecords % 1 ~= 0 or
+           ARGV[2] == '' or ARGV[3] == '' then
+            return redis.error_reply('invalid retention reconciliation arguments')
+        end
+        local expectedTypes = {'set', 'set', 'string', 'string',
+            'zset', 'zset', 'zset', 'zset', 'zset', 'zset', 'zset', 'zset', 'list', 'hash'}
+        for index = 1, 14 do
+            local actualType = redis.call('TYPE', KEYS[index])['ok']
+            if actualType ~= 'none' and actualType ~= expectedTypes[index] then
+                return redis.error_reply('retention reconciliation key has an incompatible Redis type')
+            end
+        end
+        if redis.call('HGET', KEYS[14], 'legacyAdoptionState') then
+            return {-3, 0, 'fenced'}
+        end
+        for index = 4, 8 do
+            local status = tonumber(ARGV[index])
+            if not status or status % 1 ~= 0 then
+                return redis.error_reply('invalid retention reconciliation status')
+            end
+        end
         local phase = redis.call('GET', KEYS[3]) or 'time_ids'
         if phase == 'time' then phase = 'time_ids' end
         if phase == 'occurrence' then phase = 'occurrence_ids' end
+        if phase ~= 'time_ids' and phase ~= 'time_keys' and
+           phase ~= 'occurrence_ids' and phase ~= 'occurrence_keys' then
+            return redis.error_reply('invalid retention reconciliation phase')
+        end
         local cursor = redis.call('GET', KEYS[4]) or '0'
+        if not string.match(cursor, '^%d+$') then
+            return redis.error_reply('invalid retention reconciliation cursor')
+        end
         local isTime = string.sub(phase, 1, 4) == 'time'
         local scanKeys = string.sub(phase, -5) == '_keys'
         local idsKey = isTime and KEYS[1] or KEYS[2]
         local prefix = isTime and ARGV[2] or ARGV[3]
         local firstIndex = isTime and 5 or 9
-        local maxRecords = tonumber(ARGV[1])
         local members = {}
         local nextCursor = cursor
+        local overflow = {}
+        local fromPending = false
 
-        while #members < maxRecords and redis.call('LLEN', KEYS[13]) > 0 do
-            table.insert(members, redis.call('LPOP', KEYS[13]))
+        local queued = redis.call('LRANGE', KEYS[13], 0, maxRecords - 1)
+        for _, member in ipairs(queued) do
+            table.insert(members, member)
         end
+        fromPending = #members > 0
         if #members == 0 then
             local scan
             if scanKeys then
@@ -899,71 +955,171 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             for index, value in ipairs(scan[2]) do
                 local id = scanKeys and string.sub(value, string.len(prefix) + 1) or value
                 if index <= maxRecords then table.insert(members, id)
-                else redis.call('RPUSH', KEYS[13], id) end
+                else table.insert(overflow, id) end
             end
         end
 
-        local function normalizedDateTime(value)
-            local year, month, day, hour, minute, second, fraction = string.match(
-                value or '', '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)')
-            if not year then return nil end
-            fraction = string.sub((fraction or '') .. '0000000', 1, 7)
-            return year .. month .. day .. hour .. minute .. second .. fraction
-        end
-
-        local function dateTimeTicks(value)
-            local year, month, day, hour, minute, second, fraction = string.match(
-                value, '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)')
+        local function dateTimeParts(value)
+            if type(value) ~= 'string' then return nil end
+            local year, month, day, hour, minute, second, rest = string.match(value,
+                '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.*)$')
             if not year then return nil end
             year, month, day = tonumber(year), tonumber(month), tonumber(day)
             hour, minute, second = tonumber(hour), tonumber(minute), tonumber(second)
+            if year < 1 or year > 9999 or month < 1 or month > 12 or
+               hour > 23 or minute > 59 or second > 59 then return nil end
+            local leap = year % 400 == 0 or (year % 4 == 0 and year % 100 ~= 0)
+            local monthDays = {31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+            if day < 1 or day > monthDays[month] then return nil end
+            local fraction = ''
+            local suffix = rest
+            if string.sub(rest, 1, 1) == '.' then
+                fraction, suffix = string.match(rest, '^%.(%d+)(.*)$')
+                if not fraction or string.len(fraction) > 7 then return nil end
+            end
+            local offsetMinutes = 0
+            if suffix ~= 'Z' then
+                local sign, offsetHour, offsetMinute = string.match(suffix, '^([%+%-])(%d%d):(%d%d)$')
+                if not sign then return nil end
+                offsetHour, offsetMinute = tonumber(offsetHour), tonumber(offsetMinute)
+                if offsetHour > 14 or offsetMinute > 59 or (offsetHour == 14 and offsetMinute ~= 0) then
+                    return nil
+                end
+                offsetMinutes = offsetHour * 60 + offsetMinute
+                if sign == '-' then offsetMinutes = -offsetMinutes end
+            end
             local priorYear = year - 1
             local days = priorYear * 365 + math.floor(priorYear / 4)
                 - math.floor(priorYear / 100) + math.floor(priorYear / 400)
             local beforeMonth = {0,31,59,90,120,151,181,212,243,273,304,334}
             days = days + beforeMonth[month] + day - 1
-            if month > 2 and (year % 400 == 0 or (year % 4 == 0 and year % 100 ~= 0)) then
-                days = days + 1
-            end
-            fraction = string.sub((fraction or '') .. '0000000', 1, 7)
-            return days * 864000000000 + hour * 36000000000 + minute * 600000000
-                + second * 10000000 + tonumber(fraction)
+            if month > 2 and leap then days = days + 1 end
+            local utcSeconds = days * 86400 + hour * 3600 + minute * 60 + second - offsetMinutes * 60
+            if utcSeconds < 0 or utcSeconds > 315537897599 then return nil end
+            fraction = string.sub(fraction .. '0000000', 1, 7)
+            return utcSeconds, tonumber(fraction), utcSeconds * 10000000 + tonumber(fraction)
         end
 
-        local now = normalizedDateTime(ARGV[9])
-        for _, id in ipairs(members) do
-            for index = firstIndex, firstIndex + 3 do
-                redis.call('ZREM', KEYS[index], id)
+        local nowSeconds, nowFraction = dateTimeParts(ARGV[9])
+        if not nowSeconds then return redis.error_reply('invalid retention reconciliation timestamp') end
+        local function isArray(value)
+            if type(value) ~= 'table' then return false end
+            local count = 0
+            for key, _ in pairs(value) do
+                if type(key) ~= 'number' or key < 1 or key % 1 ~= 0 then return false end
+                count = count + 1
             end
+            for index = 1, count do if value[index] == nil then return false end end
+            return true
+        end
+        local function validNode(obj)
+            if type(obj) ~= 'table' or type(obj.Id) ~= 'string' or obj.Id == '' or
+               type(obj.Status) ~= 'number' or obj.Status % 1 ~= 0 then return false end
+            if obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null and
+               (type(obj.ExecutedAt) ~= 'string' or
+                (obj.ExecutedAt ~= '' and not dateTimeParts(obj.ExecutedAt))) then return false end
+            if obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null and
+               (type(obj.LeaseUntil) ~= 'string' or
+                (obj.LeaseUntil ~= '' and not dateTimeParts(obj.LeaseUntil))) then return false end
+            if obj.AcquisitionToken ~= nil and obj.AcquisitionToken ~= cjson.null and
+               type(obj.AcquisitionToken) ~= 'string' then return false end
+            if obj.ParentId ~= nil and obj.ParentId ~= cjson.null and type(obj.ParentId) ~= 'string' then
+                return false
+            end
+            if obj.Children ~= nil and obj.Children ~= cjson.null then
+                if not isArray(obj.Children) then return false end
+                for _, child in ipairs(obj.Children) do if not validNode(child) then return false end end
+            end
+            return true
+        end
 
-            local raw = redis.call('GET', prefix .. id)
-            if raw then
-                local ok, obj = pcall(cjson.decode, raw)
-                if ok then
-                    if scanKeys then redis.call('SADD', idsKey, id) end
-                    local lease = obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null
-                        and obj.LeaseUntil ~= '' and normalizedDateTime(obj.LeaseUntil) or nil
-                    local eligible = obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null
-                        and (obj.AcquisitionToken == nil or obj.AcquisitionToken == cjson.null or obj.AcquisitionToken == '')
-                        and (lease == nil or lease <= now)
-                    if isTime and ((obj.ParentId ~= nil and obj.ParentId ~= cjson.null and obj.ParentId ~= '')
-                        or (obj.Children ~= nil and obj.Children ~= cjson.null and next(obj.Children) ~= nil)) then
-                        eligible = false
+        local function childrenContainersAreArrays(raw)
+            local index, length = 1, string.len(raw)
+            while index <= length do
+                if string.sub(raw, index, index) == '"' then
+                    local start = index
+                    index = index + 1
+                    while index <= length do
+                        local char = string.sub(raw, index, index)
+                        if char == '\\' then index = index + 2
+                        elseif char == '"' then break
+                        else index = index + 1 end
                     end
-
-                    if eligible then
-                        local status = tonumber(obj.Status)
-                        local offset = nil
-                        if status == tonumber(ARGV[4]) or status == tonumber(ARGV[5]) then offset = 0
-                        elseif status == tonumber(ARGV[6]) then offset = 1
-                        elseif status == tonumber(ARGV[7]) then offset = 2
-                        elseif status == tonumber(ARGV[8]) then offset = 3 end
-                        if offset ~= nil then
-                            local ticks = dateTimeTicks(obj.ExecutedAt)
-                            if ticks ~= nil then redis.call('ZADD', KEYS[firstIndex + offset], ticks, id) end
+                    if index > length then return false end
+                    local token = string.sub(raw, start, index)
+                    local nextIndex = index + 1
+                    while string.match(string.sub(raw, nextIndex, nextIndex), '%s') do nextIndex = nextIndex + 1 end
+                    if string.sub(raw, nextIndex, nextIndex) == ':' then
+                        local ok, key = pcall(cjson.decode, token)
+                        if not ok then return false end
+                        if key == 'Children' then
+                            nextIndex = nextIndex + 1
+                            while string.match(string.sub(raw, nextIndex, nextIndex), '%s') do nextIndex = nextIndex + 1 end
+                            if string.sub(raw, nextIndex, nextIndex) ~= '[' and
+                               string.sub(raw, nextIndex, nextIndex + 3) ~= 'null' then return false end
                         end
                     end
                 end
+                index = index + 1
+            end
+            return true
+        end
+
+        local plans = {}
+        for index, id in ipairs(members) do
+            if id == '' then return redis.error_reply('invalid retention reconciliation member') end
+            local documentType = redis.call('TYPE', prefix .. id)['ok']
+            if documentType ~= 'none' and documentType ~= 'string' then
+                return redis.error_reply('retention reconciliation document has an incompatible Redis type')
+            end
+            local plan = {id = id, addId = false, retentionOffset = nil, retentionScore = nil}
+            local raw = redis.call('GET', prefix .. id)
+            if raw then
+                local ok, obj = pcall(cjson.decode, raw)
+                if not ok or (isTime and not childrenContainersAreArrays(raw)) or
+                   not validNode(obj) or string.lower(obj.Id) ~= string.lower(id) then
+                    return redis.error_reply('retention reconciliation document has an invalid object shape')
+                end
+
+                plan.addId = scanKeys
+                local leaseSeconds, leaseFraction = nil, nil
+                if obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null and obj.LeaseUntil ~= '' then
+                    leaseSeconds, leaseFraction = dateTimeParts(obj.LeaseUntil)
+                end
+                local executedSeconds, executedFraction, executedTicks = nil, nil, nil
+                if obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null and obj.ExecutedAt ~= '' then
+                    executedSeconds, executedFraction, executedTicks = dateTimeParts(obj.ExecutedAt)
+                end
+                local leaseExpired = leaseSeconds == nil or leaseSeconds < nowSeconds or
+                    (leaseSeconds == nowSeconds and leaseFraction <= nowFraction)
+                local eligible = executedSeconds ~= nil
+                    and (obj.AcquisitionToken == nil or obj.AcquisitionToken == cjson.null or obj.AcquisitionToken == '')
+                    and leaseExpired
+                if isTime and ((obj.ParentId ~= nil and obj.ParentId ~= cjson.null and obj.ParentId ~= '')
+                    or (obj.Children ~= nil and obj.Children ~= cjson.null and next(obj.Children) ~= nil)) then
+                    eligible = false
+                end
+                if eligible then
+                    local status = obj.Status
+                    if status == tonumber(ARGV[4]) or status == tonumber(ARGV[5]) then plan.retentionOffset = 0
+                    elseif status == tonumber(ARGV[6]) then plan.retentionOffset = 1
+                    elseif status == tonumber(ARGV[7]) then plan.retentionOffset = 2
+                    elseif status == tonumber(ARGV[8]) then plan.retentionOffset = 3 end
+                    if plan.retentionOffset ~= nil then plan.retentionScore = executedTicks end
+                end
+            end
+            plans[index] = plan
+        end
+        if fromPending then redis.call('LTRIM', KEYS[13], #members, -1) end
+        for _, id in ipairs(overflow) do redis.call('RPUSH', KEYS[13], id) end
+        for _, plan in ipairs(plans) do
+            local id = plan.id
+            for index = firstIndex, firstIndex + 3 do
+                redis.call('ZREM', KEYS[index], id)
+            end
+            if plan.addId then redis.call('SADD', idsKey, id) end
+            if plan.retentionOffset ~= nil then
+                redis.call('ZADD', KEYS[firstIndex + plan.retentionOffset], plan.retentionScore, id)
             end
         end
 
@@ -981,25 +1137,138 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         """;
 
     private const string DeleteTimeTickerForRetentionScript = """
-        local function normalizedDateTime(value)
-            local year, month, day, hour, minute, second, fraction = string.match(
-                value or '', '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)')
+        if #KEYS ~= 9 or #ARGV ~= 5 or ARGV[5] == '' then
+            return redis.error_reply('invalid time retention deletion shape')
+        end
+        local expectedTypes = {'string','set','zset','zset','zset','zset','zset','string','hash'}
+        for index = 1, #KEYS do
+            local actualType = redis.call('TYPE', KEYS[index])['ok']
+            if actualType ~= 'none' and actualType ~= expectedTypes[index] then
+                return redis.error_reply('time retention deletion key has an incompatible Redis type')
+            end
+        end
+        local firstStatus, secondStatus = tonumber(ARGV[1]), tonumber(ARGV[2])
+        if not firstStatus or firstStatus % 1 ~= 0 or not secondStatus or secondStatus % 1 ~= 0 then
+            return redis.error_reply('invalid time retention deletion status')
+        end
+        local function dateTimeParts(value)
+            if type(value) ~= 'string' then return nil end
+            local year, month, day, hour, minute, second, rest = string.match(value,
+                '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.*)$')
             if not year then return nil end
-            return year .. month .. day .. hour .. minute .. second
-                .. string.sub((fraction or '') .. '0000000', 1, 7)
+            year, month, day = tonumber(year), tonumber(month), tonumber(day)
+            hour, minute, second = tonumber(hour), tonumber(minute), tonumber(second)
+            if year < 1 or year > 9999 or month < 1 or month > 12 or
+               hour > 23 or minute > 59 or second > 59 then return nil end
+            local leap = year % 400 == 0 or (year % 4 == 0 and year % 100 ~= 0)
+            local monthDays = {31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+            if day < 1 or day > monthDays[month] then return nil end
+            local fraction, suffix = '', rest
+            if string.sub(rest, 1, 1) == '.' then
+                fraction, suffix = string.match(rest, '^%.(%d+)(.*)$')
+                if not fraction or string.len(fraction) > 7 then return nil end
+            end
+            local offsetMinutes = 0
+            if suffix ~= 'Z' then
+                local sign, offsetHour, offsetMinute = string.match(suffix, '^([%+%-])(%d%d):(%d%d)$')
+                if not sign then return nil end
+                offsetHour, offsetMinute = tonumber(offsetHour), tonumber(offsetMinute)
+                if offsetHour > 14 or offsetMinute > 59 or (offsetHour == 14 and offsetMinute ~= 0) then return nil end
+                offsetMinutes = offsetHour * 60 + offsetMinute
+                if sign == '-' then offsetMinutes = -offsetMinutes end
+            end
+            local priorYear = year - 1
+            local days = priorYear * 365 + math.floor(priorYear / 4)
+                - math.floor(priorYear / 100) + math.floor(priorYear / 400)
+            local beforeMonth = {0,31,59,90,120,151,181,212,243,273,304,334}
+            days = days + beforeMonth[month] + day - 1
+            if month > 2 and leap then days = days + 1 end
+            local utcSeconds = days * 86400 + hour * 3600 + minute * 60 + second - offsetMinutes * 60
+            if utcSeconds < 0 or utcSeconds > 315537897599 then return nil end
+            return utcSeconds, tonumber(string.sub(fraction .. '0000000', 1, 7))
+        end
+        local cutoffSeconds, cutoffFraction = dateTimeParts(ARGV[3])
+        local nowSeconds, nowFraction = dateTimeParts(ARGV[4])
+        if not cutoffSeconds or not nowSeconds then
+            return redis.error_reply('invalid time retention deletion timestamp')
+        end
+        local function isArray(value)
+            if type(value) ~= 'table' then return false end
+            local count = 0
+            for key, _ in pairs(value) do
+                if type(key) ~= 'number' or key < 1 or key % 1 ~= 0 then return false end
+                count = count + 1
+            end
+            for index = 1, count do if value[index] == nil then return false end end
+            return true
+        end
+        local function validNode(obj)
+            if type(obj) ~= 'table' or type(obj.Id) ~= 'string' or obj.Id == '' or
+               type(obj.Status) ~= 'number' or obj.Status % 1 ~= 0 then return false end
+            if obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null and
+               (type(obj.ExecutedAt) ~= 'string' or (obj.ExecutedAt ~= '' and not dateTimeParts(obj.ExecutedAt))) then return false end
+            if obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null and
+               (type(obj.LeaseUntil) ~= 'string' or (obj.LeaseUntil ~= '' and not dateTimeParts(obj.LeaseUntil))) then return false end
+            if obj.AcquisitionToken ~= nil and obj.AcquisitionToken ~= cjson.null and type(obj.AcquisitionToken) ~= 'string' then return false end
+            if obj.ParentId ~= nil and obj.ParentId ~= cjson.null and type(obj.ParentId) ~= 'string' then return false end
+            if obj.Children ~= nil and obj.Children ~= cjson.null then
+                if not isArray(obj.Children) then return false end
+                for _, child in ipairs(obj.Children) do if not validNode(child) then return false end end
+            end
+            return true
+        end
+        local function childrenContainersAreArrays(raw)
+            local index, length = 1, string.len(raw)
+            while index <= length do
+                if string.sub(raw, index, index) == '"' then
+                    local start = index
+                    index = index + 1
+                    while index <= length do
+                        local char = string.sub(raw, index, index)
+                        if char == '\\' then index = index + 2
+                        elseif char == '"' then break
+                        else index = index + 1 end
+                    end
+                    if index > length then return false end
+                    local token = string.sub(raw, start, index)
+                    local nextIndex = index + 1
+                    while string.match(string.sub(raw, nextIndex, nextIndex), '%s') do nextIndex = nextIndex + 1 end
+                    if string.sub(raw, nextIndex, nextIndex) == ':' then
+                        local ok, key = pcall(cjson.decode, token)
+                        if not ok then return false end
+                        if key == 'Children' then
+                            nextIndex = nextIndex + 1
+                            while string.match(string.sub(raw, nextIndex, nextIndex), '%s') do nextIndex = nextIndex + 1 end
+                            if string.sub(raw, nextIndex, nextIndex) ~= '[' and
+                               string.sub(raw, nextIndex, nextIndex + 3) ~= 'null' then return false end
+                        end
+                    end
+                end
+                index = index + 1
+            end
+            return true
         end
         local raw = redis.call('GET', KEYS[1])
         if not raw then return 0 end
-        local obj = cjson.decode(raw)
-        local status = tonumber(obj.Status)
-        if status ~= tonumber(ARGV[1]) and status ~= tonumber(ARGV[2]) then return 0 end
-        local executedAt = obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null
-            and normalizedDateTime(obj.ExecutedAt) or nil
-        if executedAt == nil or executedAt >= normalizedDateTime(ARGV[3]) then return 0 end
+        local ok, obj = pcall(cjson.decode, raw)
+        if not ok or not childrenContainersAreArrays(raw) or not validNode(obj) or
+           string.lower(obj.Id) ~= string.lower(ARGV[5]) then
+            return redis.error_reply('cannot delete invalid time ticker document for retention')
+        end
+        if obj.Status ~= firstStatus and obj.Status ~= secondStatus then return 0 end
+        local executedSeconds, executedFraction = nil, nil
+        if obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null and obj.ExecutedAt ~= '' then
+            executedSeconds, executedFraction = dateTimeParts(obj.ExecutedAt)
+        end
+        if executedSeconds == nil or executedSeconds > cutoffSeconds or
+           (executedSeconds == cutoffSeconds and executedFraction >= cutoffFraction) then return 0 end
         if obj.AcquisitionToken ~= nil and obj.AcquisitionToken ~= cjson.null and obj.AcquisitionToken ~= '' then return 0 end
-        local leaseUntil = obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null
-            and obj.LeaseUntil ~= '' and normalizedDateTime(obj.LeaseUntil) or nil
-        if leaseUntil ~= nil and leaseUntil > normalizedDateTime(ARGV[4]) then return 0 end
+        local leaseSeconds, leaseFraction = nil, nil
+        if obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null and obj.LeaseUntil ~= '' then
+            leaseSeconds, leaseFraction = dateTimeParts(obj.LeaseUntil)
+        end
+        if leaseSeconds ~= nil and (leaseSeconds > nowSeconds or
+           (leaseSeconds == nowSeconds and leaseFraction > nowFraction)) then return 0 end
         if obj.ParentId ~= nil and obj.ParentId ~= cjson.null and obj.ParentId ~= '' then return 0 end
         if obj.Children ~= nil and obj.Children ~= cjson.null and next(obj.Children) ~= nil then return 0 end
         redis.call('DEL', KEYS[1])
@@ -1015,34 +1284,102 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
         """;
 
     private const string DeleteOccurrenceForRetentionScript = """
-        local function normalizedDateTime(value)
-            local year, month, day, hour, minute, second, fraction = string.match(
-                value or '', '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)')
+        if #KEYS ~= 11 or #ARGV ~= 6 or ARGV[1] == '' or ARGV[2] == '' then
+            return redis.error_reply('invalid occurrence retention deletion shape')
+        end
+        local expectedTypes = {'string','string','set','zset','set','zset','zset','zset','zset','string','hash'}
+        for index = 1, #KEYS do
+            local actualType = redis.call('TYPE', KEYS[index])['ok']
+            if actualType ~= 'none' and actualType ~= expectedTypes[index] then
+                return redis.error_reply('occurrence retention deletion key has an incompatible Redis type')
+            end
+        end
+        local firstStatus, secondStatus = tonumber(ARGV[3]), tonumber(ARGV[4])
+        if not firstStatus or firstStatus % 1 ~= 0 or not secondStatus or secondStatus % 1 ~= 0 then
+            return redis.error_reply('invalid occurrence retention deletion status')
+        end
+        local function dateTimeParts(value)
+            if type(value) ~= 'string' then return nil end
+            local year, month, day, hour, minute, second, rest = string.match(value,
+                '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.*)$')
             if not year then return nil end
-            return year .. month .. day .. hour .. minute .. second
-                .. string.sub((fraction or '') .. '0000000', 1, 7)
+            year, month, day = tonumber(year), tonumber(month), tonumber(day)
+            hour, minute, second = tonumber(hour), tonumber(minute), tonumber(second)
+            if year < 1 or year > 9999 or month < 1 or month > 12 or
+               hour > 23 or minute > 59 or second > 59 then return nil end
+            local leap = year % 400 == 0 or (year % 4 == 0 and year % 100 ~= 0)
+            local monthDays = {31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+            if day < 1 or day > monthDays[month] then return nil end
+            local fraction, suffix = '', rest
+            if string.sub(rest, 1, 1) == '.' then
+                fraction, suffix = string.match(rest, '^%.(%d+)(.*)$')
+                if not fraction or string.len(fraction) > 7 then return nil end
+            end
+            local offsetMinutes = 0
+            if suffix ~= 'Z' then
+                local sign, offsetHour, offsetMinute = string.match(suffix, '^([%+%-])(%d%d):(%d%d)$')
+                if not sign then return nil end
+                offsetHour, offsetMinute = tonumber(offsetHour), tonumber(offsetMinute)
+                if offsetHour > 14 or offsetMinute > 59 or (offsetHour == 14 and offsetMinute ~= 0) then return nil end
+                offsetMinutes = offsetHour * 60 + offsetMinute
+                if sign == '-' then offsetMinutes = -offsetMinutes end
+            end
+            local priorYear = year - 1
+            local days = priorYear * 365 + math.floor(priorYear / 4)
+                - math.floor(priorYear / 100) + math.floor(priorYear / 400)
+            local beforeMonth = {0,31,59,90,120,151,181,212,243,273,304,334}
+            days = days + beforeMonth[month] + day - 1
+            if month > 2 and leap then days = days + 1 end
+            local utcSeconds = days * 86400 + hour * 3600 + minute * 60 + second - offsetMinutes * 60
+            if utcSeconds < 0 or utcSeconds > 315537897599 then return nil end
+            return utcSeconds, tonumber(string.sub(fraction .. '0000000', 1, 7))
+        end
+        local cutoffSeconds, cutoffFraction = dateTimeParts(ARGV[5])
+        local nowSeconds, nowFraction = dateTimeParts(ARGV[6])
+        if not cutoffSeconds or not nowSeconds then
+            return redis.error_reply('invalid occurrence retention deletion timestamp')
         end
         local raw = redis.call('GET', KEYS[1])
         if not raw then return 0 end
-        local obj = cjson.decode(raw)
-        local status = tonumber(obj.Status)
-        if status ~= tonumber(ARGV[1]) and status ~= tonumber(ARGV[2]) then return 0 end
-        local executedAt = obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null
-            and normalizedDateTime(obj.ExecutedAt) or nil
-        if executedAt == nil or executedAt >= normalizedDateTime(ARGV[3]) then return 0 end
+        local ok, obj = pcall(cjson.decode, raw)
+        if not ok or type(obj) ~= 'table' or type(obj.Id) ~= 'string' or
+           string.lower(obj.Id) ~= string.lower(ARGV[1]) or type(obj.CronTickerId) ~= 'string' or
+           string.lower(obj.CronTickerId) ~= string.lower(ARGV[2]) or
+           type(obj.Status) ~= 'number' or obj.Status % 1 ~= 0 then
+            return redis.error_reply('cannot delete invalid occurrence document for retention')
+        end
+        if obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null and
+           (type(obj.ExecutedAt) ~= 'string' or (obj.ExecutedAt ~= '' and not dateTimeParts(obj.ExecutedAt))) then
+            return redis.error_reply('invalid occurrence ExecutedAt shape')
+        end
+        if obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null and
+           (type(obj.LeaseUntil) ~= 'string' or (obj.LeaseUntil ~= '' and not dateTimeParts(obj.LeaseUntil))) then
+            return redis.error_reply('invalid occurrence LeaseUntil shape')
+        end
+        if obj.AcquisitionToken ~= nil and obj.AcquisitionToken ~= cjson.null and type(obj.AcquisitionToken) ~= 'string' then
+            return redis.error_reply('invalid occurrence AcquisitionToken shape')
+        end
+        if obj.Status ~= firstStatus and obj.Status ~= secondStatus then return 0 end
+        local executedSeconds, executedFraction = nil, nil
+        if obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null and obj.ExecutedAt ~= '' then
+            executedSeconds, executedFraction = dateTimeParts(obj.ExecutedAt)
+        end
+        if executedSeconds == nil or executedSeconds > cutoffSeconds or
+           (executedSeconds == cutoffSeconds and executedFraction >= cutoffFraction) then return 0 end
         if obj.AcquisitionToken ~= nil and obj.AcquisitionToken ~= cjson.null and obj.AcquisitionToken ~= '' then return 0 end
-        local leaseUntil = obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null
-            and obj.LeaseUntil ~= '' and normalizedDateTime(obj.LeaseUntil) or nil
-        if leaseUntil ~= nil and leaseUntil > normalizedDateTime(ARGV[4]) then return 0 end
-        redis.call('DEL', KEYS[1])
-        redis.call('SREM', KEYS[2], ARGV[5])
-        redis.call('ZREM', KEYS[3], ARGV[5])
-        redis.call('ZREM', KEYS[4], ARGV[5])
-        redis.call('ZREM', KEYS[5], ARGV[5])
-        redis.call('ZREM', KEYS[6], ARGV[5])
-        redis.call('ZREM', KEYS[7], ARGV[5])
-        redis.call('SREM', KEYS[8], ARGV[5])
-        redis.call('DEL', KEYS[9])
+        local leaseSeconds, leaseFraction = nil, nil
+        if obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null and obj.LeaseUntil ~= '' then
+            leaseSeconds, leaseFraction = dateTimeParts(obj.LeaseUntil)
+        end
+        if leaseSeconds ~= nil and (leaseSeconds > nowSeconds or
+           (leaseSeconds == nowSeconds and leaseFraction > nowFraction)) then return 0 end
+        redis.call('DEL', KEYS[1], KEYS[2])
+        redis.call('SREM', KEYS[3], ARGV[1])
+        redis.call('ZREM', KEYS[4], ARGV[1])
+        redis.call('SREM', KEYS[5], ARGV[1])
+        for index = 6, 9 do redis.call('ZREM', KEYS[index], ARGV[1]) end
+        if redis.call('GET', KEYS[10]) == ARGV[1] then redis.call('DEL', KEYS[10]) end
+        redis.call('HDEL', KEYS[11], '0:' .. string.lower(ARGV[1]))
         return 1
         """;
     #endregion

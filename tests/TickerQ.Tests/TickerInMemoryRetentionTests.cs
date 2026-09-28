@@ -34,17 +34,7 @@ public class TickerInMemoryRetentionTests
         services.AddSingleton(clock);
         services.AddSingleton(new SchedulerOptionsBuilder { NodeIdentifier = "retention-node" });
         _provider = new TickerInMemoryPersistenceProvider<RetTime, RetCron>(services.BuildServiceProvider());
-        ClearAll().GetAwaiter().GetResult();
-    }
-
-    private async Task ClearAll()
-    {
-        var all = await _provider.GetTimeTickers(_ => true, CancellationToken.None);
-        if (all.Length > 0)
-            await _provider.RemoveTimeTickers(all.Select(t => t.Id).ToArray(), CancellationToken.None);
-        var occ = await _provider.GetAllCronTickerOccurrences(_ => true, CancellationToken.None);
-        if (occ.Length > 0)
-            await _provider.RemoveCronTickerOccurrences(occ.Select(o => o.Id).ToArray(), CancellationToken.None);
+        TickerInMemoryPersistenceProvider<RetTime, RetCron>.ResetAllStateForTests();
     }
 
     private DateTime Ago(double days) => _now - TimeSpan.FromDays(days);

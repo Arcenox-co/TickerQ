@@ -114,7 +114,7 @@ public class DefinedCronSeedingPolicyTests : IDisposable
         Assert.NotEqual(left, right);
         Assert.Equal(CronSeedIdentity.PersistedKeyLength, left.Length);
         Assert.StartsWith("tq:cron-seed:v2:", left, StringComparison.Ordinal);
-        Assert.Equal(new[] { "a:b:c", "c" },
+        Assert.Equal(new[] { "a:b:c", "c", left },
             CronSeedIdentity.LegacyAdoptionKeys("a:b", "c"));
         Assert.Throws<ArgumentException>(() => CronSeedIdentity.SeedKey(
             new string('n', CronSeedIdentity.MaxIdentityUtf8Bytes + 1), "id"));

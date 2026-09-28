@@ -424,6 +424,11 @@ public class PersistenceProviderFunctionalTests : IDisposable
             var updated = await persistence.UpdateTimeTickers([ticker]);
             Assert.Equal(1, updated);
 
+            // Owned work is protected from administrative deletion until explicitly released.
+            await persistence.ReleaseAcquiredTimeTickers([ticker.Id]);
+            var released = await persistence.GetTimeTickerById(ticker.Id);
+            Assert.Null(released.ChainGeneration);
+
             // Remove
             var removed = await persistence.RemoveTimeTickers([ticker.Id]);
             Assert.Equal(1, removed);

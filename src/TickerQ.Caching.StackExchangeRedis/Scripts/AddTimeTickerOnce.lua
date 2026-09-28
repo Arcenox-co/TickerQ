@@ -6,11 +6,42 @@
 -- ARGV[4] "once" to reject an existing document or "upsert", ARGV[5] exact supported epoch,
 -- ARGV[6] scoped | startup-seeder | legacy runtime admission mode,
 -- ARGV[7..n] typed terminal-evidence fields to clear on replacement
-local activationType = (ARGV[6] == 'scoped' or ARGV[6] == 'startup-seeder') and redis.call('TYPE', KEYS[4])['ok'] or 'none'
-if ARGV[6] ~= 'scoped' and ARGV[6] ~= 'startup-seeder' and ARGV[6] ~= 'legacy' then return 0 end
+if #KEYS < 5 or #ARGV < 7 or ARGV[1] == '' or
+   (ARGV[4] ~= 'once' and ARGV[4] ~= 'upsert') or
+   (ARGV[4] == 'once' and (#KEYS ~= 5 or #ARGV ~= 7)) or
+   (ARGV[4] == 'upsert' and #ARGV ~= #KEYS + 1) then
+    return redis.error_reply('invalid time ticker publication arguments')
+end
+if ARGV[6] ~= 'scoped' and ARGV[6] ~= 'startup-seeder' and ARGV[6] ~= 'legacy' then
+    return redis.error_reply('invalid runtime admission mode')
+end
+local expectedTypes = {'string','set','zset','hash','hash'}
+for i = 1, #KEYS do
+    local expected = expectedTypes[i] or 'string'
+    local actual = redis.call('TYPE', KEYS[i])['ok']
+    if actual ~= 'none' and actual ~= expected then
+        return redis.error_reply('time ticker publication key has an incompatible Redis type')
+    end
+end
+if ARGV[3] ~= '' and tonumber(ARGV[3]) == nil then
+    return redis.error_reply('invalid time ticker pending score')
+end
+local jsonOk, replacement = pcall(cjson.decode, ARGV[2])
+if not jsonOk or type(replacement) ~= 'table' then
+    return redis.error_reply('invalid time ticker replacement JSON')
+end
+local replacementId = replacement.Id or replacement.id
+if replacementId == nil or string.lower(tostring(replacementId)) ~= string.lower(ARGV[1]) then
+    return redis.error_reply('time ticker replacement identity mismatch')
+end
+for i = 7, #ARGV do
+    if ARGV[i] == '' then return redis.error_reply('invalid terminal evidence field') end
+end
+local activationType = redis.call('TYPE', KEYS[4])['ok']
 if activationType ~= 'none' and activationType ~= 'hash' then
     return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type')
 end
+if ARGV[6] == 'legacy' and redis.call('HGET', KEYS[4], 'legacyAdoptionState') then return 0 end
 if (ARGV[6] == 'scoped' or ARGV[6] == 'startup-seeder') and activationType == 'none' then return 0
 elseif ARGV[6] == 'scoped' or ARGV[6] == 'startup-seeder' then
     local activation = redis.call('HGETALL', KEYS[4])

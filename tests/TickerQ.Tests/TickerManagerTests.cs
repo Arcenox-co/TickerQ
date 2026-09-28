@@ -75,13 +75,19 @@ public class TickerManagerTests : IDisposable
             });
         TickerFunctionProvider.Build();
 
+        var schedulerOptions = new SchedulerOptionsBuilder();
+        schedulerOptions.BindRuntimeActivationScope(null, 1, schedulerEnabled: false);
+        var activationGate = new TickerQActivationGate();
+
         var manager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
             _persistenceProvider,
             _hostScheduler,
             _clock,
             _notificationHubSender,
             _executionContext,
-            _dispatcher);
+            _dispatcher,
+            schedulerOptions,
+            activationGate);
 
         _timeTickerManager = manager;
         _cronTickerManager = manager;
@@ -94,6 +100,91 @@ public class TickerManagerTests : IDisposable
     }
 
     private static byte[] Request(string json) => Encoding.UTF8.GetBytes(json);
+
+    [Fact]
+    public async Task SchedulerHostMutations_WaitForActivationBeforeCallingProvider()
+    {
+        var schedulerOptions = new SchedulerOptionsBuilder();
+        schedulerOptions.BindRuntimeActivationScope("manager-admission", 1, schedulerEnabled: true);
+        var activationGate = new TickerQActivationGate();
+        var manager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
+            _persistenceProvider,
+            _hostScheduler,
+            _clock,
+            _notificationHubSender,
+            _executionContext,
+            _dispatcher,
+            schedulerOptions,
+            activationGate);
+        ITimeTickerManager<TimeTickerEntity> timeManager = manager;
+        _persistenceProvider.AddTimeTickers(
+                Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>())
+            .Returns(1);
+
+        var addTask = timeManager.AddAsync(new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(1)
+        });
+        var updateTask = timeManager.UpdateAsync(new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(2)
+        });
+        var deleteTask = timeManager.DeleteAsync(Guid.NewGuid());
+
+        await Task.Yield();
+        Assert.False(addTask.IsCompleted);
+        Assert.False(updateTask.IsCompleted);
+        Assert.False(deleteTask.IsCompleted);
+        await _persistenceProvider.DidNotReceive()
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.DidNotReceive()
+            .UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.DidNotReceive()
+            .RemoveTimeTickers(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>());
+
+        activationGate.SignalActivated();
+        await Task.WhenAll(addTask, updateTask, deleteTask).WaitAsync(TimeSpan.FromSeconds(2));
+
+        await _persistenceProvider.Received(1)
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.Received(1)
+            .UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.Received(1)
+            .RemoveTimeTickers(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task QueueOnlyMutation_DoesNotWaitForActivation()
+    {
+        var schedulerOptions = new SchedulerOptionsBuilder();
+        schedulerOptions.BindRuntimeActivationScope(null, 1, schedulerEnabled: false);
+        var manager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
+            _persistenceProvider,
+            _hostScheduler,
+            _clock,
+            _notificationHubSender,
+            _executionContext,
+            _dispatcher,
+            schedulerOptions,
+            new TickerQActivationGate());
+        ITimeTickerManager<TimeTickerEntity> timeManager = manager;
+        _persistenceProvider.AddTimeTickers(
+                Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>())
+            .Returns(1);
+
+        var result = await timeManager.AddAsync(new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(1)
+        }).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(result.IsSucceeded);
+        await _persistenceProvider.Received(1)
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
 
     // ---------------------------------------------------------------
     // AddTimeTickerAsync
@@ -337,6 +428,37 @@ public class TickerManagerTests : IDisposable
         Assert.IsType<TickerValidatorException>(result.Exception);
         await _persistenceProvider.DidNotReceive()
             .UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReplaceChainAsync_ProviderRejects_ReturnsFailureWithoutNotificationOrRestart()
+    {
+        var oldRoot = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(1)
+        };
+        var replacement = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(2)
+        };
+        _persistenceProvider.GetTimeTickerById(oldRoot.Id, Arg.Any<CancellationToken>())
+            .Returns(oldRoot);
+        _persistenceProvider.ReplaceTimeTickerChainAsync(
+                oldRoot.Id, replacement, Arg.Any<CancellationToken>())
+            .Returns(0);
+
+        var result = await _timeTickerManager.ReplaceChainAsync(
+            oldRoot.Id, replacement, CancellationToken.None);
+
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(result.Exception);
+        await _notificationHubSender.DidNotReceive().AddTimeTickerNotifyAsync(Arg.Any<Guid>());
+        _hostScheduler.DidNotReceive().Restart();
+        _hostScheduler.DidNotReceive().RestartIfNeeded(Arg.Any<DateTime>());
     }
 
     [Fact]

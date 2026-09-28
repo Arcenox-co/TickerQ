@@ -365,6 +365,7 @@ public abstract class ProviderReliabilityContractTests
         var queued = await Provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
         Assert.Equal(TickerStatus.Queued, queued!.Status);
         Assert.Equal(OwnerId, queued.LockHolder);
+        Assert.NotNull(queued.ChainGeneration);
 
         await Provider.ReleaseAcquiredTimeTickers([ticker.Id], CancellationToken.None);
 
@@ -374,6 +375,7 @@ public abstract class ProviderReliabilityContractTests
         Assert.Null(persisted.LockedAt);
         Assert.Null(persisted.LeaseUntil);
         Assert.Null(persisted.AcquisitionToken);
+        Assert.Null(persisted.ChainGeneration);
     }
 
     // ---------------------------------------------------------------------

@@ -318,6 +318,7 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
             Status = TickerStatus.Queued,
             LockHolder = deadNode,
             LockedAt = _now.AddMinutes(-1),
+            AcquisitionToken = Guid.NewGuid(),
             CreatedAt = _now,
             UpdatedAt = _now
         };
@@ -352,6 +353,7 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
             Status = TickerStatus.InProgress,
             LockHolder = deadNode,
             LockedAt = _now.AddMinutes(-1),
+            AcquisitionToken = Guid.NewGuid(),
             CreatedAt = _now,
             UpdatedAt = _now
         };
@@ -371,7 +373,7 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ReleaseDeadNodeOccurrenceResources_DoesNotAffectOccurrencesFromOtherNodes()
+    public async Task ReleaseDeadNodeOccurrenceResources_PreservesForeignOwnerWithNullLockedAt()
     {
         // Arrange
         var deadNode = "dead-node-3";
@@ -385,9 +387,10 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
             Id = aliveOccurrenceId,
             CronTickerId = cronTickerId,
             ExecutionTime = _now.AddMinutes(2),
-            Status = TickerStatus.InProgress,
+            Status = TickerStatus.Queued,
             LockHolder = aliveNode,
-            LockedAt = _now,
+            LockedAt = null,
+            AcquisitionToken = Guid.NewGuid(),
             CreatedAt = _now,
             UpdatedAt = _now
         };
@@ -401,8 +404,9 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
         var all = await _provider.GetAllCronTickerOccurrences(
             x => x.Id == aliveOccurrenceId, CancellationToken.None);
         Assert.Single(all);
-        Assert.Equal(TickerStatus.InProgress, all[0].Status);
+        Assert.Equal(TickerStatus.Queued, all[0].Status);
         Assert.Equal(aliveNode, all[0].LockHolder);
+        Assert.Equal(aliveOccurrence.AcquisitionToken, all[0].AcquisitionToken);
     }
 
     #endregion
@@ -503,7 +507,6 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
     [Fact]
     public async Task ReleaseAcquiredCronTickerOccurrences_ResetsStatusToIdleAndClearsLock()
     {
-        // Arrange: create and acquire an occurrence
         var cronTickerId = Guid.NewGuid();
         await SetupCronTicker(cronTickerId);
 
@@ -513,36 +516,33 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
             Id = occurrenceId,
             CronTickerId = cronTickerId,
             ExecutionTime = _now.AddMinutes(1),
-            Status = TickerStatus.Idle,
+            Status = TickerStatus.Queued,
+            LockHolder = _nodeId,
+            LockedAt = _now,
+            AcquisitionToken = Guid.NewGuid(),
+            LeaseUntil = _now.AddMinutes(5),
             CreatedAt = _now,
             UpdatedAt = _now
         };
         await _provider.InsertCronTickerOccurrences(new[] { occurrence }, CancellationToken.None);
         _createdCronOccurrenceIds.Add(occurrenceId);
 
-        // Acquire it first (sets status to InProgress, which is NOT acquirable for release)
-        // Instead, let's test with a Queued occurrence owned by our node
-        // The CanAcquireCronOccurrence checks: (Idle||Queued) && (LockHolder==_lockHolder || LockedAt==null)
-        // After InsertCronTickerOccurrences, status is Idle and LockHolder is null, LockedAt is null
-        // So it IS acquirable for release.
-
-        // Act
         await _provider.ReleaseAcquiredCronTickerOccurrences(
             new[] { occurrenceId }, CancellationToken.None);
 
-        // Assert: verify it was reset
         var all = await _provider.GetAllCronTickerOccurrences(
             x => x.Id == occurrenceId, CancellationToken.None);
         Assert.Single(all);
         Assert.Equal(TickerStatus.Idle, all[0].Status);
         Assert.Null(all[0].LockHolder);
         Assert.Null(all[0].LockedAt);
+        Assert.Null(all[0].LeaseUntil);
+        Assert.Null(all[0].AcquisitionToken);
     }
 
     [Fact]
-    public async Task ReleaseAcquiredCronTickerOccurrences_OnlyReleasesAcquirableOccurrences()
+    public async Task ReleaseAcquiredCronTickerOccurrences_EmptyArrayPreservesForeignOwnerWithNullLockedAt()
     {
-        // Arrange: create an occurrence locked by another node (InProgress)
         var cronTickerId = Guid.NewGuid();
         await SetupCronTicker(cronTickerId);
 
@@ -552,25 +552,27 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
             Id = occurrenceId,
             CronTickerId = cronTickerId,
             ExecutionTime = _now.AddMinutes(3),
-            Status = TickerStatus.InProgress,
+            Status = TickerStatus.Queued,
             LockHolder = "other-node",
-            LockedAt = _now,
+            LockedAt = null,
+            AcquisitionToken = Guid.NewGuid(),
+            LeaseUntil = _now.AddMinutes(5),
             CreatedAt = _now,
             UpdatedAt = _now
         };
         await _provider.InsertCronTickerOccurrences(new[] { occurrence }, CancellationToken.None);
         _createdCronOccurrenceIds.Add(occurrenceId);
 
-        // Act: try to release
         await _provider.ReleaseAcquiredCronTickerOccurrences(
-            new[] { occurrenceId }, CancellationToken.None);
+            Array.Empty<Guid>(), CancellationToken.None);
 
-        // Assert: should NOT have been released (InProgress + other-node lock is not acquirable)
         var all = await _provider.GetAllCronTickerOccurrences(
             x => x.Id == occurrenceId, CancellationToken.None);
         Assert.Single(all);
-        Assert.Equal(TickerStatus.InProgress, all[0].Status);
+        Assert.Equal(TickerStatus.Queued, all[0].Status);
         Assert.Equal("other-node", all[0].LockHolder);
+        Assert.Equal(occurrence.AcquisitionToken, all[0].AcquisitionToken);
+        Assert.Equal(occurrence.LeaseUntil, all[0].LeaseUntil);
     }
 
     #endregion
@@ -705,6 +707,26 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
     }
 
     #endregion
+
+    [Fact]
+    public async Task RemoveCronTickerOccurrences_DoesNotDeleteAcquiredOccurrence()
+    {
+        var cronTickerId = Guid.NewGuid();
+        await SetupCronTicker(cronTickerId);
+        var occurrence = new CronTickerOccurrenceEntity<FakeCronTicker>
+        {
+            Id = Guid.NewGuid(), CronTickerId = cronTickerId, ExecutionTime = _now,
+            Status = TickerStatus.Idle, CreatedAt = _now, UpdatedAt = _now
+        };
+        await _provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+        _createdCronOccurrenceIds.Add(occurrence.Id);
+        Assert.Single(await _provider.AcquireImmediateCronOccurrencesAsync([occurrence.Id], CancellationToken.None));
+
+        Assert.Equal(0, await _provider.RemoveCronTickerOccurrences([occurrence.Id], CancellationToken.None));
+
+        Assert.Equal(TickerStatus.InProgress, Assert.Single(await _provider.GetAllCronTickerOccurrences(
+            x => x.Id == occurrence.Id, CancellationToken.None)).Status);
+    }
 
     #region Helpers
 

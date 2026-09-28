@@ -448,6 +448,45 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                 var keys = callInfo.ArgAt<RedisKey[]>(1);
                 var argv = callInfo.ArgAt<RedisValue[]>(2);
 
+                if (script.Contains("Atomically mutate derived indexes", StringComparison.Ordinal))
+                {
+                    var activationKey = (string)keys[0];
+                    if (_hashes.TryGetValue(activationKey, out var activation) &&
+                        activation.ContainsKey("legacyAdoptionState"))
+                        return RedisResult.Create((RedisValue)0);
+                    var member = (string)argv[0];
+                    var operationCount = Rvi(argv[1]);
+                    for (var index = 0; index < operationCount; index++)
+                    {
+                        var offset = 2 + index * 3;
+                        var command = (string)argv[offset];
+                        var key = (string)keys[Rvi(argv[offset + 1]) - 1];
+                        switch (command)
+                        {
+                            case "SADD":
+                                if (!_sets.TryGetValue(key, out var set)) _sets[key] = set = [];
+                                set.Add(member);
+                                break;
+                            case "SREM":
+                                if (_sets.TryGetValue(key, out var existingSet)) existingSet.Remove(member);
+                                break;
+                            case "DELSET":
+                                _sets.Remove(key);
+                                break;
+                            case "ZADD":
+                                var score = double.Parse(argv[offset + 2].ToString(),
+                                    System.Globalization.CultureInfo.InvariantCulture);
+                                AddSortedSetEntry(key, Guid.Parse(member),
+                                    new DateTime((long)score, DateTimeKind.Utc));
+                                break;
+                            case "ZREM":
+                                RemoveSortedSetMember(key, member);
+                                break;
+                        }
+                    }
+                    return RedisResult.Create((RedisValue)1);
+                }
+
                 if (script.Contains("retention index reconciliation", StringComparison.Ordinal))
                     return SimulateRetentionReconciliation(keys, argv);
 

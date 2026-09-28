@@ -262,10 +262,14 @@ public sealed class EfCoreDataMigrationPipeline
             var schema = provider is RelationalIndexProvider.Sqlite or RelationalIndexProvider.MySql
                 ? null
                 : entity.GetSchema();
-            var nullableUniqueSeedKey = index.IsUnique && index.Properties.Count == 1 &&
-                                        index.Properties[0].Name == "SeedKey" && index.Properties[0].IsNullable;
+            var nullableUniqueSeedKeyColumn = index.IsUnique
+                ? index.Properties
+                    .Where(property => property.Name == "SeedKey" && property.IsNullable)
+                    .Select(property => property.GetColumnName(store))
+                    .SingleOrDefault()
+                : null;
             return new RelationalIndexRequirement(
-                name, schema, entity.GetTableName()!, columns, index.IsUnique, nullableUniqueSeedKey);
+                name, schema, entity.GetTableName()!, columns, index.IsUnique, nullableUniqueSeedKeyColumn);
         }
 
         static bool IsProfessionalIndex(IIndex index)

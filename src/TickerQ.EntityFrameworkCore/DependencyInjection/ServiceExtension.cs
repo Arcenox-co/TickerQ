@@ -29,7 +29,8 @@ public static class ServiceExtension
         if (efCoreOptionBuilder.LegacyRuntimeOwner != null)
             tickerConfiguration.UseLegacyRuntimePartitionAdoption(
                 efCoreOptionBuilder.LegacyRuntimeOwner.ApplicationNamespace,
-                efCoreOptionBuilder.LegacyRuntimeAdoptionEpoch!.Value);
+                efCoreOptionBuilder.LegacyRuntimeAdoptionEpoch!.Value,
+                efCoreOptionBuilder.LegacyWritersDrained);
             
         if (efCoreOptionBuilder.PoolSize <= 0) 
             throw new ArgumentOutOfRangeException(nameof(efCoreOptionBuilder.PoolSize), "Pool size must be greater than 0");

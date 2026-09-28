@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
+using System.Buffers.Binary;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using TickerQ.Provider;
@@ -49,6 +52,49 @@ public sealed class TickerInMemoryDefinitionRevisionTests : IDisposable
         _crons.Clear();
         _occurrences.Clear();
         _results.Clear();
+    }
+
+    [Fact]
+    public async Task PreNfcV2OwnedSeed_IsCanonicalizedInPlaceWithoutDuplicate()
+    {
+        const string composedNamespace = "Caf\u00e9-R\u00e9sum\u00e9-owner";
+        const string mixedNamespace = "Cafe\u0301-R\u00e9sume\u0301-owner";
+        const string composedFunction = "R\u00e9sum\u00e9-Caf\u00e9Job";
+        const string mixedFunction = "Re\u0301sum\u00e9-Cafe\u0301Job";
+        var canonicalKey = CronSeedIdentity.SeedKey(composedNamespace, composedFunction);
+        var id = Guid.NewGuid();
+        _crons[id] = new TestCron
+        {
+            Id = id, Function = mixedFunction, Expression = "*/5 * * * *",
+            InitIdentifier = "defined", SeedOwnerNamespace = mixedNamespace,
+            SeedKey = PreNfcV2SeedKey(mixedNamespace, mixedFunction),
+            DefinitionRevision = 1, CreatedAt = _now, UpdatedAt = _now
+        };
+
+        await _provider.MigrateDefinedCronTickers(
+            new DefinedCronSeedManifest(composedNamespace,
+                [new DefinedCronTickerSeed(composedFunction, "*/13 * * * *")]),
+            CancellationToken.None);
+
+        var row = Assert.Single(_crons.Values.Where(x =>
+            CronSeedIdentity.CanonicallyEquals(x.Function, composedFunction)));
+        Assert.Equal(id, row.Id);
+        Assert.Equal(composedNamespace, row.SeedOwnerNamespace);
+        Assert.Equal(canonicalKey, row.SeedKey);
+    }
+
+    private static string PreNfcV2SeedKey(string applicationNamespace, string stableDefinitionId)
+    {
+        var application = Encoding.UTF8.GetBytes(applicationNamespace);
+        var definition = Encoding.UTF8.GetBytes(stableDefinitionId);
+        var framed = new byte[1 + 4 + application.Length + 4 + definition.Length];
+        framed[0] = 2;
+        BinaryPrimitives.WriteInt32BigEndian(framed.AsSpan(1, 4), application.Length);
+        application.CopyTo(framed.AsSpan(5));
+        var definitionOffset = 5 + application.Length;
+        BinaryPrimitives.WriteInt32BigEndian(framed.AsSpan(definitionOffset, 4), definition.Length);
+        definition.CopyTo(framed.AsSpan(definitionOffset + 4));
+        return "tq:cron-seed:v2:" + Convert.ToHexString(SHA256.HashData(framed)).ToLowerInvariant();
     }
 
     [Fact]

@@ -248,7 +248,7 @@ public sealed class MongoDefinitionRevisionFencingTests : IAsyncLifetime
 
         var admissionLocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseRecovery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        provider.AfterRunnableAdmissionFenceForTestAsync = async _ =>
+        provider.BeforeStaleRecoveryTransactionCommitForTestAsync = async _ =>
         {
             admissionLocked.TrySetResult();
             await releaseRecovery.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -269,7 +269,7 @@ public sealed class MongoDefinitionRevisionFencingTests : IAsyncLifetime
         finally
         {
             releaseRecovery.TrySetResult();
-            provider.AfterRunnableAdmissionFenceForTestAsync = null;
+            provider.BeforeStaleRecoveryTransactionCommitForTestAsync = null;
         }
     }
 

@@ -7,6 +7,7 @@ using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 
+using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -190,13 +191,61 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<int> UpdateTimeTickers(TTimeTicker[] timeTickers, CancellationToken cancellationToken = default)
         {
-            var publishesRunnable = timeTickers.Any(x => x.Status is TickerStatus.Idle or TickerStatus.Queued);
+            if (!TryFlattenTimeTickerGraph(timeTickers, out var graph))
+                return 0;
+            var publishesRunnable = graph.Any(x => x.Status is TickerStatus.Idle or TickerStatus.Queued);
             return await ExecuteTimeTickerGraphMutationAsync(publishesRunnable, 0,
                 async (dbContext, ct) =>
                 {
+                    foreach (var ticker in graph)
+                    {
+                        if (!string.IsNullOrEmpty(ticker.ApplicationNamespaceKey)
+                            && !StringComparer.Ordinal.Equals(
+                                ticker.ApplicationNamespaceKey, TickerQRuntimePartition.LegacyGlobal.StorageKey)
+                            && !StringComparer.Ordinal.Equals(ticker.ApplicationNamespaceKey, _runtimePartitionKey))
+                            throw new InvalidOperationException(
+                                "A detached EF runtime graph cannot be redirected from another application partition.");
+                        ticker.ApplicationNamespaceKey = _runtimePartitionKey;
+                    }
+
                     foreach (var ticker in timeTickers.Where(x => x.ParentId == null))
                         NormalizeChainRoot(ticker, ticker.Id);
-                    foreach (var ticker in timeTickers.Where(x => x.Status == TickerStatus.Idle))
+
+                    var nonIdle = graph.Where(x => x.Status != TickerStatus.Idle).ToArray();
+                    if (nonIdle.Length > 0)
+                    {
+                        var ids = nonIdle.Select(x => x.Id).Distinct().ToArray();
+                        if (ids.Length != nonIdle.Length)
+                            return 0;
+                        var currentRows = await dbContext.Set<TTimeTicker>()
+                            .AsNoTracking()
+                            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && ids.Contains(x.Id))
+                            .ToDictionaryAsync(x => x.Id, ct)
+                            .ConfigureAwait(false);
+                        if (currentRows.Count != ids.Length)
+                            return 0;
+
+                        foreach (var incoming in nonIdle)
+                        {
+                            var current = currentRows[incoming.Id];
+                            if (current.Status != incoming.Status ||
+                                !string.Equals(current.LockHolder, incoming.LockHolder, StringComparison.Ordinal) ||
+                                current.LockedAt != incoming.LockedAt ||
+                                current.LeaseUntil != incoming.LeaseUntil ||
+                                current.AcquisitionToken != incoming.AcquisitionToken ||
+                                current.ExecutedAt != incoming.ExecutedAt ||
+                                !string.Equals(current.ExceptionMessage, incoming.ExceptionMessage, StringComparison.Ordinal) ||
+                                !string.Equals(current.SkippedReason, incoming.SkippedReason, StringComparison.Ordinal) ||
+                                current.ElapsedTime != incoming.ElapsedTime ||
+                                current.RetryCount != incoming.RetryCount ||
+                                current.ChainRootId != incoming.ChainRootId ||
+                                current.ChainGeneration != incoming.ChainGeneration ||
+                                current.StaleRestartCount != incoming.StaleRestartCount)
+                                return 0;
+                        }
+                    }
+
+                    foreach (var ticker in graph.Where(x => x.Status == TickerStatus.Idle))
                     {
                         if (ticker.ParentId == null)
                         {
@@ -243,20 +292,154 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 }, cancellationToken).ConfigureAwait(false);
         }
 
+        private static bool TryFlattenTimeTickerGraph(
+            IEnumerable<TTimeTicker> roots, out TTimeTicker[] graph)
+        {
+            var byId = new Dictionary<Guid, TTimeTicker>();
+            var visiting = new HashSet<Guid>();
+            var visited = new HashSet<Guid>();
+
+            bool Visit(TTimeTicker ticker)
+            {
+                if (ticker == null || ticker.Id == Guid.Empty)
+                    return false;
+                if (byId.TryGetValue(ticker.Id, out var existing) && !ReferenceEquals(existing, ticker))
+                    return false;
+                byId[ticker.Id] = ticker;
+                // UpdateRange traverses Parent as well as Children. Only accept a populated Parent
+                // when it is the exact ancestor already reached through the validated downward graph;
+                // a detached upward reference could otherwise attach an unfenced stale/foreign row.
+                if (ticker.Parent != null &&
+                    (!ticker.ParentId.HasValue || ticker.Parent.Id != ticker.ParentId.Value ||
+                     !byId.TryGetValue(ticker.ParentId.Value, out var parent) ||
+                     !ReferenceEquals(parent, ticker.Parent)))
+                    return false;
+                if (visited.Contains(ticker.Id))
+                    return true;
+                if (!visiting.Add(ticker.Id))
+                    return false;
+                if (ticker.Children != null)
+                    foreach (var child in ticker.Children)
+                        if (!Visit(child))
+                            return false;
+                visiting.Remove(ticker.Id);
+                visited.Add(ticker.Id);
+                return true;
+            }
+
+            foreach (var root in roots)
+                if (!Visit(root))
+                {
+                    graph = Array.Empty<TTimeTicker>();
+                    return false;
+                }
+            graph = byId.Values.ToArray();
+            return true;
+        }
+
         public async Task<int> RemoveTimeTickers(Guid[] timeTickerIds, CancellationToken cancellationToken)
         {
+            if (timeTickerIds == null || timeTickerIds.Length == 0) return 0;
             return await ExecuteTimeTickerGraphMutationAsync(false, 0,
-                (dbContext, ct) => DeleteTimeTickerTreesAsync(
-                    dbContext.Set<TTimeTicker>(), timeTickerIds, ct),
+                (dbContext, ct) => DeleteSafeTimeTickerTreesAsync(
+                    dbContext, timeTickerIds, ct),
                 cancellationToken).ConfigureAwait(false);
         }
+
+        private async Task<int> DeleteSafeTimeTickerTreesAsync(
+            TDbContext dbContext, IEnumerable<Guid> requestedIds, CancellationToken cancellationToken)
+        {
+            var set = dbContext.Set<TTimeTicker>();
+            var now = _clock.UtcNow;
+            var total = 0;
+            var alreadyDeleted = new HashSet<Guid>();
+
+            foreach (var requestedId in requestedIds.Distinct())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (alreadyDeleted.Contains(requestedId)) continue;
+
+                var root = await set.AsNoTracking()
+                    .SingleOrDefaultAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                                               x.Id == requestedId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (root == null || root.ParentId.HasValue) continue;
+
+                var levels = new List<List<TTimeTicker>> { new() { root } };
+                var snapshots = new Dictionary<Guid, TTimeTicker> { [root.Id] = root };
+                var frontier = new List<Guid> { root.Id };
+                while (frontier.Count > 0)
+                {
+                    var children = await set.AsNoTracking()
+                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                                    x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                        .ToListAsync(cancellationToken).ConfigureAwait(false);
+                    var next = new List<TTimeTicker>();
+                    foreach (var child in children)
+                        if (snapshots.TryAdd(child.Id, child)) next.Add(child);
+                    if (next.Count == 0) break;
+                    levels.Add(next);
+                    frontier = next.Select(x => x.Id).ToList();
+                }
+
+                if (snapshots.Values.Any(x => x.Status == TickerStatus.InProgress ||
+                                              x.AcquisitionToken.HasValue ||
+                                              x.LeaseUntil > now))
+                    continue;
+
+                await OnExplicitTimeTickerDeleteDiscoveredForTestAsync(
+                    dbContext, snapshots.Keys.ToArray(), cancellationToken).ConfigureAwait(false);
+
+                // Re-authorize the complete aggregate after discovery. This catches an acquisition or
+                // lease publication at the deterministic seam and keeps deletion all-or-nothing.
+                var currentSafe = 0;
+                foreach (var snapshot in snapshots.Values)
+                {
+                    currentSafe += await set.AsNoTracking().CountAsync(
+                        x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == snapshot.Id &&
+                             x.ParentId == snapshot.ParentId && x.Status == snapshot.Status &&
+                             x.AcquisitionToken == snapshot.AcquisitionToken &&
+                             x.LeaseUntil == snapshot.LeaseUntil && x.UpdatedAt == snapshot.UpdatedAt &&
+                             x.Status != TickerStatus.InProgress && x.AcquisitionToken == null &&
+                             (!x.LeaseUntil.HasValue || x.LeaseUntil <= now), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                if (currentSafe != snapshots.Count) continue;
+
+                var deleted = 0;
+                for (var level = levels.Count - 1; level >= 0; level--)
+                {
+                    foreach (var snapshot in levels[level])
+                    {
+                        deleted += await set.Where(
+                                x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == snapshot.Id &&
+                                     x.ParentId == snapshot.ParentId && x.Status == snapshot.Status &&
+                                     x.AcquisitionToken == snapshot.AcquisitionToken &&
+                                     x.LeaseUntil == snapshot.LeaseUntil && x.UpdatedAt == snapshot.UpdatedAt)
+                            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                if (deleted != snapshots.Count)
+                    throw new DbUpdateConcurrencyException(
+                        "A TimeTicker aggregate changed during explicit deletion.");
+                alreadyDeleted.UnionWith(snapshots.Keys);
+                total += deleted;
+            }
+
+            return total;
+        }
+
+        protected internal virtual Task OnExplicitTimeTickerDeleteDiscoveredForTestAsync(
+            TDbContext dbContext, IReadOnlyCollection<Guid> discoveredIds,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
 
         public async Task<int> ReplaceTimeTickerChainAsync(Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
         {
             if (newRoot == null)
                 throw new ArgumentNullException(nameof(newRoot));
 
-            NormalizeChainRoot(newRoot, newRoot.Id);
+            NormalizeReplacementChain(newRoot, null, newRoot.Id, new HashSet<Guid>());
 
             // Runnable replacement participates in the exact same serializable activation boundary
             // as every other runnable publication. The replacement aggregate is inserted completely
@@ -264,10 +447,25 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return await ExecuteTimeTickerGraphMutationAsync(true, 0, async (dbContext, ct) =>
                 {
                     var set = dbContext.Set<TTimeTicker>();
+                    var now = _clock.UtcNow;
+                    var oldAggregate = await set.AsNoTracking()
+                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                                    (x.Id == oldRootId || x.ChainRootId == oldRootId))
+                        .ToListAsync(ct).ConfigureAwait(false);
+                    var oldRoot = oldAggregate.SingleOrDefault(x => x.Id == oldRootId);
+                    if (oldRoot == null || oldRoot.ParentId.HasValue) return 0;
+                    if (oldAggregate.Any(x => x.Status == TickerStatus.InProgress ||
+                                              x.AcquisitionToken.HasValue ||
+                                              (x.LeaseUntil.HasValue && x.LeaseUntil > now)))
+                        return 0;
+
                     // AddAsync walks the Children navigation and cascade-inserts the whole tree.
                     await set.AddAsync(newRoot, ct).ConfigureAwait(false);
                     var inserted = await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
-                    await DeleteTimeTickerTreesAsync(set, [oldRootId], ct).ConfigureAwait(false);
+                    var deleted = await DeleteTimeTickerTreesAsync(set, [oldRootId], ct).ConfigureAwait(false);
+                    if (deleted != oldAggregate.Count)
+                        throw new DbUpdateConcurrencyException(
+                            "The original TimeTicker chain changed during replacement.");
                     return inserted;
                 }, cancellationToken).ConfigureAwait(false);
         }
@@ -308,6 +506,31 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             if (node.Children == null) return;
             foreach (var child in node.Children)
                 NormalizeChainRoot(child, rootId);
+        }
+
+        private static void NormalizeReplacementChain(
+            TTimeTicker node, Guid? parentId, Guid rootId, ISet<Guid> visited)
+        {
+            if (!visited.Add(node.Id))
+                throw new InvalidOperationException(
+                    $"Cannot replace chain: duplicate or cyclic ticker id '{node.Id}'.");
+            node.ParentId = parentId;
+            node.ChainRootId = rootId;
+            node.Status = TickerStatus.Idle;
+            node.LockHolder = null;
+            node.LockedAt = null;
+            node.LeaseUntil = null;
+            node.AcquisitionToken = null;
+            node.ChainGeneration = null;
+            node.ExecutedAt = null;
+            node.ExceptionMessage = null;
+            node.SkippedReason = null;
+            node.ElapsedTime = 0;
+            node.RetryCount = 0;
+            node.StaleRestartCount = 0;
+            if (node.Children == null) return;
+            foreach (var child in node.Children)
+                NormalizeReplacementChain(child, node.Id, rootId, visited);
         }
 
         private async Task<Guid> ResolveChainRootForInsertAsync(
@@ -710,7 +933,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             }, cancellationToken).ConfigureAwait(false);
             
             if(RedisContext.HasRedisConnection)
-                await RedisContext.DistributedCache.RemoveAsync("cron:expressions", cancellationToken).ConfigureAwait(false);
+                await RedisContext.DistributedCache.RemoveAsync(CronExpressionsCacheKey, cancellationToken).ConfigureAwait(false);
             
             return result;
         }
@@ -753,7 +976,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             }, cancellationToken).ConfigureAwait(false);
             
             if(RedisContext.HasRedisConnection)
-                await RedisContext.DistributedCache.RemoveAsync("cron:expressions", cancellationToken).ConfigureAwait(false);
+                await RedisContext.DistributedCache.RemoveAsync(CronExpressionsCacheKey, cancellationToken).ConfigureAwait(false);
             
             return result;
         }
@@ -769,7 +992,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             }, cancellationToken).ConfigureAwait(false);
             
             if(RedisContext.HasRedisConnection)
-                await RedisContext.DistributedCache.RemoveAsync("cron:expressions", cancellationToken).ConfigureAwait(false);
+                await RedisContext.DistributedCache.RemoveAsync(CronExpressionsCacheKey, cancellationToken).ConfigureAwait(false);
             
             return result;
         }
@@ -869,12 +1092,33 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         public async Task<int> RemoveCronTickerOccurrences(Guid[] cronTickerOccurrences, CancellationToken cancellationToken = default)
         {
-            using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-            var dbContext = session.Context;
-            var idList = cronTickerOccurrences.ToList();
-            return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id))
-                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+            if (cronTickerOccurrences == null || cronTickerOccurrences.Length == 0) return 0;
+            var idList = cronTickerOccurrences.Distinct().ToList();
+            return await ExecuteTimeTickerGraphMutationAsync(false, 0, async (dbContext, ct) =>
+            {
+                var now = _clock.UtcNow;
+                var snapshots = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                    .AsNoTracking()
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id))
+                    .Where(x => x.Status != TickerStatus.InProgress && x.AcquisitionToken == null &&
+                                (!x.LeaseUntil.HasValue || x.LeaseUntil <= now))
+                    .ToListAsync(ct).ConfigureAwait(false);
+                var deletedIds = new List<Guid>(snapshots.Count);
+                foreach (var snapshot in snapshots)
+                {
+                    var deleted = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == snapshot.Id &&
+                                    x.Status == snapshot.Status && x.AcquisitionToken == snapshot.AcquisitionToken &&
+                                    x.LeaseUntil == snapshot.LeaseUntil && x.UpdatedAt == snapshot.UpdatedAt)
+                        .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                    if (deleted == 1) deletedIds.Add(snapshot.Id);
+                }
+                if (deletedIds.Count > 0)
+                    await dbContext.Set<CronTickerOccurrenceResultEntity<TCronTicker>>()
+                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && deletedIds.Contains(x.TickerId))
+                        .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                return deletedIds.Count;
+            }, cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default)

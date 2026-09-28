@@ -265,6 +265,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             // any terminal write or lock release. See UpdateCronTickerOccurrence for rationale.
             ApplyAcquisitionToken(propsToUpdate, functionContext,
                 (setter, token) => setter.SetProperty(x => x.AcquisitionToken, token), setters);
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
+                setters.SetProperty(x => x.ChainGeneration, (Guid?)null);
 
             // STATUS / SKIPPED — touch status/skipped reason ONLY when Status is part of the
             // update, and write SkippedReason ONLY for the Skipped transition. A status-free

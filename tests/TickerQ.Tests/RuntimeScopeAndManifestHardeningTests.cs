@@ -147,6 +147,14 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
     [Fact]
     public async Task SchedulerManagers_FailClosedBeforeHostStart_ButQueueOnlyTypedManagersRemainUsable()
     {
+        ResetFunctionProvider();
+        TickerFunctionProvider.RegisterFunctions(new Dictionary<string,
+            (string, Utilities.Enums.TickerTaskPriority, TickerFunctionDelegate, int)>
+        {
+            ["scope-test"] = (string.Empty, Utilities.Enums.TickerTaskPriority.Normal,
+                (_, _, _) => Task.CompletedTask, 0)
+        });
+        TickerFunctionProvider.Build();
         var schedulerServices = new ServiceCollection();
         schedulerServices.AddLogging();
         schedulerServices.AddTickerQ(options => options
@@ -154,9 +162,23 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
             .UseReconciliationEpoch(3));
         await using var schedulerProvider = schedulerServices.BuildServiceProvider();
 
-        var schedulerResult = await schedulerProvider.GetRequiredService<ITimeTickerManager<TimeTickerEntity>>()
+        var schedulerPersistence = schedulerProvider.GetRequiredService<
+            ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
+        var schedulerScope = new ReconciliationActivationScope("manager-app");
+        await schedulerPersistence.BeginReconciliationActivationEpochAsync(
+            schedulerScope, 3, CancellationToken.None);
+        await schedulerPersistence.CommitReconciliationActivationEpochAsync(
+            schedulerScope, 3, CancellationToken.None);
+
+        var schedulerAdd = schedulerProvider.GetRequiredService<ITimeTickerManager<TimeTickerEntity>>()
             .AddAsync(NewTimeTicker());
-        Assert.False(schedulerResult.IsSucceeded);
+        await Task.Delay(25);
+        Assert.False(schedulerAdd.IsCompleted,
+            "A scheduler-host manager must wait for process-local activation even when the durable epoch is active.");
+
+        schedulerProvider.GetRequiredService<ITickerQActivationGate>().SignalActivated();
+        var schedulerResult = await schedulerAdd;
+        Assert.True(schedulerResult.IsSucceeded, schedulerResult.Exception?.ToString());
 
         var producerServices = new ServiceCollection();
         producerServices.AddLogging();
@@ -168,6 +190,7 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
             [producerFunction] = (string.Empty, Utilities.Enums.TickerTaskPriority.Normal,
                 (_, _, _) => Task.CompletedTask, 0)
         });
+        TickerFunctionProvider.Build();
         producerServices.AddTickerQ(options => options.DisableBackgroundServices());
         await using var producerProvider = producerServices.BuildServiceProvider();
 
@@ -320,6 +343,29 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
             new DefinedCronTickerSeed("one", "* * * * *", stableDefinitionId: "same"),
             new DefinedCronTickerSeed("two", "*/2 * * * *", stableDefinitionId: " same ")
         ]));
+    }
+
+    [Fact]
+    public void CronSeedIdentity_UsesUnicodeCanonicalCompositionForEveryIdentityPart()
+    {
+        const string composedNamespace = "caf\u00e9";
+        const string decomposedNamespace = "cafe\u0301";
+        const string composedDefinition = "r\u00e9sum\u00e9";
+        const string decomposedDefinition = "re\u0301sume\u0301";
+
+        Assert.Equal(
+            CronSeedIdentity.SeedKey(composedNamespace, composedDefinition),
+            CronSeedIdentity.SeedKey(decomposedNamespace, decomposedDefinition));
+        Assert.Equal(
+            CronSeedIdentity.LegacyAdoptionKeys(composedNamespace, composedDefinition),
+            CronSeedIdentity.LegacyAdoptionKeys(decomposedNamespace, decomposedDefinition));
+
+        var manifest = new DefinedCronSeedManifest(decomposedNamespace,
+        [
+            new DefinedCronTickerSeed("job", "* * * * *", stableDefinitionId: decomposedDefinition)
+        ]);
+        Assert.Equal(composedNamespace, manifest.ApplicationNamespace);
+        Assert.Equal(composedDefinition, Assert.Single(manifest.Seeds).StableDefinitionId);
     }
 
     [Fact]

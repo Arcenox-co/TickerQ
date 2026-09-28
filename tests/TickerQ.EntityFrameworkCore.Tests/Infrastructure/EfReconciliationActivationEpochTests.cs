@@ -767,6 +767,7 @@ public sealed class EfReconciliationActivationEpochTests : IAsyncDisposable
     public async Task Dead_node_cleanup_does_not_release_descendant_from_old_root_generation()
     {
         var root = await SeedRunnableTimeTickerAsync();
+        var runtimeKey = new TickerQRuntimePartition("ef-reconciliation-tests").StorageKey;
         var oldGeneration = Guid.NewGuid();
         var currentGeneration = Guid.NewGuid();
         var child = new TimeTickerEntity
@@ -779,9 +780,16 @@ public sealed class EfReconciliationActivationEpochTests : IAsyncDisposable
         };
         await using (var seed = new TestTickerQDbContext(_options))
         {
-            seed.Add(child);
+            seed.AddRange(child, new TimeTickerEntity
+            {
+                ApplicationNamespaceKey = new TickerQRuntimePartition("foreign-generation-owner").StorageKey,
+                Id = root.Id, ChainRootId = root.Id, ChainGeneration = oldGeneration,
+                Function = "foreign-root", Request = [], Status = TickerStatus.InProgress,
+                AcquisitionToken = oldGeneration, CreatedAt = root.CreatedAt, UpdatedAt = root.UpdatedAt
+            });
             await seed.SaveChangesAsync();
-            await seed.Set<TimeTickerEntity>().Where(x => x.Id == root.Id)
+            await seed.Set<TimeTickerEntity>()
+                .Where(x => x.ApplicationNamespaceKey == runtimeKey && x.Id == root.Id)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(x => x.ChainRootId, root.Id)
                     .SetProperty(x => x.ChainGeneration, currentGeneration));
@@ -803,6 +811,110 @@ public sealed class EfReconciliationActivationEpochTests : IAsyncDisposable
         Assert.Equal(TickerStatus.Queued, persisted.Status);
         Assert.Equal("dead-node", persisted.LockHolder);
         Assert.NotNull(persisted.AcquisitionToken);
+    }
+
+    [Fact]
+    public async Task DetachedGraphUpdateRejectsForeignPartitionAndNormalizesLegacyKeysBeforeAttachment()
+    {
+        await _provider.BeginReconciliationActivationEpochAsync(1);
+        await _provider.CommitReconciliationActivationEpochAsync(1);
+        var partitionKey = new TickerQRuntimePartition("ef-reconciliation-tests").StorageKey;
+        var generation = Guid.NewGuid();
+        var root = new TimeTickerEntity
+        {
+            ApplicationNamespaceKey = partitionKey,
+            Id = Guid.NewGuid(), Function = "root-original", Request = [], Status = TickerStatus.Done,
+            ChainRootId = null, ChainGeneration = generation, ExecutedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+        };
+        root.ChainRootId = root.Id;
+        var child = new TimeTickerEntity
+        {
+            ApplicationNamespaceKey = partitionKey,
+            Id = Guid.NewGuid(), ParentId = root.Id, ChainRootId = root.Id, ChainGeneration = generation,
+            Function = "child-original", Request = [], Status = TickerStatus.Done,
+            ExecutedAt = root.ExecutedAt, CreatedAt = root.CreatedAt, UpdatedAt = root.UpdatedAt
+        };
+        root.Children = [child];
+        await using (var seed = new TestTickerQDbContext(_options))
+        {
+            seed.Add(root);
+            await seed.SaveChangesAsync();
+        }
+
+        child.ApplicationNamespaceKey = new TickerQRuntimePartition("foreign-app").StorageKey;
+        child.Function = "must-not-write";
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _provider.UpdateTimeTickers([root], CancellationToken.None));
+        await using (var verify = new TestTickerQDbContext(_options))
+            Assert.Equal("child-original", (await verify.Set<TimeTickerEntity>().AsNoTracking()
+                .SingleAsync(x => x.Id == child.Id)).Function);
+
+        root.ApplicationNamespaceKey = TickerQRuntimePartition.LegacyGlobal.StorageKey;
+        child.ApplicationNamespaceKey = TickerQRuntimePartition.LegacyGlobal.StorageKey;
+        root.Function = "root-updated";
+        child.Function = "child-updated";
+        Assert.Equal(2, await _provider.UpdateTimeTickers([root], CancellationToken.None));
+        await using var final = new TestTickerQDbContext(_options);
+        var rows = await final.Set<TimeTickerEntity>().AsNoTracking()
+            .Where(x => x.Id == root.Id || x.Id == child.Id).ToArrayAsync();
+        Assert.All(rows, x => Assert.Equal(partitionKey, x.ApplicationNamespaceKey));
+        Assert.Contains(rows, x => x.Id == root.Id && x.Function == "root-updated");
+        Assert.Contains(rows, x => x.Id == child.Id && x.Function == "child-updated");
+    }
+
+    [Fact]
+    public async Task TerminalResultIsWrittenOnlyToRuntimePartitionWhenLegacyTickerHasSameId()
+    {
+        await _provider.BeginReconciliationActivationEpochAsync(1);
+        await _provider.CommitReconciliationActivationEpochAsync(1);
+        var id = Guid.NewGuid();
+        var runtimeKey = new TickerQRuntimePartition("ef-reconciliation-tests").StorageKey;
+        var legacyKey = TickerQRuntimePartition.LegacyGlobal.StorageKey;
+        var now = new DateTime(2026, 7, 30, 12, 0, 0, DateTimeKind.Utc);
+
+        await using (var seed = new TestTickerQDbContext(_options))
+        {
+            seed.AddRange(
+                new TimeTickerEntity
+                {
+                    ApplicationNamespaceKey = runtimeKey, Id = id, Function = "runtime", Request = [],
+                    Status = TickerStatus.Idle, ExecutionTime = now, CreatedAt = now, UpdatedAt = now
+                },
+                new TimeTickerEntity
+                {
+                    ApplicationNamespaceKey = legacyKey, Id = id, Function = "legacy", Request = [],
+                    Status = TickerStatus.Done, ExecutionTime = now, CreatedAt = now, UpdatedAt = now
+                },
+                new TimeTickerResultEntity<TimeTickerEntity>
+                {
+                    ApplicationNamespaceKey = legacyKey, TickerId = id, Payload = [9],
+                    EnvelopeVersion = 1, MediaType = "application/octet-stream"
+                });
+            await seed.SaveChangesAsync();
+        }
+
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([id]));
+        var completion = new InternalFunctionContext
+        {
+            TickerId = id,
+            Type = TickerType.TimeTicker,
+            AcquisitionToken = acquired.AcquisitionToken,
+            ChainRootId = acquired.ChainRootId,
+            ChainGeneration = acquired.ChainGeneration,
+            RuntimePartitionKey = runtimeKey
+        }.SetProperty(x => x.Status, TickerStatus.Done)
+         .SetProperty(x => x.ResultEnvelope,
+             new TickerResultEnvelope([1], 1, "application/octet-stream"));
+
+        Assert.True(await _provider.CommitSuccessfulTickerAsync(completion));
+
+        await using var verify = new TestTickerQDbContext(_options);
+        var results = await verify.Set<TimeTickerResultEntity<TimeTickerEntity>>()
+            .AsNoTracking().Where(x => x.TickerId == id).ToListAsync();
+        Assert.Equal(2, results.Count);
+        Assert.Equal(new byte[] { 1 }, Assert.Single(results, x => x.ApplicationNamespaceKey == runtimeKey).Payload);
+        Assert.Equal(new byte[] { 9 }, Assert.Single(results, x => x.ApplicationNamespaceKey == legacyKey).Payload);
     }
 
     [Fact]

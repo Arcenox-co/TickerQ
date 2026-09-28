@@ -1,9 +1,10 @@
 -- Atomically delete one occurrence, its result and every index, and ABA-safely release its slot.
--- Explicit mode uses two arguments. Retention mode adds the two accepted statuses, strict cutoff,
--- and current time; the eligibility predicate and deletion remain one boundary.
+-- Explicit mode carries the observed execution generation. Retention mode carries the two accepted
+-- statuses, strict cutoff, and current time; each eligibility predicate and deletion remain one boundary.
 -- KEYS: document,result,allIds,pending,byCron,retention x4,slot,terminalEvidence
--- ARGV: occurrence id,expected cron id,[first status,second status,cutoff,now]
-if #KEYS ~= 11 or (#ARGV ~= 2 and #ARGV ~= 6) or ARGV[1] == '' or ARGV[2] == '' then
+-- ARGV retention: occurrence id,expected cron id,first status,second status,cutoff,now
+-- ARGV explicit: occurrence id,expected cron id,status,token,lease,updatedAt,observedAt
+if #KEYS ~= 11 or (#ARGV ~= 6 and #ARGV ~= 7) or ARGV[1] == '' or ARGV[2] == '' then
   return redis.error_reply('invalid occurrence deletion arguments')
 end
 local expected = {'string','string','set','zset','set','zset','zset','zset','zset','string','hash'}
@@ -17,14 +18,14 @@ if raw then
   if not ok or type(obj) ~= 'table' then return redis.error_reply('cannot delete corrupt occurrence document') end
   if string.lower(tostring(obj['Id'] or obj['id'] or '')) ~= string.lower(ARGV[1]) or
      string.lower(tostring(obj['CronTickerId'] or obj['cronTickerId'] or '')) ~= string.lower(ARGV[2]) then return 0 end
+  local function normalizedDateTime(value)
+    local year, month, day, hour, minute, second, fraction = string.match(
+      value or '', '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)')
+    if not year then return nil end
+    return year .. month .. day .. hour .. minute .. second
+      .. string.sub((fraction or '') .. '0000000', 1, 7)
+  end
   if #ARGV == 6 then
-    local function normalizedDateTime(value)
-      local year, month, day, hour, minute, second, fraction = string.match(
-        value or '', '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)')
-      if not year then return nil end
-      return year .. month .. day .. hour .. minute .. second
-        .. string.sub((fraction or '') .. '0000000', 1, 7)
-    end
     local status = tonumber(obj.Status or obj.status)
     if status ~= tonumber(ARGV[3]) and status ~= tonumber(ARGV[4]) then return 0 end
     local executedAt = obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null
@@ -34,6 +35,16 @@ if raw then
     local leaseUntil = obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null
       and obj.LeaseUntil ~= '' and normalizedDateTime(obj.LeaseUntil) or nil
     if leaseUntil ~= nil and leaseUntil > normalizedDateTime(ARGV[6]) then return 0 end
+  else
+    local status = tonumber(obj.Status or obj.status)
+    local token = obj.AcquisitionToken or obj.acquisitionToken
+    if token == nil or token == cjson.null then token = '' else token = string.lower(tostring(token)) end
+    local lease = obj.LeaseUntil or obj.leaseUntil
+    if lease == nil or lease == cjson.null or lease == '' then lease = '' else lease = normalizedDateTime(lease) end
+    local updatedAt = normalizedDateTime(obj.UpdatedAt or obj.updatedAt)
+    local expectedLease = ARGV[5] == '' and '' or normalizedDateTime(ARGV[5])
+    if status ~= tonumber(ARGV[3]) or token ~= string.lower(ARGV[4]) or
+       lease ~= expectedLease or updatedAt ~= normalizedDateTime(ARGV[6]) then return 0 end
   end
 end
 redis.call('DEL', KEYS[1], KEYS[2])

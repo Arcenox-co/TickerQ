@@ -131,7 +131,7 @@ public sealed class EfCoreRelationalIndexVerifierTests
     public void Composite_key_column_order_is_significant()
     {
         var requirement = new RelationalIndexRequirement(
-            "IX_Order", "ticker", "Items", ["First", "Second"], false, false);
+            "IX_Order", "ticker", "Items", ["First", "Second"], false, null);
         var installed = new InstalledIndexDefinition(
             "IX_Order", "ticker", "Items", ["Second", "First"], false, true, true, null);
 
@@ -148,7 +148,7 @@ public sealed class EfCoreRelationalIndexVerifierTests
     {
         var provider = EfCoreRelationalIndexVerifier.DetectProvider(providerName);
         var requirement = new RelationalIndexRequirement(
-            "IX_DefaultSchema", null, "Items", ["Value"], false, false);
+            "IX_DefaultSchema", null, "Items", ["Value"], false, null);
         var installed = new InstalledIndexDefinition(
             requirement.Name, installedSchema, requirement.Table, requirement.Columns,
             false, true, true, null);
@@ -160,7 +160,7 @@ public sealed class EfCoreRelationalIndexVerifierTests
     private static RelationalIndexRequirement SeedKeyRequirement(RelationalIndexProvider provider)
         => new("UX_CronTickers_SeedKey",
             provider is RelationalIndexProvider.Sqlite or RelationalIndexProvider.MySql ? null : "ticker",
-            "CronTickers", ["SeedKey"], true, true);
+            "CronTickers", ["ApplicationNamespaceKey", "SeedKey"], true, "SeedKey");
 
     private static InstalledIndexDefinition Installed(
         RelationalIndexRequirement requirement,

@@ -12,8 +12,10 @@ if mutationMode ~= 'terminal' and mutationMode ~= 'scoped' and mutationMode ~= '
   return redis.error_reply('invalid CAS mutation mode')
 end
 if mutationMode == 'invalid' then return nil end
-local activationType = mutationMode == 'scoped' and redis.call('TYPE', KEYS[#KEYS])['ok'] or 'none'
+local activationType = redis.call('TYPE', KEYS[#KEYS])['ok']
 if activationType ~= 'none' and activationType ~= 'hash' then return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type') end
+if (mutationMode == 'terminal' or mutationMode == 'legacy') and activationType == 'hash'
+  and redis.call('HGET', KEYS[#KEYS], 'legacyAdoptionState') then return nil end
 if mutationMode == 'scoped' and activationType == 'none' then return nil end
 if mutationMode == 'scoped' and activationType == 'hash' then
   local metadata = redis.call('HGETALL', KEYS[#KEYS])
@@ -81,6 +83,7 @@ local function superseded_by_active_generation()
   return currentGeneration and currentGeneration ~= cjson.null and
     string.lower(tostring(currentGeneration)) ~= string.lower(expectedGeneration)
 end
+local prior = terminal and redis.call('HGET', KEYS[#KEYS - 1], ARGV[16]) or nil
 if enqueue then
   if ARGV[11] == '' or ARGV[12] == '' or not tonumber(ARGV[13]) then
     return redis.error_reply('invalid outbox arguments')
@@ -97,17 +100,34 @@ if enqueue then
     if not existingOk or type(existing) ~= 'table' or not same_immutable(existing, record) then
       return redis.error_reply('outbox id immutable mismatch')
     end
-    -- Ambiguous prior invocation already committed all effects. Acknowledge idempotently even
-    -- though the terminal write cleared the acquisition token and no longer passes its fence.
-    if superseded_by_active_generation() then return nil end
-    if terminal then redis.call('HSET', KEYS[#KEYS - 1], ARGV[16], ARGV[17]) end
+    if terminal then
+      -- Terminal evidence is monotonic. Exact latest evidence proves this generation completed;
+      -- different evidence proves it was superseded and must never be rewound by an old outbox.
+      if prior then
+        if prior == ARGV[17] then return ARGV[5] end
+        local priorGeneration = string.match(prior, '^([^:]+):')
+        local replayGeneration = string.match(ARGV[17], '^([^:]+):')
+        if priorGeneration and replayGeneration and
+           string.lower(priorGeneration) ~= string.lower(replayGeneration) then return nil end
+        return redis.error_reply('terminal generation immutable mismatch')
+      end
+      -- Without durable terminal evidence, only a still-active exact generation can authorize
+      -- replay. A cleared token is ambiguous and therefore fails closed.
+      local expectedGeneration = ARGV[9] ~= '' and ARGV[9] or ARGV[2]
+      local currentJson = redis.call('GET', KEYS[1])
+      local currentOk, current = pcall(cjson.decode, currentJson or '')
+      local currentGeneration = currentOk and type(current) == 'table' and
+        (ARGV[9] ~= '' and (current['ChainGeneration'] or current['chainGeneration'])
+          or (current['AcquisitionToken'] or current['acquisitionToken'])) or nil
+      if expectedGeneration == '' or not currentGeneration or currentGeneration == cjson.null or
+         string.lower(tostring(currentGeneration)) ~= string.lower(expectedGeneration) then return nil end
+    end
     return ARGV[5]
   end
 end
 -- Validate and compare an extant outbox record before consulting generation evidence. This lets an
 -- exact ambiguous replay acknowledge after the first terminal write changed the mutable replacement,
 -- while same-ID intent or terminal-mutation mismatches still fail closed above.
-local prior = terminal and redis.call('HGET', KEYS[#KEYS - 1], ARGV[16]) or nil
 local function reject_or_replay()
   if prior then
     if superseded_by_active_generation() then return nil end

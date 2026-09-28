@@ -109,7 +109,7 @@ public sealed class PersistencePrerequisiteBootstrapTests
             return Task.CompletedTask;
         });
         var adoption = new LegacyRuntimePartitionAdoption(
-            new TickerQRuntimePartition("adoption-tests"), 9);
+            new TickerQRuntimePartition("adoption-tests"), 9, legacyWritersDrained: true);
         var context = new TickerExecutionContext
         {
             OptionsSeeding = new AdoptionOptionsSeeding(adoption)

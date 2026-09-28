@@ -25,6 +25,7 @@ if ARGV[1] == '' or (ARGV[2] ~= 'upsert' and ARGV[2] ~= 'delete' and ARGV[2] ~= 
     return redis.error_reply('invalid cron mutation argument')
 end
 if ARGV[19] == 'invalid' then return -3 end
+if ARGV[19] == 'legacy' and redis.call('HGET', KEYS[12], 'legacyAdoptionState') then return -3 end
 if ARGV[19] ~= 'legacy' and redis.call('EXISTS', KEYS[12]) == 0 then
     return -3
 elseif ARGV[19] ~= 'legacy' then
@@ -41,18 +42,18 @@ elseif ARGV[19] ~= 'legacy' then
 end
 local current = redis.call('GET', KEYS[1])
 local currentObject = nil
+local currentCorrupt = false
 if current then
     local currentOk
     currentOk, currentObject = pcall(cjson.decode, current)
     if not currentOk then
-        redis.call('HSET', KEYS[3], ARGV[1], current)
-        redis.call('SREM', KEYS[2], ARGV[1])
-        return -1
+        currentCorrupt = true
+        currentObject = nil
     end
 end
 local expectedRevision = tonumber(ARGV[18])
 if not expectedRevision then return redis.error_reply('invalid expected definition revision') end
-if expectedRevision >= 0 then
+if not currentCorrupt and expectedRevision >= 0 then
     if not currentObject then
         if expectedRevision ~= 0 then return -5 end
     else
@@ -60,7 +61,7 @@ if expectedRevision >= 0 then
         if not currentRevision or currentRevision ~= expectedRevision then return -5 end
     end
 end
-if ARGV[15] == '1' then
+if not currentCorrupt and ARGV[15] == '1' then
     if not currentObject then return -4 end
     local function normalized(value)
         if value == nil or value == cjson.null then return '' end
@@ -71,7 +72,10 @@ if ARGV[15] == '1' then
     if currentOwner ~= ARGV[16] or currentSeedKey ~= ARGV[17] then return -4 end
 end
 if ARGV[2] == 'markDeleting' then
-    if not current then return 0 end
+    if not current and not currentCorrupt then return 0 end
+    if currentCorrupt then
+        -- Defer quarantine until the common full preflight boundary below.
+    else
     currentObject.TickerQLifecycle = 'Deleting'
     local deleting = cjson.encode(currentObject)
     deleting = deleting:gsub('"Request":{}', '"Request":[]')
@@ -79,6 +83,7 @@ if ARGV[2] == 'markDeleting' then
     deleting = deleting:gsub('"Children":{}', '"Children":[]')
     redis.call('SET', KEYS[1], deleting)
     return 1
+    end
 end
 if ARGV[2] == 'upsert' then
     local replacementOk, replacement = pcall(cjson.decode, ARGV[3])
@@ -109,6 +114,8 @@ local function dateTimeTicks(value)
 end
 
 local candidates = {}
+local repairs = {}
+local hasCorruptOccurrence = false
 if ARGV[4] == '1' then
     local idle, queued, skipped, retentionScore = tonumber(ARGV[6]), tonumber(ARGV[7]), tonumber(ARGV[8]), tonumber(ARGV[10])
     if not idle or not queued or not skipped or not retentionScore or ARGV[5] == '' or
@@ -127,23 +134,34 @@ if ARGV[4] == '1' then
         if raw then
             local ok, obj = pcall(cjson.decode, raw)
             if not ok or type(obj) ~= 'table' then
-                redis.call('HSET', KEYS[11], id, raw)
-                redis.call('SREM', KEYS[5], id)
-                redis.call('ZREM', KEYS[6], id)
-                redis.call('SREM', KEYS[4], id)
-                for i = 7, 10 do redis.call('ZREM', KEYS[i], id) end
-                return -2
-            end
-            if string.lower(tostring(obj.CronTickerId or obj.cronTickerId or '')) == string.lower(ARGV[1]) then
-                table.insert(candidates, {id=id, key=documentKey, raw=raw, obj=obj})
+                table.insert(repairs, {id=id, raw=raw})
+                hasCorruptOccurrence = true
+            elseif string.lower(tostring(obj.CronTickerId or obj.cronTickerId or '')) == string.lower(ARGV[1]) then
+                local ticks = dateTimeTicks(obj.ExecutionTime or obj.executionTime)
+                local slotKey = ticks and (ARGV[12] .. ticks) or nil
+                if slotKey and not type_ok(slotKey, 'string') then
+                    return redis.error_reply('occurrence slot has an incompatible Redis type')
+                end
+                table.insert(candidates, {id=id, key=documentKey, raw=raw, obj=obj, slotKey=slotKey})
             end
         else
-            redis.call('SREM', KEYS[5], id)
-            redis.call('ZREM', KEYS[6], id)
-            redis.call('SREM', KEYS[4], id)
-            for i = 7, 10 do redis.call('ZREM', KEYS[i], id) end
+            table.insert(repairs, {id=id})
         end
     end
+    if currentCorrupt then
+        redis.call('HSET', KEYS[3], ARGV[1], current)
+        redis.call('SREM', KEYS[2], ARGV[1])
+        return -1
+    end
+    -- Only after every dynamic document and derived slot key has passed preflight may cleanup begin.
+    for _, repair in ipairs(repairs) do
+        if repair.raw then redis.call('HSET', KEYS[11], repair.id, repair.raw) end
+        redis.call('SREM', KEYS[5], repair.id)
+        redis.call('ZREM', KEYS[6], repair.id)
+        redis.call('SREM', KEYS[4], repair.id)
+        for i = 7, 10 do redis.call('ZREM', KEYS[i], repair.id) end
+    end
+    if hasCorruptOccurrence then return -2 end
     for _, candidate in ipairs(candidates) do
         local obj, id = candidate.obj, candidate.id
         local status = tonumber(obj.Status or obj.status)
@@ -171,13 +189,17 @@ if ARGV[4] == '1' then
             for i = 7, 9 do redis.call('ZREM', KEYS[i], id) end
             redis.call('ZADD', KEYS[10], retentionScore, id)
             redis.call('HDEL', KEYS[11], id)
-            local ticks = dateTimeTicks(obj.ExecutionTime or obj.executionTime)
-            if ticks then
-                local slotKey = ARGV[12] .. ticks
-                if redis.call('GET', slotKey) == id then redis.call('DEL', slotKey) end
+            if candidate.slotKey then
+                if redis.call('GET', candidate.slotKey) == id then redis.call('DEL', candidate.slotKey) end
             end
         end
     end
+end
+
+if currentCorrupt then
+    redis.call('HSET', KEYS[3], ARGV[1], current)
+    redis.call('SREM', KEYS[2], ARGV[1])
+    return -1
 end
 
 if ARGV[2] == 'delete' then

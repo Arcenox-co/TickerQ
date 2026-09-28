@@ -22,7 +22,7 @@ internal sealed record RelationalIndexRequirement(
     string Table,
     IReadOnlyList<string> Columns,
     bool IsUnique,
-    bool IsNullableUniqueSeedKey);
+    string NullableUniqueColumn);
 
 internal sealed record InstalledIndexDefinition(
     string Name,
@@ -176,14 +176,14 @@ internal static class EfCoreRelationalIndexVerifier
         if (!installed.IsValid)
             return Fail("index is invalid, hypothetical, or not ready", out mismatch);
 
-        if (requirement.IsNullableUniqueSeedKey)
+        if (!string.IsNullOrWhiteSpace(requirement.NullableUniqueColumn))
         {
             if (provider == RelationalIndexProvider.SqlServer)
             {
-                if (!IsSingleColumnNotNullFilter(installed.FilterDefinition, requirement.Columns[0]))
+                if (!IsSingleColumnNotNullFilter(installed.FilterDefinition, requirement.NullableUniqueColumn))
                     return Fail(
                         $"SQL Server nullable unique SeedKey index must be filtered with " +
-                        $"'{requirement.Columns[0]} IS NOT NULL'", out mismatch);
+                        $"'{requirement.NullableUniqueColumn} IS NOT NULL'", out mismatch);
             }
             else if (!string.IsNullOrWhiteSpace(installed.FilterDefinition))
             {

@@ -103,9 +103,12 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         _dispatcher.IsEnabled.Returns(false);
         _dispatcher.DispatchAsync(Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
         var executionContext = new TickerExecutionContext();
+        var activationGate = new TickerQActivationGate();
+        activationGate.SignalActivated();
 
         var tickerManager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
-            _provider, hostScheduler, _clock, notificationHub, executionContext, _dispatcher);
+            _provider, hostScheduler, _clock, notificationHub, executionContext, _dispatcher,
+            schedulerOptions, activationGate);
 
         _timeTickerManager = tickerManager;
         _cronTickerManager = tickerManager;

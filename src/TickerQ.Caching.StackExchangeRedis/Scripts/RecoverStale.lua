@@ -4,10 +4,12 @@
 --       staleReason, skipped, staleRevisionReason, exact supported epoch,
 --       scoped | legacy | invalid runtime admission mode
 -- Returns Q|json, R|json, C|json, S|json, or nil.
-local activationType = ARGV[13] == 'scoped' and redis.call('TYPE', KEYS[#KEYS])['ok'] or 'none'
+local activationType = redis.call('TYPE', KEYS[#KEYS])['ok']
 if ARGV[13] == 'invalid' then return nil end
 if ARGV[13] ~= 'scoped' and ARGV[13] ~= 'legacy' then return redis.error_reply('invalid runtime admission mode') end
 if activationType ~= 'none' and activationType ~= 'hash' then return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type') end
+if ARGV[13] == 'legacy' and activationType == 'hash' and
+   redis.call('HGET', KEYS[#KEYS], 'legacyAdoptionState') then return nil end
 if ARGV[13] == 'scoped' and activationType == 'none' then return nil end
 if ARGV[13] == 'scoped' and activationType == 'hash' then
   local metadata = redis.call('HGETALL', KEYS[#KEYS])

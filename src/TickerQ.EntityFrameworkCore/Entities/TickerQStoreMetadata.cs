@@ -8,6 +8,7 @@ public sealed class TickerQStoreMetadata
 {
     public const string SingletonId = "TickerQ";
     public const string TimeTickerGraphMutationSentinelId = "TickerQ:TimeTickerGraphMutation";
+    public const string LegacyRuntimeAdoptionId = "TickerQ:LegacyRuntimeAdoption";
 
     public string ApplicationNamespaceKey { get; set; } = TickerQRuntimePartition.LegacyGlobal.StorageKey;
     public string Id { get; set; } = SingletonId;

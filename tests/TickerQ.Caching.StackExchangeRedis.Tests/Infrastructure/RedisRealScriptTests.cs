@@ -130,6 +130,31 @@ public sealed class RedisRealScriptTests
     }
 
     [Fact]
+    public async Task UpdateTimeTicker_WrongTypeIndexFailsBeforeDocumentResultOrEvidenceMutation()
+    {
+        var ticker = NewIdleTicker();
+        Assert.Equal(1, await _provider.AddTimeTickers([ticker], CancellationToken.None));
+        var documentKey = RedisKeyBuilder.TimeTickerKey(ticker.Id);
+        var resultKey = RedisKeyBuilder.TimeTickerResultKey(ticker.Id);
+        var evidenceField = $"{(int)TickerType.TimeTicker}:{ticker.Id:D}";
+        var originalDocument = await _db.StringGetAsync(documentKey);
+        await _db.StringSetAsync(resultKey, "result-before");
+        await _db.HashSetAsync(RedisKeyBuilder.TerminalMutationEvidenceKey, evidenceField, "evidence-before");
+        await _db.KeyDeleteAsync(RedisKeyBuilder.TimeTickerIdsKey);
+        await _db.StringSetAsync(RedisKeyBuilder.TimeTickerIdsKey, "wrong-type");
+        ticker.Description = "must-not-persist";
+
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.UpdateTimeTickers([ticker], CancellationToken.None));
+
+        Assert.Equal(originalDocument, await _db.StringGetAsync(documentKey));
+        Assert.Equal("result-before", (string?)await _db.StringGetAsync(resultKey));
+        Assert.Equal("evidence-before", (string?)await _db.HashGetAsync(
+            RedisKeyBuilder.TerminalMutationEvidenceKey, evidenceField));
+        Assert.Equal("wrong-type", (string?)await _db.StringGetAsync(RedisKeyBuilder.TimeTickerIdsKey));
+    }
+
+    [Fact]
     public async Task RepairTimeTickerChains_CasPreservesIndexesAndResult_AndRejectsMalformedBeforeMutation()
     {
         var generation = Guid.NewGuid();
@@ -306,6 +331,538 @@ public sealed class RedisRealScriptTests
 
         Assert.True(result.IsNull);
         Assert.Equal(original, (string?)await _db.StringGetAsync(entityKey));
+    }
+
+    [Theory]
+    [InlineData("Acquire", 0)]
+    [InlineData("AcquireOnDemand", 0)]
+    [InlineData("TransitionQueued", 1)]
+    [InlineData("Release", 1)]
+    [InlineData("RecoverDeadNode", 2)]
+    [InlineData("RecoverStale", 2)]
+    public async Task Legacy_runtime_scripts_reject_adoption_tombstone_before_mutation_real_lua(
+        string scriptName, int status)
+    {
+        var id = Guid.NewGuid();
+        var entityKey = (RedisKey)$"tq:test:{scriptName}:{id}:legacy-entity";
+        var resultKey = (RedisKey)$"tq:test:{scriptName}:{id}:legacy-result";
+        var evidenceKey = (RedisKey)$"tq:test:{scriptName}:{id}:legacy-evidence";
+        var activationKey = (RedisKey)$"tq:test:{scriptName}:{id}:legacy-activation";
+        var token = Guid.NewGuid().ToString();
+        var original = $"{{\"Id\":\"{id}\",\"Status\":{status},\"LockHolder\":\"owner\"," +
+                       $"\"LockedAt\":\"{BaseNow.AddMinutes(-3):O}\",\"LeaseUntil\":\"{BaseNow.AddMinutes(-2):O}\"," +
+                       $"\"AcquisitionToken\":\"{token}\",\"UpdatedAt\":\"{BaseNow.AddMinutes(-3):O}\",\"Children\":[]}}";
+        await _db.StringSetAsync(entityKey, original);
+        await _db.HashSetAsync(activationKey, "legacyAdoptionState", "fenced");
+        RedisKey[] keys;
+        RedisValue[] args;
+        switch (scriptName)
+        {
+            case "Acquire":
+                keys = [entityKey, resultKey, evidenceKey, activationKey];
+                args = ["owner", BaseNow.ToString("O"), "2", "", "0", "1", token,
+                    BaseNow.AddMinutes(1).ToString("O"), "tq:tt:", "7", "legacy"];
+                break;
+            case "AcquireOnDemand":
+                keys = [entityKey, resultKey, evidenceKey, activationKey];
+                args = ["owner", BaseNow.ToString("O"), BaseNow.AddMinutes(1).ToString("O"), token,
+                    "2", BaseNow.ToString("O"), "1", "7", "legacy"];
+                break;
+            case "TransitionQueued":
+                keys = [entityKey, activationKey];
+                args = ["owner", token, BaseNow.ToString("O"), "1", "2",
+                    BaseNow.AddMinutes(1).ToString("O"), "7", "legacy"];
+                break;
+            case "Release":
+                keys = [entityKey, resultKey, activationKey];
+                args = ["owner", BaseNow.ToString("O"), "0", "1", "7", "legacy"];
+                break;
+            case "RecoverDeadNode":
+                keys = [entityKey, resultKey, activationKey];
+                args = ["owner", BaseNow.ToString("O"), "0", "1", "2", "7", "legacy"];
+                break;
+            default:
+                keys = [entityKey, resultKey, activationKey];
+                args = [BaseNow.ToString("O"), BaseNow.AddMinutes(-1).ToString("O"), "1", "0",
+                    "0", "1", "2", "3", "stale", "5", "revision", "7", "legacy"];
+                break;
+        }
+
+        var result = await _db.ScriptEvaluateAsync(LuaScriptLoader.Load(scriptName), keys, args);
+
+        Assert.True(result.IsNull);
+        Assert.Equal(original, (string?)await _db.StringGetAsync(entityKey));
+    }
+
+    [Fact]
+    public async Task Legacy_repair_and_quarantine_scripts_reject_adoption_tombstone_before_mutation_real_lua()
+    {
+        var prefix = $"tq:test:repair-fence:{Guid.NewGuid()}";
+        RedisKey activation = $"{prefix}:activation";
+        RedisKey ids = $"{prefix}:ids";
+        RedisKey phase = $"{prefix}:phase";
+        RedisKey cursor = $"{prefix}:cursor";
+        RedisKey pending = $"{prefix}:pending";
+        RedisKey quarantine = $"{prefix}:quarantine";
+        await _db.HashSetAsync(activation, "legacyAdoptionState", "fenced");
+        await _db.SetAddAsync(ids, Guid.NewGuid().ToString());
+
+        var repair = (RedisResult[])await _db.ScriptEvaluateAsync(
+            LuaScriptLoader.Load("RepairCronDiscoverability"),
+            [ids, phase, cursor, pending, quarantine, activation],
+            [(RedisValue)16, (RedisValue)$"{prefix}:cron:"]);
+        Assert.Equal("fenced", (string)repair[3]);
+        Assert.False(await _db.KeyExistsAsync(phase));
+        Assert.False(await _db.KeyExistsAsync(cursor));
+
+        var occurrenceId = Guid.NewGuid();
+        var cronId = Guid.NewGuid();
+        RedisKey document = $"{prefix}:co:{occurrenceId}";
+        var original = $"{{\"Id\":\"{occurrenceId}\",\"CronTickerId\":\"{cronId}\",\"Status\":0}}";
+        await _db.StringSetAsync(document, original);
+        var quarantineResult = await _db.ScriptEvaluateAsync(
+            LuaScriptLoader.Load("DeletePendingCronOccurrence"),
+            [document, (RedisKey)$"{prefix}:result", (RedisKey)$"{prefix}:all", (RedisKey)$"{prefix}:pending-occ",
+             (RedisKey)$"{prefix}:by-cron", (RedisKey)$"{prefix}:r1", (RedisKey)$"{prefix}:r2",
+             (RedisKey)$"{prefix}:r3", (RedisKey)$"{prefix}:r4", (RedisKey)$"{prefix}:occ-quarantine",
+             (RedisKey)$"{prefix}:slot", activation],
+            [(RedisValue)occurrenceId.ToString(), (RedisValue)cronId.ToString(), (RedisValue)BaseNow.ToString("O"),
+             (RedisValue)"0", (RedisValue)"1", (RedisValue)"3", (RedisValue)"stale", (RedisValue)0]);
+        Assert.Equal(-3, (long)quarantineResult);
+        Assert.Equal(original, (string?)await _db.StringGetAsync(document));
+    }
+
+    [Fact]
+    public async Task Derived_index_and_retention_mutation_rejects_adoption_tombstone_atomically_real_lua()
+    {
+        var tag = $"{{derived-fence-{Guid.NewGuid():N}}}";
+        RedisKey activation = $"tq:{tag}:activation";
+        RedisKey ids = $"tq:{tag}:ids";
+        RedisKey pending = $"tq:{tag}:pending";
+        RedisKey retention = $"tq:{tag}:retention:failed";
+        var id = Guid.NewGuid().ToString();
+        await _db.HashSetAsync(activation, "legacyAdoptionState", "adopting");
+
+        var result = await _db.ScriptEvaluateAsync(
+            LuaScriptLoader.Load("MutateDerivedIndexes"),
+            [activation, ids, pending, retention],
+            [(RedisValue)id, 3, "SADD", 2, "", "ZADD", 3, 123, "ZADD", 4, 456]);
+
+        Assert.Equal(0, (long)result);
+        Assert.False(await _db.KeyExistsAsync(ids));
+        Assert.False(await _db.KeyExistsAsync(pending));
+        Assert.False(await _db.KeyExistsAsync(retention));
+    }
+
+    [Fact]
+    public async Task Derived_index_mutation_preflights_invalid_score_before_any_write_real_lua()
+    {
+        var tag = $"{{derived-score-{Guid.NewGuid():N}}}";
+        RedisKey activation = $"tq:{tag}:activation";
+        RedisKey ids = $"tq:{tag}:ids";
+        RedisKey pending = $"tq:{tag}:pending";
+        var id = Guid.NewGuid().ToString();
+
+        await Assert.ThrowsAsync<RedisServerException>(() => _db.ScriptEvaluateAsync(
+            LuaScriptLoader.Load("MutateDerivedIndexes"),
+            [activation, ids, pending],
+            [(RedisValue)id, 2, "SADD", 2, "", "ZADD", 3, "not-a-number"]));
+
+        Assert.False(await _db.KeyExistsAsync(ids));
+        Assert.False(await _db.KeyExistsAsync(pending));
+    }
+
+    [Fact]
+    public async Task Unified_time_ticker_mutation_preflights_late_index_type_before_document_write_real_lua()
+    {
+        var tag = $"{{unified-preflight-{Guid.NewGuid():N}}}";
+        var id = Guid.NewGuid();
+        RedisKey document = $"tq:{tag}:tt:{id}";
+        RedisKey activation = $"tq:{tag}:activation";
+        RedisKey ids = $"tq:{tag}:ids";
+        RedisKey pending = $"tq:{tag}:pending";
+        RedisKey succeeded = $"tq:{tag}:retention:succeeded";
+        RedisKey failed = $"tq:{tag}:retention:failed";
+        RedisKey cancelled = $"tq:{tag}:retention:cancelled";
+        RedisKey skipped = $"tq:{tag}:retention:skipped";
+        var expectedUpdatedAt = BaseNow.ToString("O");
+        var original = $"{{\"Id\":\"{id}\",\"Status\":0,\"UpdatedAt\":\"{expectedUpdatedAt}\"}}";
+        var replacement = $"{{\"Id\":\"{id}\",\"Status\":7,\"UpdatedAt\":\"{BaseNow.AddTicks(1):O}\"}}";
+        await _db.StringSetAsync(document, original);
+        await _db.StringSetAsync(skipped, "wrong-type");
+
+        await Assert.ThrowsAsync<RedisServerException>(() => _db.ScriptEvaluateAsync(
+            LuaScriptLoader.Load("UpdateTimeTickerWithIndexes"),
+            [document, activation, ids, pending, succeeded, failed, cancelled, skipped],
+            [expectedUpdatedAt, replacement, id.ToString(), "0", "", 4, BaseNow.Ticks]));
+
+        Assert.Equal(original, (string?)await _db.StringGetAsync(document));
+        Assert.False(await _db.KeyExistsAsync(ids));
+        Assert.False(await _db.KeyExistsAsync(pending));
+        Assert.Equal("wrong-type", (string?)await _db.StringGetAsync(skipped));
+    }
+
+    [Fact]
+    public async Task Retention_reconciliation_preflights_all_index_types_before_any_write_real_lua()
+    {
+        var id = Guid.NewGuid().ToString();
+        await _db.ListRightPushAsync(RedisKeyBuilder.RetentionReconciliationPendingKey, id);
+        await _db.SortedSetAddAsync(RedisKeyBuilder.TimeTickerRetentionSucceededKey, id, 123);
+        await _db.StringSetAsync(RedisKeyBuilder.TimeTickerRetentionFailedKey, "wrong-type");
+
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.ReconcileRetentionIndexesAsync(1, CancellationToken.None));
+
+        Assert.Equal(id, (string?)await _db.ListGetByIndexAsync(
+            RedisKeyBuilder.RetentionReconciliationPendingKey, 0));
+        Assert.Equal(123, await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.TimeTickerRetentionSucceededKey, id));
+        Assert.Equal("wrong-type", (string?)await _db.StringGetAsync(
+            RedisKeyBuilder.TimeTickerRetentionFailedKey));
+    }
+
+    [Fact]
+    public async Task Retention_reconciliation_preflights_document_shape_before_any_write_real_lua()
+    {
+        var id = Guid.NewGuid();
+        var value = id.ToString();
+        await _db.StringSetAsync(RedisKeyBuilder.TimeTickerKey(id), "5");
+        await _db.ListRightPushAsync(RedisKeyBuilder.RetentionReconciliationPendingKey, value);
+        await _db.SortedSetAddAsync(RedisKeyBuilder.TimeTickerRetentionSucceededKey, value, 123);
+        await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationPhaseKey, "time_ids");
+        await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationCursorKey, "0");
+
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.ReconcileRetentionIndexesAsync(1, CancellationToken.None));
+
+        Assert.Equal("5", (string?)await _db.StringGetAsync(RedisKeyBuilder.TimeTickerKey(id)));
+        Assert.Equal(value, (string?)await _db.ListGetByIndexAsync(
+            RedisKeyBuilder.RetentionReconciliationPendingKey, 0));
+        Assert.Equal(123, await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.TimeTickerRetentionSucceededKey, value));
+        Assert.Equal("time_ids", (string?)await _db.StringGetAsync(
+            RedisKeyBuilder.RetentionReconciliationPhaseKey));
+        Assert.Equal("0", (string?)await _db.StringGetAsync(
+            RedisKeyBuilder.RetentionReconciliationCursorKey));
+    }
+
+    [Fact]
+    public async Task Retention_delete_preflights_every_key_before_removing_time_ticker_real_lua()
+    {
+        var ticker = NewIdleTicker();
+        ticker.Status = TickerStatus.Done;
+        ticker.ExecutedAt = BaseNow.AddDays(-10);
+        await _provider.AddTimeTickers([ticker], CancellationToken.None);
+        await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationPhaseKey, "occurrence_keys");
+        await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationCursorKey, "0");
+        await _db.StringSetAsync(RedisKeyBuilder.TerminalMutationEvidenceKey, "wrong-type");
+        var documentBefore = await _db.StringGetAsync(RedisKeyBuilder.TimeTickerKey(ticker.Id));
+        var scoreBefore = await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.TimeTickerRetentionSucceededKey, ticker.Id.ToString());
+
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.DeleteEligibleTimeTickerChainsAsync(
+                new RetentionCutoffs(BaseNow.AddDays(-7), null, null, null), 10,
+                RetentionCursor.Start, CancellationToken.None));
+
+        Assert.Equal(documentBefore, await _db.StringGetAsync(RedisKeyBuilder.TimeTickerKey(ticker.Id)));
+        Assert.True(await _db.SetContainsAsync(RedisKeyBuilder.TimeTickerIdsKey, ticker.Id.ToString()));
+        Assert.Equal(scoreBefore, await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.TimeTickerRetentionSucceededKey, ticker.Id.ToString()));
+        Assert.Equal("wrong-type", (string?)await _db.StringGetAsync(RedisKeyBuilder.TerminalMutationEvidenceKey));
+    }
+
+    [Fact]
+    public async Task Retention_delete_preflights_every_key_before_removing_occurrence_real_lua()
+    {
+        var cron = NewCron("occurrence-retention-preflight");
+        await _provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = NewOccurrence(cron.Id, BaseNow.AddDays(-10), TickerStatus.Failed);
+        occurrence.ExecutedAt = BaseNow.AddDays(-10);
+        await _provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+        await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationPhaseKey, "time_keys");
+        await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationCursorKey, "0");
+        await _db.StringSetAsync(RedisKeyBuilder.TerminalMutationEvidenceKey, "wrong-type");
+        var documentBefore = await _db.StringGetAsync(RedisKeyBuilder.CronOccurrenceKey(occurrence.Id));
+        var scoreBefore = await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.CronOccurrenceRetentionFailedKey, occurrence.Id.ToString());
+
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.DeleteEligibleCronTickerOccurrencesAsync(
+                new RetentionCutoffs(null, BaseNow.AddDays(-7), null, null), 10,
+                CancellationToken.None));
+
+        Assert.Equal(documentBefore, await _db.StringGetAsync(RedisKeyBuilder.CronOccurrenceKey(occurrence.Id)));
+        Assert.True(await _db.SetContainsAsync(RedisKeyBuilder.CronOccurrenceIdsKey, occurrence.Id.ToString()));
+        Assert.True(await _db.SetContainsAsync(
+            RedisKeyBuilder.CronOccurrencesByCronKey(cron.Id), occurrence.Id.ToString()));
+        Assert.Equal(scoreBefore, await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.CronOccurrenceRetentionFailedKey, occurrence.Id.ToString()));
+        Assert.Equal("wrong-type", (string?)await _db.StringGetAsync(RedisKeyBuilder.TerminalMutationEvidenceKey));
+    }
+
+    [Fact]
+    public async Task Retention_reconciliation_rejects_invalid_date_and_object_children_before_any_write_real_lua()
+    {
+        var first = Guid.NewGuid();
+        var corrupt = Guid.NewGuid();
+        var firstJson = $"{{\"Id\":\"{first}\",\"Status\":{(int)TickerStatus.Done}," +
+                        $"\"ExecutedAt\":\"{BaseNow.AddDays(-10):O}\",\"Children\":[]}}";
+        var corruptJson = $"{{\"Id\":\"{corrupt}\",\"Status\":{(int)TickerStatus.Done}," +
+                          "\"ExecutedAt\":\"2025-99-99T99:99:99.12345678Q\"," +
+                          "\"Children\":{\"not\":\"an-array\"}}";
+        await _db.StringSetAsync(RedisKeyBuilder.TimeTickerKey(first), firstJson);
+        await _db.StringSetAsync(RedisKeyBuilder.TimeTickerKey(corrupt), corruptJson);
+        await _db.ListRightPushAsync(RedisKeyBuilder.RetentionReconciliationPendingKey,
+            [first.ToString(), corrupt.ToString()]);
+        await _db.SortedSetAddAsync(RedisKeyBuilder.TimeTickerRetentionFailedKey, first.ToString(), 321);
+        await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationPhaseKey, "time_ids");
+        await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationCursorKey, "0");
+
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.ReconcileRetentionIndexesAsync(2, CancellationToken.None));
+
+        Assert.Equal([first.ToString(), corrupt.ToString()],
+            (await _db.ListRangeAsync(RedisKeyBuilder.RetentionReconciliationPendingKey))
+            .Select(x => x.ToString()).ToArray());
+        Assert.Equal(321, await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.TimeTickerRetentionFailedKey, first.ToString()));
+        Assert.Null(await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.TimeTickerRetentionSucceededKey, first.ToString()));
+        Assert.Equal("time_ids", (string?)await _db.StringGetAsync(
+            RedisKeyBuilder.RetentionReconciliationPhaseKey));
+        Assert.Equal("0", (string?)await _db.StringGetAsync(
+            RedisKeyBuilder.RetentionReconciliationCursorKey));
+    }
+
+    [Fact]
+    public async Task Retention_rejects_empty_object_children_at_root_and_nested_before_any_write_real_lua()
+    {
+        foreach (var nested in new[] { false, true })
+        {
+            var id = Guid.NewGuid();
+            var child = Guid.NewGuid();
+            var children = nested
+                ? $"[{{\"Id\":\"{child}\",\"Status\":{(int)TickerStatus.Done}," +
+                  $"\"ExecutedAt\":\"{BaseNow.AddDays(-10):O}\",\"Children\":{{}}}}]"
+                : "{}";
+            var raw = $"{{\"Id\":\"{id}\",\"Status\":{(int)TickerStatus.Done}," +
+                      $"\"ExecutedAt\":\"{BaseNow.AddDays(-10):O}\",\"Children\":{children}}}";
+            await _db.StringSetAsync(RedisKeyBuilder.TimeTickerKey(id), raw);
+            await _db.ListRightPushAsync(RedisKeyBuilder.RetentionReconciliationPendingKey, id.ToString());
+            await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationPhaseKey, "time_ids");
+            await _db.StringSetAsync(RedisKeyBuilder.RetentionReconciliationCursorKey, "0");
+
+            await Assert.ThrowsAsync<RedisServerException>(() =>
+                _provider.ReconcileRetentionIndexesAsync(1, CancellationToken.None));
+
+            Assert.Equal(raw, (string?)await _db.StringGetAsync(RedisKeyBuilder.TimeTickerKey(id)));
+            Assert.Equal(id.ToString(), (string?)await _db.ListGetByIndexAsync(
+                RedisKeyBuilder.RetentionReconciliationPendingKey, 0));
+            Assert.Null(await _db.SortedSetScoreAsync(
+                RedisKeyBuilder.TimeTickerRetentionSucceededKey, id.ToString()));
+            await _db.ListTrimAsync(RedisKeyBuilder.RetentionReconciliationPendingKey, 1, 0);
+        }
+
+        var deletionId = Guid.NewGuid();
+        var deletionRaw = $"{{\"Id\":\"{deletionId}\",\"Status\":{(int)TickerStatus.Done}," +
+                          $"\"ExecutedAt\":\"{BaseNow.AddDays(-10):O}\",\"Children\":{{}}}}";
+        await _db.StringSetAsync(RedisKeyBuilder.TimeTickerKey(deletionId), deletionRaw);
+        await _db.SetAddAsync(RedisKeyBuilder.TimeTickerIdsKey, deletionId.ToString());
+        await _db.SortedSetAddAsync(
+            RedisKeyBuilder.TimeTickerRetentionSucceededKey, deletionId.ToString(), 1);
+
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.DeleteEligibleTimeTickerChainsAsync(
+                new RetentionCutoffs(BaseNow.AddDays(-7), null, null, null), 10,
+                RetentionCursor.Start, CancellationToken.None));
+
+        Assert.Equal(deletionRaw,
+            (string?)await _db.StringGetAsync(RedisKeyBuilder.TimeTickerKey(deletionId)));
+        Assert.True(await _db.SetContainsAsync(RedisKeyBuilder.TimeTickerIdsKey, deletionId.ToString()));
+        Assert.Equal(1, await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.TimeTickerRetentionSucceededKey, deletionId.ToString()));
+    }
+
+    [Fact]
+    public async Task Explicit_time_deletion_rejects_owned_root_and_descendant_id_real_lua()
+    {
+        var root = NewIdleTicker();
+        var child = NewIdleTicker();
+        child.ParentId = root.Id;
+        root.Children = [child];
+        root.Status = TickerStatus.InProgress;
+        root.AcquisitionToken = Guid.NewGuid();
+        root.LeaseUntil = BaseNow.AddMinutes(5);
+        var rootJson = JsonSerializer.Serialize(root, TestJsonSerializerContext.Default.TimeTickerEntity);
+        await _db.StringSetAsync(RedisKeyBuilder.TimeTickerKey(root.Id), rootJson);
+        await _db.SetAddAsync(RedisKeyBuilder.TimeTickerIdsKey, root.Id.ToString());
+
+        Assert.Equal(0, await _provider.RemoveTimeTickers([root.Id], CancellationToken.None));
+        Assert.Equal(rootJson, (string?)await _db.StringGetAsync(RedisKeyBuilder.TimeTickerKey(root.Id)));
+
+        var childJson = JsonSerializer.Serialize(child, TestJsonSerializerContext.Default.TimeTickerEntity);
+        await _db.StringSetAsync(RedisKeyBuilder.TimeTickerKey(child.Id), childJson);
+        await _db.SetAddAsync(RedisKeyBuilder.TimeTickerIdsKey, child.Id.ToString());
+
+        Assert.Equal(0, await _provider.RemoveTimeTickers([child.Id], CancellationToken.None));
+        Assert.Equal(childJson, (string?)await _db.StringGetAsync(RedisKeyBuilder.TimeTickerKey(child.Id)));
+        Assert.Equal(rootJson, (string?)await _db.StringGetAsync(RedisKeyBuilder.TimeTickerKey(root.Id)));
+    }
+
+    [Fact]
+    public async Task Release_acquired_time_root_revokes_chain_generation_real_lua()
+    {
+        var root = NewIdleTicker();
+        Assert.Equal(1, await _provider.AddTimeTickers([root], CancellationToken.None));
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [root.Id], CancellationToken.None));
+        Assert.NotNull(acquired.ChainGeneration);
+        var key = RedisKeyBuilder.TimeTickerKey(root.Id);
+        var persisted = JsonSerializer.Deserialize(
+            (string)(await _db.StringGetAsync(key))!,
+            TestJsonSerializerContext.Default.TimeTickerEntity)!;
+        persisted.Status = TickerStatus.Queued;
+        await _db.StringSetAsync(key,
+            JsonSerializer.Serialize(persisted, TestJsonSerializerContext.Default.TimeTickerEntity));
+
+        await _provider.ReleaseAcquiredTimeTickers([root.Id], CancellationToken.None);
+
+        var released = await _provider.GetTimeTickerById(root.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Idle, released.Status);
+        Assert.Null(released.AcquisitionToken);
+        Assert.Null(released.ChainGeneration);
+    }
+
+    [Fact]
+    public async Task Release_requires_exact_owner_and_acquisition_token_real_lua()
+    {
+        var ownerless = NewIdleTicker();
+        ownerless.Status = TickerStatus.Queued;
+        ownerless.AcquisitionToken = Guid.NewGuid();
+        var tokenless = NewIdleTicker();
+        tokenless.Status = TickerStatus.Queued;
+        tokenless.LockHolder = _options.ExecutionOwnerId;
+        var foreign = NewIdleTicker();
+        foreign.Status = TickerStatus.Queued;
+        foreign.LockHolder = "other-node";
+        foreign.LockedAt = null;
+        foreign.AcquisitionToken = Guid.NewGuid();
+        foreign.ChainGeneration = foreign.AcquisitionToken;
+
+        var tickers = new[] { ownerless, tokenless, foreign };
+        var originals = new Dictionary<Guid, RedisValue>();
+        foreach (var ticker in tickers)
+        {
+            var key = RedisKeyBuilder.TimeTickerKey(ticker.Id);
+            var raw = JsonSerializer.Serialize(ticker, TestJsonSerializerContext.Default.TimeTickerEntity);
+            originals[ticker.Id] = raw;
+            await _db.StringSetAsync(key, raw);
+            await _db.SetAddAsync(RedisKeyBuilder.TimeTickerIdsKey, ticker.Id.ToString());
+            await _db.StringSetAsync(RedisKeyBuilder.TimeTickerResultKey(ticker.Id), "result-before");
+        }
+
+        await _provider.ReleaseAcquiredTimeTickers([ownerless.Id, tokenless.Id], CancellationToken.None);
+        await _provider.ReleaseAcquiredTimeTickers(Array.Empty<Guid>(), CancellationToken.None);
+
+        foreach (var ticker in tickers)
+        {
+            Assert.Equal(originals[ticker.Id], await _db.StringGetAsync(RedisKeyBuilder.TimeTickerKey(ticker.Id)));
+            Assert.Equal("result-before", (string?)await _db.StringGetAsync(
+                RedisKeyBuilder.TimeTickerResultKey(ticker.Id)));
+        }
+
+        var occurrence = NewOccurrence(Guid.NewGuid(), BaseNow.AddMinutes(1), TickerStatus.Queued);
+        occurrence.AcquisitionToken = Guid.NewGuid();
+        var occurrenceKey = RedisKeyBuilder.CronOccurrenceKey(occurrence.Id);
+        var occurrenceRaw = JsonSerializer.Serialize(
+            occurrence, TestJsonSerializerContext.Default.CronTickerOccurrenceEntityCronTickerEntity);
+        await _db.StringSetAsync(occurrenceKey, occurrenceRaw);
+        await _db.SetAddAsync(RedisKeyBuilder.CronOccurrenceIdsKey, occurrence.Id.ToString());
+        await _db.StringSetAsync(RedisKeyBuilder.CronOccurrenceResultKey(occurrence.Id), "cron-result-before");
+
+        await _provider.ReleaseAcquiredCronTickerOccurrences(Array.Empty<Guid>(), CancellationToken.None);
+
+        Assert.Equal(occurrenceRaw, (string?)await _db.StringGetAsync(occurrenceKey));
+        Assert.Equal("cron-result-before", (string?)await _db.StringGetAsync(
+            RedisKeyBuilder.CronOccurrenceResultKey(occurrence.Id)));
+    }
+
+    [Fact]
+    public async Task Dead_node_recovery_requires_token_and_revokes_time_generation_real_lua()
+    {
+        const string deadNode = "dead-node";
+        var tokenless = NewIdleTicker();
+        tokenless.Status = TickerStatus.Queued;
+        tokenless.LockHolder = deadNode;
+        tokenless.ChainGeneration = Guid.NewGuid();
+        var tokenlessKey = RedisKeyBuilder.TimeTickerKey(tokenless.Id);
+        var tokenlessRaw = JsonSerializer.Serialize(
+            tokenless, TestJsonSerializerContext.Default.TimeTickerEntity);
+        await _db.StringSetAsync(tokenlessKey, tokenlessRaw);
+        await _db.SetAddAsync(RedisKeyBuilder.TimeTickerIdsKey, tokenless.Id.ToString());
+        await _db.StringSetAsync(RedisKeyBuilder.TimeTickerResultKey(tokenless.Id), "result-before");
+
+        await _provider.ReleaseDeadNodeTimeTickerResources(deadNode, CancellationToken.None);
+
+        Assert.Equal(tokenlessRaw, (string?)await _db.StringGetAsync(tokenlessKey));
+        Assert.Equal("result-before", (string?)await _db.StringGetAsync(
+            RedisKeyBuilder.TimeTickerResultKey(tokenless.Id)));
+
+        var root = NewIdleTicker();
+        var child = NewIdleTicker();
+        child.ParentId = root.Id;
+        root.Children = [child];
+        Assert.Equal(1, await _provider.AddTimeTickers([root], CancellationToken.None));
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(
+            [root.Id], CancellationToken.None));
+        var acquiredChild = Assert.Single(acquired.Children);
+        Assert.NotNull(acquired.AcquisitionToken);
+        Assert.Equal(acquired.AcquisitionToken, acquiredChild.ChainGeneration);
+
+        await _provider.ReleaseDeadNodeTimeTickerResources(
+            _options.ExecutionOwnerId, CancellationToken.None);
+
+        var released = await _provider.GetTimeTickerById(root.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Idle, released!.Status);
+        Assert.Null(released.ChainGeneration);
+        var late = new InternalFunctionContext
+        {
+            TickerId = acquiredChild.Id,
+            Type = TickerType.TimeTicker,
+            AcquisitionToken = acquired.AcquisitionToken,
+            ResultEnvelope = new TickerResultEnvelope([1, 2, 3], 1, "application/json")
+        }.SetProperty(x => x.Status, TickerStatus.Done)
+            .SetProperty(x => x.ResultEnvelope,
+                new TickerResultEnvelope([1, 2, 3], 1, "application/json"));
+        Assert.Equal(0, await _provider.UpdateTimeTicker(late, CancellationToken.None));
+        Assert.False(await _db.KeyExistsAsync(RedisKeyBuilder.TimeTickerResultKey(acquiredChild.Id)));
+    }
+
+    [Fact]
+    public async Task Cron_discoverability_repair_preserves_pending_when_dynamic_document_has_wrong_type_real_lua()
+    {
+        var prefix = $"tq:test:discoverability-preflight:{Guid.NewGuid():N}";
+        var id = Guid.NewGuid().ToString();
+        RedisKey ids = $"{prefix}:ids";
+        RedisKey phase = $"{prefix}:phase";
+        RedisKey cursor = $"{prefix}:cursor";
+        RedisKey pending = $"{prefix}:pending";
+        RedisKey quarantine = $"{prefix}:quarantine";
+        RedisKey activation = $"{prefix}:activation";
+        await _db.ListRightPushAsync(pending, id);
+        await _db.HashSetAsync($"{prefix}:cron:{id}", "wrong", "type");
+
+        await Assert.ThrowsAsync<RedisServerException>(() => _db.ScriptEvaluateAsync(
+            LuaScriptLoader.Load("RepairCronDiscoverability"),
+            [ids, phase, cursor, pending, quarantine, activation],
+            [(RedisValue)16, (RedisValue)$"{prefix}:cron:"]));
+
+        Assert.Equal(id, (string?)await _db.ListGetByIndexAsync(pending, 0));
+        Assert.False(await _db.KeyExistsAsync(phase));
+        Assert.False(await _db.KeyExistsAsync(cursor));
+        Assert.False(await _db.KeyExistsAsync(ids));
+        Assert.False(await _db.KeyExistsAsync(quarantine));
     }
 
     // -------------------------------------------------------------------------
@@ -921,6 +1478,72 @@ public sealed class RedisRealScriptTests
     }
 
     [Fact]
+    public async Task CronRevision_WrongTypeDerivedSlotFailsBeforeAnyDefinitionOrOccurrenceMutation()
+    {
+        var cron = NewCron("slot-preflight");
+        await _provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = NewOccurrence(cron.Id, BaseNow.AddMinutes(7), TickerStatus.Idle);
+        await _provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+        var definitionKey = RedisKeyBuilder.CronKey(cron.Id);
+        var occurrenceKey = RedisKeyBuilder.CronOccurrenceKey(occurrence.Id);
+        var slotKey = RedisKeyBuilder.CronOccurrenceSlotKey(cron.Id, occurrence.ExecutionTime);
+        var definitionBefore = await _db.StringGetAsync(definitionKey);
+        var occurrenceBefore = await _db.StringGetAsync(occurrenceKey);
+        var missingId = Guid.Empty.ToString();
+        await _db.SetAddAsync(RedisKeyBuilder.CronOccurrenceIdsKey, missingId);
+        await _db.SetAddAsync(RedisKeyBuilder.CronOccurrencesByCronKey(cron.Id), missingId);
+        await _db.SortedSetAddAsync(RedisKeyBuilder.CronOccurrencePendingKey, missingId, 1);
+        await _db.KeyDeleteAsync(slotKey);
+        await _db.HashSetAsync(slotKey, "wrong", "type");
+
+        cron.DefinitionRevision++;
+        cron.Expression = "*/13 * * * *";
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _provider.UpdateCronTickers([cron], CancellationToken.None));
+
+        Assert.Equal(definitionBefore, await _db.StringGetAsync(definitionKey));
+        Assert.Equal(occurrenceBefore, await _db.StringGetAsync(occurrenceKey));
+        Assert.True(await _db.SetContainsAsync(RedisKeyBuilder.CronIdsKey, cron.Id.ToString()));
+        Assert.True(await _db.SetContainsAsync(
+            RedisKeyBuilder.CronOccurrencesByCronKey(cron.Id), occurrence.Id.ToString()));
+        Assert.True(await _db.SetContainsAsync(RedisKeyBuilder.CronOccurrenceIdsKey, missingId));
+        Assert.True(await _db.SetContainsAsync(
+            RedisKeyBuilder.CronOccurrencesByCronKey(cron.Id), missingId));
+        Assert.NotNull(await _db.SortedSetScoreAsync(
+            RedisKeyBuilder.CronOccurrencePendingKey, missingId));
+        Assert.Equal("hash", (string?)await _db.ExecuteAsync("TYPE", slotKey));
+    }
+
+    [Fact]
+    public async Task CorruptCronDefinitionIsNotQuarantinedBeforeReplacementJsonPreflightCompletes()
+    {
+        var cron = NewCron("corrupt-definition-preflight");
+        await _provider.InsertCronTickers([cron], CancellationToken.None);
+        var definitionKey = RedisKeyBuilder.CronKey(cron.Id);
+        const string corruptDefinition = "{not-json";
+        const string priorQuarantine = "prior-quarantine";
+        await _db.StringSetAsync(definitionKey, corruptDefinition);
+        await _db.HashSetAsync(RedisKeyBuilder.CronRepairQuarantineKey, cron.Id.ToString(), priorQuarantine);
+
+        await Assert.ThrowsAsync<RedisServerException>(() =>
+            _db.ScriptEvaluateAsync(LuaScriptLoader.Load("MutateCronDefinition"),
+                [(RedisKey)definitionKey, RedisKeyBuilder.CronIdsKey, RedisKeyBuilder.CronRepairQuarantineKey,
+                 RedisKeyBuilder.CronOccurrencesByCronKey(cron.Id), RedisKeyBuilder.CronOccurrenceIdsKey,
+                 RedisKeyBuilder.CronOccurrencePendingKey, RedisKeyBuilder.CronOccurrenceRetentionSucceededKey,
+                 RedisKeyBuilder.CronOccurrenceRetentionFailedKey, RedisKeyBuilder.CronOccurrenceRetentionCancelledKey,
+                 RedisKeyBuilder.CronOccurrenceRetentionSkippedKey, RedisKeyBuilder.CronOccurrenceRepairQuarantineKey,
+                 RedisKeyBuilder.ReconciliationActivationMetadataKey],
+                [(RedisValue)cron.Id.ToString(), "upsert", "{bad-replacement", "0", BaseNow.ToString("O"),
+                 (int)TickerStatus.Idle, (int)TickerStatus.Queued, (int)TickerStatus.Skipped, "unused", 0,
+                 "unused-occurrence-prefix", "unused-slot-prefix", "1", "0", "0", "", "", -1, "legacy"]));
+
+        Assert.Equal(corruptDefinition, (string?)await _db.StringGetAsync(definitionKey));
+        Assert.True(await _db.SetContainsAsync(RedisKeyBuilder.CronIdsKey, cron.Id.ToString()));
+        Assert.Equal(priorQuarantine, (string?)await _db.HashGetAsync(
+            RedisKeyBuilder.CronRepairQuarantineKey, cron.Id.ToString()));
+    }
+
+    [Fact]
     public async Task CronRevision_ExpiredStaleOccurrenceIsQuarantinedNotRestarted_RealLua()
     {
         var cron = new CronTickerEntity
@@ -1184,6 +1807,11 @@ public sealed class RedisRealScriptTests
         var owner = Assert.Single(await CollectCronAsync(_provider.QueueCronTickerOccurrences(
             (executionTime, [new InternalManagerContext(cron.Id)]), CancellationToken.None)));
         var slotKey = RedisKeyBuilder.CronOccurrenceSlotKey(cron.Id, executionTime);
+        await _provider.UpdateCronTickerOccurrence(new InternalFunctionContext
+        {
+            TickerId = owner.Id, Type = TickerType.CronTickerOccurrence,
+            AcquisitionToken = owner.AcquisitionToken
+        }.SetProperty(x => x.Status, TickerStatus.Done), CancellationToken.None);
         await _db.StringSetAsync(RedisKeyBuilder.CronOccurrenceResultKey(owner.Id), "result-evidence");
         var newer = Guid.NewGuid();
         await _db.StringSetAsync(slotKey, newer.ToString());
@@ -1196,6 +1824,34 @@ public sealed class RedisRealScriptTests
         Assert.False(await _db.SetContainsAsync(RedisKeyBuilder.CronOccurrencesByCronKey(cron.Id), owner.Id.ToString()));
         Assert.Null(await _db.SortedSetScoreAsync(RedisKeyBuilder.CronOccurrencePendingKey, owner.Id.ToString()));
         Assert.Equal(newer.ToString(), (string?)await _db.StringGetAsync(slotKey));
+    }
+
+    [Fact]
+    public async Task ExplicitOccurrenceDelete_RefusesGenerationAcquiredAfterPreRead()
+    {
+        var cron = NewCron("explicit-delete-race");
+        await _provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
+        {
+            Id = Guid.NewGuid(), CronTickerId = cron.Id, DefinitionRevision = cron.DefinitionRevision,
+            Status = TickerStatus.Idle, ExecutionTime = BaseNow.AddMinutes(23),
+            CreatedAt = BaseNow, UpdatedAt = BaseNow
+        };
+        Assert.Equal(1, await _provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None));
+        var resultKey = RedisKeyBuilder.CronOccurrenceResultKey(occurrence.Id);
+        await _db.StringSetAsync(resultKey, "result-evidence");
+        CronTickerOccurrenceEntity<CronTickerEntity>? acquired = null;
+        _provider.BeforeCronOccurrenceDeleteForTestAsync = async (_, ct) =>
+        {
+            acquired = Assert.Single(await _provider.AcquireImmediateCronOccurrencesAsync([occurrence.Id], ct));
+        };
+
+        Assert.Equal(0, await _provider.RemoveCronTickerOccurrences([occurrence.Id], CancellationToken.None));
+
+        Assert.NotNull(acquired);
+        Assert.True(await _db.KeyExistsAsync(RedisKeyBuilder.CronOccurrenceKey(occurrence.Id)));
+        Assert.True(await _db.SetContainsAsync(RedisKeyBuilder.CronOccurrenceIdsKey, occurrence.Id.ToString()));
+        Assert.True(await _db.SetContainsAsync(RedisKeyBuilder.CronOccurrencesByCronKey(cron.Id), occurrence.Id.ToString()));
     }
 
     [Fact]
@@ -1212,6 +1868,13 @@ public sealed class RedisRealScriptTests
             (secondTime, [new InternalManagerContext(cron.Id)]), CancellationToken.None)));
         var parentOwned = Assert.Single(await CollectCronAsync(_provider.QueueCronTickerOccurrences(
             (parentTime, [new InternalManagerContext(cron.Id)]), CancellationToken.None)));
+
+        foreach (var occurrence in new[] { first, second, parentOwned })
+            await _provider.UpdateCronTickerOccurrence(new InternalFunctionContext
+            {
+                TickerId = occurrence.Id, Type = TickerType.CronTickerOccurrence,
+                AcquisitionToken = occurrence.AcquisitionToken
+            }.SetProperty(x => x.Status, TickerStatus.Done), CancellationToken.None);
 
         Assert.Equal(2, await _provider.RemoveCronTickerOccurrences([first.Id, second.Id], CancellationToken.None));
         Assert.False(await _db.KeyExistsAsync(RedisKeyBuilder.CronOccurrenceSlotKey(cron.Id, firstTime)));

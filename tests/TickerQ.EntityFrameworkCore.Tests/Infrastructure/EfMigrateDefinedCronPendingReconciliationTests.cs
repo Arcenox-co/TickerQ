@@ -27,7 +27,8 @@ namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure;
 /// </summary>
 public sealed class EfMigrateDefinedCronPendingReconciliationTests : IAsyncLifetime
 {
-    private const string CronExpressionsCacheKey = "cron:expressions";
+    private static readonly string CronExpressionsCacheKey =
+        $"cron:expressions:{TickerQRuntimePartition.LegacyGlobal.StorageKey}";
 
     private SqliteConnection _connection = null!;
     private TestableProvider _provider = null!;

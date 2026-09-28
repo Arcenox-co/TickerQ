@@ -17,7 +17,12 @@ public sealed class MongoRetentionTests : IAsyncLifetime
     public MongoRetentionTests(MongoTestFixture fixture) => _fixture = fixture;
 
     public Task InitializeAsync() => _fixture.DropAllAsync();
-    public Task DisposeAsync() => Task.CompletedTask;
+    public Task DisposeAsync()
+    {
+        _fixture.ConcreteProvider.AfterCronRetentionDiscoveryForTestAsync = null;
+        _fixture.ConcreteProvider.AfterExplicitOccurrenceDeleteDiscoveryForTestAsync = null;
+        return Task.CompletedTask;
+    }
 
     private DateTime Ago(double days) => _fixture.FixedNow - TimeSpan.FromDays(days);
 
@@ -262,5 +267,90 @@ public sealed class MongoRetentionTests : IAsyncLifetime
         Assert.Equal(1, await _fixture.CronTickers.CountDocumentsAsync(FilterDefinition<CronTickerEntity>.Empty));
         Assert.Equal(0, await _fixture.CronTickerOccurrences.CountDocumentsAsync(
             FilterDefinition<CronTickerOccurrenceEntity<CronTickerEntity>>.Empty));
+    }
+
+    [Fact]
+    public async Task CronRetention_DoesNotDeleteResultWhenCandidateBecomesActiveAfterDiscovery()
+    {
+        var cron = new CronTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "retention-race-cron", Expression = "* * * * *",
+            Request = Array.Empty<byte>(), IsEnabled = true
+        };
+        var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
+        {
+            Id = Guid.NewGuid(), CronTickerId = cron.Id, Status = TickerStatus.Done,
+            ExecutedAt = Ago(10), ExecutionTime = Ago(10), CreatedAt = Ago(10), UpdatedAt = Ago(10)
+        };
+        await _fixture.CronTickers.InsertOneAsync(cron);
+        await _fixture.CronTickerOccurrences.InsertOneAsync(occurrence);
+        var results = _fixture.Database.GetCollection<BsonDocument>("ticker_TickerResults");
+        await results.InsertOneAsync(new BsonDocument
+        {
+            ["_id"] = new BsonBinaryData(occurrence.Id, GuidRepresentation.Standard),
+            ["Kind"] = "cron-occurrence", ["Payload"] = new BsonBinaryData(new byte[] { 7 }),
+            ["Version"] = 1, ["MediaType"] = "application/json"
+        });
+
+        var token = Guid.NewGuid();
+        _fixture.ConcreteProvider.AfterCronRetentionDiscoveryForTestAsync = async _ =>
+            await _fixture.CronTickerOccurrences.UpdateOneAsync(
+                x => x.Id == occurrence.Id,
+                Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Update
+                    .Set(x => x.Status, TickerStatus.InProgress)
+                    .Set(x => x.AcquisitionToken, token)
+                    .Set(x => x.LeaseUntil, _fixture.FixedNow.AddMinutes(1)));
+
+        var deleted = await _fixture.Provider.DeleteEligibleCronTickerOccurrencesAsync(
+            Cutoffs(succeeded: Ago(7)), 10, CancellationToken.None);
+
+        Assert.Equal(0, deleted.Deleted);
+        Assert.Equal(token, (await _fixture.CronTickerOccurrences
+            .Find(x => x.Id == occurrence.Id).SingleAsync()).AcquisitionToken);
+        Assert.Equal(1, await results.CountDocumentsAsync(
+            Builders<BsonDocument>.Filter.Eq("_id",
+                new BsonBinaryData(occurrence.Id, GuidRepresentation.Standard))));
+    }
+
+    [Fact]
+    public async Task ExplicitOccurrenceDelete_DoesNotDeleteNewerEligibleGenerationOrItsResult()
+    {
+        var cron = new CronTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "explicit-delete-race", Expression = "* * * * *",
+            Request = Array.Empty<byte>(), IsEnabled = true
+        };
+        var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
+        {
+            Id = Guid.NewGuid(), CronTickerId = cron.Id, Status = TickerStatus.Done,
+            ExecutedAt = Ago(10), ExecutionTime = Ago(10), CreatedAt = Ago(10), UpdatedAt = Ago(10)
+        };
+        await _fixture.CronTickers.InsertOneAsync(cron);
+        await _fixture.CronTickerOccurrences.InsertOneAsync(occurrence);
+        var results = _fixture.Database.GetCollection<BsonDocument>("ticker_TickerResults");
+        await results.InsertOneAsync(new BsonDocument
+        {
+            ["_id"] = new BsonBinaryData(occurrence.Id, GuidRepresentation.Standard),
+            ["Kind"] = "cron-occurrence", ["Payload"] = new BsonBinaryData(new byte[] { 9 }),
+            ["Version"] = 1, ["MediaType"] = "application/json"
+        });
+
+        _fixture.ConcreteProvider.AfterExplicitOccurrenceDeleteDiscoveryForTestAsync = async ct =>
+            await _fixture.CronTickerOccurrences.UpdateOneAsync(
+                x => x.Id == occurrence.Id,
+                Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Update
+                    .Set(x => x.Status, TickerStatus.Done)
+                    .Set(x => x.AcquisitionToken, (Guid?)null)
+                    .Set(x => x.LeaseUntil, (DateTime?)null)
+                    .Set(x => x.UpdatedAt, _fixture.FixedNow.AddMinutes(1)),
+                cancellationToken: ct);
+
+        Assert.Equal(0, await _fixture.Provider.RemoveCronTickerOccurrences(
+            [occurrence.Id], CancellationToken.None));
+        Assert.Equal(1, await _fixture.CronTickerOccurrences.CountDocumentsAsync(
+            x => x.Id == occurrence.Id));
+        Assert.Equal(1, await results.CountDocumentsAsync(
+            Builders<BsonDocument>.Filter.Eq("_id",
+                new BsonBinaryData(occurrence.Id, GuidRepresentation.Standard))));
     }
 }

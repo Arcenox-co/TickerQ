@@ -19,6 +19,7 @@ if redis.call('EXISTS', KEYS[7]) == 0 then
   -- absent-compatible for queue-only producers that do not participate in activation.
   if string.find(KEYS[7], ':scope:', 1, true) then return {-3, ''} end
 else
+  if redis.call('HGET', KEYS[7], 'legacyAdoptionState') then return {-3, ''} end
   local metadata = redis.call('HGETALL', KEYS[7])
   if #metadata ~= 6 then return redis.error_reply('reconciliation activation metadata is corrupt') end
   local fields = {}

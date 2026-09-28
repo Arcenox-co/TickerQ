@@ -47,7 +47,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                 ? "startup-seeder"
                 : "scoped"
             : "legacy";
-    private string ActivationMetadataKey => RuntimeActivationMetadataKey;
+    protected string ActivationMetadataKey => RuntimeActivationMetadataKey;
     internal string RuntimeActivationMetadataKeyForTest => RuntimeActivationMetadataKey;
     internal RedisKeyBuilder RuntimeKeysForTest => Keys;
 
@@ -106,6 +106,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     private static readonly string CompleteNodeFinalizationScript = LuaScriptLoader.Load("CompleteNodeFinalization");
     private static readonly string RescheduleNodeFinalizationScript = LuaScriptLoader.Load("RescheduleNodeFinalization");
     private static readonly string MutateCronDefinitionScript = LuaScriptLoader.Load("MutateCronDefinition");
+    private static readonly string UpdateTimeTickerWithIndexesScript =
+        LuaScriptLoader.Load("UpdateTimeTickerWithIndexes");
     private static readonly string RepairCronDiscoverabilityScript = LuaScriptLoader.Load("RepairCronDiscoverability");
     private static readonly string DeletePendingCronOccurrenceScript = LuaScriptLoader.Load("DeletePendingCronOccurrence");
     private static readonly string AddCronOccurrenceOnceScript = LuaScriptLoader.Load("AddCronOccurrenceOnce");
@@ -115,8 +117,10 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         LuaScriptLoader.Load("MutateReconciliationActivation");
     internal Func<Task> AfterNodeFinalizationClaimScriptEvaluatedAsync { get; set; }
     internal Func<Task> AfterCronDefinitionMutationScriptEvaluatedAsync { get; set; }
+    internal Func<CancellationToken, Task> AfterLegacyAdoptionFenceForTestAsync { get; set; }
     internal Func<Task> AfterActivationMutationScriptEvaluatedAsync { get; set; }
     internal Func<Task> AfterTerminalMutationScriptEvaluatedAsync { get; set; }
+    internal Func<Task> AfterUnifiedContextDocumentsLoadedAsync { get; set; }
     internal Func<Task> AfterCronTerminalCleanupAsync { get; set; }
     internal Func<Task> AfterNodeFinalizationMutationScriptEvaluatedAsync { get; set; }
 
@@ -169,7 +173,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             jsonOptions.TypeInfoResolverChain.Insert(0, redisOptions.JsonSerializerContext);
 
         Serializer = new RedisSerializer(db, jsonOptions, logger ?? throw new ArgumentNullException(nameof(logger)));
-        IndexManager = new RedisIndexManager<TTimeTicker, TCronTicker>(db, LockHolder, Clock, Keys);
+        IndexManager = new RedisIndexManager<TTimeTicker, TCronTicker>(
+            db, LockHolder, Clock, Keys, ActivationMetadataKey);
     }
 
     public bool SupportsLeaseBasedRecovery => true;
@@ -368,13 +373,23 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         if (!await Db.StringSetAsync(leaseKey, adopting, when: When.NotExists).ConfigureAwait(false))
         {
             var current = (string)await Db.StringGetAsync(leaseKey).ConfigureAwait(false);
-            if (current == completed) return;
+            if (current == completed)
+            {
+                await SetLegacyAdoptionFenceAsync(
+                    new RedisKeyBuilder(TickerQRuntimePartition.LegacyGlobal).ReconciliationActivationMetadata,
+                    authority, "completed").ConfigureAwait(false);
+                return;
+            }
             if (current != adopting)
                 throw new InvalidOperationException(
                     "Legacy runtime adoption is already held or completed by a different owner or epoch.");
         }
 
         var legacy = new RedisKeyBuilder(TickerQRuntimePartition.LegacyGlobal);
+        var legacyFenceKey = legacy.ReconciliationActivationMetadata;
+        await SetLegacyAdoptionFenceAsync(legacyFenceKey, authority, "adopting").ConfigureAwait(false);
+        if (AfterLegacyAdoptionFenceForTestAsync != null)
+            await AfterLegacyAdoptionFenceForTestAsync(cancellationToken).ConfigureAwait(false);
         var targetPrefix = Keys.PartitionPrefix;
         var legacyPrefix = legacy.PartitionPrefix;
         var multiplexer = Db.Multiplexer;
@@ -407,7 +422,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var source = key.ToString();
-                if (!seen.Add(source)) continue;
+                if (!seen.Add(source) || source == legacyFenceKey.ToString()) continue;
                 var destination = targetPrefix + source[legacyPrefix.Length..];
                 if (!await Db.KeyRenameAsync(key, destination, When.NotExists).ConfigureAwait(false))
                 {
@@ -418,12 +433,122 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             }
         }
 
+        await RebuildAdoptedDerivedIndexesAsync(cancellationToken).ConfigureAwait(false);
+        await SetLegacyAdoptionFenceAsync(legacyFenceKey, authority, "completed").ConfigureAwait(false);
         const string completeScript = "local v=redis.call('GET',KEYS[1]); if v==ARGV[1] then redis.call('SET',KEYS[1],ARGV[2]); return 1 end; if v==ARGV[2] then return 1 end; return 0";
         var acknowledged = (long)await Db.ScriptEvaluateAsync(
             completeScript, [leaseKey], [adopting, completed]).ConfigureAwait(false);
         if (acknowledged != 1)
             throw new InvalidOperationException("Legacy Redis adoption lease changed before completion could be recorded.");
     }
+
+    private async Task SetLegacyAdoptionFenceAsync(RedisKey key, string authority, string state)
+    {
+        const string script = "local t=redis.call('TYPE',KEYS[1])['ok']; if t~='none' and t~='hash' then return redis.error_reply('legacy adoption fence key has an incompatible Redis type') end; local a=redis.call('HGET',KEYS[1],'legacyAdoptionAuthority'); if a and a~=ARGV[1] then return 0 end; redis.call('HSET',KEYS[1],'legacyAdoptionAuthority',ARGV[1],'legacyAdoptionState',ARGV[2]); return 1";
+        if ((long)await Db.ScriptEvaluateAsync(script, [key], [authority, state]).ConfigureAwait(false) != 1)
+            throw new InvalidOperationException(
+                "Legacy Redis adoption fence is already held or completed by a different owner or epoch.");
+    }
+
+    private async Task RebuildAdoptedDerivedIndexesAsync(CancellationToken cancellationToken)
+    {
+        // Adoption runs before the target partition is activated. Rebuilding from primary documents
+        // closes the fence/rename race without moving or deleting results, slots, evidence, or outbox data.
+        await DeleteAdoptedReverseOccurrenceIndexesAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        await Db.KeyDeleteAsync(
+        [
+            TimeTickerIdsKey, TimeTickerPendingKey, CronIdsKey, CronOccurrenceIdsKey,
+            CronOccurrencePendingKey,
+            TimeTickerRetentionSucceededKey, TimeTickerRetentionFailedKey,
+            TimeTickerRetentionCancelledKey, TimeTickerRetentionSkippedKey,
+            CronOccurrenceRetentionSucceededKey, CronOccurrenceRetentionFailedKey,
+            CronOccurrenceRetentionCancelledKey, CronOccurrenceRetentionSkippedKey
+        ]).ConfigureAwait(false);
+
+        var timePrefix = Keys.TimeTicker(Guid.Empty)[..^36];
+        await foreach (var key in ScanAdoptedPrimaryDocumentKeysAsync(timePrefix, cancellationToken))
+        {
+            var id = ParseAdoptedDocumentId(key, timePrefix);
+            var ticker = await Serializer.GetAsync<TTimeTicker>(key.ToString()).ConfigureAwait(false);
+            if (ticker == null || ticker.Id != id)
+                throw new InvalidDataException($"Adopted Redis time ticker '{key}' is corrupt or has a mismatched ID.");
+            await IndexManager.AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        var cronPrefix = Keys.Cron(Guid.Empty)[..^36];
+        await foreach (var key in ScanAdoptedPrimaryDocumentKeysAsync(cronPrefix, cancellationToken))
+        {
+            var id = ParseAdoptedDocumentId(key, cronPrefix);
+            var ticker = await Serializer.GetAsync<TCronTicker>(key.ToString()).ConfigureAwait(false);
+            if (ticker == null || ticker.Id != id)
+                throw new InvalidDataException($"Adopted Redis Cron definition '{key}' is corrupt or has a mismatched ID.");
+            await IndexManager.AddCronIndexesAsync(ticker).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        var occurrencePrefix = Keys.CronOccurrence(Guid.Empty)[..^36];
+        await foreach (var key in ScanAdoptedPrimaryDocumentKeysAsync(occurrencePrefix, cancellationToken))
+        {
+            var id = ParseAdoptedDocumentId(key, occurrencePrefix);
+            var occurrence = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(key.ToString())
+                .ConfigureAwait(false);
+            if (occurrence == null || occurrence.Id != id || occurrence.CronTickerId == Guid.Empty)
+                throw new InvalidDataException($"Adopted Redis Cron occurrence '{key}' is corrupt or has a mismatched ID.");
+            await IndexManager.AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
+    private async Task DeleteAdoptedReverseOccurrenceIndexesAsync(CancellationToken cancellationToken)
+    {
+        var prefix = Keys.Cron(Guid.Empty)[..^36];
+        const string suffix = ":occurrences";
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var endpoint in Db.Multiplexer.GetEndPoints())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var server = Db.Multiplexer.GetServer(endpoint);
+            if (!server.IsConnected || server.IsReplica) continue;
+            await foreach (var key in server.KeysAsync(
+                               Db.Database, pattern: prefix + "????????-????-????-????-????????????" + suffix,
+                               pageSize: 256).WithCancellation(cancellationToken))
+            {
+                var value = key.ToString();
+                if (!seen.Add(value)) continue;
+                var idPart = value[prefix.Length..^suffix.Length];
+                if (Guid.TryParseExact(idPart, "D", out _))
+                    await Db.KeyDeleteAsync(key).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+    }
+
+    private async IAsyncEnumerable<RedisKey> ScanAdoptedPrimaryDocumentKeysAsync(
+        string prefix, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var endpoint in Db.Multiplexer.GetEndPoints())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var server = Db.Multiplexer.GetServer(endpoint);
+            if (!server.IsConnected || server.IsReplica) continue;
+            await foreach (var key in server.KeysAsync(
+                               Db.Database, pattern: prefix + "????????-????-????-????-????????????",
+                               pageSize: 256).WithCancellation(cancellationToken))
+            {
+                var value = key.ToString();
+                if (seen.Add(value) && value.Length == prefix.Length + 36 &&
+                    Guid.TryParseExact(value[prefix.Length..], "D", out _))
+                    yield return key;
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+    }
+
+    private static Guid ParseAdoptedDocumentId(RedisKey key, string prefix)
+        => Guid.ParseExact(key.ToString()[prefix.Length..], "D");
 
     private static bool IsStandaloneTopology(IDatabase db)
     {
@@ -1332,14 +1457,61 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     public async Task UpdateTimeTickersWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
     {
         var tickers = await Serializer.LoadByIdsAsync<TTimeTicker>(timeTickerIds, TimeTickerKey, cancellationToken).ConfigureAwait(false);
+        if (AfterUnifiedContextDocumentsLoadedAsync != null)
+            await AfterUnifiedContextDocumentsLoadedAsync().ConfigureAwait(false);
 
         foreach (var ticker in tickers)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            ApplyFunctionContextToTicker(ticker, functionContext);
-            await Serializer.SetAsync(TimeTickerKey(ticker.Id), ticker).ConfigureAwait(false);
-            await IndexManager.AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
+            var current = ticker;
+            for (var attempt = 0; attempt < 64; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var expectedUpdatedAt = current.UpdatedAt;
+                ApplyFunctionContextToTicker(current, functionContext);
+                current.UpdatedAt = NextAggregateUpdatedAt(expectedUpdatedAt);
+                var outcome = (long)await Db.ScriptEvaluateAsync(
+                    UpdateTimeTickerWithIndexesScript,
+                    [(RedisKey)TimeTickerKey(current.Id), (RedisKey)ActivationMetadataKey,
+                     (RedisKey)TimeTickerIdsKey, (RedisKey)TimeTickerPendingKey,
+                     (RedisKey)TimeTickerRetentionSucceededKey, (RedisKey)TimeTickerRetentionFailedKey,
+                     (RedisKey)TimeTickerRetentionCancelledKey, (RedisKey)TimeTickerRetentionSkippedKey],
+                    BuildUnifiedTimeTickerMutationArguments(current, expectedUpdatedAt)).ConfigureAwait(false);
+                if (outcome != -2) break;
+                current = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(current.Id)).ConfigureAwait(false);
+                if (current == null) break;
+            }
         }
+    }
+
+    private RedisValue[] BuildUnifiedTimeTickerMutationArguments(TTimeTicker ticker, DateTime expectedUpdatedAt)
+    {
+        var pending = ticker.ExecutionTime.HasValue && CanAcquire(ticker.Status, ticker.LockHolder, LockHolder);
+        var retentionIndex = 0;
+        var retentionScore = string.Empty;
+        var now = Clock.UtcNow;
+        if (!ticker.ParentId.HasValue && ticker.Children is not { Count: > 0 } &&
+            ticker.ExecutedAt is { } executedAt && !ticker.AcquisitionToken.HasValue &&
+            !(ticker.LeaseUntil is { } leaseUntil && leaseUntil > now))
+        {
+            retentionIndex = ticker.Status switch
+            {
+                TickerStatus.Done or TickerStatus.DueDone => 1,
+                TickerStatus.Failed => 2,
+                TickerStatus.Cancelled => 3,
+                TickerStatus.Skipped => 4,
+                _ => 0
+            };
+            if (retentionIndex != 0)
+                retentionScore = ToScore(executedAt).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        return
+        [
+            expectedUpdatedAt.ToString("O"), Serializer.Serialize(ticker), ticker.Id.ToString(),
+            pending ? "1" : "0",
+            pending ? ToScore(ticker.ExecutionTime.Value).ToString(System.Globalization.CultureInfo.InvariantCulture) : "",
+            retentionIndex, retentionScore
+        ];
     }
 
     public async Task<Guid[]> TransitionQueuedTimeTickersToInProgressAsync(
@@ -1471,10 +1643,12 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             foreach (var functionGroup in manifest.Seeds.Where(s => s.CanSeed).GroupBy(s => s.Function))
             {
                 var legacy = existingList.Where(x => !string.IsNullOrEmpty(x.InitIdentifier)
-                    && x.Function == functionGroup.Key && x.SeedOwnerNamespace == null
-                    && (x.SeedKey == null || CronSeedIdentity.LegacyAdoptionKeys(
-                        manifest.ApplicationNamespace, functionGroup.Single().StableDefinitionId)
-                        .Contains(x.SeedKey, StringComparer.Ordinal))).ToArray();
+                    && CronSeedIdentity.CanonicallyEquals(x.Function, functionGroup.Key) && x.SeedOwnerNamespace == null
+                    && (x.SeedKey == null
+                        || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
+                        || CronSeedIdentity.LegacyAdoptionKeys(
+                            manifest.ApplicationNamespace, functionGroup.Single().StableDefinitionId)
+                            .Contains(x.SeedKey, StringComparer.Ordinal))).ToArray();
                 if (legacy.Length == 0) continue;
                 if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
                     throw new InvalidOperationException(
@@ -1497,13 +1671,16 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                      !string.IsNullOrEmpty(c.InitIdentifier)
                      && (manifest.IsLegacyGlobal
                          ? manifest.IsOrphanedSeedFunction(c.Function)
-                         : c.SeedOwnerNamespace == manifest.ApplicationNamespace
+                         : CronSeedIdentity.CanonicallyEquals(c.SeedOwnerNamespace, manifest.ApplicationNamespace)
                            && manifest.IsOrphanedSeedKey(c.SeedKey))))
         {
             var observedRevision = cron.DefinitionRevision;
             var immediate = manifest.IsLegacyGlobal
-                ? blockedFunctions.Contains(cron.Function)
-                : blockedSeedKeys!.Contains(cron.SeedKey);
+                ? blockedFunctions.Any(function =>
+                    CronSeedIdentity.CanonicallyEquals(function, cron.Function))
+                : blockedFunctions.Any(function =>
+                      CronSeedIdentity.CanonicallyEquals(function, cron.Function))
+                  || blockedSeedKeys!.Contains(cron.SeedKey);
             var retirementChanged = CronSeedRetirement.ApplyRetirement(cron, now, grace, immediate);
             if (retirementChanged)
             {
@@ -1542,14 +1719,20 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             var legacyAdoptionKeys = manifest.IsLegacyGlobal
                 ? []
                 : CronSeedIdentity.LegacyAdoptionKeys(manifest.ApplicationNamespace, seed.StableDefinitionId);
+            var acceptedSeedKeys = manifest.IsLegacyGlobal
+                ? []
+                : CronSeedIdentity.AcceptedSeedKeys(manifest.ApplicationNamespace, seed.StableDefinitionId);
 
             var group = manifest.IsLegacyGlobal
                 ? (byFunction.TryGetValue(seed.Function, out var legacyGroup) ? legacyGroup : null)
                 : existingList.Where(x => !string.IsNullOrEmpty(x.InitIdentifier)
-                        && ((x.SeedKey == seedKey && x.SeedOwnerNamespace == manifest.ApplicationNamespace)
-                            || (x.Function == seed.Function && x.SeedOwnerNamespace == null
+                        && ((acceptedSeedKeys.Contains(x.SeedKey, StringComparer.Ordinal)
+                             && CronSeedIdentity.CanonicallyEquals(x.SeedOwnerNamespace, manifest.ApplicationNamespace))
+                            || (CronSeedIdentity.CanonicallyEquals(x.Function, seed.Function) && x.SeedOwnerNamespace == null
                                 && manifest.MayAdoptLegacy(seed.Function)
-                                && (x.SeedKey == null || legacyAdoptionKeys.Contains(x.SeedKey, StringComparer.Ordinal)))))
+                                && (x.SeedKey == null
+                                    || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
+                                    || legacyAdoptionKeys.Contains(x.SeedKey, StringComparer.Ordinal)))))
                     .OrderBy(x => x.Id).ToList();
 
             if (group is { Count: > 0 })
@@ -1704,10 +1887,13 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             cancellationToken.ThrowIfCancellationRequested();
             var result = await Db.ScriptEvaluateAsync(RepairCronDiscoverabilityScript,
                 [CronIdsKey, CronRepairPhaseKey, CronRepairCursorKey, CronRepairPendingKey,
-                 CronRepairQuarantineKey],
+                 CronRepairQuarantineKey, ActivationMetadataKey],
                 [(RedisValue)batchSize, (RedisValue)$"{Prefix}:cron:"]).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             var values = (RedisResult[])result;
+            if ((string)values[3] == "fenced")
+                throw new InvalidOperationException(
+                    "Redis Cron discoverability repair was rejected because legacy partition adoption has started.");
             if ((long)values[1] > 0)
                 throw new InvalidDataException(
                     $"Redis cron discoverability repair quarantined {(long)values[1]} corrupt document(s); progress={values[3]}.");
@@ -1808,12 +1994,22 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         int? firstRetentionStatus = null, int? secondRetentionStatus = null,
         DateTime? retentionCutoff = null, DateTime? now = null)
     {
+        var observedAt = Clock.UtcNow;
+        if (!firstRetentionStatus.HasValue &&
+            (occurrence.Status == TickerStatus.InProgress || occurrence.AcquisitionToken.HasValue ||
+             occurrence.LeaseUntil.HasValue && occurrence.LeaseUntil.Value > observedAt))
+            return false;
         RedisValue[] arguments = firstRetentionStatus.HasValue
             ? [(RedisValue)occurrence.Id.ToString(), (RedisValue)occurrence.CronTickerId.ToString(),
                (RedisValue)firstRetentionStatus.Value, (RedisValue)secondRetentionStatus!.Value,
                (RedisValue)retentionCutoff!.Value.ToUniversalTime().ToString("O"),
                (RedisValue)now!.Value.ToUniversalTime().ToString("O")]
-            : [(RedisValue)occurrence.Id.ToString(), (RedisValue)occurrence.CronTickerId.ToString()];
+            : [(RedisValue)occurrence.Id.ToString(), (RedisValue)occurrence.CronTickerId.ToString(),
+               (RedisValue)(int)occurrence.Status,
+               (RedisValue)(occurrence.AcquisitionToken?.ToString() ?? string.Empty),
+               (RedisValue)(occurrence.LeaseUntil?.ToUniversalTime().ToString("O") ?? string.Empty),
+               (RedisValue)occurrence.UpdatedAt.ToUniversalTime().ToString("O"),
+               (RedisValue)observedAt.ToUniversalTime().ToString("O")];
         var result = await Db.ScriptEvaluateAsync(DeleteCronOccurrenceScript,
             [(RedisKey)CronOccurrenceKey(occurrence.Id), CronOccurrenceResultKey(occurrence.Id),
              CronOccurrenceIdsKey, CronOccurrencePendingKey, CronOccurrencesByCronKey(occurrence.CronTickerId),
@@ -1851,12 +2047,15 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                  CronOccurrenceIdsKey, CronOccurrencePendingKey, CronOccurrencesByCronKey(cronTickerId),
                  CronOccurrenceRetentionSucceededKey, CronOccurrenceRetentionFailedKey,
                  CronOccurrenceRetentionCancelledKey, CronOccurrenceRetentionSkippedKey,
-                 CronOccurrenceRepairQuarantineKey, (RedisKey)slotKey],
+                 CronOccurrenceRepairQuarantineKey, (RedisKey)slotKey, ActivationMetadataKey],
                 [(RedisValue)occurrenceId.ToString(), (RedisValue)cronTickerId.ToString(),
                  (RedisValue)now.ToString("O"), LuaStatusIdle, LuaStatusQueued, LuaStatusSkipped,
                  (RedisValue)"Quarantined because its Cron definition revision is stale.",
                  (RedisValue)ToScore(now)]).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
+            if ((long)result == -3)
+                throw new InvalidOperationException(
+                    "Redis Cron occurrence quarantine was rejected because legacy partition adoption has started.");
             if ((long)result < 0)
                 throw new InvalidDataException(
                     $"Redis cron occurrence '{CronOccurrenceKey(occurrenceId)}' is corrupt; the original value was quarantined and preserved.");

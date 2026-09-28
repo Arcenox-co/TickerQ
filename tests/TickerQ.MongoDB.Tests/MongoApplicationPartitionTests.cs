@@ -84,24 +84,29 @@ public sealed class MongoApplicationPartitionTests(MongoTestFixture fixture) : I
                 ["MediaType"] = "application/octet-stream"
             });
         var adoption = new LegacyRuntimePartitionAdoption(
-            new TickerQRuntimePartition("mongo-adopter"), 41);
+            new TickerQRuntimePartition("mongo-adopter"), 41, legacyWritersDrained: true);
 
         target.AfterLegacyAdoptionLeaseForTestAsync = _ =>
             throw new OperationCanceledException("deterministic interruption");
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
             target.AdoptLegacyRuntimePartitionAsync(adoption));
+        var lateId = Guid.NewGuid();
+        Assert.Equal(0, await legacy.AddTimeTickers([Time(lateId, "late-during-adoption")]));
         target.AfterLegacyAdoptionLeaseForTestAsync = null;
         await target.AdoptLegacyRuntimePartitionAsync(adoption);
         await target.AdoptLegacyRuntimePartitionAsync(adoption);
+        Assert.Equal(0, await legacy.AddTimeTickers([Time(Guid.NewGuid(), "late-after-adoption")]));
 
         Assert.Equal("legacy", (await target.GetTimeTickerById(id))!.Function);
         Assert.Equal(9, (await target.GetTimeTickerResultAsync(id))!.ToPayloadArray()[0]);
         Assert.Null(await legacy.GetTimeTickerById(id));
+        Assert.Null(await legacy.GetTimeTickerById(lateId));
         var other = new TickerMongoPersistenceProvider<TimeTickerEntity, CronTickerEntity>(
             context, fixture.Clock, QueueOnly("mongo-other"));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             other.AdoptLegacyRuntimePartitionAsync(
-                new LegacyRuntimePartitionAdoption(new TickerQRuntimePartition("mongo-other"), 41)));
+                new LegacyRuntimePartitionAdoption(new TickerQRuntimePartition("mongo-other"), 41,
+                    legacyWritersDrained: true)));
     }
 
     [Fact]

@@ -281,11 +281,11 @@ namespace TickerQ.Utilities
         /// legacy runtime state. The provider acquires a durable store-global lease before inspection.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseLegacyRuntimePartitionAdoption(
-            string targetRuntimeNamespace, long reconciliationEpoch)
+            string targetRuntimeNamespace, long reconciliationEpoch, bool legacyWritersDrained)
         {
             ThrowIfRuntimeBindingFrozen();
             var requested = new LegacyRuntimePartitionAdoption(
-                new TickerQRuntimePartition(targetRuntimeNamespace), reconciliationEpoch);
+                new TickerQRuntimePartition(targetRuntimeNamespace), reconciliationEpoch, legacyWritersDrained);
             if (LegacyRuntimePartitionAdoption != null && LegacyRuntimePartitionAdoption != requested)
                 throw new InvalidOperationException(
                     "Legacy runtime partition adoption is already configured and cannot be redirected.");

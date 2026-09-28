@@ -115,7 +115,8 @@ namespace TickerQ.Utilities.Models
             _desiredSeedKeys = ApplicationNamespace == null
                 ? new HashSet<string>(StringComparer.Ordinal)
                 : _seeds.Where(s => s.CanSeed)
-                    .Select(s => CronSeedIdentity.SeedKey(ApplicationNamespace, s.StableDefinitionId))
+                    .SelectMany(s => CronSeedIdentity.AcceptedSeedKeys(
+                        ApplicationNamespace, s.StableDefinitionId))
                     .ToHashSet(StringComparer.Ordinal);
             _desiredSeedFunctionsView = Array.AsReadOnly(_desiredSeedFunctions.ToArray());
             _desiredSeedKeysView = Array.AsReadOnly(_desiredSeedKeys.ToArray());

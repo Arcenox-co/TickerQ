@@ -94,6 +94,7 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
         DateTime? lockedAt = null,
         DateTime? executionTime = null)
     {
+        var acquisitionToken = lockHolder == null ? (Guid?)null : Guid.NewGuid();
         var ticker = new TestTimeTicker
         {
             Id = id ?? Guid.NewGuid(),
@@ -102,6 +103,8 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
             Status = status,
             LockHolder = lockHolder,
             LockedAt = lockedAt,
+            AcquisitionToken = acquisitionToken,
+            ChainGeneration = acquisitionToken,
             CreatedAt = _now.AddHours(-1),
             UpdatedAt = _now.AddHours(-1)
         };
@@ -431,6 +434,7 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
             Status = TickerStatus.Queued,
             LockHolder = "dead-node",
             LockedAt = _now.AddMinutes(-10),
+            AcquisitionToken = Guid.NewGuid(),
             CreatedAt = _now,
             UpdatedAt = _now
         };
