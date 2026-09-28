@@ -15,6 +15,23 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     public Task InitializeAsync() => _f.DropAllAsync();
     public Task DisposeAsync() => Task.CompletedTask;
 
+    [Fact]
+    public async Task DropAllAsync_CreatesFreshProviderAndSchedulerOptions()
+    {
+        var originalProvider = _f.ConcreteProvider;
+        var originalOptions = _f.Options;
+        originalOptions.ReconciliationEpoch = 42;
+        originalProvider.AfterRunnableAdmissionFenceForTestAsync = _ => Task.CompletedTask;
+
+        await _f.DropAllAsync();
+
+        Assert.NotSame(originalProvider, _f.ConcreteProvider);
+        Assert.NotSame(originalOptions, _f.Options);
+        Assert.Equal(1, _f.Options.ReconciliationEpoch);
+        Assert.Null(_f.ConcreteProvider.AfterRunnableAdmissionFenceForTestAsync);
+        Assert.True(_f.Provider.SupportsDurableNodeFinalizationOutbox);
+    }
+
     private TimeTickerEntity NewTimeTicker(DateTime? executionTime = null, TickerStatus status = TickerStatus.Idle)
     {
         var t = new TimeTickerEntity
@@ -50,6 +67,39 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
         Assert.NotNull(fetched);
         Assert.Equal(ticker.Function, fetched!.Function);
         Assert.Equal(TickerStatus.Idle, fetched.Status);
+    }
+
+    [Fact]
+    public async Task RepairTimeTickerChains_PersistsGeneration_AndRejectsMalformedBeforeMutation()
+    {
+        var generation = Guid.NewGuid();
+        var root = NewTimeTicker();
+        root.ChainRootId = Guid.NewGuid();
+        root.ChainGeneration = generation;
+        var child = NewTimeTicker();
+        child.ParentId = root.Id;
+        child.ChainRootId = child.Id;
+        child.ChainGeneration = Guid.NewGuid();
+        await _f.TimeTickers.InsertManyAsync([child, root]);
+
+        Assert.Equal(new TimeTickerChainRepairResult(2, 2, 0),
+            await _f.Provider.RepairTimeTickerChainsAsync());
+        var persisted = (await _f.TimeTickers.Find(Builders<TimeTickerEntity>.Filter.Empty).ToListAsync())
+            .ToDictionary(x => x.Id);
+        Assert.Equal((root.Id, generation),
+            (persisted[root.Id].ChainRootId, persisted[root.Id].ChainGeneration));
+        Assert.Equal((root.Id, generation),
+            (persisted[child.Id].ChainRootId, persisted[child.Id].ChainGeneration));
+
+        var orphan = NewTimeTicker();
+        orphan.ParentId = Guid.NewGuid();
+        await _f.TimeTickers.InsertOneAsync(orphan);
+        var before = persisted[root.Id].UpdatedAt;
+
+        var error = await Assert.ThrowsAsync<TimeTickerChainRepairException>(
+            () => _f.Provider.RepairTimeTickerChainsAsync());
+        Assert.Equal(TimeTickerChainMalformedKind.Orphan, error.Kind);
+        Assert.Equal(before, (await _f.TimeTickers.Find(x => x.Id == root.Id).SingleAsync()).UpdatedAt);
     }
 
     [Fact]
@@ -112,6 +162,57 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ReleaseAcquiredResources_EmptyIds_PreserveForeignOwnerWithNullLockedAt()
+    {
+        var timeTicker = NewTimeTicker(status: TickerStatus.Queued);
+        await _f.Provider.AddTimeTickers([timeTicker], CancellationToken.None);
+        var timeToken = Guid.NewGuid();
+        await _f.TimeTickers.UpdateOneAsync(
+            Builders<TimeTickerEntity>.Filter.Eq(x => x.Id, timeTicker.Id),
+            Builders<TimeTickerEntity>.Update
+                .Set(x => x.Status, TickerStatus.Queued)
+                .Set(x => x.LockHolder, "other-node")
+                .Set(x => x.LockedAt, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, timeToken)
+                .Set(x => x.ChainGeneration, timeToken));
+
+        var cron = NewCron();
+        await _f.Provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
+        {
+            Id = Guid.NewGuid(),
+            CronTickerId = cron.Id,
+            ExecutionTime = _f.FixedNow.AddMinutes(1),
+            Status = TickerStatus.Idle
+        };
+        await _f.Provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+        var occurrenceToken = Guid.NewGuid();
+        await _f.CronTickerOccurrences.UpdateOneAsync(
+            Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Filter.Eq(x => x.Id, occurrence.Id),
+            Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Update
+                .Set(x => x.Status, TickerStatus.Queued)
+                .Set(x => x.LockHolder, "other-node")
+                .Set(x => x.LockedAt, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, occurrenceToken));
+
+        await _f.Provider.ReleaseAcquiredTimeTickers(Array.Empty<Guid>(), CancellationToken.None);
+        await _f.Provider.ReleaseAcquiredCronTickerOccurrences(Array.Empty<Guid>(), CancellationToken.None);
+
+        var savedTime = await _f.Provider.GetTimeTickerById(timeTicker.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Queued, savedTime!.Status);
+        Assert.Equal("other-node", savedTime.LockHolder);
+        Assert.Equal(timeToken, savedTime.AcquisitionToken);
+        Assert.Equal(timeToken, savedTime.ChainGeneration);
+
+        var savedOccurrence = await _f.CronTickerOccurrences
+            .Find(x => x.Id == occurrence.Id)
+            .SingleAsync();
+        Assert.Equal(TickerStatus.Queued, savedOccurrence.Status);
+        Assert.Equal("other-node", savedOccurrence.LockHolder);
+        Assert.Equal(occurrenceToken, savedOccurrence.AcquisitionToken);
+    }
+
+    [Fact]
     public async Task UpdateTimeTicker_AppliesStatusAndElapsedTime()
     {
         var ticker = NewTimeTicker();
@@ -153,6 +254,7 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
             Builders<TimeTickerEntity>.Update
                 .Set(x => x.LockHolder, "dead-node")
                 .Set(x => x.LockedAt, _f.FixedNow)
+                .Set(x => x.AcquisitionToken, Guid.NewGuid())
                 .Set(x => x.Status, TickerStatus.Queued));
 
         await _f.Provider.ReleaseDeadNodeTimeTickerResources("dead-node", CancellationToken.None);
@@ -160,6 +262,55 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
         var after = await _f.Provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
         Assert.Equal(TickerStatus.Idle, after!.Status);
         Assert.Null(after.LockHolder);
+    }
+
+    [Fact]
+    public async Task ReleaseDeadNodeResources_PreserveForeignOwnerWithNullLockedAt()
+    {
+        var ticker = NewTimeTicker(status: TickerStatus.Queued);
+        await _f.Provider.AddTimeTickers([ticker], CancellationToken.None);
+        var timeToken = Guid.NewGuid();
+        await _f.TimeTickers.UpdateOneAsync(
+            Builders<TimeTickerEntity>.Filter.Eq(x => x.Id, ticker.Id),
+            Builders<TimeTickerEntity>.Update
+                .Set(x => x.Status, TickerStatus.Queued)
+                .Set(x => x.LockHolder, "healthy-node")
+                .Set(x => x.LockedAt, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, timeToken)
+                .Set(x => x.ChainGeneration, timeToken));
+
+        var cron = NewCron();
+        await _f.Provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
+        {
+            Id = Guid.NewGuid(),
+            CronTickerId = cron.Id,
+            ExecutionTime = _f.FixedNow.AddMinutes(1),
+            Status = TickerStatus.Idle
+        };
+        await _f.Provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+        var occurrenceToken = Guid.NewGuid();
+        await _f.CronTickerOccurrences.UpdateOneAsync(
+            Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Filter.Eq(x => x.Id, occurrence.Id),
+            Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Update
+                .Set(x => x.Status, TickerStatus.Queued)
+                .Set(x => x.LockHolder, "healthy-node")
+                .Set(x => x.LockedAt, (DateTime?)null)
+                .Set(x => x.AcquisitionToken, occurrenceToken));
+
+        await _f.Provider.ReleaseDeadNodeTimeTickerResources("dead-node", CancellationToken.None);
+        await _f.Provider.ReleaseDeadNodeOccurrenceResources("dead-node", CancellationToken.None);
+
+        var savedTime = await _f.Provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Queued, savedTime!.Status);
+        Assert.Equal("healthy-node", savedTime.LockHolder);
+        Assert.Equal(timeToken, savedTime.AcquisitionToken);
+        Assert.Equal(timeToken, savedTime.ChainGeneration);
+
+        var savedOccurrence = await _f.CronTickerOccurrences.Find(x => x.Id == occurrence.Id).SingleAsync();
+        Assert.Equal(TickerStatus.Queued, savedOccurrence.Status);
+        Assert.Equal("healthy-node", savedOccurrence.LockHolder);
+        Assert.Equal(occurrenceToken, savedOccurrence.AcquisitionToken);
     }
 
     [Fact]

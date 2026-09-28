@@ -1,4 +1,5 @@
 using System;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -32,6 +33,16 @@ namespace TickerQ.DependencyInjection
             var schedulerOptionsBuilder = new SchedulerOptionsBuilder();
             var optionInstance = new TickerOptionsBuilder<TTimeTicker,TCronTicker>(tickerExecutionContext, schedulerOptionsBuilder);
             optionsBuilder?.Invoke(optionInstance);
+            schedulerOptionsBuilder.ReconciliationEpoch = optionInstance.ReconciliationEpoch;
+            // Freeze runtime admission before registering factories that may construct a provider or
+            // manager. Scoped protocol APIs remain free to administer other applications' records, but
+            // they can never redirect this process's configured execution scope.
+            schedulerOptionsBuilder.BindRuntimeActivationScope(
+                optionInstance.DefinedCronApplicationNamespace,
+                optionInstance.ReconciliationEpoch,
+                optionInstance.RegisterBackgroundServices);
+            tickerExecutionContext.RuntimePartition = schedulerOptionsBuilder.RuntimePartition;
+            optionInstance.FreezeRuntimeBinding();
             CronScheduleCache.TimeZoneInfo = schedulerOptionsBuilder.SchedulerTimeZone;
 
             // Apply JSON serializer options for ticker requests if configured during service registration
@@ -42,18 +53,46 @@ namespace TickerQ.DependencyInjection
 
             // Configure whether ticker request payloads should use GZip compression
             TickerHelper.UseGZipCompression = optionInstance.RequestGZipCompressionEnabled;
-            services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
-            services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
+            if (optionInstance.RegisterBackgroundServices)
+            {
+                services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
+                services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
+            }
+            else
+            {
+                // Queue-only applications advertise their public managers as usable before host startup.
+                // Resolve both interfaces through one concrete manager and publish the process-local
+                // function registry at that resolution boundary; no persistence startup I/O occurs here.
+                services.AddSingleton<QueueOnlyFunctionRegistryReadiness>();
+                services.AddSingleton<TickerManager<TTimeTicker, TCronTicker>>();
+                services.AddSingleton<ITimeTickerManager<TTimeTicker>>(sp =>
+                {
+                    sp.GetRequiredService<QueueOnlyFunctionRegistryReadiness>().EnsureBuilt();
+                    return sp.GetRequiredService<TickerManager<TTimeTicker, TCronTicker>>();
+                });
+                services.AddSingleton<ICronTickerManager<TCronTicker>>(sp =>
+                {
+                    sp.GetRequiredService<QueueOnlyFunctionRegistryReadiness>().EnsureBuilt();
+                    return sp.GetRequiredService<TickerManager<TTimeTicker, TCronTicker>>();
+                });
+            }
             services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ITickerQRedisContext, NoOpTickerQRedisContext>();
             services.AddSingleton<ITickerQNotificationHubSender, NoOpTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
+            services.AddSingleton<ITickerQActivationGate, TickerQActivationGate>();
 
             // Retention capability validation must be the first TickerQ hosted service so an
             // unsupported provider fails before initialization, scheduler, or worker side effects.
             // It remains absent when background services are disabled, preserving queue-only hosts.
             if (optionInstance.RegisterBackgroundServices && optionInstance.JobRetention.IsEnabled)
                 services.AddHostedService<TickerQRetentionCapabilityValidator>();
+
+            // Fail closed before initialization when a scheduler host cannot persist/fence activation epochs.
+            // Queue-only hosts register no pollers, so forcing this capability there would break otherwise
+            // source-compatible third-party providers without protecting any execution path.
+            if (optionInstance.RegisterBackgroundServices)
+                services.AddHostedService<TickerQReconciliationActivationCapabilityValidator>();
 
             // Register the initializer hosted service BEFORE scheduler services
             // to guarantee seeding completes before the scheduler starts polling.
@@ -201,6 +240,31 @@ namespace TickerQ.DependencyInjection
             }
 
             return host;
+        }
+
+        private sealed class QueueOnlyFunctionRegistryReadiness
+        {
+            private readonly IServiceProvider _serviceProvider;
+            private readonly object _gate = new();
+            private bool _built;
+
+            public QueueOnlyFunctionRegistryReadiness(IServiceProvider serviceProvider)
+                => _serviceProvider = serviceProvider;
+
+            public void EnsureBuilt()
+            {
+                lock (_gate)
+                {
+                    if (_built)
+                        return;
+
+                    var configuration = _serviceProvider.GetService<IConfiguration>();
+                    if (configuration != null)
+                        TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
+                    TickerFunctionProvider.Build();
+                    _built = true;
+                }
+            }
         }
     }
 }

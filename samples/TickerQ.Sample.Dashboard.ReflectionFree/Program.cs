@@ -8,6 +8,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddTickerQ(options =>
 {
+    // Even the in-memory provider uses this physical process-local partition and exact epoch.
+    options.UseDefinedCronApplicationNamespace("reflection-free-dashboard-sample");
+    options.UseReconciliationEpoch(1);
     options.WithJsonContext(TickerQRequestJsonContext.Default);
     options.AddDashboard(dashboard => dashboard.AllowAnonymousDashboard());
 });

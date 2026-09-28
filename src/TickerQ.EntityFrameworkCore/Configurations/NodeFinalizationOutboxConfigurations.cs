@@ -12,10 +12,11 @@ public sealed class NodeFinalizationOutboxConfigurations : IEntityTypeConfigurat
 
     public void Configure(EntityTypeBuilder<NodeFinalizationOutboxEntity> builder)
     {
-        builder.HasKey(x => x.OutboxId);
-        builder.HasIndex(x => new { x.TickerType, x.TickerId, x.AcquisitionToken, x.DispatchId, x.NodeEpoch })
+        builder.HasKey(x => new { x.ApplicationNamespaceKey, x.OutboxId });
+        builder.Property(x => x.ApplicationNamespaceKey).IsRequired().HasMaxLength(80);
+        builder.HasIndex(x => new { x.ApplicationNamespaceKey, x.TickerType, x.TickerId, x.AcquisitionToken, x.DispatchId, x.NodeEpoch })
             .IsUnique();
-        builder.HasIndex(x => new { x.AvailableAtUtc, x.OutboxId });
+        builder.HasIndex(x => new { x.ApplicationNamespaceKey, x.AvailableAtUtc, x.OutboxId });
 
         builder.Property(x => x.FinalizeUri).IsRequired().HasMaxLength(NodeFinalizationIntent.MaxUriLength);
         builder.Property(x => x.FinalizePathAndQuery).IsRequired().HasMaxLength(NodeFinalizationIntent.MaxPathAndQueryLength);

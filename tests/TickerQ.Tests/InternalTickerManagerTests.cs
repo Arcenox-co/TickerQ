@@ -56,16 +56,21 @@ public class InternalTickerManagerTests
         _notificationHub.UpdateTimeTickerFromInternalFunctionContext<FakeTimeTicker>(Arg.Any<InternalFunctionContext>()).Returns(Task.CompletedTask);
         _notificationHub.UpdateCronOccurrenceFromInternalFunctionContext<FakeCronTicker>(Arg.Any<InternalFunctionContext>()).Returns(Task.CompletedTask);
 
+        _manager = CreateManager(new SchedulerOptionsBuilder());
+    }
+
+    private IInternalTickerManager CreateManager(SchedulerOptionsBuilder options)
+    {
         // Create the manager via reflection since it is internal
         var managerType = typeof(IInternalTickerManager).Assembly
             .GetType("TickerQ.Utilities.Managers.InternalTickerManager`2")!
             .MakeGenericType(typeof(FakeTimeTicker), typeof(FakeCronTicker));
 
-        _manager = (IInternalTickerManager)Activator.CreateInstance(
+        return (IInternalTickerManager)Activator.CreateInstance(
             managerType,
             BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
             binder: null,
-            args: new object[] { _persistence, _clock, _notificationHub, new SchedulerOptionsBuilder() },
+            args: new object[] { _persistence, _clock, _notificationHub, options },
             culture: null)!;
     }
 
@@ -1300,6 +1305,44 @@ public class InternalTickerManagerTests
             _manager.UpdateTickerFromRemoteAsync(context));
 
         await _persistence.DidNotReceiveWithAnyArgs().UpdateTimeTicker(default!, default);
+    }
+
+    [Fact]
+    public async Task Scoped_terminal_update_rejects_missing_or_foreign_partition_before_provider_call()
+    {
+        var options = new SchedulerOptionsBuilder();
+        options.BindRuntimeActivationScope("terminal-a", 7, true);
+        var manager = CreateManager(options);
+        _persistence.SupportsAcknowledgedTerminalUpdates.Returns(true);
+        var context = TerminalContext(TickerStatus.Done);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.UpdateTickerFromRemoteAsync(context));
+        context.RuntimePartitionKey = new TickerQRuntimePartition("terminal-b").StorageKey;
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.UpdateTickerFromRemoteAsync(context));
+
+        await _persistence.DidNotReceiveWithAnyArgs()
+            .CommitTerminalTickerAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task Scoped_node_finalization_rejects_legacy_partition_intent_before_provider_call()
+    {
+        var options = new SchedulerOptionsBuilder();
+        options.BindRuntimeActivationScope("terminal-a", 7, true);
+        var manager = CreateManager(options);
+        _persistence.SupportsAcknowledgedTerminalUpdates.Returns(true);
+        _persistence.SupportsDurableNodeFinalizationOutbox.Returns(true);
+        var context = TerminalContext(TickerStatus.Done);
+        context.RuntimePartitionKey = options.RuntimePartition.StorageKey;
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.UpdateTickerFromRemoteAsync(context, FinalizationIntent(context)));
+
+        Assert.Contains("identity", exception.Message, StringComparison.OrdinalIgnoreCase);
+        await _persistence.DidNotReceiveWithAnyArgs()
+            .CommitTerminalTickerAndEnqueueNodeFinalizationAsync(default!, default!, default);
     }
 
     [Fact]

@@ -22,6 +22,15 @@ public static class ServiceExtension
         var efCoreOptionBuilder = new TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>();
 
         efConfiguration?.Invoke(efCoreOptionBuilder);
+
+        // Preserve the provider-specific API introduced with the EF partition schema,
+        // but route it into the single Core startup protocol so adoption cannot run
+        // later than activation or only inside EF's ordinary migration bootstrapper.
+        if (efCoreOptionBuilder.LegacyRuntimeOwner != null)
+            tickerConfiguration.UseLegacyRuntimePartitionAdoption(
+                efCoreOptionBuilder.LegacyRuntimeOwner.ApplicationNamespace,
+                efCoreOptionBuilder.LegacyRuntimeAdoptionEpoch!.Value,
+                efCoreOptionBuilder.LegacyWritersDrained);
             
         if (efCoreOptionBuilder.PoolSize <= 0) 
             throw new ArgumentOutOfRangeException(nameof(efCoreOptionBuilder.PoolSize), "Pool size must be greater than 0");

@@ -267,11 +267,17 @@ public sealed class RedisParentResultPublicationTests
     }
 
     [Fact]
-    public async Task CronOccurrenceSuccessPublishesAndRecreationClearsResult()
+    public async Task CronOccurrenceSuccessPublishesAndRawRecreationPreservesTerminalEvidence()
     {
+        var cronId = Guid.NewGuid();
+        await _provider.InsertCronTickers([new CronTickerEntity
+        {
+            Id = cronId, Function = "ResultCron", Expression = "*/5 * * * *", Request = [],
+            CreatedAt = Now.AddHours(-1), UpdatedAt = Now.AddHours(-1)
+        }], CancellationToken.None);
         var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
         {
-            Id = Guid.NewGuid(), CronTickerId = Guid.NewGuid(),
+            Id = Guid.NewGuid(), CronTickerId = cronId,
             ExecutionTime = Now.AddMinutes(-1), Status = TickerStatus.Idle,
             CreatedAt = Now.AddHours(-1), UpdatedAt = Now.AddHours(-1)
         };
@@ -295,16 +301,24 @@ public sealed class RedisParentResultPublicationTests
         occurrence.LockedAt = null;
         occurrence.LeaseUntil = null;
         occurrence.AcquisitionToken = null;
-        await _provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
-        Assert.Null(await _provider.GetCronTickerOccurrenceResultAsync(occurrence.Id));
+        Assert.Equal(0,
+            await _provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None));
+        Assert.Equal("cron"u8.ToArray(),
+            (await _provider.GetCronTickerOccurrenceResultAsync(occurrence.Id))!.ToPayloadArray());
     }
 
     [Fact]
     public async Task CronOccurrenceCommitReturnsFalseWhenAcquisitionFenceRejectsMutation()
     {
+        var cronId = Guid.NewGuid();
+        await _provider.InsertCronTickers([new CronTickerEntity
+        {
+            Id = cronId, Function = "ResultCron", Expression = "*/5 * * * *", Request = [],
+            CreatedAt = Now.AddHours(-1), UpdatedAt = Now.AddHours(-1)
+        }], CancellationToken.None);
         var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
         {
-            Id = Guid.NewGuid(), CronTickerId = Guid.NewGuid(),
+            Id = Guid.NewGuid(), CronTickerId = cronId,
             ExecutionTime = Now.AddMinutes(-1), Status = TickerStatus.Idle,
             CreatedAt = Now.AddHours(-1), UpdatedAt = Now.AddHours(-1)
         };

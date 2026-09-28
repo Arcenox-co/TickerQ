@@ -139,7 +139,9 @@ public class TickerInMemoryPersistenceProviderCronDeduplicationTests : IAsyncLif
             _provider.QueueCronTickerOccurrences((executionTime, new[] { context }), CancellationToken.None));
         Assert.Single(firstResults);
 
-        // Remove the occurrence
+        // Explicit deletion rejects owned work. Release the queued lease before removing the row so
+        // this test remains focused on freeing the (ExecutionTime, CronTickerId) deduplication slot.
+        await _provider.ReleaseAcquiredCronTickerOccurrences([firstResults[0].Id], CancellationToken.None);
         var removed = await _provider.RemoveCronTickerOccurrences(
             new[] { firstResults[0].Id }, CancellationToken.None);
         Assert.Equal(1, removed);
@@ -226,7 +228,7 @@ public class TickerInMemoryPersistenceProviderCronDeduplicationTests : IAsyncLif
 
             // The seed owns a separate, freshly inserted seeded row.
             var seededRow = Assert.Single(rows.Where(r => r.Id != userId));
-            Assert.Equal("*/5 * * * *", seededRow.Expression);
+            Assert.Equal("0 */5 * * * *", seededRow.Expression);
             Assert.Equal(9, seededRow.RequestContractVersion);
             Assert.Equal("sha256:seed-only", seededRow.RequestContractFingerprint);
             Assert.StartsWith("MemoryTicker_Seeded_", seededRow.InitIdentifier);

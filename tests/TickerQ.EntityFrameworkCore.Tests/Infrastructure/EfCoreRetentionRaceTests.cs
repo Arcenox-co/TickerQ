@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using TickerQ.EntityFrameworkCore.Infrastructure;
@@ -124,11 +125,59 @@ public class EfCoreRetentionRaceTests : IAsyncLifetime
         }
     }
 
+    private sealed class RetryObservingProvider :
+        TickerEfCorePersistenceProvider<TestTickerQDbContext, TimeTickerEntity, CronTickerEntity>
+    {
+        private int _attempt;
+        public List<Guid> AttemptContextIds { get; } = [];
+
+        public RetryObservingProvider(
+            IServiceProvider sp, ITickerClock clock, SchedulerOptionsBuilder opts, ITickerQRedisContext redis)
+            : base(sp, clock, opts, redis) { }
+
+        protected internal override Task OnChainDiscoveredForTestAsync(
+            TestTickerQDbContext dbContext, Guid rootId, IReadOnlyCollection<Guid> discoveredIds,
+            CancellationToken cancellationToken)
+        {
+            AttemptContextIds.Add(dbContext.ContextId.InstanceId);
+            return Interlocked.Increment(ref _attempt) == 1
+                ? Task.FromException(new RetryableAdmissionTestException())
+                : Task.CompletedTask;
+        }
+    }
+
     private InterleavingProvider ProviderThatInterleaves(
         Func<TestTickerQDbContext, Guid, IReadOnlyCollection<Guid>, CancellationToken, Task> interleave)
         => new(_services, _clock, _schedulerOptions, _redisContext, interleave);
 
     private static RetentionCutoffs Cutoffs(DateTime succeeded) => new(succeeded, null, null, null);
+
+    [Fact]
+    public async Task Execution_strategy_retry_uses_fresh_context_transaction_and_attempt_state()
+    {
+        var root = Node(TickerStatus.Done, Ago(10));
+        var child = Node(TickerStatus.Done, Ago(10), root.Id);
+        await Seed(root, child);
+        var retryOptions = new DbContextOptionsBuilder<TestTickerQDbContext>()
+            .UseSqlite(_connection)
+            .ReplaceService<IExecutionStrategyFactory, RetryableAdmissionExecutionStrategyFactory>()
+            .Options;
+        await using var retryServices = new ServiceCollection()
+            .AddSingleton<IDbContextFactory<TestTickerQDbContext>>(
+                new NonPooledTestTickerQDbContextFactory(retryOptions))
+            .BuildServiceProvider();
+        var provider = new RetryObservingProvider(
+            retryServices, _clock, _schedulerOptions, _redisContext);
+
+        var result = await provider.DeleteEligibleTimeTickerChainsAsync(
+            Cutoffs(Ago(7)), 100, RetentionCursor.Start, CancellationToken.None);
+
+        Assert.Equal(2, provider.AttemptContextIds.Count);
+        Assert.Equal(2, provider.AttemptContextIds.Distinct().Count());
+        Assert.Equal(2, result.Deleted);
+        Assert.False(await Exists(root.Id));
+        Assert.False(await Exists(child.Id));
+    }
 
     [Fact]
     public async Task ReparentAwayDuringDiscovery_DoesNotDeleteAdoptedChild()

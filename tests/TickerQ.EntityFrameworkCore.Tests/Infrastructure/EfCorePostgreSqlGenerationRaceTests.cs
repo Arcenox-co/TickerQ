@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using Testcontainers.PostgreSql;
 using TickerQ.EntityFrameworkCore.Entities;
+using TickerQ.EntityFrameworkCore.Infrastructure;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -67,6 +68,22 @@ public sealed class EfCorePostgreSqlGenerationRaceTests : IAsyncLifetime
     {
         await _services.DisposeAsync();
         await _postgres.DisposeAsync();
+    }
+
+    [PostgreSqlRaceFact]
+    public async Task Installed_index_verification_rejects_same_name_wrong_postgresql_index()
+    {
+        await using var context = new TestTickerQDbContext(_options);
+        await context.Database.ExecuteSqlRawAsync("DROP INDEX ticker.\"UX_CronTickers_SeedKey\"");
+        await context.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX \"UX_CronTickers_SeedKey\" ON ticker.\"CronTickers\" (\"SeedKey\")");
+
+        var pipeline = new EfCoreDataMigrationPipeline(
+            [new TimeTickerChainRootDataMigration<TimeTickerEntity>()]);
+        var error = await Assert.ThrowsAsync<TickerQStoreSchemaException>(() => pipeline.RunAsync(context));
+
+        Assert.Contains("UX_CronTickers_SeedKey", error.ToString());
+        Assert.Empty(await context.Set<TickerQStoreMetadata>().AsNoTracking().ToArrayAsync());
     }
 
     [PostgreSqlRaceFact]

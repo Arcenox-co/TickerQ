@@ -1,5 +1,6 @@
 using System;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore.Entities;
 
@@ -9,6 +10,7 @@ namespace TickerQ.EntityFrameworkCore.Entities;
 /// </summary>
 public sealed class NodeFinalizationOutboxEntity
 {
+    public string ApplicationNamespaceKey { get; set; } = TickerQRuntimePartition.LegacyGlobal.StorageKey;
     public Guid OutboxId { get; set; }
     public int SchemaVersion { get; set; }
     public TickerType TickerType { get; set; }

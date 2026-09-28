@@ -30,7 +30,7 @@ internal sealed class EfCoreNodeFinalizationOutboxReadiness : IEfCoreNodeFinaliz
 /// Enables Node dispatch only when the configured EF model and installed database schema expose the
 /// exact durable finalization outbox. Probe failures do not disable ordinary EF persistence hosts.
 /// </summary>
-internal sealed class EfCoreNodeFinalizationOutboxReadinessProbe<TContext> : ITickerQPersistenceBootstrapper
+internal sealed class EfCoreNodeFinalizationOutboxReadinessProbe<TContext> : ITickerQPersistenceReadinessProbe
     where TContext : DbContext
 {
     private readonly IServiceProvider _serviceProvider;
@@ -48,6 +48,9 @@ internal sealed class EfCoreNodeFinalizationOutboxReadinessProbe<TContext> : ITi
     }
 
     public async Task BootstrapAsync(CancellationToken cancellationToken = default)
+        => await ProbeAsync(cancellationToken).ConfigureAwait(false);
+
+    public async Task ProbeAsync(CancellationToken cancellationToken = default)
     {
         _readiness.MarkNotReady();
         using var scope = _serviceProvider.CreateScope();
@@ -85,8 +88,9 @@ internal sealed class EfCoreNodeFinalizationOutboxReadinessProbe<TContext> : ITi
     {
         var entity = context.Model.FindEntityType(typeof(NodeFinalizationOutboxEntity));
         if (entity == null || string.IsNullOrWhiteSpace(entity.GetTableName()) ||
-            entity.FindPrimaryKey()?.Properties.Count != 1 ||
-            entity.FindPrimaryKey()!.Properties[0].Name != nameof(NodeFinalizationOutboxEntity.OutboxId) ||
+            entity.FindPrimaryKey()?.Properties.Count != 2 ||
+            entity.FindPrimaryKey()!.Properties[0].Name != nameof(NodeFinalizationOutboxEntity.ApplicationNamespaceKey) ||
+            entity.FindPrimaryKey()!.Properties[1].Name != nameof(NodeFinalizationOutboxEntity.OutboxId) ||
             entity.FindProperty(nameof(NodeFinalizationOutboxEntity.CreatedAtUtcTicks)) == null ||
             entity.FindProperty(nameof(NodeFinalizationOutboxEntity.TerminalMutationDigest)) == null)
         {

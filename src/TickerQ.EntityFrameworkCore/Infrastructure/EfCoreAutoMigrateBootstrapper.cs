@@ -15,7 +15,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure;
 /// <c>efOptions.AutoMigrateDatabase()</c> — strictly opt-in, since teams that
 /// migrate via CI/CD pipelines must not have the app mutate schema on boot.
 /// </summary>
-internal sealed class EfCoreAutoMigrateBootstrapper<TContext> : ITickerQPersistenceBootstrapper
+internal sealed class EfCoreAutoMigrateBootstrapper<TContext> : ITickerQPersistencePrerequisiteBootstrapper
     where TContext : DbContext
 {
     private readonly IServiceProvider _serviceProvider;

@@ -127,6 +127,51 @@ public sealed class MongoResultPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SameGuidForTimeAndCronOccurrenceKeepsTypedResultsAndExactRetriesIndependent()
+    {
+        var sharedId = Guid.NewGuid();
+        var time = NewTimeTicker();
+        time.Id = sharedId;
+        var cron = NewCron();
+        var occurrence = NewOccurrence(cron.Id);
+        occurrence.Id = sharedId;
+        await _fixture.Provider.AddTimeTickers([time]);
+        await _fixture.Provider.InsertCronTickers([cron], CancellationToken.None);
+        await _fixture.Provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+
+        var acquiredTime = Assert.Single(await _fixture.Provider.AcquireImmediateTimeTickersAsync([sharedId]));
+        var acquiredOccurrence = Assert.Single(
+            await _fixture.Provider.AcquireImmediateCronOccurrencesAsync([sharedId]));
+        var timeCommit = Success(sharedId, acquiredTime.AcquisitionToken, null, Envelope(1));
+        var cronCommit = Success(sharedId, acquiredOccurrence.AcquisitionToken, cron.Id, Envelope(2),
+            TickerType.CronTickerOccurrence);
+
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(timeCommit));
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(cronCommit));
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(timeCommit));
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(cronCommit));
+        Assert.Equal(1, (await _fixture.Provider.GetTimeTickerResultAsync(sharedId))!.ToPayloadArray()[0]);
+        Assert.Equal(2, (await _fixture.Provider.GetCronTickerOccurrenceResultAsync(sharedId))!.ToPayloadArray()[0]);
+        Assert.Equal(2, await Results.CountDocumentsAsync(FilterDefinition<BsonDocument>.Empty));
+    }
+
+    [Fact]
+    public async Task LegacyScalarResultIsAdoptedIntoTypedIdentityWithoutCrossKindExposure()
+    {
+        var id = Guid.NewGuid();
+        await Results.InsertOneAsync(ResultDocument(id, "time", 7));
+
+        Assert.Equal(7, (await _fixture.Provider.GetTimeTickerResultAsync(id))!.ToPayloadArray()[0]);
+        Assert.Null(await _fixture.Provider.GetCronTickerOccurrenceResultAsync(id));
+
+        var documents = await Results.Find(FilterDefinition<BsonDocument>.Empty).ToListAsync();
+        var adopted = Assert.Single(documents);
+        Assert.True(adopted["_id"].IsBsonDocument);
+        Assert.Equal("time", adopted["_id"].AsBsonDocument["Kind"].AsString);
+        Assert.Equal(id, adopted["_id"].AsBsonDocument["TickerId"].AsGuid);
+    }
+
+    [Fact]
     public async Task StaleFenceDoesNotPublishOrChangeTerminalStatus()
     {
         var (ticker, _) = await AddAcquiredTimeTickerAsync();
@@ -136,6 +181,108 @@ public sealed class MongoResultPersistenceTests : IAsyncLifetime
         Assert.False(affected);
         Assert.Null(await _fixture.Provider.GetTimeTickerResultAsync(ticker.Id));
         Assert.Equal(TickerStatus.InProgress, (await _fixture.Provider.GetTimeTickerById(ticker.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Exact_terminal_replay_loses_after_new_queued_generation()
+    {
+        var ticker = NewTimeTicker();
+        await _fixture.Provider.AddTimeTickers([ticker]);
+        var runA = Assert.Single(await _fixture.Provider.AcquireImmediateTimeTickersAsync([ticker.Id]));
+        var terminalA = Success(ticker.Id, runA.AcquisitionToken, null, null);
+
+        Assert.True(await _fixture.Provider.CommitTerminalTickerAsync(terminalA));
+        Assert.True(await _fixture.Provider.CommitTerminalTickerAsync(terminalA));
+        Assert.Equal(1, await _fixture.Provider.UpdateTimeTicker(
+            new InternalFunctionContext { TickerId = ticker.Id, Type = TickerType.TimeTicker }
+                .SetProperty(x => x.Status, TickerStatus.Idle), CancellationToken.None));
+        var idle = await _fixture.Provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+        var candidate = new TimeTickerEntity
+        {
+            Id = ticker.Id, UpdatedAt = idle!.UpdatedAt, AcquisitionToken = idle.AcquisitionToken
+        };
+        var queued = new List<TimeTickerEntity>();
+        await foreach (var item in _fixture.Provider.QueueTimeTickers([candidate])) queued.Add(item);
+        var runB = Assert.Single(queued);
+        Assert.NotEqual(runA.AcquisitionToken, runB.AcquisitionToken);
+        Assert.Equal(TickerStatus.Queued, runB.Status);
+
+        Assert.False(await _fixture.Provider.CommitTerminalTickerAsync(terminalA));
+        var persisted = await _fixture.Provider.GetTimeTickerById(ticker.Id, CancellationToken.None);
+        Assert.Equal(runB.AcquisitionToken, persisted!.AcquisitionToken);
+        Assert.Equal(TickerStatus.Queued, persisted.Status);
+    }
+
+    [Fact]
+    public async Task Exact_terminal_replay_and_new_generation_are_serialized_by_entity_authority()
+    {
+        var ticker = NewTimeTicker();
+        await _fixture.Provider.AddTimeTickers([ticker]);
+        var runA = Assert.Single(await _fixture.Provider.AcquireImmediateTimeTickersAsync([ticker.Id]));
+        var terminalA = Success(ticker.Id, runA.AcquisitionToken, null, null);
+        Assert.True(await _fixture.Provider.CommitTerminalTickerAsync(terminalA));
+        Assert.Equal(1, await _fixture.Provider.UpdateTimeTicker(
+            new InternalFunctionContext { TickerId = ticker.Id, Type = TickerType.TimeTicker }
+                .SetProperty(x => x.Status, TickerStatus.Idle)));
+        var idle = await _fixture.Provider.GetTimeTickerById(ticker.Id);
+        var authorityReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAuthority = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _fixture.ConcreteProvider.AfterTerminalReplayAuthorityForTestAsync = async _ =>
+        {
+            authorityReached.TrySetResult();
+            await releaseAuthority.Task;
+        };
+
+        var replay = Task.Run(() => _fixture.Provider.CommitTerminalTickerAsync(terminalA));
+        await authorityReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var acquire = Task.Run(async () =>
+        {
+            var queued = new List<TimeTickerEntity>();
+            await foreach (var row in _fixture.Provider.QueueTimeTickers([
+                new TimeTickerEntity
+                {
+                    Id = ticker.Id, UpdatedAt = idle!.UpdatedAt,
+                    AcquisitionToken = idle.AcquisitionToken
+                }])) queued.Add(row);
+            return queued;
+        });
+        await Task.Delay(150);
+        Assert.False(acquire.IsCompleted);
+
+        releaseAuthority.TrySetResult();
+        Assert.True(await replay);
+        var runB = Assert.Single(await acquire);
+        Assert.NotEqual(runA.AcquisitionToken, runB.AcquisitionToken);
+        _fixture.ConcreteProvider.AfterTerminalReplayAuthorityForTestAsync = null;
+    }
+
+    [Fact]
+    public async Task Legacy_result_adoption_serializes_with_terminal_reacquisition()
+    {
+        var ticker = NewTimeTicker();
+        ticker.Status = TickerStatus.Done;
+        ticker.ExecutedAt = _fixture.FixedNow;
+        await _fixture.Provider.AddTimeTickers([ticker]);
+        await Results.InsertOneAsync(ResultDocument(ticker.Id, "time", 17));
+        var authorityReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAuthority = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _fixture.ConcreteProvider.AfterLegacyResultAuthorityForTestAsync = async _ =>
+        {
+            authorityReached.TrySetResult();
+            await releaseAuthority.Task;
+        };
+
+        var read = Task.Run(() => _fixture.Provider.GetTimeTickerResultAsync(ticker.Id));
+        await authorityReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var acquire = Task.Run(() => _fixture.Provider.AcquireTimeTickerOnDemandAsync(
+            ticker.Id, _fixture.FixedNow, CancellationToken.None));
+        await Task.Delay(150);
+        Assert.False(acquire.IsCompleted);
+
+        releaseAuthority.TrySetResult();
+        Assert.Equal(17, (await read)!.ToPayloadArray()[0]);
+        Assert.NotNull(await acquire);
+        _fixture.ConcreteProvider.AfterLegacyResultAuthorityForTestAsync = null;
     }
 
     [Fact]
@@ -256,6 +403,106 @@ public sealed class MongoResultPersistenceTests : IAsyncLifetime
 
         Assert.Null(await _fixture.Provider.GetTimeTickerResultAsync(ticker.Id));
         Assert.Equal(TickerStatus.InProgress, (await _fixture.Provider.GetTimeTickerById(ticker.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task MajorityCommitThenResponseLossReturnsTruthAndExactRetryIsIdempotent()
+    {
+        var (ticker, token) = await AddAcquiredTimeTickerAsync();
+        var committed = Success(ticker.Id, token, null, Envelope(7));
+        _fixture.ConcreteProvider.AfterTerminalTransactionForTestAsync =
+            _ => throw new TimeoutException("simulated lost terminal commit response");
+        try
+        {
+            Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(committed));
+        }
+        finally
+        {
+            _fixture.ConcreteProvider.AfterTerminalTransactionForTestAsync = null;
+        }
+
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(committed));
+        Assert.False(await _fixture.Provider.CommitSuccessfulTickerAsync(
+            Success(ticker.Id, token, null, Envelope(8))));
+        Assert.Equal(TickerStatus.Done, (await _fixture.Provider.GetTimeTickerById(ticker.Id))!.Status);
+        Assert.Equal(7, (await _fixture.Provider.GetTimeTickerResultAsync(ticker.Id))!.ToPayloadArray()[0]);
+    }
+
+    [Fact]
+    public async Task CronOccurrenceCancellationAfterCommitReturnsTruthAndExactRetryCannotAcknowledgeDifferentResult()
+    {
+        var cron = NewCron();
+        await _fixture.Provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = NewOccurrence(cron.Id);
+        await _fixture.Provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+        var acquired = Assert.Single(await _fixture.Provider.AcquireImmediateCronOccurrencesAsync([occurrence.Id]));
+        var committed = Success(occurrence.Id, acquired.AcquisitionToken, cron.Id, Envelope(4),
+            TickerType.CronTickerOccurrence);
+        using var cancellation = new CancellationTokenSource();
+        _fixture.ConcreteProvider.AfterTerminalTransactionForTestAsync = _ =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        };
+        try
+        {
+            Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(committed, cancellation.Token));
+        }
+        finally
+        {
+            _fixture.ConcreteProvider.AfterTerminalTransactionForTestAsync = null;
+        }
+
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(committed));
+        Assert.False(await _fixture.Provider.CommitSuccessfulTickerAsync(
+            Success(occurrence.Id, acquired.AcquisitionToken, cron.Id, Envelope(5),
+                TickerType.CronTickerOccurrence)));
+        Assert.Equal(TickerStatus.Done,
+            Assert.Single(await _fixture.Provider.GetAllCronTickerOccurrences(x => x.Id == occurrence.Id)).Status);
+        Assert.Equal(4,
+            (await _fixture.Provider.GetCronTickerOccurrenceResultAsync(occurrence.Id))!.ToPayloadArray()[0]);
+    }
+
+    [Fact]
+    public async Task FailedTerminalCommitAmbiguityReturnsTruthWithoutPublishingAResult()
+    {
+        var (ticker, token) = await AddAcquiredTimeTickerAsync();
+        var failed = Terminal(ticker.Id, token, TickerStatus.Failed, "ordinary failure");
+        _fixture.ConcreteProvider.AfterTerminalTransactionForTestAsync =
+            _ => throw new TimeoutException("simulated lost failed-terminal response");
+        try
+        {
+            Assert.True(await _fixture.Provider.CommitTerminalTickerAsync(failed));
+        }
+        finally
+        {
+            _fixture.ConcreteProvider.AfterTerminalTransactionForTestAsync = null;
+        }
+
+        Assert.True(await _fixture.Provider.CommitTerminalTickerAsync(failed));
+        Assert.False(await _fixture.Provider.CommitTerminalTickerAsync(
+            Terminal(ticker.Id, token, TickerStatus.Cancelled, "different terminal mutation")));
+        var stored = await _fixture.Provider.GetTimeTickerById(ticker.Id);
+        Assert.Equal(TickerStatus.Failed, stored!.Status);
+        Assert.Equal("ordinary failure", stored.ExceptionMessage);
+        Assert.Null(await _fixture.Provider.GetTimeTickerResultAsync(ticker.Id));
+    }
+
+    [Fact]
+    public async Task RetryNeverAcknowledgesAnotherExecutionsIdenticalTerminalWrite()
+    {
+        var (ticker, tokenA) = await AddAcquiredTimeTickerAsync();
+        var attemptA = Success(ticker.Id, tokenA, null, Envelope(6));
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(attemptA));
+
+        var attemptB = Assert.IsType<TimeTickerEntity>(
+            await _fixture.Provider.AcquireTimeTickerOnDemandAsync(ticker.Id, _fixture.FixedNow));
+        Assert.NotEqual(tokenA, attemptB.AcquisitionToken);
+        Assert.True(await _fixture.Provider.CommitSuccessfulTickerAsync(
+            Success(ticker.Id, attemptB.AcquisitionToken, null, Envelope(6))));
+
+        Assert.False(await _fixture.Provider.CommitSuccessfulTickerAsync(attemptA));
+        Assert.Equal(6, (await _fixture.Provider.GetTimeTickerResultAsync(ticker.Id))!.ToPayloadArray()[0]);
     }
 
     [Fact]
@@ -406,6 +653,16 @@ public sealed class MongoResultPersistenceTests : IAsyncLifetime
 
     private static TickerResultEnvelope Envelope(byte value)
         => new([value], 1, "application/json", "contract", "Example.Result");
+
+    private static InternalFunctionContext Terminal(
+        Guid id, Guid? token, TickerStatus status, string exception)
+        => new InternalFunctionContext
+        {
+            TickerId = id, FunctionName = "result-test", Type = TickerType.TimeTicker,
+            AcquisitionToken = token
+        }.SetProperty(x => x.Status, status)
+         .SetProperty(x => x.ExceptionDetails, exception)
+         .SetProperty(x => x.ReleaseLock, true);
 
     private static InternalFunctionContext Success(
         Guid id, Guid? token, Guid? parentId, TickerResultEnvelope? envelope,

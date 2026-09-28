@@ -12,6 +12,7 @@ public class InternalManagerContext(Guid id)
     public int Retries { get; set; }
     public int[] RetryIntervals { get; set; }
     public int? TimeoutSeconds { get; set; }
+    public long DefinitionRevision { get; set; }
     public NextCronOccurrence NextCronOccurrence { get; set; }
 }
 

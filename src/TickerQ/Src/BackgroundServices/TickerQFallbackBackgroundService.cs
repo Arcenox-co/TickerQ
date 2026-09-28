@@ -16,14 +16,16 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
     private readonly ITickerQTaskScheduler _tickerQTaskScheduler;
     private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
     private readonly TimeSpan _fallbackJobPeriod;
+    private readonly ITickerQActivationGate _activationGate;
 
-    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, ITickerFunctionConcurrencyGate concurrencyGate)
+    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, ITickerFunctionConcurrencyGate concurrencyGate, ITickerQActivationGate activationGate = null)
     {
         _internalTickerManager = internalTickerManager;
         _fallbackJobPeriod = schedulerOptions.FallbackIntervalChecker;
         _tickerExecutionTaskHandler = tickerExecutionTaskHandler;
         _tickerQTaskScheduler = tickerQTaskScheduler;
         _concurrencyGate = concurrencyGate;
+        _activationGate = activationGate;
     }
 
     public override Task StartAsync(CancellationToken ct)
@@ -34,6 +36,9 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (_activationGate != null)
+            await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try

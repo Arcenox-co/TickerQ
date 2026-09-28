@@ -11,7 +11,31 @@ namespace TickerQ.Utilities.Interfaces.Managers
 {
     internal interface IInternalTickerManager
     {
+        /// <summary>Whether the configured provider implements durable reconciliation activation epochs.</summary>
+        bool SupportsReconciliationActivationEpoch => false;
+        bool SupportsAuthoritativeCronReconciliation => false;
+        bool SupportsLegacyRuntimePartitionAdoption => false;
+        Task AdoptLegacyRuntimePartitionAsync(LegacyRuntimePartitionAdoption adoption,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(
+                "The configured manager does not support explicit legacy runtime partition adoption.");
+        Task<ActivationEpochState> GetReconciliationActivationStateAsync(ReconciliationActivationScope scope,
+            CancellationToken cancellationToken = default);
+        Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(ReconciliationActivationScope scope,
+            long targetEpoch, CancellationToken cancellationToken = default);
+        Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(ReconciliationActivationScope scope,
+            long targetEpoch, string checkpoint, CancellationToken cancellationToken = default);
+        Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(ReconciliationActivationScope scope,
+            long targetEpoch, CancellationToken cancellationToken = default);
+        Task<ActivationEpochState> GetReconciliationActivationStateAsync(CancellationToken cancellationToken = default);
+        Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(long targetEpoch,
+            CancellationToken cancellationToken = default);
+        Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(long targetEpoch, string checkpoint,
+            CancellationToken cancellationToken = default);
+        Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(long targetEpoch,
+            CancellationToken cancellationToken = default);
         Task<(TimeSpan TimeRemaining, InternalFunctionContext[] Functions)> GetNextTickers(CancellationToken cancellationToken = default);
+
         Task ReleaseAcquiredResources(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
         Task<InternalFunctionContext[]> SetTickersInProgress(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
         Task UpdateTickerAsync(InternalFunctionContext context, CancellationToken cancellationToken = default);
@@ -33,9 +57,12 @@ namespace TickerQ.Utilities.Interfaces.Managers
             => Task.FromResult<TickerResultEnvelope>(null);
         Task<InternalFunctionContext[]> RunTimedOutTickers(CancellationToken cancellationToken = default);
         Task MigrateDefinedCronTickers(DefinedCronTickerSeed[] cronTickers, CancellationToken cancellationToken = default);
+        Task MigrateDefinedCronTickers(DefinedCronSeedManifest manifest, CancellationToken cancellationToken = default);
         Task DeleteTicker(Guid tickerId, TickerType type, CancellationToken cancellationToken = default);
         Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default);
         Task UpdateSkipTimeTickersWithUnifiedContextAsync(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
+        Task<TimeTickerChainRepairResult> RepairTimeTickerChainsAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult(TimeTickerChainRepairResult.Empty);
         Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default);
         /// <summary>Whether the configured persistence provider supports lease renewal and stale-job recovery.</summary>
         bool SupportsLeaseBasedRecovery => false;

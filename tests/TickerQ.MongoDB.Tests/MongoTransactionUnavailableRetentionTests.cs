@@ -63,6 +63,40 @@ public sealed class MongoTransactionUnavailableRetentionTests : IAsyncLifetime
     public void DurableNodeFinalizationCapabilityIsFalseOnStandalone()
         => Assert.False(_provider.SupportsDurableNodeFinalizationOutbox);
 
+    [Fact]
+    public async Task ReconciliationActivation_fails_closed_without_claim_on_standalone()
+    {
+        Assert.True(_provider.SupportsReconciliationActivationEpoch);
+        var exception = await Assert.ThrowsAsync<NotSupportedException>(() =>
+            _provider.BeginReconciliationActivationEpochAsync(1));
+        Assert.Contains("replica-set transactions", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Activation was not claimed", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(0, await _context.StoreMetadata.CountDocumentsAsync(
+            FilterDefinition<global::MongoDB.Bson.BsonDocument>.Empty));
+    }
+
+    [Fact]
+    public async Task DefinitionRevisionAcquisition_FailsClosed_WhenTransactionsUnavailable()
+    {
+        var cron = new CronTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "standalone-revision", Expression = "* * * * *",
+            DefinitionRevision = 2, Request = [], IsEnabled = true, CreatedAt = _now, UpdatedAt = _now
+        };
+        var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
+        {
+            Id = Guid.NewGuid(), CronTickerId = cron.Id, DefinitionRevision = 2,
+            ExecutionTime = _now, Status = TickerStatus.Idle, CreatedAt = _now, UpdatedAt = _now
+        };
+        await _context.CronTickers.InsertOneAsync(cron);
+        await _context.CronTickerOccurrences.InsertOneAsync(occurrence);
+
+        Assert.Empty(await _provider.AcquireImmediateCronOccurrencesAsync([occurrence.Id], CancellationToken.None));
+        Assert.Null(await _provider.GetEarliestAvailableCronOccurrence([cron.Id], CancellationToken.None));
+        Assert.Equal(TickerStatus.Idle,
+            (await _context.CronTickerOccurrences.Find(x => x.Id == occurrence.Id).SingleAsync()).Status);
+    }
+
     private DateTime Ago(double days) => _now - TimeSpan.FromDays(days);
 
     private TimeTickerEntity Node(TickerStatus status, DateTime? executedAt, Guid? parentId = null)
@@ -99,7 +133,20 @@ public sealed class MongoTransactionUnavailableRetentionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task CronOccurrenceRetention_StillWorks_WhenTransactionsUnavailable_AndPreservesDefinition()
+    public async Task ExplicitTimeChainDeletion_FailsClosed_WhenTransactionsUnavailable()
+    {
+        var root = Node(TickerStatus.Done, Ago(10));
+        var child = Node(TickerStatus.Done, Ago(10), root.Id);
+        await _context.TimeTickers.InsertManyAsync([root, child]);
+
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            _provider.RemoveTimeTickers([root.Id], CancellationToken.None));
+
+        Assert.Equal(2, await _context.TimeTickers.CountDocumentsAsync(FilterDefinition<TimeTickerEntity>.Empty));
+    }
+
+    [Fact]
+    public async Task CronOccurrenceRetention_FailsClosed_WhenTransactionsUnavailable()
     {
         var cron = new CronTickerEntity
         {
@@ -121,12 +168,28 @@ public sealed class MongoTransactionUnavailableRetentionTests : IAsyncLifetime
             UpdatedAt = Ago(10)
         });
 
-        var result = await _provider.DeleteEligibleCronTickerOccurrencesAsync(
-            new RetentionCutoffs(Ago(7), null, null, null), 10, CancellationToken.None);
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            _provider.DeleteEligibleCronTickerOccurrencesAsync(
+                new RetentionCutoffs(Ago(7), null, null, null), 10, CancellationToken.None));
 
-        Assert.Equal(1, result.Deleted);
         Assert.Equal(1, await _context.CronTickers.CountDocumentsAsync(FilterDefinition<CronTickerEntity>.Empty));
-        Assert.Equal(0, await _context.CronTickerOccurrences.CountDocumentsAsync(
+        Assert.Equal(1, await _context.CronTickerOccurrences.CountDocumentsAsync(
+            FilterDefinition<CronTickerOccurrenceEntity<CronTickerEntity>>.Empty));
+    }
+
+    [Fact]
+    public async Task ExplicitCronOccurrenceDelete_FailsClosed_WhenTransactionsUnavailable()
+    {
+        var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
+        {
+            Id = Guid.NewGuid(), CronTickerId = Guid.NewGuid(), Status = TickerStatus.Done,
+            ExecutedAt = Ago(10), ExecutionTime = Ago(10), CreatedAt = Ago(10), UpdatedAt = Ago(10)
+        };
+        await _context.CronTickerOccurrences.InsertOneAsync(occurrence);
+
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            _provider.RemoveCronTickerOccurrences([occurrence.Id], CancellationToken.None));
+        Assert.Equal(1, await _context.CronTickerOccurrences.CountDocumentsAsync(
             FilterDefinition<CronTickerOccurrenceEntity<CronTickerEntity>>.Empty));
     }
 }

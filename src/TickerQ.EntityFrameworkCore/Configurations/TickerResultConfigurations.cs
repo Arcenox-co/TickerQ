@@ -19,10 +19,13 @@ public sealed class TimeTickerResultConfigurations<TTimeTicker>
 
     public void Configure(EntityTypeBuilder<TimeTickerResultEntity<TTimeTicker>> builder)
     {
-        builder.HasKey(x => x.TickerId);
+        builder.HasKey(x => new { x.ApplicationNamespaceKey, x.TickerId });
+        builder.Property(x => x.ApplicationNamespaceKey).IsRequired().HasMaxLength(80);
         ConfigureEnvelope(builder.Property(x => x.Payload), builder.Property(x => x.MediaType),
             builder.Property(x => x.ContractId), builder.Property(x => x.ContractType));
-        builder.HasOne(x => x.Ticker).WithOne().HasForeignKey<TimeTickerResultEntity<TTimeTicker>>(x => x.TickerId)
+        builder.HasOne(x => x.Ticker).WithOne()
+            .HasForeignKey<TimeTickerResultEntity<TTimeTicker>>(x => new { x.ApplicationNamespaceKey, x.TickerId })
+            .HasPrincipalKey<TTimeTicker>(x => new { x.ApplicationNamespaceKey, x.Id })
             .OnDelete(DeleteBehavior.Cascade);
         builder.ToTable("TimeTickerResults", _schema);
     }
@@ -47,12 +50,14 @@ public sealed class CronTickerOccurrenceResultConfigurations<TCronTicker>
 
     public void Configure(EntityTypeBuilder<CronTickerOccurrenceResultEntity<TCronTicker>> builder)
     {
-        builder.HasKey(x => x.TickerId);
+        builder.HasKey(x => new { x.ApplicationNamespaceKey, x.TickerId });
+        builder.Property(x => x.ApplicationNamespaceKey).IsRequired().HasMaxLength(80);
         TimeTickerResultConfigurations<TimeTickerEntity>.ConfigureEnvelope(
             builder.Property(x => x.Payload), builder.Property(x => x.MediaType),
             builder.Property(x => x.ContractId), builder.Property(x => x.ContractType));
         builder.HasOne(x => x.Occurrence).WithOne()
-            .HasForeignKey<CronTickerOccurrenceResultEntity<TCronTicker>>(x => x.TickerId)
+            .HasForeignKey<CronTickerOccurrenceResultEntity<TCronTicker>>(x => new { x.ApplicationNamespaceKey, x.TickerId })
+            .HasPrincipalKey<CronTickerOccurrenceEntity<TCronTicker>>(x => new { x.ApplicationNamespaceKey, x.Id })
             .OnDelete(DeleteBehavior.Cascade);
         builder.ToTable("CronTickerOccurrenceResults", _schema);
     }

@@ -27,13 +27,20 @@ namespace TickerQ.Utilities.Managers
         private readonly ITickerQNotificationHubSender _notificationHubSender;
         private readonly ITickerQDispatcher _dispatcher;
         private readonly TickerExecutionContext _executionContext;
+        private readonly ITickerQActivationGate _activationGate;
+        private readonly bool _runtimeSchedulerEnabled;
+        private readonly string _runtimeActivationScopeKey;
+        private readonly long _runtimeActivationEpoch;
+        private static readonly SemaphoreSlim AddOnceGate = new(1, 1);
         public TickerManager(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerQHostScheduler tickerQHostScheduler,
             ITickerClock clock,
             ITickerQNotificationHubSender notificationHubSender,
             TickerExecutionContext executionContext,
-            ITickerQDispatcher dispatcher
+            ITickerQDispatcher dispatcher,
+            SchedulerOptionsBuilder schedulerOptions,
+            ITickerQActivationGate activationGate
             )
         {
             _persistenceProvider = persistenceProvider;
@@ -42,6 +49,10 @@ namespace TickerQ.Utilities.Managers
             _notificationHubSender = notificationHubSender;
             _executionContext = executionContext ?? throw new ArgumentNullException(nameof(executionContext));
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+            _runtimeSchedulerEnabled = schedulerOptions?.RuntimeSchedulerEnabled ?? true;
+            _runtimeActivationScopeKey = schedulerOptions?.RuntimeActivationScope?.ScopeKey;
+            _runtimeActivationEpoch = schedulerOptions?.RuntimeActivationEpoch ?? 0;
+            _activationGate = activationGate ?? throw new ArgumentNullException(nameof(activationGate));
         }
 
         Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.AddAsync(TCronTicker entity, CancellationToken cancellationToken)
@@ -56,15 +67,37 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TTimeTicker>(
                     new TickerValidatorException("AddOnceAsync requires a non-empty initIdentifier."));
 
-            var existing = await _persistenceProvider
-                .GetTimeTickers(x => x.InitIdentifier == initIdentifier, cancellationToken)
-                .ConfigureAwait(false);
+            // Admission must happen before the process-wide deduplication gate. Otherwise an ordinary
+            // pre-start caller can hold AddOnceGate while waiting for activation and deadlock the
+            // initializer seeder that is authorized to complete that activation.
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+            await AddOnceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var existing = await _persistenceProvider
+                    .GetTimeTickers(x => x.InitIdentifier == initIdentifier, cancellationToken)
+                    .ConfigureAwait(false);
+                if (existing is { Length: > 0 })
+                    return new TickerResult<TTimeTicker>(existing.OrderBy(x => x.Id).First());
 
-            if (existing is { Length: > 0 })
-                return new TickerResult<TTimeTicker>(existing[0]);
+                entity.InitIdentifier = initIdentifier;
+                entity.Id = TimeTickerInitIdentity.DeterministicId(initIdentifier);
+                var inserted = await AddTimeTickerAsync(entity, cancellationToken).ConfigureAwait(false);
+                if (inserted.IsSucceeded) return inserted;
 
-            entity.InitIdentifier = initIdentifier;
-            return await AddTimeTickerAsync(entity, cancellationToken).ConfigureAwait(false);
+                // Another node can win between discovery and insert. Deterministic ids make that
+                // conflict convergent; return the committed winner rather than surfacing a false error.
+                existing = await _persistenceProvider
+                    .GetTimeTickers(x => x.InitIdentifier == initIdentifier, cancellationToken)
+                    .ConfigureAwait(false);
+                return existing is { Length: > 0 }
+                    ? new TickerResult<TTimeTicker>(existing.OrderBy(x => x.Id).First())
+                    : inserted;
+            }
+            finally
+            {
+                AddOnceGate.Release();
+            }
         }
 
         Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.UpdateAsync(TCronTicker cronTicker, CancellationToken cancellationToken)
@@ -125,6 +158,8 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<TTimeTicker>> AddTimeTickerAsync(TTimeTicker entity, CancellationToken cancellationToken)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+
             if (entity.Id == Guid.Empty)
                 entity.Id = Guid.NewGuid();
 
@@ -144,7 +179,10 @@ namespace TickerQ.Utilities.Managers
                 var executionTime = entity.ExecutionTime!.Value;
 
                 // Persist first
-                await _persistenceProvider.AddTimeTickers([entity], cancellationToken: cancellationToken);
+                var affected = await _persistenceProvider.AddTimeTickers([entity], cancellationToken: cancellationToken);
+                if (affected <= 0)
+                    return new TickerResult<TTimeTicker>(new TickerValidatorException(
+                        $"TimeTicker '{entity.Id}' was not inserted because it already exists."));
 
                 // Notify the dashboard BEFORE the dispatch path — for tickers
                 // scheduled at "now" the dispatcher acquires + runs immediately
@@ -189,6 +227,8 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<TCronTicker>> AddCronTickerAsync(TCronTicker entity, CancellationToken cancellationToken)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+
            
             if (entity.Id == Guid.Empty)
                 entity.Id = Guid.NewGuid();
@@ -226,6 +266,8 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<TTimeTicker>> UpdateTimeTickerAsync(TTimeTicker timeTicker, CancellationToken cancellationToken)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+
             if (timeTicker is null)
                 return new TickerResult<TTimeTicker>(
                     new TickerValidatorException($"Ticker must not be null!"));
@@ -258,6 +300,8 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<TCronTicker>> UpdateCronTickerAsync(TCronTicker cronTicker, CancellationToken cancellationToken = default)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+
             if (cronTicker is null)
                 return new TickerResult<TCronTicker>(new Exception($"Cron ticker must not be null!"));
 
@@ -301,6 +345,7 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<TCronTicker>> DeleteCronTickerAsync(Guid id, CancellationToken cancellationToken = default)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
             var affectedRows = await _persistenceProvider.RemoveCronTickers([id], cancellationToken: cancellationToken);
             
             if(affectedRows > 0 && _executionContext.Functions.Any(x => x.ParentId == id))
@@ -312,6 +357,7 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<TTimeTicker>> DeleteTimeTickerAsync(Guid id, CancellationToken cancellationToken = default)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
             var affectedRows = await _persistenceProvider.RemoveTimeTickers([id], cancellationToken: cancellationToken);
             
             if(affectedRows > 0 && _executionContext.Functions.Any(x => x.TickerId == id))
@@ -323,6 +369,8 @@ namespace TickerQ.Utilities.Managers
         private async Task<TickerResult<TTimeTicker>> ReplaceTimeTickerChainAsync(
             Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+
             if (newRoot is null)
                 return new TickerResult<TTimeTicker>(
                     new TickerValidatorException("Replacement chain root must not be null!"));
@@ -335,9 +383,9 @@ namespace TickerQ.Utilities.Managers
             var existing = await _persistenceProvider
                 .GetTimeTickerById(oldRootId, cancellationToken)
                 .ConfigureAwait(false);
-            if (existing == null)
+            if (existing == null || existing.ParentId.HasValue)
                 return new TickerResult<TTimeTicker>(
-                    new TickerValidatorException($"Chain root '{oldRootId}' was not found."));
+                    new TickerValidatorException($"Chain root '{oldRootId}' was not found or is not a root."));
 
             // Validate + stamp the COMPLETE replacement graph before touching persistence.
             // A validation failure returns here with the original aggregate untouched.
@@ -357,6 +405,10 @@ namespace TickerQ.Utilities.Managers
                 var inserted = await _persistenceProvider
                     .ReplaceTimeTickerChainAsync(oldRootId, newRoot, cancellationToken)
                     .ConfigureAwait(false);
+                if (inserted == 0)
+                    return new TickerResult<TTimeTicker>(
+                        new TickerValidatorException(
+                            $"Chain root '{oldRootId}' no longer exists, is active, or changed during replacement."));
 
                 await _notificationHubSender.AddTimeTickerNotifyAsync(newRoot.Id).ConfigureAwait(false);
 
@@ -384,6 +436,13 @@ namespace TickerQ.Utilities.Managers
                 _ => dateTime
             };
         }
+
+        private Task WaitForMutationAdmissionAsync(CancellationToken cancellationToken)
+            => _runtimeSchedulerEnabled &&
+               !StartupSeederAdmissionContext.Matches(
+                   _runtimeActivationScopeKey, _runtimeActivationEpoch)
+                ? _activationGate.WaitForActivationAsync(cancellationToken)
+                : Task.CompletedTask;
 
         private static TickerValidatorException ValidateAndStampRequest(BaseTickerEntity entity, byte[] request)
         {
@@ -490,16 +549,17 @@ namespace TickerQ.Utilities.Managers
             }
         }
 
-        private static InternalFunctionContext[] BuildImmediateContextsFromNonGeneric(IEnumerable<TimeTickerEntity> tickers)
+        private InternalFunctionContext[] BuildImmediateContextsFromNonGeneric(IEnumerable<TimeTickerEntity> tickers)
         {
             return tickers.Select(BuildContextFromNonGeneric).ToArray();
         }
 
-        private static InternalFunctionContext BuildContextFromNonGeneric(TimeTickerEntity ticker)
+        private InternalFunctionContext BuildContextFromNonGeneric(TimeTickerEntity ticker)
         {
             return new InternalFunctionContext
             {
                 FunctionName = ticker.Function,
+                RuntimePartitionKey = _executionContext.RuntimePartition.StorageKey,
                 RequestContractVersion = ticker.RequestContractVersion,
                 RequestContractFingerprint = ticker.RequestContractFingerprint,
                 TickerId = ticker.Id,
@@ -519,6 +579,8 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<List<TTimeTicker>>> AddTimeTickersBatchAsync(List<TTimeTicker> entities, CancellationToken cancellationToken = default)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+
             if (entities == null || entities.Count == 0)
                 return new TickerResult<List<TTimeTicker>>(entities ?? new List<TTimeTicker>());
 
@@ -585,6 +647,8 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<List<TCronTicker>>> AddCronTickersBatchAsync(List<TCronTicker> entities, CancellationToken cancellationToken = default)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+
             var validEntities = new List<TCronTicker>();
             var errors = new List<Exception>();
             var nextOccurrences = new List<DateTime>();
@@ -649,6 +713,8 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<List<TTimeTicker>>> UpdateTimeTickersBatchAsync(List<TTimeTicker> timeTickers, CancellationToken cancellationToken = default)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+
             if (timeTickers.Any(timeTicker => timeTicker is null))
                 return new TickerResult<List<TTimeTicker>>(
                     new TickerValidatorException("Ticker must not be null!"));
@@ -702,6 +768,8 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<List<TCronTicker>>> UpdateCronTickersBatchAsync(List<TCronTicker> cronTickers, CancellationToken cancellationToken = default)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+
             var validTickers = new List<TCronTicker>();
             var errors = new List<Exception>();
             var nextOccurrences = new List<DateTime>();
@@ -780,6 +848,7 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<TTimeTicker>> DeleteTimeTickersBatchAsync(List<Guid> ids, CancellationToken cancellationToken = default)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
             var affectedRows = await _persistenceProvider.RemoveTimeTickers(ids.ToArray(), cancellationToken: cancellationToken);
             
             if (affectedRows > 0 && _executionContext.Functions.Any(x => ids.Contains(x.TickerId)))
@@ -790,6 +859,7 @@ namespace TickerQ.Utilities.Managers
 
         private async Task<TickerResult<TCronTicker>> DeleteCronTickersBatchAsync(List<Guid> ids, CancellationToken cancellationToken = default)
         {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
             var affectedRows = await _persistenceProvider.RemoveCronTickers(ids.ToArray(), cancellationToken: cancellationToken);
             
             if (affectedRows > 0 && _executionContext.Functions.Any(x => ids.Contains(x.ParentId ?? Guid.Empty)))

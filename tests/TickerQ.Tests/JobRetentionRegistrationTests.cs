@@ -23,7 +23,7 @@ public class JobRetentionRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
 
-        services.AddTickerQ();
+        services.AddTickerQ(o => o.UseDefinedCronApplicationNamespace("retention-registration-tests"));
 
         Assert.False(HasRetentionHostedService(services));
     }
@@ -34,7 +34,11 @@ public class JobRetentionRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
 
-        services.AddTickerQ(o => o.ConfigureJobRetention(r => r.DeleteSucceededAfter = TimeSpan.FromDays(1)));
+        services.AddTickerQ(o =>
+        {
+            o.UseDefinedCronApplicationNamespace("retention-registration-tests");
+            o.ConfigureJobRetention(r => r.DeleteSucceededAfter = TimeSpan.FromDays(1));
+        });
 
         Assert.True(HasRetentionHostedService(services));
         Assert.Contains(services, d => d.ServiceType == typeof(JobRetentionOptions));
@@ -63,7 +67,11 @@ public class JobRetentionRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
 
-        services.AddTickerQ(o => o.ConfigureJobRetention(r => r.DeleteSucceededAfter = TimeSpan.FromDays(1)));
+        services.AddTickerQ(o =>
+        {
+            o.UseDefinedCronApplicationNamespace("retention-registration-tests");
+            o.ConfigureJobRetention(r => r.DeleteSucceededAfter = TimeSpan.FromDays(1));
+        });
 
         var indexed = services.Select((d, i) => (d, i)).ToList();
 
@@ -83,7 +91,11 @@ public class JobRetentionRegistrationTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddTickerQ(o => o.ConfigureJobRetention(r => r.DeleteSucceededAfter = TimeSpan.FromDays(1)));
+        services.AddTickerQ(o =>
+        {
+            o.UseDefinedCronApplicationNamespace("retention-registration-tests");
+            o.ConfigureJobRetention(r => r.DeleteSucceededAfter = TimeSpan.FromDays(1));
+        });
         var manager = Substitute.For<IInternalTickerManager>();
         manager.SupportsRetention.Returns(false);
         services.Replace(ServiceDescriptor.Singleton(manager));

@@ -29,10 +29,22 @@ public class TickerQRetentionBackgroundServiceTests
 
     private static TickerQRetentionBackgroundService NewService(
         IInternalTickerManager manager, JobRetentionOptions options, ITickerClock clock,
-        ILogger<TickerQRetentionBackgroundService> logger = null)
-        => new TickerQRetentionBackgroundService(
+        ILogger<TickerQRetentionBackgroundService> logger = null,
+        ITickerQActivationGate activationGate = null)
+    {
+        activationGate ??= ActivatedGate();
+        return new TickerQRetentionBackgroundService(
             manager, options, clock,
-            logger ?? NullLogger<TickerQRetentionBackgroundService>.Instance);
+            logger ?? NullLogger<TickerQRetentionBackgroundService>.Instance,
+            activationGate);
+    }
+
+    private static ITickerQActivationGate ActivatedGate()
+    {
+        var gate = new TickerQActivationGate();
+        gate.SignalActivated();
+        return gate;
+    }
 
     private static void StubEmpty(IInternalTickerManager manager)
     {
@@ -40,6 +52,29 @@ public class TickerQRetentionBackgroundServiceTests
             .Returns(RetentionChainBatchResult.Empty);
         manager.SweepCronOccurrencesAsync(Arg.Any<RetentionCutoffs>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(RetentionBatchResult.Empty);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ClosedActivationGate_MakesZeroPersistenceCalls()
+    {
+        var gate = new TickerQActivationGate();
+        var manager = Substitute.For<IInternalTickerManager>();
+        manager.SupportsRetention.Returns(true);
+        var options = new JobRetentionOptions
+        {
+            DeleteSucceededAfter = TimeSpan.FromDays(1),
+            SweepInterval = TimeSpan.FromMilliseconds(1)
+        };
+        var service = NewService(manager, options, new FixedClock(DateTime.UtcNow), activationGate: gate);
+
+        await service.StartAsync(CancellationToken.None);
+        await Task.Delay(100);
+        await service.StopAsync(CancellationToken.None);
+
+        await manager.DidNotReceive().SweepTimeChainsAsync(
+            Arg.Any<RetentionCutoffs>(), Arg.Any<int>(), Arg.Any<RetentionCursor>(), Arg.Any<CancellationToken>());
+        await manager.DidNotReceive().SweepCronOccurrencesAsync(
+            Arg.Any<RetentionCutoffs>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

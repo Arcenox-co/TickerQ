@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
@@ -7,6 +8,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities
 {
@@ -36,6 +38,21 @@ namespace TickerQ.Utilities
         /// Defaults to true.
         /// </summary>
         internal bool SeedDefinedCronTickers { get; set; } = true;
+        internal long ReconciliationEpoch { get; private set; }
+        internal string DefinedCronApplicationNamespace { get; private set; }
+        internal Dictionary<string, string> LegacyDefinedCronOwnership { get; } = new(StringComparer.Ordinal);
+        internal bool AdoptAllLegacyDefinedCronTickers { get; private set; }
+        internal LegacyRuntimePartitionAdoption LegacyRuntimePartitionAdoption { get; private set; }
+        private bool _runtimeBindingFrozen;
+
+        private void ThrowIfRuntimeBindingFrozen()
+        {
+            if (_runtimeBindingFrozen)
+                throw new InvalidOperationException(
+                    "The TickerQ runtime partition, scheduler mode, and reconciliation epoch are already bound and cannot be mutated.");
+        }
+
+        internal void FreezeRuntimeBinding() => _runtimeBindingFrozen = true;
         
         /// <summary>
         /// Controls whether background services (job processors) should be registered.
@@ -46,17 +63,23 @@ namespace TickerQ.Utilities
         /// <summary>
         /// Seeding delegate for time tickers, executed with the application's service provider.
         /// </summary>
-        internal Func<IServiceProvider, System.Threading.Tasks.Task> TimeSeederAction { get; set; }
+        internal Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> TimeSeederAction { get; set; }
 
         /// <summary>
         /// Seeding delegate for cron tickers, executed with the application's service provider.
         /// </summary>
-        internal Func<IServiceProvider, System.Threading.Tasks.Task> CronSeederAction { get; set; }
+        internal Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> CronSeederAction { get; set; }
 
         // Explicit interface implementation for ITickerOptionsSeeding
         bool ITickerOptionsSeeding.SeedDefinedCronTickers => SeedDefinedCronTickers;
-        Func<IServiceProvider, System.Threading.Tasks.Task> ITickerOptionsSeeding.TimeSeederAction => TimeSeederAction;
-        Func<IServiceProvider, System.Threading.Tasks.Task> ITickerOptionsSeeding.CronSeederAction => CronSeederAction;
+        bool ITickerOptionsSeeding.RegisterBackgroundServices => RegisterBackgroundServices;
+        long ITickerOptionsSeeding.ReconciliationEpoch => ReconciliationEpoch;
+        string ITickerOptionsSeeding.DefinedCronApplicationNamespace => DefinedCronApplicationNamespace;
+        IReadOnlyDictionary<string, string> ITickerOptionsSeeding.LegacyDefinedCronOwnership => LegacyDefinedCronOwnership;
+        bool ITickerOptionsSeeding.AdoptAllLegacyDefinedCronTickers => AdoptAllLegacyDefinedCronTickers;
+        LegacyRuntimePartitionAdoption ITickerOptionsSeeding.LegacyRuntimePartitionAdoption => LegacyRuntimePartitionAdoption;
+        Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.TimeSeederAction => TimeSeederAction;
+        Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.CronSeederAction => CronSeederAction;
 
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
@@ -165,6 +188,112 @@ namespace TickerQ.Utilities
             SeedDefinedCronTickers = false;
             return this;
         }
+
+        /// <summary>
+        /// Assigns this scheduler host a stable application namespace for activation and code-defined Cron ownership.
+        /// Required when background services are enabled. Applications sharing one persistence store must use distinct values.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseDefinedCronApplicationNamespace(string applicationNamespace)
+        {
+            ThrowIfRuntimeBindingFrozen();
+            if (string.IsNullOrWhiteSpace(applicationNamespace))
+                throw new ArgumentException("A non-empty application namespace is required.", nameof(applicationNamespace));
+            DefinedCronApplicationNamespace = applicationNamespace.Trim();
+            return this;
+        }
+
+        /// <summary>
+        /// Maps one legacy, pre-namespace code-defined Cron function to the single application namespace
+        /// that is allowed to adopt it in place during reconciliation.
+        /// </summary>
+        /// <param name="function">The exact registered function name on the legacy row.</param>
+        /// <param name="ownerApplicationNamespace">
+        /// The stable namespace configured by the owning application with
+        /// <see cref="UseDefinedCronApplicationNamespace"/>.
+        /// </param>
+        /// <returns>This builder.</returns>
+        /// <exception cref="ArgumentException">
+        /// A value is blank or exceeds the bounded Cron seed identity contract.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// The same normalized function was already mapped to a different namespace.
+        /// </exception>
+        /// <remarks>
+        /// Legacy rows are unclaimed by default and reconciliation fails closed rather than guessing an
+        /// owner. Configure the same complete mapping on every scheduler application sharing the store.
+        /// Repeating an identical mapping is idempotent; a conflicting mapping is rejected deterministically.
+        /// </remarks>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> MapLegacyDefinedCronOwnership(
+            string function, string ownerApplicationNamespace)
+        {
+            if (string.IsNullOrWhiteSpace(function))
+                throw new ArgumentException("A non-empty function is required.", nameof(function));
+            if (string.IsNullOrWhiteSpace(ownerApplicationNamespace))
+                throw new ArgumentException("A non-empty owner application namespace is required.", nameof(ownerApplicationNamespace));
+            var normalizedFunction = function.Trim();
+            var normalizedOwner = ownerApplicationNamespace.Trim();
+            _ = CronSeedIdentity.SeedKey(normalizedOwner, normalizedFunction);
+            if (LegacyDefinedCronOwnership.TryGetValue(normalizedFunction, out var existingOwner) &&
+                !StringComparer.Ordinal.Equals(existingOwner, normalizedOwner))
+                throw new InvalidOperationException(
+                    $"Legacy Cron function '{normalizedFunction}' is already mapped to application namespace " +
+                    $"'{existingOwner}' and cannot also be mapped to '{normalizedOwner}'.");
+            LegacyDefinedCronOwnership[normalizedFunction] = normalizedOwner;
+            return this;
+        }
+
+        /// <summary>
+        /// Explicitly allows this application's namespace to claim every otherwise-unmapped legacy
+        /// code-defined Cron function present in its desired manifest.
+        /// </summary>
+        /// <returns>This builder.</returns>
+        /// <remarks>
+        /// This is a sticky, idempotent, single-application upgrade opt-in. It is unsafe when independent
+        /// applications share a store because legacy rows carry no trustworthy application owner. In a
+        /// shared store, use <see cref="MapLegacyDefinedCronOwnership"/> on every application instead.
+        /// Explicit per-function mappings take precedence over this catch-all. Without either opt-in,
+        /// automatic adoption remains disabled and ambiguous legacy ownership fails closed.
+        /// </remarks>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> AdoptLegacyDefinedCronTickers()
+        {
+            AdoptAllLegacyDefinedCronTickers = true;
+            return this;
+        }
+
+        /// <summary>
+        /// Selects the positive, monotonic deployment epoch used to fence startup reconciliation.
+        /// Required when background services are enabled. Keep it stable for identical deployments and
+        /// increase it whenever startup reconciliation inputs or semantics change.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseReconciliationEpoch(long epoch)
+        {
+            ThrowIfRuntimeBindingFrozen();
+            if (epoch <= 0)
+                throw new ArgumentOutOfRangeException(nameof(epoch), epoch,
+                    "The reconciliation epoch must be positive.");
+            ReconciliationEpoch = epoch;
+            _schedulerOptions.ReconciliationEpoch = epoch;
+            return this;
+        }
+
+        /// <summary>
+        /// Explicitly authorizes this application and deployment epoch to claim all namespace-less
+        /// legacy runtime state. The provider acquires a durable store-global lease before inspection.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseLegacyRuntimePartitionAdoption(
+            string targetRuntimeNamespace, long reconciliationEpoch, bool legacyWritersDrained)
+        {
+            ThrowIfRuntimeBindingFrozen();
+            var requested = new LegacyRuntimePartitionAdoption(
+                new TickerQRuntimePartition(targetRuntimeNamespace), reconciliationEpoch, legacyWritersDrained);
+            if (LegacyRuntimePartitionAdoption != null && LegacyRuntimePartitionAdoption != requested)
+                throw new InvalidOperationException(
+                    "Legacy runtime partition adoption is already configured and cannot be redirected.");
+            UseDefinedCronApplicationNamespace(requested.TargetPartition.ApplicationNamespace);
+            UseReconciliationEpoch(requested.Epoch);
+            LegacyRuntimePartitionAdoption = requested;
+            return this;
+        }
         
         /// <summary>
         /// Disables background services registration. 
@@ -173,6 +302,7 @@ namespace TickerQ.Utilities
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> DisableBackgroundServices()
         {
+            ThrowIfRuntimeBindingFrozen();
             RegisterBackgroundServices = false;
             return this;
         }
@@ -197,11 +327,21 @@ namespace TickerQ.Utilities
             Func<ITimeTickerManager<TTimeTicker>, System.Threading.Tasks.Task> timeSeeder)
         {
             if (timeSeeder == null) return this;
+            return UseTickerSeeder((manager, _) => timeSeeder(manager));
+        }
 
-            TimeSeederAction = async sp =>
+        /// <summary>
+        /// Configure a cancellation-aware custom seeder for time tickers. The token represents host startup.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
+            Func<ITimeTickerManager<TTimeTicker>, System.Threading.CancellationToken, System.Threading.Tasks.Task> timeSeeder)
+        {
+            if (timeSeeder == null) return this;
+
+            TimeSeederAction = async (sp, cancellationToken) =>
             {
                 var manager = sp.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
-                await timeSeeder(manager).ConfigureAwait(false);
+                await timeSeeder(manager, cancellationToken).ConfigureAwait(false);
             };
 
             return this;
@@ -214,11 +354,21 @@ namespace TickerQ.Utilities
             Func<ICronTickerManager<TCronTicker>, System.Threading.Tasks.Task> cronSeeder)
         {
             if (cronSeeder == null) return this;
+            return UseTickerSeeder((manager, _) => cronSeeder(manager));
+        }
 
-            CronSeederAction = async sp =>
+        /// <summary>
+        /// Configure a cancellation-aware custom seeder for cron tickers. The token represents host startup.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
+            Func<ICronTickerManager<TCronTicker>, System.Threading.CancellationToken, System.Threading.Tasks.Task> cronSeeder)
+        {
+            if (cronSeeder == null) return this;
+
+            CronSeederAction = async (sp, cancellationToken) =>
             {
                 var manager = sp.GetRequiredService<ICronTickerManager<TCronTicker>>();
-                await cronSeeder(manager).ConfigureAwait(false);
+                await cronSeeder(manager, cancellationToken).ConfigureAwait(false);
             };
 
             return this;
@@ -230,6 +380,18 @@ namespace TickerQ.Utilities
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
             Func<ITimeTickerManager<TTimeTicker>, System.Threading.Tasks.Task> timeSeeder,
             Func<ICronTickerManager<TCronTicker>, System.Threading.Tasks.Task> cronSeeder)
+        {
+            UseTickerSeeder(timeSeeder);
+            UseTickerSeeder(cronSeeder);
+            return this;
+        }
+
+        /// <summary>
+        /// Configure cancellation-aware custom seeders for both time and cron tickers.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
+            Func<ITimeTickerManager<TTimeTicker>, System.Threading.CancellationToken, System.Threading.Tasks.Task> timeSeeder,
+            Func<ICronTickerManager<TCronTicker>, System.Threading.CancellationToken, System.Threading.Tasks.Task> cronSeeder)
         {
             UseTickerSeeder(timeSeeder);
             UseTickerSeeder(cronSeeder);
@@ -280,6 +442,41 @@ namespace TickerQ.Utilities
     public class SchedulerOptionsBuilder
     {
         private readonly string _executionOwnerNonce = Guid.NewGuid().ToString("N");
+        private bool _runtimeActivationScopeBound;
+        private long _reconciliationEpoch = 1;
+
+        /// <summary>
+        /// The immutable application scope this scheduler instance admits for runtime work. It is bound
+        /// from TickerQ registration options before any persistence provider can be resolved; protocol
+        /// calls for other scopes cannot redirect it.
+        /// </summary>
+        internal ReconciliationActivationScope RuntimeActivationScope { get; private set; }
+        internal TickerQRuntimePartition RuntimePartition { get; private set; }
+        internal long RuntimeActivationEpoch { get; private set; }
+        internal bool RuntimeSchedulerEnabled { get; private set; }
+        internal bool HasRuntimeActivationScopeBinding => _runtimeActivationScopeBound;
+
+        internal void BindRuntimeActivationScope(string applicationNamespace, long epoch, bool schedulerEnabled)
+        {
+            var partition = TickerQRuntimePartition.Bind(applicationNamespace, schedulerEnabled);
+            var scope = partition.IsLegacyGlobal ? null : new ReconciliationActivationScope(partition.ApplicationNamespace);
+            if (_runtimeActivationScopeBound)
+            {
+                if (RuntimeSchedulerEnabled == schedulerEnabled
+                    && RuntimeActivationEpoch == epoch
+                    && Equals(RuntimePartition, partition))
+                    return;
+                throw new InvalidOperationException(
+                    "The TickerQ runtime activation scope is already bound and cannot be redirected.");
+            }
+
+            RuntimeActivationScope = scope;
+            RuntimePartition = partition;
+            RuntimeActivationEpoch = epoch;
+            RuntimeSchedulerEnabled = schedulerEnabled;
+            _reconciliationEpoch = epoch;
+            _runtimeActivationScopeBound = true;
+        }
 
         /// <summary>Human-readable logical node label used by dashboards, metrics, and heartbeat providers.</summary>
         public string NodeIdentifier { get; set; } = Environment.MachineName;
@@ -289,6 +486,21 @@ namespace TickerQ.Utilities
         /// processes may intentionally share NodeIdentifier, but must never share row ownership.
         /// </summary>
         public string ExecutionOwnerId => $"{NodeIdentifier}:{Environment.ProcessId}:{_executionOwnerNonce}";
+        /// <summary>
+        /// The exact reconciliation epoch this scheduler binary can execute against. Persistence providers
+        /// use it to fail closed when a shared store is activating or has published a different epoch.
+        /// </summary>
+        public long ReconciliationEpoch
+        {
+            get => _reconciliationEpoch;
+            set
+            {
+                if (_runtimeActivationScopeBound && value != RuntimeActivationEpoch)
+                    throw new InvalidOperationException(
+                        "The TickerQ runtime activation epoch is already bound and cannot be redirected.");
+                _reconciliationEpoch = value;
+            }
+        }
         public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
         public TimeSpan IdleWorkerTimeOut { get; set; } = TimeSpan.FromMinutes(1);
         public TimeSpan FallbackIntervalChecker { get; set; } = TimeSpan.FromSeconds(30);
@@ -309,6 +521,38 @@ namespace TickerQ.Utilities
         /// </summary>
         public TimeSpan StaleCronOccurrenceThreshold { get; set; } = TimeSpan.Zero;
         public TimeZoneInfo SchedulerTimeZone = TimeZoneInfo.Local;
+
+        private TimeSpan _definedCronRetirementGracePeriod = TimeSpan.FromHours(24);
+
+        /// <summary>
+        /// How long a previously-seeded code-defined cron whose definition has disappeared from the
+        /// desired seed manifest is kept enabled before the reconciler retires it (two-phase,
+        /// non-destructive retirement). On the first reconcile that observes the seed as no longer
+        /// desired, its <c>RetirementRequestedAt</c> is stamped and it stays enabled; only on a later
+        /// reconcile once this grace window has elapsed is it disabled and marked <c>RetiredAt</c>. The
+        /// row and all of its occurrences/results are always preserved — retention, not reconciliation,
+        /// removes history.
+        /// <para>
+        /// Defaults to 24 hours: comfortably longer than a typical rolling deploy, so a node that
+        /// temporarily rolls back to an older build (which does not project the seed) cannot cause the
+        /// schedule to be retired mid-rollout. Set to <see cref="TimeSpan.Zero"/> for immediate
+        /// retirement in controlled single-node deployments. A blocked required-contract seed is retired
+        /// immediately regardless of this grace, because continuing to schedule an unsatisfiable request
+        /// is unsafe.
+        /// </para>
+        /// </summary>
+        /// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
+        public TimeSpan DefinedCronRetirementGracePeriod
+        {
+            get => _definedCronRetirementGracePeriod;
+            set
+            {
+                if (value < TimeSpan.Zero)
+                    throw new ArgumentOutOfRangeException(nameof(value), value,
+                        "DefinedCronRetirementGracePeriod cannot be negative.");
+                _definedCronRetirementGracePeriod = value;
+            }
+        }
 
         /// <summary>
         /// Runtime stale-job recovery: while a ticker executes, the owning node
@@ -356,7 +600,8 @@ namespace TickerQ.Utilities
         /// as timeout-pending. The delegate remains tracked, leased, and scoped until it actually exits.
         /// In-process delegates cannot be terminated safely.
         /// </summary>
-        public TimeSpan TimeoutGracePeriod { get; set; } = TimeSpan.FromSeconds(5);
+        public TimeSpan TimeoutGracePeriod { get; set; } =
+            TimeSpan.FromSeconds(DefinedCronExecutionLimits.DefaultTimeoutGraceSeconds);
 
         /// <summary>
         /// On graceful shutdown, how long to wait for in-flight ticker executions

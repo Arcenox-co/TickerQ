@@ -178,8 +178,83 @@ public class DefinedCronTickerSeedingTests : IAsyncLifetime
         }
 
         using var verify = Ctx();
-        Assert.False(await verify.Set<CronTickerEntity>().AnyAsync(c => c.Id == seededId));
-        Assert.True(await verify.Set<CronTickerEntity>().AnyAsync(c => c.Id == userId));
+        // Slice 3: a blocked required-contract seed retires IMMEDIATELY but non-destructively — the row is
+        // disabled and marked retired in place, never deleted. The user row is untouched.
+        var seededRow = await verify.Set<CronTickerEntity>().AsNoTracking().SingleAsync(c => c.Id == seededId);
+        Assert.False(seededRow.IsEnabled);
+        Assert.Equal(_now, seededRow.RetirementRequestedAt);
+        Assert.Equal(_now, seededRow.RetiredAt);
+        Assert.True(seededRow.SeedWasEnabledBeforeRetirement);
+
+        var userRow = await verify.Set<CronTickerEntity>().AsNoTracking().SingleAsync(c => c.Id == userId);
+        Assert.True(userRow.IsEnabled);
+        Assert.Null(userRow.RetiredAt);
+    }
+
+    [Fact]
+    public async Task CronExpressionRemoved_ButFunctionStillRegistered_RetiresSeededRow()
+    {
+        // A code-defined cron whose expression was removed drops out of the desired seed manifest
+        // even though the function itself stays registered (e.g. it is still invocable on demand).
+        // Orphan detection must compare persisted seeded rows to the DESIRED SEED MANIFEST, not the
+        // global runtime function registry — otherwise the stale seeded schedule keeps firing (#).
+        var removedId = Guid.NewGuid();
+        var keptId = Guid.NewGuid();
+        using (var ctx = Ctx())
+        {
+            ctx.Set<CronTickerEntity>().AddRange(
+                new CronTickerEntity
+                {
+                    Id = removedId,
+                    Function = "Removed",
+                    Expression = "*/5 * * * *",
+                    InitIdentifier = "MemoryTicker_Seeded_Removed",
+                    CreatedAt = _now.AddDays(-1),
+                    UpdatedAt = _now.AddDays(-1),
+                    Request = Array.Empty<byte>()
+                },
+                new CronTickerEntity
+                {
+                    Id = keptId,
+                    Function = "Kept",
+                    Expression = "*/5 * * * *",
+                    InitIdentifier = "MemoryTicker_Seeded_Kept",
+                    CreatedAt = _now.AddDays(-1),
+                    UpdatedAt = _now.AddDays(-1),
+                    Request = Array.Empty<byte>()
+                });
+            await ctx.SaveChangesAsync();
+        }
+
+        // Both functions remain registered in the runtime registry; only "Kept" still has a cron
+        // expression, so only "Kept" appears in the desired seed manifest handed to the provider.
+        TickerFunctionProvider.ReplaceFunctions(
+            new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
+            {
+                ["Removed"] = ("", TickerTaskPriority.Normal, null!, 1),
+                ["Kept"] = ("*/5 * * * *", TickerTaskPriority.Normal, null!, 1)
+            });
+        try
+        {
+            await _provider.MigrateDefinedCronTickers(
+                new[] { new DefinedCronTickerSeed("Kept", "*/5 * * * *", 1, null) },
+                CancellationToken.None);
+        }
+        finally
+        {
+            TickerFunctionProvider.ReplaceFunctions(
+                new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>());
+        }
+
+        using var verify = Ctx();
+        // Slice 3: the row whose expression was removed enters the grace window on this first absent pass —
+        // retirement is requested and it stays enabled, but it is NEVER deleted (non-destructive).
+        var removedRow = await verify.Set<CronTickerEntity>().AsNoTracking().SingleAsync(c => c.Id == removedId);
+        Assert.Equal(_now, removedRow.RetirementRequestedAt);
+        Assert.Null(removedRow.RetiredAt);
+        Assert.True(removedRow.IsEnabled);
+        Assert.True(await verify.Set<CronTickerEntity>().AnyAsync(c => c.Id == keptId),
+            "The still-desired seeded row must remain active.");
     }
 
     [Fact]
@@ -267,9 +342,43 @@ public class DefinedCronTickerSeedingTests : IAsyncLifetime
         // The seed owns a separate, freshly inserted seeded row carrying its identity.
         var seededRow = await verify.Set<CronTickerEntity>().AsNoTracking()
             .SingleAsync(c => c.Function == "Shared" && c.Id != userId);
-        Assert.Equal("*/5 * * * *", seededRow.Expression);
+        Assert.Equal(CronExpression.Parse("*/5 * * * *").Value, seededRow.Expression);
         Assert.Equal(9, seededRow.RequestContractVersion);
         Assert.Equal("sha256:seed-only", seededRow.RequestContractFingerprint);
         Assert.StartsWith("MemoryTicker_Seeded_", seededRow.InitIdentifier);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DocumentedLegacySeedKeys_AreAdoptedInPlace(bool namespacedLegacyKey)
+    {
+        const string function = "EfDocumentedLegacyKey";
+        const string owner = "ef-legacy-key-owner";
+        const string stableId = "stable-definition";
+        var id = Guid.NewGuid();
+        var legacyKey = CronSeedIdentity.LegacyAdoptionKeys(owner, stableId)[namespacedLegacyKey ? 0 : 1];
+        using (var ctx = Ctx())
+        {
+            ctx.Set<CronTickerEntity>().Add(new CronTickerEntity
+            {
+                Id = id, Function = function, Expression = "*/5 * * * *", SeedKey = legacyKey,
+                InitIdentifier = $"MemoryTicker_Seeded_{function}", CreatedAt = _now, UpdatedAt = _now,
+                Request = Array.Empty<byte>()
+            });
+            await ctx.SaveChangesAsync();
+        }
+
+        await _provider.MigrateDefinedCronTickers(
+            new DefinedCronSeedManifest(owner,
+                [new DefinedCronTickerSeed(function, "*/7 * * * *", stableDefinitionId: stableId)],
+                new Dictionary<string, string>(StringComparer.Ordinal) { [function] = owner }),
+            CancellationToken.None);
+
+        using var verify = Ctx();
+        var row = await verify.Set<CronTickerEntity>().AsNoTracking().SingleAsync();
+        Assert.Equal(id, row.Id);
+        Assert.Equal(owner, row.SeedOwnerNamespace);
+        Assert.Equal(CronSeedIdentity.SeedKey(owner, stableId), row.SeedKey);
     }
 }

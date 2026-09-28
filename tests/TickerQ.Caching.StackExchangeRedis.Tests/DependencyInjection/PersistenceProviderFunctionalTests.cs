@@ -59,7 +59,7 @@ public class PersistenceProviderFunctionalTests : IDisposable
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddTickerQ();
+        services.AddTickerQ(options => options.DisableBackgroundServices());
         return services.BuildServiceProvider();
     }
 
@@ -83,6 +83,7 @@ public class PersistenceProviderFunctionalTests : IDisposable
 
         services.AddTickerQ(options =>
         {
+            options.DisableBackgroundServices();
             options.AddOperationalStore(ef =>
             {
                 ef.UseApplicationDbContext<FunctionalTestDbContext>(ConfigurationType.UseModelCustomizer);
@@ -115,6 +116,7 @@ public class PersistenceProviderFunctionalTests : IDisposable
 
         services.AddTickerQ(options =>
         {
+            options.DisableBackgroundServices();
             options.AddOperationalStore(ef =>
             {
                 ef.UseApplicationDbContext<FunctionalTestDbContext>(ConfigurationType.UseModelCustomizer);
@@ -399,6 +401,7 @@ public class PersistenceProviderFunctionalTests : IDisposable
         try
         {
             var persistence = sp.GetRequiredService<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
+            var executionOwner = sp.GetRequiredService<SchedulerOptionsBuilder>().ExecutionOwnerId;
 
             var ticker = new TimeTickerEntity
             {
@@ -406,6 +409,8 @@ public class PersistenceProviderFunctionalTests : IDisposable
                 Function = TestFunction,
                 ExecutionTime = DateTime.UtcNow.AddMinutes(5),
                 Status = TickerStatus.Idle,
+                LockHolder = executionOwner,
+                AcquisitionToken = Guid.NewGuid(),
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
                 Request = Array.Empty<byte>()
@@ -418,6 +423,11 @@ public class PersistenceProviderFunctionalTests : IDisposable
             ticker.ExecutionTime = DateTime.UtcNow.AddMinutes(99);
             var updated = await persistence.UpdateTimeTickers([ticker]);
             Assert.Equal(1, updated);
+
+            // Owned work is protected from administrative deletion until explicitly released.
+            await persistence.ReleaseAcquiredTimeTickers([ticker.Id]);
+            var released = await persistence.GetTimeTickerById(ticker.Id);
+            Assert.Null(released.ChainGeneration);
 
             // Remove
             var removed = await persistence.RemoveTimeTickers([ticker.Id]);

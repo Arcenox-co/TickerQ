@@ -428,7 +428,7 @@ public class EfCoreRetentionTests : IAsyncLifetime
         var occIndexes = ctx.Model.FindEntityType(typeof(CronTickerOccurrenceEntity<CronTickerEntity>))!.GetIndexes()
             .Select(i => string.Join(",", i.Properties.Select(p => p.Name))).ToList();
 
-        Assert.Contains("Status,ExecutedAt", timeIndexes);
-        Assert.Contains("Status,ExecutedAt", occIndexes);
+        Assert.Contains("ApplicationNamespaceKey,Status,ExecutedAt", timeIndexes);
+        Assert.Contains("ApplicationNamespaceKey,Status,ExecutedAt", occIndexes);
     }
 }

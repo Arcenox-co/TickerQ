@@ -1,6 +1,25 @@
--- KEYS[1] = ticker key, KEYS[2] = result side key
--- ARGV[1] = lockHolder, ARGV[2] = now (ISO), ARGV[3] = statusIdle, ARGV[4] = statusQueued
+-- KEYS[1] = ticker key, KEYS[2] = result side key, KEYS[3] = activation metadata
+-- ARGV[1] = lockHolder, ARGV[2] = now (ISO), ARGV[3] = statusIdle, ARGV[4] = statusQueued,
+-- ARGV[5] = exact supported epoch, ARGV[6] = scoped | legacy | invalid runtime admission mode
 -- Returns: updated JSON on success, nil on failure
+local activationType = redis.call('TYPE', KEYS[3])['ok']
+if ARGV[6] == 'invalid' then return nil end
+if ARGV[6] ~= 'scoped' and ARGV[6] ~= 'legacy' then return redis.error_reply('invalid runtime admission mode') end
+if activationType ~= 'none' and activationType ~= 'hash' then return redis.error_reply('reconciliation activation metadata key has an incompatible Redis type') end
+if ARGV[6] == 'legacy' and activationType == 'hash' and
+   redis.call('HGET', KEYS[3], 'legacyAdoptionState') then return nil end
+if ARGV[6] == 'scoped' and activationType == 'none' then return nil end
+if ARGV[6] == 'scoped' and activationType == 'hash' then
+  local metadata = redis.call('HGETALL', KEYS[3])
+  if #metadata ~= 6 then return redis.error_reply('reconciliation activation metadata is corrupt') end
+  local fields = {}; for i = 1, #metadata, 2 do fields[metadata[i]] = metadata[i + 1] end
+  local phase = fields['phase']
+  if not fields['epoch'] or not phase or fields['checkpoint'] == nil or not string.match(fields['epoch'], '^[0-9]+$')
+    or #fields['epoch'] > 19 or #fields['checkpoint'] > 200 or (phase ~= '0' and phase ~= '1' and phase ~= '2') then
+    return redis.error_reply('reconciliation activation metadata is corrupt')
+  end
+  if phase ~= '2' or fields['epoch'] ~= ARGV[5] then return nil end
+end
 local json = redis.call('GET', KEYS[1])
 if not json then return nil end
 local obj = cjson.decode(json)
@@ -9,7 +28,9 @@ if status == nil then return nil end
 status = tonumber(status)
 if status ~= tonumber(ARGV[3]) and status ~= tonumber(ARGV[4]) then return nil end
 local holder = obj['LockHolder'] or obj['lockHolder']
-if holder and holder ~= '' and holder ~= cjson.null and holder ~= ARGV[1] then return nil end
+if not holder or holder == '' or holder == cjson.null or holder ~= ARGV[1] then return nil end
+local token = obj['AcquisitionToken'] or obj['acquisitionToken']
+if not token or token == '' or token == cjson.null then return nil end
 obj['LockHolder'] = cjson.null
 obj['lockHolder'] = nil
 obj['LockedAt'] = cjson.null
@@ -18,6 +39,10 @@ obj['LeaseUntil'] = cjson.null
 obj['leaseUntil'] = nil
 obj['AcquisitionToken'] = cjson.null
 obj['acquisitionToken'] = nil
+if obj['ChainGeneration'] ~= nil or obj['chainGeneration'] ~= nil then
+  obj['ChainGeneration'] = cjson.null
+  obj['chainGeneration'] = nil
+end
 local resultKey = tostring(KEYS[2])
 local resultPrefix = string.match(resultKey, '^(.*:tt:)[^:]+:result$')
 local function clearChildren(children)

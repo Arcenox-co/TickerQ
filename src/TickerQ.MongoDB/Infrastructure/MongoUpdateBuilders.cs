@@ -34,6 +34,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 u = Combine(u, defs.Set(x => x.AcquisitionToken, ctx.AcquisitionToken));
             else if (ClearsAcquisitionToken(props, ctx))
                 u = Combine(u, defs.Set(x => x.AcquisitionToken, (Guid?)null));
+            if (props.Contains(nameof(InternalFunctionContext.ReleaseLock)))
+                u = Combine(u, defs.Set(x => x.ChainGeneration, (Guid?)null));
 
             if (props.Contains(nameof(InternalFunctionContext.Status)) && ctx.Status != TickerStatus.Skipped)
             {

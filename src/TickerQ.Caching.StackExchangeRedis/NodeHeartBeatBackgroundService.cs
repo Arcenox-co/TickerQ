@@ -14,12 +14,16 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
     private readonly PeriodicTimer _tickerHeartBeatPeriodicTimer;
     private readonly IInternalTickerManager  _internalTickerManager;
     private readonly ILogger<NodeHeartBeatBackgroundService> _logger;
+    private readonly ITickerQActivationGate _activationGate;
 
-    public NodeHeartBeatBackgroundService(ServiceExtension.TickerQRedisOptionBuilder schedulerOptionsBuilder, ITickerQRedisContext context, IInternalTickerManager internalTickerManager, ILogger<NodeHeartBeatBackgroundService> logger)
+    public NodeHeartBeatBackgroundService(ServiceExtension.TickerQRedisOptionBuilder schedulerOptionsBuilder,
+        ITickerQRedisContext context, IInternalTickerManager internalTickerManager,
+        ILogger<NodeHeartBeatBackgroundService> logger, ITickerQActivationGate activationGate)
     {
         _context = context;
         _internalTickerManager = internalTickerManager;
         _logger = logger;
+        _activationGate = activationGate ?? throw new ArgumentNullException(nameof(activationGate));
         _tickerHeartBeatPeriodicTimer = new PeriodicTimer(schedulerOptionsBuilder.NodeHeartbeatInterval);
     }
     
@@ -31,6 +35,9 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Heartbeat registration, dead-node discovery, and resource release are all persistence I/O.
+        await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
