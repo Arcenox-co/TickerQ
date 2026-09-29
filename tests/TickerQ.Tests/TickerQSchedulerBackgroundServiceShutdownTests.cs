@@ -45,7 +45,7 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
             _taskScheduler,
             _internalManager,
             _schedulerOptions,
-            new TickerFunctionConcurrencyGate());
+            new TickerFunctionConcurrencyGate(), LicenseTestState.Active());
     }
 
     [Fact]
@@ -247,7 +247,7 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
         };
         var service = new TickerQSchedulerBackgroundService(
             _executionContext, _taskHandler, scheduler, _internalManager, options,
-            new TickerFunctionConcurrencyGate());
+            new TickerFunctionConcurrencyGate(), LicenseTestState.Active());
 
         // Act: StopAsync must block in the drain window while the execution is in flight.
         var stopTask = service.StopAsync(CancellationToken.None);
@@ -277,7 +277,7 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
         };
         var service = new TickerQSchedulerBackgroundService(
             _executionContext, _taskHandler, _taskScheduler, _internalManager, options,
-            new TickerFunctionConcurrencyGate());
+            new TickerFunctionConcurrencyGate(), LicenseTestState.Active());
         var context = new InternalFunctionContext
         {
             TickerId = Guid.NewGuid(),
@@ -344,7 +344,7 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
         };
         var service = new TickerQSchedulerBackgroundService(
             _executionContext, _taskHandler, _taskScheduler, _internalManager, options,
-            new TickerFunctionConcurrencyGate());
+            new TickerFunctionConcurrencyGate(), LicenseTestState.Active());
 
         await service.StartAsync(CancellationToken.None);
         Assert.True(await acquisitionCommitted.Task.WaitAsync(TimeSpan.FromSeconds(5)));

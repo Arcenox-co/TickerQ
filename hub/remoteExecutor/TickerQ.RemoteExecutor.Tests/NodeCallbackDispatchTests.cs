@@ -18,6 +18,7 @@ using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
 using Xunit;
 
@@ -46,14 +47,32 @@ public sealed class NodeCallbackDispatchTests
                 $"http://127.0.0.1:{port}", () => "dotnet-node-e2e-secret", NodeEpoch, true);
             var manager = Substitute.For<IInternalTickerManager>();
             var instrumentation = Substitute.For<ITickerQInstrumentation>();
+            var clock = Substitute.For<ITickerClock>();
+            clock.UtcNow.Returns(DateTime.UtcNow);
+            var licenseState = new TickerQLicenseStateProvider(clock);
+            licenseState.Publish(TickerQLicenseState.ForCertificate(
+                TickerQLicenseStatus.Active,
+                isEvaluation: false,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                "Remote executor tests",
+                "Business",
+                "Full",
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddYears(1),
+                365,
+                4,
+                "Ed25519",
+                "test",
+                "5.x"));
             await using var services = new ServiceCollection()
                 .AddSingleton<IRemotePayloadLoader>(new StubPayloadLoader(null))
                 .AddSingleton(manager)
                 .AddSingleton(instrumentation)
                 .BuildServiceProvider();
             var handler = new global::TickerQ.TickerExecutionTaskHandler(
-                services, Substitute.For<ITickerClock>(), instrumentation, manager,
-                new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
+                services, clock, instrumentation, manager,
+                new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), licenseState);
             var childCalls = 0;
             var context = new InternalFunctionContext
             {

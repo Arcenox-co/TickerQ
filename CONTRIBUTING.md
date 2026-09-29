@@ -6,7 +6,7 @@ We welcome contributions to TickerQ! Before you start, please read through this 
 
 All contributors must sign our [Contributor License Agreement](CLA.md) before their pull request can be merged. This is a one-time process handled automatically via [CLA Assistant](https://cla-assistant.io/) when you open your first pull request.
 
-**Why?** TickerQ is dual-licensed under Apache 2.0 and MIT. The CLA ensures that all contributions can be distributed under these licenses and that the project can continue to evolve.
+**Why?** TickerQ includes source-available commercial package families as well as components and historical artifacts under MIT and/or Apache 2.0. The CLA expressly allows Arcenox LLC to distribute contributions under open-source or proprietary terms while preserving the license attached to each immutable released artifact.
 
 ## How to Contribute
 
@@ -49,4 +49,4 @@ Use [GitHub Issues](https://github.com/Arcenox-co/TickerQ/issues) to report bugs
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project's [dual license (Apache 2.0 / MIT)](LICENSE), subject to the terms of the [CLA](CLA.md).
+By contributing, you grant the rights stated in the [CLA](CLA.md). Inclusion does not promise a particular outbound license: the applicable terms are the license embedded in the relevant immutable artifact. See the repository [license boundary notice](LICENSE), [commercial agreement](LICENSE-COMMERCIAL.txt), and [preserved open-source terms](LICENSE-OSS).

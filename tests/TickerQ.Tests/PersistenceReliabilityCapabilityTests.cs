@@ -41,7 +41,7 @@ public class PersistenceReliabilityCapabilityTests
         var notifier = Substitute.For<ITickerQFailureNotifier>();
 
         var service = new TickerQStaleJobRecoveryBackgroundService(
-            manager, new SchedulerOptionsBuilder(), logger, notifier);
+            manager, new SchedulerOptionsBuilder(), logger, notifier, LicenseTestState.Active());
 
         await service.StartAsync(CancellationToken.None);
         await logger.WarningLogged.Task.WaitAsync(TimeSpan.FromSeconds(3));

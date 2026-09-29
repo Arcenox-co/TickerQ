@@ -8,10 +8,14 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces.Managers;
 
 var builder = WebApplication.CreateBuilder(args);
+var licensePath = Environment.GetEnvironmentVariable("TICKERQ_LICENSE_PATH");
 
 // TickerQ setup with SQLite operational store (file-based)
 builder.Services.AddTickerQ(options =>
 {
+    if (!string.IsNullOrWhiteSpace(licensePath))
+        options.UseLicense(licensePath);
+
     // Physical runtime partition + exact epoch. The host-owned
     // ApplicationRuntimePartitioning migration installs the EF ownership shape.
     options.UseDefinedCronApplicationNamespace("web-api-sample");

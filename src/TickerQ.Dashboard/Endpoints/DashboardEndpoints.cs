@@ -21,6 +21,7 @@ using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 
 namespace TickerQ.Dashboard.Endpoints;
 
@@ -67,6 +68,10 @@ public static class DashboardEndpoints
 
         // Options (kept): React app reads these on boot for basePath/concurrency/tz.
         apiGroup.MapGet("/options", GetOptions);
+
+        // Read-only license status for the About page and the global banner. Authenticated exactly like
+        // every other read (it sits under /api). Exposes only safe, presentation-ready fields.
+        apiGroup.MapGet("/license", GetLicense);
 
         // AI assistant chat (read-only) — mapped only when configured. Sits
         // under /api so AuthMiddleware gates it; not under the write group.
@@ -115,6 +120,22 @@ public static class DashboardEndpoints
         // the guarantee hold for hand-crafted requests too. Evaluated per
         // request so the predicate overload (role-based viewers) works.
         var w = d.MapGroup(string.Empty);
+
+        // License enforcement: when the offline license blocks execution, no mutation may run. Evaluated
+        // per request, before every write handler, and returned as safe JSON with the license reason.
+        // Reads and GET /api/license stay available for diagnosis.
+        w.AddEndpointFilter(async (invocationContext, next) =>
+        {
+            var license = invocationContext.HttpContext.RequestServices
+                .GetRequiredService<TickerQLicenseStateProvider>().Current;
+            if (!license.ExecutionAllowed)
+                return Results.Json(
+                    new ErrorResponseBody { Error = license.Message },
+                    Json(invocationContext.HttpContext),
+                    statusCode: StatusCodes.Status403Forbidden);
+            return await next(invocationContext);
+        });
+
         if (config.ReadOnly || config.ReadOnlyPredicate != null)
         {
             w.AddEndpointFilter(async (invocationContext, next) =>
@@ -277,6 +298,7 @@ public static class DashboardEndpoints
     {
         var executionContext = context.RequestServices.GetRequiredService<TickerExecutionContext>();
         var schedulerOptions = context.RequestServices.GetRequiredService<SchedulerOptionsBuilder>();
+        var retention = context.RequestServices.GetRequiredService<JobRetentionOptions>();
         await WriteJson(context, new DashboardOptionsResponse
         {
             MaxConcurrency = schedulerOptions.MaxConcurrency,
@@ -284,6 +306,52 @@ public static class DashboardEndpoints
             CurrentMachine = schedulerOptions.NodeIdentifier,
             LastHostExceptionMessage = executionContext.LastHostExceptionMessage,
             SchedulerTimeZone = ToIanaTimeZoneId(schedulerOptions.SchedulerTimeZone),
+            MinPollingInterval = schedulerOptions.MinPollingInterval,
+            FallbackIntervalChecker = schedulerOptions.FallbackIntervalChecker,
+            DefaultExecutionTimeout = schedulerOptions.DefaultExecutionTimeout,
+            StaleJobRecoveryEnabled = schedulerOptions.StaleJobRecoveryEnabled,
+            Retention = new RetentionConfigResponse
+            {
+                Enabled = retention.IsEnabled,
+                DeleteSucceededAfter = retention.DeleteSucceededAfter,
+                DeleteFailedAfter = retention.DeleteFailedAfter,
+                DeleteCancelledAfter = retention.DeleteCancelledAfter,
+                DeleteSkippedAfter = retention.DeleteSkippedAfter,
+                SweepInterval = retention.SweepInterval,
+                BatchSize = retention.BatchSize,
+                MaxBatchesPerSweep = retention.MaxBatchesPerSweep,
+                MaxNodesPerChain = retention.MaxNodesPerChain,
+            },
+        }, Json(context));
+    }
+
+    // ===== License =====
+
+    // Projects the shared, validated license state into a minimal, safe DTO. The raw certificate,
+    // envelope, payload, signature, public key, file path, and any internal exception are never exposed.
+    private static async Task GetLicense(HttpContext context)
+    {
+        var state = context.RequestServices.GetRequiredService<TickerQLicenseStateProvider>().Current;
+        await WriteJson(context, new LicenseResponse
+        {
+            Status = state.Status.ToString(),
+            ExecutionAllowed = state.ExecutionAllowed,
+            Message = state.Message,
+            ActionLabel = state.ActionLabel,
+            ActionUrl = state.ActionUrl,
+            WorkspaceId = state.WorkspaceId,
+            WorkspaceName = state.WorkspaceName,
+            Plan = state.Plan,
+            Kind = state.Kind,
+            IsEvaluation = state.IsEvaluation,
+            LicenseId = state.LicenseId,
+            IssuedAt = state.IssuedAt,
+            ExpiresAt = state.ExpiresAt,
+            DaysRemaining = state.DaysRemaining,
+            SchemaVersion = state.SchemaVersion,
+            Algorithm = state.Algorithm,
+            KeyId = state.KeyId,
+            AnchoredMinorLine = state.AnchoredMinorLine,
         }, Json(context));
     }
 

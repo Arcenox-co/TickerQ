@@ -4,6 +4,11 @@
         <LangVersion>8.0</LangVersion>
         <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
         <AssemblyName>TickerQ.SourceGenerator</AssemblyName>
+        <PackageId>TickerQ.SourceGenerator</PackageId>
+        <Title>TickerQ Source Generator</Title>
+        <Description>Compile-time TickerQ function registration and request-contract generation.</Description>
+        <PackageTags>$(PackageTags);source-generator;roslyn;analyzer</PackageTags>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
         <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     </PropertyGroup>
 
@@ -14,5 +19,11 @@
         </PackageReference>
         <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="[4.10.0,)"/>
         <PackageReference Include="System.Memory" Version="4.6.3" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="$(OutputPath)$(AssemblyName).dll"
+              Pack="true"
+              PackagePath="analyzers/dotnet/cs" />
     </ItemGroup>
 </Project>

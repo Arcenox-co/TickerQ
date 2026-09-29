@@ -6,6 +6,7 @@ import {
   Clock,
   Timer,
   Sparkles,
+  BadgeCheck,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -38,6 +39,12 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     // configured, the page itself explains how to enable it (AddAssistant).
     label: "AI",
     items: [{ path: "/assistant", label: "Chat AI", icon: Sparkles }],
+  },
+  {
+    label: "System",
+    items: [
+      { path: "/license", label: "License", icon: BadgeCheck },
+    ],
   },
 ];
 

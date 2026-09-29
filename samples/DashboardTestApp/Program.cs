@@ -12,6 +12,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces.Managers;
 
 var builder = WebApplication.CreateBuilder(args);
+var licensePath = Environment.GetEnvironmentVariable("TICKERQ_LICENSE_PATH");
 
 // ── Assistant chat history ──
 // Per-user, server-side chat history (the SPA shows the conversation list
@@ -35,6 +36,9 @@ if (useOpenAIHistory)
 // every startup, so a fresh DB avoids duplicate one-off tickers).
 builder.Services.AddTickerQ(options =>
 {
+    if (!string.IsNullOrWhiteSpace(licensePath))
+        options.UseLicense(licensePath);
+
     // Physical runtime partition + exact deployment epoch; keep both stable across replicas.
     options.UseDefinedCronApplicationNamespace("dashboard-test-sample");
     options.UseReconciliationEpoch(1);

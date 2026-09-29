@@ -85,6 +85,7 @@ public sealed class ReconciliationActivationProtocolTests : IDisposable
             manager,
             new SchedulerOptionsBuilder(),
             new TickerFunctionConcurrencyGate(),
+            LicenseTestState.Active(),
             activationGate: gate);
 
         using var cts = new CancellationTokenSource();
@@ -121,6 +122,7 @@ public sealed class ReconciliationActivationProtocolTests : IDisposable
             Substitute.For<ITickerExecutionTaskHandler>(),
             taskScheduler,
             new TickerFunctionConcurrencyGate(),
+            LicenseTestState.Active(),
             activationGate: gate);
 
         using var cts = new CancellationTokenSource();
@@ -154,6 +156,7 @@ public sealed class ReconciliationActivationProtocolTests : IDisposable
             new SchedulerOptionsBuilder { LeaseRenewalInterval = TimeSpan.FromMilliseconds(20) },
             NullLogger<TickerQStaleJobRecoveryBackgroundService>.Instance,
             Substitute.For<ITickerQFailureNotifier>(),
+            LicenseTestState.Active(),
             activationGate: gate);
 
         using var cts = new CancellationTokenSource();
@@ -516,7 +519,8 @@ public sealed class ReconciliationActivationProtocolTests : IDisposable
         if (readiness != null)
             services.AddSingleton(readiness);
 
-        return new TickerQInitializerHostedService(context, services.BuildServiceProvider(), configuration)
+        return new TickerQInitializerHostedService(
+            context, services.BuildServiceProvider(), configuration, LicenseTestState.Active())
         {
             InitializationRequested = true
         };

@@ -10,6 +10,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.BackgroundServices;
@@ -25,6 +26,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private readonly ITickerExecutionTaskHandler  _taskHandler;
     private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
     private readonly ITickerQActivationGate _activationGate;
+    private readonly TickerQLicenseStateProvider _licenseState;
     private readonly SemaphoreSlim _acquisitionPublicationGate = new(1, 1);
     private int _started;
     private int _stopping;
@@ -39,6 +41,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         IInternalTickerManager  internalTickerManager,
         SchedulerOptionsBuilder schedulerOptions,
         ITickerFunctionConcurrencyGate concurrencyGate,
+        TickerQLicenseStateProvider licenseState,
         ILogger<TickerQSchedulerBackgroundService> logger = null,
         ITickerQActivationGate activationGate = null)
     {
@@ -47,6 +50,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         _taskScheduler = taskScheduler;
         _internalTickerManager = internalTickerManager ?? throw new ArgumentNullException(nameof(internalTickerManager));
         _concurrencyGate = concurrencyGate;
+        _licenseState = licenseState;
         _activationGate = activationGate;
         _schedulerOptions = schedulerOptions;
         _logger = logger ?? NullLogger<TickerQSchedulerBackgroundService>.Instance;
@@ -59,6 +63,9 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     
     public override Task StartAsync(CancellationToken ct)
     {
+        if (!_licenseState.ExecutionAllowed)
+            return Task.CompletedTask;
+
         if (SkipFirstRun)
         {
             _taskScheduler.Freeze();
@@ -76,10 +83,16 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!_licenseState.ExecutionAllowed)
+            return;
+
         if (_activationGate != null)
             await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
 
-        while (!stoppingToken.IsCancellationRequested)
+        if (!_licenseState.ExecutionAllowed)
+            return;
+
+        while (!stoppingToken.IsCancellationRequested && _licenseState.ExecutionAllowed)
         {
             _schedulerLoopCancellationTokenSource = SafeCancellationTokenSource.CreateLinked(stoppingToken);
 
@@ -118,7 +131,9 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     private async Task RunTickerQSchedulerAsync(CancellationToken stoppingToken, CancellationToken cancellationToken)
     {
-        while (!stoppingToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        while (!stoppingToken.IsCancellationRequested
+               && !cancellationToken.IsCancellationRequested
+               && _licenseState.ExecutionAllowed)
         {
             if (_executionContext.Functions.Length != 0)
             {
@@ -135,6 +150,15 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                     var pendingPublication = acquired.OrderBy(x => x.CachedPriority).ToArray();
                     _executionContext.SetFunctions(pendingPublication);
 
+                    if (!_licenseState.ExecutionAllowed)
+                    {
+                        await _internalTickerManager.ReleaseAcquiredResources(
+                                pendingPublication, CancellationToken.None)
+                            .ConfigureAwait(false);
+                        _executionContext.SetFunctions(null);
+                        return;
+                    }
+
                     if (Volatile.Read(ref _stopping) != 0)
                     {
                         await _internalTickerManager.ReleaseAcquiredResources(
@@ -145,6 +169,14 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
                     for (var index = 0; index < pendingPublication.Length; index++)
                     {
+                        if (!_licenseState.ExecutionAllowed)
+                        {
+                            await _internalTickerManager.ReleaseAcquiredResources(
+                                    pendingPublication[index..], CancellationToken.None)
+                                .ConfigureAwait(false);
+                            _executionContext.SetFunctions(null);
+                            return;
+                        }
                         await QueueAcquiredExecution(pendingPublication[index], stoppingToken)
                             .ConfigureAwait(false);
                         _executionContext.SetFunctions(pendingPublication[(index + 1)..]);

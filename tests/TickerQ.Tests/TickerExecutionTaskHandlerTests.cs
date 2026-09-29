@@ -49,7 +49,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         _serviceProvider = services.BuildServiceProvider();
 
-        _handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
+        _handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
     }
 
     #region Success Path
@@ -196,6 +196,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         var handler = new TickerExecutionTaskHandler(
             _serviceProvider, _clock, _instrumentation, _internalManager,
             new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            LicenseTestState.Active(_clock),
             _ => descriptor);
         var context = CreateContext(ct: (_, _, _) =>
         {
@@ -220,6 +221,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         var handler = new TickerExecutionTaskHandler(
             _serviceProvider, _clock, _instrumentation, _internalManager,
             new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            LicenseTestState.Active(_clock),
             _ => null);
         var context = CreateContext(ct: (_, _, _) =>
         {
@@ -248,6 +250,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         var handler = new TickerExecutionTaskHandler(
             _serviceProvider, _clock, _instrumentation, _internalManager,
             new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            LicenseTestState.Active(_clock),
             _ => descriptor);
         var context = CreateContext(ct: (_, _, _) =>
         {
@@ -276,6 +279,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         var handler = new TickerExecutionTaskHandler(
             _serviceProvider, _clock, _instrumentation, _internalManager,
             new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            LicenseTestState.Active(_clock),
             _ => descriptor);
         var context = CreateContext(ct: (_, _, _) =>
         {
@@ -322,7 +326,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
 
         var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
 
@@ -343,7 +347,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
 
         var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
         context.Retries = 2;
@@ -423,7 +427,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>());
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
 
         var context = CreateContext(ct: (_, _, _) => throw new TaskCanceledException("cancelled"));
 
@@ -792,7 +796,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         };
         var handler = new TickerExecutionTaskHandler(
             serviceProvider, _clock, instrumentation, manager, options,
-            Substitute.For<ITickerQFailureNotifier>());
+            Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
 
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         ScopedProbe capturedProbe = null;
@@ -855,7 +859,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         await using var serviceProvider = services.BuildServiceProvider();
         var handler = new TickerExecutionTaskHandler(
             serviceProvider, _clock, instrumentation, manager,
-            new SchedulerOptionsBuilder(), notifier);
+            new SchedulerOptionsBuilder(), notifier, LicenseTestState.Active(_clock));
         var context = CreateContext(ct: (_, _, _) =>
             throw new InvalidOperationException("delegate failed"));
 
@@ -880,7 +884,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             {
                 DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
                 TimeoutGracePeriod = TimeSpan.FromMilliseconds(200),
-            }, Substitute.For<ITickerQFailureNotifier>());
+            }, Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
         var attempts = 0;
         var context = CreateContext(ct: async (_, _, _) =>
         {
@@ -924,7 +928,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             {
                 DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
                 TimeoutGracePeriod = TimeSpan.FromMilliseconds(50),
-            }, notifier);
+            }, notifier, LicenseTestState.Active(_clock));
         var context = CreateContext(ct: async (token, _, _) =>
             await Task.Delay(Timeout.InfiniteTimeSpan, token));
 
@@ -956,7 +960,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             {
                 DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
                 TimeoutGracePeriod = TimeSpan.FromMilliseconds(50),
-            }, Substitute.For<ITickerQFailureNotifier>());
+            }, Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
         var childRan = false;
         var parent = CreateContext(async (token, _, execution) =>
         {
@@ -1002,7 +1006,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         await using var serviceProvider = services.BuildServiceProvider();
         var handler = new TickerExecutionTaskHandler(
             serviceProvider, _clock, instrumentation, manager, new SchedulerOptionsBuilder(),
-            Substitute.For<ITickerQFailureNotifier>());
+            Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
         var parent = CreateContext((_, _, executionContext) =>
         {
             executionContext.IsRemoteCallbackExecution = true;

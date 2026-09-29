@@ -27,7 +27,7 @@ public class DesignTimeToolDetectionTests
         var serviceProvider = Substitute.For<IServiceProvider>();
         var configuration = Substitute.For<IConfiguration>();
 
-        var initializer = new TickerQInitializerHostedService(context, serviceProvider, configuration);
+        var initializer = new TickerQInitializerHostedService(context, serviceProvider, configuration, LicenseTestState.Active());
         await initializer.StartAsync(CancellationToken.None);
 
         // InitializationRequested is false by default, so no seeding should occur.
@@ -78,7 +78,7 @@ public class DesignTimeToolDetectionTests
         services.AddSingleton(new SchedulerOptionsBuilder());
 
         var sp = services.BuildServiceProvider();
-        var initializer = new TickerQInitializerHostedService(context, sp, configuration);
+        var initializer = new TickerQInitializerHostedService(context, sp, configuration, LicenseTestState.Active());
         initializer.InitializationRequested = true;
 
         await initializer.StartAsync(CancellationToken.None);
@@ -107,7 +107,7 @@ public class DesignTimeToolDetectionTests
         var configuration = host.Services.GetRequiredService<IConfiguration>();
 
         // Create a new initializer with the real context that has seeding disabled
-        var initializer = new TickerQInitializerHostedService(context, host.Services, configuration);
+        var initializer = new TickerQInitializerHostedService(context, host.Services, configuration, LicenseTestState.Active());
         initializer.InitializationRequested = true;
 
         await initializer.StartAsync(CancellationToken.None);
@@ -177,7 +177,8 @@ public class DesignTimeToolDetectionTests
         services.AddSingleton(finalizer);
         services.AddSingleton(new SchedulerOptionsBuilder());
 
-        var initializer = new TickerQInitializerHostedService(context, services.BuildServiceProvider(), configuration)
+        var initializer = new TickerQInitializerHostedService(
+            context, services.BuildServiceProvider(), configuration, LicenseTestState.Active())
         {
             InitializationRequested = true
         };
@@ -205,7 +206,7 @@ public class DesignTimeToolDetectionTests
         services.AddSingleton(new SchedulerOptionsBuilder());
 
         var sp = services.BuildServiceProvider();
-        var initializer = new TickerQInitializerHostedService(context, sp, configuration);
+        var initializer = new TickerQInitializerHostedService(context, sp, configuration, LicenseTestState.Active());
         initializer.InitializationRequested = true;
 
         await initializer.StartAsync(CancellationToken.None);
@@ -221,7 +222,7 @@ public class DesignTimeToolDetectionTests
         var sp = Substitute.For<IServiceProvider>();
         var config = Substitute.For<IConfiguration>();
 
-        var initializer = new TickerQInitializerHostedService(context, sp, config);
+        var initializer = new TickerQInitializerHostedService(context, sp, config, LicenseTestState.Active());
 
         // Should complete immediately without exceptions
         await initializer.StopAsync(CancellationToken.None);

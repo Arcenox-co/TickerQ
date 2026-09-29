@@ -40,6 +40,34 @@ internal class DashboardOptionsResponse
     public string CurrentMachine { get; set; }
     public string LastHostExceptionMessage { get; set; }
     public string SchedulerTimeZone { get; set; }
+
+    /// <summary>Minimum interval between database polls (guards against tight loops).</summary>
+    public TimeSpan MinPollingInterval { get; set; }
+
+    /// <summary>Interval of the fallback due-work checker.</summary>
+    public TimeSpan FallbackIntervalChecker { get; set; }
+
+    /// <summary>Global per-attempt execution timeout applied to tickers with no own timeout. Null → no timeout.</summary>
+    public TimeSpan? DefaultExecutionTimeout { get; set; }
+
+    /// <summary>True when the stale-job watchdog recovers jobs abandoned by a dead node.</summary>
+    public bool StaleJobRecoveryEnabled { get; set; }
+
+    /// <summary>Historical-record retention state exposed to the dashboard.</summary>
+    public RetentionConfigResponse Retention { get; set; }
+}
+
+internal class RetentionConfigResponse
+{
+    public bool Enabled { get; set; }
+    public TimeSpan? DeleteSucceededAfter { get; set; }
+    public TimeSpan? DeleteFailedAfter { get; set; }
+    public TimeSpan? DeleteCancelledAfter { get; set; }
+    public TimeSpan? DeleteSkippedAfter { get; set; }
+    public TimeSpan SweepInterval { get; set; }
+    public int BatchSize { get; set; }
+    public int MaxBatchesPerSweep { get; set; }
+    public int MaxNodesPerChain { get; set; }
 }
 
 internal class ActionResponse
@@ -77,6 +105,32 @@ internal class NextTickerResponse
 internal class HostStatusResponse
 {
     public bool IsRunning { get; set; }
+}
+
+/// <summary>
+/// Minimal, safe projection of the shared license state for the Dashboard. Deliberately excludes the raw
+/// certificate, envelope, payload, signature, public key, file path, and any internal exception detail.
+/// </summary>
+internal sealed class LicenseResponse
+{
+    public string Status { get; set; }
+    public bool ExecutionAllowed { get; set; }
+    public string Message { get; set; }
+    public string ActionLabel { get; set; }
+    public string ActionUrl { get; set; }
+    public Guid? WorkspaceId { get; set; }
+    public string WorkspaceName { get; set; }
+    public string Plan { get; set; }
+    public string Kind { get; set; }
+    public bool IsEvaluation { get; set; }
+    public Guid? LicenseId { get; set; }
+    public DateTimeOffset? IssuedAt { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public int? DaysRemaining { get; set; }
+    public int? SchemaVersion { get; set; }
+    public string Algorithm { get; set; }
+    public string KeyId { get; set; }
+    public string AnchoredMinorLine { get; set; }
 }
 
 internal class TupleResponse<T1, T2>

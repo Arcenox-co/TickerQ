@@ -165,7 +165,7 @@ public class DefinedCronSeedingPolicyTests : IDisposable
         services.AddSingleton(new SchedulerOptionsBuilder());
         var sp = services.BuildServiceProvider();
 
-        var initializer = new TickerQInitializerHostedService(context, sp, configuration)
+        var initializer = new TickerQInitializerHostedService(context, sp, configuration, LicenseTestState.Active())
         {
             InitializationRequested = true
         };

@@ -15,6 +15,7 @@ using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Managers;
 using TickerQ.Utilities.Temps;
 
@@ -81,6 +82,11 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerQNotificationHubSender, NoOpTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
             services.AddSingleton<ITickerQActivationGate, TickerQActivationGate>();
+
+            // Publish one fail-closed offline-license verdict before any persistence bootstrap,
+            // reconciliation, scheduler, recovery, retention, or execution service starts.
+            services.AddSingleton<TickerQLicenseStateProvider>();
+            services.AddHostedService<TickerQLicenseHostedService>();
 
             // Retention capability validation must be the first TickerQ hosted service so an
             // unsupported provider fails before initialization, scheduler, or worker side effects.

@@ -13,6 +13,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Caching.StackExchangeRedis.Tests.Infrastructure;
@@ -588,7 +589,7 @@ public sealed class RedisReconciliationActivationEpochTests
         services.AddSingleton(new SchedulerOptionsBuilder());
         services.AddSingleton<ITickerQActivationGate>(gate);
         var initializer = new TickerQInitializerHostedService(
-            context, services.BuildServiceProvider(), configuration)
+            context, services.BuildServiceProvider(), configuration, ActiveLicense())
         {
             InitializationRequested = true
         };
@@ -597,6 +598,29 @@ public sealed class RedisReconciliationActivationEpochTests
         Assert.False(gate.IsActivated);
         Assert.Equal("wrong-type",
             (string?)await _db.StringGetAsync(activationKey));
+    }
+
+    private static TickerQLicenseStateProvider ActiveLicense()
+    {
+        var clock = Substitute.For<ITickerClock>();
+        clock.UtcNow.Returns(Now);
+        var provider = new TickerQLicenseStateProvider(clock);
+        provider.Publish(TickerQLicenseState.ForCertificate(
+            TickerQLicenseStatus.Active,
+            isEvaluation: false,
+            licenseId: Guid.NewGuid(),
+            workspaceId: Guid.NewGuid(),
+            workspaceName: "Redis Tests",
+            plan: "Enterprise",
+            kind: "Full",
+            issuedAt: new DateTimeOffset(Now.AddDays(-1)),
+            expiresAt: new DateTimeOffset(Now.AddYears(1)),
+            daysRemaining: 365,
+            schemaVersion: 4,
+            algorithm: "Ed25519",
+            keyId: "tests",
+            anchoredMinorLine: "5.0"));
+        return provider;
     }
 
     [Fact]

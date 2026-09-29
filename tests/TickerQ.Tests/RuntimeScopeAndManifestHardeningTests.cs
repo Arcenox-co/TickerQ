@@ -99,6 +99,7 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
                 });
                 Assert.True(result.IsSucceeded, result.Exception?.ToString());
             }));
+        services.AddSingleton(LicenseTestState.Active());
         await using var serviceProvider = services.BuildServiceProvider();
         var initializer = serviceProvider.GetRequiredService<TickerQInitializerHostedService>();
         initializer.InitializationRequested = true;

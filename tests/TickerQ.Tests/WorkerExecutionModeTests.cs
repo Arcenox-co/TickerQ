@@ -115,6 +115,7 @@ public sealed class WorkerExecutionModeTests
             manager,
             new SchedulerOptionsBuilder(),
             Substitute.For<ITickerQFailureNotifier>(),
+            LicenseTestState.Active(clock),
             _ => null);
     }
 
