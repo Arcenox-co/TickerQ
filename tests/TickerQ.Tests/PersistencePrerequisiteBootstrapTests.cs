@@ -61,7 +61,8 @@ public sealed class PersistencePrerequisiteBootstrapTests
         services.AddSingleton<ITickerQActivationGate>(gate);
         services.AddSingleton(new SchedulerOptionsBuilder());
         services.AddSingleton(prerequisite);
-        var initializer = new TickerQInitializerHostedService(context, services.BuildServiceProvider(), configuration)
+        var initializer = new TickerQInitializerHostedService(
+            context, services.BuildServiceProvider(), configuration, LicenseTestState.Active())
         {
             InitializationRequested = true
         };
@@ -122,7 +123,7 @@ public sealed class PersistencePrerequisiteBootstrapTests
         services.AddSingleton(new SchedulerOptionsBuilder());
         services.AddSingleton(prerequisite);
         var initializer = new TickerQInitializerHostedService(
-            context, services.BuildServiceProvider(), Substitute.For<IConfiguration>())
+            context, services.BuildServiceProvider(), Substitute.For<IConfiguration>(), LicenseTestState.Active())
         { InitializationRequested = true };
 
         await initializer.StartAsync(CancellationToken.None);

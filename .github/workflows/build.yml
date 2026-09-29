@@ -26,7 +26,7 @@ jobs:
         id: check
         run: |
           VERSION="${{ steps.get-version.outputs.version }}"
-          PACKAGE_IDS=(tickerq tickerq.dashboard tickerq.utilities tickerq.entityframeworkcore tickerq.instrumentation.opentelemetry tickerq.caching.stackexchangeredis tickerq.mongodb tickerq.sdk tickerq.remoteexecutor)
+          PACKAGE_IDS=(tickerq tickerq.dashboard tickerq.utilities tickerq.entityframeworkcore tickerq.instrumentation.opentelemetry tickerq.caching.stackexchangeredis tickerq.sourcegenerator tickerq.mongodb tickerq.sdk tickerq.remoteexecutor)
           MISSING=0
 
           for ID in "${PACKAGE_IDS[@]}"; do
@@ -102,6 +102,7 @@ jobs:
           dotnet restore src/TickerQ.MongoDB/TickerQ.MongoDB.csproj
           dotnet restore hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj
           dotnet restore hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj
+          dotnet restore hub/remoteExecutor/TickerQ.RemoteExecutor.Tests/TickerQ.RemoteExecutor.Tests.csproj
           dotnet restore tests/TickerQ.Tests/TickerQ.Tests.csproj
           dotnet restore tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj
           dotnet restore tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj
@@ -120,20 +121,29 @@ jobs:
           dotnet build src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release
           dotnet build hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release
           dotnet build hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release
+          dotnet build hub/remoteExecutor/TickerQ.RemoteExecutor.Tests/TickerQ.RemoteExecutor.Tests.csproj --configuration Release
           dotnet build tests/TickerQ.Tests/TickerQ.Tests.csproj --configuration Release
           dotnet build tests/TickerQ.EntityFrameworkCore.Tests/TickerQ.EntityFrameworkCore.Tests.csproj --configuration Release
           dotnet build tests/TickerQ.Caching.StackExchangeRedis.Tests/TickerQ.Caching.StackExchangeRedis.Tests.csproj --configuration Release
           dotnet build tests/TickerQ.SourceGenerator.Tests/TickerQ.SourceGenerator.Tests.csproj --configuration Release
 
-      - name: Run tests
+      - name: Run Node SDK tests
+        working-directory: hub/sdks/node
+        run: |
+          npm install --include=dev --no-package-lock --ignore-scripts --no-audit --no-fund
+          npm test
+
+      - name: Run .NET tests
         run: |
           dotnet test tests/TickerQ.Tests/ --configuration Release --no-build
           dotnet test tests/TickerQ.EntityFrameworkCore.Tests/ --configuration Release --no-build
-          dotnet test tests/TickerQ.Caching.StackExchangeRedis.Tests/ --configuration Release --no-build
+          dotnet test tests/TickerQ.Caching.StackExchangeRedis.Tests/ --configuration Release --no-build -p:IsTestProject=true
           dotnet test tests/TickerQ.SourceGenerator.Tests/ --configuration Release --no-build
+          dotnet test hub/remoteExecutor/TickerQ.RemoteExecutor.Tests/ --configuration Release --no-build
 
       - name: Pack other projects
         run: |
+          dotnet pack src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release --output ./nupkgs
           dotnet pack src/TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs
           dotnet pack src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs
           dotnet pack src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs
@@ -142,6 +152,9 @@ jobs:
           dotnet pack src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release --output ./nupkgs
           dotnet pack hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release --output ./nupkgs
           dotnet pack hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release --output ./nupkgs
+
+      - name: Validate commercial package licenses
+        run: python3 scripts/validate-package-licenses.py --directory ./nupkgs --version "${{ needs.check-nuget.outputs.version }}" --commercial-license ./LICENSE-COMMERCIAL.txt --repository-commit "${{ github.sha }}"
 
       - name: Show package file sizes
         run: |

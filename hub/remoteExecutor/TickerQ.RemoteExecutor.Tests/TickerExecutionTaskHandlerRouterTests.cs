@@ -1,5 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
+using NSubstitute;
+using TickerQ.Utilities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
 using Xunit;
 
@@ -58,6 +62,52 @@ public sealed class TickerExecutionTaskHandlerRouterTests
         Assert.Equal(1, local.RegisteredCalls);
         Assert.Same(root, local.LastContext);
         Assert.Same(registeredSource, local.LastRegisteredSource);
+    }
+
+    [Fact]
+    public async Task RemoteCompatibilityHandler_BlocksBeforeDelegate_WhenLicenseDeniesExecution()
+    {
+        const string functionName = "BlockedRemote@node-a";
+        var originalFunctions = TickerFunctionProvider.TickerFunctions;
+        var invoked = false;
+        var clock = Substitute.For<ITickerClock>();
+        clock.UtcNow.Returns(DateTime.UtcNow);
+        var licenseState = new TickerQLicenseStateProvider(clock);
+        licenseState.Publish(TickerQLicenseState.Invalid("test authority denied execution"));
+
+        await using var services = new ServiceCollection()
+            .AddSingleton(licenseState)
+            .BuildServiceProvider();
+
+        TickerFunctionProvider.ReplaceFunctions(
+            new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
+            {
+                [functionName] = (string.Empty, TickerTaskPriority.Normal, (_, _, _) =>
+                {
+                    invoked = true;
+                    return Task.CompletedTask;
+                }, 0)
+            });
+
+        try
+        {
+            var handler = new TickerRemoteExecutionTaskHandler(services);
+            var context = new InternalFunctionContext
+            {
+                TickerId = Guid.NewGuid(),
+                FunctionName = functionName
+            };
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => handler.ExecuteTaskAsync(context, isDue: false, CancellationToken.None));
+
+            Assert.Contains("execution is disabled", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.False(invoked);
+        }
+        finally
+        {
+            TickerFunctionProvider.ReplaceFunctions(originalFunctions);
+        }
     }
 
     private sealed class RecordingHandler : ITickerExecutionTaskHandler

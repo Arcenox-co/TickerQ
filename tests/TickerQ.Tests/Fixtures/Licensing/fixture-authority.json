@@ -1,0 +1,9 @@
+{
+  "keyId": "tickerq-golden-fixture-2026-09",
+  "algorithm": "Ed25519",
+  "publicKey": "pTdhJtb6jqKaVMzx0fsQP/oe4nwvv8I6\u002Bxf/Xuo0Mo4=",
+  "issuerImplementation": "Arcenox.Licensing.Core.Persistence.Integrations.Licensing.Ed25519LicenseSigner",
+  "portalCommit": "cce0b3635860a022974379b45e307bb7d94f1760",
+  "generatedAt": "2026-09-25T00:00:00Z",
+  "containsSyntheticDataOnly": true
+}

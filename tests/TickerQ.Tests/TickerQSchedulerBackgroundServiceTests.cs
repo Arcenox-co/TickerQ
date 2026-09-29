@@ -47,7 +47,7 @@ public class TickerQSchedulerBackgroundServiceTests : IDisposable
             taskScheduler,
             internalManager,
             schedulerOptions,
-            new TickerFunctionConcurrencyGate());
+            new TickerFunctionConcurrencyGate(), LicenseTestState.Active());
 
         using var cts = new CancellationTokenSource();
         var before = DateTime.UtcNow;
@@ -138,7 +138,7 @@ public class TickerQSchedulerBackgroundServiceTests : IDisposable
 
         var service = new TickerQSchedulerBackgroundService(
             executionContext, taskHandler, taskScheduler,
-            internalManager, schedulerOptions, gate);
+            internalManager, schedulerOptions, gate, LicenseTestState.Active());
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
 
@@ -210,7 +210,7 @@ public class TickerQSchedulerBackgroundServiceTests : IDisposable
 
         var service = new TickerQSchedulerBackgroundService(
             executionContext, taskHandler, taskScheduler,
-            internalManager, new SchedulerOptionsBuilder(), gate);
+            internalManager, new SchedulerOptionsBuilder(), gate, LicenseTestState.Active());
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
 
@@ -270,7 +270,7 @@ public class TickerQSchedulerBackgroundServiceTests : IDisposable
 
         var service = new TickerQSchedulerBackgroundService(
             executionContext, taskHandler, taskScheduler,
-            internalManager, new SchedulerOptionsBuilder(), gate);
+            internalManager, new SchedulerOptionsBuilder(), gate, LicenseTestState.Active());
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
 
@@ -359,7 +359,7 @@ public class TickerQSchedulerBackgroundServiceTests : IDisposable
 
         var service = new TickerQSchedulerBackgroundService(
             executionContext, taskHandler, taskScheduler, internalManager,
-            new SchedulerOptionsBuilder(), new TickerFunctionConcurrencyGate());
+            new SchedulerOptionsBuilder(), new TickerFunctionConcurrencyGate(), LicenseTestState.Active());
         var function = new InternalFunctionContext
         {
             TickerId = Guid.NewGuid(),
@@ -529,7 +529,7 @@ public class TickerQSchedulerBackgroundServiceTests : IDisposable
 
         var service = new TickerQSchedulerBackgroundService(
             executionContext, taskHandler, taskScheduler,
-            internalManager, new SchedulerOptionsBuilder(), localGate);
+            internalManager, new SchedulerOptionsBuilder(), localGate, LicenseTestState.Active());
 
         gate = localGate;
         capturedWork = () => captured;

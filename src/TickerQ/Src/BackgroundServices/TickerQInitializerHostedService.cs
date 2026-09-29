@@ -10,6 +10,7 @@ using TickerQ.Provider;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 
 namespace TickerQ.BackgroundServices;
 
@@ -27,6 +28,7 @@ internal sealed class TickerQInitializerHostedService : IHostedService
     private readonly TickerExecutionContext _executionContext;
     private readonly IServiceProvider _serviceProvider;
     private readonly IConfiguration _configuration;
+    private readonly TickerQLicenseStateProvider _licenseState;
 
     /// <summary>
     /// Set to true by <c>UseTickerQ</c> to signal that this hosted service
@@ -39,16 +41,21 @@ internal sealed class TickerQInitializerHostedService : IHostedService
     public TickerQInitializerHostedService(
         TickerExecutionContext executionContext,
         IServiceProvider serviceProvider,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        TickerQLicenseStateProvider licenseState)
     {
         _executionContext = executionContext;
         _serviceProvider = serviceProvider;
         _configuration = configuration;
+        _licenseState = licenseState;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (!InitializationRequested)
+            return;
+
+        if (!_licenseState.ExecutionAllowed)
             return;
 
         // Function discovery is process-local readiness, not persistence activation. Queue-only hosts

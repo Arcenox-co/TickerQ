@@ -7,6 +7,7 @@ using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.RemoteExecutor;
@@ -39,6 +40,14 @@ public class TickerRemoteExecutionTaskHandler : ITickerExecutionTaskHandler
                 0, cancellationToken).ConfigureAwait(false);
             return;
         }
+
+        // Compatibility hosts can dispatch without Core's graph-aware handler. Resolve the shared
+        // singleton at the last boundary and fail closed when licensing was never registered or has
+        // become blocking while this run waited to dispatch.
+        var license = scope.ServiceProvider.GetService<TickerQLicenseStateProvider>()?.Current
+                      ?? TickerQLicenseState.NotValidated;
+        if (!license.ExecutionAllowed)
+            throw new InvalidOperationException(license.Message);
 
         var tickerFunctionContext = new TickerFunctionContext
         {

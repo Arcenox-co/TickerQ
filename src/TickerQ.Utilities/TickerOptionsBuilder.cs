@@ -294,6 +294,16 @@ namespace TickerQ.Utilities
             LegacyRuntimePartitionAdoption = requested;
             return this;
         }
+
+        /// <summary>
+        /// Points TickerQ at an offline license certificate. Relative paths are resolved from the host
+        /// content root. When omitted, TickerQ looks for <c>tickerq.tqlicense</c> in the content root.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseLicense(string certificatePath)
+        {
+            _tickerExecutionContext.LicenseCertificatePath = certificatePath;
+            return this;
+        }
         
         /// <summary>
         /// Disables background services registration. 

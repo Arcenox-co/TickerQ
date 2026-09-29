@@ -71,6 +71,7 @@ public sealed class ParentResultPropagationTests : IDisposable
         _handler = new TickerExecutionTaskHandler(
             sp, clock, instrumentation, _manager, options,
             Substitute.For<ITickerQFailureNotifier>(),
+            LicenseTestState.Active(clock),
             descriptorResolver: _ => null);
     }
 
