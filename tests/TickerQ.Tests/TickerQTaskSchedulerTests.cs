@@ -78,4 +78,41 @@ public class TickerQTaskSchedulerTests
         Assert.True(executed);
         await scheduler.DisposeAsync();
     }
+
+    [Fact]
+    public async Task Worker_Still_Running_After_DisposeAsync_Gives_Up_Exits_Cleanly()
+    {
+        // DisposeAsync waits at most 5 s for its workers and then disposes the shutdown token source.
+        // A worker still busy at that point used to read _shutdownCts.Token on its way back to the loop
+        // condition, throwing ObjectDisposedException on its dedicated thread and killing the process.
+        // The same happens to an idle worker whose continuation is delayed past the 5 s, e.g. by thread
+        // pool starvation during host shutdown.
+        var scheduler = new TickerQTaskScheduler(1);
+        using var started = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+
+        await scheduler.QueueAsync(_ =>
+        {
+            started.Set();
+            release.Wait(TimeSpan.FromSeconds(30));
+            return Task.CompletedTask;
+        }, TickerTaskPriority.Normal);
+
+        Assert.True(started.Wait(TimeSpan.FromSeconds(5)));
+
+        await scheduler.DisposeAsync();
+        var workersLeftByDispose = scheduler.ActiveWorkers;
+
+        // The worker now returns to its loop condition, after _shutdownCts was disposed.
+        release.Set();
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (scheduler.ActiveWorkers > 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.Equal(1, workersLeftByDispose);
+        Assert.Equal(0, scheduler.ActiveWorkers);
+    }
 }
