@@ -5,16 +5,20 @@ on:
     types: [published]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  check-nuget:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
-      skip: ${{ steps.check.outputs.all_exist }}
       version: ${{ steps.get-version.outputs.version }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Validate source license policy
         run: python3 -m unittest scripts.tests.test_license_policy -v
@@ -25,42 +29,17 @@ jobs:
           VERSION=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:Version)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Check if all NuGet packages already exist
-        id: check
-        run: |
-          VERSION="${{ steps.get-version.outputs.version }}"
-          PACKAGE_IDS=(tickerq tickerq.dashboard tickerq.utilities tickerq.entityframeworkcore tickerq.instrumentation.opentelemetry tickerq.caching.stackexchangeredis tickerq.sourcegenerator tickerq.mongodb tickerq.sdk tickerq.remoteexecutor)
-          MISSING=0
-
-          for ID in "${PACKAGE_IDS[@]}"; do
-            LOWER_ID=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
-            URL="https://api.nuget.org/v3-flatcontainer/$LOWER_ID/$VERSION/$LOWER_ID.$VERSION.nupkg"
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
-
-            if [ "$STATUS" = "200" ]; then
-              echo "✅ $ID $VERSION exists on NuGet"
-            else
-              echo "❌ $ID $VERSION does NOT exist on NuGet"
-              MISSING=1
-            fi
-          done
-
-          if [ "$MISSING" = "0" ]; then
-            echo "all_exist=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "all_exist=false" >> "$GITHUB_OUTPUT"
-          fi
-
   build:
-    needs: check-nuget
-    if: needs.check-nuget.outputs.skip != 'true'
+    needs: prepare
     runs-on: ubuntu-latest
     env:
       DOTNET_NOLOGO: true
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Detect .NET version
         id: detect
@@ -69,21 +48,33 @@ jobs:
           echo "dotnet_version=${DOTNET_VER}.0.x" >> "$GITHUB_OUTPUT"
 
       - name: Setup .NET SDKs
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: ${{ steps.detect.outputs.dotnet_version }}
 
       - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci --include=dev
         working-directory: src/TickerQ.Dashboard/wwwroot
 
       - name: Build frontend
         run: npm run build
+        working-directory: src/TickerQ.Dashboard/wwwroot
+
+      - name: Validate Dashboard bundled third-party notices
+        run: |
+          ./node_modules/.bin/vite build --sourcemap --outDir "$RUNNER_TEMP/tickerq-dashboard-license-audit" --emptyOutDir
+          python3 ../../../scripts/generate-dashboard-third-party-notices.py \
+            --bundle-dir "$RUNNER_TEMP/tickerq-dashboard-license-audit" \
+            --node-modules ./node_modules \
+            --source-dir ./src \
+            --lockfile ./package-lock.json \
+            --output ../DASHBOARD-THIRD-PARTY-NOTICES.md \
+            --check
         working-directory: src/TickerQ.Dashboard/wwwroot
 
       - name: Build TickerQ.Utilities
@@ -133,8 +124,19 @@ jobs:
       - name: Run Node SDK tests
         working-directory: hub/sdks/node
         run: |
-          npm install --include=dev --no-package-lock --ignore-scripts --no-audit --no-fund
+          npm ci --include=dev --ignore-scripts --no-audit --no-fund
           npm test
+
+      - name: Pack and validate Node SDK licensing
+        run: |
+          mkdir -p ./npm-packages
+          npm pack ./hub/sdks/node --pack-destination ./npm-packages
+          NODE_VERSION=$(node -p "require('./hub/sdks/node/package.json').version")
+          python3 scripts/validate-node-package.py \
+            --archive "./npm-packages/tickerq-sdk-${NODE_VERSION}.tgz" \
+            --version "$NODE_VERSION" \
+            --commercial-license ./LICENSE.md \
+            --third-party-notices ./THIRD-PARTY-NOTICES.md
 
       - name: Run .NET tests
         run: |
@@ -157,34 +159,42 @@ jobs:
           dotnet pack hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release --output ./nupkgs
 
       - name: Validate commercial package licenses
-        run: python3 scripts/validate-package-licenses.py --directory ./nupkgs --version "${{ needs.check-nuget.outputs.version }}" --commercial-license ./LICENSE.md --third-party-notices ./THIRD-PARTY-NOTICES.md --repository-commit "${{ github.sha }}"
+        run: python3 scripts/validate-package-licenses.py --directory ./nupkgs --version "${{ needs.prepare.outputs.version }}" --commercial-license ./LICENSE.md --third-party-notices ./THIRD-PARTY-NOTICES.md --dashboard-third-party-notices ./src/TickerQ.Dashboard/DASHBOARD-THIRD-PARTY-NOTICES.md --repository-commit "${{ github.sha }}"
 
       - name: Show package file sizes
         run: |
           echo "📦 Package sizes:"
-          for pkg in ./nupkgs/*.nupkg ./nupkgs/*.snupkg; do
+          for pkg in ./nupkgs/*.nupkg; do
             [ -f "$pkg" ] && size=$(du -h "$pkg" | cut -f1) && echo " - $(basename "$pkg"): $size"
           done
 
       - name: Upload nupkgs artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nupkgs
-          path: ./nupkgs
+          path: ./nupkgs/*.nupkg
+          if-no-files-found: error
+
+      - name: Upload validated npm package artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package
+          path: ./npm-packages/*.tgz
+          if-no-files-found: error
 
   mongo-verify:
     name: MongoDB runtime verification
-    # Runtime verification is deliberately independent of the package-existence
-    # publishing optimization: it has no dependency on check-nuget/build, so the
-    # MongoDB Testcontainers suite runs on every release/dispatch even when the
-    # build job is skipped because all packages already exist on NuGet.
+    # Runtime verification is deliberately independent of package creation, so
+    # the MongoDB Testcontainers suite runs on every release and manual build.
     runs-on: ubuntu-latest
     env:
       DOTNET_NOLOGO: true
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Detect .NET version
         id: detect
@@ -193,7 +203,7 @@ jobs:
           echo "dotnet_version=${DOTNET_VER}.0.x" >> "$GITHUB_OUTPUT"
 
       - name: Setup .NET SDKs
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: ${{ steps.detect.outputs.dotnet_version }}
 
@@ -231,123 +241,69 @@ jobs:
 
       - name: Upload MongoDB test diagnostics and results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mongo-test-results
           path: TestResults/Mongo
           if-no-files-found: warn
 
-  trigger-publish:
+  release-notification:
     needs:
-      - check-nuget
+      - prepare
       - build
       - mongo-verify
-    # Allow package build to be skipped when everything already exists, but never
-    # publish from a run whose unconditional MongoDB runtime verification failed.
-    if: always() && needs.check-nuget.result == 'success' && needs.mongo-verify.result == 'success'
+    if: always() && github.event_name == 'release'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Get artifact ID for nupkgs
-        id: get_artifact
-        # Only try to get artifact if build actually ran
-        if: needs.build.result == 'success'
-        run: |
-          artifacts=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)
-          id=$(echo "$artifacts" | jq '.artifacts[] | select(.name=="nupkgs") | .id')
-          echo "ARTIFACT_ID=$id" >> "$GITHUB_ENV"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Trigger publish.yml with artifact ID
-        # Only trigger publish if build succeeded and created artifact
-        if: needs.build.result == 'success'
-        uses: actions/github-script@v7
-        env:
-          GH_PAT: ${{ secrets.PAT_TOKEN }}
-        with:
-          script: |
-            const artifactId = process.env.ARTIFACT_ID;
-            const version = '${{ needs.check-nuget.outputs.version }}';
-
-            const res = await fetch('https://api.github.com/repos/${{ github.repository }}/actions/workflows/publish.yml/dispatches', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${process.env.GH_PAT}`,
-                'Accept': 'application/vnd.github.v3+json'
-              },
-              body: JSON.stringify({
-                ref: '${{ github.event.release.target_commitish || github.ref_name }}',
-                inputs: {
-                  version: version,
-                  artifact_id: artifactId
-                }
-              })
-            });
-
-            if (!res.ok) {
-              const body = await res.text();
-              core.setFailed(`❌ Failed to dispatch: ${res.status} ${res.statusText}\n${body}`);
-            } else {
-              console.log(`✅ Successfully triggered publish with artifact ID: ${artifactId}`);
-            }
-
-      - name: Send Discord Notification
+      - name: Send Discord notification
         if: always()
+        continue-on-error: true
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          MONGO_RESULT: ${{ needs.mongo-verify.result }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TARGET: ${{ github.event.release.target_commitish }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          BRANCH="${{ github.event.release.target_commitish || github.ref_name }}"
-          TAG="${{ github.event.release.tag_name || 'manual' }}"
-          MESSAGE="📦 *${REPO_NAME}* | Branch: \`${BRANCH}\` | Release: \`${TAG}\`"
+          set -euo pipefail
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          message="📦 *${repo_name}* | Branch: \`${RELEASE_TARGET}\` | Release: \`${RELEASE_TAG}\`"
 
-          # Determine status based on check-nuget and build results
-          if [ "${{ needs.check-nuget.result }}" != "success" ]; then
-            STATUS_EMOJI="❌"
-            STATUS_TEXT="Failed"
-            COLOR="15158332"
-          elif [ "${{ needs.build.result }}" == "skipped" ]; then
-            STATUS_EMOJI="⏭️"
-            STATUS_TEXT="Skipped (Packages already exist)"
-            COLOR="16776960"
-          elif [ "${{ needs.build.result }}" != "success" ]; then
-            STATUS_EMOJI="❌"
-            STATUS_TEXT="Build Failed"
-            COLOR="15158332"
+          if [ "$PREPARE_RESULT" != "success" ]; then
+            status_emoji="❌"
+            status_text="Preparation Failed"
+            color=15158332
+          elif [ "$MONGO_RESULT" != "success" ]; then
+            status_emoji="❌"
+            status_text="MongoDB Verification Failed"
+            color=15158332
+          elif [ "$BUILD_RESULT" != "success" ]; then
+            status_emoji="❌"
+            status_text="Build Failed"
+            color=15158332
           else
-            STATUS_EMOJI="✅"
-            STATUS_TEXT="Successful"
-            COLOR="3066993"
+            status_emoji="✅"
+            status_text="Successful"
+            color=3066993
           fi
 
-          # Create a proper JSON payload in a separate file
-          cat > payload.json << EOF
-          {
-            "embeds": [
-              {
-                "title": "${STATUS_EMOJI} TickerQ Deployment ${STATUS_TEXT}",
-                "description": "${MESSAGE}",
-                "color": ${COLOR},
-                "fields": [
-                  {
-                    "name": "Version",
-                    "value": "${{ needs.check-nuget.outputs.version }}",
-                    "inline": true
-                  },
-                  {
-                    "name": "Build Status",
-                    "value": "${{ needs.build.result }}",
-                    "inline": true
-                  }
-                ],
-                "footer": {
-                  "text": "Deployed on $(date +'%Y-%m-%d %H:%M UTC')"
-                }
-              }
-            ]
-          }
-          EOF
+          jq -n \
+            --arg title "${status_emoji} TickerQ Deployment ${status_text}" \
+            --arg description "$message" \
+            --arg version "$VERSION" \
+            --arg build_status "$BUILD_RESULT" \
+            --arg footer "Deployed on $(date -u +'%Y-%m-%d %H:%M UTC')" \
+            --argjson color "$color" \
+            '{embeds: [{title: $title, description: $description, color: $color,
+              fields: [
+                {name: "Version", value: $version, inline: true},
+                {name: "Build Status", value: $build_status, inline: true}
+              ], footer: {text: $footer}}]}' > payload.json
 
-          # Send with the file as payload
-          curl -H "Content-Type: application/json" \
-            -X POST "${{ secrets.DISCORD_WEBHOOK }}" \
+          curl --fail-with-body \
+            -H "Content-Type: application/json" \
+            -X POST "$DISCORD_WEBHOOK" \
             --data @payload.json
