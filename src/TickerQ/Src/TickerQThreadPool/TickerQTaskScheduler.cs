@@ -214,8 +214,12 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         var lastWorkTime = DateTime.UtcNow;
         var localQueue = _workerQueues[workerId];
         var consecutiveStealFailures = 0;
-        
-        while (!_shutdownCts.Token.IsCancellationRequested && !_disposed)
+
+        // Read IsCancellationRequested on the source, never through .Token: DisposeAsync disposes
+        // _shutdownCts after at most 5 s even if this worker is still running, and .Token throws
+        // ObjectDisposedException from then on. On this dedicated thread that exception is unhandled
+        // and terminates the process.
+        while (!_shutdownCts.IsCancellationRequested && !_disposed)
         {
             WorkItem workItem = default;
             bool foundWork = false;
@@ -329,7 +333,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         try
         {
             // Check cancellation before executing
-            if (!workItem.UserToken.IsCancellationRequested && !_shutdownCts.Token.IsCancellationRequested)
+            if (!workItem.UserToken.IsCancellationRequested && !_shutdownCts.IsCancellationRequested)
             {
                 // Start the work without awaiting it so this worker
                 // can continue processing other items while the task awaits.
@@ -387,7 +391,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
     /// </summary>
     internal void PostContinuation(SendOrPostCallback callback, object state)
     {
-        if (_disposed || _shutdownCts.Token.IsCancellationRequested)
+        if (_disposed || _shutdownCts.IsCancellationRequested)
             return;
         
         // Continuations get queued to the current worker's queue if possible
