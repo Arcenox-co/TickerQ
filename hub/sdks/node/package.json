@@ -30,7 +30,7 @@
     "sdk"
   ],
   "author": "Arcenox",
-  "license": "(MIT OR Apache-2.0)",
+  "license": "SEE LICENSE IN LICENSE.md",
   "repository": {
     "type": "git",
     "url": "https://github.com/Arcenox-co/TickerQ",
@@ -45,7 +45,8 @@
   },
   "files": [
     "dist",
-    "LICENSE",
+    "LICENSE.md",
+    "THIRD-PARTY-NOTICES.md",
     "README.md"
   ],
   "peerDependencies": {

@@ -18,14 +18,19 @@ COMMERCIAL_PACKAGE_IDS = {
     "TickerQ.Dashboard",
     "TickerQ.Instrumentation.OpenTelemetry",
     "TickerQ.SourceGenerator",
+    "TickerQ.MongoDB",
     "TickerQ.SDK",
     "TickerQ.RemoteExecutor",
 }
-OSS_PACKAGE_IDS = {"TickerQ.MongoDB"}
-EXPECTED_PACKAGE_IDS = COMMERCIAL_PACKAGE_IDS | OSS_PACKAGE_IDS
-COMMERCIAL_LICENSE_FILE = "COMMERCIAL.md"
-OSS_LICENSE_FILE = "OPEN-SOURCE.md"
-OSS_LICENSE_EXPRESSION = "MIT OR Apache-2.0"
+EXPECTED_PACKAGE_IDS = COMMERCIAL_PACKAGE_IDS
+COMMERCIAL_LICENSE_FILE = "LICENSE.md"
+THIRD_PARTY_NOTICES_FILE = "THIRD-PARTY-NOTICES.md"
+FORBIDDEN_LEGACY_LICENSE_FILES = {
+    "COMMERCIAL.md",
+    "LICENSE-COMMERCIAL.md",
+    "LICENSE-OSS.md",
+    "OPEN-SOURCE.md",
+}
 NUGET_FILE_LICENSE_SENTINEL_URL = "https://aka.ms/deprecateLicenseUrl"
 REPOSITORY_URL = "https://github.com/arcenox-co/TickerQ"
 
@@ -60,6 +65,7 @@ def validate(
     directory: Path,
     expected_version: str,
     canonical_license: bytes,
+    canonical_notices: bytes,
     expected_repository_commit: str | None = None,
 ) -> list[str]:
     errors: list[str] = []
@@ -107,6 +113,11 @@ def validate(
             license_value = _text(license_element)
 
             if package_id in COMMERCIAL_PACKAGE_IDS:
+                require_acceptance = _text(metadata.find("{*}requireLicenseAcceptance"))
+                if require_acceptance.casefold() != "true":
+                    errors.append(
+                        f"{package_id}: requireLicenseAcceptance must be true, found {require_acceptance!r}"
+                    )
                 if license_type != "file" or license_value != COMMERCIAL_LICENSE_FILE:
                     errors.append(
                         f"{package_id}: expected file license {COMMERCIAL_LICENSE_FILE}, "
@@ -116,17 +127,23 @@ def validate(
                     errors.append(f"{package_id}: missing embedded {COMMERCIAL_LICENSE_FILE}")
                 elif archive.read(COMMERCIAL_LICENSE_FILE) != canonical_license:
                     errors.append(f"{package_id}: embedded commercial terms differ from canonical source")
+                if THIRD_PARTY_NOTICES_FILE not in names:
+                    errors.append(f"{package_id}: missing embedded {THIRD_PARTY_NOTICES_FILE}")
+                elif archive.read(THIRD_PARTY_NOTICES_FILE) != canonical_notices:
+                    errors.append(f"{package_id}: embedded third-party notices differ from canonical source")
+                stale_license_files = sorted(
+                    name
+                    for name in names
+                    if Path(name).name.casefold()
+                    in {filename.casefold() for filename in FORBIDDEN_LEGACY_LICENSE_FILES}
+                )
+                if stale_license_files:
+                    errors.append(
+                        f"{package_id}: stale OSS license file(s): {', '.join(stale_license_files)}"
+                    )
                 license_url = _text(metadata.find("{*}licenseUrl"))
                 if license_url and license_url != NUGET_FILE_LICENSE_SENTINEL_URL:
                     errors.append(f"{package_id}: unexpected legacy licenseUrl {license_url!r}")
-            elif package_id in OSS_PACKAGE_IDS:
-                if license_type != "expression" or license_value != OSS_LICENSE_EXPRESSION:
-                    errors.append(
-                        f"{package_id}: expected expression {OSS_LICENSE_EXPRESSION!r}, "
-                        f"found type={license_type!r} value={license_value!r}"
-                    )
-                if OSS_LICENSE_FILE not in names:
-                    errors.append(f"{package_id}: missing preserved {OSS_LICENSE_FILE}")
             else:
                 errors.append(f"unexpected package ID {package_id!r} in {path.name}")
 
@@ -149,6 +166,7 @@ def main() -> int:
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--version", required=True)
     parser.add_argument("--commercial-license", required=True, type=Path)
+    parser.add_argument("--third-party-notices", required=True, type=Path)
     parser.add_argument("--repository-commit")
     args = parser.parse_args()
 
@@ -156,11 +174,14 @@ def main() -> int:
         parser.error(f"package directory does not exist: {args.directory}")
     if not args.commercial_license.is_file():
         parser.error(f"canonical commercial license does not exist: {args.commercial_license}")
+    if not args.third_party_notices.is_file():
+        parser.error(f"canonical third-party notices do not exist: {args.third_party_notices}")
 
     errors = validate(
         args.directory,
         args.version,
         args.commercial_license.read_bytes(),
+        args.third_party_notices.read_bytes(),
         args.repository_commit,
     )
     if errors:
@@ -170,7 +191,7 @@ def main() -> int:
 
     print(
         f"Validated {len(EXPECTED_PACKAGE_IDS)} packages at {args.version}: "
-        f"{len(COMMERCIAL_PACKAGE_IDS)} commercial, {len(OSS_PACKAGE_IDS)} open-source."
+        f"{len(COMMERCIAL_PACKAGE_IDS)} commercial."
     )
     return 0
 

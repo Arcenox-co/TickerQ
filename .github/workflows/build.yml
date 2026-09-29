@@ -16,6 +16,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Validate source license policy
+        run: python3 -m unittest scripts.tests.test_license_policy -v
+
       - name: Read version from file
         id: get-version
         run: |
@@ -154,7 +157,7 @@ jobs:
           dotnet pack hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release --output ./nupkgs
 
       - name: Validate commercial package licenses
-        run: python3 scripts/validate-package-licenses.py --directory ./nupkgs --version "${{ needs.check-nuget.outputs.version }}" --commercial-license ./licenses/COMMERCIAL.md --repository-commit "${{ github.sha }}"
+        run: python3 scripts/validate-package-licenses.py --directory ./nupkgs --version "${{ needs.check-nuget.outputs.version }}" --commercial-license ./LICENSE.md --third-party-notices ./THIRD-PARTY-NOTICES.md --repository-commit "${{ github.sha }}"
 
       - name: Show package file sizes
         run: |

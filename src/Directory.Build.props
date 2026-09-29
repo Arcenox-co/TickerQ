@@ -9,19 +9,10 @@
         <DotNetAbstractionsVersion>[10.0.0,11.0.0)</DotNetAbstractionsVersion>
         <RepositoryUrl>https://github.com/arcenox-co/TickerQ</RepositoryUrl>
         <PackageProjectUrl>https://tickerq.net/</PackageProjectUrl>
-        <TickerQCommercialPackage Condition="'$(MSBuildProjectName)' == 'TickerQ' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.Utilities' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.EntityFrameworkCore' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.Caching.StackExchangeRedis' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.Dashboard' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.Instrumentation.OpenTelemetry' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.SourceGenerator' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.SDK' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.RemoteExecutor'">true</TickerQCommercialPackage>
-        <PackageLicenseFile Condition="'$(TickerQCommercialPackage)' == 'true'">COMMERCIAL.md</PackageLicenseFile>
-        <PackageLicenseExpression Condition="'$(TickerQCommercialPackage)' != 'true'">MIT OR Apache-2.0</PackageLicenseExpression>
+        <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
+        <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
         <Authors>Arcenox LLC</Authors>
-        <Copyright>Copyright 2025-present Arcenox LLC</Copyright>
+        <Copyright>Copyright 2025-present Arcenox LLC and contributors</Copyright>
         <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
@@ -38,10 +29,12 @@
 
     <ItemGroup>
         <None Include="..\..\icon.jpg" Pack="true" PackagePath="\" />
-        <None Include="$(MSBuildThisFileDirectory)..\licenses\COMMERCIAL.md"
+        <None Include="$(MSBuildThisFileDirectory)..\LICENSE.md"
               Pack="true"
-              PackagePath=""
-              Condition="'$(TickerQCommercialPackage)' == 'true'" />
+              PackagePath="" />
+        <None Include="$(MSBuildThisFileDirectory)..\THIRD-PARTY-NOTICES.md"
+              Pack="true"
+              PackagePath="" />
     </ItemGroup>
 
     <ItemGroup>
