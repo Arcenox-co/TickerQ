@@ -1,5 +1,6 @@
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Interfaces;
+using System.Text.Json.Serialization;
 
 namespace TickerQ.Sample.Dashboard.ReflectionFree;
 
@@ -19,6 +20,14 @@ public class SampleJobs
         Console.WriteLine($"[{DateTime.UtcNow}] Time job executed! Id={context.Id}");
         return Task.CompletedTask;
     }
+
+    [TickerFunction("ReflectionFree_IncludedAccessorJob")]
+    public Task IncludedAccessorJobAsync(TickerFunctionContext<IncludedAccessorRequest> context)
+        => Task.CompletedTask;
+
+    [TickerFunction("ReflectionFree_ResultJob", ResultType = typeof(JobResult))]
+    public ValueTask<JobResult> ResultJobAsync(TickerFunctionContext context)
+        => ValueTask.FromResult(new JobResult("aot-result", 42));
 }
 
 // Approach 2: Interface-based (new) — registered via app.MapTicker<T>()
@@ -31,7 +40,29 @@ public class CleanupJob : ITickerFunction
     }
 }
 
-public record OrderRequest(string OrderId, decimal Amount);
+public record OrderRequest(string OrderId, decimal Amount, OrderCustomer? Customer = null);
+
+public record OrderCustomer(string Email, string? DisplayName = null);
+
+public record JobResult(string Value, int Count);
+
+public class IncludedAccessorRequest
+{
+    [JsonInclude]
+    internal string InternalValue { get; set; } = string.Empty;
+
+    [JsonInclude]
+    protected internal string ProtectedInternalValue { get; set; } = string.Empty;
+
+    internal bool Matches(string value)
+        => InternalValue == value && ProtectedInternalValue == value;
+}
+
+[JsonSerializable(typeof(OrderRequest))]
+[JsonSerializable(typeof(OrderCustomer))]
+[JsonSerializable(typeof(IncludedAccessorRequest))]
+[JsonSerializable(typeof(JobResult))]
+internal partial class TickerQRequestJsonContext : JsonSerializerContext;
 
 public class ProcessOrderJob : ITickerFunction<OrderRequest>
 {

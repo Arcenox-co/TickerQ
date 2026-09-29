@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.Extensions.Hosting;
@@ -10,8 +11,14 @@ namespace TickerQ.Utilities;
 internal interface ITickerOptionsSeeding
 {
     bool SeedDefinedCronTickers { get; }
-    Func<IServiceProvider, System.Threading.Tasks.Task> TimeSeederAction { get; }
-    Func<IServiceProvider, System.Threading.Tasks.Task> CronSeederAction { get; }
+    bool RegisterBackgroundServices => true;
+    long ReconciliationEpoch => 0;
+    string DefinedCronApplicationNamespace => null;
+    IReadOnlyDictionary<string, string> LegacyDefinedCronOwnership => null;
+    bool AdoptAllLegacyDefinedCronTickers => false;
+    LegacyRuntimePartitionAdoption LegacyRuntimePartitionAdoption => null;
+    Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> TimeSeederAction { get; }
+    Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> CronSeederAction { get; }
 }
 
 internal class TickerExecutionContext
@@ -19,9 +26,11 @@ internal class TickerExecutionContext
    private long _nextOccurrenceTicks;
    internal Action<IServiceProvider> ExternalProviderApplicationAction { get; set; }
    internal Action<object> DashboardApplicationAction { get; set; }
+   internal string LicenseCertificatePath { get; set; }
    public Action<object, CoreNotifyActionType> NotifyCoreAction { get; set; }
    public string LastHostExceptionMessage { get; set; }
    internal ITickerOptionsSeeding OptionsSeeding { get; set; }
+   internal TickerQRuntimePartition RuntimePartition { get; set; } = TickerQRuntimePartition.LegacyGlobal;
    
    internal volatile InternalFunctionContext[] Functions = [];
    

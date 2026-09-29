@@ -4,6 +4,8 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Caching.StackExchangeRedis.DependencyInjection;
+using TickerQ.Caching.StackExchangeRedis.Infrastructure;
+using TickerQ.Caching.StackExchangeRedis.Helpers;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -17,6 +19,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
     private readonly SchedulerOptionsBuilder _schedulerOptions;
     private readonly ServiceExtension.TickerQRedisOptionBuilder _tickerQRedisOptionBuilder;
     private readonly ITickerQNotificationHubSender _notificationHubSender;
+    private readonly RedisKeyBuilder _keys;
     public IDistributedCache DistributedCache { get; }
     public bool HasRedisConnection => true;
 
@@ -25,6 +28,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
         DistributedCache = cache;
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _schedulerOptions = schedulerOptions ??  throw new ArgumentNullException(nameof(schedulerOptions));
+        _keys = new RedisKeyBuilder(_schedulerOptions.RuntimePartition ?? TickerQ.Utilities.Models.TickerQRuntimePartition.LegacyGlobal);
         _tickerQRedisOptionBuilder = tickerQRedisOptionBuilder;
         _notificationHubSender = notificationHubSender;
     }
@@ -32,7 +36,8 @@ internal class TickerQRedisContext : ITickerQRedisContext
     public async Task NotifyNodeAliveAsync()
     {
         var node = _schedulerOptions.NodeIdentifier;
-        var key  = $"hb:{node}";
+        var owner = _schedulerOptions.ExecutionOwnerId;
+        var key = _keys.Heartbeat(owner);
 
         var payload = new NodeHeartbeatPayload
         {
@@ -51,13 +56,13 @@ internal class TickerQRedisContext : ITickerQRedisContext
                 AbsoluteExpirationRelativeToNow = ttl
             });
 
-        await AddNodeToRegistryAsync(node);
+        await AddNodeToRegistryAsync(owner);
     }
     
     public async Task<string[]> GetDeadNodesAsync()
     {
         // Get all registered nodes
-        var nodesJson = await _cache.GetStringAsync("nodes:registry");
+        var nodesJson = await _cache.GetStringAsync(_keys.NodesRegistry);
         if (string.IsNullOrEmpty(nodesJson)) return [];
     
         var allNodes = JsonSerializer.Deserialize(nodesJson, RedisContextJsonSerializerContext.Default.HashSetString);
@@ -66,7 +71,7 @@ internal class TickerQRedisContext : ITickerQRedisContext
         // Check which ones are dead
         foreach (var node in allNodes)
         {
-            var heartbeat = await _cache.GetStringAsync($"hb:{node}");
+            var heartbeat = await _cache.GetStringAsync(_keys.Heartbeat(node));
             if (string.IsNullOrEmpty(heartbeat))
             {
                 deadNodes.Add(node);
@@ -83,27 +88,27 @@ internal class TickerQRedisContext : ITickerQRedisContext
     
     private async Task RemoveNodesFromRegistryAsync(HashSet<string> nodes)
     {
-        var nodesJson = await _cache.GetStringAsync("nodes:registry");
+        var nodesJson = await _cache.GetStringAsync(_keys.NodesRegistry);
         var nodesList = string.IsNullOrEmpty(nodesJson) 
             ? []
             : JsonSerializer.Deserialize(nodesJson, RedisContextJsonSerializerContext.Default.HashSetString);
         
             nodesList.RemoveWhere(nodes.Contains);
             
-            await _cache.SetStringAsync("nodes:registry", JsonSerializer.Serialize(nodesList, RedisContextJsonSerializerContext.Default.HashSetString),
+            await _cache.SetStringAsync(_keys.NodesRegistry, JsonSerializer.Serialize(nodesList, RedisContextJsonSerializerContext.Default.HashSetString),
                 new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromDays(30) });
     }
     
     private async Task AddNodeToRegistryAsync(string node)
     {
-        var nodesJson = await _cache.GetStringAsync("nodes:registry");
+        var nodesJson = await _cache.GetStringAsync(_keys.NodesRegistry);
         var nodesList = string.IsNullOrEmpty(nodesJson) 
             ? []
             : JsonSerializer.Deserialize(nodesJson, RedisContextJsonSerializerContext.Default.HashSetString);
 
         if (nodesList.Add(node))
         {
-            await _cache.SetStringAsync("nodes:registry", JsonSerializer.Serialize(nodesList, RedisContextJsonSerializerContext.Default.HashSetString),
+            await _cache.SetStringAsync(_keys.NodesRegistry, JsonSerializer.Serialize(nodesList, RedisContextJsonSerializerContext.Default.HashSetString),
                 new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromDays(30) });
         }
     }
@@ -188,4 +193,5 @@ internal sealed class NodeHeartbeatPayload
 [JsonSerializable(typeof(int[]))]
 [JsonSerializable(typeof(long))]
 [JsonSerializable(typeof(bool))]
+[JsonSerializable(typeof(RedisNodeFinalizationRecord))]
 internal partial class RedisContextJsonSerializerContext : JsonSerializerContext;

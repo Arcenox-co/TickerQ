@@ -87,6 +87,12 @@ tickerq.job.execute.timeticker (main job execution span)
 
 ### Tags Added to Activities
 
+Tags are deliberately chosen to be **safe to export**. No exception messages, stack traces,
+cancellation/skip reason strings, or job payloads are ever set as tags — only a stable
+exception **type name** is emitted on failure, because messages and stack traces can contain
+credentials or payload data. (Reasons are still available through the structured `ILogger`
+output below.)
+
 | Tag | Description | Example |
 |-----|-------------|---------|
 | `tickerq.job.id` | Unique job identifier | `123e4567-e89b-12d3-a456-426614174000` |
@@ -94,21 +100,16 @@ tickerq.job.execute.timeticker (main job execution span)
 | `tickerq.job.function` | Function name being executed | `ProcessEmails` |
 | `tickerq.job.priority` | Job priority | `Normal`, `High`, `LongRunning` |
 | `tickerq.job.machine` | Machine executing the job | `web-server-01` |
-| `tickerq.job.parent_id` | Parent job ID (for child jobs) | `parent-job-guid` |
-| `tickerq.job.enqueued_from` | Where the job was enqueued from | `UserController.CreateUser (Program.cs:42)` |
-| `tickerq.job.is_due` | Whether the job was due | `true`, `false` |
-| `tickerq.job.is_child` | Whether this is a child job | `true`, `false` |
 | `tickerq.job.retries` | Maximum retry attempts | `3` |
-| `tickerq.job.current_attempt` | Current retry attempt | `1`, `2`, `3` |
-| `tickerq.job.final_status` | Final execution status | `Done`, `Failed`, `Cancelled`, `Skipped` |
-| `tickerq.job.final_retry_count` | Final retry count reached | `2` |
-| `tickerq.job.execution_time_ms` | Execution time in milliseconds | `1250` |
-| `tickerq.job.success` | Whether execution was successful | `true`, `false` |
-| `tickerq.job.error_type` | Exception type for failures | `SqlException`, `TimeoutException` |
-| `tickerq.job.error_message` | Error message | `Connection timeout` |
-| `tickerq.job.error_stack_trace` | Full stack trace | `at MyService.ProcessData()...` |
-| `tickerq.job.cancellation_reason` | Reason for cancellation | `Task was cancelled` |
-| `tickerq.job.skip_reason` | Reason for skipping | `Another instance is already running` |
+| `tickerq.job.parent_id` | Parent job ID (child jobs only) | `parent-job-guid` |
+| `tickerq.job.run_condition` | Run condition (time-ticker children only) | `OnSuccess` |
+| `tickerq.job.enqueued_from` | Where the job was enqueued from | `UserController.CreateUser (Program.cs:42)` |
+| `tickerq.job.execution_time_ms` | Execution time in milliseconds (on completion) | `1250` |
+| `tickerq.job.success` | Whether execution was successful (on completion) | `true`, `false` |
+| `tickerq.job.retry_count` | Retry count reached at failure | `2` |
+| `tickerq.job.error_type` | Exception **type name** on failure (no message/stack trace) | `SqlException`, `TimeoutException` |
+| `tickerq.seeding.type` | Ticker type being seeded | `TimeTicker` |
+| `tickerq.seeding.environment` | Environment/node for the seeding span | `production-node-01` |
 
 ## Logging Output
 

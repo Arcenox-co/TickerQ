@@ -388,6 +388,10 @@ namespace TickerQ.Utilities.Infrastructure
                 RunCondition = null,
                 ExecutedAt = occ.ExecutedAt,
                 Description = parent != null ? $"Cron: {parent.Expression}" : null,
+                LockHolder = occ.LockHolder,
+                LockedAt = occ.LockedAt,
+                RetryIntervalsSeconds = parent?.RetryIntervals,
+                OnStale = parent?.OnStale ?? StaleAction.Restart,
             };
         }
 
@@ -450,7 +454,12 @@ namespace TickerQ.Utilities.Infrastructure
                 ParentId = e.ParentId,
                 RunCondition = e.RunCondition,
                 ExecutedAt = e.ExecutedAt,
-                Description = e.Description
+                Description = e.Description,
+                LockHolder = e.LockHolder,
+                LockedAt = e.LockedAt,
+                RetryIntervalsSeconds = e.RetryIntervals,
+                OnStale = e.OnStale,
+                TimeoutSeconds = e.TimeoutSeconds,
             };
         }
 
@@ -483,7 +492,10 @@ namespace TickerQ.Utilities.Infrastructure
                 LastRunStatus = lastRun?.Status,
                 LastRunAt = lastRun?.ExecutedAt,
                 IsEnabled = c.IsEnabled,
-                IsSystemPaused = c.IsSystemPaused
+                IsSystemPaused = c.IsSystemPaused,
+                RetryIntervalsSeconds = c.RetryIntervals,
+                OnStale = c.OnStale,
+                TimeoutSeconds = c.TimeoutSeconds,
             };
         }
 
@@ -502,7 +514,9 @@ namespace TickerQ.Utilities.Infrastructure
                 ExceptionMessage = e.ExceptionMessage,
                 SkippedReason = e.SkippedReason,
                 ExecutedAt = e.ExecutedAt,
-                CreatedAt = e.CreatedAt
+                CreatedAt = e.CreatedAt,
+                LockHolder = e.LockHolder,
+                LockedAt = e.LockedAt,
             };
         }
 
@@ -520,7 +534,9 @@ namespace TickerQ.Utilities.Infrastructure
                 ExceptionMessage = e.ExceptionMessage,
                 SkippedReason = e.SkippedReason,
                 ExecutedAt = e.ExecutedAt,
-                ChildCount = e.Children?.Count ?? 0
+                ChildCount = e.Children?.Count ?? 0,
+                LockHolder = e.LockHolder,
+                LockedAt = e.LockedAt,
             };
 
         // Cron occurrences inherit Retries from the parent cron ticker — the
@@ -533,6 +549,7 @@ namespace TickerQ.Utilities.Infrastructure
             {
                 Id = e.Id,
                 Type = ExecutionType.CronOccurrence,
+                CronTickerId = e.CronTickerId,
                 FunctionName = functionName,
                 Status = e.Status,
                 ScheduledFor = e.ExecutionTime,
@@ -541,7 +558,9 @@ namespace TickerQ.Utilities.Infrastructure
                 Retries = parentRetries,
                 ExceptionMessage = e.ExceptionMessage,
                 SkippedReason = e.SkippedReason,
-                ExecutedAt = e.ExecutedAt
+                ExecutedAt = e.ExecutedAt,
+                LockHolder = e.LockHolder,
+                LockedAt = e.LockedAt,
             };
 
         // ============ Sort helpers ============
@@ -652,25 +671,39 @@ namespace TickerQ.Utilities.Infrastructure
 
         public Task<IList<FunctionInfoDto>> GetAllFunctionsAsync(CancellationToken cancellationToken = default)
         {
-            var functions = TickerFunctionProvider.TickerFunctions;
-            var infos = TickerFunctionProvider.TickerFunctionRequestInfos;
-
-            var result = functions.Select(kvp =>
+            var descriptors = TickerFunctionProvider.TickerFunctionDescriptors;
+            var result = descriptors.Values.Select(descriptor =>
             {
-                var name = kvp.Key;
-                string reqType = null, reqExample = null;
-                if (infos != null && infos.TryGetValue(name, out var info))
+                var request = descriptor.Request;
+                FunctionRequestContractDto requestDto = null;
+                if (request != null)
                 {
-                    reqType = info.RequestType;
-                    reqExample = info.RequestExampleJson;
+                    requestDto = new FunctionRequestContractDto
+                    {
+                        TypeName = request.TypeName,
+                        MediaType = request.MediaType,
+                        Required = request.Required,
+                        SchemaDialect = request.SchemaDialect,
+                        SchemaJson = request.Schema?.GetRawText(),
+                        Fingerprint = request.Fingerprint,
+                        Examples = request.Examples.Select(example => new FunctionRequestExampleDto
+                        {
+                            Key = example.Key,
+                            Summary = example.Summary,
+                            ValueJson = example.Value.GetRawText()
+                        }).ToList()
+                    };
                 }
+
                 return new FunctionInfoDto
                 {
-                    FunctionName = name,
-                    RequestType = reqType,
-                    RequestExample = reqExample,
-                    Priority = kvp.Value.Priority,
-                    CronExpression = kvp.Value.cronExpression
+                    FunctionName = descriptor.FunctionName,
+                    ContractVersion = descriptor.ContractVersion,
+                    RequestContract = requestDto,
+                    RequestType = request?.TypeName,
+                    RequestExample = request?.Examples.FirstOrDefault()?.Value.GetRawText(),
+                    Priority = descriptor.Priority,
+                    CronExpression = descriptor.CronExpression
                 };
             }).ToList();
 
@@ -875,7 +908,11 @@ namespace TickerQ.Utilities.Infrastructure
                 {
                     Date = date,
                     Counts = allStatuses
-                        .Select(s => (s, (statusCounts != null && statusCounts.TryGetValue(s, out var c)) ? c : 0))
+                        .Select(s => new GraphBucketCountDto
+                        {
+                            Status = s,
+                            Count = statusCounts != null && statusCounts.TryGetValue(s, out var c) ? c : 0,
+                        })
                         .ToArray()
                 });
             }

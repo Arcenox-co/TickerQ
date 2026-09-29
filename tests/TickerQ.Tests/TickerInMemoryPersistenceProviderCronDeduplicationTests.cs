@@ -139,7 +139,9 @@ public class TickerInMemoryPersistenceProviderCronDeduplicationTests : IAsyncLif
             _provider.QueueCronTickerOccurrences((executionTime, new[] { context }), CancellationToken.None));
         Assert.Single(firstResults);
 
-        // Remove the occurrence
+        // Explicit deletion rejects owned work. Release the queued lease before removing the row so
+        // this test remains focused on freeing the (ExecutionTime, CronTickerId) deduplication slot.
+        await _provider.ReleaseAcquiredCronTickerOccurrences([firstResults[0].Id], CancellationToken.None);
         var removed = await _provider.RemoveCronTickerOccurrences(
             new[] { firstResults[0].Id }, CancellationToken.None);
         Assert.Equal(1, removed);
@@ -191,6 +193,52 @@ public class TickerInMemoryPersistenceProviderCronDeduplicationTests : IAsyncLif
 
         // Cleanup
         await _provider.RemoveCronTickerOccurrences(new[] { occurrence1.Id }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task MigrateDefinedCronTickers_UserRowSharingFunction_NotMatchedOrMutated()
+    {
+        // A user-created cron (no seed identity) sharing a function name with a code seed,
+        // and a DIFFERENT expression. Seed reconciliation must not match or mutate it.
+        var userId = Guid.NewGuid();
+        var userRow = new FakeCronTicker
+        {
+            Id = userId,
+            Function = "SeedShared",
+            Expression = "0 0 * * *",          // differs from the seed
+            InitIdentifier = "",               // user row: no seed identity
+            RequestContractVersion = null,
+            RequestContractFingerprint = null
+        };
+        await _provider.InsertCronTickers(new[] { userRow }, CancellationToken.None);
+
+        try
+        {
+            var seed = new DefinedCronTickerSeed("SeedShared", "*/5 * * * *", 9, "sha256:seed-only");
+            await _provider.MigrateDefinedCronTickers(new[] { seed }, CancellationToken.None);
+
+            var rows = await _provider.GetCronTickers(x => x.Function == "SeedShared", CancellationToken.None);
+
+            // The user row is untouched.
+            var persistedUser = Assert.Single(rows.Where(r => r.Id == userId));
+            Assert.Equal("0 0 * * *", persistedUser.Expression);
+            Assert.Null(persistedUser.RequestContractVersion);
+            Assert.Null(persistedUser.RequestContractFingerprint);
+            Assert.Equal("", persistedUser.InitIdentifier);
+
+            // The seed owns a separate, freshly inserted seeded row.
+            var seededRow = Assert.Single(rows.Where(r => r.Id != userId));
+            Assert.Equal("0 */5 * * * *", seededRow.Expression);
+            Assert.Equal(9, seededRow.RequestContractVersion);
+            Assert.Equal("sha256:seed-only", seededRow.RequestContractFingerprint);
+            Assert.StartsWith("MemoryTicker_Seeded_", seededRow.InitIdentifier);
+
+            await _provider.RemoveCronTickers(rows.Select(r => r.Id).ToArray(), CancellationToken.None);
+        }
+        finally
+        {
+            await _provider.RemoveCronTickers(new[] { userId }, CancellationToken.None);
+        }
     }
 
     private async Task SetupCronTicker(Guid cronTickerId)

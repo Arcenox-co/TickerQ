@@ -2,6 +2,7 @@ using System.Net;
 using System.Reflection;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -11,6 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TickerQ.Dashboard.DependencyInjection;
+using TickerQ.Dashboard;
 
 namespace TickerQ.Tests;
 
@@ -26,6 +28,57 @@ namespace TickerQ.Tests;
 /// </summary>
 public class DashboardAuthorizationPipelineTests
 {
+    [Fact]
+    public void DashboardOptions_AnonymousExposureRequiresExplicitAcknowledgement()
+    {
+        var options = new DashboardOptionsBuilder();
+
+        var exception = Assert.Throws<InvalidOperationException>(() => options.Validate());
+        Assert.Contains("AllowAnonymousDashboard", exception.Message);
+
+        options.AllowAnonymousDashboard();
+        options.Validate();
+    }
+
+    [Fact]
+    public void DashboardOptions_ForwardedHeadersRequireExplicitTrustBoundary()
+    {
+        var options = new DashboardOptionsBuilder().AllowAnonymousDashboard()
+            .EnableForwardedHeaders();
+
+        var exception = Assert.Throws<InvalidOperationException>(() => options.Validate());
+        Assert.Contains("TrustForwarded", exception.Message);
+
+        options.TrustForwardedProxy(IPAddress.Loopback);
+        options.Validate();
+    }
+
+    [Fact]
+    public void DashboardOptions_BackendDomainDoesNotImplicitlyGrantCorsTrust()
+    {
+        var options = new DashboardOptionsBuilder().AllowAnonymousDashboard();
+        options.SetBackendDomain("https://api.example.test");
+
+        var exception = Assert.Throws<InvalidOperationException>(() => options.Validate());
+        Assert.Contains("AllowOrigins", exception.Message);
+    }
+
+    [Fact]
+    public void DefaultCorsPolicy_AllowsOnlyExplicitOriginWithCredentials()
+    {
+        var options = new DashboardOptionsBuilder().AllowAnonymousDashboard()
+            .AllowOrigins("https://dashboard.example.test");
+        ServiceExtensions.ConfigureDefaultCorsPolicy(options);
+        var builder = new CorsPolicyBuilder();
+        options.CorsPolicyBuilder(builder);
+        var policy = builder.Build();
+
+        Assert.True(policy.SupportsCredentials);
+        Assert.True(policy.IsOriginAllowed("https://dashboard.example.test"));
+        Assert.False(policy.IsOriginAllowed("https://evil.example.test"));
+        Assert.Single(policy.Origins);
+    }
+
     private static readonly MethodInfo MapPathBaseAwareMethod =
         typeof(ServiceCollectionExtensions).GetMethod(
             "MapPathBaseAware",

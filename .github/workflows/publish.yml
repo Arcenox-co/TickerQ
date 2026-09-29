@@ -17,6 +17,9 @@ jobs:
       name: production-publish
 
     steps:
+      - name: Checkout validation policy
+        uses: actions/checkout@v4
+
       - name: Download artifact ZIP by ID
         run: |
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -27,8 +30,10 @@ jobs:
       - name: Extract artifact
         run: unzip artifact.zip -d ./nupkgs
 
+      - name: Validate package versions and licenses
+        run: python3 scripts/validate-package-licenses.py --directory ./nupkgs --version "${{ github.event.inputs.version }}" --commercial-license ./LICENSE-COMMERCIAL.txt --repository-commit "${{ github.sha }}"
+
       - name: Publish to NuGet
-        continue-on-error: true
         run: |
           for f in ./nupkgs/*.nupkg; do
             echo "📦 Pushing $(basename "$f")..."
@@ -39,7 +44,6 @@ jobs:
           done
 
       - name: Publish symbols to NuGet
-        continue-on-error: true
         run: |
           for f in ./nupkgs/*.snupkg; do
             [ -f "$f" ] || continue

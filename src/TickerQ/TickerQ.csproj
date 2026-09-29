@@ -13,8 +13,22 @@
         <None Include="..\..\README.md" Pack="true" PackagePath="" />
     </ItemGroup>
 
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+            <_Parameter1>TickerQFunctionalMinorLine</_Parameter1>
+            <_Parameter2>$(TickerQFunctionalMinorLine)</_Parameter2>
+        </AssemblyAttribute>
+    </ItemGroup>
+
    <ItemGroup>
-       <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+       <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
+       <ProjectReference Include="..\TickerQ.SourceGenerator\TickerQ.SourceGenerator.csproj"
+                         ReferenceOutputAssembly="false"
+                         PrivateAssets="all" />
+   </ItemGroup>
+
+   <ItemGroup>
+       <PackageReference Include="NSec.Cryptography" Version="26.4.0" />
    </ItemGroup>
 
     <Target Name="CopyAnalyzer" AfterTargets="Build">

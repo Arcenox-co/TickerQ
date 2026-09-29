@@ -131,8 +131,8 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
     public Task AddTimeTickersBatchNotifyAsync()
         => Push("scope.changed", "time-tickers", null);
 
-    public Task UpdateTimeTickerNotifyAsync(object timeTicker)
-        => Push("time_ticker.updated", "time-tickers", timeTicker);
+    public Task UpdateTimeTickerNotifyAsync(Guid id)
+        => Push("time_ticker.updated", "time-tickers", new { id });
 
     public Task RemoveTimeTickerNotifyAsync(Guid id)
         => Push("time_ticker.removed", "time-tickers", new { id });
@@ -159,36 +159,23 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
 
     // ── Cron tickers + occurrences ──
 
-    public Task AddCronTickerNotifyAsync(object cronTicker)
-        => Push("scope.changed", "cron-tickers", null);
+    public Task AddCronTickerNotifyAsync(Guid id)
+        => Push("scope.changed", "cron-tickers", new { id });
 
-    public Task UpdateCronTickerNotifyAsync(object cronTicker)
-        => Push("scope.changed", "cron-tickers", null);
+    public Task UpdateCronTickerNotifyAsync(Guid id)
+        => Push("scope.changed", "cron-tickers", new { id });
 
     public Task RemoveCronTickerNotifyAsync(Guid id)
         => Push("scope.changed", "cron-tickers", new { id });
 
-    public Task AddCronOccurrenceAsync(Guid groupId, object occurrence)
+    public Task AddCronOccurrenceAsync(Guid groupId, Guid occurrenceId)
     {
-        // Best-effort extract of the occurrence id from the payload object so the
-        // log line is keyed to the actual occurrence (not the cron group id).
-        var occurrenceId = TryGetOccurrenceId(occurrence);
-        if (occurrenceId.HasValue)
-            EnqueueSchedulerLine(occurrenceId.Value, (int)TickerType.CronTickerOccurrence, string.Empty, 2, "Cron occurrence enqueued");
-        return Push("scope.changed", "cron-occurrences", new { cronTickerId = groupId });
+        EnqueueSchedulerLine(occurrenceId, (int)TickerType.CronTickerOccurrence, string.Empty, 2, "Cron occurrence enqueued");
+        return Push("scope.changed", "cron-occurrences", new { cronTickerId = groupId, occurrenceId });
     }
 
-    private static Guid? TryGetOccurrenceId(object occurrence)
-    {
-        if (occurrence == null) return null;
-        var prop = occurrence.GetType().GetProperty("Id");
-        if (prop == null) return null;
-        var v = prop.GetValue(occurrence);
-        return v is Guid g ? g : null;
-    }
-
-    public Task UpdateCronOccurrenceAsync(Guid groupId, object occurrence)
-        => Push("scope.changed", "cron-occurrences", new { cronTickerId = groupId });
+    public Task UpdateCronOccurrenceAsync(Guid groupId, Guid occurrenceId)
+        => Push("scope.changed", "cron-occurrences", new { cronTickerId = groupId, occurrenceId });
 
     public Task UpdateCronOccurrenceFromInternalFunctionContext<TCronTickerEntity>(InternalFunctionContext ctx)
         where TCronTickerEntity : CronTickerEntity, new()

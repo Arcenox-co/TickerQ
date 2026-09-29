@@ -1,4 +1,5 @@
 import { TickerType, TickerStatus, TickerTaskPriority, RunCondition } from '../enums';
+import type { ResultEnvelope } from './ResultEnvelope';
 
 export interface InternalFunctionContext {
     parametersToUpdate: string[];
@@ -6,6 +7,7 @@ export interface InternalFunctionContext {
     cachedMaxConcurrency: number;
     functionName: string;
     tickerId: string;
+    acquisitionToken: string;
     parentId: string | null;
     type: TickerType;
     retries: number;
@@ -19,4 +21,6 @@ export interface InternalFunctionContext {
     executionTime: string;
     runCondition: RunCondition;
     timeTickerChildren: InternalFunctionContext[];
+    /** Included only in a final successful status update. */
+    resultEnvelope?: ResultEnvelope | null;
 }

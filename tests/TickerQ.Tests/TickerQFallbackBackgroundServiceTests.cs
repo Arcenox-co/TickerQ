@@ -46,7 +46,8 @@ public class TickerQFallbackBackgroundServiceTests
             _schedulerOptions,
             _taskHandler,
             _taskScheduler,
-            new TickerFunctionConcurrencyGate());
+            new TickerFunctionConcurrencyGate(),
+            LicenseTestState.Active());
     }
 
     [Fact]

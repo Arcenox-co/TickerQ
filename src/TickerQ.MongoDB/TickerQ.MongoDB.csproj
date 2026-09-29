@@ -10,10 +10,11 @@
 
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="" />
+		<None Include="..\..\LICENSE-OSS" Pack="true" PackagePath="" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<PackageReference Include="MongoDB.Driver" Version="3.9.0" />
-		<PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+		<ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
 	</ItemGroup>
 </Project>

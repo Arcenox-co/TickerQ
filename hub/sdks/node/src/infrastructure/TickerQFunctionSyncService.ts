@@ -29,11 +29,13 @@ export class TickerQFunctionSyncService {
     async syncAsync(signal?: AbortSignal): Promise<SyncNodesAndFunctionsResult | null> {
         const functions = TickerFunctionProvider.tickerFunctions;
         const requestInfos = TickerFunctionProvider.tickerFunctionRequestInfos;
+        const resultInfos = TickerFunctionProvider.tickerFunctionResultInfos;
 
         const nodeFunctions: NodeFunction[] = [];
 
         for (const [name, reg] of functions) {
             const requestInfo = requestInfos.get(name);
+            const resultInfo = resultInfos.get(name);
 
             const nodeFunction: NodeFunction = {
                 functionName: name,
@@ -41,6 +43,10 @@ export class TickerQFunctionSyncService {
                 taskPriority: reg.priority,
                 requestType: requestInfo?.requestType ?? '',
                 requestExampleJson: requestInfo?.requestExampleJson ?? '',
+                contractVersion: requestInfo?.contractVersion ?? 1,
+                requestContract: requestInfo?.requestContract,
+                resultType: resultInfo?.resultType ?? '',
+                resultContract: resultInfo?.resultContract,
             };
 
             nodeFunctions.push(nodeFunction);
@@ -50,6 +56,7 @@ export class TickerQFunctionSyncService {
             nodeName: this.options.nodeName!,
             callbackUrl: this.options.callbackUri!,
             isProduction: process.env.NODE_ENV === 'production',
+            nodeEpoch: this.options.nodeEpoch,
             functions: nodeFunctions,
         };
 
