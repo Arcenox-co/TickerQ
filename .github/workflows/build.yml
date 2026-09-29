@@ -154,7 +154,7 @@ jobs:
           dotnet pack hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release --output ./nupkgs
 
       - name: Validate commercial package licenses
-        run: python3 scripts/validate-package-licenses.py --directory ./nupkgs --version "${{ needs.check-nuget.outputs.version }}" --commercial-license ./LICENSE-COMMERCIAL.txt --repository-commit "${{ github.sha }}"
+        run: python3 scripts/validate-package-licenses.py --directory ./nupkgs --version "${{ needs.check-nuget.outputs.version }}" --commercial-license ./licenses/COMMERCIAL.md --repository-commit "${{ github.sha }}"
 
       - name: Show package file sizes
         run: |

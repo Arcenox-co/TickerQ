@@ -18,7 +18,7 @@
                                              '$(MSBuildProjectName)' == 'TickerQ.SourceGenerator' Or
                                              '$(MSBuildProjectName)' == 'TickerQ.SDK' Or
                                              '$(MSBuildProjectName)' == 'TickerQ.RemoteExecutor'">true</TickerQCommercialPackage>
-        <PackageLicenseFile Condition="'$(TickerQCommercialPackage)' == 'true'">LICENSE-COMMERCIAL.txt</PackageLicenseFile>
+        <PackageLicenseFile Condition="'$(TickerQCommercialPackage)' == 'true'">COMMERCIAL.md</PackageLicenseFile>
         <PackageLicenseExpression Condition="'$(TickerQCommercialPackage)' != 'true'">MIT OR Apache-2.0</PackageLicenseExpression>
         <Authors>Arcenox LLC</Authors>
         <Copyright>Copyright 2025-present Arcenox LLC</Copyright>
@@ -38,7 +38,7 @@
 
     <ItemGroup>
         <None Include="..\..\icon.jpg" Pack="true" PackagePath="\" />
-        <None Include="$(MSBuildThisFileDirectory)..\LICENSE-COMMERCIAL.txt"
+        <None Include="$(MSBuildThisFileDirectory)..\licenses\COMMERCIAL.md"
               Pack="true"
               PackagePath=""
               Condition="'$(TickerQCommercialPackage)' == 'true'" />

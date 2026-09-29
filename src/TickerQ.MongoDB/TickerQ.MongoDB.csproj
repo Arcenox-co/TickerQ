@@ -10,7 +10,7 @@
 
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="" />
-		<None Include="..\..\LICENSE-OSS" Pack="true" PackagePath="" />
+		<None Include="..\..\licenses\OPEN-SOURCE.md" Pack="true" PackagePath="" />
 	</ItemGroup>
 
 	<ItemGroup>

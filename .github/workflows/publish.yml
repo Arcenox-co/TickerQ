@@ -31,7 +31,7 @@ jobs:
         run: unzip artifact.zip -d ./nupkgs
 
       - name: Validate package versions and licenses
-        run: python3 scripts/validate-package-licenses.py --directory ./nupkgs --version "${{ github.event.inputs.version }}" --commercial-license ./LICENSE-COMMERCIAL.txt --repository-commit "${{ github.sha }}"
+        run: python3 scripts/validate-package-licenses.py --directory ./nupkgs --version "${{ github.event.inputs.version }}" --commercial-license ./licenses/COMMERCIAL.md --repository-commit "${{ github.sha }}"
 
       - name: Publish to NuGet
         run: |

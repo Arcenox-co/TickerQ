@@ -49,4 +49,4 @@ Use [GitHub Issues](https://github.com/Arcenox-co/TickerQ/issues) to report bugs
 
 ## License
 
-By contributing, you grant the rights stated in the [CLA](CLA.md). Inclusion does not promise a particular outbound license: the applicable terms are the license embedded in the relevant immutable artifact. See the repository [license boundary notice](LICENSE), [commercial agreement](LICENSE-COMMERCIAL.txt), and [preserved open-source terms](LICENSE-OSS).
+By contributing, you grant the rights stated in the [CLA](CLA.md). Inclusion does not promise a particular outbound license: the applicable terms are the license embedded in the relevant immutable artifact. See the repository [license guide](LICENSE.md), [commercial agreement](licenses/COMMERCIAL.md), and [preserved open-source terms](licenses/OPEN-SOURCE.md).

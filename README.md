@@ -260,6 +260,6 @@ Thanks to all our wonderful contributors! See [CONTRIBUTORS.md](CONTRIBUTORS.md)
 
 ## License
 
-TickerQ's commercial transition begins with functional line **5.x**: version `10.5.0` for .NET 10 and its parallel `9.5.0` / `8.5.0` builds. The nine Schedule A package families are source-available under the [TickerQ Software License Agreement v1.0](LICENSE-COMMERCIAL.txt); Community, Evaluation, and paid Commercial licenses are available at [license.tickerq.net](https://license.tickerq.net/pricing).
+TickerQ's commercial transition begins with functional line **5.x**: version `10.5.0` for .NET 10 and its parallel `9.5.0` / `8.5.0` builds. The nine Schedule A package families are source-available under the [TickerQ Software License Agreement v1.0](licenses/COMMERCIAL.md); Community, Evaluation, and paid Commercial licenses are available at [license.tickerq.net](https://license.tickerq.net/pricing).
 
-Every immutable artifact originally released under MIT and/or Apache 2.0—including every pre-transition release—permanently retains those grants. The original terms are preserved in [LICENSE-OSS](LICENSE-OSS). `TickerQ.MongoDB` remains outside Schedule A and is dual-licensed under MIT OR Apache-2.0. See the [license boundary notice](LICENSE) for details.
+Every immutable artifact originally released under MIT and/or Apache 2.0—including every pre-transition release—permanently retains those grants. The [original terms](licenses/OPEN-SOURCE.md) remain preserved. `TickerQ.MongoDB` remains outside Schedule A and is dual-licensed under MIT OR Apache-2.0. See the readable [license guide](LICENSE.md) for the complete boundary.
