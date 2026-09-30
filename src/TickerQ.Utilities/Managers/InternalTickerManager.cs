@@ -118,6 +118,21 @@ namespace TickerQ.Utilities.Managers
             return (timeRemaining, merged);
         }
 
+        // Maps the whole chain: the executor walks children recursively, so truncating here would
+        // silently drop every step below the grandchild level.
+        protected static List<InternalFunctionContext> MapChainChildren(IEnumerable<TimeTickerEntity> children)
+            => children?.Select(ch => new InternalFunctionContext
+            {
+                FunctionName = ch.Function,
+                TickerId = ch.Id,
+                Type = TickerType.TimeTicker,
+                Retries = ch.Retries,
+                RetryIntervals = ch.RetryIntervals,
+                ParentId = ch.ParentId,
+                RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus,
+                TimeTickerChildren = MapChainChildren(ch.Children)
+            }).ToList() ?? [];
+
         protected static TimeSpan SafeRemaining(DateTime target, DateTime now)
         {
             var remaining = target - now;
@@ -139,26 +154,7 @@ namespace TickerQ.Utilities.Managers
                     RetryIntervals = updatedTimeTicker.RetryIntervals,
                     ParentId = updatedTimeTicker.ParentId,
                     ExecutionTime = updatedTimeTicker.ExecutionTime ?? Clock.UtcNow,
-                    TimeTickerChildren = updatedTimeTicker.Children.Select(ch => new InternalFunctionContext
-                    {
-                        FunctionName = ch.Function,
-                        TickerId = ch.Id,
-                        Type = TickerType.TimeTicker,
-                        Retries = ch.Retries,
-                        RetryIntervals = ch.RetryIntervals,
-                        ParentId = ch.ParentId,
-                        RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus,
-                        TimeTickerChildren = ch.Children.Select(gch => new InternalFunctionContext
-                        {
-                            FunctionName = gch.Function,
-                            TickerId = gch.Id,
-                            Type = TickerType.TimeTicker,
-                            Retries = gch.Retries,
-                            RetryIntervals = gch.RetryIntervals,
-                            ParentId = gch.ParentId,
-                            RunCondition = gch.RunCondition ?? RunCondition.OnAnyCompletedStatus
-                        }).ToList()
-                    }).ToList()
+                    TimeTickerChildren = MapChainChildren(updatedTimeTicker.Children)
                 });
 
                 await NotificationHubSender.UpdateTimeTickerNotifyAsync(updatedTimeTicker);
@@ -423,26 +419,7 @@ namespace TickerQ.Utilities.Managers
                     RetryIntervals = timedOutTimeTicker.RetryIntervals,
                     ParentId = timedOutTimeTicker.ParentId,
                     ExecutionTime = timedOutTimeTicker.ExecutionTime ?? Clock.UtcNow,
-                    TimeTickerChildren = timedOutTimeTicker.Children.Select(ch => new InternalFunctionContext
-                    {
-                        FunctionName = ch.Function,
-                        TickerId = ch.Id,
-                        Type = TickerType.TimeTicker,
-                        Retries = ch.Retries,
-                        RetryIntervals = ch.RetryIntervals,
-                        ParentId = ch.ParentId,
-                        RunCondition = ch.RunCondition ?? RunCondition.OnAnyCompletedStatus,
-                        TimeTickerChildren = ch.Children.Select(gch => new InternalFunctionContext
-                        {
-                            FunctionName = gch.Function,
-                            TickerId = gch.Id,
-                            Type = TickerType.TimeTicker,
-                            Retries = gch.Retries,
-                            RetryIntervals = gch.RetryIntervals,
-                            ParentId = gch.ParentId,
-                            RunCondition = gch.RunCondition ?? RunCondition.OnAnyCompletedStatus
-                        }).ToList()
-                    }).ToList()
+                    TimeTickerChildren = MapChainChildren(timedOutTimeTicker.Children)
                 });
 
                 await NotificationHubSender.UpdateTimeTickerNotifyAsync(timedOutTimeTicker).ConfigureAwait(false);

@@ -982,6 +982,47 @@ public class InternalTickerManagerTests
     }
 
     [Fact]
+    public async Task RunTimedOutTickers_SequentialChain_MapsEveryLevel()
+    {
+        // root -> step1 -> ... -> step7: the executor walks the whole context tree, so every
+        // level must survive the mapping, not only child and grandchild.
+        var root = new TimeTickerEntity { Id = Guid.NewGuid(), Function = "Step0", ExecutionTime = _now.AddMinutes(-5) };
+        var parent = root;
+        for (var i = 1; i <= 7; i++)
+        {
+            var step = new TimeTickerEntity
+            {
+                Id = Guid.NewGuid(),
+                Function = $"Step{i}",
+                ParentId = parent.Id,
+                RunCondition = RunCondition.OnSuccess
+            };
+            parent.Children = new List<TimeTickerEntity> { step };
+            parent = step;
+        }
+
+        _persistence.QueueTimedOutTimeTickers(Arg.Any<CancellationToken>())
+            .Returns(ToAsyncEnumerable(new[] { root }));
+        _persistence.QueueTimedOutCronTickerOccurrences(Arg.Any<CancellationToken>())
+            .Returns(EmptyAsyncEnumerable<CronTickerOccurrenceEntity<FakeCronTicker>>());
+
+        var results = await _manager.RunTimedOutTickers(CancellationToken.None);
+
+        var node = Assert.Single(results);
+        var functions = new List<string> { node.FunctionName };
+        while (node.TimeTickerChildren.Count > 0)
+        {
+            var next = Assert.Single(node.TimeTickerChildren);
+            Assert.Equal(node.TickerId, next.ParentId);
+            Assert.Equal(RunCondition.OnSuccess, next.RunCondition);
+            node = next;
+            functions.Add(node.FunctionName);
+        }
+
+        Assert.Equal(Enumerable.Range(0, 8).Select(i => $"Step{i}"), functions);
+    }
+
+    [Fact]
     public async Task RunTimedOutTickers_NotifiesHub_ForTimeTickers()
     {
         var timedOutTimeTicker = new TimeTickerEntity

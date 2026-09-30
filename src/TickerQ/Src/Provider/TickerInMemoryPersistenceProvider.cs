@@ -1108,46 +1108,43 @@ namespace TickerQ.Provider
                     if (ch.ExecutionTime != null)
                         continue;
 
-                    var childEntity = new TimeTickerEntity
-                    {
-                        Id = ch.Id,
-                        Function = ch.Function,
-                        Retries = ch.Retries,
-                        RetryIntervals = ch.RetryIntervals,
-                        RunCondition = ch.RunCondition,
-                        Children = new List<TimeTickerEntity>()
-                    };
-
-                    if (ChildrenIndex.TryGetValue(ch.Id, out var grandChildren) && !grandChildren.IsEmpty)
-                    {
-                        // Pre-size grandchildren collection
-                        var grandChildList = new List<TimeTickerEntity>(grandChildren.Count);
-
-                        foreach (var grandChildId in grandChildren.Keys)
-                        {
-                            if (!TimeTickers.TryGetValue(grandChildId, out var gch))
-                                continue;
-
-                            grandChildList.Add(new TimeTickerEntity
-                            {
-                                Id = gch.Id,
-                                Function = gch.Function,
-                                Retries = gch.Retries,
-                                RetryIntervals = gch.RetryIntervals,
-                                RunCondition = gch.RunCondition
-                            });
-                        }
-
-                        childEntity.Children = grandChildList;
-                    }
-
-                    children.Add(childEntity);
+                    children.Add(MapChainNodeForQueue(ch));
                 }
 
                 root.Children = children;
             }
 
             return root;
+        }
+
+        // Maps a chain node with its whole subtree: the executor walks children recursively, so a
+        // fixed depth here would silently drop every step below the grandchild level.
+        private static TimeTickerEntity MapChainNodeForQueue(TTimeTicker node)
+        {
+            var entity = new TimeTickerEntity
+            {
+                Id = node.Id,
+                Function = node.Function,
+                Retries = node.Retries,
+                RetryIntervals = node.RetryIntervals,
+                RunCondition = node.RunCondition,
+                Children = new List<TimeTickerEntity>()
+            };
+
+            if (ChildrenIndex.TryGetValue(node.Id, out var childIds) && !childIds.IsEmpty)
+            {
+                var children = new List<TimeTickerEntity>(childIds.Count);
+
+                foreach (var childId in childIds.Keys)
+                {
+                    if (TimeTickers.TryGetValue(childId, out var child))
+                        children.Add(MapChainNodeForQueue(child));
+                }
+
+                entity.Children = children;
+            }
+
+            return entity;
         }
 
         private static void AddChildIndex(Guid parentId, Guid childId)

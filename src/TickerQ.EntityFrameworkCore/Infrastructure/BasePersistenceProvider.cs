@@ -90,6 +90,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
+        await AttachChainTailAsync(dbContext, timeTickersToUpdate, cancellationToken).ConfigureAwait(false);
+
         foreach (var timeTicker in timeTickersToUpdate)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -189,12 +191,16 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         // Fetch all tickers within that complete second (this ensures we get all tickers in the same second)
         var maxExecutionTime = minSecond.AddSeconds(1);
     
-        return await baseQuery
+        var earliest = await baseQuery
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
             .Where(x => x.ExecutionTime >= minSecond && x.ExecutionTime < maxExecutionTime)
             .OrderBy(x => x.ExecutionTime)
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+
+        await AttachChainTailAsync(dbContext, earliest, cancellationToken).ConfigureAwait(false);
+
+        return earliest;
     }
     
     public async Task<byte[]> GetTimeTickerRequest(Guid tickerId, CancellationToken cancellationToken = default)
@@ -259,13 +265,55 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             return [];
 
         // Return the acquired tickers for immediate execution, with children
-        return await dbContext.Set<TTimeTicker>()
+        var acquired = await dbContext.Set<TTimeTicker>()
             .AsNoTracking()
             .Where(x => idList.Contains(x.Id) && x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        await AttachChainTailAsync(dbContext, acquired, cancellationToken).ConfigureAwait(false);
+
+        return acquired;
+    }
+
+    // ForQueueTimeTickers stops at grandchildren (a LINQ projection cannot recurse), while the
+    // executor walks the chain to any depth. Load the remaining levels one query per level for all
+    // roots at once and attach them, so steps below the grandchild are executed instead of being
+    // silently dropped.
+    private static async Task AttachChainTailAsync(TDbContext dbContext, TimeTickerEntity[] roots, CancellationToken cancellationToken)
+    {
+        var frontier = roots
+            .SelectMany(root => root.Children)
+            .SelectMany(child => child.Children)
+            .ToList();
+
+        while (frontier.Count > 0)
+        {
+            var parents = frontier.ToDictionary(node => node.Id);
+            var parentIds = parents.Keys.ToList();
+
+            var level = await dbContext.Set<TTimeTicker>()
+                .AsNoTracking()
+                .Where(x => x.ParentId != null && parentIds.Contains(x.ParentId.Value))
+                .Select(x => new TimeTickerEntity
+                {
+                    Id = x.Id,
+                    Function = x.Function,
+                    Retries = x.Retries,
+                    RetryIntervals = x.RetryIntervals,
+                    RunCondition = x.RunCondition,
+                    ParentId = x.ParentId
+                })
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (var siblings in level.GroupBy(node => node.ParentId!.Value))
+                parents[siblings.Key].Children = siblings.ToArray();
+
+            frontier = level;
+        }
     }
         
     #region Core_Cron_Ticker_Methods

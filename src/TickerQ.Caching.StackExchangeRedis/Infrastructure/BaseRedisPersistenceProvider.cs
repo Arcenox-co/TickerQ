@@ -185,26 +185,23 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             Status = ticker.Status,
             LockHolder = ticker.LockHolder,
             LockedAt = ticker.LockedAt,
-            Children = ticker.Children.Select(ch => new TimeTickerEntity
-            {
-                Id = ch.Id,
-                Function = ch.Function,
-                Retries = ch.Retries,
-                RetryIntervals = ch.RetryIntervals,
-                RunCondition = ch.RunCondition,
-                ParentId = ch.ParentId,
-                Children = ch.Children.Select(gch => new TimeTickerEntity
-                {
-                    Id = gch.Id,
-                    Function = gch.Function,
-                    Retries = gch.Retries,
-                    RetryIntervals = gch.RetryIntervals,
-                    RunCondition = gch.RunCondition,
-                    ParentId = gch.ParentId
-                }).ToArray()
-            }).ToArray()
+            Children = ticker.Children.Select(MapChainNodeForQueue).ToArray()
         };
     }
+
+    // Maps a chain node with its whole subtree: the executor walks children recursively, so a
+    // fixed depth here would silently drop every step below the grandchild level.
+    private static TimeTickerEntity MapChainNodeForQueue(TTimeTicker node)
+        => new TimeTickerEntity
+        {
+            Id = node.Id,
+            Function = node.Function,
+            Retries = node.Retries,
+            RetryIntervals = node.RetryIntervals,
+            RunCondition = node.RunCondition,
+            ParentId = node.ParentId,
+            Children = node.Children.Select(MapChainNodeForQueue).ToArray()
+        };
     #endregion
 
     #region Core_Time_Ticker_Methods

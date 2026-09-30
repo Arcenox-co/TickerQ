@@ -557,6 +557,112 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     // 10. InsertCronTickers
     // =========================================================================
 
+    // =========================================================================
+    // Chain depth — every queue path must hand the executor the whole chain
+    // =========================================================================
+
+    // Sequential chain: root -> step1 -> step2 -> ... -> step{depth}. Steps below the root carry no
+    // ExecutionTime, as materialized periodic chains and fluent chains do.
+    private async Task<TimeTickerEntity> SeedSequentialChain(int depth, DateTime rootExecutionTime)
+    {
+        var root = CreateTimeTicker(executionTime: rootExecutionTime, function: "Step0");
+        var all = new List<TimeTickerEntity> { root };
+        var parent = root;
+
+        for (var i = 1; i <= depth; i++)
+        {
+            var step = CreateTimeTicker(function: $"Step{i}");
+            step.ExecutionTime = null;
+            step.ParentId = parent.Id;
+            step.RunCondition = RunCondition.OnAnyCompletedStatus;
+            all.Add(step);
+            parent = step;
+        }
+
+        await SeedTimeTickers(all.ToArray());
+        return root;
+    }
+
+    private static List<string> WalkSequentialChain(TimeTickerEntity root)
+    {
+        var functions = new List<string> { root.Function };
+        var node = root;
+        while (node.Children is { Count: > 0 })
+        {
+            Assert.Single(node.Children);
+            node = node.Children.First();
+            functions.Add(node.Function);
+        }
+        return functions;
+    }
+
+    private static readonly string[] EightStepChain =
+        Enumerable.Range(0, 8).Select(i => $"Step{i}").ToArray();
+
+    [Fact]
+    public async Task GetEarliestTimeTickers_ReturnsChainBelowGrandchildren()
+    {
+        await SeedSequentialChain(depth: 7, rootExecutionTime: _fixedNow.AddMilliseconds(500));
+
+        var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
+
+        Assert.Single(results);
+        Assert.Equal(EightStepChain, WalkSequentialChain(results[0]));
+    }
+
+    [Fact]
+    public async Task QueueTimedOutTimeTickers_ReturnsChainBelowGrandchildren()
+    {
+        await SeedSequentialChain(depth: 7, rootExecutionTime: _fixedNow.AddSeconds(-5));
+
+        var results = await ToListAsync(_provider.QueueTimedOutTimeTickers(CancellationToken.None));
+
+        Assert.Single(results);
+        Assert.Equal(EightStepChain, WalkSequentialChain(results[0]));
+    }
+
+    [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_ReturnsChainBelowGrandchildren()
+    {
+        var root = await SeedSequentialChain(depth: 7, rootExecutionTime: _fixedNow);
+
+        var results = await _provider.AcquireImmediateTimeTickersAsync(new[] { root.Id }, CancellationToken.None);
+
+        Assert.Single(results);
+        Assert.Equal(EightStepChain, WalkSequentialChain(results[0]));
+    }
+
+    [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_KeepsBranchesBelowGrandchildren()
+    {
+        // root -> a -> b -> c -> { d1, d2 -> e }: branching and depth below the grandchild together.
+        var root = CreateTimeTicker(executionTime: _fixedNow, function: "Root");
+        TimeTickerEntity Step(string function, Guid parentId)
+        {
+            var step = CreateTimeTicker(function: function);
+            step.ExecutionTime = null;
+            step.ParentId = parentId;
+            return step;
+        }
+        var a = Step("A", root.Id);
+        var b = Step("B", a.Id);
+        var c = Step("C", b.Id);
+        var d1 = Step("D1", c.Id);
+        var d2 = Step("D2", c.Id);
+        var e = Step("E", d2.Id);
+        await SeedTimeTickers(root, a, b, c, d1, d2, e);
+
+        var result = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync(new[] { root.Id }, CancellationToken.None));
+
+        var cNode = result.Children.Single().Children.Single().Children.Single();
+        Assert.Equal("C", cNode.Function);
+        Assert.Equal(new[] { "D1", "D2" }, cNode.Children.Select(x => x.Function).OrderBy(x => x).ToArray());
+        var d2Node = cNode.Children.Single(x => x.Function == "D2");
+        Assert.Equal(d2.Id, d2Node.Id);
+        Assert.Equal("E", Assert.Single(d2Node.Children).Function);
+        Assert.Empty(cNode.Children.Single(x => x.Function == "D1").Children);
+    }
+
     [Fact]
     public async Task InsertCronTickers_InsertsAndVerifiesInDb()
     {

@@ -669,6 +669,37 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_ReturnsChainBelowGrandchildren()
+    {
+        // root -> step1 -> ... -> step7: the executor walks the whole tree, so the queue mapping
+        // must not stop at the grandchild.
+        var root = CreateTimeTicker(status: TickerStatus.Idle, lockHolder: null, lockedAt: null);
+        root.Function = "Step0";
+        var parent = root;
+        for (var i = 1; i <= 7; i++)
+        {
+            var step = CreateTimeTicker(status: TickerStatus.Idle, lockHolder: null, lockedAt: null);
+            step.Function = $"Step{i}";
+            step.ExecutionTime = null;
+            step.ParentId = parent.Id;
+            parent.Children = new List<TimeTickerEntity> { step };
+            parent = step;
+        }
+        SeedTimeTicker(root);
+
+        var results = await _provider.AcquireImmediateTimeTickersAsync([root.Id], CancellationToken.None);
+
+        var node = Assert.Single(results);
+        var functions = new List<string> { node.Function };
+        while (node.Children.Count > 0)
+        {
+            node = Assert.Single(node.Children);
+            functions.Add(node.Function);
+        }
+        Assert.Equal(Enumerable.Range(0, 8).Select(i => $"Step{i}"), functions);
+    }
+
+    [Fact]
     public async Task AcquireImmediateTimeTickersAsync_EmptyIds_ReturnsEmpty()
     {
         var results = await _provider.AcquireImmediateTimeTickersAsync([], CancellationToken.None);

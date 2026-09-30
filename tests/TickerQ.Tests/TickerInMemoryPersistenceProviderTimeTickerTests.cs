@@ -817,6 +817,36 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_ReturnsChainBelowGrandchildren()
+    {
+        // Arrange: root -> step1 -> ... -> step7, children without ExecutionTime (chain steps).
+        var root = CreateTicker(function: "Step0", executionTime: _now);
+        _createdTimeTickerIds.Add(root.Id);
+        var parent = root;
+        for (var i = 1; i <= 7; i++)
+        {
+            var step = CreateTicker(function: $"Step{i}", useDefaultExecutionTime: false);
+            _createdTimeTickerIds.Add(step.Id);
+            parent.Children = new List<FakeTimeTicker> { step };
+            parent = step;
+        }
+        await _provider.AddTimeTickers(new[] { root }, CancellationToken.None);
+
+        // Act
+        var acquired = await _provider.AcquireImmediateTimeTickersAsync(new[] { root.Id }, CancellationToken.None);
+
+        // Assert: the executor gets all eight steps, not just root, child and grandchild.
+        TimeTickerEntity node = Assert.Single(acquired);
+        var functions = new List<string> { node.Function };
+        while (node.Children.Count > 0)
+        {
+            node = Assert.Single(node.Children);
+            functions.Add(node.Function);
+        }
+        Assert.Equal(Enumerable.Range(0, 8).Select(i => $"Step{i}"), functions);
+    }
+
+    [Fact]
     public async Task AddTickerWithChildren_GrandChildren()
     {
         // Arrange: parent -> child -> grandchild

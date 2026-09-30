@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.BackgroundServices;
 
@@ -52,32 +53,7 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
                 {
                     foreach (var function in functions)
                     {
-                        if (TickerFunctionProvider.TickerFunctions.TryGetValue(function.FunctionName, out var tickerItem))
-                        {
-                            function.CachedDelegate = tickerItem.Delegate;
-                            function.CachedPriority = tickerItem.Priority;
-                            function.CachedMaxConcurrency = tickerItem.MaxConcurrency;
-                        }
-
-                        foreach (var child in function.TimeTickerChildren)
-                        {
-                            if (TickerFunctionProvider.TickerFunctions.TryGetValue(child.FunctionName, out var childItem))
-                            {
-                                child.CachedDelegate = childItem.Delegate;
-                                child.CachedPriority = childItem.Priority;
-                                child.CachedMaxConcurrency = childItem.MaxConcurrency;
-                            }
-
-                            foreach (var grandChild in child.TimeTickerChildren)
-                            {
-                                if (TickerFunctionProvider.TickerFunctions.TryGetValue(grandChild.FunctionName, out var grandChildItem))
-                                {
-                                    grandChild.CachedDelegate = grandChildItem.Delegate;
-                                    grandChild.CachedPriority = grandChildItem.Priority;
-                                    grandChild.CachedMaxConcurrency = grandChildItem.MaxConcurrency;
-                                }
-                            }
-                        }
+                        CacheFunctionReferences(function);
 
                         try
                         {
@@ -134,5 +110,20 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
     {
         Interlocked.Exchange(ref _started, 0);
         await base.StopAsync(cancellationToken);
+    }
+
+    // Resolves delegates for the whole chain, not just two levels below the root: a step whose
+    // delegate stays null is silently skipped by the executor.
+    private static void CacheFunctionReferences(InternalFunctionContext context)
+    {
+        if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
+        {
+            context.CachedDelegate = tickerItem.Delegate;
+            context.CachedPriority = tickerItem.Priority;
+            context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
+        }
+
+        foreach (var child in context.TimeTickerChildren)
+            CacheFunctionReferences(child);
     }
 }

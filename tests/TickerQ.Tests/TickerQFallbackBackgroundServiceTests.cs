@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Frozen;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NSubstitute;
@@ -131,6 +134,55 @@ public class TickerQFallbackBackgroundServiceTests
             Arg.Any<Func<CancellationToken, Task>>(),
             Arg.Any<TickerTaskPriority>(),
             Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TimedOutChain_ResolvesDelegatesOnEveryLevel()
+    {
+        // A step whose CachedDelegate stays null is silently skipped by the executor, so the
+        // fallback path must resolve delegates below the grandchild as well.
+        var original = TickerFunctionProvider.TickerFunctions;
+        TickerFunctionDelegate noOp = (_, _, _) => Task.CompletedTask;
+        TickerFunctionProvider.TickerFunctions = Enumerable.Range(0, 8)
+            .ToDictionary(i => $"Step{i}", _ => ((string)null, TickerTaskPriority.Normal, noOp, 0))
+            .ToFrozenDictionary();
+
+        try
+        {
+            var root = new InternalFunctionContext { FunctionName = "Step0", TickerId = Guid.NewGuid() };
+            var steps = new List<InternalFunctionContext> { root };
+            for (var i = 1; i <= 7; i++)
+            {
+                var step = new InternalFunctionContext { FunctionName = $"Step{i}", TickerId = Guid.NewGuid() };
+                steps[^1].TimeTickerChildren = new List<InternalFunctionContext> { step };
+                steps.Add(step);
+            }
+
+            var callCount = 0;
+            _internalManager.RunTimedOutTickers(Arg.Any<CancellationToken>())
+                .Returns(_ => Interlocked.Increment(ref callCount) == 1
+                    ? new[] { root }
+                    : Array.Empty<InternalFunctionContext>());
+
+            var service = CreateService();
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            await service.StartAsync(cts.Token);
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(350), cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected
+            }
+            await service.StopAsync(CancellationToken.None);
+
+            Assert.All(steps, step => Assert.NotNull(step.CachedDelegate));
+        }
+        finally
+        {
+            TickerFunctionProvider.TickerFunctions = original;
+        }
     }
 
     [Fact]
