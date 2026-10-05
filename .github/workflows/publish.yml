@@ -168,12 +168,12 @@ jobs:
               output.write(f"npm_archive={npm_archive.as_posix()}\n")
           PY
 
-      - name: Validate public Version 1.1 terms and pinned PDF digest
+      - name: Validate public Version 1.0 terms and pinned PDF digest
         run: |
           python3 scripts/validate-public-terms.py \
             --agreement release-source/LICENSE.md \
-            --expected-version public-master-v1.1 \
-            --expected-pdf-sha256-file release-source/licenses/public-master-v1.1.sha256
+            --expected-version public-master-v1.0 \
+            --expected-pdf-sha256-file release-source/licenses/public-master-v1.0.sha256
 
       - name: Validate exact NuGet artifact set
         env:

@@ -260,6 +260,6 @@ Thanks to all our wonderful contributors! See [CONTRIBUTORS.md](CONTRIBUTORS.md)
 
 ## License
 
-TickerQ's commercial transition begins with functional line **5.x**: version `10.5.0` for .NET 10 and its parallel `9.5.0` / `8.5.0` builds. All current TickerQ package families, including `TickerQ.MongoDB` and `@tickerq/sdk`, are source-available under the [TickerQ Software License Agreement v1.1](LICENSE.md); Community, Evaluation, and paid Commercial licenses are available at [license.tickerq.net](https://license.tickerq.net/pricing).
+TickerQ's commercial transition begins with functional line **5.x**: version `10.5.0` for .NET 10 and its parallel `9.5.0` / `8.5.0` builds. All current TickerQ package families, including `TickerQ.MongoDB` and `@tickerq/sdk`, are source-available under the [TickerQ Software License Agreement v1.0](LICENSE.md); Community, Evaluation, and paid Commercial licenses are available at [license.tickerq.net](https://license.tickerq.net/pricing).
 
 Every immutable artifact originally released under MIT and/or Apache 2.0 retains the terms included with that artifact. Current distributions preserve required notices for retained contributor portions in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); those notices do not license TickerQ as a whole. See [LICENSING.md](LICENSING.md) for the complete version boundary.

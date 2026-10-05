@@ -156,7 +156,7 @@ class LicensePolicyTests(unittest.TestCase):
 
         self.assertTrue(commercial.read_text(encoding="utf-8").startswith("TICKERQ\nSOFTWARE LICENSE AGREEMENT"))
         license_text = commercial.read_text(encoding="utf-8")
-        self.assertIn("Agreement version Version 1.1", license_text)
+        self.assertIn("Agreement version Version 1.0", license_text)
         self.assertIn("TickerQ.MongoDB MongoDB persistence provider", license_text)
         self.assertIn("@tickerq/sdk TickerQ Hub JavaScript/TypeScript client", license_text)
         self.assertIn("first immutable version 1.0.0 artifact", license_text)
@@ -187,7 +187,7 @@ class LicensePolicyTests(unittest.TestCase):
         self.assertFalse((ROOT / "licenses" / "OPEN-SOURCE.md").exists())
         self.assertEqual(
             "PENDING_PUBLICATION",
-            (ROOT / "licenses" / "public-master-v1.1.sha256").read_text().strip(),
+            (ROOT / "licenses" / "public-master-v1.0.sha256").read_text().strip(),
         )
 
     def test_node_package_designates_commercial_terms(self) -> None:
@@ -390,11 +390,11 @@ class LicensePolicyTests(unittest.TestCase):
 
     def test_public_terms_validator_fails_closed_on_portal_drift(self) -> None:
         validator = load_public_terms_validator()
-        agreement = b"agreement-v1.1"
-        pdf = b"pdf-v1.1"
+        agreement = b"agreement-v1.0"
+        pdf = b"pdf-v1.0"
         expected_hash = hashlib.sha256(pdf).hexdigest()
         metadata = {
-            "version": "public-master-v1.1",
+            "version": "public-master-v1.0",
             "content": agreement.decode(),
             "sha256": expected_hash,
         }
@@ -402,15 +402,15 @@ class LicensePolicyTests(unittest.TestCase):
         self.assertEqual(
             [],
             validator.validate(
-                metadata, pdf, agreement, "public-master-v1.1", expected_hash
+                metadata, pdf, agreement, "public-master-v1.0", expected_hash
             ),
         )
         self.assertTrue(
             any("expected" in error for error in validator.validate(
-                {**metadata, "version": "public-master-v1.0"},
+                {**metadata, "version": "public-master-v0.9"},
                 pdf,
                 agreement,
-                "public-master-v1.1",
+                "public-master-v1.0",
                 expected_hash,
             ))
         )
@@ -419,7 +419,7 @@ class LicensePolicyTests(unittest.TestCase):
                 {**metadata, "content": "different"},
                 pdf,
                 agreement,
-                "public-master-v1.1",
+                "public-master-v1.0",
                 expected_hash,
             ))
         )
@@ -428,7 +428,7 @@ class LicensePolicyTests(unittest.TestCase):
                 metadata,
                 b"different-pdf",
                 agreement,
-                "public-master-v1.1",
+                "public-master-v1.0",
                 expected_hash,
             ))
         )
@@ -437,7 +437,7 @@ class LicensePolicyTests(unittest.TestCase):
                 metadata,
                 pdf,
                 agreement,
-                "public-master-v1.1",
+                "public-master-v1.0",
                 "PENDING_PUBLICATION",
             ))
         )

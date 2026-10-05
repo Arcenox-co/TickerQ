@@ -3,13 +3,13 @@ SOFTWARE LICENSE AGREEMENT
 Source-Available | Community | 30-Day Evaluation | Annual Commercial Subscription
 Licensor / licensing authority Arcenox LLC, a Wyoming limited liability company
 Authorized Seller Arcenox SH.P.K., a Kosovo limited liability company
-Agreement version Version 1.1
+Agreement version Version 1.0
 Effective date September 29, 2026
 Commercial versions Commercial functional line 5.x and later; see Section 2 and Schedule A
 Contact contact@tickerq.net | https://tickerq.net
 These are the public master terms for TickerQ. Customer-specific pricing, subscription dates, covered entities,
 and payment terms are stated in the applicable Order and invoice.
-PUBLIC MASTER TERMS | VERSION 1.1 | EFFECTIVE SEPTEMBER 29, 2026
+PUBLIC MASTER TERMS | VERSION 1.0 | EFFECTIVE SEPTEMBER 29, 2026
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 TICKERQ SOFTWARE LICENSE AGREEMENT
 IMPORTANT: THIS AGREEMENT IS A BINDING CONTRACT. IT CONTAINS LIMITATIONS OF LIABILITY,
@@ -48,7 +48,7 @@ indemnity, liability, governing law, or dispute terms.
 Licensor represents that it owns, or has sufficient authority from the applicable rights holders to license and
 enforce rights in, the Commercial Versions. Customer's rights are contractual license rights only; the Software
 is licensed, not sold. Seller does not grant broader rights than Licensor grants under this Agreement.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 2
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 2
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 2. Scope and Version Boundary
 This Agreement governs the Commercial Versions of each TickerQ package family listed in Schedule A. For
@@ -93,7 +93,7 @@ access or use the Licensed Product solely for a Covered Entity's benefit and und
 Commercial Subscription. a paid, twelve-month subscription license granted under an Order and Section 7.
 Commercial Version. an immutable TickerQ artifact first distributed under this Agreement beginning with the
 commercial-transition Functional Minor Line represented by version 10.5.0 and its parallel .NET-target builds,
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 3
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 3
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 or under a later Functional Minor Line; or, for @tickerq/sdk, the first immutable version 1.0.0 artifact
 distributed with this Agreement or any later semantic version. An artifact previously distributed under the MIT
@@ -138,7 +138,7 @@ identifies the target framework, not a different functional release. For example
 Functional Minor Line. For @tickerq/sdk, each semantic major-and-minor line is a Functional Minor Line, so
 1.0.x is the initial line and 1.1.x is a later line. The patch component identifies maintenance releases within
 the applicable line.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 4
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 4
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 Government Body. a ministry, department, agency, municipality, public authority, or state-owned entity,
 excluding an Educational Institution when it uses the Licensed Product primarily for teaching, learning, or
@@ -180,7 +180,7 @@ Service Provider. a consultancy, agency, contractor, managed service provider, o
 operating, or supporting a Customer Application for another entity.
 Seller. Arcenox SH.P.K., acting as Licensor's authorized distributor, seller of record, invoice issuer, and
 payment-collection agent, and not as owner of the Licensed Product.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 5
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 5
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 Subscription Term. the twelve-month period stated in the Order, subject to earlier termination under this
 Agreement.
@@ -217,7 +217,7 @@ Subject to continued eligibility and compliance, Licensor grants Customer a limi
 transferable except under Section 23.1, no-charge license during the Community term to install, reproduce,
 use, modify, and compile the Licensed Product for Customer Applications; to conduct Production Use; and to
 distribute the Licensed Product only as compiled into an Integrated Product in accordance with Section 9.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 6
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 6
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 A Community License is issued for twelve (12) months and is renewable without charge while Customer
 remains eligible. Customer must re-attest eligibility and obtain a renewed License Certificate before
@@ -256,7 +256,7 @@ The Evaluation License does not automatically convert into a paid plan, no charg
 no payment obligation arises unless Customer accepts an Order. At expiration, Customer must obtain a valid
 Community License, purchase a Commercial Subscription, or stop using and uninstall the Commercial
 Version, subject to the non-disabling runtime rule in Sections 11 and 13.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 7
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 7
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 7. Commercial Subscription License
 Subject to payment of all fees and compliance, Licensor grants Customer and its Covered Entities a limited,
@@ -298,7 +298,7 @@ services, security-response commitments, or an SLA. All restrictions, ownership 
 that by their nature apply to continued use remain in effect.
 8. General License Restrictions
 Except where this Agreement expressly permits, Customer must not, and must not enable another person to:
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 8
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 8
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 (a) sell, sublicense, rent, lease, lend, transfer, publish, or distribute the Licensed Product on a stand-alone
 basis;
@@ -340,7 +340,7 @@ delivered copy contains a version outside Customer's later fallback scope. Follo
 Commercial Subscription, Customer may continue building, maintaining, deploying, and distributing
 Integrated Products only with the Fallback Versions permitted by Section 7. Expiration of a Community or
 Evaluation License creates no fallback right for Customer. A person with Programmatic Access, or an entity
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 9
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 9
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 that independently develops or controls the TickerQ integration, must be covered by Customer's active
 license, Customer's fallback license for the applicable Fallback Versions, or its own valid license, as applicable.
@@ -380,7 +380,7 @@ For a new Commercial Subscription, Licensor may withhold the Commercial License 
 confirms that payment has cleared. If Seller approves credit terms in an Order, payment is due on the stated
 date. For renewals, cleared payment must be received on or before expiration unless the Order provides
 otherwise.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 10
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 10
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 10.3. Taxes and Withholding
 Fees exclude VAT, sales, use, withholding, customs, and similar transaction taxes. Customer is responsible for
@@ -420,7 +420,7 @@ Fallback Version. A refund does not re-anchor the applicable Anchored Minor Line
 fallback rights that vested for a non-refunded Paid Subscription Period, except that no fallback right
 continues for an affected Fallback Version that Customer must cease using under Section 18.1 because of an
 infringement claim.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 11
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 11
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 11. Offline License Certificates and Runtime Continuity
 A License Certificate evidences an entitlement but does not expand this Agreement. Customer must protect
@@ -462,7 +462,7 @@ the current Subscription Term without a reasonable transition or remedy. After e
 license is limited to Fallback Versions within the Anchored Minor Line: it includes no later Functional Minor
 Line even if released during the paid term, and no patch or parallel build of the Anchored Minor Line first
 generally available after the Paid Subscription Period.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 12
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 12
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 Commercial support consists of reasonable installation, configuration, and product-use assistance through
 the support channel stated in the Order. It does not include custom development, architecture consulting,
@@ -502,7 +502,7 @@ updates, support, and Hosted Services, end unless Customer renews. A renewal beg
 Term and establishes a new Anchored Minor Line without enlarging fallback rights from an earlier term.
 An Evaluation or Community License does not create fallback rights. After its expiration, Customer must stop
 development, building, modification, new deployment, distribution, and Production Use unless Customer
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 13
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 13
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 obtains another valid license; lawfully delivered end-user copies retain the limited runtime continuity stated
 in Section 9. An expired Evaluation License remains non-production. Technical runtime continuity is not an
@@ -542,7 +542,7 @@ source without permission.
 No trademark license is granted except the limited nominative use necessary to identify that an Integrated
 Product uses or is compatible with TickerQ. Customer must not imply sponsorship, certification, or
 endorsement without written permission.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 14
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 14
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 15. Confidentiality
 Confidential Information means nonpublic information disclosed by one Party to another that is marked
@@ -580,7 +580,7 @@ infrastructure, databases, deployment configuration, access controls, backups, o
 Each Party warrants that it has authority to enter into this Agreement. Customer warrants that eligibility and
 Order information it supplies is accurate and that it has all rights needed for Customer Applications and data
 used with the Licensed Product.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 15
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 15
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 17.2. Limited Commercial Warranty
 For thirty (30) days after initial issuance of a Commercial License Certificate, Licensor warrants that the
@@ -618,7 +618,7 @@ continued use is enjoined or reasonably likely to infringe; Customer must then c
 Fallback Version. A replacement does not re-anchor or otherwise expand the Anchored Minor Line unless an
 Order expressly says so. This Section states Customer's exclusive remedy for third-party intellectual-property
 claims.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 16
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 16
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 18.2. Customer Indemnity
 Customer will defend and indemnify the Arcenox Parties and their officers, employees, and contractors
@@ -653,7 +653,7 @@ prohibited destination, person, or end use.
 Customer represents that it is not subject to applicable sanctions that prohibit the transaction and will not
 use the Licensed Product for unlawful surveillance, weapons development, or another prohibited use.
 Licensor may refuse or suspend performance where reasonably necessary to comply with law.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 17
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 17
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 21. Records, Eligibility Verification, and Audit
 Customer will maintain records reasonably sufficient to demonstrate license type, Customer identity, control
@@ -692,7 +692,7 @@ arbitration clause for a specific enterprise transaction.
 Customer may not assign this Agreement, an Order, or a License Certificate except as stated in this Section.
 Customer may assign this Agreement and its applicable Orders, without Licensor's prior consent, to a
 successor in connection with a merger, consolidation, change of control, or sale of substantially all assets or
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 18
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 18
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 business to which the Licensed Product relates, provided that: (a) Customer gives Licensor and Seller written
 notice no later than thirty (30) days after the transaction; (b) the successor assumes in writing all applicable
@@ -731,7 +731,7 @@ Licensor may publish a revised Agreement for future Orders or renewal terms. A r
 Customer's paid rights during a current Subscription Term unless required by law or accepted by Customer.
 Material changes will be identified by a new version date. Continued use after renewal or acceptance of a
 new Order constitutes acceptance of the then-applicable Agreement.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 19
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 19
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 23.6. Electronic Contracting; Counterparts
 Electronic acceptance, electronic signatures, and electronically delivered copies are effective to the extent
@@ -744,7 +744,7 @@ describe personal-data processing but do not expand license rights or silently m
 Services Terms, a data-processing agreement, and service-level terms apply only when incorporated into an
 Order for a Hosted Service. A purchase order is for administrative convenience only unless the applicable
 Arcenox Party expressly agrees to its substantive terms as stated in Section 1.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 20
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 20
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 24. Notices and Contact
 Legal notices to either Arcenox Party must be sent by email to the legal-notice address below with a request
@@ -767,7 +767,7 @@ entity represents that the individual has authority to bind that entity. Viewing
 downloading a package, or using platform-enabled repository forking alone does not constitute acceptance
 and grants no operational license rights. When a written signature is required, the applicable Order or
 addendum will contain the signature blocks.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 21
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 21
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 SCHEDULE A - COVERED TICKERQ PACKAGES
 The commercial-transition Functional Minor Line represented by version 10.5.0 for .NET 10, together with
@@ -800,4 +800,4 @@ TickerQ.RemoteExecutor, and @tickerq/sdk are integration packages only; this Agr
 access to or govern
 TickerQ Hub itself. Public source-code or package availability does not grant operational rights. Third-party
 dependencies remain governed by their own license terms.
-Arcenox LLC / Arcenox SH.P.K. | Version 1.1 | Page 22
+Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 22

@@ -22,14 +22,14 @@ The following package families are expressly designated as governed by that agre
 
 For NuGet packages, the commercial transition begins with functional line 5.x: version `10.5.0` for .NET 10 and parallel versions `9.5.0` for .NET 9 and `8.5.0` for .NET 8 when first distributed as the same functional release. For the previously unpublished npm package `@tickerq/sdk`, the transition begins with version `1.0.0` and includes every later semantic version unless an artifact's immutable distribution materials expressly provide otherwise. TickerQ Hub remains a hosted service governed by separately contracted hosted-service terms.
 
-- **Repository agreement:** [LICENSE.md](LICENSE.md), Version 1.1, effective September 29, 2026
-- **Required portal agreement version:** `public-master-v1.1`
-- **Required v1.1 PDF SHA-256:** [`licenses/public-master-v1.1.sha256`](licenses/public-master-v1.1.sha256) — currently `PENDING_PUBLICATION`
+- **Repository agreement:** [LICENSE.md](LICENSE.md), Version 1.0, effective September 29, 2026
+- **Required portal agreement version:** `public-master-v1.0`
+- **Required v1.0 PDF SHA-256:** [`licenses/public-master-v1.0.sha256`](licenses/public-master-v1.0.sha256) — currently `PENDING_PUBLICATION`
 - **Current portal agreement endpoint:** https://license.tickerq.net/api/commercial-terms/current/view
-- **Currently published portal agreement:** `public-master-v1.0` (prior version)
+- **Currently published portal agreement:** `public-master-v1.0` (different, previously published text; not this revised agreement)
 - **Prior portal PDF SHA-256:** `9663da243deba54d8b9a1ca87a3d7e94e4a1a96b744b3a37902307f0456ee640`
 
-> **Publication gate:** Do not distribute an artifact governed by Version 1.1 until the licensing portal publishes matching Version 1.1 PDF and text representations and `licenses/public-master-v1.1.sha256` records the published PDF's exact SHA-256. Automated NuGet and npm publication validates all three values and fails closed while the digest is pending. The prior v1.0 portal document is not the agreement embedded in a v1.1 artifact.
+> **Publication gate:** Do not distribute an artifact governed by Version 1.0 until the licensing portal publishes matching Version 1.0 PDF and text representations and `licenses/public-master-v1.0.sha256` records the published PDF's exact SHA-256. Automated NuGet and npm publication validates all three values and fails closed while the digest is pending. The existing portal document and this revised agreement share the v1.0 label but are not the same text. A matching version label alone never authorizes publication: exact agreement bytes and the approved PDF digest must also match. Preserve previously published documents and historical acceptance records; this relabeling does not rewrite prior acceptances.
 
 ## Prior open-source artifacts
 

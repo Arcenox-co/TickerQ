@@ -41,7 +41,7 @@ def validate(
     actual_hash = hashlib.sha256(pdf_bytes).hexdigest()
     expected_hash = expected_pdf_sha256.strip().lower()
     if re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None:
-        errors.append("source-controlled Version 1.1 PDF SHA-256 is not published")
+        errors.append("source-controlled Version 1.0 PDF SHA-256 is not published")
     elif not isinstance(declared_hash, str) or declared_hash.lower() != expected_hash:
         errors.append(
             f"portal metadata declares PDF SHA-256 {declared_hash!r}; expected {expected_hash}"
