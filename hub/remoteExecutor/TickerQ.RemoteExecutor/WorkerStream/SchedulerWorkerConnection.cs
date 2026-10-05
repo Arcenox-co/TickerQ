@@ -77,16 +77,49 @@ public sealed class SchedulerWorkerConnection : IAsyncDisposable
         var tcs = new TaskCompletionSource<ExecutionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pendingExecutions[request.RequestId] = tcs;
 
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _closedCts.Token);
-        linked.CancelAfter(timeout);
-        await using var _ = linked.Token.Register(() =>
+        try
         {
-            if (_pendingExecutions.TryRemove(request.RequestId, out var s))
-                s.TrySetException(new TimeoutException($"Worker did not return ExecutionResult for {request.RequestId} within {timeout}"));
-        }).ConfigureAwait(false);
+            await WriteAsync(new SchedulerCommand { ExecuteFunction = request }, ct).ConfigureAwait(false);
+            return await tcs.Task.WaitAsync(timeout, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The caller owns this exact dispatch and connection. Correlate the cancel
+            // before returning cancellation so a newer/older same-ticker generation is untouched.
+            await TrySendExecutionCancellationAsync(request).ConfigureAwait(false);
+            throw;
+        }
+        catch (TimeoutException)
+        {
+            throw new TimeoutException(
+                $"Worker did not return ExecutionResult for {request.RequestId} within {timeout}");
+        }
+        finally
+        {
+            ((ICollection<KeyValuePair<string, TaskCompletionSource<ExecutionResult>>>)_pendingExecutions)
+                .Remove(new KeyValuePair<string, TaskCompletionSource<ExecutionResult>>(request.RequestId, tcs));
+        }
+    }
 
-        await WriteAsync(new SchedulerCommand { ExecuteFunction = request }, ct).ConfigureAwait(false);
-        return await tcs.Task.ConfigureAwait(false);
+    private async Task TrySendExecutionCancellationAsync(ExecuteFunction request)
+    {
+        try
+        {
+            await WriteAsync(new SchedulerCommand
+            {
+                CancelExecution = new CancelExecution
+                {
+                    RequestId = Guid.NewGuid().ToString("N"),
+                    TickerId = request.TickerId,
+                    ExecutionRequestId = request.RequestId
+                }
+            }, _closedCts.Token).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Best effort: cancellation of the scheduler wait must not be masked by a
+            // stream failure while notifying a worker that may already be disconnected.
+        }
     }
 
     /// <summary>

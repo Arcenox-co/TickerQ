@@ -70,17 +70,13 @@ public class ActivitySourceInstrumentation(ILogger<ActivitySourceInstrumentation
     using var activity = ActivitySource.StartActivity("tickerq.job.failed");
     if (activity == null) return;
 
-    activity.SetStatus(ActivityStatusCode.Error, exception.Message);
+    activity.SetStatus(ActivityStatusCode.Error);
 
     activity.SetTag("tickerq.job.id", jobId.ToString());
     activity.SetTag("tickerq.job.function", functionName);
     activity.SetTag("tickerq.job.retry_count", retryCount);
     activity.SetTag("tickerq.job.error_type", exception.GetType().Name);
-    activity.SetTag("tickerq.job.error_message", exception.Message);
 
-    // Record exception information in tags instead of RecordException (not available in all .NET versions)
-    if (exception.StackTrace != null)
-      activity.SetTag("tickerq.job.error_stack_trace", exception.StackTrace);
   }
 
   public override void LogJobCancelled(Guid jobId, string functionName, string reason)
@@ -90,11 +86,11 @@ public class ActivitySourceInstrumentation(ILogger<ActivitySourceInstrumentation
     using var activity = ActivitySource.StartActivity("tickerq.job.cancelled");
     if (activity == null) return;
 
-    activity.SetStatus(ActivityStatusCode.Error, reason);
+    activity.SetStatus(ActivityStatusCode.Error);
 
     activity.SetTag("tickerq.job.id", jobId.ToString());
     activity.SetTag("tickerq.job.function", functionName);
-    activity.SetTag("tickerq.job.cancellation_reason", reason);
+
   }
 
   public override void LogJobSkipped(Guid jobId, string functionName, string reason)
@@ -106,7 +102,7 @@ public class ActivitySourceInstrumentation(ILogger<ActivitySourceInstrumentation
 
     activity.SetTag("tickerq.job.id", jobId.ToString());
     activity.SetTag("tickerq.job.function", functionName);
-    activity.SetTag("tickerq.job.skip_reason", reason);
+
   }
 
   public override void LogSeedingDataStarted(string seedingDataType)
@@ -140,6 +136,7 @@ public class ActivitySourceInstrumentation(ILogger<ActivitySourceInstrumentation
 
     activity.SetTag("tickerq.job.id", tickerId.ToString());
     activity.SetTag("tickerq.job.function", functionName);
-    activity.SetTag("tickerq.job.cancellation_reason", exception.Message);
+    activity.SetTag("tickerq.job.error_type", exception.GetType().Name);
+    activity.SetStatus(ActivityStatusCode.Error);
   }
 }

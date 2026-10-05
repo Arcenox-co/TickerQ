@@ -101,6 +101,8 @@ namespace TickerQ.SourceGenerator
                 var method = MethodAnalyzer.Analyze(classDecl, methodDecl, semanticModel);
                 if (method == null) continue;
 
+                method.DiagnosticLocation = methodDecl.Identifier.GetLocation();
+
                 var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl) as IMethodSymbol;
                 var tickerAttr = methodSymbol?.GetAttributes()
                     .FirstOrDefault(a => a.AttributeClass?.Name == SourceGeneratorConstants.TickerFunctionAttributeName);
@@ -116,6 +118,7 @@ namespace TickerQ.SourceGenerator
                     usedFunctionNames, productionContext);
 
                 TickerFunctionValidator.ValidateMethodParameters(methodDecl, methodSymbol, productionContext);
+                ValidateResultContract(method, methodSymbol, productionContext);
 
                 methods.Add(method);
             }
@@ -133,6 +136,9 @@ namespace TickerQ.SourceGenerator
             if (methods.Count == 0)
                 return;
 
+            EmitRequestSchemas(methods, productionContext);
+            EmitResultSchemas(methods, productionContext);
+
             var source = FactoryGenerator.Generate(effectiveNamespace, methods, constructors);
             var formatted = SourceGeneratorUtilities.FormatCode(source);
 
@@ -140,6 +146,88 @@ namespace TickerQ.SourceGenerator
                 SourceGeneratorConstants.GeneratedFileName,
                 SourceText.From(formatted, Encoding.UTF8));
 
+        }
+
+        /// <summary>
+        /// Runs the compile-time JSON Schema 2020-12 emitter for every typed function and stashes the
+        /// resulting schema + default example on the model. Unsupported wire shapes are reported as
+        /// diagnostics (TQ012/TQ013) and leave <see cref="TickerMethodModel.SchemaJson"/> null so no
+        /// misleading schema is emitted.
+        /// </summary>
+        private static void EmitRequestSchemas(List<TickerMethodModel> methods, SourceProductionContext productionContext)
+        {
+            foreach (var method in methods)
+            {
+                if (!method.UsesGenericContext || method.RequestType == null)
+                    continue;
+
+                var result = Generation.Schema.JsonSchemaEmitter.Emit(method.RequestType);
+                if (result.Supported)
+                {
+                    method.SchemaJson = result.SchemaJson;
+                    method.DefaultExampleJson = result.ExampleJson;
+                    continue;
+                }
+
+                var location = method.DiagnosticLocation ?? Location.None;
+                if (result.ConverterType != null)
+                {
+                    productionContext.ReportDiagnostic(Diagnostic.Create(
+                        DiagnosticDescriptors.CustomConverterRequestSchema, location,
+                        method.FunctionName, result.ConverterType));
+                }
+                else
+                {
+                    productionContext.ReportDiagnostic(Diagnostic.Create(
+                        DiagnosticDescriptors.UnsupportedRequestSchema, location,
+                        method.FunctionName, result.Reason));
+                }
+            }
+        }
+
+        private static void ValidateResultContract(
+            TickerMethodModel method,
+            IMethodSymbol methodSymbol,
+            SourceProductionContext productionContext)
+        {
+            if (method.ResultType == null || method.HasValidResultContract)
+                return;
+
+            var invalidType = method.ResultType.SpecialType == SpecialType.System_Void
+                || method.ResultType is INamedTypeSymbol named && named.IsUnboundGenericType;
+            productionContext.ReportDiagnostic(Diagnostic.Create(
+                invalidType
+                    ? DiagnosticDescriptors.InvalidResultContract
+                    : DiagnosticDescriptors.ResultContractReturnTypeMismatch,
+                method.DiagnosticLocation ?? Location.None,
+                method.FunctionName,
+                method.ResultType.ToDisplayString(),
+                methodSymbol.ReturnType.ToDisplayString()));
+        }
+
+        private static void EmitResultSchemas(
+            List<TickerMethodModel> methods,
+            SourceProductionContext productionContext)
+        {
+            foreach (var method in methods)
+            {
+                if (!method.HasValidResultContract)
+                    continue;
+
+                var result = Generation.Schema.JsonSchemaEmitter.EmitResult(method.ResultType);
+                if (result.Supported)
+                {
+                    method.ResultSchemaJson = result.SchemaJson;
+                    continue;
+                }
+
+                method.HasValidResultContract = false;
+                productionContext.ReportDiagnostic(Diagnostic.Create(
+                    DiagnosticDescriptors.UnsupportedResultSchema,
+                    method.DiagnosticLocation ?? Location.None,
+                    method.FunctionName,
+                    result.Reason));
+            }
         }
 
         #endregion

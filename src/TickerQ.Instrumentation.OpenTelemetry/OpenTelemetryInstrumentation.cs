@@ -10,8 +10,9 @@ namespace TickerQ.Instrumentation.OpenTelemetry;
 
 internal class OpenTelemetryInstrumentation : TickerQBaseLoggerInstrumentation , ITickerQInstrumentation
 {
+    internal const string ActivitySourceName = "TickerQ";
     private readonly ILogger<OpenTelemetryInstrumentation> _logger;
-    private static readonly ActivitySource ActivitySource = new("TickerQ", "1.0.0");
+    private static readonly ActivitySource ActivitySource = new(ActivitySourceName, "1.0.0");
 
     public OpenTelemetryInstrumentation(ILogger<OpenTelemetryInstrumentation> logger, SchedulerOptionsBuilder optionsBuilder) : base(logger, optionsBuilder.NodeIdentifier)
     {
@@ -84,16 +85,12 @@ internal class OpenTelemetryInstrumentation : TickerQBaseLoggerInstrumentation ,
         activity?.SetTag("tickerq.job.function", functionName);
         activity?.SetTag("tickerq.job.retry_count", retryCount);
         activity?.SetTag("tickerq.job.error_type", exception.GetType().Name);
-        activity?.SetTag("tickerq.job.error_message", exception.Message);
             
         if (activity != null)
         {
-            activity.SetStatus(ActivityStatusCode.Error, exception.Message);
-            // Record exception information in tags instead of RecordException (not available in all .NET versions)
-            if (exception.StackTrace != null)
-            {
-                activity.SetTag("tickerq.job.error_stack_trace", exception.StackTrace);
-            }
+            // Exception messages and stack traces can contain credentials or payload data;
+            // export the stable error type and status only.
+            activity.SetStatus(ActivityStatusCode.Error);
         }
             
         base.LogJobFailed(jobId, functionName, exception, retryCount);
@@ -104,11 +101,11 @@ internal class OpenTelemetryInstrumentation : TickerQBaseLoggerInstrumentation ,
         using var activity = ActivitySource.StartActivity("tickerq.job.cancelled");
         activity?.SetTag("tickerq.job.id", jobId.ToString());
         activity?.SetTag("tickerq.job.function", functionName);
-        activity?.SetTag("tickerq.job.cancellation_reason", reason);
+
             
         if (activity != null)
         {
-            activity.SetStatus(ActivityStatusCode.Error, reason);
+            activity.SetStatus(ActivityStatusCode.Error);
         }
             
         base.LogJobCancelled(jobId, functionName, reason);
@@ -119,7 +116,7 @@ internal class OpenTelemetryInstrumentation : TickerQBaseLoggerInstrumentation ,
         using var activity = ActivitySource.StartActivity("tickerq.job.skipped");
         activity?.SetTag("tickerq.job.id", jobId.ToString());
         activity?.SetTag("tickerq.job.function", functionName);
-        activity?.SetTag("tickerq.job.skip_reason", reason);
+
             
         base.LogJobSkipped(jobId, functionName, reason);
     }
@@ -147,7 +144,8 @@ internal class OpenTelemetryInstrumentation : TickerQBaseLoggerInstrumentation ,
         using var activity = ActivitySource.StartActivity("tickerq.job_request_serialization.failed");
         activity?.SetTag("tickerq.job.id", tickerId.ToString());
         activity?.SetTag("tickerq.job.function", functionName);
-        activity?.SetTag("tickerq.job.cancellation_reason", exception.Message);
+        activity?.SetTag("tickerq.job.error_type", exception.GetType().Name);
+        activity?.SetStatus(ActivityStatusCode.Error);
         base.LogRequestDeserializationFailure(requestType, functionName, tickerId, type, exception);
     }
 }

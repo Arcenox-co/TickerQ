@@ -1,11 +1,14 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using TickerQ.Caching.StackExchangeRedis;
 using TickerQ.Dashboard.Infrastructure;
 using TickerQ.Utilities.Entities;
-using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.Tests;
+
+[JsonSerializable(typeof(TimeTickerEntity))]
+internal sealed partial class ContractIdentityTestJsonContext : JsonSerializerContext;
 
 public sealed class TrimSafeSerializationTests
 {
@@ -47,9 +50,12 @@ public sealed class TrimSafeSerializationTests
     }
 
     [Fact]
-    public void DashboardContext_HasTypeInfo_For_CronOccurrenceUpdateNotification()
+    public void DashboardContext_HasTypeInfo_For_Guid()
     {
-        Assert.NotNull(DashboardJsonSerializerContext.Default.CronOccurrenceUpdateNotification);
+        // Cron occurrence updates are now id-only: clients receive just the
+        // occurrence Guid and refetch the authoritative shape over REST. The id
+        // payload must stay trim-safe serializable via the source-gen context.
+        Assert.NotNull(DashboardJsonSerializerContext.Default.Guid);
     }
 
     [Fact]
@@ -112,90 +118,43 @@ public sealed class TrimSafeSerializationTests
     }
 
     [Fact]
-    public void SerializeToElement_CronOccurrenceUpdateNotification_ProducesAllSevenProperties()
+    public void SerializeToElement_CronOccurrenceId_ProducesGuidString()
     {
+        // The full-entity CronOccurrenceUpdateNotification DTO was removed in favor
+        // of the ID-only invalidation contract: only the occurrence id is broadcast.
         var id = Guid.NewGuid();
-        var cronTickerId = Guid.NewGuid();
-        var executedAt = new DateTime(2024, 6, 15, 12, 0, 0, DateTimeKind.Utc);
 
-        var dto = new TickerQ.Dashboard.Hubs.CronOccurrenceUpdateNotification
-        {
-            Id = id,
-            Status = TickerStatus.Done,
-            CronTickerId = cronTickerId,
-            ExecutedAt = executedAt,
-            ElapsedTime = 1500L,
-            RetryCount = 1,
-            ExceptionMessage = "test-error"
-        };
+        var element = JsonSerializer.SerializeToElement(id, DashboardJsonSerializerContext.Default.Guid);
 
-        var element = JsonSerializer.SerializeToElement(dto, DashboardJsonSerializerContext.Default.CronOccurrenceUpdateNotification);
-
-        Assert.Equal(JsonValueKind.Object, element.ValueKind);
-
-        Assert.True(element.TryGetProperty("id", out var idProp));
-        Assert.Equal(id.ToString(), idProp.GetString());
-
-        Assert.True(element.TryGetProperty("status", out _));
-        Assert.True(element.TryGetProperty("cronTickerId", out var cronIdProp));
-        Assert.Equal(cronTickerId.ToString(), cronIdProp.GetString());
-
-        Assert.True(element.TryGetProperty("executedAt", out _));
-
-        Assert.True(element.TryGetProperty("elapsedTime", out var elapsedProp));
-        Assert.Equal(1500L, elapsedProp.GetInt64());
-
-        Assert.True(element.TryGetProperty("retryCount", out var retryProp));
-        Assert.Equal(1, retryProp.GetInt32());
-
-        Assert.True(element.TryGetProperty("exceptionMessage", out var exMsgProp));
-        Assert.Equal("test-error", exMsgProp.GetString());
+        Assert.Equal(JsonValueKind.String, element.ValueKind);
+        Assert.Equal(id.ToString(), element.GetString());
     }
 
     [Fact]
-    public void CronOccurrenceUpdateNotification_HasExpectedPropertyNames()
+    public void UpdateCronOccurrenceAsync_IsIdOnlyContract()
     {
-        var type = typeof(TickerQ.Dashboard.Hubs.CronOccurrenceUpdateNotification);
+        // Preserved ID-only contract: cron occurrence updates carry only the
+        // group id and occurrence id (both Guid) — never a full entity payload.
+        var method = typeof(ITickerQNotificationHubSender).GetMethod("UpdateCronOccurrenceAsync");
 
-        Assert.NotNull(type.GetProperty("Id"));
-        Assert.NotNull(type.GetProperty("Status"));
-        Assert.NotNull(type.GetProperty("CronTickerId"));
-        Assert.NotNull(type.GetProperty("ExecutedAt"));
-        Assert.NotNull(type.GetProperty("ElapsedTime"));
-        Assert.NotNull(type.GetProperty("RetryCount"));
-        Assert.NotNull(type.GetProperty("ExceptionMessage"));
+        Assert.NotNull(method);
+
+        var parameters = method!.GetParameters();
+        Assert.Equal(2, parameters.Length);
+        Assert.All(parameters, p => Assert.Equal(typeof(Guid), p.ParameterType));
     }
 
     [Fact]
-    public void CronOccurrenceUpdateNotification_SerializesWithCamelCaseNames()
+    public void AddCronOccurrenceAsync_IsIdOnlyContract()
     {
-        // The JSON keys must be camelCase to match the anonymous type they replace.
-        var dto = new TickerQ.Dashboard.Hubs.CronOccurrenceUpdateNotification
-        {
-            Id = Guid.NewGuid(),
-            Status = TickerStatus.Idle,
-            CronTickerId = Guid.NewGuid(),
-            ExecutedAt = DateTime.UtcNow,
-            ElapsedTime = 100L,
-            RetryCount = 0,
-            ExceptionMessage = null
-        };
+        // Adds are id-only too: (groupId, occurrenceId) Guids, no entity bytes.
+        var method = typeof(ITickerQNotificationHubSender).GetMethod("AddCronOccurrenceAsync");
 
-        var element = JsonSerializer.SerializeToElement(dto, DashboardJsonSerializerContext.Default.CronOccurrenceUpdateNotification);
-        var json = element.GetRawText();
+        Assert.NotNull(method);
 
-        Assert.Contains("\"id\"", json);
-        Assert.Contains("\"status\"", json);
-        Assert.Contains("\"cronTickerId\"", json);
-        Assert.Contains("\"executedAt\"", json);
-        Assert.Contains("\"elapsedTime\"", json);
-        Assert.Contains("\"retryCount\"", json);
-
-        // Assert no PascalCase keys leaked through
-        Assert.DoesNotContain("\"Id\"", json);
-        Assert.DoesNotContain("\"Status\"", json);
-        Assert.DoesNotContain("\"CronTickerId\"", json);
-        Assert.DoesNotContain("\"ElapsedTime\"", json);
+        var parameters = method!.GetParameters();
+        Assert.Equal(2, parameters.Length);
+        Assert.All(parameters, p => Assert.Equal(typeof(Guid), p.ParameterType));
     }
 
     [Fact]
@@ -244,5 +203,26 @@ public sealed class TrimSafeSerializationTests
         Assert.NotNull(deserialized);
         Assert.Single(deserialized.Children);
         Assert.Equal(child.Id, deserialized.Children.First().Id);
+    }
+
+    [Fact]
+    public void TimeTickerEntity_RequestContractIdentity_RoundTripsViaSourceGeneratedContext()
+    {
+        var ticker = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            RequestContractVersion = 7,
+            RequestContractFingerprint = "sha256:test-fingerprint"
+        };
+
+        var json = JsonSerializer.Serialize(ticker, ContractIdentityTestJsonContext.Default.TimeTickerEntity);
+        Assert.Contains("\"RequestContractVersion\":7", json, StringComparison.Ordinal);
+        Assert.Contains("\"RequestContractFingerprint\":\"sha256:test-fingerprint\"", json, StringComparison.Ordinal);
+
+        var deserialized = JsonSerializer.Deserialize(json, ContractIdentityTestJsonContext.Default.TimeTickerEntity);
+
+        Assert.NotNull(deserialized);
+        Assert.Equal(7, deserialized.RequestContractVersion);
+        Assert.Equal("sha256:test-fingerprint", deserialized.RequestContractFingerprint);
     }
 }

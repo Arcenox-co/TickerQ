@@ -5,6 +5,7 @@ using TickerQ.RemoteExecutor.Logging;
 using TickerQ.RemoteExecutor.TunnelClient;
 using TickerQ.RemoteExecutor.WorkerStream;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Interfaces;
@@ -125,21 +126,7 @@ internal static class RemoteExecutionDelegateFactory
 
             var payload = await loader.LoadPayloadAsync(context.Id, context.Type, ct).ConfigureAwait(false);
 
-            Console.WriteLine($"[DBG-DLG] Dispatching {context.FunctionName} ({context.Id}): retries={context.Retries} intervals=[{(context.RetryIntervals == null ? "null" : string.Join(",", context.RetryIntervals))}]");
-
-            var execute = new ExecuteFunction
-            {
-                TickerId = context.Id.ToString(),
-                FunctionName = context.FunctionName ?? string.Empty,
-                Type = (int)context.Type,
-                RetryCount = context.RetryCount,
-                IsDue = false,
-                ScheduledFor = Timestamp.FromDateTime(DateTime.SpecifyKind(context.ScheduledFor, DateTimeKind.Utc)),
-                RequestPayload = payload != null ? ByteString.CopyFrom(payload) : ByteString.Empty,
-                Retries = context.Retries,
-            };
-            if (context.RetryIntervals is { Length: > 0 })
-                execute.RetryIntervalsSeconds.AddRange(context.RetryIntervals);
+            var execute = CreateExecuteFunction(context, payload);
 
             var dispatchStart = DateTimeOffset.UtcNow;
             ExecutionResult result;
@@ -150,11 +137,9 @@ internal static class RemoteExecutionDelegateFactory
             catch (Exception waitEx) when (ct.IsCancellationRequested)
             {
                 // The dashboard's Cancel signalled the scheduler-local CTS, which
-                // tripped the timeout-Register callback inside ExecuteFunctionAsync
-                // (it surfaces as TimeoutException). The SDK has its own
-                // CancelExecution arriving in parallel and will land Cancelled in
-                // the DB on its own — we just need to make sure the scheduler's
-                // task handler sees this as cancellation, not a generic failure.
+                // caused ExecuteFunctionAsync to push a generation-correlated
+                // CancelExecution on this worker connection. Keep the scheduler's
+                // task handler cancellation-shaped rather than a generic failure.
                 _ = waitEx;
                 throw new TaskCanceledException("Cancelled by dashboard");
             }
@@ -192,18 +177,32 @@ internal static class RemoteExecutionDelegateFactory
                 });
             }
 
-            if (!result.Success)
-            {
-                // Cancellation must surface as TaskCanceledException so the
-                // scheduler's local task handler maps it to TickerStatus.Cancelled
-                // instead of Failed. Without this branch, every Success=false
-                // result lands as Failed even when the user clicked Cancel.
-                if (result.Cancelled)
-                    throw new TaskCanceledException(
-                        string.IsNullOrEmpty(result.Error) ? "Cancelled by dashboard" : result.Error);
-                throw new InvalidOperationException(
-                    string.IsNullOrEmpty(result.Error) ? "Worker reported execution failure" : result.Error);
-            }
+            // Cancellation dominates contradictory flags; only an unambiguously successful
+            // response may stage a result in Core's runtime-owned sink.
+            WorkerResultEnvelopeMapper.ValidateAndStageResult(result, context);
         };
+    }
+
+    internal static ExecuteFunction CreateExecuteFunction(TickerFunctionContext context, byte[]? payload)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var execute = new ExecuteFunction
+        {
+            TickerId = context.Id.ToString(),
+            FunctionName = context.FunctionName ?? string.Empty,
+            Type = (int)context.Type,
+            RetryCount = context.RetryCount,
+            IsDue = context.IsDue,
+            ScheduledFor = Timestamp.FromDateTime(
+                DateTime.SpecifyKind(context.ScheduledFor, DateTimeKind.Utc)),
+            RequestPayload = payload is not null ? ByteString.CopyFrom(payload) : ByteString.Empty,
+            Retries = context.Retries
+        };
+        if (context.RetryIntervals is { Length: > 0 })
+            execute.RetryIntervalsSeconds.AddRange(context.RetryIntervals);
+        WorkerResultEnvelopeMapper.SetParentResult(execute, context.ParentResultEnvelope);
+        if (context.ParentId.HasValue)
+            execute.ParentId = context.ParentId.Value.ToString();
+        return execute;
     }
 }

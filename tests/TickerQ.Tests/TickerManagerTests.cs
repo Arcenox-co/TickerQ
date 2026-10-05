@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NSubstitute;
@@ -18,6 +19,10 @@ namespace TickerQ.Tests;
 public class TickerManagerTests : IDisposable
 {
     private const string ValidFunctionName = "TestFunction";
+    private const string TypedFunctionName = "TypedFunction";
+    private const string TypedSchema =
+        "{\"type\":\"object\",\"properties\":{\"OrderId\":{\"type\":\"string\",\"minLength\":1}}," +
+        "\"required\":[\"OrderId\"],\"additionalProperties\":false}";
     private const string InvalidFunctionName = "NonExistentFunction";
     private const string ValidCronExpression = "0 0 * * * *"; // every hour (6-part with seconds)
     private const string InvalidCronExpression = "not-a-cron";
@@ -50,9 +55,29 @@ public class TickerManagerTests : IDisposable
         TickerFunctionProvider.RegisterFunctions(
             new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
             {
-                [ValidFunctionName] = ("", TickerTaskPriority.Normal, (_, _, _) => Task.CompletedTask, 0)
+                [ValidFunctionName] = ("", TickerTaskPriority.Normal, (_, _, _) => Task.CompletedTask, 0),
+                [TypedFunctionName] = ("", TickerTaskPriority.Normal, (_, _, _) => Task.CompletedTask, 0)
+            });
+        TickerFunctionProvider.RegisterDescriptors(
+            new Dictionary<string, TickerFunctionDescriptor>
+            {
+                [TypedFunctionName] = new TickerFunctionDescriptor(
+                    TypedFunctionName,
+                    TickerTaskPriority.Normal,
+                    null,
+                    7,
+                    new TickerRequestContract(
+                        "TickerQ.Tests.OrderRequest",
+                        TickerRequestContractConstants.DefaultMediaType,
+                        true,
+                        TickerRequestContractConstants.SchemaDialect2020_12,
+                        TypedSchema))
             });
         TickerFunctionProvider.Build();
+
+        var schedulerOptions = new SchedulerOptionsBuilder();
+        schedulerOptions.BindRuntimeActivationScope(null, 1, schedulerEnabled: false);
+        var activationGate = new TickerQActivationGate();
 
         var manager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
             _persistenceProvider,
@@ -60,7 +85,9 @@ public class TickerManagerTests : IDisposable
             _clock,
             _notificationHubSender,
             _executionContext,
-            _dispatcher);
+            _dispatcher,
+            schedulerOptions,
+            activationGate);
 
         _timeTickerManager = manager;
         _cronTickerManager = manager;
@@ -70,6 +97,93 @@ public class TickerManagerTests : IDisposable
     {
         // Rebuild with empty functions so static state does not leak between test classes.
         TickerFunctionProvider.Build();
+    }
+
+    private static byte[] Request(string json) => Encoding.UTF8.GetBytes(json);
+
+    [Fact]
+    public async Task SchedulerHostMutations_WaitForActivationBeforeCallingProvider()
+    {
+        var schedulerOptions = new SchedulerOptionsBuilder();
+        schedulerOptions.BindRuntimeActivationScope("manager-admission", 1, schedulerEnabled: true);
+        var activationGate = new TickerQActivationGate();
+        var manager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
+            _persistenceProvider,
+            _hostScheduler,
+            _clock,
+            _notificationHubSender,
+            _executionContext,
+            _dispatcher,
+            schedulerOptions,
+            activationGate);
+        ITimeTickerManager<TimeTickerEntity> timeManager = manager;
+        _persistenceProvider.AddTimeTickers(
+                Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>())
+            .Returns(1);
+
+        var addTask = timeManager.AddAsync(new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(1)
+        });
+        var updateTask = timeManager.UpdateAsync(new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(2)
+        });
+        var deleteTask = timeManager.DeleteAsync(Guid.NewGuid());
+
+        await Task.Yield();
+        Assert.False(addTask.IsCompleted);
+        Assert.False(updateTask.IsCompleted);
+        Assert.False(deleteTask.IsCompleted);
+        await _persistenceProvider.DidNotReceive()
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.DidNotReceive()
+            .UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.DidNotReceive()
+            .RemoveTimeTickers(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>());
+
+        activationGate.SignalActivated();
+        await Task.WhenAll(addTask, updateTask, deleteTask).WaitAsync(TimeSpan.FromSeconds(2));
+
+        await _persistenceProvider.Received(1)
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.Received(1)
+            .UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.Received(1)
+            .RemoveTimeTickers(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task QueueOnlyMutation_DoesNotWaitForActivation()
+    {
+        var schedulerOptions = new SchedulerOptionsBuilder();
+        schedulerOptions.BindRuntimeActivationScope(null, 1, schedulerEnabled: false);
+        var manager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
+            _persistenceProvider,
+            _hostScheduler,
+            _clock,
+            _notificationHubSender,
+            _executionContext,
+            _dispatcher,
+            schedulerOptions,
+            new TickerQActivationGate());
+        ITimeTickerManager<TimeTickerEntity> timeManager = manager;
+        _persistenceProvider.AddTimeTickers(
+                Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>())
+            .Returns(1);
+
+        var result = await timeManager.AddAsync(new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(1)
+        }).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(result.IsSucceeded);
+        await _persistenceProvider.Received(1)
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
     }
 
     // ---------------------------------------------------------------
@@ -116,6 +230,295 @@ public class TickerManagerTests : IDisposable
         Assert.False(result.IsSucceeded);
         Assert.IsType<TickerValidatorException>(result.Exception);
         Assert.Contains(InvalidFunctionName, result.Exception.Message);
+    }
+
+    [Fact]
+    public async Task AddTimeTickerAsync_InvalidChildFunction_RejectsWholeGraphBeforePersistence()
+    {
+        var entity = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10),
+            Children =
+            [
+                new TimeTickerEntity
+                {
+                    Function = InvalidFunctionName,
+                    ExecutionTime = FixedUtcNow.AddMinutes(11)
+                }
+            ]
+        };
+
+        var result = await _timeTickerManager.AddAsync(entity, CancellationToken.None);
+
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(result.Exception);
+        Assert.Contains(InvalidFunctionName, result.Exception.Message);
+        await _persistenceProvider.DidNotReceive()
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AddTimeTickerBatch_InvalidGrandchildFunction_RejectsWholeBatchBeforePersistence()
+    {
+        var invalidRoot = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10),
+            Children =
+            [
+                new TimeTickerEntity
+                {
+                    Function = ValidFunctionName,
+                    ExecutionTime = FixedUtcNow.AddMinutes(11),
+                    Children =
+                    [
+                        new TimeTickerEntity
+                        {
+                            Function = InvalidFunctionName,
+                            ExecutionTime = FixedUtcNow.AddMinutes(12)
+                        }
+                    ]
+                }
+            ]
+        };
+        var validRoot = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10)
+        };
+
+        var result = await _timeTickerManager.AddBatchAsync([validRoot, invalidRoot]);
+
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(result.Exception);
+        Assert.Contains(InvalidFunctionName, result.Exception.Message);
+        await _persistenceProvider.DidNotReceive()
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateTimeTickerAsync_InvalidChildFunction_RejectsWholeGraphBeforePersistence()
+    {
+        var entity = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10),
+            Children =
+            [
+                new TimeTickerEntity
+                {
+                    Function = InvalidFunctionName,
+                    ExecutionTime = FixedUtcNow.AddMinutes(11)
+                }
+            ]
+        };
+
+        var result = await _timeTickerManager.UpdateAsync(entity, CancellationToken.None);
+
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(result.Exception);
+        Assert.Contains(InvalidFunctionName, result.Exception.Message);
+        await _persistenceProvider.DidNotReceive()
+            .UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateTimeTickerBatch_InvalidGrandchildFunction_RejectsWholeBatchBeforePersistence()
+    {
+        var entity = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10),
+            Children =
+            [
+                new TimeTickerEntity
+                {
+                    Function = ValidFunctionName,
+                    ExecutionTime = FixedUtcNow.AddMinutes(11),
+                    Children =
+                    [
+                        new TimeTickerEntity
+                        {
+                            Function = InvalidFunctionName,
+                            ExecutionTime = FixedUtcNow.AddMinutes(12)
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var result = await _timeTickerManager.UpdateBatchAsync([entity]);
+
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(result.Exception);
+        Assert.Contains(InvalidFunctionName, result.Exception.Message);
+        await _persistenceProvider.DidNotReceive()
+            .UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    // ---------------------------------------------------------------
+    // Cyclic graph rejection (must reject before any persistence, never recurse forever)
+    // ---------------------------------------------------------------
+
+    [Fact]
+    public async Task AddTimeTickerAsync_SelfReferencingCycle_RejectsBeforePersistence()
+    {
+        var root = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10)
+        };
+        root.Children.Add(root); // root -> root
+
+        var result = await _timeTickerManager.AddAsync(root, CancellationToken.None);
+
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(result.Exception);
+        await _persistenceProvider.DidNotReceive()
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AddTimeTickerBatch_LongerCycle_RejectsWholeBatchBeforePersistence()
+    {
+        var root = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10)
+        };
+        var child = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(11)
+        };
+        root.Children.Add(child);
+        child.Children.Add(root); // root -> child -> root
+
+        var validRoot = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10)
+        };
+
+        var result = await _timeTickerManager.AddBatchAsync([validRoot, root]);
+
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(result.Exception);
+        await _persistenceProvider.DidNotReceive()
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateTimeTickerAsync_SelfReferencingCycle_RejectsBeforePersistence()
+    {
+        var root = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10)
+        };
+        root.Children.Add(root); // root -> root
+
+        var result = await _timeTickerManager.UpdateAsync(root, CancellationToken.None);
+
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(result.Exception);
+        await _persistenceProvider.DidNotReceive()
+            .UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReplaceChainAsync_ProviderRejects_ReturnsFailureWithoutNotificationOrRestart()
+    {
+        var oldRoot = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(1)
+        };
+        var replacement = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(2)
+        };
+        _persistenceProvider.GetTimeTickerById(oldRoot.Id, Arg.Any<CancellationToken>())
+            .Returns(oldRoot);
+        _persistenceProvider.ReplaceTimeTickerChainAsync(
+                oldRoot.Id, replacement, Arg.Any<CancellationToken>())
+            .Returns(0);
+
+        var result = await _timeTickerManager.ReplaceChainAsync(
+            oldRoot.Id, replacement, CancellationToken.None);
+
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(result.Exception);
+        await _notificationHubSender.DidNotReceive().AddTimeTickerNotifyAsync(Arg.Any<Guid>());
+        _hostScheduler.DidNotReceive().Restart();
+        _hostScheduler.DidNotReceive().RestartIfNeeded(Arg.Any<DateTime>());
+    }
+
+    [Fact]
+    public async Task UpdateTimeTickerBatch_LongerCycle_RejectsWholeBatchBeforePersistence()
+    {
+        var root = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10)
+        };
+        var child = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(11)
+        };
+        root.Children.Add(child);
+        child.Children.Add(root); // root -> child -> root
+
+        var result = await _timeTickerManager.UpdateBatchAsync([root]);
+
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(result.Exception);
+        await _persistenceProvider.DidNotReceive()
+            .UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AddTimeTickerAsync_SharedDagReference_NotTreatedAsCycle()
+    {
+        // A shared child reachable from two distinct parents is a DAG, not a cycle:
+        // it must validate successfully and persist.
+        var shared = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(12)
+        };
+        var root = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(10)
+        };
+        var otherParent = new TimeTickerEntity
+        {
+            Function = ValidFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(11)
+        };
+        root.Children.Add(otherParent);
+        root.Children.Add(shared);
+        otherParent.Children.Add(shared); // shared reachable via root and via otherParent (no cycle)
+
+        _persistenceProvider
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>())
+            .Returns(1);
+
+        var result = await _timeTickerManager.AddAsync(root, CancellationToken.None);
+
+        Assert.True(result.IsSucceeded);
+        await _persistenceProvider.Received(1)
+            .AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -266,7 +669,7 @@ public class TickerManagerTests : IDisposable
             .InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>())
             .Returns(1);
         _notificationHubSender
-            .AddCronTickerNotifyAsync(Arg.Any<object>())
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>())
             .Returns(Task.CompletedTask);
 
         var result = await _cronTickerManager.AddAsync(entity, CancellationToken.None);
@@ -322,7 +725,7 @@ public class TickerManagerTests : IDisposable
             .InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>())
             .Returns(1);
         _notificationHubSender
-            .AddCronTickerNotifyAsync(Arg.Any<object>())
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>())
             .Returns(Task.CompletedTask);
 
         await _cronTickerManager.AddAsync(entity, CancellationToken.None);
@@ -344,13 +747,13 @@ public class TickerManagerTests : IDisposable
             .InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>())
             .Returns(1);
         _notificationHubSender
-            .AddCronTickerNotifyAsync(Arg.Any<object>())
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>())
             .Returns(Task.CompletedTask);
 
         await _cronTickerManager.AddAsync(entity, CancellationToken.None);
 
         await _notificationHubSender.Received(1)
-            .AddCronTickerNotifyAsync(Arg.Any<object>());
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>());
     }
 
     [Fact]
@@ -366,7 +769,7 @@ public class TickerManagerTests : IDisposable
             .InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>())
             .Returns(1);
         _notificationHubSender
-            .AddCronTickerNotifyAsync(Arg.Any<object>())
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>())
             .Returns(Task.CompletedTask);
 
         var result = await _cronTickerManager.AddAsync(entity, CancellationToken.None);
@@ -389,7 +792,7 @@ public class TickerManagerTests : IDisposable
             .InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>())
             .Returns(1);
         _notificationHubSender
-            .AddCronTickerNotifyAsync(Arg.Any<object>())
+            .AddCronTickerNotifyAsync(Arg.Any<Guid>())
             .Returns(Task.CompletedTask);
 
         var result = await _cronTickerManager.AddAsync(entity, CancellationToken.None);
@@ -966,6 +1369,73 @@ public class TickerManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task AddTimeTickerAsync_ImmediateDispatch_PreservesChainIdentityForRootAndChild()
+    {
+        _dispatcher.IsEnabled.Returns(true);
+        var generation = Guid.NewGuid();
+        var rootId = Guid.NewGuid();
+        var childId = Guid.NewGuid();
+        var acquired = new TimeTickerEntity
+        {
+            Id = rootId, Function = ValidFunctionName, ExecutionTime = FixedUtcNow,
+            AcquisitionToken = generation, ChainRootId = rootId, ChainGeneration = generation,
+            Children = [new TimeTickerEntity
+            {
+                Id = childId, Function = ValidFunctionName, ParentId = rootId,
+                ChainRootId = rootId, ChainGeneration = generation
+            }]
+        };
+        InternalFunctionContext[] dispatched = null;
+        _persistenceProvider.AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>()).Returns(1);
+        _persistenceProvider.AcquireImmediateTimeTickersAsync(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
+            .Returns([acquired]);
+        _dispatcher.DispatchAsync(Arg.Do<InternalFunctionContext[]>(x => dispatched = x), CancellationToken.None)
+            .Returns(Task.CompletedTask);
+
+        var result = await _timeTickerManager.AddAsync(new TimeTickerEntity
+        {
+            Id = rootId, Function = ValidFunctionName, ExecutionTime = FixedUtcNow
+        });
+
+        Assert.True(result.IsSucceeded);
+        var root = Assert.Single(dispatched!);
+        Assert.Equal(rootId, root.ChainRootId);
+        Assert.Equal(generation, root.ChainGeneration);
+        var child = Assert.Single(root.TimeTickerChildren);
+        Assert.Equal(rootId, child.ChainRootId);
+        Assert.Equal(generation, child.ChainGeneration);
+    }
+
+    [Fact]
+    public async Task AddTimeTickerBatch_ImmediateDispatch_PreservesChainIdentity()
+    {
+        _dispatcher.IsEnabled.Returns(true);
+        var generation = Guid.NewGuid();
+        var rootId = Guid.NewGuid();
+        var acquired = new TimeTickerEntity
+        {
+            Id = rootId, Function = ValidFunctionName, ExecutionTime = FixedUtcNow,
+            AcquisitionToken = generation, ChainRootId = rootId, ChainGeneration = generation
+        };
+        InternalFunctionContext[] dispatched = null;
+        _persistenceProvider.AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>()).Returns(1);
+        _persistenceProvider.AcquireImmediateTimeTickersAsync(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
+            .Returns([acquired]);
+        _dispatcher.DispatchAsync(Arg.Do<InternalFunctionContext[]>(x => dispatched = x), CancellationToken.None)
+            .Returns(Task.CompletedTask);
+
+        var result = await _timeTickerManager.AddBatchAsync([new TimeTickerEntity
+        {
+            Id = rootId, Function = ValidFunctionName, ExecutionTime = FixedUtcNow
+        }]);
+
+        Assert.True(result.IsSucceeded);
+        var root = Assert.Single(dispatched!);
+        Assert.Equal(rootId, root.ChainRootId);
+        Assert.Equal(generation, root.ChainGeneration);
+    }
+
+    [Fact]
     public async Task AddTimeTickerAsync_DispatcherDisabledAndImmediateExecution_DoesNotDispatch()
     {
         _dispatcher.IsEnabled.Returns(false);
@@ -987,5 +1457,120 @@ public class TickerManagerTests : IDisposable
 
         await _persistenceProvider.DidNotReceive()
             .AcquireImmediateTimeTickersAsync(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>());
+    }
+
+    // ---------------------------------------------------------------
+    // Authoritative typed-request validation and contract identity
+    // ---------------------------------------------------------------
+
+    [Fact]
+    public async Task AddTimeTickerAsync_ValidTypedPayload_StampsCanonicalContractIdentity()
+    {
+        var entity = new TimeTickerEntity
+        {
+            Function = TypedFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(5),
+            Request = Request("{\"OrderId\":\"abc\"}")
+        };
+        _persistenceProvider.AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>()).Returns(1);
+        _notificationHubSender.AddTimeTickerNotifyAsync(Arg.Any<Guid>()).Returns(Task.CompletedTask);
+
+        var result = await _timeTickerManager.AddAsync(entity, CancellationToken.None);
+
+        Assert.True(result.IsSucceeded);
+        Assert.Equal(7, entity.RequestContractVersion);
+        Assert.Equal(
+            TickerFunctionProvider.TickerFunctionDescriptors[TypedFunctionName].Request.Fingerprint,
+            entity.RequestContractFingerprint);
+    }
+
+    [Fact]
+    public async Task SingleTimeWrites_InvalidTypedPayload_RejectBeforePersistence()
+    {
+        var add = await _timeTickerManager.AddAsync(new TimeTickerEntity
+        {
+            Function = TypedFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(5),
+            Request = Request("{}")
+        });
+        var update = await _timeTickerManager.UpdateAsync(new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = TypedFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(5),
+            Request = Request("{}")
+        });
+
+        Assert.False(add.IsSucceeded);
+        Assert.False(update.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(add.Exception);
+        Assert.IsType<TickerValidatorException>(update.Exception);
+        await _persistenceProvider.DidNotReceive().AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.DidNotReceive().UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SingleCronWrites_InvalidTypedPayload_RejectBeforePersistence()
+    {
+        var add = await _cronTickerManager.AddAsync(new CronTickerEntity
+        {
+            Function = TypedFunctionName,
+            Expression = ValidCronExpression,
+            Request = Request("{}")
+        });
+        var update = await _cronTickerManager.UpdateAsync(new CronTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = TypedFunctionName,
+            Expression = ValidCronExpression,
+            Request = Request("{}")
+        });
+
+        Assert.False(add.IsSucceeded);
+        Assert.False(update.IsSucceeded);
+        Assert.IsType<TickerValidatorException>(add.Exception);
+        Assert.IsType<TickerValidatorException>(update.Exception);
+        await _persistenceProvider.DidNotReceive().InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.DidNotReceive().UpdateCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task BatchTimeWrites_InvalidTypedPayload_RejectAtomicallyBeforePersistence()
+    {
+        var ticker = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = TypedFunctionName,
+            ExecutionTime = FixedUtcNow.AddMinutes(5),
+            Request = Request("{}")
+        };
+
+        var add = await _timeTickerManager.AddBatchAsync(new List<TimeTickerEntity> { ticker });
+        var update = await _timeTickerManager.UpdateBatchAsync(new List<TimeTickerEntity> { ticker });
+
+        Assert.False(add.IsSucceeded);
+        Assert.False(update.IsSucceeded);
+        await _persistenceProvider.DidNotReceive().AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.DidNotReceive().UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task BatchCronWrites_InvalidTypedPayload_RejectAtomicallyBeforePersistence()
+    {
+        var ticker = new CronTickerEntity
+        {
+            Id = Guid.NewGuid(),
+            Function = TypedFunctionName,
+            Expression = ValidCronExpression,
+            Request = Request("{}")
+        };
+
+        var add = await _cronTickerManager.AddBatchAsync(new List<CronTickerEntity> { ticker });
+        var update = await _cronTickerManager.UpdateBatchAsync(new List<CronTickerEntity> { ticker });
+
+        Assert.False(add.IsSucceeded);
+        Assert.False(update.IsSucceeded);
+        await _persistenceProvider.DidNotReceive().InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>());
+        await _persistenceProvider.DidNotReceive().UpdateCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>());
     }
 }

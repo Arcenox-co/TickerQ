@@ -79,6 +79,15 @@ namespace TickerQ.SourceGenerator.Utilities
         }
 
         /// <summary>
+        /// Formats arbitrary text as a complete C# string literal. Roslyn handles every character
+        /// that can terminate or corrupt generated source, including Unicode line separators.
+        /// </summary>
+        public static string FormatStringLiteral(string value)
+        {
+            return SymbolDisplay.FormatLiteral(value, true);
+        }
+
+        /// <summary>
         /// Gets the service key from a FromKeyedServicesAttribute.
         /// </summary>
         public static string GetServiceKey(AttributeData keyedServiceAttribute)
@@ -88,7 +97,7 @@ namespace TickerQ.SourceGenerator.Utilities
                 var keyArg = keyedServiceAttribute.ConstructorArguments[0];
                 if (keyArg.Value is string stringKey)
                 {
-                    return $"\"{stringKey}\"";
+                    return FormatStringLiteral(stringKey);
                 }
                 else if (keyArg.Value != null)
                 {
@@ -118,7 +127,7 @@ namespace TickerQ.SourceGenerator.Utilities
                 case ulong ul:
                     return ul.ToString(System.Globalization.CultureInfo.InvariantCulture) + "UL";
                 case char c:
-                    return $"'{c}'";
+                    return SymbolDisplay.FormatLiteral(c, true);
                 case bool b:
                     return b ? "true" : "false";
                 default:

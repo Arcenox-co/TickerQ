@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
@@ -5,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using StackExchange.Redis;
 using TickerQ.Caching.StackExchangeRedis.Infrastructure;
+using TickerQ.Caching.StackExchangeRedis.Helpers;
 using static TickerQ.Caching.StackExchangeRedis.DependencyInjection.ServiceExtension;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
@@ -34,7 +36,12 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
     private DateTime _fixedNow;
     private const string NodeId = "test-node-1";
     private const string ValidFunction = "TestFunction";
-    private const string Prefix = "tq";
+    private static Task NoOpDelegate(
+        CancellationToken cancellationToken,
+        IServiceProvider serviceProvider,
+        TickerQ.Utilities.Base.TickerFunctionContext context) => Task.CompletedTask;
+    private static readonly string Prefix = new RedisKeyBuilder(
+        TickerQRuntimePartition.LegacyGlobal).PartitionPrefix;
 
     // In-memory stores backing the mock
     private readonly Dictionary<string, string> _store = new();
@@ -50,6 +57,14 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         _clock.UtcNow.Returns(_fixedNow);
 
         _db = Substitute.For<IDatabase>();
+        var multiplexer = Substitute.For<IConnectionMultiplexer>();
+        var server = Substitute.For<IServer>();
+        var endpoint = new DnsEndPoint("standalone.test", 6379);
+        _db.Multiplexer.Returns(multiplexer);
+        multiplexer.GetEndPoints(Arg.Any<bool>()).Returns([endpoint]);
+        multiplexer.GetServer(endpoint, Arg.Any<object>()).Returns(server);
+        server.IsConnected.Returns(true);
+        server.ServerType.Returns(ServerType.Standalone);
 
         _jsonOptions = new JsonSerializerOptions
         {
@@ -74,7 +89,7 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         TickerFunctionProvider.RegisterFunctions(
             new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
             {
-                [ValidFunction] = ("", TickerTaskPriority.Normal, (_, _, _) => Task.CompletedTask, 0)
+                [ValidFunction] = ("", TickerTaskPriority.Normal, NoOpDelegate, 0)
             });
         TickerFunctionProvider.Build();
 
@@ -88,15 +103,18 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         _dispatcher.IsEnabled.Returns(false);
         _dispatcher.DispatchAsync(Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
         var executionContext = new TickerExecutionContext();
+        var activationGate = new TickerQActivationGate();
+        activationGate.SignalActivated();
 
         var tickerManager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
-            _provider, hostScheduler, _clock, notificationHub, executionContext, _dispatcher);
+            _provider, hostScheduler, _clock, notificationHub, executionContext, _dispatcher,
+            schedulerOptions, activationGate);
 
         _timeTickerManager = tickerManager;
         _cronTickerManager = tickerManager;
 
         _internalManager = new InternalTickerManager<TimeTickerEntity, CronTickerEntity>(
-            _provider, _clock, notificationHub);
+            _provider, _clock, notificationHub, schedulerOptions);
 
         return Task.CompletedTask;
     }
@@ -234,8 +252,61 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         _db.ScriptEvaluateAsync(Arg.Any<string>(), Arg.Any<RedisKey[]?>(), Arg.Any<RedisValue[]?>(), Arg.Any<CommandFlags>())
             .Returns(ci =>
             {
+                var script = ci.ArgAt<string>(0);
                 var keys = ci.ArgAt<RedisKey[]>(1);
                 var argv = ci.ArgAt<RedisValue[]>(2);
+
+                if (script.Contains("Atomically publish/remove one Cron definition", StringComparison.Ordinal))
+                {
+                    var cronKey = (string)keys[0];
+                    var idsKey = (string)keys[1];
+                    var id = (string)argv[0];
+                    if ((string)argv[1] == "delete")
+                    {
+                        var removed = _store.Remove(cronKey);
+                        if (_sets.TryGetValue(idsKey, out var ids)) ids.Remove(id);
+                        return RedisResult.Create((RedisValue)(removed ? 1 : 0));
+                    }
+                    _store[cronKey] = (string)argv[2];
+                    if (!_sets.TryGetValue(idsKey, out var members)) _sets[idsKey] = members = [];
+                    members.Add(id);
+                    return RedisResult.Create((RedisValue)1);
+                }
+
+                if (script.Contains("delete one time-ticker aggregate root", StringComparison.Ordinal))
+                {
+                    var id = (string)argv[0];
+                    var removed = _store.Remove((string)keys[0]);
+                    if (_sets.TryGetValue((string)keys[1], out var ids)) ids.Remove(id);
+                    if (_sortedSets.TryGetValue((string)keys[2], out var pending))
+                    {
+                        var scores = pending.Where(entry => entry.Value == id).Select(entry => entry.Key).ToArray();
+                        foreach (var score in scores) pending.Remove(score);
+                    }
+                    for (var index = 4; index < keys.Length; index++) _store.Remove((string)keys[index]);
+                    return RedisResult.Create((RedisValue)(removed ? 1 : 0));
+                }
+
+                if (script.Contains("publishes a TimeTicker document", StringComparison.Ordinal))
+                {
+                    var timeTickerKey = (string)keys[0];
+                    var id = (string)argv[0];
+                    if ((string)argv[3] == "once" && _store.ContainsKey(timeTickerKey))
+                        return RedisResult.Create((RedisValue)0);
+                    _store[timeTickerKey] = (string)argv[1];
+                    if (!_sets.TryGetValue((string)keys[1], out var ids))
+                        _sets[(string)keys[1]] = ids = [];
+                    ids.Add(id);
+                    var pendingScore = (string)argv[2];
+                    if (!string.IsNullOrEmpty(pendingScore))
+                    {
+                        if (!_sortedSets.TryGetValue((string)keys[2], out var pending))
+                            _sortedSets[(string)keys[2]] = pending = new SortedList<double, string>();
+                        pending[double.Parse(pendingScore, System.Globalization.CultureInfo.InvariantCulture)] = id;
+                    }
+                    return RedisResult.Create((RedisValue)1);
+                }
+
                 var entityKey = (string)keys[0];
 
                 if (!_store.TryGetValue(entityKey, out var json))
@@ -245,7 +316,7 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
                 var status = obj.GetProperty("Status").GetInt32();
                 var lockHolder = obj.TryGetProperty("LockHolder", out var lh) && lh.ValueKind != JsonValueKind.Null ? lh.GetString() : null;
 
-                if (argv.Length == 5) // RecoverDeadNode
+                if (argv.Length is 7 or 9) // RecoverDeadNode; final arguments are exact activation epoch + mode
                 {
                     if (lockHolder != (string)argv[0]) return RedisResult.Create(RedisValue.Null);
                     if (status != int.Parse(argv[2].ToString()) && status != int.Parse(argv[3].ToString()) && status != int.Parse(argv[4].ToString()))
@@ -541,7 +612,7 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         var stored = VerifyInStore<TimeTickerEntity>($"{Prefix}:tt:{result.Result.Id}");
         Assert.NotNull(stored);
         Assert.Equal(TickerStatus.InProgress, stored!.Status);
-        Assert.Equal(NodeId, stored.LockHolder);
+        Assert.StartsWith(NodeId + ":", stored.LockHolder);
 
         // Verify dispatcher was called
         await _dispatcher.Received(1).DispatchAsync(
@@ -567,7 +638,7 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         var stored = VerifyInStore<TimeTickerEntity>($"{Prefix}:tt:{result.Result.Id}");
         Assert.NotNull(stored);
         Assert.Equal(TickerStatus.InProgress, stored!.Status);
-        Assert.Equal(NodeId, stored.LockHolder);
+        Assert.StartsWith(NodeId + ":", stored.LockHolder);
 
         await _dispatcher.Received(1).DispatchAsync(
             Arg.Is<InternalFunctionContext[]>(c => c.Length > 0),

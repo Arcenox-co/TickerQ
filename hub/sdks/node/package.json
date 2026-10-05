@@ -14,9 +14,12 @@
   },
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc -p tsconfig.type-tests.json",
+    "test": "npm run build && npm run typecheck && node test/canonicalContract.test.mjs && node test/registerFunctionPolicy.test.mjs && node test/parentContext.test.mjs && node test/resultPropagation.test.mjs && node test/schedulerCompatibility.test.mjs && node test/callbackExecution.test.mjs && node test/protocolExecution.test.mjs && node test/sdkStop.test.mjs",
     "watch": "tsc --watch",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run build"
+    "verify:public-terms": "python3 ../../../scripts/validate-public-terms.py --agreement ../../../LICENSE.md --expected-version public-master-v1.0 --expected-pdf-sha256-file ../../../licenses/public-master-v1.0.sha256",
+    "prepublishOnly": "npm run build && npm run verify:public-terms"
   },
   "keywords": [
     "tickerq",
@@ -28,11 +31,11 @@
     "sdk"
   ],
   "author": "Arcenox",
-  "license": "(MIT OR Apache-2.0)",
+  "license": "SEE LICENSE IN LICENSE.md",
   "repository": {
     "type": "git",
     "url": "https://github.com/Arcenox-co/TickerQ",
-    "directory": "sdks/node"
+    "directory": "hub/sdks/node"
   },
   "homepage": "https://tickerq.net",
   "bugs": {
@@ -43,7 +46,8 @@
   },
   "files": [
     "dist",
-    "LICENSE",
+    "LICENSE.md",
+    "THIRD-PARTY-NOTICES.md",
     "README.md"
   ],
   "peerDependencies": {

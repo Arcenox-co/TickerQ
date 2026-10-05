@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 
 namespace TickerQ.BackgroundServices;
 
@@ -15,15 +16,19 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
     private readonly ITickerExecutionTaskHandler _tickerExecutionTaskHandler;
     private readonly ITickerQTaskScheduler _tickerQTaskScheduler;
     private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
+    private readonly TickerQLicenseStateProvider _licenseState;
     private readonly TimeSpan _fallbackJobPeriod;
+    private readonly ITickerQActivationGate _activationGate;
 
-    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, ITickerFunctionConcurrencyGate concurrencyGate)
+    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, ITickerFunctionConcurrencyGate concurrencyGate, TickerQLicenseStateProvider licenseState, ITickerQActivationGate activationGate = null)
     {
         _internalTickerManager = internalTickerManager;
         _fallbackJobPeriod = schedulerOptions.FallbackIntervalChecker;
         _tickerExecutionTaskHandler = tickerExecutionTaskHandler;
         _tickerQTaskScheduler = tickerQTaskScheduler;
         _concurrencyGate = concurrencyGate;
+        _licenseState = licenseState;
+        _activationGate = activationGate;
     }
 
     public override Task StartAsync(CancellationToken ct)
@@ -34,7 +39,13 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        while (!stoppingToken.IsCancellationRequested)
+        if (!_licenseState.ExecutionAllowed)
+            return;
+
+        if (_activationGate != null)
+            await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
+
+        while (!stoppingToken.IsCancellationRequested && _licenseState.ExecutionAllowed)
         {
             try
             {

@@ -20,7 +20,7 @@ public class TickerQDispatcherConcurrencyTests
     [Fact]
     public void Constructor_ThrowsArgumentNullException_WhenConcurrencyGateIsNull()
     {
-        var act = () => new TickerQDispatcher(_taskScheduler, _taskHandler, null!);
+        var act = () => new TickerQDispatcher(_taskScheduler, _taskHandler, null!, LicenseTestState.Active());
 
         var ex = Assert.Throws<ArgumentNullException>(act);
         Assert.Equal("concurrencyGate", ex.ParamName);
@@ -30,7 +30,7 @@ public class TickerQDispatcherConcurrencyTests
     public async Task DispatchAsync_ZeroMaxConcurrency_DoesNotAcquireSemaphore()
     {
         var gate = new TickerFunctionConcurrencyGate();
-        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate);
+        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate, LicenseTestState.Active());
 
         Func<CancellationToken, Task>? capturedWork = null;
         _taskScheduler.QueueAsync(
@@ -69,7 +69,7 @@ public class TickerQDispatcherConcurrencyTests
     public async Task DispatchAsync_WithMaxConcurrency_AcquiresAndReleasesSemaphore()
     {
         var gate = new TickerFunctionConcurrencyGate();
-        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate);
+        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate, LicenseTestState.Active());
 
         Func<CancellationToken, Task>? capturedWork = null;
         _taskScheduler.QueueAsync(
@@ -111,7 +111,7 @@ public class TickerQDispatcherConcurrencyTests
     public async Task DispatchAsync_WithMaxConcurrency_ReleasesSemaphoreOnException()
     {
         var gate = new TickerFunctionConcurrencyGate();
-        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate);
+        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate, LicenseTestState.Active());
 
         _taskHandler.ExecuteTaskAsync(
             Arg.Any<InternalFunctionContext>(),
@@ -155,7 +155,7 @@ public class TickerQDispatcherConcurrencyTests
     public async Task DispatchAsync_DifferentFunctions_HaveIndependentSemaphores()
     {
         var gate = new TickerFunctionConcurrencyGate();
-        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate);
+        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate, LicenseTestState.Active());
 
         var capturedWorks = new List<Func<CancellationToken, Task>>();
         _taskScheduler.QueueAsync(
@@ -200,7 +200,7 @@ public class TickerQDispatcherConcurrencyTests
     public async Task DispatchAsync_MaxConcurrencyOne_SerializesExecution()
     {
         var gate = new TickerFunctionConcurrencyGate();
-        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate);
+        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate, LicenseTestState.Active());
 
         var capturedWorks = new List<Func<CancellationToken, Task>>();
         _taskScheduler.QueueAsync(

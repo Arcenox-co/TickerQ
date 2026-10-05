@@ -34,11 +34,11 @@ internal sealed class RedisSerializer
         }
     }
 
+    internal string Serialize<T>(T value) where T : class
+        => JsonSerializer.Serialize(value, GetTypeInfo<T>());
+
     internal Task SetAsync<T>(string key, T value) where T : class
-    {
-        var payload = JsonSerializer.Serialize(value, GetTypeInfo<T>());
-        return _db.StringSetAsync(key, payload);
-    }
+        => _db.StringSetAsync(key, Serialize(value));
 
     internal T DeserializeOrNull<T>(string json) where T : class
     {
