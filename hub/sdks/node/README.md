@@ -280,4 +280,4 @@ The SDK has **no runtime dependencies**. It uses only Node.js built-in modules (
 
 ## License
 
-Dual-licensed under [MIT](LICENSE) and [Apache 2.0](LICENSE). Choose whichever you prefer.
+This package is governed by the [TickerQ Software License Agreement](LICENSE.md) and is expressly designated as a covered TickerQ SDK under Schedule A. Community, Evaluation, and paid Commercial licenses are available through [license.tickerq.net](https://license.tickerq.net/pricing). Retained third-party contributor portions are identified separately in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

@@ -4,12 +4,12 @@ Source-Available | Community | 30-Day Evaluation | Annual Commercial Subscriptio
 Licensor / licensing authority Arcenox LLC, a Wyoming limited liability company
 Authorized Seller Arcenox SH.P.K., a Kosovo limited liability company
 Agreement version Version 1.0
-Effective date August 16, 2026
+Effective date September 29, 2026
 Commercial versions Commercial functional line 5.x and later; see Section 2 and Schedule A
 Contact contact@tickerq.net | https://tickerq.net
 These are the public master terms for TickerQ. Customer-specific pricing, subscription dates, covered entities,
 and payment terms are stated in the applicable Order and invoice.
-PUBLIC MASTER TERMS | VERSION 1.0 | EFFECTIVE AUGUST 16, 2026
+PUBLIC MASTER TERMS | VERSION 1.0 | EFFECTIVE SEPTEMBER 29, 2026
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 TICKERQ SOFTWARE LICENSE AGREEMENT
 IMPORTANT: THIS AGREEMENT IS A BINDING CONTRACT. IT CONTAINS LIMITATIONS OF LIABILITY,
@@ -51,17 +51,19 @@ is licensed, not sold. Seller does not grant broader rights than Licensor grants
 Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 2
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 2. Scope and Version Boundary
-This Agreement governs the Commercial Versions of each TickerQ package family listed in Schedule A,
-beginning with the commercial-transition functional release represented by version 10.5.0 for .NET 10 and
-any versions 9.5.0 for .NET 9 and 8.5.0 for .NET 8 first distributed as parallel target-framework builds of that
-same functional release. It also governs later Functional Minor Lines and their parallel target-framework
-builds unless the immutable package contents and metadata for a particular artifact expressly provide
-otherwise. TickerQ's major-version component identifies the target .NET framework; it does not determine
-functional succession or the fallback boundary. An Order may also expressly include another TickerQ
-package, version, SDK, or tool. TickerQ Hub and any other Hosted Service are not licensed by this Agreement
-and require separate hosted-service terms.
+This Agreement governs the Commercial Versions of each TickerQ package family listed in Schedule A. For
+.NET package families, coverage begins with the commercial-transition functional release represented by
+version 10.5.0 for .NET 10 and any versions 9.5.0 for .NET 9 and 8.5.0 for .NET 8 first distributed as parallel
+target-framework builds of that same functional release. It also governs later Functional Minor Lines and their
+parallel target-framework builds unless the immutable package contents and metadata for a particular artifact
+expressly provide otherwise. TickerQ's .NET major-version component identifies the target .NET framework; it
+does not determine functional succession or the fallback boundary. For @tickerq/sdk, coverage begins with
+the first immutable version 1.0.0 artifact distributed with this Agreement and includes every later semantic
+version unless that artifact's immutable distribution materials expressly provide otherwise. An Order may also
+expressly include another TickerQ package, version, SDK, or tool. TickerQ Hub and any other Hosted Service are
+not licensed by this Agreement and require separate hosted-service terms.
 Every TickerQ artifact originally distributed under the MIT License and/or Apache License 2.0, including every
-release distributed before the commercial transition represented by version 10.5.0, remains permanently
+.NET release distributed before the commercial transition represented by version 10.5.0, remains permanently
 governed by the open-source license under which that specific artifact was originally distributed. A parallel
 build numbered 9.5.0 or 8.5.0 is a Commercial Version only if that immutable artifact was first distributed as
 part of the commercial-transition functional release and was not previously distributed under the MIT License
@@ -84,7 +86,8 @@ Anchored Minor Line. for each Subscription Term, the most recent Functional Mino
 Order and generally available on the first day of that Subscription Term. The Anchored Minor Line is fixed for
 that Subscription Term. A renewal is a new Subscription Term and re-anchors the license to the Functional
 Minor Line current when the renewal term begins. Unless an Order expressly states separate anchors, the
-same Anchored Minor Line applies to all covered package families.
+corresponding current Functional Minor Line applies to each covered package family; parallel .NET package
+families share their functional minor line, while @tickerq/sdk uses its semantic major-and-minor line.
 Authorized User. an employee or individual contractor of a Covered Entity whom Customer authorizes to
 access or use the Licensed Product solely for a Covered Entity's benefit and under Customer's control.
 Commercial Subscription. a paid, twelve-month subscription license granted under an Order and Section 7.
@@ -92,9 +95,10 @@ Commercial Version. an immutable TickerQ artifact first distributed under this A
 commercial-transition Functional Minor Line represented by version 10.5.0 and its parallel .NET-target builds,
 Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 3
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
-or under a later Functional Minor Line. An artifact previously distributed under the MIT License or Apache
-License 2.0 is not a Commercial Version and remains a Prior Open-Source Release regardless of its numeric
-version.
+or under a later Functional Minor Line; or, for @tickerq/sdk, the first immutable version 1.0.0 artifact
+distributed with this Agreement or any later semantic version. An artifact previously distributed under the MIT
+License or Apache License 2.0 is not a Commercial Version and remains a Prior Open-Source Release
+regardless of its numeric version.
 Community License. the no-charge, eligibility-based license described in Sections 4 and 5.
 Consolidated Gross Revenue. the worldwide gross revenue, before deduction of costs or expenses, of the
 relevant entity together with its parent entities, subsidiaries, and entities under common control, determined
@@ -127,11 +131,13 @@ even if released during the term, and a 5.x patch first released after the term 
 while the 6.x Functional Minor Line is current re-anchors the renewed term to 6.x. A version first generally
 available before the Paid Subscription Period does not qualify unless an Order expressly grants that
 additional fallback right. TickerQ Hub and other Hosted Services are never Fallback Versions.
-Functional Minor Line. a functionally equivalent TickerQ release family identified by its minor-version
-component across supported .NET target frameworks. The major-version component identifies the
-target .NET framework, not a different functional release. For example, 10.5.x for .NET 10, 9.5.x for .NET 9,
-and 8.5.x for .NET 8 are one 5.x Functional Minor Line; 10.6.x, 9.6.x, and 8.6.x are the later 6.x Functional
-Minor Line. The patch component identifies maintenance releases within that line.
+Functional Minor Line. for .NET package families, a functionally equivalent TickerQ release family identified
+by its minor-version component across supported .NET target frameworks. The .NET major-version component
+identifies the target framework, not a different functional release. For example, 10.5.x for .NET 10, 9.5.x for
+.NET 9, and 8.5.x for .NET 8 are one 5.x Functional Minor Line; 10.6.x, 9.6.x, and 8.6.x are the later 6.x
+Functional Minor Line. For @tickerq/sdk, each semantic major-and-minor line is a Functional Minor Line, so
+1.0.x is the initial line and 1.1.x is a later line. The patch component identifies maintenance releases within
+the applicable line.
 Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 4
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 Government Body. a ministry, department, agency, municipality, public authority, or state-owned entity,
@@ -157,9 +163,10 @@ Paid Subscription Period. the portion of a Subscription Term for which Seller ha
 applicable Commercial fees. A period for which fees are refunded or credited is not part of the Paid
 Subscription Period.
 Prior Open-Source Release. every immutable TickerQ artifact originally distributed under the MIT License
-and/or Apache License 2.0, including every pre-commercial-transition release preceding version 10.5.0. An
-artifact's previously granted open-source status never changes because of this Agreement or because a
-parallel target-framework build has a different numeric major version.
+and/or Apache License 2.0, including every pre-commercial-transition .NET release preceding version 10.5.0.
+An artifact's previously granted open-source status never changes because of this Agreement, because a
+parallel target-framework build has a different numeric major version, or because another package family has
+a separately defined commercial-transition version.
 Production Use. use of the Licensed Product to operate, support, or provide a live Customer Application or
 service for Customer, its users, or third parties, excluding internal evaluation and testing.
 Programmatic Access. the ability to develop, modify, debug, compile, build, or recompile code that
@@ -765,12 +772,16 @@ TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 SCHEDULE A - COVERED TICKERQ PACKAGES
 The commercial-transition Functional Minor Line represented by version 10.5.0 for .NET 10, together with
 any versions 9.5.0 for .NET 9 and 8.5.0 for .NET 8 first distributed as parallel target-framework builds of that
-same functional release, and later Commercial Versions of the package families below are governed by this
-Agreement unless an artifact's immutable distribution materials expressly provide otherwise. Every artifact
+same functional release, and later Commercial Versions of the .NET package families below are governed by
+this Agreement unless an artifact's immutable distribution materials expressly provide otherwise. For
+@tickerq/sdk, the commercial transition begins with the first immutable version 1.0.0 artifact distributed
+with this Agreement and includes every later semantic version unless its immutable distribution materials
+expressly provide otherwise. Every artifact
 previously distributed under the MIT License and/or Apache License 2.0 remains permanently governed by its
 original open-source terms. Listing a package family here does not relicense a Prior Open-Source Release,
 narrow its terms, or remove previously granted rights. Functional and fallback succession is determined by
-the Functional Minor Line, never by the target-framework major version alone.
+the applicable Functional Minor Line: the shared functional minor component for parallel .NET builds and the
+semantic major-and-minor line for @tickerq/sdk.
 Package ID Included material
 TickerQ Core scheduler engine
 TickerQ.Utilities Shared types, entities, and interfaces
@@ -779,11 +790,14 @@ TickerQ.Caching.StackExchangeRedis Redis persistence and distributed coordinatio
 TickerQ.Dashboard Real-time dashboard user interface
 TickerQ.Instrumentation.OpenTelemetry OpenTelemetry instrumentation
 TickerQ.SourceGenerator Compile-time function registration and generated code
+TickerQ.MongoDB MongoDB persistence provider
 TickerQ.SDK TickerQ Hub client and integration package
 TickerQ.RemoteExecutor TickerQ Hub remote-execution integration
+@tickerq/sdk TickerQ Hub JavaScript/TypeScript client and integration package
 Any other TickerQ package, assembly, SDK, or tool is included only if its immutable distribution materials or
-an applicable Order expressly designate it as governed by this Agreement. TickerQ.SDK and
-TickerQ.RemoteExecutor are integration packages only; this Agreement does not grant access to or govern
+an applicable Order expressly designate it as governed by this Agreement. TickerQ.SDK,
+TickerQ.RemoteExecutor, and @tickerq/sdk are integration packages only; this Agreement does not grant
+access to or govern
 TickerQ Hub itself. Public source-code or package availability does not grant operational rights. Third-party
 dependencies remain governed by their own license terms.
 Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 22

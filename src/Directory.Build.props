@@ -9,19 +9,8 @@
         <DotNetAbstractionsVersion>[10.0.0,11.0.0)</DotNetAbstractionsVersion>
         <RepositoryUrl>https://github.com/arcenox-co/TickerQ</RepositoryUrl>
         <PackageProjectUrl>https://tickerq.net/</PackageProjectUrl>
-        <TickerQCommercialPackage Condition="'$(MSBuildProjectName)' == 'TickerQ' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.Utilities' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.EntityFrameworkCore' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.Caching.StackExchangeRedis' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.Dashboard' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.Instrumentation.OpenTelemetry' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.SourceGenerator' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.SDK' Or
-                                             '$(MSBuildProjectName)' == 'TickerQ.RemoteExecutor'">true</TickerQCommercialPackage>
-        <PackageLicenseFile Condition="'$(TickerQCommercialPackage)' == 'true'">LICENSE-COMMERCIAL.txt</PackageLicenseFile>
-        <PackageLicenseExpression Condition="'$(TickerQCommercialPackage)' != 'true'">MIT OR Apache-2.0</PackageLicenseExpression>
-        <Authors>Arcenox LLC</Authors>
-        <Copyright>Copyright 2025-present Arcenox LLC</Copyright>
+        <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
+        <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
         <PackageTags>ticker;queue;cron;time;scheduler;fire-and-forget</PackageTags>
         <PackageIcon>icon.jpg</PackageIcon>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
@@ -30,18 +19,19 @@
         <!-- Source Link -->
         <PublishRepositoryUrl>true</PublishRepositoryUrl>
         <EmbedUntrackedSources>true</EmbedUntrackedSources>
-        <IncludeSymbols>true</IncludeSymbols>
-        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+        <IncludeSymbols>false</IncludeSymbols>
         <Deterministic>true</Deterministic>
         <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     </PropertyGroup>
 
     <ItemGroup>
         <None Include="..\..\icon.jpg" Pack="true" PackagePath="\" />
-        <None Include="$(MSBuildThisFileDirectory)..\LICENSE-COMMERCIAL.txt"
+        <None Include="$(MSBuildThisFileDirectory)..\LICENSE.md"
               Pack="true"
-              PackagePath=""
-              Condition="'$(TickerQCommercialPackage)' == 'true'" />
+              PackagePath="" />
+        <None Include="$(MSBuildThisFileDirectory)..\THIRD-PARTY-NOTICES.md"
+              Pack="true"
+              PackagePath="" />
     </ItemGroup>
 
     <ItemGroup>

@@ -210,7 +210,7 @@ See the runnable nested-request/AOT probe in `samples/TickerQ.Sample.Dashboard.R
 | [`TickerQ.SourceGenerator`](https://www.nuget.org/packages/TickerQ.SourceGenerator) | Compile-time function registration |
 | [`TickerQ.SDK`](https://www.nuget.org/packages/TickerQ.SDK) | Remote worker SDK and integration helpers |
 | [`TickerQ.RemoteExecutor`](https://www.nuget.org/packages/TickerQ.RemoteExecutor) | Hub registration and remote execution transport |
-| [`TickerQ.MongoDB`](https://www.nuget.org/packages/TickerQ.MongoDB) | MongoDB persistence provider (outside commercial Schedule A) |
+| [`TickerQ.MongoDB`](https://www.nuget.org/packages/TickerQ.MongoDB) | MongoDB persistence provider |
 
 > **Note:** All packages are versioned together. Always update all packages to the same version.
 
@@ -260,6 +260,6 @@ Thanks to all our wonderful contributors! See [CONTRIBUTORS.md](CONTRIBUTORS.md)
 
 ## License
 
-TickerQ's commercial transition begins with functional line **5.x**: version `10.5.0` for .NET 10 and its parallel `9.5.0` / `8.5.0` builds. The nine Schedule A package families are source-available under the [TickerQ Software License Agreement v1.0](LICENSE-COMMERCIAL.txt); Community, Evaluation, and paid Commercial licenses are available at [license.tickerq.net](https://license.tickerq.net/pricing).
+TickerQ's commercial transition begins with functional line **5.x**: version `10.5.0` for .NET 10 and its parallel `9.5.0` / `8.5.0` builds. All current TickerQ package families, including `TickerQ.MongoDB` and `@tickerq/sdk`, are source-available under the [TickerQ Software License Agreement v1.0](LICENSE.md); Community, Evaluation, and paid Commercial licenses are available at [license.tickerq.net](https://license.tickerq.net/pricing).
 
-Every immutable artifact originally released under MIT and/or Apache 2.0—including every pre-transition release—permanently retains those grants. The original terms are preserved in [LICENSE-OSS](LICENSE-OSS). `TickerQ.MongoDB` remains outside Schedule A and is dual-licensed under MIT OR Apache-2.0. See the [license boundary notice](LICENSE) for details.
+Every immutable artifact originally released under MIT and/or Apache 2.0 retains the terms included with that artifact. Current distributions preserve required notices for retained contributor portions in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); those notices do not license TickerQ as a whole. See [LICENSING.md](LICENSING.md) for the complete version boundary.
