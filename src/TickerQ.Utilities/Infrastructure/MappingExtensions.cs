@@ -30,7 +30,10 @@ namespace TickerQ.Utilities.Infrastructure
                 UpdatedAt = e.UpdatedAt,
                 ParentId = e.ParentId,
                 ExecutionTime = e.ExecutionTime,
-                Children = e.Children.Select(ch => new TimeTickerEntity
+                // A child with its own ExecutionTime is scheduled on its own; only the ones without run with the
+                // parent. The filter lives here, not in an Include: EF Core ignores an Include once the query
+                // projects, so the Include(Children.Where(...)) in front of this projection never applied.
+                Children = e.Children.Where(ch => ch.ExecutionTime == null).Select(ch => new TimeTickerEntity
                 {
                     Id = ch.Id,
                     Function = ch.Function,
