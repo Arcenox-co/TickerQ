@@ -279,6 +279,44 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Equal(ticker2.Id, remaining[0].Id);
     }
 
+    [Fact]
+    public async Task RemoveTimeTickers_RemovesChildrenAndGrandchildrenToo()
+    {
+        // Without this the children stayed behind with ParentId null: listed as root tickers, and still run at
+        // their own ExecutionTime after the chain was deleted.
+        var grandchild = CreateTimeTicker(function: "Grandchild");
+        grandchild.ExecutionTime = null;
+        var child = CreateTimeTicker(executionTime: _fixedNow.AddHours(1), function: "Child");
+        child.Children = new List<TimeTickerEntity> { grandchild };
+        var parent = CreateTimeTicker(function: "Parent");
+        parent.Children = new List<TimeTickerEntity> { child };
+        var unrelated = CreateTimeTicker(function: "Unrelated");
+        await SeedTimeTickers(parent, unrelated);
+
+        var result = await _provider.RemoveTimeTickers(new[] { parent.Id }, CancellationToken.None);
+
+        Assert.Equal(3, result);
+        using var ctx = CreateVerifyContext();
+        var remaining = await ctx.Set<TimeTickerEntity>().AsNoTracking().ToListAsync();
+        Assert.Equal(unrelated.Id, Assert.Single(remaining).Id);
+    }
+
+    [Fact]
+    public async Task RemoveTimeTickers_ParentAndItsChildInOneCall_RemovesEachOnce()
+    {
+        var child = CreateTimeTicker(function: "Child");
+        child.ExecutionTime = null;
+        var parent = CreateTimeTicker(function: "Parent");
+        parent.Children = new List<TimeTickerEntity> { child };
+        await SeedTimeTickers(parent);
+
+        var result = await _provider.RemoveTimeTickers(new[] { parent.Id, child.Id }, CancellationToken.None);
+
+        Assert.Equal(2, result);
+        using var ctx = CreateVerifyContext();
+        Assert.Empty(await ctx.Set<TimeTickerEntity>().AsNoTracking().ToListAsync());
+    }
+
     // =========================================================================
     // 4. GetTimeTickerById
     // =========================================================================
