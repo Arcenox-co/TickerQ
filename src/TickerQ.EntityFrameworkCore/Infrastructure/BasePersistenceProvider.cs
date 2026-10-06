@@ -88,6 +88,10 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
             .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks older than 1 second
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
+            // The projection loads children and grandchildren: a chain, not sibling collections, so a single
+            // query has no cartesian explosion, and it reads the tickers in one statement while other nodes
+            // lock and release them. Stated explicitly to avoid MultipleCollectionIncludeWarning.
+            .AsSingleQuery()
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
@@ -186,6 +190,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
             .Where(x => x.ExecutionTime >= minSecond && x.ExecutionTime < maxExecutionTime)
             .OrderBy(x => x.ExecutionTime)
+            .AsSingleQuery() // Children and grandchildren; see QueueTimedOutTimeTickers.
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -256,6 +261,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .AsNoTracking()
             .Where(x => idList.Contains(x.Id) && x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
+            .AsSingleQuery() // Children and grandchildren; see QueueTimedOutTimeTickers.
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken)
             .ConfigureAwait(false);
