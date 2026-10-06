@@ -39,9 +39,11 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         {
                             TickerRelation.Children => query
                                 .Include(x => x.Children),
+                            // Children and grandchildren; see GetTimeTickersPaginated for why single.
                             TickerRelation.ChildrenDeep => query
                                 .Include(x => x.Children)
-                                .ThenInclude(x => x.Children),
+                                .ThenInclude(x => x.Children)
+                                .AsSingleQuery(),
                             _ => query
                         };
                     }
@@ -92,11 +94,12 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var baseQuery = dbContext.Set<TTimeTicker>()
                 .Include(x => x.Children)
                 .ThenInclude(x => x.Children)
+                .AsSingleQuery() // Children and grandchildren; see GetTimeTickersPaginated.
                 .AsNoTracking();
-            
+
             if (predicate != null)
                 baseQuery = baseQuery.Where(predicate);
-            
+
             return await baseQuery
                 .Where(x => x.ParentId == null)
                 .OrderByDescending(x => x.ExecutionTime)
@@ -113,14 +116,19 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             var dbContext = session.Context;
 
+            // Children and grandchildren: a chain, not sibling collections, so a single query has no cartesian
+            // explosion. Split would also re-run the paging per level, ordered on ExecutionTime, which is not
+            // unique, so a level could page differently than its parents. Stated explicitly to avoid
+            // MultipleCollectionIncludeWarning.
             var baseQuery = dbContext.Set<TTimeTicker>()
                 .Include(x => x.Children)
                 .ThenInclude(x => x.Children)
+                .AsSingleQuery()
                 .AsNoTracking();
-            
+
             if (predicate != null)
                 baseQuery = baseQuery.Where(predicate);
-            
+
             baseQuery = baseQuery
                 .Where(x => x.ParentId == null)
                 .OrderByDescending(x => x.ExecutionTime);
@@ -159,6 +167,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var tickersToDelete = await dbContext.Set<TTimeTicker>()
                 .Include(x => x.Children)
                 .ThenInclude(x => x.Children) // Include grandchildren if needed
+                .AsSingleQuery() // Children and grandchildren; see GetTimeTickersPaginated.
                 .Where(x => idList.Contains(x.Id))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);

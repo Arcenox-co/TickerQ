@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -91,6 +92,9 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
 
         _options = new DbContextOptionsBuilder<TestTickerQDbContext>()
             .UseSqlite(_connection)
+            // Loading more than one collection without a chosen splitting behaviour fails here instead of
+            // logging MultipleCollectionIncludeWarning at runtime.
+            .ConfigureWarnings(w => w.Throw(RelationalEventId.MultipleCollectionIncludeWarning))
             .Options;
 
         _seedContext = new TestTickerQDbContext(_options);
@@ -1285,5 +1289,94 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
 
         Assert.Single(results);
         Assert.Equal(acquirable.Id, results[0].Id);
+    }
+
+    // =========================================================================
+    // Children and grandchildren: these queries load two collection levels and
+    // must state their query splitting behaviour (the options throw on
+    // MultipleCollectionIncludeWarning).
+    // =========================================================================
+
+    private async Task<(TimeTickerEntity Parent, TimeTickerEntity Child, TimeTickerEntity Grandchild)> SeedTickerWithGrandchild()
+    {
+        var grandchild = CreateTimeTicker(function: "Grandchild");
+        grandchild.ExecutionTime = null;
+        var child = CreateTimeTicker(function: "Child");
+        child.ExecutionTime = null;
+        child.Children = new List<TimeTickerEntity> { grandchild };
+        var parent = CreateTimeTicker(function: "Parent");
+        parent.Children = new List<TimeTickerEntity> { child };
+
+        await SeedTimeTickers(parent);
+        return (parent, child, grandchild);
+    }
+
+    [Fact]
+    public async Task GetEarliestTimeTickers_ProjectsChildrenAndGrandchildren()
+    {
+        var (parent, child, grandchild) = await SeedTickerWithGrandchild();
+
+        var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
+
+        var loaded = Assert.Single(results);
+        Assert.Equal(parent.Id, loaded.Id);
+        var loadedChild = Assert.Single(loaded.Children);
+        Assert.Equal(child.Id, loadedChild.Id);
+        Assert.Equal(grandchild.Id, Assert.Single(loadedChild.Children).Id);
+    }
+
+    [Fact]
+    public async Task GetTimeTickers_LoadsChildrenAndGrandchildren()
+    {
+        var (parent, child, grandchild) = await SeedTickerWithGrandchild();
+
+        var results = await _provider.GetTimeTickers(null, CancellationToken.None);
+
+        var loaded = Assert.Single(results);
+        Assert.Equal(parent.Id, loaded.Id);
+        var loadedChild = Assert.Single(loaded.Children);
+        Assert.Equal(child.Id, loadedChild.Id);
+        Assert.Equal(grandchild.Id, Assert.Single(loadedChild.Children).Id);
+    }
+
+    [Fact]
+    public async Task GetTimeTickersPaginated_LoadsChildrenAndGrandchildren()
+    {
+        var (parent, child, grandchild) = await SeedTickerWithGrandchild();
+
+        var page = await _provider.GetTimeTickersPaginated(null, 1, 10, CancellationToken.None);
+
+        var loaded = Assert.Single(page.Items);
+        Assert.Equal(parent.Id, loaded.Id);
+        var loadedChild = Assert.Single(loaded.Children);
+        Assert.Equal(child.Id, loadedChild.Id);
+        Assert.Equal(grandchild.Id, Assert.Single(loadedChild.Children).Id);
+    }
+
+    [Fact]
+    public async Task TimeTickersQuery_WithChildrenDeep_LoadsChildrenAndGrandchildren()
+    {
+        var (parent, child, grandchild) = await SeedTickerWithGrandchild();
+
+        var loaded = await _provider.TimeTickersQuery()
+            .WithRelated(TickerRelation.ChildrenDeep)
+            .Where(x => x.Id == parent.Id)
+            .FirstOrDefaultAsync(CancellationToken.None);
+
+        Assert.NotNull(loaded);
+        var loadedChild = Assert.Single(loaded.Children);
+        Assert.Equal(child.Id, loadedChild.Id);
+        Assert.Equal(grandchild.Id, Assert.Single(loadedChild.Children).Id);
+    }
+
+    [Fact]
+    public async Task RemoveTimeTickers_WithChildrenAndGrandchildren_RemovesTheTicker()
+    {
+        var (parent, _, _) = await SeedTickerWithGrandchild();
+
+        await _provider.RemoveTimeTickers(new[] { parent.Id }, CancellationToken.None);
+
+        using var ctx = CreateVerifyContext();
+        Assert.False(await ctx.Set<TimeTickerEntity>().AsNoTracking().AnyAsync(t => t.Id == parent.Id));
     }
 }
