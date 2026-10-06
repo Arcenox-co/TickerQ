@@ -163,8 +163,17 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
             
-            // Remove using Entity Framework (respects cascade delete configuration)
-            dbContext.Set<TTimeTicker>().RemoveRange(tickersToDelete);
+            // Remove the descendants explicitly. The relationship is DeleteBehavior.NoAction, so removing only the
+            // parents made EF set ParentId to null on the loaded children: orphans that showed up as root tickers,
+            // and that still ran at their own ExecutionTime after their chain was deleted. Two levels is as deep
+            // as a chain goes (FluentChainTickerBuilder), and as deep as the query above loads.
+            var withDescendants = tickersToDelete
+                .Concat(tickersToDelete.SelectMany(x => x.Children))
+                .Concat(tickersToDelete.SelectMany(x => x.Children).SelectMany(x => x.Children))
+                .Distinct()
+                .ToList();
+
+            dbContext.Set<TTimeTicker>().RemoveRange(withDescendants);
             
             return await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
