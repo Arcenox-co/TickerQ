@@ -553,6 +553,54 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         Assert.Empty(results);
     }
 
+    // A child with its own ExecutionTime is scheduled on its own. Handed to the parent as well, it would run
+    // twice: with the parent and again at its own time.
+    private async Task<(TimeTickerEntity Parent, TimeTickerEntity Unscheduled)> SeedParentWithScheduledAndUnscheduledChild(
+        DateTime parentExecutionTime)
+    {
+        var unscheduled = CreateTimeTicker(function: "RunsWithParent");
+        unscheduled.ExecutionTime = null;
+        var scheduled = CreateTimeTicker(executionTime: _fixedNow.AddHours(1), function: "RunsOnItsOwn");
+        var parent = CreateTimeTicker(executionTime: parentExecutionTime, function: "Parent");
+        parent.Children = new List<TimeTickerEntity> { unscheduled, scheduled };
+
+        await SeedTimeTickers(parent);
+        return (parent, unscheduled);
+    }
+
+    [Fact]
+    public async Task GetEarliestTimeTickers_LeavesOutChildrenWithTheirOwnExecutionTime()
+    {
+        var (parent, unscheduled) = await SeedParentWithScheduledAndUnscheduledChild(_fixedNow.AddMinutes(5));
+
+        var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
+
+        var loaded = Assert.Single(results, t => t.Id == parent.Id);
+        Assert.Equal(unscheduled.Id, Assert.Single(loaded.Children).Id);
+    }
+
+    [Fact]
+    public async Task QueueTimedOutTimeTickers_LeavesOutChildrenWithTheirOwnExecutionTime()
+    {
+        var (parent, unscheduled) = await SeedParentWithScheduledAndUnscheduledChild(_fixedNow.AddMinutes(-5));
+
+        var results = await ToListAsync(_provider.QueueTimedOutTimeTickers(CancellationToken.None));
+
+        var loaded = Assert.Single(results, t => t.Id == parent.Id);
+        Assert.Equal(unscheduled.Id, Assert.Single(loaded.Children).Id);
+    }
+
+    [Fact]
+    public async Task AcquireImmediateTimeTickersAsync_LeavesOutChildrenWithTheirOwnExecutionTime()
+    {
+        var (parent, unscheduled) = await SeedParentWithScheduledAndUnscheduledChild(_fixedNow.AddMinutes(5));
+
+        var results = await _provider.AcquireImmediateTimeTickersAsync(new[] { parent.Id }, CancellationToken.None);
+
+        var loaded = Assert.Single(results);
+        Assert.Equal(unscheduled.Id, Assert.Single(loaded.Children).Id);
+    }
+
     // =========================================================================
     // 10. InsertCronTickers
     // =========================================================================
