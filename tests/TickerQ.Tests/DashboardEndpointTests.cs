@@ -532,6 +532,36 @@ public class DashboardEndpointTests
 
     #endregion
 
+    #region DashboardOptionsBuilder — Reduced Motion
+
+    [Fact]
+    public void WithReducedMotion_DefaultsToEnabled()
+    {
+        var builder = new DashboardOptionsBuilder();
+        builder.WithReducedMotion();
+
+        Assert.True(builder.ReducedMotion);
+    }
+
+    [Fact]
+    public void WithReducedMotion_CanBeExplicitlyDisabled()
+    {
+        var builder = new DashboardOptionsBuilder();
+        builder.WithReducedMotion(false);
+
+        Assert.False(builder.ReducedMotion);
+    }
+
+    [Fact]
+    public void ReducedMotion_DefaultsToFalse_WhenNotConfigured()
+    {
+        var builder = new DashboardOptionsBuilder();
+
+        Assert.False(builder.ReducedMotion);
+    }
+
+    #endregion
+
     #region DashboardOptionsBuilder — Fluent Chaining
 
     [Fact]
