@@ -74,4 +74,5 @@ internal class FrontendConfigResponse
     public string BasePath { get; set; }
     public string BackendDomain { get; set; }
     public AuthInfoResponse Auth { get; set; }
+    public bool ReducedMotion { get; set; }
 }

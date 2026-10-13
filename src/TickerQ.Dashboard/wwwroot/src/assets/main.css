@@ -2,6 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Respects the client's OS/browser accessibility setting automatically, and the
+   dashboard's "reduced-motion" class covers the server-side WithReducedMotion() override */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html.reduced-motion *,
+html.reduced-motion *::before,
+html.reduced-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
 .dot-carousel {
     position: relative;
     left: -9999px;

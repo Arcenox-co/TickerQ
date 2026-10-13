@@ -13,6 +13,7 @@ declare global {
         enabled: boolean;
         sessionTimeout: number;
       };
+      reducedMotion: boolean;
     };
   }
 }

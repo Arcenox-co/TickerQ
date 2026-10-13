@@ -13,6 +13,7 @@ public class DashboardOptionsBuilder
     internal Action<CorsPolicyBuilder> CorsPolicyBuilder { get; set; }
     internal string BackendDomain { get; set; }
     internal string GroupName { get; set; }
+    internal bool ReducedMotion { get; set; }
     
     // Clean authentication system
     internal AuthConfig Auth { get; set; } = new();
@@ -39,6 +40,18 @@ public class DashboardOptionsBuilder
     /// <summary>Set OpenAPI group name for dashboard endpoints</summary>
     public void SetGroupName(string groupName)
         => GroupName = groupName;
+
+    /// <summary>
+    /// Force-disable CSS animations/transitions regardless of the client's OS/browser
+    /// "prefers-reduced-motion" setting. The dashboard already honors that setting
+    /// automatically; use this to override it site-wide (e.g. for machines that are
+    /// always accessed over Remote Desktop, where animations can spike host CPU).
+    /// </summary>
+    public DashboardOptionsBuilder WithReducedMotion(bool enabled = true)
+    {
+        ReducedMotion = enabled;
+        return this;
+    }
     
     /// <summary>Configure no authentication (public dashboard)</summary>
     public DashboardOptionsBuilder WithNoAuth()

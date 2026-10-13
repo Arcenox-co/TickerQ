@@ -214,7 +214,8 @@ namespace TickerQ.Dashboard.DependencyInjection
                     Mode = config.Auth.Mode.ToString().ToLower(),
                     Enabled = config.Auth.IsEnabled,
                     SessionTimeout = config.Auth.SessionTimeoutMinutes
-                }
+                },
+                ReducedMotion = config.ReducedMotion
             };
 
             var frontendJsonOptions = new JsonSerializerOptions
