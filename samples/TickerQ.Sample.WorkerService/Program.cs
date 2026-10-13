@@ -12,7 +12,12 @@ if (OperatingSystem.IsWindows())
 
 builder.ConfigureServices(services =>
 {
-    services.AddTickerQ();
+    services.AddTickerQ(options =>
+    {
+        // Physical process-local runtime partition + exact scheduler activation epoch.
+        options.UseDefinedCronApplicationNamespace("worker-service-sample");
+        options.UseReconciliationEpoch(1);
+    });
     services.AddHostedService<SampleScheduler>();
 });
 

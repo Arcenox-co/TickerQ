@@ -31,4 +31,8 @@
       <ProjectReference Include="..\..\src\TickerQ\TickerQ.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+      <None Update="Fixtures/Licensing/**" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
 </Project>

@@ -1,0 +1,22 @@
+-- Reschedule only the exact immutable identity and active claim.
+-- KEYS: records hash, due sorted set
+-- ARGV: outboxId, immutableDigest, tickerType, tickerId, acquisitionToken, dispatchId,
+--       nodeEpoch, claimToken, claimedBy, availableScore, availableUtc, errorCode
+local json = redis.call('HGET', KEYS[1], ARGV[1])
+if not json then return 0 end
+local ok, record = pcall(cjson.decode, json)
+if not ok or type(record) ~= 'table' then return 0 end
+if record['OutboxId'] ~= ARGV[1] or record['ImmutableDigest'] ~= ARGV[2]
+  or tostring(record['TickerType']) ~= ARGV[3] or record['TickerId'] ~= ARGV[4]
+  or record['AcquisitionToken'] ~= ARGV[5] or record['DispatchId'] ~= ARGV[6]
+  or record['NodeEpoch'] ~= ARGV[7] or record['ClaimToken'] ~= ARGV[8]
+  or record['ClaimedBy'] ~= ARGV[9] then return 0 end
+record['ClaimToken'] = nil
+record['ClaimedBy'] = nil
+record['LeaseUntilUtc'] = nil
+record['AvailableAtUtc'] = ARGV[11]
+record['LastErrorCode'] = ARGV[12]
+local updated = cjson.encode(record)
+redis.call('HSET', KEYS[1], ARGV[1], updated)
+redis.call('ZADD', KEYS[2], ARGV[10], ARGV[1])
+return 1

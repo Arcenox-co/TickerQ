@@ -1,9 +1,9 @@
 ﻿<Project>
 
     <PropertyGroup>
-        <Authors>Albert Kunushevci</Authors>
+        <Authors>Arcenox LLC</Authors>
         <Company>Arcenox LLC</Company>
-        <Copyright>Copyright © 2025 Arcenox LLC</Copyright>
+        <Copyright>Copyright 2025-present Arcenox LLC and contributors</Copyright>
     </PropertyGroup>
 
 </Project>

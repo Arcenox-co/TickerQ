@@ -11,6 +11,15 @@ namespace TickerQ.SourceGenerator.Analysis
 {
     internal static class MethodAnalyzer
     {
+        private static readonly SymbolDisplayFormat GeneratedTypeFormat = new SymbolDisplayFormat(
+            globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Included,
+            typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+            genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters,
+            miscellaneousOptions:
+                SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers |
+                SymbolDisplayMiscellaneousOptions.ExpandNullable |
+                SymbolDisplayMiscellaneousOptions.ExpandValueTuple);
+
         /// <summary>
         /// Builds a TickerMethodModel from Roslyn syntax/semantic info.
         /// Returns null if the method doesn't have a valid TickerFunction attribute.
@@ -36,7 +45,7 @@ namespace TickerQ.SourceGenerator.Analysis
 
             var fullClassName = SourceGeneratorUtilities.GetFullClassName(classDecl);
             var isStatic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
-            var isAsync = SourceGeneratorUtilities.IsMethodAwaitable(methodDecl);
+            var isAsync = IsTaskLike(methodSymbol.ReturnType);
 
             var model = new TickerMethodModel
             {
@@ -53,16 +62,59 @@ namespace TickerQ.SourceGenerator.Analysis
                 IsAsync = isAsync,
             };
 
+            AnalyzeResult(methodSymbol, attrData, model);
+
             AnalyzeParameters(methodDecl, semanticModel, model);
 
             return model;
+        }
+
+        private static void AnalyzeResult(IMethodSymbol methodSymbol, AttributeData attribute, TickerMethodModel model)
+        {
+            var declared = attribute.NamedArguments
+                .FirstOrDefault(pair => pair.Key == "ResultType").Value.Value as ITypeSymbol;
+            if (declared == null)
+                return;
+
+            model.ResultType = declared;
+            model.ResultTypeFullName = RenderTypeSyntax(declared);
+
+            var returned = methodSymbol.ReturnType;
+            var returnsNonGenericTaskLike = IsNonGenericTaskLike(returned);
+            if (returned is INamedTypeSymbol named
+                && named.TypeArguments.Length == 1
+                && IsGenericTaskLike(named))
+                returned = named.TypeArguments[0];
+
+            model.HasValidResultContract = declared.SpecialType != SpecialType.System_Void
+                && (!(declared is INamedTypeSymbol declaredNamed) || !declaredNamed.IsUnboundGenericType)
+                && !returnsNonGenericTaskLike
+                && SymbolEqualityComparer.Default.Equals(declared, returned);
+        }
+
+        private static bool IsTaskLike(ITypeSymbol type)
+            => IsNonGenericTaskLike(type)
+                || type is INamedTypeSymbol named && named.TypeArguments.Length == 1 && IsGenericTaskLike(named);
+
+        private static bool IsNonGenericTaskLike(ITypeSymbol type)
+        {
+            var name = type.ToDisplayString();
+            return name == "System.Threading.Tasks.Task"
+                || name == "System.Threading.Tasks.ValueTask";
+        }
+
+        private static bool IsGenericTaskLike(INamedTypeSymbol type)
+        {
+            var name = type.OriginalDefinition.ToDisplayString();
+            return name == "System.Threading.Tasks.Task<TResult>"
+                || name == "System.Threading.Tasks.ValueTask<TResult>";
         }
 
         private static void AnalyzeParameters(MethodDeclarationSyntax methodDecl, SemanticModel semanticModel, TickerMethodModel model)
         {
             foreach (var parameter in methodDecl.ParameterList.Parameters)
             {
-                var typeSymbol = ModelExtensions.GetSymbolInfo(semanticModel, parameter.Type).Symbol;
+                var typeSymbol = semanticModel.GetTypeInfo(parameter.Type).Type;
                 var typeName = typeSymbol?.ToDisplayString() ?? parameter.Type.ToString();
 
                 if (typeName.Contains("CancellationToken"))
@@ -76,16 +128,12 @@ namespace TickerQ.SourceGenerator.Analysis
                     model.UsesGenericContext = true;
                     model.HasContext = true;
 
-                    var startIndex = typeName.IndexOf('<') + 1;
-                    var endIndex = typeName.LastIndexOf('>');
-                    if (startIndex > 0 && endIndex > startIndex)
+                    if (typeSymbol is INamedTypeSymbol namedContext && namedContext.TypeArguments.Length == 1)
                     {
-                        var rawRequestType = typeName.Substring(startIndex, endIndex - startIndex);
-                        model.GenericRequestTypeFullName = Global(rawRequestType);
-                        var simpleName = model.GenericRequestTypeFullName.Contains(".")
-                            ? model.GenericRequestTypeFullName.Substring(model.GenericRequestTypeFullName.LastIndexOf('.') + 1)
-                            : model.GenericRequestTypeFullName;
-                        model.GenericRequestTypeName = simpleName;
+                        var requestType = namedContext.TypeArguments[0];
+                        model.RequestType = requestType;
+                        model.GenericRequestTypeFullName = RenderTypeSyntax(requestType);
+                        model.GenericRequestTypeName = requestType.Name;
                     }
                 }
                 else if (typeName.Contains("TickerFunctionContext"))
@@ -93,6 +141,14 @@ namespace TickerQ.SourceGenerator.Analysis
                     model.HasContext = true;
                 }
             }
+        }
+
+        internal static string RenderTypeSyntax(ITypeSymbol typeSymbol)
+        {
+            // Runtime type syntax is used in typeof(...) as well as generic arguments.
+            // Omitting nullable-reference modifiers preserves the CLR type identity and keeps
+            // every occurrence legal inside typeof, including nested generic arguments/arrays.
+            return typeSymbol.ToDisplayString(GeneratedTypeFormat);
         }
 
         /// <summary>

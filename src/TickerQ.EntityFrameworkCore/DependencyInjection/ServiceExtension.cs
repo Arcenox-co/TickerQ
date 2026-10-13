@@ -22,6 +22,15 @@ public static class ServiceExtension
         var efCoreOptionBuilder = new TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>();
 
         efConfiguration?.Invoke(efCoreOptionBuilder);
+
+        // Preserve the provider-specific API introduced with the EF partition schema,
+        // but route it into the single Core startup protocol so adoption cannot run
+        // later than activation or only inside EF's ordinary migration bootstrapper.
+        if (efCoreOptionBuilder.LegacyRuntimeOwner != null)
+            tickerConfiguration.UseLegacyRuntimePartitionAdoption(
+                efCoreOptionBuilder.LegacyRuntimeOwner.ApplicationNamespace,
+                efCoreOptionBuilder.LegacyRuntimeAdoptionEpoch!.Value,
+                efCoreOptionBuilder.LegacyWritersDrained);
             
         if (efCoreOptionBuilder.PoolSize <= 0) 
             throw new ArgumentOutOfRangeException(nameof(efCoreOptionBuilder.PoolSize), "Pool size must be greater than 0");
@@ -51,10 +60,11 @@ public static class ServiceExtension
             {
                 Task.Run(async () =>
                 {
-                    // Release resources held by dead nodes before the scheduler starts processing.
-                    await internalTickerManager.ReleaseDeadNodeResources(schedulerOptions.NodeIdentifier);
-                                        
-                    // After cleanup, restart the host scheduler so it immediately
+                    // Ownership is process-instance unique. Do not release current-label rows on
+                    // startup: a sibling process with the same logical NodeIdentifier may still be
+                    // live. Expired predecessors are handled by lease/stale recovery.
+
+                    // After startup, restart the host scheduler so it immediately
                     // picks up newly seeded cron tickers and jobs configured via the core pipeline.
                     if (hostScheduler != null && hostScheduler.IsRunning)
                     {

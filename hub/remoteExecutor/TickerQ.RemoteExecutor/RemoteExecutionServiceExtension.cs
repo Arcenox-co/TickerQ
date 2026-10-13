@@ -47,6 +47,20 @@ public static class RemoteExecutionServiceExtension
             // Register options as singleton so background service can access it
             services.AddSingleton(tickerqRemoteExecutionOptions);
 
+            // Ticker persistence providers are singleton lifecycle owners. Keep provider-backed
+            // capability accessors from the exact concrete instance that the manager/reconciler
+            // use, so every sync observes startup-readiness changes and fails closed before it
+            // publishes any Node callback delegate.
+            services.AddSingleton(sp => RemoteExecutorPersistenceCapabilities.From(
+                sp.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>()));
+
+            // One provider-backed lifecycle owner drains durable Node finalization intents.
+            services.AddSingleton<NodeFinalizationReconciler<TTimeTicker, TCronTicker>>();
+            services.AddSingleton<INodeFinalizationWakeSignal>(sp =>
+                sp.GetRequiredService<NodeFinalizationReconciler<TTimeTicker, TCronTicker>>());
+            services.AddHostedService(sp =>
+                sp.GetRequiredService<NodeFinalizationReconciler<TTimeTicker, TCronTicker>>());
+
             // Register background service to sync remote functions (also injectable for webhooks)
             services.AddSingleton<RemoteFunctionsSyncService>();
             services.AddHostedService(sp => sp.GetRequiredService<RemoteFunctionsSyncService>());

@@ -5,15 +5,12 @@ public class RestartThrottleManagerTests
     [Fact]
     public async Task RequestRestart_TriggersCallback_AfterDebounceWindow()
     {
-        var triggered = false;
-        using var manager = new RestartThrottleManager(() => triggered = true);
+        var triggered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var manager = new RestartThrottleManager(() => triggered.TrySetResult());
 
         manager.RequestRestart();
 
-        // Debounce window is 50ms, give some extra time
-        await Task.Delay(200);
-
-        Assert.True(triggered);
+        await triggered.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Fact]

@@ -9,10 +9,15 @@
     <Title>TickerQ Remote Executor</Title>
     <Description>Remote execution integration for TickerQ, enabling hub registration and remote task dispatch.</Description>
     <PackageTags>$(PackageTags);remote;executor;hub;dispatch;callback</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+    <None Include="README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\TickerQ.Utilities\TickerQ.Utilities.csproj" />
     <PackageReference Include="Grpc.AspNetCore" Version="2.76.0" />
     <PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
     <PackageReference Include="Google.Protobuf" Version="3.31.1" />

@@ -8,10 +8,20 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces.Managers;
 
 var builder = WebApplication.CreateBuilder(args);
+var licensePath = Environment.GetEnvironmentVariable("TICKERQ_LICENSE_PATH");
 
 // TickerQ setup with SQLite operational store (file-based)
 builder.Services.AddTickerQ(options =>
 {
+    if (!string.IsNullOrWhiteSpace(licensePath))
+        options.UseLicense(licensePath);
+
+    // Physical runtime partition + exact epoch. The host-owned
+    // ApplicationRuntimePartitioning migration installs the EF ownership shape.
+    options.UseDefinedCronApplicationNamespace("web-api-sample");
+    options.UseReconciliationEpoch(1);
+    // Existing verified single-owner stores only, for one reviewed rollout:
+    // options.UseLegacyRuntimePartitionAdoption("web-api-sample", 1);
     options.AddOperationalStore(efOptions =>
     {
         efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>
@@ -21,12 +31,12 @@ builder.Services.AddTickerQ(options =>
                 b => b.MigrationsAssembly("TickerQ.Sample.WebApi"));
         });
     });
-    options.AddDashboard();
+    options.AddDashboard(dashboard => dashboard.AllowAnonymousDashboard());
 });
 
 var app = builder.Build();
 
-// Ensure TickerQ operational store schema is applied
+// Apply the host-owned migration history, including ApplicationRuntimePartitioning.
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<TickerQDbContext>();

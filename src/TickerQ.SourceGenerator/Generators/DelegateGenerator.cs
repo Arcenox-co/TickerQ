@@ -64,10 +64,13 @@ namespace TickerQ.SourceGenerator.Generators
             // This ensures we always have an await when async is used
             var needsAsync = methodInfo.UsesGenericContext || isAwaitable;
             var asyncFlag = needsAsync ? "async " : "";
-            var cronExprFlag = string.IsNullOrEmpty(cronExpression) ? "string.Empty" : $"\"{cronExpression}\"";
+            var cronExprFlag = string.IsNullOrEmpty(cronExpression)
+                ? "string.Empty"
+                : SourceGeneratorUtilities.FormatStringLiteral(cronExpression);
+            var functionNameLiteral = SourceGeneratorUtilities.FormatStringLiteral(functionName);
 
             // Generate delegate registration with proper multiline format
-            sb.AppendLine($"            tickerFunctionDelegateDict.TryAdd(\"{functionName}\", ({cronExprFlag}, (TickerTaskPriority){functionPriority}, new TickerFunctionDelegate({asyncFlag}(cancellationToken, serviceProvider, context) =>");
+            sb.AppendLine($"            tickerFunctionDelegateDict.TryAdd({functionNameLiteral}, ({cronExprFlag}, (TickerTaskPriority){functionPriority}, new TickerFunctionDelegate({asyncFlag}(cancellationToken, serviceProvider, context) =>");
             sb.AppendLine("            {");
 
             var parametersList = new List<string>();

@@ -46,3 +46,18 @@ tmpgen/
 
 # Local issue tracking
 tickerq_open_issues.md
+
+# Node
+node_modules/
+
+# Local package build artifacts
+nupkgs/
+
+# Local working notes / tool config
+.claude/
+*.bak
+BRANCH_ASSESSMENT-*.md
+RemoteScheduler-Dashboard-Plan.md
+REWRITE_PLAN.md
+# Misnamed bin dir with a literal backslash (Windows-path artifact)
+samples/TickerQ.Sample.WebApi/bin*

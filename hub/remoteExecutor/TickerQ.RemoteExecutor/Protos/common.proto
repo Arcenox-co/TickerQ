@@ -162,6 +162,24 @@ message FunctionProto {
   optional string request_example = 3;
   TickerTaskPriorityProto priority = 4;
   optional string cron_expression = 5;
+  int32 contract_version = 6;
+  optional FunctionRequestContractProto request_contract = 7;
+}
+
+message FunctionRequestContractProto {
+  string type_name = 1;
+  string media_type = 2;
+  bool required = 3;
+  string schema_dialect = 4;
+  optional string schema_json = 5;
+  optional string fingerprint = 6;
+  repeated FunctionRequestExampleProto examples = 7;
+}
+
+message FunctionRequestExampleProto {
+  string key = 1;
+  optional string summary = 2;
+  string value_json = 3;
 }
 
 message HostStatusProto {

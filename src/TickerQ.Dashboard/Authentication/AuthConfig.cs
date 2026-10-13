@@ -1,91 +1,146 @@
 using System;
+using System.Collections.Generic;
+using TickerQ.Dashboard.Authentication.Schemes;
 
 namespace TickerQ.Dashboard.Authentication;
 
 /// <summary>
-/// Authentication configuration for TickerQ Dashboard
+/// Authentication configuration for TickerQ Dashboard.
 /// </summary>
+/// <remarks>
+/// The runtime uses the <see cref="Schemes"/> list — every request is tried
+/// against each scheme in order and the first match wins. The legacy POCO-
+/// style properties (<see cref="Mode"/>, <see cref="BasicCredentials"/>,
+/// <see cref="ApiKey"/>, etc.) remain for backward compatibility with
+/// existing callers; they are materialized into a single equivalent scheme
+/// by <see cref="Validate"/> at startup.
+/// </remarks>
 public class AuthConfig
 {
     /// <summary>
-    /// Authentication mode
+    /// Active scheme list. The runtime walks this in order on every request.
+    /// Builder methods (<c>WithBasicAuth</c>, <c>WithApiKey</c>, …) append
+    /// here directly; the legacy property-bag setup path appends inside
+    /// <see cref="Validate"/>.
     /// </summary>
-    public AuthMode Mode { get; set; } = AuthMode.None;
-    
+    internal List<IAuthScheme> Schemes { get; } = new();
+
+    private AuthMode _mode = AuthMode.None;
+
     /// <summary>
-    /// Basic authentication credentials (Base64 encoded username:password)
+    /// Legacy single-mode property. New code should configure schemes via
+    /// <c>WithBasicAuth</c> / <c>WithApiKey</c> / etc. on the builder.
+    /// Reading after <see cref="Validate"/> prefers the first scheme's mode
+    /// so multi-scheme setups report a consistent value.
     /// </summary>
+    public AuthMode Mode
+    {
+        get => Schemes.Count > 0 ? Schemes[0].LegacyMode : _mode;
+        set => _mode = value;
+    }
+
+    /// <summary>Base64 <c>username:password</c> for legacy Basic auth setup.</summary>
     public string? BasicCredentials { get; set; }
-    
-    /// <summary>
-    /// API key for authentication (sent as Bearer token)
-    /// </summary>
+
+    /// <summary>API key value for legacy ApiKey auth setup.</summary>
     public string? ApiKey { get; set; }
-    
-    /// <summary>
-    /// Custom authentication function
-    /// </summary>
+
+    /// <summary>User validator for legacy Custom auth setup.</summary>
     public Func<string, bool>? CustomValidator { get; set; }
-    
-    /// <summary>
-    /// Session timeout in minutes (default: 60 minutes)
-    /// </summary>
-    public int SessionTimeoutMinutes { get; set; } = 60;
-    
-    /// <summary>
-    /// Authorization policy name for Host mode (default: null uses the default policy)
-    /// </summary>
+
+    /// <summary>Authorization policy name for legacy Host auth setup.</summary>
     public string? HostAuthorizationPolicy { get; set; }
-    
+
     /// <summary>
-    /// Whether authentication is enabled
+    /// Host-app login page for browser flows (e.g. <c>/account/login</c>).
+    /// When set (Host mode), unauthenticated browser NAVIGATIONS to the
+    /// dashboard are redirected there with <c>?returnUrl=&lt;dashboard-url&gt;</c>
+    /// instead of loading a dashboard that can only 401. The SPA also uses it
+    /// for mid-session expiry. Fetch/API clients keep getting plain 401s.
     /// </summary>
-    public bool IsEnabled => Mode != AuthMode.None;
-    
+    public string? HostLoginRedirectPath { get; set; }
+
+    /// <summary>Session timeout in minutes (advertised to the SPA via /api/auth/info).</summary>
+    public int SessionTimeoutMinutes { get; set; } = 60;
+
     /// <summary>
-    /// Validate the configuration
+    /// JWT options when a <see cref="Schemes.JwtBearerScheme"/> is registered.
+    /// Populated by <see cref="AuthSchemeBuilder.AddJwtBearer"/> and consumed
+    /// by the service-extension wiring (which requires an explicit signing key
+    /// unless ephemeral development signing was explicitly enabled).
+    /// </summary>
+    internal JwtBearerOptions? JwtBearerOptions { get; set; }
+
+    /// <summary>
+    /// Cookie options when a <see cref="Schemes.CookieAuthScheme"/> is
+    /// registered. Cookies reuse the same <see cref="Jwt.JwtTokenIssuer"/>
+    /// the bearer scheme uses — one signing key, two transports.
+    /// </summary>
+    internal CookieAuthOptions? CookieAuthOptions { get; set; }
+
+    /// <summary>True when at least one scheme is configured (either via builder or legacy POCO).</summary>
+    public bool IsEnabled => Schemes.Count > 0 || _mode != AuthMode.None;
+
+    /// <summary>
+    /// Materialize legacy property-bag setup into a scheme (if no builder-
+    /// added schemes exist) and validate every scheme. Called once at
+    /// service-registration time — see <c>ServiceExtensions.AddDashboard</c>.
     /// </summary>
     public void Validate()
     {
-        switch (Mode)
+        if (Schemes.Count == 0)
         {
-            case AuthMode.Basic when string.IsNullOrEmpty(BasicCredentials):
-                throw new InvalidOperationException("BasicCredentials is required for Basic authentication mode");
-            case AuthMode.ApiKey when string.IsNullOrEmpty(ApiKey):
-                throw new InvalidOperationException("ApiKey is required for ApiKey authentication mode");
-            case AuthMode.Custom when CustomValidator == null:
-                throw new InvalidOperationException("CustomValidator is required for Custom authentication mode");
+            switch (_mode)
+            {
+                case AuthMode.None:
+                    break;
+                case AuthMode.Basic:
+                    Schemes.Add(new BasicAuthScheme { Credentials = BasicCredentials });
+                    break;
+                case AuthMode.ApiKey:
+                    Schemes.Add(new ApiKeyAuthScheme { ApiKey = ApiKey });
+                    break;
+                case AuthMode.Host:
+                    Schemes.Add(new HostAuthScheme { AuthorizationPolicy = HostAuthorizationPolicy });
+                    break;
+                case AuthMode.Custom:
+                    Schemes.Add(new CustomAuthScheme { Validator = CustomValidator });
+                    break;
+            }
         }
+
+        foreach (var scheme in Schemes)
+            scheme.Validate();
     }
 }
 
 /// <summary>
-/// Authentication modes supported by TickerQ Dashboard
+/// Authentication modes supported by the dashboard.
 /// </summary>
+/// <remarks>
+/// Identifies a single scheme. Configurations that combine multiple schemes
+/// (Cookie + JWT) report the first scheme's mode via <see cref="AuthConfig.Mode"/>.
+/// </remarks>
 public enum AuthMode
 {
-    /// <summary>
-    /// No authentication - public dashboard
-    /// </summary>
+    /// <summary>No authentication — public dashboard.</summary>
     None = 0,
-    
-    /// <summary>
-    /// Basic authentication with username/password
-    /// </summary>
+
+    /// <summary>HTTP Basic authentication.</summary>
     Basic = 1,
-    
-    /// <summary>
-    /// API key authentication (sent as Bearer token)
-    /// </summary>
+
+    /// <summary>API key authentication (sent as a Bearer token).</summary>
     ApiKey = 2,
-    
-    /// <summary>
-    /// Use host application's authentication
-    /// </summary>
+
+    /// <summary>Delegate to the host application's authentication.</summary>
     Host = 3,
-    
-    /// <summary>
-    /// Custom authentication function
-    /// </summary>
-    Custom = 4
+
+    /// <summary>User-supplied validator.</summary>
+    Custom = 4,
+
+    /// <summary>JSON Web Token (Bearer header) issued by the dashboard's own login endpoint.</summary>
+    Jwt = 5,
+
+    /// <summary>Stateless JWT carried in an HTTP-only cookie, set by the dashboard's login endpoint.</summary>
+    Cookie = 6,
 }

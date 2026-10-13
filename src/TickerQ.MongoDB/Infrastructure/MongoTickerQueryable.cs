@@ -21,8 +21,9 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public MongoTickerQueryable(
             IMongoCollection<TEntity> collection,
+            Expression<Func<TEntity, bool>> partitionPredicate,
             Func<TEntity, TickerRelation[], CancellationToken, Task> relationLoader)
-            : this(collection, relationLoader, collection.AsQueryable(), [])
+            : this(collection, relationLoader, collection.AsQueryable().Where(partitionPredicate), [])
         {
         }
 

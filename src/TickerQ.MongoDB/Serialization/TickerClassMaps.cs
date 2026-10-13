@@ -3,6 +3,7 @@ using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Entities.BaseEntity;
 using TickerQ.Utilities.Enums;
 
 namespace TickerQ.MongoDB.Serialization
@@ -15,12 +16,23 @@ namespace TickerQ.MongoDB.Serialization
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {
-            if (Interlocked.Exchange(ref _registered, 1) != 0)
-                return;
+            if (Interlocked.Exchange(ref _registered, 1) == 0)
+            {
+                BsonSerializer.RegisterSerializer(new GuidSerializer(GuidRepresentation.Standard));
+                BsonSerializer.RegisterSerializer(typeof(TickerStatus), new EnumSerializer<TickerStatus>(BsonType.Int32));
+                BsonSerializer.RegisterSerializer(typeof(RunCondition), new EnumSerializer<RunCondition>(BsonType.Int32));
 
-            BsonSerializer.RegisterSerializer(new GuidSerializer(GuidRepresentation.Standard));
-            BsonSerializer.RegisterSerializer(typeof(TickerStatus), new EnumSerializer<TickerStatus>(BsonType.Int32));
-            BsonSerializer.RegisterSerializer(typeof(RunCondition), new EnumSerializer<RunCondition>(BsonType.Int32));
+                if (!BsonClassMap.IsClassMapRegistered(typeof(BaseTickerEntity)))
+                {
+                    BsonClassMap.RegisterClassMap<BaseTickerEntity>(cm =>
+                    {
+                        cm.AutoMap();
+                        cm.SetIgnoreExtraElements(true);
+                        cm.IdMemberMap.SetElementName("Id");
+                        cm.SetIdMember(null);
+                    });
+                }
+            }
 
             RegisterTimeTicker<TTimeTicker>();
             RegisterCronTicker<TCronTicker>();
@@ -84,6 +96,8 @@ namespace TickerQ.MongoDB.Serialization
                 {
                     cm.AutoMap();
                     cm.SetIgnoreExtraElements(true);
+                    cm.IdMemberMap.SetElementName("Id");
+                    cm.SetIdMember(null);
                     cm.UnmapMember(x => x.CronTicker);
                 }
             );

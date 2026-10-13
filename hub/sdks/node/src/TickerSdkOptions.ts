@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 export const TICKERQ_SDK_CONSTANTS = {
     HubBaseUrl: 'https://hub.tickerq.net/',
     HubHostname: 'hub.tickerq.net',
@@ -24,6 +26,9 @@ export class TickerSdkOptions {
 
     /** Identifier for this application node. */
     nodeName: string | null = null;
+
+    /** Process-instance epoch published during sync and pinned by Core dispatch. */
+    nodeEpoch: string = randomUUID();
 
     /** HTTP request timeout in milliseconds (default: 30000). */
     timeoutMs: number = 30_000;

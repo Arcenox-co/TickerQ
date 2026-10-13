@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.EntityFrameworkCore.Customizer;
 using TickerQ.EntityFrameworkCore.DbContextFactory;
+using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.Utilities.Entities;
 
 namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure;
@@ -49,6 +50,12 @@ public class DesignTimeDbContextTests : IDisposable
         var cronTickerEntity = model.FindEntityType(typeof(CronTickerEntity));
         Assert.NotNull(cronTickerEntity);
         Assert.Equal("ticker", cronTickerEntity.GetSchema());
+
+        var timeResultEntity = model.FindEntityType(typeof(TimeTickerResultEntity<TimeTickerEntity>));
+        var cronResultEntity = model.FindEntityType(typeof(CronTickerOccurrenceResultEntity<CronTickerEntity>));
+        Assert.Equal("ticker", timeResultEntity!.GetSchema());
+        Assert.Equal("ticker", cronResultEntity!.GetSchema());
+        Assert.Equal("ticker", model.FindEntityType(typeof(NodeFinalizationOutboxEntity))!.GetSchema());
     }
 
     [Fact]
@@ -114,6 +121,12 @@ public class DesignTimeDbContextTests : IDisposable
         var timeTickerEntity = model.FindEntityType(typeof(TimeTickerEntity));
         Assert.NotNull(timeTickerEntity);
         Assert.Equal("ticker", timeTickerEntity.GetSchema());
+        Assert.Equal("ticker",
+            model.FindEntityType(typeof(TimeTickerResultEntity<TimeTickerEntity>))!.GetSchema());
+        Assert.Equal("ticker",
+            model.FindEntityType(typeof(CronTickerOccurrenceResultEntity<CronTickerEntity>))!.GetSchema());
+        Assert.Equal("ticker",
+            model.FindEntityType(typeof(NodeFinalizationOutboxEntity))!.GetSchema());
     }
 
     [Fact]
