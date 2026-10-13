@@ -47,6 +47,12 @@
 dotnet add package TickerQ
 ```
 
+For commercial versions, obtain a Community, Evaluation, or paid certificate from
+[the licensing portal](https://license.tickerq.net). Place the unmodified `tickerq.tqlicense` file in the
+application's content root on every host that runs TickerQ. Include it in deployment or mount it from a
+protected location; keep it out of public source control. Missing or invalid certificates disable job execution.
+Evaluation is for non-production use only. See [certificate setup and redistribution](LICENSING.md#runtime-certificate-setup).
+
 ### 1. Register services
 
 ```csharp
@@ -54,6 +60,8 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddTickerQ(options =>
 {
+    // Relative to the application content root; this is also the default certificate location.
+    options.UseLicense("tickerq.tqlicense");
     // Physical runtime partition. Stable across replicas; use a distinct value per application.
     options.UseDefinedCronApplicationNamespace("orders-api");
     // Keep stable for identical replicas/restarts; increment for each reconciliation-changing deployment.
@@ -260,6 +268,6 @@ Thanks to all our wonderful contributors! See [CONTRIBUTORS.md](CONTRIBUTORS.md)
 
 ## License
 
-TickerQ's commercial transition begins with functional line **5.x**: version `10.5.0` for .NET 10 and its parallel `9.5.0` / `8.5.0` builds. All current TickerQ package families, including `TickerQ.MongoDB` and `@tickerq/sdk`, are source-available under the [TickerQ Software License Agreement v1.0](LICENSE.md); Community, Evaluation, and paid Commercial licenses are available at [license.tickerq.net](https://license.tickerq.net/pricing).
+TickerQ's commercial transition begins with functional line **5.x**: version `10.5.0` for .NET 10 and its parallel `9.5.0` / `8.5.0` builds. All current TickerQ package families, including `TickerQ.MongoDB` and `@tickerq/sdk`, are commercial, source-available software under one [TickerQ Software License Agreement v1.0](LICENSE.md). Community, Evaluation, and paid Commercial Subscription are entitlement options under that same agreement, obtained through [license.tickerq.net](https://license.tickerq.net/pricing).
 
 Every immutable artifact originally released under MIT and/or Apache 2.0 retains the terms included with that artifact. Current distributions preserve required notices for retained contributor portions in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); those notices do not license TickerQ as a whole. See [LICENSING.md](LICENSING.md) for the complete version boundary.

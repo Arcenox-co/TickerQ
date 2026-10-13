@@ -185,9 +185,9 @@ class LicensePolicyTests(unittest.TestCase):
             (ROOT / "src" / "TickerQ.Dashboard" / "TickerQ.Dashboard.csproj").read_text(),
         )
         self.assertFalse((ROOT / "licenses" / "OPEN-SOURCE.md").exists())
-        self.assertEqual(
-            "PENDING_PUBLICATION",
+        self.assertRegex(
             (ROOT / "licenses" / "public-master-v1.0.sha256").read_text().strip(),
+            r"\A(?:PENDING_PUBLICATION|[0-9a-f]{64})\Z",
         )
 
     def test_node_package_designates_commercial_terms(self) -> None:
@@ -441,6 +441,31 @@ class LicensePolicyTests(unittest.TestCase):
                 "PENDING_PUBLICATION",
             ))
         )
+
+    def test_pending_public_terms_stop_publication_before_network_access(self) -> None:
+        validator = load_public_terms_validator()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agreement = root / "LICENSE.md"
+            digest = root / "terms.sha256"
+            agreement.write_text("agreement-v1.0", encoding="utf-8")
+            digest.write_text("PENDING_PUBLICATION\n", encoding="utf-8")
+            with mock.patch.object(sys, "argv", [
+                "validate-public-terms.py", "--agreement", str(agreement),
+                "--expected-version", "public-master-v1.0",
+                "--expected-pdf-sha256-file", str(digest),
+            ]), mock.patch.object(validator, "fetch") as fetch, mock.patch.object(sys, "stderr", io.StringIO()) as errors:
+                self.assertEqual(1, validator.main())
+                fetch.assert_not_called()
+                self.assertIn("public-master-v1.0 PDF SHA-256 is not published", errors.getvalue())
+
+    def test_nuget_and_npm_publication_require_the_same_agreement_revision(self) -> None:
+        workflow = (ROOT / ".github/workflows/publish.yml").read_text()
+        package = json.loads((ROOT / "hub/sdks/node/package.json").read_text())
+        for command in (workflow, package["scripts"]["verify:public-terms"]):
+            self.assertIn("--expected-version public-master-v1.0", command)
+            self.assertIn("licenses/public-master-v1.0.sha256", command)
+            self.assertNotIn("public-master-v0.9", command)
 
     def test_validator_rejects_duplicate_zip_members(self) -> None:
         validator = load_validator()

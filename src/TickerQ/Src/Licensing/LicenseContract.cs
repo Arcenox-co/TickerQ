@@ -41,8 +41,9 @@ namespace TickerQ.Licensing
 
     /// <summary>
     /// The minimal signed payload fields TickerQ reads. Historical certificates may carry additional
-    /// trailing commercial claims; those are ignored here — runtime expiry is the temporal authority and
-    /// the anchored minor line is the only extra field a paid v4 Full certificate must carry.
+    /// trailing commercial claims; those are not evaluated here. This reader reports authenticity and
+    /// expiration, not contractual entitlement. The paid v4 anchor records a fallback line, not proof
+    /// that this package qualifies for fallback rights.
     /// </summary>
     internal sealed class LicensePayload
     {

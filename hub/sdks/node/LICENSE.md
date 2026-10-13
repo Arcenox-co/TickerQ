@@ -4,12 +4,14 @@ Source-Available | Community | 30-Day Evaluation | Annual Commercial Subscriptio
 Licensor / licensing authority Arcenox LLC, a Wyoming limited liability company
 Authorized Seller Arcenox SH.P.K., a Kosovo limited liability company
 Agreement version Version 1.0
-Effective date September 29, 2026
+Effective date October 13, 2026
 Commercial versions Commercial functional line 5.x and later; see Section 2 and Schedule A
 Contact contact@tickerq.net | https://tickerq.net
 These are the public master terms for TickerQ. Customer-specific pricing, subscription dates, covered entities,
 and payment terms are stated in the applicable Order and invoice.
-PUBLIC MASTER TERMS | VERSION 1.0 | EFFECTIVE SEPTEMBER 29, 2026
+This is one commercial, source-available agreement. Community, Evaluation, and Commercial Subscription
+are entitlement options under this Agreement, not separate open-source licenses for the Licensed Product.
+PUBLIC MASTER TERMS | VERSION 1.0 | EFFECTIVE OCTOBER 13, 2026
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 TICKERQ SOFTWARE LICENSE AGREEMENT
 IMPORTANT: THIS AGREEMENT IS A BINDING CONTRACT. IT CONTAINS LIMITATIONS OF LIABILITY,
@@ -118,19 +120,18 @@ profit training or education business is assessed under the revenue test.
 Evaluation License. the one-time, thirty-calendar-day license described in Section 6, as it may be extended in
 writing by Licensor.
 Fallback Versions. the Commercial Versions that (a) belong to the Anchored Minor Line for the applicable
-Subscription Term; (b) belong to a package family covered by the Order and recorded in the License
-Certificate; (c) Licensor first made generally available during the Paid Subscription Period; and (d) Customer
-was entitled to obtain under that Commercial Subscription. Fallback Versions include qualifying patch
-releases and all qualifying parallel .NET-target builds within the Anchored Minor Line. They exclude every
-later Functional Minor Line, even if Licensor first made that later line generally available during the Paid
-Subscription Period, and exclude any patch or parallel build of the Anchored Minor Line first made generally
-available after the Paid Subscription Period. Example: if a Subscription Term begins when 10.5.0, 9.5.0, and
-8.5.0 are first generally available as parallel builds, the Anchored Minor Line is 5.x. A 10.5.1, 9.5.1, or 8.5.1
-build first generally available during that Paid Subscription Period may qualify; 10.6.0, 9.6.0, and 8.6.0 do not,
-even if released during the term, and a 5.x patch first released after the term does not. A renewal beginning
-while the 6.x Functional Minor Line is current re-anchors the renewed term to 6.x. A version first generally
-available before the Paid Subscription Period does not qualify unless an Order expressly grants that
-additional fallback right. TickerQ Hub and other Hosted Services are never Fallback Versions.
+Subscription Term; (b) belong to a package family covered by the Order; (c) Licensor first made generally
+available on or before the end of a non-empty Paid Subscription Period; and (d) Customer was entitled to obtain under that Commercial Subscription.
+Fallback Versions include versions already generally available when the Paid Subscription Period began,
+qualifying patch releases, and all qualifying parallel .NET-target builds within the Anchored Minor Line.
+They exclude every later Functional Minor Line, even if Licensor first made that later line generally available
+during the Paid Subscription Period, and exclude any patch or parallel build of the Anchored Minor Line first made generally
+available after the Paid Subscription Period. Example: if a Subscription Term begins while 10.5.0, 9.5.0, and
+8.5.0 are the current parallel builds, the Anchored Minor Line is 5.x and those existing builds qualify.
+A 10.5.1, 9.5.1, or 8.5.1 build first generally available during that Paid Subscription Period may qualify;
+10.6.0, 9.6.0, and 8.6.0 do not, even if released during the term, and a 5.x patch first released after the term
+does not. A renewal beginning while the 6.x Functional Minor Line is current re-anchors the renewed term to
+6.x without removing previously vested 5.x fallback rights. TickerQ Hub and other Hosted Services are never Fallback Versions.
 Functional Minor Line. for .NET package families, a functionally equivalent TickerQ release family identified
 by its minor-version component across supported .NET target frameworks. The .NET major-version component
 identifies the target framework, not a different functional release. For example, 10.5.x for .NET 10, 9.5.x for
@@ -287,6 +288,8 @@ Licensor's uncured material breach, Licensor grants Customer a perpetual, paid-u
 exclusive license to install, reproduce, use, modify, compile, build, deploy, and conduct Production Use only
 of the Fallback Versions within the applicable Anchored Minor Line for Customer Applications, and to
 distribute those Fallback Versions only as compiled into Integrated Products in accordance with Section 9.
+This includes covered versions of the Anchored Minor Line already available at purchase and qualifying
+patches and parallel builds first made generally available on or before the end of the Paid Subscription Period.
 Customer may make new builds, deployments, and distributions of Integrated Products using a Fallback
 Version after expiration. This fallback right does not vest if Licensor terminates for Customer's uncured
 material breach and is non-transferable except as expressly permitted by Section 23.1.
@@ -304,12 +307,14 @@ TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 basis;
 (b) make any nonpublic source code, License Certificate, or substantially all of the Licensed Product's
 functionality available to a third party, including through a wrapper, development framework,
-hosted development tool, service bureau, or competing scheduler product;
+hosted development tool, service bureau, or competing scheduler product, except for the certificate
+delivery and end-user use expressly permitted by Section 9;
 (c) use, copy, or modify the Licensed Product source code to distribute or offer a stand-alone product
 whose primary purpose is to compete with or substitute for TickerQ; this does not prohibit
 independent development without use of Licensed Product code;
 (d) remove or alter copyright, trademark, attribution, proprietary, or license notices;
-(e) share, publish, sell, forge, alter, or circumvent a License Certificate or technical license control;
+(e) share, publish, or sell a License Certificate except as expressly permitted by Section 9, or forge,
+alter, or circumvent a License Certificate or technical license control;
 (f) misrepresent Community eligibility, reset an Evaluation period, or conceal the identity, control group,
 or revenue of the actual user;
 (g) reverse engineer or decompile object code except to the limited extent such restriction is prohibited
@@ -334,7 +339,14 @@ applicable Anchored Minor Line. In each case, the Integrated Product must provid
 functionality and must not expose the Licensed Product as a stand-alone library, framework, scheduler
 service, or general-purpose development component.
 End users of a compliant Integrated Product do not need a separate TickerQ license solely to run that
-Integrated Product. An end user that lawfully receives a compiled Integrated Product may continue to run
+Integrated Product. To enable that runtime use, Customer may include an unmodified License Certificate
+issued to Customer with the compiled Integrated Product, or deliver that certificate directly to its end users
+for installation with that product, when Customer is authorized to distribute that version under this Section.
+End users may retain and use the delivered certificate solely to run the lawfully delivered Integrated Product,
+including the continued use permitted below. Customer must require end users not to use the certificate for
+another application or share it separately from the Integrated Product. This permission does not authorize
+stand-alone certificate distribution, grant Programmatic Access, or expand Customer's license scope.
+An end user that lawfully receives a compiled Integrated Product may continue to run
 that delivered copy notwithstanding expiration or termination of Customer's license, including where the
 delivered copy contains a version outside Customer's later fallback scope. Following expiration of a
 Commercial Subscription, Customer may continue building, maintaining, deploying, and distributing
@@ -415,43 +427,48 @@ Licensed Product, becomes eligible for Community after purchase, fails to deploy
 If Customer terminates an Order for Licensor's uncured material breach under Section 13.2, Seller will refund
 prepaid fees allocable to the period after the effective termination date. Any refunded or credited period is
 excluded from the Paid Subscription Period. Only a qualifying version within the Anchored Minor Line that
-Licensor first made generally available during the non-refunded Paid Subscription Period may become a
-Fallback Version. A refund does not re-anchor the applicable Anchored Minor Line and does not revoke
-fallback rights that vested for a non-refunded Paid Subscription Period, except that no fallback right
+Licensor first made generally available on or before the end of the remaining non-empty, non-refunded Paid
+Subscription Period may become a Fallback Version, including versions available before that period began.
+A full refund for a Subscription Term leaves no Paid Subscription Period and creates no fallback entitlement
+for that term. A refund does not re-anchor the applicable Anchored Minor Line and does not revoke fallback rights that vested for a non-refunded Paid Subscription Period, except that no fallback right
 continues for an affected Fallback Version that Customer must cease using under Section 18.1 because of an
 infringement claim.
 Arcenox LLC / Arcenox SH.P.K. | Version 1.0 | Page 11
 TICKERQ SOFTWARE LICENSE AGREEMENT | PUBLIC MASTER TERMS
 11. Offline License Certificates and Runtime Continuity
 A License Certificate evidences an entitlement but does not expand this Agreement. Customer must protect
-each License Certificate as a confidential credential, restrict access to Authorized Users, and promptly report
-suspected compromise. Licensor may replace a compromised or incorrectly issued certificate and may give
-legal notice that a certificate is revoked, but revocation is not implemented through a remote kill switch.
+each License Certificate as a confidential credential, restrict access to Authorized Users and, solely for the
+delivery and runtime use permitted by Section 9, end users of a compliant Integrated Product, and promptly
+report suspected compromise. Delivery and retention expressly permitted by Section 9 are not a breach of
+the certificate-sharing or confidentiality restrictions in this Agreement. Licensor may replace a compromised
+or incorrectly issued certificate and may give legal notice that a certificate is revoked, but revocation is not
+implemented through a remote kill switch.
 License Certificates are digitally signed and validated locally and offline. Ordinary validation does not require
 internet access, a licensing server, telemetry, an online account, a time service controlled by an Arcenox
-Party, or periodic phone-home communication. Each Commercial License Certificate carries, in offline-
-verifiable form, Customer's legal name or stable identifier, license type, the Anchored Minor Line identifier,
-each covered package family, issue date, Subscription Term start and end dates, the applicable Paid
-Subscription Period, and any Covered Entity or other entitlement scope stated in the Order that is necessary
-to determine fallback rights. It records the Anchored Minor Line and covered package families rather than
-treating a single major-specific version string as the fallback boundary. Each Commercial Version intended for
-offline fallback validation carries immutable, digitally signed release metadata identifying its Functional Minor
-Line, package family, target .NET framework, patch level, and first general-availability date. Those signed
-fields allow Customer to prove fallback scope offline.
+Party, or periodic phone-home communication. A License Certificate identifies Customer or its workspace,
+the entitlement type, issue date, and applicable certificate expiration. A Commercial License Certificate also
+records the Anchored Minor Line. The accepted Order and payment records establish covered package
+families, Covered Entities, Subscription Term, and Paid Subscription Period. Licensor will provide Customer
+with a retainable copy of its entitlement record identifying that scope and the Anchored Minor Line.
+Licensor will maintain dated release records identifying package versions, their Functional Minor Lines, and
+first general-availability dates so Customer can determine its Fallback Versions and retain evidence offline.
 Expiration of a License Certificate must not technically disable, interrupt, degrade, terminate, or cause the
 shutdown of an already compiled or deployed Customer Application or Integrated Product. Runtime
 operation may continue without contacting either Arcenox Party. Technical continuity does not itself extend
 the license term, but a qualifying paid Customer retains the fallback rights in Section 7; Community and
 Evaluation Customers must renew or obtain another valid license before continuing licensed activity, except
 for end-user continuity under Section 9 or a written grace period.
-After the Subscription Term expires, local, offline validation will recognize Customer's continuing entitlement
-when the License Certificate and the Commercial Version's signed release metadata establish that the artifact
-is a Fallback Version within the recorded Anchored Minor Line and covered package families. Validation will
-treat parallel .NET-target builds within that Functional Minor Line as the same fallback line and will reject a
-later Functional Minor Line or a patch first generally available after the Paid Subscription Period. An expired
-maintenance or subscription date may generate a non-blocking notice, but it must not prevent lawful
-building, deployment, distribution, or Production Use of a Fallback Version under Section 7 and must never
-require telemetry, phone-home communication, or remote authorization.
+Runtime validation checks certificate authenticity and reports certificate status; it does not determine all
+contractual rights, verify payment or Community eligibility, or certify that an artifact is a Fallback Version.
+A matching Anchored Minor Line alone is not proof of fallback entitlement. Customer determines fallback
+scope from Section 7, its entitlement and payment records, and the applicable release records. Parallel .NET
+builds within the same Functional Minor Line are assessed individually against their release dates.
+During an active Commercial Subscription, the Anchored Minor Line does not restrict covered updates.
+An expired certificate generates a non-blocking notice for every entitlement type, including Community and
+Evaluation, both during operation and when an existing application restarts. Continued technical execution
+does not authorize otherwise unlicensed activity. Missing, forged, or otherwise invalid certificates may block
+execution; expiration alone does not make an authentic certificate invalid. Lawful use of a Fallback Version
+requires no renewal, telemetry, phone-home communication, or remote authorization.
 12. Updates, Maintenance, and Support
 During an active Commercial Subscription, Customer may lawfully obtain and use generally available updates
 to the Licensed Product included in its Order, including later Functional Minor Lines and parallel .NET-target
@@ -517,7 +534,9 @@ Subscription Period as stated in Sections 7 and 10.5.
 Customer may retain License Certificates and reasonable archival materials necessary to prove and exercise a
 surviving fallback right. Otherwise, upon termination Customer must cease unauthorized use and destroy
 nonpublic materials and License Certificates for which no continuing right exists. Customer will certify
-compliance on reasonable request. Expiration and termination are legal entitlement events and are never
+compliance on reasonable request. These obligations do not require removal or destruction of certificates
+retained with lawfully delivered end-user copies under Section 9.
+Expiration and termination are legal entitlement events and are never
 implemented through a remote kill switch.
 Sections concerning payment, ownership, confidentiality, privacy, warranty disclaimers, indemnities, liability,
 disputes, audit, and any provisions that by nature should survive will survive expiration or termination.
@@ -762,7 +781,8 @@ This Agreement becomes binding between Licensor and Customer through an affirmat
 acceptance, requesting or using a License Certificate after being presented with these terms, or accepting an
 Order that incorporates this Agreement. The same acceptance binds Customer to Seller's limited Order,
 invoice, payment, tax, refund, and notice role. The acceptance record should identify Customer, the
-accepting individual, the Agreement version, and the acceptance time. An individual accepting for a legal
+accepting individual, the Agreement version and effective date, the acceptance time, and the SHA-256 of the
+accepted PDF, and preserve an immutable copy of the accepted terms. An individual accepting for a legal
 entity represents that the individual has authority to bind that entity. Viewing Public Source Code,
 downloading a package, or using platform-enabled repository forking alone does not constitute acceptance
 and grants no operational license rights. When a written signature is required, the applicable Order or

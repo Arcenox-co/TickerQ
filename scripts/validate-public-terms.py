@@ -41,7 +41,7 @@ def validate(
     actual_hash = hashlib.sha256(pdf_bytes).hexdigest()
     expected_hash = expected_pdf_sha256.strip().lower()
     if re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None:
-        errors.append("source-controlled Version 1.0 PDF SHA-256 is not published")
+        errors.append(f"source-controlled {expected_version} PDF SHA-256 is not published")
     elif not isinstance(declared_hash, str) or declared_hash.lower() != expected_hash:
         errors.append(
             f"portal metadata declares PDF SHA-256 {declared_hash!r}; expected {expected_hash}"
@@ -70,10 +70,13 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        metadata = json.loads(fetch(args.metadata_url))
-        pdf_bytes = fetch(args.pdf_url)
         agreement_bytes = args.agreement.read_bytes()
         expected_pdf_sha256 = args.expected_pdf_sha256_file.read_text(encoding="utf-8")
+        if re.fullmatch(r"[0-9a-fA-F]{64}", expected_pdf_sha256.strip()) is None:
+            print(f"Public agreement validation failed: source-controlled {args.expected_version} PDF SHA-256 is not published", file=sys.stderr)
+            return 1
+        metadata = json.loads(fetch(args.metadata_url))
+        pdf_bytes = fetch(args.pdf_url)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"Public agreement validation failed: {error}", file=sys.stderr)
         return 1

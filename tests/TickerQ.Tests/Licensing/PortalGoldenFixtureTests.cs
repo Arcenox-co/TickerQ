@@ -13,7 +13,7 @@ public sealed class PortalGoldenFixtureTests
     [InlineData("active-business-full-v4.tqlicense", TickerQLicenseStatus.Active, true, false, "Business", "Full")]
     [InlineData("expired-business-full-v4.tqlicense", TickerQLicenseStatus.Expired, true, false, "Business", "Full")]
     [InlineData("active-evaluation-v4.tqlicense", TickerQLicenseStatus.Expiring, true, true, "Business", "Evaluation")]
-    [InlineData("expired-evaluation-v4.tqlicense", TickerQLicenseStatus.Expired, false, true, "Business", "Evaluation")]
+    [InlineData("expired-evaluation-v4.tqlicense", TickerQLicenseStatus.Expired, true, true, "Business", "Evaluation")]
     public void Portal_generated_fixture_matches_package_contract(
         string fixture,
         TickerQLicenseStatus expectedStatus,

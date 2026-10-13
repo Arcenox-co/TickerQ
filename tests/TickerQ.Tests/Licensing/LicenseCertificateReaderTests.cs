@@ -90,7 +90,7 @@ public sealed class LicenseCertificateReaderTests
     }
 
     [Fact]
-    public void Expired_full_certificate_keeps_anchored_execution_rights()
+    public void Expired_full_certificate_preserves_runtime_without_certifying_fallback()
     {
         var state = TickerQLicenseState.ForCertificate(
             TickerQLicenseStatus.Expired,
@@ -106,15 +106,14 @@ public sealed class LicenseCertificateReaderTests
             4,
             "Ed25519",
             "production-2026-01",
-            "5.x",
-            executionAllowedAfterExpiry: true);
+            "5.x");
 
         Assert.True(state.ExecutionAllowed);
-        Assert.Contains("anchored 5.x rights", state.Message, StringComparison.Ordinal);
+        Assert.Contains("does not verify fallback entitlement", state.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Expired_evaluation_blocks_execution()
+    public void Expired_evaluation_preserves_runtime_with_a_warning()
     {
         var state = TickerQLicenseState.ForCertificate(
             TickerQLicenseStatus.Expired,
@@ -132,7 +131,18 @@ public sealed class LicenseCertificateReaderTests
             "production-2026-01",
             null);
 
-        Assert.False(state.ExecutionAllowed);
-        Assert.Contains("execution is disabled", state.Message, StringComparison.Ordinal);
+        Assert.True(state.ExecutionAllowed);
+        Assert.Contains("Evaluation rights have ended", state.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(TickerQLicenseStatus.Missing)]
+    [InlineData(TickerQLicenseStatus.Invalid)]
+    [InlineData((TickerQLicenseStatus)99)]
+    public void Certificate_factory_rejects_unverified_statuses(TickerQLicenseStatus status)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => TickerQLicenseState.ForCertificate(
+            status, false, Guid.NewGuid(), Guid.NewGuid(), "Workspace", "Business", "Full",
+            Now.AddDays(-1), Now.AddYears(1), 365, 4, "Ed25519", "test", "5.x"));
     }
 }

@@ -23,7 +23,10 @@ namespace TickerQ.Utilities.Licensing
 
         public TickerQLicenseStatus Status { get; private set; }
 
-        /// <summary>Whether TickerQ execution is permitted. Invalid or missing authority and expired Evaluations block execution.</summary>
+        /// <summary>
+        /// Whether technical execution is enabled. Missing or invalid certificates block execution;
+        /// expiration alone never does. This flag does not establish contractual license entitlement.
+        /// </summary>
         public bool ExecutionAllowed { get; private set; }
 
         /// <summary>A clear, human-readable explanation suitable for logs, the banner, and the About page.</summary>
@@ -48,7 +51,6 @@ namespace TickerQ.Utilities.Licensing
         public string Algorithm { get; private set; }
         public string KeyId { get; private set; }
         public string AnchoredMinorLine { get; private set; }
-        private bool ExecutionAllowedAfterExpiry { get; set; }
 
         /// <summary>
         /// The state used before validation has completed. Fails closed: execution is blocked until the
@@ -98,13 +100,15 @@ namespace TickerQ.Utilities.Licensing
             int schemaVersion,
             string algorithm,
             string keyId,
-            string anchoredMinorLine,
-            bool executionAllowedAfterExpiry = false)
+            string anchoredMinorLine)
         {
+            if (status is not (TickerQLicenseStatus.Active or TickerQLicenseStatus.Expiring or TickerQLicenseStatus.Expired))
+                throw new ArgumentOutOfRangeException(nameof(status), "A verified certificate status is required.");
+
             var state = new TickerQLicenseState
             {
                 Status = status,
-                ExecutionAllowed = status != TickerQLicenseStatus.Expired || executionAllowedAfterExpiry,
+                ExecutionAllowed = true,
                 IsEvaluation = isEvaluation,
                 LicenseId = licenseId,
                 WorkspaceId = workspaceId,
@@ -118,7 +122,6 @@ namespace TickerQ.Utilities.Licensing
                 Algorithm = algorithm,
                 KeyId = keyId,
                 AnchoredMinorLine = anchoredMinorLine,
-                ExecutionAllowedAfterExpiry = executionAllowedAfterExpiry,
             };
 
             var expiryDate = expiresAt.HasValue
@@ -130,10 +133,10 @@ namespace TickerQ.Utilities.Licensing
             {
                 case TickerQLicenseStatus.Expired:
                     state.Message = isEvaluation
-                        ? "The TickerQ Evaluation certificate expired on " + expiryDate + ". TickerQ execution is disabled."
-                        : !executionAllowedAfterExpiry
-                            ? "The TickerQ " + plan + " certificate expired on " + expiryDate + ". TickerQ execution is disabled. Renew the certificate."
-                            : "The TickerQ " + plan + " certificate expired on " + expiryDate + ". TickerQ execution continues under its anchored " + anchoredMinorLine + " rights. Renew the certificate.";
+                        ? "The TickerQ Evaluation certificate expired on " + expiryDate + ". Execution continues for runtime continuity only. Evaluation rights have ended; obtain a valid entitlement before further use. Evaluation never permits production use."
+                        : string.Equals(plan, "Community", StringComparison.Ordinal)
+                            ? "The TickerQ Community certificate expired on " + expiryDate + ". Execution continues for runtime continuity only. Re-attest eligibility and renew before further licensed activity; Community has no fallback rights."
+                            : "The TickerQ " + plan + " certificate expired on " + expiryDate + ". Execution continues for runtime continuity only. Continued licensed use requires qualifying fallback rights under your agreement and Order, or renewal; this runtime does not verify fallback entitlement.";
                     break;
                 case TickerQLicenseStatus.Expiring:
                     state.Message = isEvaluation
@@ -187,8 +190,7 @@ namespace TickerQ.Utilities.Licensing
                 SchemaVersion!.Value,
                 Algorithm,
                 KeyId,
-                AnchoredMinorLine,
-                ExecutionAllowedAfterExpiry);
+                AnchoredMinorLine);
         }
     }
 }

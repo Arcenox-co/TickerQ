@@ -22,7 +22,8 @@ export function LicenseBanner() {
   if (!visible) return null;
 
   const blocking = !license.executionAllowed;
-  const Icon = license.isEvaluation && !blocking ? FlaskConical : blocking ? AlertCircle : AlertTriangle;
+  const evaluation = license.isEvaluation && license.status !== "Expired";
+  const Icon = evaluation && !blocking ? FlaskConical : blocking ? AlertCircle : AlertTriangle;
   const safeActionUrl =
     license.actionUrl && SAFE_ACTION_URLS.has(license.actionUrl)
       ? license.actionUrl
@@ -36,7 +37,7 @@ export function LicenseBanner() {
         "flex min-h-10 shrink-0 items-center gap-3 border-b px-4 py-2 text-xs",
         blocking
           ? "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300"
-          : license.isEvaluation
+          : evaluation
             ? "border-sky-500/25 bg-sky-500/10 text-sky-800 dark:text-sky-300"
             : "border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-300"
       )}

@@ -16,10 +16,10 @@ namespace TickerQ.Utilities.Licensing
         /// <summary>A verified, in-force certificate. Execution is allowed.</summary>
         Active,
 
-        /// <summary>A verified certificate whose runtime expiry is within the warning window. Execution is allowed.</summary>
+        /// <summary>A verified certificate whose expiration is within the warning window. Execution is allowed.</summary>
         Expiring,
 
-        /// <summary>A verified certificate whose runtime expiry has passed. Readable for diagnosis, but execution is blocked.</summary>
+        /// <summary>A verified certificate that has expired. Execution continues; legal entitlement is not implied.</summary>
         Expired
     }
 }

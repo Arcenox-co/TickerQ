@@ -19,8 +19,8 @@ namespace TickerQ.BackgroundServices;
 /// the license verdict is known before any discovery, seeding, scheduling, or execution can occur. It is
 /// deliberately side-effect-free: it never touches managers, providers, or the store, and a Missing, Invalid,
 /// or Expired certificate never throws — the host and Dashboard still start so the state can be diagnosed.
-/// A single clear warning is logged for a state that blocks, restricts, or has expired; the operational loops
-/// stay quiet afterwards to avoid repeating it.
+/// A single clear warning is logged at startup for a state that blocks, restricts, or has expired. The state
+/// provider logs once if a valid certificate subsequently expires; operational loops do not repeat it.
 /// </summary>
 internal sealed class TickerQLicenseHostedService : IHostedService
 {

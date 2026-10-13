@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowUpRight,
   BadgeCheck,
   CalendarClock,
@@ -24,7 +25,7 @@ const STATUS_STYLES: Record<LicenseStatus, string> = {
   NotValidated: "border-slate-500/25 bg-slate-500/10 text-slate-700 dark:text-slate-300",
   Active: "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   Expiring: "border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-300",
-  Expired: "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300",
+  Expired: "border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-300",
   Missing: "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300",
   Invalid: "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300",
 };
@@ -54,7 +55,7 @@ function LicenseSummary({ license }: { license: LicenseResponse }) {
     license.actionUrl && SAFE_ACTION_URLS.has(license.actionUrl)
       ? license.actionUrl
       : null;
-  const StatusIcon = license.executionAllowed ? BadgeCheck : AlertCircle;
+  const StatusIcon = !license.executionAllowed ? AlertCircle : license.status === "Expired" ? AlertTriangle : BadgeCheck;
 
   return (
     <DataCard>
@@ -102,7 +103,7 @@ export default function LicensePage() {
     <div className="space-y-5">
       <PageHeader
         title="License"
-        description="Offline certificate status and runtime authority for this TickerQ host."
+        description="Offline certificate status and execution state for this TickerQ host."
       />
 
       {isLoading && (
@@ -134,7 +135,7 @@ export default function LicensePage() {
             <FlaskConical className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
             <div>
               <h2 className="text-sm font-semibold">Evaluation certificate</h2>
-              <p className="mt-1 text-sm leading-6 opacity-85">This certificate is limited to internal, non-production evaluation. Obtain a commercial certificate before running TickerQ in production.</p>
+              <p className="mt-1 text-sm leading-6 opacity-85">Evaluation permits internal, non-production use only while its term is active. Obtain a Community entitlement if eligible, or a paid Commercial Subscription, before production use.</p>
             </div>
           </div>
         </DataCard>
@@ -149,12 +150,12 @@ export default function LicensePage() {
             <DetailRow label="Product" value="TickerQ" />
             <DetailRow label="Dashboard version" value={config.version || "Development build"} mono />
             <DetailRow label="Verification" value="Offline Ed25519 certificate" />
-            <DetailRow label="Runtime policy" value={license?.executionAllowed ? "Licensed execution enabled" : "Fail-closed; dashboard diagnostics only"} />
+            <DetailRow label="Runtime policy" value={license?.executionAllowed ? "Execution enabled; contractual entitlement applies separately" : "Fail-closed; dashboard diagnostics only"} />
           </dl>
         </DataCard>
 
         <DataCard>
-          <DataCardHeader title="Entitlement">
+          <DataCardHeader title="Certificate identity">
             <ShieldCheck className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
           </DataCardHeader>
           <dl>

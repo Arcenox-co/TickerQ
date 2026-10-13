@@ -1,4 +1,6 @@
 using System.Threading;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using TickerQ.Utilities.Interfaces;
 
 namespace TickerQ.Utilities.Licensing
@@ -13,11 +15,13 @@ namespace TickerQ.Utilities.Licensing
     public sealed class TickerQLicenseStateProvider
     {
         private readonly ITickerClock _clock;
+        private readonly ILogger<TickerQLicenseStateProvider> _logger;
         private TickerQLicenseState _current = TickerQLicenseState.NotValidated;
 
-        public TickerQLicenseStateProvider(ITickerClock clock)
+        public TickerQLicenseStateProvider(ITickerClock clock, ILogger<TickerQLicenseStateProvider> logger = null)
         {
             _clock = clock;
+            _logger = logger ?? NullLogger<TickerQLicenseStateProvider>.Instance;
         }
 
         /// <summary>The current, self-consistent license snapshot. Never null.</summary>
@@ -28,8 +32,9 @@ namespace TickerQ.Utilities.Licensing
                 var current = Volatile.Read(ref _current);
                 var observedAt = new System.DateTimeOffset(_clock.UtcNow, System.TimeSpan.Zero);
                 var refreshed = current.RefreshTemporalStatus(observedAt);
-                if (!ReferenceEquals(current, refreshed))
-                    Interlocked.CompareExchange(ref _current, refreshed, current);
+                if (!ReferenceEquals(current, refreshed)
+                    && ReferenceEquals(Interlocked.CompareExchange(ref _current, refreshed, current), current))
+                    _logger.LogWarning("TickerQ license: {Message}", refreshed.Message);
                 return Volatile.Read(ref _current);
             }
         }

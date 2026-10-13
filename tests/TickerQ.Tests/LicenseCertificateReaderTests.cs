@@ -48,7 +48,7 @@ public sealed class LicenseCertificateReaderTests : IDisposable
     }
 
     [Fact]
-    public void Evaluate_ExpiredV4Full_RemainsExecutableUnderAnchoredRights()
+    public void Evaluate_ExpiredV4Full_PreservesRuntimeWithoutClaimingFallbackEntitlement()
     {
         var issuedAt = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
@@ -57,11 +57,12 @@ public sealed class LicenseCertificateReaderTests : IDisposable
 
         Assert.Equal(TickerQLicenseStatus.Expired, state.Status);
         Assert.True(state.ExecutionAllowed);
-        Assert.Contains("anchored 5.x rights", state.Message);
+        Assert.Contains("runtime continuity only", state.Message);
+        Assert.Contains("does not verify fallback entitlement", state.Message);
     }
 
     [Fact]
-    public void Evaluate_ExpiredV4Evaluation_BlocksExecution()
+    public void Evaluate_ExpiredV4Evaluation_PreservesRuntimeWithNoProductionRights()
     {
         var issuedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
@@ -70,11 +71,13 @@ public sealed class LicenseCertificateReaderTests : IDisposable
 
         Assert.Equal(TickerQLicenseStatus.Expired, state.Status);
         Assert.True(state.IsEvaluation);
-        Assert.False(state.ExecutionAllowed);
+        Assert.True(state.ExecutionAllowed);
+        Assert.Contains("Evaluation rights have ended", state.Message);
+        Assert.Contains("never permits production", state.Message);
     }
 
     [Fact]
-    public void Evaluate_ExpiredLegacyTrial_BlocksExecution()
+    public void Evaluate_ExpiredLegacyTrial_PreservesRuntimeContinuity()
     {
         var issuedAt = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
@@ -83,11 +86,11 @@ public sealed class LicenseCertificateReaderTests : IDisposable
 
         Assert.Equal(TickerQLicenseStatus.Expired, state.Status);
         Assert.True(state.IsEvaluation);
-        Assert.False(state.ExecutionAllowed);
+        Assert.True(state.ExecutionAllowed);
     }
 
     [Fact]
-    public void Evaluate_ExpiredLegacyFull_BlocksUnsignedFallbackRights()
+    public void Evaluate_ExpiredLegacyFull_PreservesRuntimeWithoutClaimingFallbackEntitlement()
     {
         var issuedAt = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
@@ -95,7 +98,8 @@ public sealed class LicenseCertificateReaderTests : IDisposable
             issuedAt, issuedAt.AddYears(1), null), issuedAt.AddYears(1).AddSeconds(1));
 
         Assert.Equal(TickerQLicenseStatus.Expired, state.Status);
-        Assert.False(state.ExecutionAllowed);
+        Assert.True(state.ExecutionAllowed);
+        Assert.Contains("does not verify fallback entitlement", state.Message);
     }
 
     [Fact]
@@ -110,17 +114,86 @@ public sealed class LicenseCertificateReaderTests : IDisposable
         Assert.True(state.ExecutionAllowed);
     }
 
-    [Fact]
-    public void Evaluate_V4FullForDifferentFunctionalLine_IsInvalidAndBlocked()
+    [Theory]
+    [InlineData(1, TickerQLicenseStatus.Active)]
+    [InlineData(366, TickerQLicenseStatus.Expired)]
+    public void Evaluate_V4FullForDifferentFunctionalLine_DoesNotBlockRuntime(int days, TickerQLicenseStatus expectedStatus)
     {
         var issuedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
         var state = Evaluate(Payload(4, LicenseKind.Full, LicensePlan.Business,
-            issuedAt, issuedAt.AddYears(1), "6.x"), issuedAt.AddDays(1));
+            issuedAt, issuedAt.AddYears(1), "6.x"), issuedAt.AddDays(days));
+
+        Assert.Equal(expectedStatus, state.Status);
+        Assert.True(state.ExecutionAllowed);
+        Assert.Equal("6.x", state.AnchoredMinorLine);
+        if (expectedStatus == TickerQLicenseStatus.Expired)
+            Assert.Contains("does not verify fallback entitlement", state.Message);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("5.0")]
+    [InlineData("05.x")]
+    [InlineData("0.x")]
+    [InlineData("-1.x")]
+    [InlineData(" 5.x")]
+    [InlineData("5.x ")]
+    public void Evaluate_V4FullWithMalformedAnchor_RemainsInvalid(string? anchor)
+    {
+        var issuedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var state = Evaluate(Payload(4, LicenseKind.Full, LicensePlan.Business,
+            issuedAt, issuedAt.AddYears(1), anchor), issuedAt.AddDays(1));
 
         Assert.Equal(TickerQLicenseStatus.Invalid, state.Status);
         Assert.False(state.ExecutionAllowed);
         Assert.Contains("invalid anchored minor line", state.Message);
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Evaluate_ExpiredCommunity_PreservesRuntimeWithoutFallbackRights(int schema)
+    {
+        var issuedAt = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var state = Evaluate(Payload(schema, LicenseKind.Full, LicensePlan.Community,
+            issuedAt, issuedAt.AddYears(1), null), issuedAt.AddYears(1));
+
+        Assert.Equal(TickerQLicenseStatus.Expired, state.Status);
+        Assert.True(state.ExecutionAllowed);
+        Assert.False(state.IsEvaluation);
+        Assert.Contains("Community has no fallback rights", state.Message);
+        Assert.Equal(TickerQLicenseState.RenewCertificateUrl, state.ActionUrl);
+    }
+
+    [Theory]
+    [InlineData(4, (int)LicenseKind.Evaluation, (int)LicensePlan.Business, 30, null)]
+    [InlineData(3, (int)LicenseKind.Full, (int)LicensePlan.Community, 365, null)]
+    [InlineData(4, (int)LicenseKind.Full, (int)LicensePlan.Business, 365, "5.x")]
+    [InlineData(4, (int)LicenseKind.Full, (int)LicensePlan.Business, 365, "6.x")]
+    public void Read_ExpiredCertificateOnRestart_PreservesRuntime(
+        int schema, int kind, int plan, int termDays, string? anchor)
+    {
+        var issuedAt = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var expiresAt = issuedAt.AddDays(termDays);
+        var root = Directory.CreateTempSubdirectory("tickerq-license-restart-");
+        try
+        {
+            File.WriteAllBytes(Path.Combine(root.FullName, LicenseCertificateReader.DefaultFileName),
+                CreateCertificate(Payload(schema, (LicenseKind)kind, (LicensePlan)plan, issuedAt, expiresAt, anchor)));
+
+            var state = LicenseCertificateReader.Read(null, root.FullName, expiresAt.AddSeconds(1),
+                candidate => candidate == KeyId ? _publicKey : null!);
+
+            Assert.Equal(TickerQLicenseStatus.Expired, state.Status);
+            Assert.True(state.ExecutionAllowed);
+            Assert.Contains("runtime continuity only", state.Message);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
     }
 
     [Fact]

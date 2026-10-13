@@ -1,7 +1,6 @@
 using System;
+using System.Globalization;
 using System.IO;
-using System.Linq;
-using System.Reflection;
 using System.Text.Json;
 using NSec.Cryptography;
 using TickerQ.Utilities.Licensing;
@@ -20,13 +19,6 @@ namespace TickerQ.Licensing
     {
         internal const string DefaultFileName = "tickerq.tqlicense";
         private const int MaxCertificateBytes = 128 * 1024;
-
-        private const string FunctionalMinorLineMetadataKey = "TickerQFunctionalMinorLine";
-
-        private static readonly string RuntimeFunctionalMinorLine = typeof(LicenseCertificateReader).Assembly
-            .GetCustomAttributes<AssemblyMetadataAttribute>()
-            .SingleOrDefault(attribute => attribute.Key == FunctionalMinorLineMetadataKey)
-            ?.Value;
 
         private static readonly SignatureAlgorithm Algorithm = SignatureAlgorithm.Ed25519;
 
@@ -178,7 +170,7 @@ namespace TickerQ.Licensing
             if (!string.Equals(payload.KeyId, envelope.KeyId, StringComparison.Ordinal))
                 return TickerQLicenseState.Invalid("certificate key mismatch");
 
-            var contractFailure = ValidateContract(payload, RuntimeFunctionalMinorLine);
+            var contractFailure = ValidateContract(payload);
             if (contractFailure != null)
                 return TickerQLicenseState.Invalid(contractFailure);
             if (payload.IssuedAt > now)
@@ -190,7 +182,7 @@ namespace TickerQ.Licensing
         // Mirrors the portal's frozen schema/kind contract. Returns a short reason on failure, or null when
         // the certificate is structurally valid. Temporal expiry is intentionally NOT evaluated here — an
         // expired certificate is still structurally valid and must remain readable.
-        private static string ValidateContract(LicensePayload payload, string runtimeFunctionalMinorLine)
+        private static string ValidateContract(LicensePayload payload)
         {
             if (payload.LicenseId == Guid.Empty || payload.WorkspaceId == Guid.Empty)
                 return "incomplete certificate identity";
@@ -232,14 +224,22 @@ namespace TickerQ.Licensing
                         return "paid license must not be Community";
                     if (payload.RuntimeExpiresAt != payload.IssuedAt.AddYears(1))
                         return "invalid full-license term";
-                    if (string.IsNullOrWhiteSpace(runtimeFunctionalMinorLine)
-                        || !string.Equals(payload.AnchoredMinorLine, runtimeFunctionalMinorLine, StringComparison.Ordinal))
+                    // The anchor limits contractual fallback rights, not active-term upgrades or runtime
+                    // continuity. Validate its shape without treating a line match as proof of entitlement.
+                    if (!IsFunctionalMinorLine(payload.AnchoredMinorLine))
                         return "invalid anchored minor line";
                     return null;
                 default:
                     return "unsupported schema or kind";
             }
         }
+
+        private static bool IsFunctionalMinorLine(string value) =>
+            value != null
+            && value.EndsWith(".x", StringComparison.Ordinal)
+            && int.TryParse(value.AsSpan(0, value.Length - 2), NumberStyles.None, CultureInfo.InvariantCulture, out var line)
+            && line > 0
+            && string.Equals(value, line.ToString(CultureInfo.InvariantCulture) + ".x", StringComparison.Ordinal);
 
         private static bool IsPerpetualCommunity(LicensePayload payload) =>
             payload.SchemaVersion == 2
@@ -249,12 +249,9 @@ namespace TickerQ.Licensing
 
         private static TickerQLicenseState BuildState(LicenseEnvelope envelope, LicensePayload payload, DateTimeOffset now)
         {
-            // Legacy schema-v3 Trial is the predecessor of schema-v4 Evaluation and must retain the same
-            // expiry enforcement. Only build-bound schema-v4 Full certificates keep post-expiry rights.
+            // All authentic certificate kinds retain technical runtime continuity after expiration.
+            // Runtime status does not establish legal entitlement or prove contractual fallback rights.
             var isEvaluation = payload.LicenseKind is LicenseKind.Evaluation or LicenseKind.Trial;
-            var executionAllowedAfterExpiry = payload.SchemaVersion == 4
-                && payload.LicenseKind == LicenseKind.Full
-                && string.Equals(payload.AnchoredMinorLine, RuntimeFunctionalMinorLine, StringComparison.Ordinal);
             var expiresAt = payload.RuntimeExpiresAt;
 
             TickerQLicenseStatus status;
@@ -291,8 +288,7 @@ namespace TickerQ.Licensing
                 envelope.SchemaVersion,
                 envelope.Algorithm,
                 envelope.KeyId,
-                payload.AnchoredMinorLine,
-                executionAllowedAfterExpiry);
+                payload.AnchoredMinorLine);
         }
     }
 }

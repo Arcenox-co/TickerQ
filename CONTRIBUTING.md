@@ -18,6 +18,8 @@ All contributors must sign our [Contributor License Agreement](CLA.md) before th
 
 ## Development Setup
 
+Building, modifying for operational use, and running Commercial Versions require a valid entitlement under the [existing agreement](LICENSE.md). Obtain an eligible Community, Evaluation, or paid entitlement before those activities; signing the CLA does not grant a runtime license. Evaluation is limited to non-production use. See [runtime certificate setup](LICENSING.md#runtime-certificate-setup) for applications that execute TickerQ jobs.
+
 ### Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) (or .NET 8/9 depending on your target)
