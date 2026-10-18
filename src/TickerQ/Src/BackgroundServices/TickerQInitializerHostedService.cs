@@ -87,9 +87,9 @@ internal sealed class TickerQInitializerHostedService : IHostedService
         var activationScope = schedulerOptions.HasRuntimeActivationScopeBinding
             ? schedulerOptions.RuntimeActivationScope
             : new Utilities.Models.ReconciliationActivationScope(
-                _executionContext.OptionsSeeding?.DefinedCronApplicationNamespace);
+                _executionContext.OptionsSeeding?.ApplicationNamespace);
         if (activationScope == null)
-            throw new InvalidOperationException("Scheduler startup requires a defined-Cron application namespace.");
+            throw new InvalidOperationException("Scheduler startup requires an application namespace configured with UseApplicationNamespace(...).");
         if ((_executionContext.OptionsSeeding?.SeedDefinedCronTickers ?? true)
             && !internalTickerManager.SupportsAuthoritativeCronReconciliation)
             throw new NotSupportedException(
@@ -266,7 +266,7 @@ internal sealed class TickerQInitializerHostedService : IHostedService
         }
 
         var options = serviceProvider.GetRequiredService<TickerExecutionContext>().OptionsSeeding;
-        var applicationNamespace = options?.DefinedCronApplicationNamespace;
+        var applicationNamespace = options?.ApplicationNamespace;
         if (applicationNamespace == null)
             await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed.ToArray(), cancellationToken);
         else

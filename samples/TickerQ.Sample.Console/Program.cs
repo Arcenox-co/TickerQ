@@ -17,7 +17,7 @@ var host = Host.CreateDefaultBuilder(args)
         {
             // Physical runtime partition + exact epoch. The host-owned
             // ApplicationRuntimePartitioning migration installs the EF ownership shape.
-            options.UseDefinedCronApplicationNamespace("console-sample");
+            options.UseApplicationNamespace("console-sample");
             options.UseReconciliationEpoch(1);
             // Existing verified single-owner stores only, for one reviewed rollout:
             // options.UseLegacyRuntimePartitionAdoption("console-sample", 1);

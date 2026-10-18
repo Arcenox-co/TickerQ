@@ -23,7 +23,7 @@ public class JobRetentionRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
 
-        services.AddTickerQ(o => o.UseDefinedCronApplicationNamespace("retention-registration-tests"));
+        services.AddTickerQ(o => o.UseApplicationNamespace("retention-registration-tests"));
 
         Assert.False(HasRetentionHostedService(services));
     }
@@ -36,7 +36,7 @@ public class JobRetentionRegistrationTests
 
         services.AddTickerQ(o =>
         {
-            o.UseDefinedCronApplicationNamespace("retention-registration-tests");
+            o.UseApplicationNamespace("retention-registration-tests");
             o.ConfigureJobRetention(r => r.DeleteSucceededAfter = TimeSpan.FromDays(1));
         });
 
@@ -69,7 +69,7 @@ public class JobRetentionRegistrationTests
 
         services.AddTickerQ(o =>
         {
-            o.UseDefinedCronApplicationNamespace("retention-registration-tests");
+            o.UseApplicationNamespace("retention-registration-tests");
             o.ConfigureJobRetention(r => r.DeleteSucceededAfter = TimeSpan.FromDays(1));
         });
 
@@ -93,7 +93,7 @@ public class JobRetentionRegistrationTests
         services.AddLogging();
         services.AddTickerQ(o =>
         {
-            o.UseDefinedCronApplicationNamespace("retention-registration-tests");
+            o.UseApplicationNamespace("retention-registration-tests");
             o.ConfigureJobRetention(r => r.DeleteSucceededAfter = TimeSpan.FromDays(1));
         });
         var manager = Substitute.For<IInternalTickerManager>();

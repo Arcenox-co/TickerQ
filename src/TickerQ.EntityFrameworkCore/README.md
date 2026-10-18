@@ -140,7 +140,7 @@ all of these additive columns through the application's normal EF Core migration
 `AutoMigrateDatabase()` flow). `EnsureCreated()` creates the complete table for a new database only;
 it does not upgrade an existing schema.
 
-`UseDefinedCronApplicationNamespace(...)` is the physical EF runtime partition, not only seed
+`UseApplicationNamespace(...)` is the physical EF runtime partition, not only seed
 identity. Runtime identities and runnable indexes begin with `ApplicationNamespaceKey`, so two
 applications can reuse GUIDs in one database only with distinct explicit namespaces. Scheduler hosts
 also require the exact positive reconciliation epoch. Namespaced queue-only hosts do not activate an

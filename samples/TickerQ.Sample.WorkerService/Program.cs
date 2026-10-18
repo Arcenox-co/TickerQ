@@ -15,7 +15,7 @@ builder.ConfigureServices(services =>
     services.AddTickerQ(options =>
     {
         // Physical process-local runtime partition + exact scheduler activation epoch.
-        options.UseDefinedCronApplicationNamespace("worker-service-sample");
+        options.UseApplicationNamespace("worker-service-sample");
         options.UseReconciliationEpoch(1);
     });
     services.AddHostedService<SampleScheduler>();

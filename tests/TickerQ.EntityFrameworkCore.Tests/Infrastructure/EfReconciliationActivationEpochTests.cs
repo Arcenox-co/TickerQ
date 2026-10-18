@@ -1056,7 +1056,7 @@ public sealed class EfReconciliationActivationEpochTests : IAsyncDisposable
         scheduler = new SchedulerOptionsBuilder();
         var executionContext = new TickerExecutionContext();
         var tickerOptions = new TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>(executionContext, scheduler);
-        tickerOptions.UseDefinedCronApplicationNamespace(applicationNamespace)
+        tickerOptions.UseApplicationNamespace(applicationNamespace)
             .UseReconciliationEpoch(1);
         scheduler.ReconciliationEpoch = 1;
         scheduler.BindRuntimeActivationScope(applicationNamespace, 1, true);

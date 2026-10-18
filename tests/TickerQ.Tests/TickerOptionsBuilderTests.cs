@@ -59,7 +59,7 @@ public class TickerOptionsBuilderTests
 
         builder.UseLegacyRuntimePartitionAdoption("orders-api", 12, legacyWritersDrained: true);
 
-        Assert.Equal("orders-api", executionContext.OptionsSeeding.DefinedCronApplicationNamespace);
+        Assert.Equal("orders-api", executionContext.OptionsSeeding.ApplicationNamespace);
         Assert.Equal(12, executionContext.OptionsSeeding.ReconciliationEpoch);
         Assert.Equal(new TickerQRuntimePartition("orders-api").StorageKey,
             executionContext.OptionsSeeding.LegacyRuntimePartitionAdoption.TargetPartition.StorageKey);
@@ -94,27 +94,27 @@ public class TickerOptionsBuilderTests
     }
 
     [Fact]
-    public void UseDefinedCronApplicationNamespace_StoresTrimmedExplicitNamespace()
+    public void UseApplicationNamespace_StoresTrimmedExplicitNamespace()
     {
         var executionContext = new TickerExecutionContext();
         var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
             executionContext, new SchedulerOptionsBuilder());
 
-        builder.UseDefinedCronApplicationNamespace("  billing-api  ");
+        builder.UseApplicationNamespace("  billing-api  ");
 
-        Assert.Equal("billing-api", executionContext.OptionsSeeding.DefinedCronApplicationNamespace);
+        Assert.Equal("billing-api", executionContext.OptionsSeeding.ApplicationNamespace);
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void UseDefinedCronApplicationNamespace_RejectsMissingNamespace(string value)
+    public void UseApplicationNamespace_RejectsMissingNamespace(string value)
     {
         var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
             new TickerExecutionContext(), new SchedulerOptionsBuilder());
 
-        Assert.Throws<ArgumentException>(() => builder.UseDefinedCronApplicationNamespace(value));
+        Assert.Throws<ArgumentException>(() => builder.UseApplicationNamespace(value));
     }
 
     [Fact]

@@ -41,7 +41,7 @@ public class ServiceExtensionTests
 
         builder.Services.AddTickerQ(tickerOptions =>
         {
-            tickerOptions.UseDefinedCronApplicationNamespace("service-extension-tests");
+            tickerOptions.UseApplicationNamespace("service-extension-tests");
             tickerOptions.AddOperationalStore(efOptions =>
             {
                 efOptions.UseApplicationDbContext<TestDbContext>(ConfigurationType.UseModelCustomizer);

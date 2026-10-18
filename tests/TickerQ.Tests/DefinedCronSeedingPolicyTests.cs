@@ -176,7 +176,7 @@ public class DefinedCronSeedingPolicyTests : IDisposable
     {
         public bool SeedDefinedCronTickers => true;
         public long ReconciliationEpoch => 1;
-        public string DefinedCronApplicationNamespace => "defined-cron-policy-tests";
+        public string ApplicationNamespace => "defined-cron-policy-tests";
         public Func<IServiceProvider, CancellationToken, Task> TimeSeederAction => null;
         public Func<IServiceProvider, CancellationToken, Task> CronSeederAction => null;
     }

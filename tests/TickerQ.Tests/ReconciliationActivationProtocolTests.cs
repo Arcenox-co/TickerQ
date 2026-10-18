@@ -477,7 +477,7 @@ public sealed class ReconciliationActivationProtocolTests : IDisposable
     {
         var services = new ServiceCollection();
         services.AddTickerQ(options =>
-            options.UseDefinedCronApplicationNamespace("activation-gate-tests"));
+            options.UseApplicationNamespace("activation-gate-tests"));
         var provider = services.BuildServiceProvider();
 
         var gate = provider.GetService<ITickerQActivationGate>();
@@ -530,7 +530,7 @@ public sealed class ReconciliationActivationProtocolTests : IDisposable
         public bool SeedDefinedCronTickers => true;
         public bool RegisterBackgroundServices { get; } = registerBackgroundServices;
         public long ReconciliationEpoch { get; } = reconciliationEpoch;
-        public string DefinedCronApplicationNamespace => "tickerq-tests";
+        public string ApplicationNamespace => "tickerq-tests";
         public Func<IServiceProvider, CancellationToken, Task> TimeSeederAction => null;
         public Func<IServiceProvider, CancellationToken, Task> CronSeederAction => null;
     }

@@ -39,7 +39,7 @@ public class DesignTimeToolDetectionTests
     {
         var services = new ServiceCollection();
         services.AddTickerQ(options =>
-            options.UseDefinedCronApplicationNamespace("design-time-tests"));
+            options.UseApplicationNamespace("design-time-tests"));
 
         var host = BuildMinimalHost(services);
         host.UseTickerQ();
@@ -54,7 +54,7 @@ public class DesignTimeToolDetectionTests
         // UseTickerQ should complete without touching the database or building functions.
         var services = new ServiceCollection();
         services.AddTickerQ(options =>
-            options.UseDefinedCronApplicationNamespace("design-time-tests"));
+            options.UseApplicationNamespace("design-time-tests"));
 
         var host = BuildMinimalHost(services);
 
@@ -97,7 +97,7 @@ public class DesignTimeToolDetectionTests
         var services = new ServiceCollection();
         services.AddTickerQ(options => options
             .IgnoreSeedDefinedCronTickers()
-            .UseDefinedCronApplicationNamespace("design-time-tests")
+            .UseApplicationNamespace("design-time-tests")
             .UseReconciliationEpoch(1));
 
         var host = BuildMinimalHost(services);
@@ -244,7 +244,7 @@ public class DesignTimeToolDetectionTests
     {
         var services = new ServiceCollection();
         services.AddTickerQ(options =>
-            options.UseDefinedCronApplicationNamespace("design-time-tests"));
+            options.UseApplicationNamespace("design-time-tests"));
 
         // Verify registration order: initializer should appear before scheduler
         var hostedServiceDescriptors = services
@@ -295,7 +295,7 @@ public class DesignTimeToolDetectionTests
     {
         public bool SeedDefinedCronTickers { get; } = seedDefinedCronTickers;
         public long ReconciliationEpoch => 1;
-        public string DefinedCronApplicationNamespace => "design-time-tests";
+        public string ApplicationNamespace => "design-time-tests";
         public Func<IServiceProvider, CancellationToken, Task> TimeSeederAction { get; } =
             (serviceProvider, _) => timeSeederAction(serviceProvider);
         public Func<IServiceProvider, CancellationToken, Task> CronSeederAction { get; } = null;

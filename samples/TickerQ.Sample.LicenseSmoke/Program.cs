@@ -82,7 +82,7 @@ internal static class Program
         builder.Services.AddTickerQ(options =>
         {
             options.UseLicense(path);
-            options.UseDefinedCronApplicationNamespace("license-smoke-test");
+            options.UseApplicationNamespace("license-smoke-test");
             options.UseReconciliationEpoch(1);
             options.IgnoreSeedDefinedCronTickers(); // Preview cron functions must not affect the isolated smoke test.
         });

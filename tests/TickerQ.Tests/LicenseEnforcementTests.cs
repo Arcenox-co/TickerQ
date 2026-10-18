@@ -23,7 +23,7 @@ public sealed class LicenseEnforcementTests
 
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("license-order-test");
+            options.UseApplicationNamespace("license-order-test");
             options.UseReconciliationEpoch(1);
         });
 

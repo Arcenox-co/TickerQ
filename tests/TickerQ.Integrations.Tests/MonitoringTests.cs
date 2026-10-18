@@ -209,7 +209,7 @@ public partial class MonitoringTests
     public async Task ExecutionSource_CombinesTimeAndCron_ExcludesDispatchers_AndIncludesChainSteps()
     {
         var services = new ServiceCollection();
-        services.AddTickerQ(o => o.UseDefinedCronApplicationNamespace("monitor-source-" + Guid.NewGuid()).UseReconciliationEpoch(1).AddIntegrations());
+        services.AddTickerQ(o => o.UseApplicationNamespace("monitor-source-" + Guid.NewGuid()).UseReconciliationEpoch(1).AddIntegrations());
         using var container = services.BuildServiceProvider();
         var provider = container.GetRequiredService<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
         var scheduler = container.GetRequiredService<SchedulerOptionsBuilder>();

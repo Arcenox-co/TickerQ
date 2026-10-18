@@ -5,6 +5,13 @@ seed ownership, non-destructive retirement, pending-occurrence reconciliation, a
 
 The upgrade is additive, but it is not schema-optional. Install the required schema before starting upgraded scheduler nodes.
 
+## Application namespace configuration
+
+Replace `UseDefinedCronApplicationNamespace(...)` with `UseApplicationNamespace(...)` in application
+configuration. This API rename reflects its scope across both time tickers and cron schedules. Keep
+the same namespace value and reconciliation epoch: the rename itself does not change storage keys,
+require a database migration, or move existing jobs.
+
 ## Guarantees and boundaries
 
 The upgrade is designed around these invariants:
@@ -38,7 +45,7 @@ The upgrade is designed around these invariants:
 5. Configure `UseReconciliationEpoch(N)` with a positive deployment-controlled value. Keep `N` stable
    across replicas and restarts of the identical deployment; increase it before changing code-defined
    schedules, seed identity/contract metadata, repair rules, or finalization semantics.
-   Every scheduler also requires a stable `UseDefinedCronApplicationNamespace(...)`; a scheduler
+   Every scheduler also requires a stable `UseApplicationNamespace(...)`; a scheduler
    without one is invalid. Namespaced queue-only producers are admitted without activation. A
    namespace-less queue-only producer explicitly targets the legacy-global compatibility partition.
 6. Start one upgraded scheduler node and wait for the provider-specific bootstrap, data reconciliation, and finalization phases it implements.
@@ -179,7 +186,7 @@ A code-defined cron receives a deterministic ownership key derived from an appli
 ```csharp
 services.AddTickerQ(options =>
 {
-    options.UseDefinedCronApplicationNamespace("billing-api");
+    options.UseApplicationNamespace("billing-api");
     options.UseReconciliationEpoch(1);
     // provider/dashboard configuration...
 });
@@ -187,7 +194,7 @@ services.AddTickerQ(options =>
 
 The value is persisted in `SeedOwnerNamespace`; use the same value on every node of one application and a different value for every independently deployed application sharing the store. Do not derive it from a host name, replica ID, deployment slot, or other value that changes between restarts. A definition's stable ID defaults to its function name, so its resulting `SeedKey` and deterministic ID remain stable across expression and request-contract changes.
 
-Scheduler hosts must configure both `UseDefinedCronApplicationNamespace(...)` and an explicit positive `UseReconciliationEpoch(...)`; startup fails closed when either is omitted. Dashboard/manager-only processes that disable scheduler background services do not participate in activation. Keep the namespace stable for the lifetime of the application. Keep the epoch stable across replicas and restarts of an identical deployment, and increment it before deploying changes to definitions, contracts, repair semantics, or finalization behavior.
+Scheduler hosts must configure both `UseApplicationNamespace(...)` and an explicit positive `UseReconciliationEpoch(...)`; startup fails closed when either is omitted. Dashboard/manager-only processes that disable scheduler background services do not participate in activation. Keep the namespace stable for the lifetime of the application. Keep the epoch stable across replicas and restarts of an identical deployment, and increment it before deploying changes to definitions, contracts, repair semantics, or finalization behavior.
 
 On the first v2 reconciliation, exactly one legacy code-owned row for a definition may be adopted in place when it has no owner and its key is null, the function/stable-definition ID, or the pre-v2 `namespace:stableDefinitionId` form. Adoption rewrites ownership to the bounded v2 key while preserving the row's primary key and occurrence references. **Unclaimed legacy rows are not adopted automatically.** Reconciliation fails closed before writes when no explicit owner is configured, candidates are duplicated, the local manifest has multiple possible definitions for that function, or another namespaced owner already conflicts. Resolve ownership explicitly before retrying; do not delete historical rows merely to bypass the diagnostic.
 
@@ -200,7 +207,7 @@ that uses the store so startup order cannot change the result:
 ```csharp
 services.AddTickerQ(options =>
 {
-    options.UseDefinedCronApplicationNamespace("orders-api");
+    options.UseApplicationNamespace("orders-api");
     options.UseReconciliationEpoch(2);
 
     options.MapLegacyDefinedCronOwnership("ProcessOrders", "orders-api");
@@ -217,7 +224,7 @@ claim that row. A mapping does not transfer an already namespaced row.
 For a store that is provably used by exactly one application, a shorter migration is available:
 
 ```csharp
-options.UseDefinedCronApplicationNamespace("orders-api");
+options.UseApplicationNamespace("orders-api");
 options.AdoptLegacyDefinedCronTickers();
 ```
 
@@ -282,7 +289,7 @@ Operational requirements:
 - Legacy runtime adoption is unsupported on Redis Cluster because the global lease, legacy keys, and
   target partition cannot be moved atomically across slots. Perform adoption on standalone Redis first.
 - Do not flush or edit TickerQ keys during rolling deployment.
-- Configure `UseDefinedCronApplicationNamespace(...)` on every Redis scheduler host. Redis stamps `SeedOwnerNamespace` in the cron JSON, derives new document IDs from the bounded namespaced `SeedKey`, and scopes activation metadata to that application; one application's empty manifest retires only rows carrying that same owner.
+- Configure `UseApplicationNamespace(...)` on every Redis scheduler host. Redis stamps `SeedOwnerNamespace` in the cron JSON, derives new document IDs from the bounded namespaced `SeedKey`, and scopes activation metadata to that application; one application's empty manifest retires only rows carrying that same owner.
 - Treat corrupt serialized ticker documents as an operational incident. They must be reported/quarantined for explicit remediation rather than silently replaced.
 - Inspect the activation metadata checkpoint when diagnosing an interrupted startup. `Activating` is intentionally fail-closed; restart the idempotent initializer rather than editing the hash manually.
 

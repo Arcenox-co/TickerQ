@@ -93,7 +93,7 @@ builder.Services.AddTickerQ(options =>
 {
     // This stable value physically partitions every runtime row/result/lock in the shared store.
     // Epoch 1 must exactly match this deployment's activated reconciliation epoch.
-    options.UseDefinedCronApplicationNamespace("dashboard-host-jwt-sample");
+    options.UseApplicationNamespace("dashboard-host-jwt-sample");
     options.UseReconciliationEpoch(1);
     options.AddOperationalStore(efOptions =>
     {

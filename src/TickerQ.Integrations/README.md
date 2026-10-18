@@ -21,7 +21,7 @@ builder.Services.AddDataProtection()
 
 builder.Services.AddTickerQ(options =>
 {
-    options.UseDefinedCronApplicationNamespace("orders-production");
+    options.UseApplicationNamespace("orders-production");
     // Keep your existing operational-store and scheduler configuration here.
     options.AddDashboard(dashboard =>
     {

@@ -135,7 +135,7 @@ public sealed class PersistencePrerequisiteBootstrapTests
     {
         public bool SeedDefinedCronTickers => true;
         public long ReconciliationEpoch => 1;
-        public string DefinedCronApplicationNamespace => "prerequisite-tests";
+        public string ApplicationNamespace => "prerequisite-tests";
         public Func<IServiceProvider, CancellationToken, Task> TimeSeederAction => null;
         public Func<IServiceProvider, CancellationToken, Task> CronSeederAction => null;
     }
@@ -144,7 +144,7 @@ public sealed class PersistencePrerequisiteBootstrapTests
     {
         public bool SeedDefinedCronTickers => true;
         public long ReconciliationEpoch => adoption.Epoch;
-        public string DefinedCronApplicationNamespace => adoption.TargetPartition.ApplicationNamespace;
+        public string ApplicationNamespace => adoption.TargetPartition.ApplicationNamespace;
         public LegacyRuntimePartitionAdoption LegacyRuntimePartitionAdoption => adoption;
         public Func<IServiceProvider, CancellationToken, Task> TimeSeederAction => null;
         public Func<IServiceProvider, CancellationToken, Task> CronSeederAction => null;

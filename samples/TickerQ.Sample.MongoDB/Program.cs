@@ -12,7 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddTickerQ(options =>
 {
     // Physical document/lock/result partition + exact activated deployment epoch.
-    options.UseDefinedCronApplicationNamespace("mongodb-sample");
+    options.UseApplicationNamespace("mongodb-sample");
     options.UseReconciliationEpoch(1);
     // Existing verified single-owner replica-set/mongos stores only:
     // options.UseLegacyRuntimePartitionAdoption("mongodb-sample", 1);

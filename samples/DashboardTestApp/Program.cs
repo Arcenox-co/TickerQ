@@ -40,7 +40,7 @@ builder.Services.AddTickerQ(options =>
         options.UseLicense(licensePath);
 
     // Physical runtime partition + exact deployment epoch; keep both stable across replicas.
-    options.UseDefinedCronApplicationNamespace("dashboard-test-sample");
+    options.UseApplicationNamespace("dashboard-test-sample");
     options.UseReconciliationEpoch(1);
     options.AddOperationalStore(efOptions =>
     {

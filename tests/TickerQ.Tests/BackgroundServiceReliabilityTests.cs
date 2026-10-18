@@ -256,7 +256,7 @@ public class BackgroundServiceReliabilityTests
     [InlineData("shutdown-negative")]
     public void InvalidSchedulerConfiguration_FailsAtRegistration(string invalid)
     {
-        Assert.ThrowsAny<ArgumentException>(() => new ServiceCollection().AddTickerQ(o => o.UseDefinedCronApplicationNamespace("background-tests").ConfigureScheduler(s =>
+        Assert.ThrowsAny<ArgumentException>(() => new ServiceCollection().AddTickerQ(o => o.UseApplicationNamespace("background-tests").ConfigureScheduler(s =>
         {
             switch (invalid)
             {
@@ -275,8 +275,8 @@ public class BackgroundServiceReliabilityTests
     [Fact]
     public void DefaultConfiguration_AndDocumentedZeroWaits_AreAccepted()
     {
-        new ServiceCollection().AddTickerQ(o => o.UseDefinedCronApplicationNamespace("background-tests"));
-        new ServiceCollection().AddTickerQ(o => o.UseDefinedCronApplicationNamespace("background-tests").ConfigureScheduler(s =>
+        new ServiceCollection().AddTickerQ(o => o.UseApplicationNamespace("background-tests"));
+        new ServiceCollection().AddTickerQ(o => o.UseApplicationNamespace("background-tests").ConfigureScheduler(s =>
         { s.MinPollingInterval = TimeSpan.FromSeconds(-1); s.ShutdownDrainTimeout = TimeSpan.Zero; s.MaxStaleRestarts = 0; }));
     }
 
@@ -330,7 +330,7 @@ public class BackgroundServiceReliabilityTests
     public void HostRegistration_SharesOwnershipQueue_AndStopsWebhookAfterProducers()
     {
         var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddTickerQ(o => o.UseDefinedCronApplicationNamespace("background-tests").NotifyFailuresViaWebhook("https://example.test/hook"));
+        builder.Services.AddTickerQ(o => o.UseApplicationNamespace("background-tests").NotifyFailuresViaWebhook("https://example.test/hook"));
         using var host = builder.Build();
         var hosted = host.Services.GetServices<IHostedService>().ToList();
         var webhook = hosted.FindIndex(x => x is TickerQWebhookNotifierBackgroundService);

@@ -39,7 +39,7 @@ namespace TickerQ.Utilities
         /// </summary>
         internal bool SeedDefinedCronTickers { get; set; } = true;
         internal long ReconciliationEpoch { get; private set; }
-        internal string DefinedCronApplicationNamespace { get; private set; }
+        internal string ApplicationNamespace { get; private set; }
         internal Dictionary<string, string> LegacyDefinedCronOwnership { get; } = new(StringComparer.Ordinal);
         internal bool AdoptAllLegacyDefinedCronTickers { get; private set; }
         internal LegacyRuntimePartitionAdoption LegacyRuntimePartitionAdoption { get; private set; }
@@ -74,7 +74,7 @@ namespace TickerQ.Utilities
         bool ITickerOptionsSeeding.SeedDefinedCronTickers => SeedDefinedCronTickers;
         bool ITickerOptionsSeeding.RegisterBackgroundServices => RegisterBackgroundServices;
         long ITickerOptionsSeeding.ReconciliationEpoch => ReconciliationEpoch;
-        string ITickerOptionsSeeding.DefinedCronApplicationNamespace => DefinedCronApplicationNamespace;
+        string ITickerOptionsSeeding.ApplicationNamespace => ApplicationNamespace;
         IReadOnlyDictionary<string, string> ITickerOptionsSeeding.LegacyDefinedCronOwnership => LegacyDefinedCronOwnership;
         bool ITickerOptionsSeeding.AdoptAllLegacyDefinedCronTickers => AdoptAllLegacyDefinedCronTickers;
         LegacyRuntimePartitionAdoption ITickerOptionsSeeding.LegacyRuntimePartitionAdoption => LegacyRuntimePartitionAdoption;
@@ -202,15 +202,16 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Assigns this scheduler host a stable application namespace for activation and code-defined Cron ownership.
-        /// Required when background services are enabled. Applications sharing one persistence store must use distinct values.
+        /// Assigns this application's stable runtime namespace for time tickers, cron schedules, and their execution data.
+        /// Required when background services are enabled. Use the same value across replicas of one application
+        /// and distinct values for independent applications sharing a persistence store.
         /// </summary>
-        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseDefinedCronApplicationNamespace(string applicationNamespace)
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseApplicationNamespace(string applicationNamespace)
         {
             ThrowIfRuntimeBindingFrozen();
             if (string.IsNullOrWhiteSpace(applicationNamespace))
                 throw new ArgumentException("A non-empty application namespace is required.", nameof(applicationNamespace));
-            DefinedCronApplicationNamespace = applicationNamespace.Trim();
+            ApplicationNamespace = applicationNamespace.Trim();
             return this;
         }
 
@@ -221,7 +222,7 @@ namespace TickerQ.Utilities
         /// <param name="function">The exact registered function name on the legacy row.</param>
         /// <param name="ownerApplicationNamespace">
         /// The stable namespace configured by the owning application with
-        /// <see cref="UseDefinedCronApplicationNamespace"/>.
+        /// <see cref="UseApplicationNamespace"/>.
         /// </param>
         /// <returns>This builder.</returns>
         /// <exception cref="ArgumentException">
@@ -301,7 +302,7 @@ namespace TickerQ.Utilities
             if (LegacyRuntimePartitionAdoption != null && LegacyRuntimePartitionAdoption != requested)
                 throw new InvalidOperationException(
                     "Legacy runtime partition adoption is already configured and cannot be redirected.");
-            UseDefinedCronApplicationNamespace(requested.TargetPartition.ApplicationNamespace);
+            UseApplicationNamespace(requested.TargetPartition.ApplicationNamespace);
             UseReconciliationEpoch(requested.Epoch);
             LegacyRuntimePartitionAdoption = requested;
             return this;

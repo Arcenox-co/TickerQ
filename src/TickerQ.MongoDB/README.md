@@ -15,7 +15,7 @@ dotnet add package TickerQ.MongoDB
 ```csharp
 builder.Services.AddTickerQ(options =>
 {
-    options.UseDefinedCronApplicationNamespace("orders-api");
+    options.UseApplicationNamespace("orders-api");
     options.UseReconciliationEpoch(1);
     options.AddOperationalStore(mongoOptions =>
     {
@@ -33,7 +33,7 @@ services.AddSingleton<IMongoClient>(_ => new MongoClient("mongodb://localhost:27
 
 builder.Services.AddTickerQ(options =>
 {
-    options.UseDefinedCronApplicationNamespace("orders-api");
+    options.UseApplicationNamespace("orders-api");
     options.UseReconciliationEpoch(1);
     options.AddOperationalStore(mongoOptions =>
     {
@@ -44,7 +44,7 @@ builder.Services.AddTickerQ(options =>
 
 ## Notes
 
-- `UseDefinedCronApplicationNamespace(...)` physically partitions runtime documents, results,
+- `UseApplicationNamespace(...)` physically partitions runtime documents, results,
   locks, evidence, outbox, and metadata. Applications sharing a database may reuse GUIDs only with
   distinct explicit namespaces. Scheduler mode also requires the exact positive activation epoch;
   namespaced queue-only mode does not activate one. Namespace-less queue-only explicitly targets the

@@ -83,7 +83,7 @@ public sealed partial class EfTransactionalSchedulingTests
             services.AddTickerQ(options =>
             {
                 if (!runtimeEnabled) options.DisableBackgroundServices();
-                if (!legacyPartition) options.UseDefinedCronApplicationNamespace("staged-jobs");
+                if (!legacyPartition) options.UseApplicationNamespace("staged-jobs");
                 if (withStore) options.AddOperationalStore(ef => ef
                     .UseApplicationDbContext<AppDbContext>(ConfigurationType.UseModelCustomizer));
             });

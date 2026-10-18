@@ -21,7 +21,7 @@ internal static class DashboardPreview
         builder.Services.AddTickerQ(options =>
         {
             options.UseLicense(licensePath);
-            options.UseDefinedCronApplicationNamespace("license-smoke-dashboard");
+            options.UseApplicationNamespace("license-smoke-dashboard");
             options.UseReconciliationEpoch(1);
             if (example == "database")
             {

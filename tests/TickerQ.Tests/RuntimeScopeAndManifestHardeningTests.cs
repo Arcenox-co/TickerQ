@@ -26,7 +26,7 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddTickerQ(options => options
-            .UseDefinedCronApplicationNamespace("app-a")
+            .UseApplicationNamespace("app-a")
             .UseReconciliationEpoch(7));
         await using var serviceProvider = services.BuildServiceProvider();
         var provider = serviceProvider.GetRequiredService<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
@@ -52,7 +52,7 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddTickerQ(options => options
-            .UseDefinedCronApplicationNamespace("startup-app")
+            .UseApplicationNamespace("startup-app")
             .UseReconciliationEpoch(9));
         await using var serviceProvider = services.BuildServiceProvider();
         var provider = serviceProvider.GetRequiredService<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
@@ -87,7 +87,7 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
         services.AddLogging();
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
         services.AddTickerQ(options => options
-            .UseDefinedCronApplicationNamespace("startup-host")
+            .UseApplicationNamespace("startup-host")
             .UseReconciliationEpoch(12)
             .UseTickerSeeder(async manager =>
             {
@@ -121,7 +121,7 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddTickerQ(options => options
-            .UseDefinedCronApplicationNamespace("manifest-a")
+            .UseApplicationNamespace("manifest-a")
             .UseReconciliationEpoch(15));
         await using var serviceProvider = services.BuildServiceProvider();
         var provider = serviceProvider.GetRequiredService<
@@ -159,7 +159,7 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
         var schedulerServices = new ServiceCollection();
         schedulerServices.AddLogging();
         schedulerServices.AddTickerQ(options => options
-            .UseDefinedCronApplicationNamespace("manager-app")
+            .UseApplicationNamespace("manager-app")
             .UseReconciliationEpoch(3));
         await using var schedulerProvider = schedulerServices.BuildServiceProvider();
 
@@ -269,12 +269,12 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
         services.AddTickerQ(options =>
         {
             captured = options;
-            options.UseDefinedCronApplicationNamespace("immutable-app")
+            options.UseApplicationNamespace("immutable-app")
                 .UseReconciliationEpoch(8);
         });
 
         Assert.Throws<InvalidOperationException>(() =>
-            captured.UseDefinedCronApplicationNamespace("redirected-app"));
+            captured.UseApplicationNamespace("redirected-app"));
         Assert.Throws<InvalidOperationException>(() => captured.UseReconciliationEpoch(9));
         Assert.Throws<InvalidOperationException>(() => captured.DisableBackgroundServices());
 

@@ -103,7 +103,7 @@ public sealed class RedisArrayCacheIntegrationTests(ArrayCacheRedisFixture fixtu
         services.AddTickerQ(options =>
         {
             options.DisableBackgroundServices();
-            options.UseDefinedCronApplicationNamespace("cache-deploy");
+            options.UseApplicationNamespace("cache-deploy");
             options.ConfigureScheduler(s => s.DefinedCronRetirementGracePeriod = TimeSpan.Zero);
             options.AddOperationalStore(ef => ef.UseApplicationDbContext<AppDbContext>(ConfigurationType.UseModelCustomizer));
         });

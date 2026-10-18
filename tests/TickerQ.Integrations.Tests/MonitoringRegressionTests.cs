@@ -292,7 +292,7 @@ public partial class MonitoringTests
     public async Task ExecutionSource_BoundedQueriesReportUnavailableWhenLimitExceeded(bool simultaneousCompletions)
     {
         var services = new ServiceCollection();
-        services.AddTickerQ(o => o.UseDefinedCronApplicationNamespace("monitor-limits-" + Guid.NewGuid()).UseReconciliationEpoch(1).AddIntegrations());
+        services.AddTickerQ(o => o.UseApplicationNamespace("monitor-limits-" + Guid.NewGuid()).UseReconciliationEpoch(1).AddIntegrations());
         using var container = services.BuildServiceProvider();
         var provider = container.GetRequiredService<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
         var scheduler = container.GetRequiredService<SchedulerOptionsBuilder>();
@@ -317,7 +317,7 @@ public partial class MonitoringTests
     public async Task ExecutionSource_PagesOldestFirst_WithoutSplittingTimestampGroups()
     {
         var services = new ServiceCollection();
-        services.AddTickerQ(o => o.UseDefinedCronApplicationNamespace("monitor-paging-" + Guid.NewGuid()).UseReconciliationEpoch(1).AddIntegrations());
+        services.AddTickerQ(o => o.UseApplicationNamespace("monitor-paging-" + Guid.NewGuid()).UseReconciliationEpoch(1).AddIntegrations());
         using var container = services.BuildServiceProvider();
         var provider = container.GetRequiredService<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
         var scheduler = container.GetRequiredService<SchedulerOptionsBuilder>();

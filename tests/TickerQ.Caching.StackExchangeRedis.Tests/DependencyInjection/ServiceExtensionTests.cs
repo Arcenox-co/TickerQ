@@ -22,7 +22,7 @@ public class ServiceExtensionTests
             // No Configuration, no ConfigurationOptions, no ConnectionMultiplexer
             services.AddTickerQ(options =>
             {
-                options.UseDefinedCronApplicationNamespace("redis-service-extension-tests");
+                options.UseApplicationNamespace("redis-service-extension-tests");
                 options.AddStackExchangeRedis(_ => { });
             });
         });
@@ -39,7 +39,7 @@ public class ServiceExtensionTests
         {
             services.AddTickerQ(options =>
             {
-                options.UseDefinedCronApplicationNamespace("redis-service-extension-tests");
+                options.UseApplicationNamespace("redis-service-extension-tests");
                 options.AddStackExchangeRedis(redis =>
                 {
                     redis.Configuration = "localhost:6379,abortConnect=false";
@@ -63,7 +63,7 @@ public class ServiceExtensionTests
         {
             services.AddTickerQ(options =>
             {
-                options.UseDefinedCronApplicationNamespace("redis-service-extension-tests");
+                options.UseApplicationNamespace("redis-service-extension-tests");
                 options.AddStackExchangeRedis(redis =>
                 {
                     redis.ConnectionMultiplexer = mockMultiplexer;
@@ -91,7 +91,7 @@ public class ServiceExtensionTests
 
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("redis-service-extension-tests");
+            options.UseApplicationNamespace("redis-service-extension-tests");
             options.AddStackExchangeRedis(redis =>
             {
                 redis.Configuration = "localhost:6379,abortConnect=false";
@@ -121,7 +121,7 @@ public class ServiceExtensionTests
 
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("redis-service-extension-tests");
+            options.UseApplicationNamespace("redis-service-extension-tests");
             options.AddStackExchangeRedis(redis =>
             {
                 redis.ConnectionMultiplexer = tickerQMultiplexer;
@@ -155,7 +155,7 @@ public class ServiceExtensionTests
         {
             services.AddTickerQ(options =>
             {
-                options.UseDefinedCronApplicationNamespace("redis-service-extension-tests");
+                options.UseApplicationNamespace("redis-service-extension-tests");
                 options.AddStackExchangeRedis(redis =>
                 {
                     redis.ConnectionMultiplexerFactory = () => Task.FromResult(mockMultiplexer);
@@ -180,7 +180,7 @@ public class ServiceExtensionTests
 
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("redis-service-extension-tests");
+            options.UseApplicationNamespace("redis-service-extension-tests");
             options.AddStackExchangeRedis(redis =>
             {
                 redis.ConnectionMultiplexerFactory = () => Task.FromResult(mockMultiplexer);
@@ -208,7 +208,7 @@ public class ServiceExtensionTests
 
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("redis-service-extension-tests");
+            options.UseApplicationNamespace("redis-service-extension-tests");
             options.AddStackExchangeRedis(redis =>
             {
                 redis.ConnectionMultiplexer = mockMultiplexer;
@@ -232,7 +232,7 @@ public class ServiceExtensionTests
 
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("redis-service-extension-tests");
+            options.UseApplicationNamespace("redis-service-extension-tests");
             options.AddStackExchangeRedis(redis =>
             {
                 redis.ConnectionMultiplexer = mockMultiplexer;
@@ -258,7 +258,7 @@ public class ServiceExtensionTests
 
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("redis-service-extension-tests");
+            options.UseApplicationNamespace("redis-service-extension-tests");
             options.AddStackExchangeRedis(redis =>
             {
                 redis.ConnectionMultiplexer = mockMultiplexer;

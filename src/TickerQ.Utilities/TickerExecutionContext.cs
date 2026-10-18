@@ -13,7 +13,7 @@ internal interface ITickerOptionsSeeding
     bool SeedDefinedCronTickers { get; }
     bool RegisterBackgroundServices => true;
     long ReconciliationEpoch => 0;
-    string DefinedCronApplicationNamespace => null;
+    string ApplicationNamespace => null;
     IReadOnlyDictionary<string, string> LegacyDefinedCronOwnership => null;
     bool AdoptAllLegacyDefinedCronTickers => false;
     LegacyRuntimePartitionAdoption LegacyRuntimePartitionAdoption => null;

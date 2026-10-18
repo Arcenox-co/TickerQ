@@ -16,7 +16,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddTickerQ(options =>
 {
     // Physical runtime partition + exact deployment epoch; both are required in scheduler mode.
-    options.UseDefinedCronApplicationNamespace("dashboard-readonly-sample");
+    options.UseApplicationNamespace("dashboard-readonly-sample");
     options.UseReconciliationEpoch(1);
     options.AddOperationalStore(efOptions =>
     {

@@ -42,7 +42,7 @@ namespace TickerQ.DependencyInjection
             // manager. Scoped protocol APIs remain free to administer other applications' records, but
             // they can never redirect this process's configured execution scope.
             schedulerOptionsBuilder.BindRuntimeActivationScope(
-                optionInstance.DefinedCronApplicationNamespace,
+                optionInstance.ApplicationNamespace,
                 optionInstance.ReconciliationEpoch,
                 optionInstance.RegisterBackgroundServices);
             tickerExecutionContext.RuntimePartition = schedulerOptionsBuilder.RuntimePartition;

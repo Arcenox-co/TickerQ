@@ -63,7 +63,7 @@ For a .NET application running TickerQ, obtain the appropriate certificate throu
 builder.Services.AddTickerQ(options =>
 {
     options.UseLicense("licenses/tickerq.tqlicense");
-    options.UseDefinedCronApplicationNamespace("orders-api");
+    options.UseApplicationNamespace("orders-api");
     options.UseReconciliationEpoch(1);
 });
 ```

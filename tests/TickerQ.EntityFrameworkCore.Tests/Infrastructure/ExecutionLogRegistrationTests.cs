@@ -22,7 +22,7 @@ public sealed class ExecutionLogRegistrationTests
                 .ReplaceService<IModelCacheKeyFactory, TenantCacheKeyFactory>());
             services.AddTickerQ(options =>
             {
-                options.UseDefinedCronApplicationNamespace("tenant-logs-test"); options.UseReconciliationEpoch(1);
+                options.UseApplicationNamespace("tenant-logs-test"); options.UseReconciliationEpoch(1);
                 options.AddOperationalStore(ef => ef.UseApplicationDbContext<TenantContext>(ConfigurationType.UseModelCustomizer));
                 options.ConfigureExecutionLogs(logs => logs.PersistToDatabase = enabled);
             });
@@ -59,7 +59,7 @@ public sealed class ExecutionLogRegistrationTests
         services.AddDbContext<ApplicationContext>(db => db.UseSqlite("Data Source=:memory:"));
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("application-logs-test"); options.UseReconciliationEpoch(1);
+            options.UseApplicationNamespace("application-logs-test"); options.UseReconciliationEpoch(1);
             options.AddOperationalStore(ef => ef.UseApplicationDbContext<ApplicationContext>(ConfigurationType.UseModelCustomizer));
             options.ConfigureExecutionLogs(logs => logs.PersistToDatabase = enabled);
         });
@@ -82,7 +82,7 @@ public sealed class ExecutionLogRegistrationTests
             var services = new ServiceCollection(); services.AddLogging();
             services.AddTickerQ(options =>
             {
-                options.UseDefinedCronApplicationNamespace("logs-test"); options.UseReconciliationEpoch(1);
+                options.UseApplicationNamespace("logs-test"); options.UseReconciliationEpoch(1);
                 options.AddOperationalStore(ef => ef.UseTickerQDbContext<TickerQDbContext>(db => db.UseSqlite("Data Source=:memory:")));
                 options.ConfigureExecutionLogs(logs => logs.PersistToDatabase = persist);
             });

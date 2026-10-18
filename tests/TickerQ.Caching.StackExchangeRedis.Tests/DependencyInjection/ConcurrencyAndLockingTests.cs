@@ -52,7 +52,7 @@ public class ConcurrencyAndLockingTests : IAsyncLifetime
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddTickerQ(options =>
-            options.UseDefinedCronApplicationNamespace("redis-concurrency-tests"));
+            options.UseApplicationNamespace("redis-concurrency-tests"));
         var sp = services.BuildServiceProvider();
         _concurrencyGate = sp.GetRequiredService<ITickerFunctionConcurrencyGate>();
 

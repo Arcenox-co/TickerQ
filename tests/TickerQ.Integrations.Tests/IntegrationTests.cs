@@ -190,7 +190,7 @@ public class IntegrationTests
         var services = new ServiceCollection();
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("integration-tests");
+            options.UseApplicationNamespace("integration-tests");
             void AddIntegrations() => Assert.Same(options, options.AddIntegrations(integrations =>
             {
                 integrations.ApplicationName = "Orders";
@@ -217,7 +217,7 @@ public class IntegrationTests
     {
         var services = new ServiceCollection();
         services.AddTickerQ<CustomTimeTicker, CustomCronTicker>(options =>
-            options.UseDefinedCronApplicationNamespace("integration-custom-tests").AddIntegrations());
+            options.UseApplicationNamespace("integration-custom-tests").AddIntegrations());
         using var provider = services.BuildServiceProvider();
         Assert.Equal("TickerQ", provider.GetRequiredService<IntegrationOptions>().ApplicationName);
         Assert.IsType<IntegrationEngine>(provider.GetRequiredService<ITickerQFailureNotifier>());
@@ -229,7 +229,7 @@ public class IntegrationTests
     public void Registration_StaysOptional()
     {
         var services = new ServiceCollection();
-        services.AddTickerQ(options => options.UseDefinedCronApplicationNamespace("integration-disabled-tests"));
+        services.AddTickerQ(options => options.UseApplicationNamespace("integration-disabled-tests"));
         using var provider = services.BuildServiceProvider();
         Assert.Null(provider.GetService<IntegrationOptions>());
         Assert.Null(provider.GetService<ITickerIntegrationAdminService>());
@@ -240,7 +240,7 @@ public class IntegrationTests
     {
         var services = new ServiceCollection();
         var exception = Assert.Throws<InvalidOperationException>(() => services.AddTickerQ(options =>
-            options.UseDefinedCronApplicationNamespace("integration-duplicate-tests").AddIntegrations().AddIntegrations()));
+            options.UseApplicationNamespace("integration-duplicate-tests").AddIntegrations().AddIntegrations()));
         Assert.Contains("already registered", exception.Message);
     }
 
@@ -252,7 +252,7 @@ public class IntegrationTests
         var services = new ServiceCollection();
         var exception = Assert.Throws<InvalidOperationException>(() => services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("integration-tests");
+            options.UseApplicationNamespace("integration-tests");
             if (first) options.AddIntegrations();
             options.NotifyFailuresViaWebhook("https://example.com/legacy");
             if (!first) options.AddIntegrations();
@@ -269,7 +269,7 @@ public class IntegrationTests
         static ServiceProvider Build(string name)
         {
             var services = new ServiceCollection();
-            services.AddTickerQ(o => o.UseDefinedCronApplicationNamespace(name));
+            services.AddTickerQ(o => o.UseApplicationNamespace(name));
             return services.BuildServiceProvider();
         }
         var name = "integrations-" + Guid.NewGuid();

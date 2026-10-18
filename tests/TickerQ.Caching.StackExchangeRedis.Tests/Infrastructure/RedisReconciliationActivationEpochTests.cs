@@ -579,7 +579,7 @@ public sealed class RedisReconciliationActivationEpochTests
         var gate = new TickerQActivationGate();
         var context = new TickerExecutionContext();
         new TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>(context, new SchedulerOptionsBuilder())
-            .UseDefinedCronApplicationNamespace(applicationNamespace)
+            .UseApplicationNamespace(applicationNamespace)
             .UseReconciliationEpoch(1);
         var configuration = Substitute.For<IConfiguration>();
         var services = new ServiceCollection();

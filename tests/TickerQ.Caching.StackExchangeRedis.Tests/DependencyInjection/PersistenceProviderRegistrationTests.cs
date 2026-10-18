@@ -27,7 +27,7 @@ public class PersistenceProviderRegistrationTests
 
         // Act
         services.AddTickerQ(options =>
-            options.UseDefinedCronApplicationNamespace("redis-provider-registration-tests"));
+            options.UseApplicationNamespace("redis-provider-registration-tests"));
 
         // Assert
         var provider = services.BuildServiceProvider();
@@ -47,7 +47,7 @@ public class PersistenceProviderRegistrationTests
         // Act
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("redis-provider-registration-tests");
+            options.UseApplicationNamespace("redis-provider-registration-tests");
             options.AddStackExchangeRedis(redis =>
             {
                 redis.Configuration = "localhost:6379,abortConnect=false";
@@ -77,7 +77,7 @@ public class PersistenceProviderRegistrationTests
         // Act
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("redis-provider-registration-tests");
+            options.UseApplicationNamespace("redis-provider-registration-tests");
             options.AddOperationalStore(ef =>
             {
                 ef.UseApplicationDbContext<TestDbContext>(ConfigurationType.UseModelCustomizer);
@@ -107,7 +107,7 @@ public class PersistenceProviderRegistrationTests
         // Act — EF Core registered first, then Redis
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("redis-provider-registration-tests");
+            options.UseApplicationNamespace("redis-provider-registration-tests");
             options.AddOperationalStore(ef =>
             {
                 ef.UseApplicationDbContext<TestDbContext>(ConfigurationType.UseModelCustomizer);
@@ -142,7 +142,7 @@ public class PersistenceProviderRegistrationTests
         // Act — Redis registered first, then EF Core (reversed order)
         services.AddTickerQ(options =>
         {
-            options.UseDefinedCronApplicationNamespace("redis-provider-registration-tests");
+            options.UseApplicationNamespace("redis-provider-registration-tests");
             options.AddStackExchangeRedis(redis =>
             {
                 redis.Configuration = "localhost:6379";

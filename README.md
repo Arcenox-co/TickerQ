@@ -63,7 +63,7 @@ builder.Services.AddTickerQ(options =>
     // Relative to the application content root; this is also the default certificate location.
     options.UseLicense("tickerq.tqlicense");
     // Physical runtime partition. Stable across replicas; use a distinct value per application.
-    options.UseDefinedCronApplicationNamespace("orders-api");
+    options.UseApplicationNamespace("orders-api");
     // Keep stable for identical replicas/restarts; increment for each reconciliation-changing deployment.
     options.UseReconciliationEpoch(1);
 });
@@ -87,7 +87,7 @@ single `LegacyGlobal` partition; an owner is never inferred.
 builder.Services.AddTickerQ(options =>
 {
     options.DisableBackgroundServices();
-    options.UseDefinedCronApplicationNamespace("orders-api");
+    options.UseApplicationNamespace("orders-api");
     options.AddOperationalStore(store => { /* configure the same backend as the scheduler */ });
 });
 ```

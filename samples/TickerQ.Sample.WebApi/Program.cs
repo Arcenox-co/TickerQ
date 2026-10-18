@@ -18,7 +18,7 @@ builder.Services.AddTickerQ(options =>
 
     // Physical runtime partition + exact epoch. The host-owned
     // ApplicationRuntimePartitioning migration installs the EF ownership shape.
-    options.UseDefinedCronApplicationNamespace("web-api-sample");
+    options.UseApplicationNamespace("web-api-sample");
     options.UseReconciliationEpoch(1);
     // Existing verified single-owner stores only, for one reviewed rollout:
     // options.UseLegacyRuntimePartitionAdoption("web-api-sample", 1);
