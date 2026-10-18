@@ -56,6 +56,71 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
 
     #region Helpers
 
+    [Fact]
+    public async Task CancelPending_CancelsEntirePendingSubtree_AndRejectsQueuedSnapshot()
+    {
+        var root = CreateTicker();
+        var child = CreateTicker(useDefaultExecutionTime: false);
+        var grandchild = CreateTicker(executionTime: _now.AddDays(1));
+        root.Children.Add(child);
+        child.Children.Add(grandchild);
+        await _provider.AddTimeTickers([root]);
+        var stored = await _provider.GetTimeTickerById(root.Id);
+        TimeTickerEntity? queued = null;
+        await foreach (var item in _provider.QueueTimeTickers([new TimeTickerEntity { Id = root.Id, UpdatedAt = stored.UpdatedAt }]))
+            queued = item;
+        Assert.NotNull(queued);
+        Assert.Equal(3, await _provider.CancelPendingTimeTickerAsync(root.Id));
+        Assert.Empty(await _provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(root.Id, queued!.AcquisitionToken)]));
+        Assert.Empty(await _provider.GetEarliestTimeTickers());
+        foreach (var id in new[] { root.Id, child.Id, grandchild.Id })
+        {
+            var saved = await _provider.GetTimeTickerById(id);
+            Assert.Equal(TickerStatus.Cancelled, saved.Status);
+            Assert.Equal(_now, saved.ExecutedAt);
+            Assert.Null(saved.AcquisitionToken);
+        }
+        Assert.Equal(0, await _provider.CancelPendingTimeTickerAsync(root.Id));
+    }
+
+    [Fact]
+    public async Task CancelPending_Child_DoesNotStopRunningParent_AndRejectsCachedStart()
+    {
+        var root = CreateTicker();
+        var child = CreateTicker(useDefaultExecutionTime: false);
+        root.Children.Add(child);
+        await _provider.AddTimeTickers([root]);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([root.Id]));
+        Assert.Equal(0, await _provider.CancelPendingTimeTickerAsync(root.Id));
+        Assert.Equal(1, await _provider.CancelPendingTimeTickerAsync(child.Id));
+        var context = new InternalFunctionContext
+        {
+            TickerId = child.Id, ParentId = root.Id, ChainRootId = root.Id,
+            ChainGeneration = acquired.ChainGeneration, AcquisitionToken = acquired.AcquisitionToken
+        };
+        context.SetProperty(x => x.Status, TickerStatus.InProgress);
+        Assert.Equal(0, await _provider.UpdateTimeTicker(context));
+        Assert.Equal(TickerStatus.Cancelled, (await _provider.GetTimeTickerById(child.Id)).Status);
+        Assert.Equal(TickerStatus.InProgress, (await _provider.GetTimeTickerById(root.Id)).Status);
+    }
+
+    [Fact]
+    public async Task CancelPending_RacingAcquisition_OnlyOneWins()
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            var root = CreateTicker();
+            await _provider.AddTimeTickers([root]);
+            using var start = new ManualResetEventSlim();
+            var cancel = Task.Run(async () => { start.Wait(); return await _provider.CancelPendingTimeTickerAsync(root.Id); });
+            var acquire = Task.Run(async () => { start.Wait(); return await _provider.AcquireImmediateTimeTickersAsync([root.Id]); });
+            start.Set();
+            await Task.WhenAll(cancel, acquire);
+            Assert.Equal(1, await cancel + (await acquire).Length);
+        }
+    }
+
     private FakeTimeTicker CreateTicker(
         Guid? id = null,
         string function = "TestFunc",

@@ -456,10 +456,18 @@ namespace TickerQ.Utilities.Managers
                 // Ownership and aggregate-generation fencing lives in the provider. Never notify or
                 // release descendants after a rejected child/result mutation.
                 if (affected == 0 && (publishesResult || functionContext.ParentId != null))
+                {
+                    // A cancellation also wins over the parent's later condition-based skip.
+                    // It is already terminal; do not relabel it or fail the rest of the chain.
+                    if (functionContext.Status == TickerStatus.Skipped &&
+                        (await _persistenceProvider.GetTimeTickerById(functionContext.TickerId, cancellationToken)
+                            .ConfigureAwait(false))?.Status == TickerStatus.Cancelled)
+                        return;
                     throw new TickerResultNotAcknowledgedException(
                         $"Mutation for TickerFunction '{functionContext.FunctionName}' " +
                         $"(ticker {functionContext.TickerId}) was not acknowledged: ownership or chain generation is stale. " +
                         "Notifications and descendant release are suppressed.");
+                }
             }
 
             await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);

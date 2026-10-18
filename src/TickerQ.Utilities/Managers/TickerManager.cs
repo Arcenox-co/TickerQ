@@ -112,6 +112,28 @@ namespace TickerQ.Utilities.Managers
         Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.DeleteAsync(Guid id, CancellationToken cancellationToken)
             => DeleteTimeTickerAsync(id, cancellationToken);
 
+        async Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.CancelAsync(Guid id, CancellationToken cancellationToken)
+        {
+            await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+            int affected;
+            try
+            {
+                affected = await _persistenceProvider.CancelPendingTimeTickerAsync(id, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception exception) { return new TickerResult<TTimeTicker>(exception); }
+
+            if (affected > 0)
+            {
+                // Persistence already fenced execution. Refresh hints must not turn a committed
+                // cancellation into a reported failure or cancel an unrelated running function.
+                try { _tickerQHostScheduler.Restart(); } catch { }
+                try { await _notificationHubSender.UpdateTimeTickerNotifyAsync(id).ConfigureAwait(false); } catch { }
+            }
+            return new TickerResult<TTimeTicker>(affected);
+        }
+
         Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.ReplaceChainAsync(Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken)
             => ReplaceTimeTickerChainAsync(oldRootId, newRoot, cancellationToken);
 

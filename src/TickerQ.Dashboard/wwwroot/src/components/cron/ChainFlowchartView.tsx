@@ -13,6 +13,7 @@ import { StatusBadge } from "@/components/cron/StatusBadges";
 import { RunConditionBadge } from "@/components/cron/RunConditionBadge";
 import { LogsPanel } from "@/components/cron/LogsPanel";
 import { ChainLogsPanel } from "@/components/cron/ChainLogsPanel";
+import { CancelTickerButton } from "@/components/cron/CancelTickerButton";
 import { Button } from "@/components/ui/button";
 import { useChainTickers } from "@/services/hooks";
 import { STATUS_CONFIG, statusHsl } from "@/lib/cron/status-config";
@@ -549,6 +550,8 @@ export function ChainFlowchartView({
             </button>
           </div>
           <div className="space-y-3 text-[11px]">
+            <CancelTickerButton id={selectedNode.ticker.id} status={selectedNode.ticker.status}
+              hasChildren={selectedNode.children.length > 0} onChanged={() => { void chainQuery.refetch(); }} />
             <Detail label="Function">
               <span className="font-mono">{selectedNode.ticker.functionName || "—"}</span>
             </Detail>

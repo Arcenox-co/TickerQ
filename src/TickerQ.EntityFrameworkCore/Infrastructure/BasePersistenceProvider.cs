@@ -1386,6 +1386,51 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public Task<int> CancelPendingTimeTickerAsync(Guid id, CancellationToken cancellationToken = default)
+        => ExecuteTimeTickerGraphMutationAsync(false, 0, async (dbContext, ct) =>
+        {
+            var set = dbContext.Set<TTimeTicker>()
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey);
+            var target = await set.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct).ConfigureAwait(false);
+            if (target == null || target.Status is not (TickerStatus.Idle or TickerStatus.Queued)) return 0;
+
+            // Match the root-first lock order used by cached child execution updates.
+            if (target.ChainRootId is { } rootId && rootId != id)
+                await set.Where(x => x.Id == rootId).ExecuteUpdateAsync(
+                    setter => setter.SetProperty(x => x.ChainGeneration, x => x.ChainGeneration), ct).ConfigureAwait(false);
+
+            var now = _clock.UtcNow;
+            Task<int> Cancel(IQueryable<TTimeTicker> query) => query
+                .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
+                .ExecuteUpdateAsync(setter => setter
+                    .SetProperty(x => x.Status, TickerStatus.Cancelled)
+                    .SetProperty(x => x.UpdatedAt, now)
+                    .SetProperty(x => x.ExecutedAt, now)
+                    .SetProperty(x => x.LockHolder, (string)null)
+                    .SetProperty(x => x.LockedAt, (DateTime?)null)
+                    .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                    .SetProperty(x => x.AcquisitionToken, (Guid?)null), ct);
+            var affected = await Cancel(set.Where(x => x.Id == id)).ConfigureAwait(false);
+            if (affected == 0) return 0;
+
+            var seen = new HashSet<Guid> { id };
+            var frontier = new List<Guid> { id };
+            while (frontier.Count > 0)
+            {
+                var next = new List<Guid>();
+                foreach (var batch in frontier.Chunk(250))
+                {
+                    var children = await set.Where(x => x.ParentId.HasValue && batch.Contains(x.ParentId.Value))
+                        .Select(x => x.Id).ToArrayAsync(ct).ConfigureAwait(false);
+                    next.AddRange(children.Where(seen.Add));
+                }
+                foreach (var batch in next.Chunk(250))
+                    affected += await Cancel(set.Where(x => batch.Contains(x.Id))).ConfigureAwait(false);
+                frontier = next;
+            }
+            return affected;
+        }, cancellationToken);
+
     public Task<int> UpdateTimeTicker(InternalFunctionContext functionContexts, CancellationToken cancellationToken)
     {
         var releasesToIdle = functionContexts.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
@@ -1437,6 +1482,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
 
             var query = dbContext.Set<TTimeTicker>()
                 .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                            x.Status != TickerStatus.Cancelled &&
                             x.Id == functionContexts.TickerId);
 
             query = ApplyTimeTickerGenerationFence(dbContext, query, functionContexts);
@@ -1524,7 +1570,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             await ExecuteTimeTickerGraphMutationAsync(true, 0, async (dbContext, ct) =>
             {
                 var query = dbContext.Set<TTimeTicker>().Where(x =>
-                    x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id));
+                    x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id) && x.Status != TickerStatus.Cancelled);
                 if (functionContext.ParentId == null)
                 {
                     query = functionContext.AcquisitionToken.HasValue
@@ -1552,7 +1598,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var context = session.Context;
         var updateNow = _clock.UtcNow;
         await context.Set<TTimeTicker>().Where(x =>
-                x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id))
+                x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id) && x.Status != TickerStatus.Cancelled)
             .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(
                 functionContext, updateNow, NextLeaseUntil(updateNow)), cancellationToken).ConfigureAwait(false);
     }

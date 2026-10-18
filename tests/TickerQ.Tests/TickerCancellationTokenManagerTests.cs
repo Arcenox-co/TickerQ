@@ -206,8 +206,10 @@ public class TickerCancellationTokenManagerTests : IDisposable
         var tickerId = Guid.NewGuid();
         var parentId = Guid.NewGuid();
         var first = MakeContext(tickerId, parentId);
+        first.Type = TickerType.TimeTicker;
         first.ChainGeneration = Guid.NewGuid();
         var stale = MakeContext(tickerId, parentId);
+        stale.Type = TickerType.TimeTicker;
         stale.ChainGeneration = Guid.NewGuid();
         var liveSource = TickerCancellationTokenManager.TryRegisterAcquired(first, isDue: false)!;
 
@@ -382,6 +384,46 @@ public class TickerCancellationTokenManagerTests : IDisposable
         Assert.True(TickerCancellationTokenManager.RequestTickerCancellationById(tickerId));
         Assert.True(sourceA.IsCancellationRequested);
         Assert.True(sourceB.IsCancellationRequested);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CronOccurrenceWithParent_UsesItsOwnAcquisitionToken(bool legacyRegistration)
+    {
+        var context = MakeContext(Guid.NewGuid(), Guid.NewGuid());
+        context.AcquisitionToken = Guid.NewGuid();
+        context.ChainGeneration = Guid.NewGuid(); // not the cron occurrence's identity
+        using var source = legacyRegistration ? new CancellationTokenSource() :
+            TickerCancellationTokenManager.TryRegisterAcquired(context, false)!;
+        if (legacyRegistration) TickerCancellationTokenManager.AddTickerCancellationToken(source, context, false);
+        Assert.False(TickerCancellationTokenManager.RequestTickerCancellation(
+            new TickerExecutionLease(context.Type, context.TickerId, context.ChainGeneration)));
+        Assert.True(TickerCancellationTokenManager.RequestTickerCancellation(
+            new TickerExecutionLease(context.Type, context.TickerId, context.AcquisitionToken)));
+        Assert.True(source.IsCancellationRequested);
+    }
+
+    [Fact]
+    public void ScopedLegacyCancellation_RejectsAmbiguousTypes_AndNeverCrossesNamespaces()
+    {
+        var id = Guid.NewGuid();
+        var a = MakeContext(id);
+        var b = MakeContext(id);
+        a.RuntimePartitionKey = new TickerQRuntimePartition("cancel-a").StorageKey;
+        b.RuntimePartitionKey = new TickerQRuntimePartition("cancel-b").StorageKey;
+        var sourceA = TickerCancellationTokenManager.TryRegisterAcquired(a, false)!;
+        var sourceB = TickerCancellationTokenManager.TryRegisterAcquired(b, false)!;
+        Assert.True(TickerCancellationTokenManager.RequestTickerCancellationById(a.RuntimePartitionKey, id));
+        Assert.True(sourceA.IsCancellationRequested);
+        Assert.False(sourceB.IsCancellationRequested);
+        var time = MakeContext(id);
+        time.Type = TickerType.TimeTicker;
+        time.RuntimePartitionKey = b.RuntimePartitionKey;
+        var timeSource = TickerCancellationTokenManager.TryRegisterAcquired(time, false)!;
+        Assert.False(TickerCancellationTokenManager.RequestTickerCancellationById(b.RuntimePartitionKey, id));
+        Assert.False(sourceB.IsCancellationRequested);
+        Assert.False(timeSource.IsCancellationRequested);
     }
 
     private static InternalFunctionContext MakeContext(Guid tickerId, Guid? parentId = null)

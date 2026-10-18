@@ -24,14 +24,17 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         private readonly ITickerQNotificationHubSender _notificationHubSender;
         private readonly TickerExecutionContext _executionContext;
         private readonly DashboardOptionsBuilder _dashboardOptions;
+        private readonly string _runtimePartitionKey;
         public TickerDashboardRepository(
             TickerExecutionContext executionContext,
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerQHostScheduler tickerQHostScheduler, 
             ITickerQNotificationHubSender notificationHubSender, 
             DashboardOptionsBuilder dashboardOptions,
-            ITickerQDispatcher dispatcher)
+            ITickerQDispatcher dispatcher,
+            SchedulerOptionsBuilder schedulerOptions = null)
         {
+            _runtimePartitionKey = (schedulerOptions?.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal).StorageKey;
             _persistenceProvider = persistenceProvider ?? throw new ArgumentNullException(nameof(persistenceProvider));
             _tickerQHostScheduler = tickerQHostScheduler ?? throw new ArgumentNullException(nameof(tickerQHostScheduler));
             _notificationHubSender = notificationHubSender ?? throw new ArgumentNullException(nameof(notificationHubSender));
@@ -662,7 +665,7 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         }
 
         public bool CancelTickerById(Guid tickerId)
-            => TickerCancellationTokenManager.RequestTickerCancellationById(tickerId);
+            => TickerCancellationTokenManager.RequestTickerCancellationById(_runtimePartitionKey, tickerId);
 
         public async Task DeleteCronTickerOccurrenceByIdAsync(Guid id, CancellationToken cancellationToken)
         {

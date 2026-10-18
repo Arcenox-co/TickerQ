@@ -809,12 +809,46 @@ namespace TickerQ.Provider
             }));
         }
 
+        public Task<int> CancelPendingTimeTickerAsync(Guid id, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                if (!TimeTickers.TryGetValue(id, out var target) ||
+                    target.Status is not (TickerStatus.Idle or TickerStatus.Queued)) return 0;
+
+                var ids = new HashSet<Guid> { id };
+                var frontier = new Queue<Guid>();
+                frontier.Enqueue(id);
+                while (frontier.TryDequeue(out var parent))
+                    foreach (var childId in GetChildrenIds(parent))
+                        if (ids.Add(childId)) frontier.Enqueue(childId);
+
+                var affected = 0;
+                foreach (var tickerId in ids)
+                {
+                    var current = TimeTickers[tickerId];
+                    if (current.Status is not (TickerStatus.Idle or TickerStatus.Queued)) continue;
+                    var updated = CloneTicker(current);
+                    updated.Status = TickerStatus.Cancelled;
+                    updated.UpdatedAt = _clock.UtcNow;
+                    updated.ExecutedAt = updated.UpdatedAt;
+                    updated.LockHolder = null;
+                    updated.LockedAt = updated.LeaseUntil = null;
+                    updated.AcquisitionToken = null;
+                    if (TryUpdateTimeTicker(tickerId, updated, current, requireRunnableActivation: false)) affected++;
+                }
+                return affected;
+            }));
+        }
+
         public Task<int> UpdateTimeTicker(InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(WriteGraph(() =>
             {
                 if (!TimeTickers.TryGetValue(functionContext.TickerId, out var ticker) ||
+                    ticker.Status == TickerStatus.Cancelled ||
                     !HasCurrentChainGeneration(functionContext, ticker))
                     return 0;
 
@@ -866,7 +900,7 @@ namespace TickerQ.Provider
             {
                 foreach (var id in timeTickerIds)
                 {
-                    if (TimeTickers.TryGetValue(id, out var ticker))
+                    if (TimeTickers.TryGetValue(id, out var ticker) && ticker.Status != TickerStatus.Cancelled)
                     {
                         var updatedTicker = CloneTicker(ticker);
                         ApplyFunctionContextToTicker(updatedTicker, functionContext);

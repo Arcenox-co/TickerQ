@@ -28,6 +28,8 @@ internal sealed class EfStagingTimeTickerManager<TTimeTicker>(
         => inner.UpdateAsync(entity, cancellationToken);
     public Task<TickerResult<TTimeTicker>> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
         => inner.DeleteAsync(id, cancellationToken);
+    public Task<TickerResult<TTimeTicker>> CancelAsync(Guid id, CancellationToken cancellationToken = default)
+        => inner.CancelAsync(id, cancellationToken);
     public Task<TickerResult<TTimeTicker>> ReplaceChainAsync(Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
         => inner.ReplaceChainAsync(oldRootId, newRoot, cancellationToken);
     public Task<TickerResult<List<TTimeTicker>>> AddBatchAsync(List<TTimeTicker> entities, CancellationToken cancellationToken = default)

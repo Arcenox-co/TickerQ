@@ -21,6 +21,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel = "Confirm",
+  dismissLabel = "Cancel",
   confirmVariant = "gradient",
   isPending = false,
   onConfirm,
@@ -31,6 +32,7 @@ export function ConfirmDialog({
   title: string;
   description?: ReactNode;
   confirmLabel?: string;
+  dismissLabel?: string;
   confirmVariant?: "gradient" | "destructive" | "default";
   isPending?: boolean;
   onConfirm: () => void | Promise<void>;
@@ -57,7 +59,7 @@ export function ConfirmDialog({
             onClick={() => onOpenChange(false)}
             disabled={isPending}
           >
-            Cancel
+            {dismissLabel}
           </Button>
           <Button
             type="button"

@@ -874,7 +874,33 @@ namespace TickerQ.Utilities.Infrastructure
         }
 
         public bool CancelTicker(Guid tickerId)
-            => TickerCancellationTokenManager.RequestTickerCancellationById(tickerId);
+            => TickerCancellationTokenManager.RequestTickerCancellationById(RuntimePartitionKey, tickerId);
+
+        private string RuntimePartitionKey =>
+            (_schedulerOptions?.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal).StorageKey;
+
+        public async Task<bool> RequestRunningTickerCancellationAsync(
+            Guid tickerId, TickerType type, CancellationToken cancellationToken = default)
+        {
+            Guid? token;
+            if (type == TickerType.TimeTicker)
+            {
+                var ticker = await _persistence.GetTimeTickerById(tickerId, cancellationToken).ConfigureAwait(false);
+                if (ticker?.Status != TickerStatus.InProgress) return false;
+                token = ticker.ParentId.HasValue ? ticker.ChainGeneration : ticker.AcquisitionToken;
+            }
+            else if (type == TickerType.CronTickerOccurrence)
+            {
+                var occurrence = await _persistence.CronTickerOccurrencesQuery()
+                    .Where(x => x.Id == tickerId).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                if (occurrence?.Status != TickerStatus.InProgress) return false;
+                token = occurrence.AcquisitionToken;
+            }
+            else return false;
+
+            return token.HasValue && TickerCancellationTokenManager.RequestTickerCancellation(
+                RuntimePartitionKey, new TickerExecutionLease(type, tickerId, token));
+        }
 
         public async Task StartHostAsync(CancellationToken cancellationToken = default)
         {

@@ -89,6 +89,84 @@ public sealed class RedisRealScriptTests
             NullLogger<TickerRedisPersistenceProvider<TimeTickerEntity, CronTickerEntity>>.Instance);
     }
 
+    [Fact]
+    public async Task CancelPending_QueuedChain_CancelsNestedChildren_AndFencesSnapshot()
+    {
+        var root = NewIdleTicker();
+        var child = NewIdleTicker();
+        var grandchild = NewIdleTicker();
+        child.ExecutionTime = null;
+        grandchild.ExecutionTime = BaseNow.AddHours(1);
+        root.Children.Add(child);
+        child.Children.Add(grandchild);
+        await _provider.AddTimeTickers([root]);
+        var stored = await _provider.GetTimeTickerById(root.Id);
+        TimeTickerEntity? queued = null;
+        await foreach (var row in _provider.QueueTimeTickers([new TimeTickerEntity { Id = root.Id, UpdatedAt = stored.UpdatedAt }]))
+            queued = row;
+        Assert.NotNull(queued);
+        Assert.Equal(3, await _provider.CancelPendingTimeTickerAsync(root.Id));
+        Assert.Empty(await _provider.TransitionQueuedTimeTickersToInProgressAsync(
+            [new AcquisitionLease(root.Id, queued!.AcquisitionToken)]));
+        Assert.Empty(await _provider.GetEarliestTimeTickers());
+        Assert.Null(await _db.SortedSetScoreAsync(_provider.RuntimeKeysForTest.TimeTickerPending, root.Id.ToString()));
+        foreach (var id in new[] { root.Id, child.Id, grandchild.Id })
+        {
+            var saved = await _provider.GetTimeTickerById(id);
+            Assert.Equal(TickerStatus.Cancelled, saved.Status);
+            Assert.Equal(BaseNow, saved.ExecutedAt);
+            Assert.Null(saved.LockHolder);
+            Assert.Null(saved.AcquisitionToken);
+        }
+        Assert.Equal(0, await _provider.CancelPendingTimeTickerAsync(root.Id));
+    }
+
+    [Fact]
+    public async Task CancelPending_EmbeddedChild_LeavesRunningParentAndSiblingAlone()
+    {
+        var root = NewIdleTicker();
+        var child = NewIdleTicker();
+        var sibling = NewIdleTicker();
+        child.ExecutionTime = sibling.ExecutionTime = null;
+        root.Children.Add(child);
+        root.Children.Add(sibling);
+        await _provider.AddTimeTickers([root]);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([root.Id]));
+        Assert.Equal(0, await _provider.CancelPendingTimeTickerAsync(root.Id));
+        Assert.Equal(1, await _provider.CancelPendingTimeTickerAsync(child.Id));
+        var context = new InternalFunctionContext
+        {
+            TickerId = child.Id, ParentId = root.Id, ChainRootId = root.Id,
+            ChainGeneration = acquired.ChainGeneration, AcquisitionToken = acquired.AcquisitionToken
+        };
+        context.SetProperty(x => x.Status, TickerStatus.InProgress);
+        Assert.Equal(0, await _provider.UpdateTimeTicker(context));
+        var saved = await _provider.GetTimeTickerById(root.Id);
+        Assert.Equal(TickerStatus.InProgress, saved.Status);
+        Assert.Equal(TickerStatus.Cancelled, saved.Children.Single(x => x.Id == child.Id).Status);
+        Assert.Equal(TickerStatus.Idle, saved.Children.Single(x => x.Id == sibling.Id).Status);
+    }
+
+    [Fact]
+    public async Task CancelPending_RacesAcquisition_AndMaintainsRetentionIndexes()
+    {
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            var ticker = NewIdleTicker();
+            await _provider.AddTimeTickers([ticker]);
+            var cancel = _provider.CancelPendingTimeTickerAsync(ticker.Id);
+            var acquire = _provider.AcquireImmediateTimeTickersAsync([ticker.Id]);
+            await Task.WhenAll(cancel, acquire);
+            Assert.Equal(1, await cancel + (await acquire).Length);
+            var saved = await _provider.GetTimeTickerById(ticker.Id);
+            Assert.Equal(await cancel == 1 ? TickerStatus.Cancelled : TickerStatus.InProgress, saved.Status);
+            if (await cancel == 1)
+                Assert.NotNull(await _db.SortedSetScoreAsync(
+                    _provider.RuntimeKeysForTest.TimeTickerRetentionCancelled, ticker.Id.ToString()));
+        }
+        Assert.Equal(0, await _provider.CancelPendingTimeTickerAsync(Guid.NewGuid()));
+    }
+
     private TimeTickerEntity NewIdleTicker(int[]? retryIntervals = null)
         => new()
         {

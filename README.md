@@ -146,6 +146,35 @@ public class MyService(ITimeTickerManager<TimeTickerEntity> manager)
 }
 ```
 
+### Cancel a pending time ticker
+
+```csharp
+var result = await timeTickerManager.CancelAsync(tickerId, cancellationToken);
+if (!result.IsSucceeded)
+    throw result.Exception!;
+
+bool cancelled = result.AffectedRows > 0;
+```
+
+`CancelAsync` atomically marks an `Idle` or `Queued` time ticker and its pending
+descendants as `Cancelled`. It retains their history and prevents their functions
+from starting, including jobs already queued by another scheduler. Running and
+finished jobs stay unchanged. `AffectedRows` counts the cancelled jobs; zero means
+the selected ticker was missing or no longer pending. Cancellation is an independent
+store operation, so an EF ticker created with `StageAsync` must be committed first.
+
+All built-in providers support this operation; MongoDB requires a replica set for
+the chain transaction. An explicit later **Run now** can still restart a cancelled
+ticker. This API does not interrupt a function that has already started.
+
+In the dashboard, open job details (including a selected job in the chain view)
+and choose **Cancel job** for a pending time ticker. The confirmation explains
+that pending descendants are included. For running time jobs and cron occurrences,
+**Request cancellation** signals the execution's `CancellationToken` on the node
+hosting the dashboard. The job stays `InProgress` until its function exits; a function
+that ignores cancellation can still finish normally. To cancel an execution running
+on another scheduler node, use that node's dashboard.
+
 ## Typed request contracts
 
 TickerQ can generate a Draft 2020-12 JSON Schema and AOT-safe `JsonTypeInfo<T>` for typed function requests. The same immutable descriptor drives the Dashboard editor, Hub/SDK metadata, scheduling validation, and execution-time drift checks.

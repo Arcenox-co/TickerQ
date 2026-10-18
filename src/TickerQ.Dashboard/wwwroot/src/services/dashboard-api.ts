@@ -35,6 +35,8 @@ import type {
   UpdateTimeTickerRequest,
   BulkRetryItem,
   BulkActionResponse,
+  CancelTickerCommand,
+  CancellationResponse,
 } from "./api-types";
 
 const API_BASE = "/api/dashboard";
@@ -281,7 +283,10 @@ export const dashboardApi = {
   stopHost: () => post<void>("/host/stop"),
   restartHost: () => post<void>("/host/restart"),
 
-  cancelTicker: (id: string) => post<void>(`/tickers/${id}/cancel`),
+  cancelTicker: ({ id, type, running }: CancelTickerCommand) =>
+    post<CancellationResponse>(
+      `/${type === "TimeTicker" ? "time-tickers" : "cron-occurrences"}/${id}/${running ? "request-cancellation" : "cancel"}`
+    ),
 
   addTimeTicker: (body: AddTimeTickerRequest) =>
     post<AddTickerResponse>("/time-tickers", body),

@@ -152,6 +152,9 @@ public static class DashboardEndpoints
 
         w.MapPost("/tickers/{id:guid}/cancel", CancelTicker<TTimeTicker, TCronTicker>);
         w.MapPost("/tickers/bulk-cancel", BulkCancelTickers<TTimeTicker, TCronTicker>);
+        w.MapPost("/time-tickers/{id:guid}/cancel", CancelPendingTimeTicker<TTimeTicker, TCronTicker>);
+        w.MapPost("/time-tickers/{id:guid}/request-cancellation", RequestTimeTickerCancellation<TTimeTicker, TCronTicker>);
+        w.MapPost("/cron-occurrences/{id:guid}/request-cancellation", RequestCronOccurrenceCancellation<TTimeTicker, TCronTicker>);
         w.MapPost("/time-tickers/bulk-delete", BulkDeleteTimeTickers<TTimeTicker, TCronTicker>);
         w.MapPost("/cron-tickers/bulk-delete", BulkDeleteCronTickers<TTimeTicker, TCronTicker>);
         w.MapPost("/executions/bulk-retry", BulkRetryExecutions<TTimeTicker, TCronTicker>);
@@ -627,6 +630,66 @@ public static class DashboardEndpoints
         var ok = DataService<TTimeTicker, TCronTicker>(c).CancelTicker(id);
         c.Response.StatusCode = ok ? 204 : 404;
         return Task.CompletedTask;
+    }
+
+    private static async Task CancelPendingTimeTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var result = await c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>()
+            .CancelAsync(id, c.RequestAborted);
+        if (!result.IsSucceeded)
+        {
+            c.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("TickerQ.Dashboard")
+                .LogWarning(result.Exception, "Pending ticker cancellation failed for {TickerId}", id);
+            c.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await WriteJson(c, new ErrorResponseBody { Error = "The job could not be cancelled. Refresh its status and try again." }, Json(c));
+            return;
+        }
+        if (result.AffectedRows > 0)
+        {
+            await WriteJson(c, new CancellationResponseBody { Outcome = "Cancelled", Affected = result.AffectedRows }, Json(c));
+            return;
+        }
+
+        var ticker = await DataService<TTimeTicker, TCronTicker>(c).GetTimeTickerByIdAsync(id, c.RequestAborted);
+        if (ticker?.Status == TickerStatus.Cancelled)
+        {
+            await WriteJson(c, new CancellationResponseBody { Outcome = "Cancelled" }, Json(c));
+            return;
+        }
+        c.Response.StatusCode = ticker == null ? StatusCodes.Status404NotFound : StatusCodes.Status409Conflict;
+        await WriteJson(c, new ErrorResponseBody
+        {
+            Error = ticker == null ? "This job no longer exists." :
+                "This job is no longer pending. Refresh its status before requesting cancellation of a running job."
+        }, Json(c));
+    }
+
+    private static Task RequestTimeTickerCancellation<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+        => RequestRunningCancellation<TTimeTicker, TCronTicker>(c, id, TickerType.TimeTicker);
+
+    private static Task RequestCronOccurrenceCancellation<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+        => RequestRunningCancellation<TTimeTicker, TCronTicker>(c, id, TickerType.CronTickerOccurrence);
+
+    private static async Task RequestRunningCancellation<TTimeTicker, TCronTicker>(HttpContext c, Guid id, TickerType type)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var requested = await DataService<TTimeTicker, TCronTicker>(c)
+            .RequestRunningTickerCancellationAsync(id, type, c.RequestAborted);
+        c.Response.StatusCode = requested ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict;
+        if (requested)
+            await WriteJson(c, new CancellationResponseBody { Outcome = "Requested", Affected = 1 }, Json(c));
+        else
+            await WriteJson(c, new ErrorResponseBody
+            {
+                Error = "No matching running execution was found on this node. Refresh its status; if it is running on another node, open that node's dashboard to request cancellation."
+            }, Json(c));
     }
 
     private static async Task AddTimeTicker<TTimeTicker, TCronTicker>(HttpContext c)

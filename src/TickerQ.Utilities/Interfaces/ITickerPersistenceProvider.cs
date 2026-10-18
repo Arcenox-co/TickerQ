@@ -400,6 +400,13 @@ namespace TickerQ.Utilities.Interfaces
         Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(Expression<Func<TTimeTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
         Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default);
         Task<int> UpdateTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default);
+        /// <summary>
+        /// Atomically cancels an Idle/Queued target and all Idle/Queued descendants. Returns the
+        /// number changed, or zero if the target is missing, running, or terminal. Cancellation
+        /// must fence acquisition and cached child execution; unsupported providers fail closed.
+        /// </summary>
+        Task<int> CancelPendingTimeTickerAsync(Guid id, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This provider does not support pending ticker cancellation.");
         Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default);
         /// <summary>
         /// Atomically replaces the entire time-ticker chain aggregate rooted at

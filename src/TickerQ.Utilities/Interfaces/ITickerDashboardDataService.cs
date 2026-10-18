@@ -100,6 +100,11 @@ namespace TickerQ.Utilities.Interfaces
 
         bool CancelTicker(Guid tickerId);
 
+        /// <summary>Signals only the exact persisted running generation on this node and namespace.</summary>
+        Task<bool> RequestRunningTickerCancellationAsync(Guid tickerId, TickerQ.Utilities.Enums.TickerType type,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("Running cancellation is not supported by this dashboard data service.");
+
         Task StartHostAsync(CancellationToken cancellationToken = default);
 
         Task StopHostAsync(CancellationToken cancellationToken = default);

@@ -115,6 +115,12 @@ internal sealed class BulkActionResponseBody
     public int Affected { get; set; }
 }
 
+internal sealed class CancellationResponseBody
+{
+    public string Outcome { get; set; } = string.Empty;
+    public int Affected { get; set; }
+}
+
 internal sealed class ErrorResponseBody
 {
     public string Error { get; set; } = string.Empty;

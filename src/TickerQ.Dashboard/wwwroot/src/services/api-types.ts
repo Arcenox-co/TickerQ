@@ -23,6 +23,17 @@ export type RunCondition =
 // TimeTicker | CronOccurrence.
 export type ExecutionType = "TimeTicker" | "CronOccurrence";
 
+export interface CancelTickerCommand {
+  id: string;
+  type: ExecutionType;
+  running: boolean;
+}
+
+export interface CancellationResponse {
+  outcome: "Cancelled" | "Requested";
+  affected: number;
+}
+
 /** What the stale-job watchdog does if the executing node dies mid-run. */
 export type StaleAction = "Restart" | "Cancel";
 

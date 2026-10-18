@@ -36,6 +36,15 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task<TickerResult<TTimeTicker>> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Cancels a persisted Idle or Queued ticker and its pending descendants atomically.
+        /// Running and terminal tickers are not changed. AffectedRows is the number cancelled;
+        /// zero means the selected ticker was missing or no longer pending. Records are retained.
+        /// This is an independent store operation, not a staged DbContext mutation.
+        /// </summary>
+        Task<TickerResult<TTimeTicker>> CancelAsync(Guid id, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support pending ticker cancellation.");
+
+        /// <summary>
         /// Atomically replaces the chain aggregate rooted at <paramref name="oldRootId"/> with
         /// <paramref name="newRoot"/> (root plus its whole descendant tree). The complete
         /// replacement is validated and persisted before the original is removed, all within a

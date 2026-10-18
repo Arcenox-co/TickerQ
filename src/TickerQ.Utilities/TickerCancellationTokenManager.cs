@@ -22,7 +22,8 @@ namespace TickerQ.Utilities
                 CancellationSource = cancellationSource,
                 IsDue = isDue,
                 ParentId = context.ParentId ?? Guid.Empty,
-                AcquisitionToken = context.ParentId.HasValue ? context.ChainGeneration : context.AcquisitionToken
+                AcquisitionToken = context.Type == TickerType.TimeTicker && context.ParentId.HasValue
+                    ? context.ChainGeneration : context.AcquisitionToken
             };
 
             var partitionKey = NormalizePartition(context.RuntimePartitionKey);
@@ -62,7 +63,8 @@ namespace TickerQ.Utilities
                 CancellationSource = cancellationSource,
                 IsDue = isDue,
                 ParentId = context.ParentId ?? Guid.Empty,
-                AcquisitionToken = context.ParentId.HasValue ? context.ChainGeneration : context.AcquisitionToken
+                AcquisitionToken = context.Type == TickerType.TimeTicker && context.ParentId.HasValue
+                    ? context.ChainGeneration : context.AcquisitionToken
             };
 
             var partitionKey = NormalizePartition(context.RuntimePartitionKey);
@@ -300,6 +302,20 @@ namespace TickerQ.Utilities
             }
 
             return true;
+        }
+
+        internal static bool RequestTickerCancellationById(string runtimePartitionKey, Guid tickerId)
+        {
+            // Compatibility for old dashboard callers without a type. Never fan out across
+            // namespaces or cancel both a time ticker and a cron occurrence with the same id.
+            TickerExecutionLease? match = null;
+            foreach (var entry in TickerCancellationTokens)
+            {
+                if (entry.Key.RuntimePartitionKey != runtimePartitionKey || entry.Key.TickerId != tickerId) continue;
+                if (match.HasValue) return false;
+                match = new TickerExecutionLease(entry.Key.Type, tickerId, entry.Value.AcquisitionToken);
+            }
+            return match.HasValue && RequestTickerCancellation(runtimePartitionKey, match.Value);
         }
 
         internal static bool RequestTickerCancellation(TickerExecutionLease lease)

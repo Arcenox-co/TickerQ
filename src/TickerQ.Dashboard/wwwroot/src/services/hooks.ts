@@ -16,6 +16,7 @@ import type {
   AddTimeTickerChainRequest,
   AddTimeTickerRequest,
   BulkRetryItem,
+  CancelTickerCommand,
   CronOccurrenceQueryFilter,
   CronTickerFlatDto,
   CronTickerQueryFilter,
@@ -218,6 +219,8 @@ export function useCronOccurrence(id: string | null) {
     queryKey: qk.cronOccurrence(id ?? ""),
     queryFn: ({ signal }) => dashboardApi.getCronOccurrence(id!, signal),
     enabled: !!id,
+    refetchInterval: (query) =>
+      query.state.data && ACTIVE_STATUSES.includes(query.state.data.status) ? 2_000 : false,
   });
 }
 
@@ -302,6 +305,8 @@ export function useChainTickers(rootId: string | null) {
 // ===== Mutations =====
 
 function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["cron-occurrences"] });
+  qc.invalidateQueries({ queryKey: ["chain-tickers"] });
   qc.invalidateQueries({ queryKey: ["time-tickers"] });
   qc.invalidateQueries({ queryKey: ["cron-tickers"] });
   qc.invalidateQueries({ queryKey: ["executions"] });
@@ -335,8 +340,8 @@ export function useRestartHost() {
 export function useCancelTicker() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => dashboardApi.cancelTicker(id),
-    onSuccess: () => invalidateAll(qc),
+    mutationFn: (command: CancelTickerCommand) => dashboardApi.cancelTicker(command),
+    onSettled: () => invalidateAll(qc),
   });
 }
 

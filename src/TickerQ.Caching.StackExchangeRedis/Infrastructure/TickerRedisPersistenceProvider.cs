@@ -130,7 +130,12 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     #region Time_Ticker_Shared_Methods
     public async Task<TTimeTicker> GetTimeTickerById(Guid id, CancellationToken cancellationToken = default)
     {
-        return await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
+        var root = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(id)).ConfigureAwait(false);
+        if (root != null) return root;
+        var rootId = await FindTimeTickerAggregateIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!rootId.HasValue) return null;
+        root = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(rootId.Value)).ConfigureAwait(false);
+        return root == null ? null : FindEmbeddedTimeTicker(root.Children, id);
     }
 
     public async Task<TTimeTicker[]> GetTimeTickers(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken)

@@ -55,6 +55,26 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     #region Success Path
 
     [Fact]
+    public async Task CancelledChildSnapshot_NeverInvokesChildOrConcurrentGrandchild()
+    {
+        var calls = 0;
+        var root = CreateContext(ct: (_, _, _) => Task.CompletedTask, type: TickerType.TimeTicker);
+        var child = CreateContext(ct: (_, _, _) => { calls++; return Task.CompletedTask; }, type: TickerType.TimeTicker);
+        var grandchild = CreateContext(ct: (_, _, _) => { calls++; return Task.CompletedTask; }, type: TickerType.TimeTicker);
+        child.RunCondition = RunCondition.OnSuccess;
+        grandchild.RunCondition = RunCondition.InProgress;
+        child.TimeTickerChildren.Add(grandchild);
+        root.TimeTickerChildren.Add(child);
+        _internalManager.UpdateTickerAsync(
+                Arg.Is<InternalFunctionContext>(c => c.TickerId == child.TickerId && c.Status == TickerStatus.InProgress),
+                Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new TickerResultNotAcknowledgedException("Already cancelled"));
+        await _handler.ExecuteTaskAsync(root, isDue: false);
+        Assert.Equal(0, calls);
+        Assert.Equal(TickerStatus.Done, root.Status);
+    }
+
+    [Fact]
     public async Task ExecuteTaskAsync_SetsStatusDone_WhenSucceeds_NotDue()
     {
         var context = CreateContext(ct: (_, _, _) => Task.CompletedTask);
@@ -408,6 +428,56 @@ public class TickerExecutionTaskHandlerTests : IDisposable
 
     #region Cancellation Path
 
+    [Theory]
+    [InlineData(TickerType.TimeTicker)]
+    [InlineData(TickerType.CronTickerOccurrence)]
+    public async Task RunningCancellation_ThrowIfCancellationRequested_IsCancelledWithoutRetry(TickerType type)
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var context = CreateContext(async (token, _, _) =>
+        {
+            entered.SetResult();
+            await release.Task;
+            token.ThrowIfCancellationRequested(); // OperationCanceledException, not TaskCanceledException
+        }, type);
+        context.AcquisitionToken = Guid.NewGuid();
+        if (type == TickerType.CronTickerOccurrence) context.ParentId = Guid.NewGuid();
+        context.Retries = 2;
+        var execution = _handler.ExecuteTaskAsync(context, false);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            Assert.True(TickerCancellationTokenManager.RequestTickerCancellation(
+                new TickerExecutionLease(type, context.TickerId, context.AcquisitionToken)));
+        }
+        finally { release.TrySetResult(); }
+        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
+        Assert.Equal(0, context.RetryCount);
+        _instrumentation.Received(1).LogJobCancelled(context.TickerId, context.FunctionName, Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task RunningCancellation_IgnoredToken_RemainsInProgressUntilFunctionExits()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var context = CreateContext(async (_, _, _) => { entered.SetResult(); await release.Task; });
+        var execution = _handler.ExecuteTaskAsync(context, false);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            Assert.True(TickerCancellationTokenManager.RequestTickerCancellationById(context.TickerId));
+            Assert.False(execution.IsCompleted);
+            Assert.Equal(TickerStatus.InProgress, context.Status);
+            Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
+        }
+        finally { release.TrySetResult(); }
+        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(TickerStatus.Done, context.Status);
+    }
+
     [Fact]
     public async Task ExecuteTaskAsync_SetsStatusCancelled_WhenTaskCancelledExceptionThrown()
     {
@@ -437,6 +507,33 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             Arg.Any<Exception>(),
             Arg.Is(context.TickerId),
             Arg.Is(context.Type));
+    }
+
+    [Fact]
+    public async Task RunningCancellation_PersistsBeforeCallingFailingUserHook()
+    {
+        var exceptionHandler = Substitute.For<ITickerExceptionHandler>();
+        var persisted = false;
+        var hookObservedPersistence = false;
+        _internalManager.UpdateTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { persisted = true; return Task.CompletedTask; });
+        exceptionHandler.HandleCanceledExceptionAsync(Arg.Any<Exception>(), Arg.Any<Guid>(), Arg.Any<TickerType>())
+            .Returns<Task>(_ => { hookObservedPersistence = persisted; throw new InvalidOperationException("Notification failed"); });
+        var services = new ServiceCollection();
+        services.AddSingleton(_internalManager);
+        services.AddSingleton(_instrumentation);
+        services.AddSingleton(exceptionHandler);
+        using var sp = services.BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
+        var context = CreateContext(ct: (_, _, _) => throw new TaskCanceledException());
+
+        await handler.ExecuteTaskAsync(context, false);
+
+        Assert.True(persisted);
+        Assert.True(hookObservedPersistence);
+        Assert.Equal(TickerStatus.Cancelled, context.Status);
+        await exceptionHandler.Received(1).HandleCanceledExceptionAsync(Arg.Any<Exception>(), context.TickerId, context.Type);
     }
 
     #endregion

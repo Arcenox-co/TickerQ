@@ -170,6 +170,21 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         if (isChild)
             context.AcquisitionToken = chainAcquisitionToken;
 
+        if (isChild)
+        {
+            // The parent's snapshot can contain a child cancelled since acquisition. Persist
+            // admission before invoking it OR releasing any of its concurrent descendants.
+            context.SetProperty(x => x.Status, TickerStatus.InProgress);
+            try
+            {
+                await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (TickerResultNotAcknowledgedException)
+            {
+                return;
+            }
+        }
+
         if (context.Type == TickerType.CronTickerOccurrence)
         {
             // Root occurrence: reuse the acquisition-time registration if the caller supplied one.
@@ -326,9 +341,6 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         _tickerQInstrumentation.LogJobEnqueued(typeName, context.FunctionName, context.TickerId, "ExecutionTaskHandler");
         
         context.SetProperty(x => x.Status, TickerStatus.InProgress);
-
-        if (isChild && mode == ExecutionMode.Scheduler)
-            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None);
 
         if (TryGetContractDriftReason(context, out var driftReason))
         {
@@ -544,7 +556,8 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     stopWatch, cancellationToken, mode);
                 return;
             }
-            catch (TaskCanceledException ex)
+            catch (OperationCanceledException ex) when (
+                cancellationTokenSource.IsCancellationRequested || ex is TaskCanceledException)
             {
                 context.SetProperty(x => x.Status, TickerStatus.Cancelled)
                     .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
@@ -557,11 +570,18 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 // Log job cancelled
                 _tickerQInstrumentation.LogJobCancelled(context.TickerId, context.FunctionName, "Task was cancelled");
 
-                if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
-                    await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type);
-
                 if (mode == ExecutionMode.Scheduler)
                     await PersistExecutionUpdateAsync(context, tickerFunctionContext);
+
+                // A user notification hook must not leave a stopped job persisted as running.
+                if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
+                {
+                    try { await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type); }
+                    catch (Exception hookError)
+                    {
+                        _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, hookError, context.RetryCount);
+                    }
+                }
                 
                 return;
             }

@@ -123,6 +123,7 @@ namespace TickerQ.Dashboard.Infrastructure;
 [JsonSerializable(typeof(BulkIdsRequest))]
 [JsonSerializable(typeof(BulkRetryRequest))]
 [JsonSerializable(typeof(BulkActionResponseBody))]
+[JsonSerializable(typeof(CancellationResponseBody))]
 [JsonSerializable(typeof(AddTickerResponseBody))]
 [JsonSerializable(typeof(ErrorResponseBody))]
 [JsonSerializable(typeof(AddTimeTickerChainResponseBody))]

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Ban, Copy, Pencil, Play, X } from "lucide-react";
+import { ArrowLeft, Copy, Pencil, Play, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { ResizableSidePanel } from "@/components/cron/ResizableSidePanel";
@@ -9,11 +9,11 @@ import { ChainLogsPanel } from "@/components/cron/ChainLogsPanel";
 import { PayloadPreview } from "@/components/cron/PayloadPreview";
 import { EditTimeTickerFields } from "@/components/cron/EditTimeTickerFields";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
+import { CancelTickerButton } from "@/components/cron/CancelTickerButton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { nowAsDatetimeLocal } from "@/components/form-fields/datetime-field";
 import {
-  useCancelTicker,
   useDuplicateTimeTicker,
   useRunTimeTicker,
   useTimeTicker,
@@ -43,11 +43,9 @@ export function TimeTickerDetailPanel({
   const [tab, setTab] = useState<"logs" | "edit">("logs");
   const [confirmDup, setConfirmDup] = useState(false);
   const [dupTime, setDupTime] = useState("");
-  const [confirmCancel, setConfirmCancel] = useState(false);
   const readOnly = isReadOnly();
   const runM = useRunTimeTicker();
   const dupM = useDuplicateTimeTicker();
-  const cancelM = useCancelTicker();
 
   // The `ticker` prop is a snapshot of the list row from when the panel was
   // opened. Poll the single-ticker endpoint while the run is still active so
@@ -104,15 +102,6 @@ export function TimeTickerDetailPanel({
       onClose();
     } catch (err) {
       toast.error("Failed to duplicate", { description: errMsg(err) });
-    }
-  }
-  async function handleCancel() {
-    try {
-      await cancelM.mutateAsync(t.id);
-      setConfirmCancel(false);
-      onChanged();
-    } catch (err) {
-      toast.error("Cancel failed", { description: errMsg(err) });
     }
   }
 
@@ -186,16 +175,7 @@ export function TimeTickerDetailPanel({
                 Duplicate
               </Button>
             ))}
-          <Button
-            variant="destructive"
-            size="sm"
-            className="h-7 text-xs"
-            disabled={!isRunning}
-            onClick={() => setConfirmCancel(true)}
-          >
-            <Ban className="h-3 w-3 mr-1" />
-            Cancel
-          </Button>
+          <CancelTickerButton id={t.id} status={t.status} hasChildren={isChain} onChanged={onChanged} />
         </div>
         )}
 
@@ -299,22 +279,6 @@ export function TimeTickerDetailPanel({
           </p>
         </div>
       </ConfirmDialog>
-      <ConfirmDialog
-        open={confirmCancel}
-        onOpenChange={setConfirmCancel}
-        title="Cancel ticker?"
-        description={
-          <>
-            Stops{" "}
-            <span className="font-mono font-semibold text-foreground">{bare}</span> from
-            running. This cannot be undone.
-          </>
-        }
-        confirmLabel="Cancel ticker"
-        confirmVariant="destructive"
-        isPending={cancelM.isPending}
-        onConfirm={handleCancel}
-      />
     </ResizableSidePanel>
   );
 }

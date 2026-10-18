@@ -2045,6 +2045,32 @@ namespace TickerQ.MongoDB.Infrastructure
             return rows.Select(r => BuildQueuedEntity(r, byParent)).ToArray();
         }
 
+        public Task<int> CancelPendingTimeTickerAsync(Guid id, CancellationToken cancellationToken = default)
+            => ExecuteAdmittedGraphMutationAsync(async (session, ct) =>
+            {
+                var fb = Builders<TTimeTicker>.Filter;
+                var pending = fb.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued });
+                var now = _clock.UtcNow;
+                var update = Builders<TTimeTicker>.Update
+                    .Set(x => x.Status, TickerStatus.Cancelled)
+                    .Set(x => x.UpdatedAt, now).Set(x => x.ExecutedAt, now)
+                    .Set(x => x.LockHolder, null).Set(x => x.LockedAt, null)
+                    .Set(x => x.LeaseUntil, null).Set(x => x.AcquisitionToken, null);
+                var target = await _context.TimeTickers.UpdateOneAsync(session,
+                    InPartition(fb.And(fb.Eq(x => x.Id, id), pending)), update, cancellationToken: ct).ConfigureAwait(false);
+                if (target.ModifiedCount == 0) return 0;
+                var ids = await CollectDescendantIds(session, id, ct).ConfigureAwait(false);
+                var affected = 1;
+                foreach (var batch in ids.Chunk(250))
+                {
+                    var result = await _context.TimeTickers.UpdateManyAsync(session,
+                        InPartition(fb.And(fb.In(x => x.Id, batch), pending)), update, cancellationToken: ct).ConfigureAwait(false);
+                    affected += (int)result.ModifiedCount;
+                }
+                return affected;
+            }, _ => throw new NotSupportedException(
+                "Atomic pending chain cancellation requires a MongoDB replica set transaction."), cancellationToken);
+
         public async Task<int> UpdateTimeTicker(InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
         {
             var now = _clock.UtcNow;
@@ -2052,6 +2078,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var filter = Builders<TTimeTicker>.Filter.And(
                 Builders<TTimeTicker>.Filter.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 Builders<TTimeTicker>.Filter.Eq(x => x.Id, functionContext.TickerId),
+                Builders<TTimeTicker>.Filter.Ne(x => x.Status, TickerStatus.Cancelled),
                 Builders<TTimeTicker>.Filter.Ne(x => x.LockHolder, RetentionLockHolder));
             if (IsFencedTerminalWrite(functionContext) && functionContext.ParentId == null)
             {
@@ -2112,6 +2139,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 .UpdateManyAsync(
                     InPartition(Builders<TTimeTicker>.Filter.And(
                         Builders<TTimeTicker>.Filter.In(x => x.Id, timeTickerIds),
+                        Builders<TTimeTicker>.Filter.Ne(x => x.Status, TickerStatus.Cancelled),
                         Builders<TTimeTicker>.Filter.Ne(x => x.LockHolder, RetentionLockHolder))),
                     update,
                     cancellationToken: cancellationToken)

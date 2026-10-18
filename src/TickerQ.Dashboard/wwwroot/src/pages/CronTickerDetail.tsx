@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ArrowLeft, Ban, Loader2, Play, Trash2, X } from "lucide-react";
+import { ArrowLeft, Loader2, Play, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/cron/DataTable";
@@ -13,13 +13,14 @@ import {
 } from "@/components/cron/ExecutionVolumeChart";
 import { CronExpressionPreview } from "@/components/cron/CronExpressionPreview";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
+import { CancelTickerButton } from "@/components/cron/CancelTickerButton";
 import { ResizableSidePanel } from "@/components/cron/ResizableSidePanel";
 import { PayloadPreview } from "@/components/cron/PayloadPreview";
 import { LogsPanel } from "@/components/cron/LogsPanel";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  useCancelTicker,
+  useCronOccurrence,
   useCronOccurrences,
   useCronTicker,
   useCronTickerGraphById,
@@ -43,7 +44,9 @@ export default function CronTickerDetailPage() {
   const [occPage, setOccPage] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
-  const [activeOcc, setActiveOcc] = useState<CronOccurrenceFlatDto | null>(null);
+  const [occurrenceSnapshot, setActiveOcc] = useState<CronOccurrenceFlatDto | null>(null);
+  const activeOccurrenceQuery = useCronOccurrence(occurrenceSnapshot?.id ?? null);
+  const activeOcc = activeOccurrenceQuery.data ?? occurrenceSnapshot;
   const [runConfirm, setRunConfirm] = useState(false);
   const [bulkConfirm, setBulkConfirm] = useState(false);
 
@@ -59,7 +62,6 @@ export default function CronTickerDetailPage() {
 
   const runMutation = useRunCronTicker();
   const deleteOccMutation = useDeleteCronOccurrence();
-  const cancelMutation = useCancelTicker();
 
   const occItems = occQuery.data?.items ?? [];
   const occHighlight = useRowHighlight(
@@ -159,15 +161,6 @@ export default function CronTickerDetailPage() {
     }
   }
 
-  async function handleCancelOcc() {
-    if (!activeOcc) return;
-    try {
-      await cancelMutation.mutateAsync(activeOcc.id);
-      setActiveOcc(null);
-    } catch (err) {
-      toast.error("Cancel failed", { description: errMsg(err) });
-    }
-  }
 
   const allSelected = occItems.length > 0 && selected.size === occItems.length;
 
@@ -405,15 +398,7 @@ export default function CronTickerDetailPage() {
 
             {!readOnly && (
               <div className="px-5 py-3 border-b border-border flex items-center gap-2">
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className="h-7 text-xs"
-                  disabled={activeOcc.status !== "InProgress" || cancelMutation.isPending}
-                  onClick={handleCancelOcc}
-                >
-                  <Ban className="h-3 w-3 mr-1" /> Cancel
-                </Button>
+                <CancelTickerButton id={activeOcc.id} type="CronOccurrence" status={activeOcc.status} />
                 <Button
                   variant="ghost"
                   size="sm"

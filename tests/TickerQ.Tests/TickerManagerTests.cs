@@ -101,6 +101,41 @@ public class TickerManagerTests : IDisposable
 
     private static byte[] Request(string json) => Encoding.UTF8.GetBytes(json);
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3)]
+    public async Task CancelAsync_ReportsTheCommittedCount_AndOnlyRefreshesChanges(int count)
+    {
+        var id = Guid.NewGuid();
+        _persistenceProvider.CancelPendingTimeTickerAsync(id).Returns(count);
+        var result = await _timeTickerManager.CancelAsync(id);
+        Assert.True(result.IsSucceeded);
+        Assert.Equal(count, result.AffectedRows);
+        _hostScheduler.Received(count > 0 ? 1 : 0).Restart();
+        await _notificationHubSender.Received(count > 0 ? 1 : 0).UpdateTimeTickerNotifyAsync(id);
+    }
+
+    [Fact]
+    public async Task CancelAsync_NotificationFailure_DoesNotHideCommittedCancellation()
+    {
+        var id = Guid.NewGuid();
+        _persistenceProvider.CancelPendingTimeTickerAsync(id).Returns(1);
+        _notificationHubSender.UpdateTimeTickerNotifyAsync(id).Returns<Task>(_ => throw new InvalidOperationException());
+        var result = await _timeTickerManager.CancelAsync(id);
+        Assert.True(result.IsSucceeded);
+        Assert.Equal(1, result.AffectedRows);
+    }
+
+    [Fact]
+    public async Task CancelAsync_UnsupportedProvider_ReportsFailure()
+    {
+        _persistenceProvider.CancelPendingTimeTickerAsync(Arg.Any<Guid>())
+            .Returns<Task<int>>(_ => throw new NotSupportedException());
+        var result = await _timeTickerManager.CancelAsync(Guid.NewGuid());
+        Assert.False(result.IsSucceeded);
+        Assert.IsType<NotSupportedException>(result.Exception);
+    }
+
     [Fact]
     public async Task SchedulerHostMutations_WaitForActivationBeforeCallingProvider()
     {

@@ -1359,6 +1359,62 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             .ToArray();
     }
 
+    protected async Task<Guid?> FindTimeTickerAggregateIdAsync(Guid id, CancellationToken cancellationToken)
+    {
+        if (await Db.KeyExistsAsync(TimeTickerKey(id)).ConfigureAwait(false)) return id;
+        // Descendants are embedded; scan bounded pages only for a non-root id.
+        await foreach (var member in Db.SetScanAsync(TimeTickerIdsKey).WithCancellation(cancellationToken))
+        {
+            if (!Guid.TryParse(member.ToString(), out var rootId)) continue;
+            var root = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(rootId)).ConfigureAwait(false);
+            if (root != null && FindEmbeddedTimeTicker(root.Children, id) != null) return rootId;
+        }
+        return null;
+    }
+
+    public async Task<int> CancelPendingTimeTickerAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var rootId = await FindTimeTickerAggregateIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!rootId.HasValue) return 0;
+        for (var attempt = 0; attempt < 64; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var raw = await Db.StringGetAsync(TimeTickerKey(rootId.Value)).ConfigureAwait(false);
+            var root = Serializer.DeserializeOrNull<TTimeTicker>((string)raw);
+            var target = root?.Id == id ? root : root == null ? null : FindEmbeddedTimeTicker(root.Children, id);
+            if (target == null || target.Status is not (TickerStatus.Idle or TickerStatus.Queued)) return 0;
+
+            var expectedUpdatedAt = root.UpdatedAt;
+            var now = Clock.UtcNow;
+            var pending = new Stack<TTimeTicker>();
+            pending.Push(target);
+            var affected = 0;
+            while (pending.TryPop(out var ticker))
+            {
+                foreach (var child in ticker.Children) pending.Push(child);
+                if (ticker.Status is not (TickerStatus.Idle or TickerStatus.Queued)) continue;
+                ticker.Status = TickerStatus.Cancelled;
+                ticker.UpdatedAt = now;
+                ticker.ExecutedAt = now;
+                ticker.LockHolder = null;
+                ticker.LockedAt = ticker.LeaseUntil = null;
+                ticker.AcquisitionToken = null;
+                affected++;
+            }
+            root.UpdatedAt = NextAggregateUpdatedAt(expectedUpdatedAt);
+            var outcome = (long)await Db.ScriptEvaluateAsync(UpdateTimeTickerWithIndexesScript,
+                [(RedisKey)TimeTickerKey(root.Id), (RedisKey)ActivationMetadataKey,
+                 (RedisKey)TimeTickerIdsKey, (RedisKey)TimeTickerPendingKey,
+                 (RedisKey)TimeTickerRetentionSucceededKey, (RedisKey)TimeTickerRetentionFailedKey,
+                 (RedisKey)TimeTickerRetentionCancelledKey, (RedisKey)TimeTickerRetentionSkippedKey],
+                [.. BuildUnifiedTimeTickerMutationArguments(root, expectedUpdatedAt), raw]).ConfigureAwait(false);
+            if (outcome == 1) return affected;
+            if (outcome != -2) return 0;
+        }
+        throw new InvalidOperationException("The ticker kept changing during cancellation. Retry CancelAsync.");
+    }
+
     public async Task<int> UpdateTimeTicker(InternalFunctionContext functionContext, CancellationToken cancellationToken = default)
     {
         if (functionContext.ParentId != null)
@@ -1368,7 +1424,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         {
             cancellationToken.ThrowIfCancellationRequested();
             var ticker = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(functionContext.TickerId)).ConfigureAwait(false);
-            if (ticker == null) return 0;
+            if (ticker == null || ticker.Status == TickerStatus.Cancelled) return 0;
 
             var fenced = IsFencedTerminalWrite(functionContext);
             if (fenced && !functionContext.AcquisitionToken.HasValue) return 0;
@@ -1404,7 +1460,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             if (root == null) return 0;
 
             var child = FindEmbeddedTimeTicker(root.Children, functionContext.TickerId);
-            if (child == null) return 0;
+            if (child == null || child.Status == TickerStatus.Cancelled) return 0;
 
             var expectedUpdatedAt = root.UpdatedAt;
             var expectedStatus = (int)child.Status;
@@ -1434,7 +1490,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         return now > expectedUpdatedAt ? now : expectedUpdatedAt.AddTicks(1);
     }
 
-    private static TTimeTicker FindEmbeddedTimeTicker(
+    protected static TTimeTicker FindEmbeddedTimeTicker(
         IEnumerable<TTimeTicker> children,
         Guid tickerId)
     {
@@ -1466,6 +1522,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             for (var attempt = 0; attempt < 64; attempt++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (current.Status == TickerStatus.Cancelled) break;
                 var expectedUpdatedAt = current.UpdatedAt;
                 ApplyFunctionContextToTicker(current, functionContext);
                 current.UpdatedAt = NextAggregateUpdatedAt(expectedUpdatedAt);

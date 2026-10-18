@@ -1,10 +1,11 @@
 -- Atomically replace one time-ticker document and maintain all of its derived indexes.
 -- KEYS: document, activation metadata, ids set, pending zset, then succeeded/failed/cancelled/skipped retention zsets.
 -- ARGV: expectedUpdatedAt, replacementJson, id, pending flag (0/1), pending score,
---       retention index (0 none, 1 succeeded, 2 failed, 3 cancelled, 4 skipped), retention score.
+--       retention index (0 none, 1 succeeded, 2 failed, 3 cancelled, 4 skipped), retention score,
+--       optional exact observed JSON (cancellation CAS, including embedded descendants).
 -- Returns 1 on success, 0 when fenced by legacy adoption, -1 when the document disappeared,
 -- and -2 when the observed document version changed.
-if #KEYS ~= 8 or #ARGV ~= 7 then
+if #KEYS ~= 8 or (#ARGV ~= 7 and #ARGV ~= 8) then
     return redis.error_reply('invalid unified time ticker mutation shape')
 end
 
@@ -62,6 +63,7 @@ end
 
 local currentJson = redis.call('GET', KEYS[1])
 if not currentJson then return -1 end
+if #ARGV == 8 and currentJson ~= ARGV[8] then return -2 end
 local currentOk, current = pcall(cjson.decode, currentJson)
 if not currentOk or type(current) ~= 'table' then
     return redis.error_reply('invalid current time ticker json')
@@ -72,7 +74,7 @@ if not currentId or currentId == cjson.null or
     return redis.error_reply('current time ticker id mismatch')
 end
 local currentUpdatedAt = current['UpdatedAt'] or current['updatedAt']
-if not currentUpdatedAt or tostring(currentUpdatedAt) ~= ARGV[1] then return -2 end
+if #ARGV ~= 8 and (not currentUpdatedAt or tostring(currentUpdatedAt) ~= ARGV[1]) then return -2 end
 
 -- Every condition capable of producing a deterministic Redis/JSON error was checked above.
 -- Redis serializes this document and index mutation as one Lua invocation.
