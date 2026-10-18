@@ -323,7 +323,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             var envConfig = new FrontendConfigResponse
             {
                 BasePath = frontendBasePath,
-                NotificationsEnabled = httpContext.RequestServices.GetService<TickerQ.Utilities.Notifications.ITickerNotificationAdminService>() != null,
+                IntegrationsEnabled = httpContext.RequestServices.GetService<TickerQ.Utilities.Integrations.ITickerIntegrationAdminService>() != null,
                 BackendDomain = config.BackendDomain,
                 Version = PackageVersion.Value,
                 Title = config.Title,

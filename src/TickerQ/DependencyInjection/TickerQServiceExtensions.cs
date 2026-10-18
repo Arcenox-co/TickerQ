@@ -129,8 +129,8 @@ namespace TickerQ.DependencyInjection
             // TryAdd lets users register their own ITickerQFailureNotifier beforehand.
             if (optionInstance.FailureWebhook != null)
             {
-                if (services.Any(s => s.ServiceType == typeof(Utilities.Notifications.ITickerNotificationAdminService)))
-                    throw new InvalidOperationException("Use either AddNotifications or NotifyFailuresViaWebhook. Move the existing webhook into a notification destination before enabling the optional package.");
+                if (services.Any(s => s.ServiceType == typeof(Utilities.Integrations.ITickerIntegrationAdminService)))
+                    throw new InvalidOperationException("Use either AddIntegrations or NotifyFailuresViaWebhook. Move the existing webhook into an integration destination before enabling the optional package.");
                 services.AddSingleton(optionInstance.FailureWebhook);
                 if (optionInstance.FailureWebhook.ShutdownDrainTimeout < TimeSpan.Zero ||
                     optionInstance.FailureWebhook.ShutdownDrainTimeout.TotalMilliseconds > uint.MaxValue - 1)
@@ -203,7 +203,7 @@ namespace TickerQ.DependencyInjection
             // Register in-memory persistence as fallback — only used when no external provider
             // (EF Core, Redis, SDK) has been configured via ExternalProviderConfigServiceAction above.
             services.TryAddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
-            services.TryAddSingleton<Utilities.Notifications.ITickerNotificationSettingsStore>(sp =>
+            services.TryAddSingleton<Utilities.Integrations.ITickerIntegrationSettingsStore>(sp =>
                 sp.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>());
 
             optionInstance.DashboardServiceAction?.Invoke(services);

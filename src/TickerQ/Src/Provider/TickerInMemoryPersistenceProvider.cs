@@ -22,27 +22,27 @@ namespace TickerQ.Provider
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        public bool NotificationSettingsArePersistent => false;
-        public Task<TickerQ.Utilities.Notifications.NotificationSettingsRecord> ReadNotificationSettingsAsync(CancellationToken cancellationToken = default)
+        public bool IntegrationSettingsArePersistent => false;
+        public Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            lock (_partitionState.NotificationLock) return Task.FromResult(_partitionState.NotificationSettings);
+            lock (_partitionState.IntegrationLock) return Task.FromResult(_partitionState.IntegrationSettings);
         }
-        public Task<bool> SaveNotificationSettingsAsync(TickerQ.Utilities.Notifications.NotificationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        public Task<bool> SaveIntegrationSettingsAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            lock (_partitionState.NotificationLock)
+            lock (_partitionState.IntegrationLock)
             {
-                if ((_partitionState.NotificationSettings?.Version ?? Guid.Empty) != expectedVersion) return Task.FromResult(false);
-                _partitionState.NotificationSettings = record;
+                if ((_partitionState.IntegrationSettings?.Version ?? Guid.Empty) != expectedVersion) return Task.FromResult(false);
+                _partitionState.IntegrationSettings = record;
                 return Task.FromResult(true);
             }
         }
 
         private sealed class PartitionState
         {
-            internal readonly object NotificationLock = new();
-            internal TickerQ.Utilities.Notifications.NotificationSettingsRecord NotificationSettings;
+            internal readonly object IntegrationLock = new();
+            internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationSettings;
             internal readonly ConcurrentDictionary<Guid, TTimeTicker> TimeTickers = new();
             internal readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, byte>> ChildrenIndex = new();
             internal readonly ConcurrentDictionary<Guid, TCronTicker> CronTickers = new();

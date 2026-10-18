@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using TickerQ.EntityFrameworkCore.Configurations;
@@ -40,7 +40,7 @@ namespace TickerQ.EntityFrameworkCore.Customizer
             builder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<TCronTicker>(schema));
             builder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations(schema));
             builder.ApplyConfiguration(new TickerQStoreMetadataConfigurations(schema));
-            builder.ApplyConfiguration(new NotificationSettingsConfigurations(schema));
+            builder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
             if (executionLogs) builder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
 
             // Opt-in assistant chat history tables (AddAssistantHistory()).

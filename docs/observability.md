@@ -76,9 +76,9 @@ Tag keys actually emitted:
 > file, line). It's build/source metadata rather than user data, but treat your trace
 > backend as you would source-path information.
 
-## Dashboard-managed notifications
+## Dashboard-managed integrations
 
-The optional [TickerQ.Notifications package](../src/TickerQ.Notifications/README.md) adds
+The optional [TickerQ.Integrations package](../src/TickerQ.Integrations/README.md) adds
 Slack, Teams Workflows, and custom JSON webhooks, with destinations and per-function rules
 edited in the dashboard. Settings are encrypted in the operational store; EF users must
 apply the new settings-table migration. Delivery uses a bounded, best-effort process-local

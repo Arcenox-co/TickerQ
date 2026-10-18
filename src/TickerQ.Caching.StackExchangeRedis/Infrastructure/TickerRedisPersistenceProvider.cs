@@ -21,20 +21,20 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
-    public bool NotificationSettingsArePersistent => true;
+    public bool IntegrationSettingsArePersistent => true;
 
-    public async Task<TickerQ.Utilities.Notifications.NotificationSettingsRecord> ReadNotificationSettingsAsync(CancellationToken cancellationToken = default)
+    public async Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var values = await Db.HashGetAsync(Prefix + "notifications:settings", new RedisValue[] { "version", "payload" }).ConfigureAwait(false);
+        var values = await Db.HashGetAsync(Prefix + "integrations:settings", new RedisValue[] { "version", "payload" }).ConfigureAwait(false);
         return values[0].IsNull ? null : new(Guid.Parse(values[0].ToString()), values[1].ToString());
     }
 
-    public async Task<bool> SaveNotificationSettingsAsync(TickerQ.Utilities.Notifications.NotificationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+    public async Task<bool> SaveIntegrationSettingsAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         const string script = "local old = redis.call('HGET', KEYS[1], 'version'); if (old or '') ~= ARGV[1] then return 0 end; redis.call('HSET', KEYS[1], 'version', ARGV[2], 'payload', ARGV[3]); return 1";
-        return (long)await Db.ScriptEvaluateAsync(script, new RedisKey[] { Prefix + "notifications:settings" },
+        return (long)await Db.ScriptEvaluateAsync(script, new RedisKey[] { Prefix + "integrations:settings" },
             new RedisValue[] { expectedVersion == Guid.Empty ? "" : expectedVersion.ToString(), record.Version.ToString(), record.ProtectedConfiguration }).ConfigureAwait(false) == 1;
     }
 

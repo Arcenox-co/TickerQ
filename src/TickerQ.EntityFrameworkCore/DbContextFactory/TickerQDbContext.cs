@@ -47,7 +47,7 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
         modelBuilder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<TCronTicker>(schema));
         modelBuilder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations(schema));
         modelBuilder.ApplyConfiguration(new TickerQStoreMetadataConfigurations(schema));
-        modelBuilder.ApplyConfiguration(new NotificationSettingsConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
         if (executionLogs) modelBuilder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
 
         // Assistant chat history tables — mapped only when opted in via

@@ -174,7 +174,7 @@ internal class TupleResponse<T1, T2>
 
 internal class FrontendConfigResponse
 {
-    public bool NotificationsEnabled { get; set; }
+    public bool IntegrationsEnabled { get; set; }
     public string BasePath { get; set; }
     public string BackendDomain { get; set; }
 

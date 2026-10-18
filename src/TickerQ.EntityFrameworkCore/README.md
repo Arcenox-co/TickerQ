@@ -115,14 +115,16 @@ with SQL Server) for its full transient-error handling. TickerQ also performs bo
 EF write conflicts and database exceptions marked `IsTransient`; it does not suppress permanent
 failures or override an exhausted provider retry policy.
 
-## Notification settings
+## Integration settings
 
-The optional [TickerQ.Notifications](../TickerQ.Notifications/README.md) package stores
-its encrypted configuration in a `NotificationSettings` table, one row per runtime
+The optional [TickerQ.Integrations](../TickerQ.Integrations/README.md) package stores
+its encrypted configuration in an `IntegrationSettings` table, one row per runtime
 namespace. Generate and apply an EF migration before enabling it. The model customizer
 and standalone TickerQ context include the mapping; manually configured models must add
-`NotificationSettingsConfigurations` with their configured schema. The package guide
-covers setup and sharing Data Protection keys across replicas.
+`IntegrationSettingsConfigurations` with their configured schema. The package guide
+covers setup and sharing Data Protection keys across replicas. For an existing
+`NotificationSettings` table, follow the [rename upgrade steps](../TickerQ.Integrations/README.md#upgrade-existing-notification-settings)
+to preserve saved connections instead of dropping and recreating the table.
 
 ## Database schema upgrades
 

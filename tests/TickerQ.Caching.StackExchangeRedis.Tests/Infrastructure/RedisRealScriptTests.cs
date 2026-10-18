@@ -90,19 +90,42 @@ public sealed class RedisRealScriptTests
     }
 
     [Fact]
-    public async Task NotificationSettings_SaveReadAndConcurrentEdits_AreAtomic()
+    public async Task IntegrationSettings_RenameLegacyHash_PreservesVersionAndEncryptedPayload()
     {
-        var store = (TickerQ.Utilities.Notifications.ITickerNotificationSettingsStore)_provider;
-        Assert.True(store.NotificationSettingsArePersistent);
-        Assert.Null(await store.ReadNotificationSettingsAsync());
-        var first = new TickerQ.Utilities.Notifications.NotificationSettingsRecord(Guid.NewGuid(), "protected-first");
-        Assert.True(await store.SaveNotificationSettingsAsync(first, Guid.Empty));
-        Assert.Equal(first, await store.ReadNotificationSettingsAsync());
-        Assert.False(await store.SaveNotificationSettingsAsync(first, Guid.Empty));
-        var candidates = Enumerable.Range(0, 2).Select(_ => new TickerQ.Utilities.Notifications.NotificationSettingsRecord(Guid.NewGuid(), "protected-next")).ToArray();
-        var results = await Task.WhenAll(candidates.Select(x => store.SaveNotificationSettingsAsync(x, first.Version)));
+        var prefix = _provider.RuntimeKeysForTest.PartitionPrefix;
+        var legacyKey = prefix + "notifications:settings";
+        var currentKey = prefix + "integrations:settings";
+        var version = Guid.NewGuid();
+        await _db.HashSetAsync(legacyKey, [new("version", version.ToString()), new("payload", "encrypted-settings")]);
+
+        Assert.True(await _db.KeyRenameAsync(legacyKey, currentKey, When.NotExists));
+
+        var record = await _provider.ReadIntegrationSettingsAsync();
+        Assert.NotNull(record);
+        Assert.Equal(version, record.Version);
+        Assert.Equal("encrypted-settings", record.ProtectedConfiguration);
+        Assert.False(await _db.KeyExistsAsync(legacyKey));
+
+        // A second source must not overwrite a configuration already at the new key.
+        await _db.HashSetAsync(legacyKey, "payload", "other-settings");
+        Assert.False(await _db.KeyRenameAsync(legacyKey, currentKey, When.NotExists));
+        Assert.Equal(record, await _provider.ReadIntegrationSettingsAsync());
+    }
+
+    [Fact]
+    public async Task IntegrationSettings_SaveReadAndConcurrentEdits_AreAtomic()
+    {
+        var store = (TickerQ.Utilities.Integrations.ITickerIntegrationSettingsStore)_provider;
+        Assert.True(store.IntegrationSettingsArePersistent);
+        Assert.Null(await store.ReadIntegrationSettingsAsync());
+        var first = new TickerQ.Utilities.Integrations.IntegrationSettingsRecord(Guid.NewGuid(), "protected-first");
+        Assert.True(await store.SaveIntegrationSettingsAsync(first, Guid.Empty));
+        Assert.Equal(first, await store.ReadIntegrationSettingsAsync());
+        Assert.False(await store.SaveIntegrationSettingsAsync(first, Guid.Empty));
+        var candidates = Enumerable.Range(0, 2).Select(_ => new TickerQ.Utilities.Integrations.IntegrationSettingsRecord(Guid.NewGuid(), "protected-next")).ToArray();
+        var results = await Task.WhenAll(candidates.Select(x => store.SaveIntegrationSettingsAsync(x, first.Version)));
         Assert.Single(results, x => x);
-        Assert.Equal(candidates[Array.IndexOf(results, true)], await store.ReadNotificationSettingsAsync());
+        Assert.Equal(candidates[Array.IndexOf(results, true)], await store.ReadIntegrationSettingsAsync());
     }
 
     [Fact]

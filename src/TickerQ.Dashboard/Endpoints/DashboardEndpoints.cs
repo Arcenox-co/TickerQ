@@ -150,7 +150,7 @@ public static class DashboardEndpoints
             });
         }
 
-        d.MapNotifications(w, config);
+        d.MapIntegrations(w, config);
 
         w.MapPost("/host/start", StartHost<TTimeTicker, TCronTicker>);
         w.MapPost("/host/stop", StopHost<TTimeTicker, TCronTicker>);

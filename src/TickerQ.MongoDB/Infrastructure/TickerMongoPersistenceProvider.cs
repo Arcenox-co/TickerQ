@@ -24,26 +24,26 @@ namespace TickerQ.MongoDB.Infrastructure
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
-        private IMongoCollection<BsonDocument> NotificationSettings => _context.Database.GetCollection<BsonDocument>(
-            _context.TimeTickers.CollectionNamespace.CollectionName + "_NotificationSettings");
-        public bool NotificationSettingsArePersistent => true;
+        private IMongoCollection<BsonDocument> IntegrationSettings => _context.Database.GetCollection<BsonDocument>(
+            _context.TimeTickers.CollectionNamespace.CollectionName + "_IntegrationSettings");
+        public bool IntegrationSettingsArePersistent => true;
 
-        public async Task<TickerQ.Utilities.Notifications.NotificationSettingsRecord> ReadNotificationSettingsAsync(CancellationToken cancellationToken = default)
+        public async Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
         {
-            var row = await NotificationSettings.Find(Builders<BsonDocument>.Filter.Eq("_id", _runtimePartitionKey))
+            var row = await IntegrationSettings.Find(Builders<BsonDocument>.Filter.Eq("_id", _runtimePartitionKey))
                 .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
             return row == null ? null : new(Guid.Parse(row["Version"].AsString), row["ProtectedConfiguration"].AsString);
         }
 
-        public async Task<bool> SaveNotificationSettingsAsync(TickerQ.Utilities.Notifications.NotificationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        public async Task<bool> SaveIntegrationSettingsAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
         {
             var row = new BsonDocument { ["_id"] = _runtimePartitionKey, ["Version"] = record.Version.ToString(), ["ProtectedConfiguration"] = record.ProtectedConfiguration };
             if (expectedVersion == Guid.Empty)
             {
-                try { await NotificationSettings.InsertOneAsync(row, cancellationToken: cancellationToken).ConfigureAwait(false); return true; }
+                try { await IntegrationSettings.InsertOneAsync(row, cancellationToken: cancellationToken).ConfigureAwait(false); return true; }
                 catch (MongoWriteException ex) when (ex.WriteError.Category == ServerErrorCategory.DuplicateKey) { return false; }
             }
-            var result = await NotificationSettings.ReplaceOneAsync(
+            var result = await IntegrationSettings.ReplaceOneAsync(
                 Builders<BsonDocument>.Filter.Eq("_id", _runtimePartitionKey) & Builders<BsonDocument>.Filter.Eq("Version", expectedVersion.ToString()),
                 row, cancellationToken: cancellationToken).ConfigureAwait(false);
             return result.MatchedCount == 1;

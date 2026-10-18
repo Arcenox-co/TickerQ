@@ -32,20 +32,20 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
-    public bool NotificationSettingsArePersistent => true;
+    public bool IntegrationSettingsArePersistent => true;
 
-    public async Task<TickerQ.Utilities.Notifications.NotificationSettingsRecord> ReadNotificationSettingsAsync(CancellationToken cancellationToken = default)
+    public async Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
     {
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var row = await session.Context.Set<TickerQ.EntityFrameworkCore.Entities.NotificationSettingsEntity>().AsNoTracking()
+        var row = await session.Context.Set<TickerQ.EntityFrameworkCore.Entities.IntegrationSettingsEntity>().AsNoTracking()
             .SingleOrDefaultAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, cancellationToken).ConfigureAwait(false);
         return row == null ? null : new(row.Version, row.ProtectedConfiguration);
     }
 
-    public async Task<bool> SaveNotificationSettingsAsync(TickerQ.Utilities.Notifications.NotificationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+    public async Task<bool> SaveIntegrationSettingsAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
     {
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var rows = session.Context.Set<TickerQ.EntityFrameworkCore.Entities.NotificationSettingsEntity>();
+        var rows = session.Context.Set<TickerQ.EntityFrameworkCore.Entities.IntegrationSettingsEntity>();
         if (expectedVersion != Guid.Empty)
             return await rows.Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Version == expectedVersion)
                 .ExecuteUpdateAsync(s => s.SetProperty(x => x.Version, record.Version)

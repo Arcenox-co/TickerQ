@@ -32,13 +32,13 @@ public class DashboardOptionsBuilder
     internal bool CustomCorsPolicyConfigured { get; set; }
     internal bool AnonymousDashboardAcknowledged { get; set; }
     internal AssistantOptionsBuilder? Assistant { get; set; }
-    internal Func<HttpContext, bool>? NotificationManagementPredicate { get; private set; }
-    internal bool CanManageNotifications(HttpContext context) => NotificationManagementPredicate?.Invoke(context) == true;
+    internal Func<HttpContext, bool>? IntegrationManagementPredicate { get; private set; }
+    internal bool CanManageIntegrations(HttpContext context) => IntegrationManagementPredicate?.Invoke(context) == true;
 
-    /// <summary>Explicit permission to manage notification destinations, secrets, rules and test delivery.</summary>
-    public DashboardOptionsBuilder AllowNotificationManagement(Func<HttpContext, bool> authorize)
+    /// <summary>Explicit permission to manage integration destinations, secrets, alert rules and test delivery.</summary>
+    public DashboardOptionsBuilder AllowIntegrationManagement(Func<HttpContext, bool> authorize)
     {
-        NotificationManagementPredicate = authorize ?? throw new ArgumentNullException(nameof(authorize));
+        IntegrationManagementPredicate = authorize ?? throw new ArgumentNullException(nameof(authorize));
         return this;
     }
 

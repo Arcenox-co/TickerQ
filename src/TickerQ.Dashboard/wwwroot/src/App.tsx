@@ -11,7 +11,7 @@ import ChainBuilderPage from "@/pages/ChainBuilder";
 import ChainFlowchartPage from "@/pages/ChainFlowchart";
 import CronOccurrenceChainPage from "@/pages/CronOccurrenceChain";
 import AssistantChatPage from "@/pages/AssistantChat";
-import NotificationsPage from "@/pages/Notifications";
+import IntegrationsPage from "@/pages/Integrations";
 import LicensePage from "@/pages/License";
 import AboutPage from "@/pages/About";
 import DiagnosticsPage from "@/pages/Diagnostics";
@@ -48,7 +48,7 @@ export default function App() {
           <Route path="cron-tickers/:id/occurrences/:occurrenceId/flowchart" element={<CronOccurrenceChainPage />} />
           <Route path="assistant" element={<AssistantChatPage />} />
           <Route path="license" element={<LicensePage />} />
-          <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="integrations" element={<IntegrationsPage />} />
           <Route path="about" element={<AboutPage />} />
           <Route path="diagnostics" element={<DiagnosticsPage />} />
         </Route>

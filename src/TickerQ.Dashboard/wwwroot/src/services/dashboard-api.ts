@@ -1,4 +1,4 @@
-import type { NotificationConfiguration, NotificationSnapshot, NotificationDeliveryStatus } from "./notification-types";
+import type { IntegrationConfiguration, IntegrationSnapshot, IntegrationDeliveryStatus } from "./integration-types";
 import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
 import { formatApiErrorMessage } from "@/lib/api-error-message";
 import { tokenStore } from "@/lib/auth/token-store";
@@ -173,10 +173,10 @@ async function rootRequest<T>(path: string, signal?: AbortSignal): Promise<T> {
 // ===== Reads =====
 
 export const dashboardApi = {
-  getNotifications: (signal?: AbortSignal) => get<NotificationSnapshot>("/notifications", signal),
-  saveNotifications: (body: NotificationConfiguration) => put<void>("/notifications", body),
-  previewNotification: (provider: string, payloadTemplate: string | null) => post<{payload: string}>("/notifications/preview", { provider, payloadTemplate }),
-  testNotification: (id: string) => post<NotificationDeliveryStatus>(`/notifications/destinations/${id}/test`),
+  getIntegrations: (signal?: AbortSignal) => get<IntegrationSnapshot>("/integrations", signal),
+  saveIntegrations: (body: IntegrationConfiguration) => put<void>("/integrations", body),
+  previewIntegration: (provider: string, payloadTemplate: string | null) => post<{payload: string}>("/integrations/preview", { provider, payloadTemplate }),
+  testIntegration: (id: string) => post<IntegrationDeliveryStatus>(`/integrations/destinations/${id}/test`),
   // Scheduler options (root-level under /api/, not /api/dashboard/)
   getOptions: (signal?: AbortSignal) =>
     rootRequest<DashboardOptionsResponse>("/api/options", signal),

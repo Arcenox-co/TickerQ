@@ -7,7 +7,7 @@ import {
   Timer,
   Sparkles,
   BadgeCheck,
-  Bell,
+  Plug,
   Info,
   Activity,
   ChevronLeft,
@@ -48,9 +48,14 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     label: "System",
     items: [
       { path: "/diagnostics", label: "Diagnostics", icon: Activity },
-      { path: "/about", label: "About", icon: Info },
+      { path: "/integrations", label: "Integrations", icon: Plug },
+    ],
+  },
+  {
+    label: "Information",
+    items: [
       { path: "/license", label: "License", icon: BadgeCheck },
-      { path: "/notifications", label: "Notifications", icon: Bell },
+      { path: "/about", label: "About", icon: Info },
     ],
   },
 ];
@@ -66,16 +71,21 @@ export function Sidebar() {
         collapsed ? "w-[52px]" : "w-[52px] md:w-52"
       )}
     >
-      <nav className="flex-1 py-3 px-2 overflow-y-auto scrollbar-thin">
+      <nav aria-label="Dashboard" className="flex-1 py-3 px-2 overflow-y-auto scrollbar-thin">
         {navGroups.map((group, gi) => (
-          <div key={group.label} className={cn(gi > 0 && "mt-5")}>
+          <div
+            key={group.label}
+            role="group"
+            aria-label={group.label}
+            className={cn(gi > 0 && "mt-5")}
+          >
             {!collapsed && (
               <p className="hidden md:block text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/50 px-2.5 mb-1.5">
                 {group.label}
               </p>
             )}
             <div className="space-y-0.5">
-              {group.items.filter(item => item.path !== "/notifications" || getRuntimeConfig().notificationsEnabled).map((item) => {
+              {group.items.filter(item => item.path !== "/integrations" || getRuntimeConfig().integrationsEnabled).map((item) => {
                 const isActive = item.end
                   ? pathname === item.path
                   : pathname.startsWith(item.path);
@@ -90,8 +100,8 @@ export function Sidebar() {
                       "flex items-center gap-2.5 rounded-lg text-[13px] transition-all duration-150 group relative",
                       collapsed ? "px-0 py-2 justify-center" : "px-0 py-2 justify-center md:px-2.5 md:py-[7px] md:justify-start",
                       isActive
-                        ? "bg-primary/8 text-foreground font-medium"
-                        : "text-muted-foreground hover:text-foreground hover:bg-surface-2/60"
+                        ? "bg-primary/8 text-sidebar-foreground font-medium"
+                        : "text-muted-foreground hover:text-sidebar-foreground hover:bg-surface-2/60"
                     )}
                   >
                     {isActive && (
@@ -102,7 +112,7 @@ export function Sidebar() {
                         "h-[15px] w-[15px] shrink-0 transition-colors",
                         isActive
                           ? "text-primary"
-                          : "text-muted-foreground/70 group-hover:text-foreground"
+                          : "text-muted-foreground/70 group-hover:text-sidebar-foreground"
                       )}
                     />
                     {!collapsed && <span className="hidden md:inline">{item.label}</span>}
@@ -118,7 +128,7 @@ export function Sidebar() {
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
-          className="w-full flex items-center justify-center p-1.5 rounded-lg text-muted-foreground/50 hover:text-foreground hover:bg-surface-2 transition-colors"
+          className="w-full flex items-center justify-center p-1.5 rounded-lg text-muted-foreground/50 hover:text-sidebar-foreground hover:bg-surface-2 transition-colors"
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
           {collapsed ? (
