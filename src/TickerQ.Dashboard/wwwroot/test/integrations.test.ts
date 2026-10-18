@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  editableDestination,
   parseHeaders,
   removeDestination,
 } from "../src/components/integrations/configuration.ts";
@@ -39,6 +40,23 @@ test("removing an integration preserves shared rules and removes only orphaned r
       headers: null,
       payloadTemplate: null,
     })),
+    monitors: [
+      { id: "sole-monitor", destinationIds: ["slack"] },
+      { id: "shared-monitor", destinationIds: ["slack", "teams"] },
+    ].map((m) => ({
+      ...m,
+      name: m.id,
+      function: "Invoices",
+      kind: "deadline" as const,
+      enabled: true,
+      notifyRecovery: true,
+      timeZoneId: "UTC",
+      deadlineLocalTime: "08:00",
+      graceMinutes: 10,
+      durationSeconds: 300,
+      failureThreshold: 3,
+      lookbackHours: 24,
+    })),
     rules: [
       { id: "sole", destinationIds: ["slack"] },
       { id: "shared", destinationIds: ["slack", "teams"] },
@@ -67,5 +85,29 @@ test("removing an integration preserves shared rules and removes only orphaned r
       ["other", ["teams"]],
     ],
   );
+  assert.deepEqual(
+    next.monitors?.map((m) => [m.id, m.destinationIds]),
+    [["shared-monitor", ["teams"]]],
+  );
   assert.deepEqual(config, original);
+});
+
+
+test("editing legacy payloads preserves all three message categories without mutating the snapshot", () => {
+  const original = { id: "slack", name: "Slack", provider: "slack", enabled: true, url: null, headers: null,
+    payloadTemplate: '{"text":"existing message"}' };
+  const editable = editableDestination(original);
+  assert.equal(editable.payloadTemplate, null);
+  assert.deepEqual(editable.messageTemplates, { jobAlert: original.payloadTemplate, monitoringAlert: original.payloadTemplate, recovery: original.payloadTemplate });
+  editable.messageTemplates!.recovery = null;
+  assert.equal(editable.messageTemplates!.jobAlert, original.payloadTemplate);
+  assert.equal(original.payloadTemplate, '{"text":"existing message"}');
+});
+
+test("explicit default categories never fall back to a stale shared template", () => {
+  const editable = editableDestination({ id: "slack", name: "Slack", provider: "slack", enabled: true, url: null, headers: null,
+    payloadTemplate: '{"text":"old"}', messageTemplates: { jobAlert: null, monitoringAlert: '{"text":"monitor"}', recovery: null } });
+  assert.equal(editable.messageTemplates!.jobAlert, null);
+  assert.equal(editable.messageTemplates!.recovery, null);
+  assert.equal(editable.messageTemplates!.monitoringAlert, '{"text":"monitor"}');
 });

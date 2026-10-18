@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -15,6 +14,7 @@ import {
 } from "lucide-react";
 import { getRuntimeConfig } from "@/lib/runtime-config";
 import { cn } from "@/lib/utils";
+import { WorkspaceLicense } from "./WorkspaceLicense";
 
 interface NavItem {
   path: string;
@@ -60,8 +60,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   },
 ];
 
-export function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const { pathname } = useLocation();
 
   return (
@@ -71,6 +70,11 @@ export function Sidebar() {
         collapsed ? "w-[52px]" : "w-[52px] md:w-52"
       )}
     >
+      {!collapsed && (
+        <div className="hidden shrink-0 md:block">
+          <WorkspaceLicense />
+        </div>
+      )}
       <nav aria-label="Dashboard" className="flex-1 py-3 px-2 overflow-y-auto scrollbar-thin">
         {navGroups.map((group, gi) => (
           <div
@@ -127,7 +131,7 @@ export function Sidebar() {
       <div className="hidden md:block p-2 border-t border-border">
         <button
           type="button"
-          onClick={() => setCollapsed((c) => !c)}
+          onClick={onToggle}
           className="w-full flex items-center justify-center p-1.5 rounded-lg text-muted-foreground/50 hover:text-sidebar-foreground hover:bg-surface-2 transition-colors"
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         >

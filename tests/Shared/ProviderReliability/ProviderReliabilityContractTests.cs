@@ -46,6 +46,123 @@ namespace TickerQ.Tests.Shared.ProviderReliability;
 public abstract class ProviderReliabilityContractTests
 {
     [Fact]
+    public async Task IntegrationMonitoring_MetadataFiltersWindowAndFunction_AndIncludesNestedSteps()
+    {
+        const string function = "monitored-metadata";
+        var generation = Guid.NewGuid();
+        var root = NewTimeTicker(function: "unrelated", status: TickerStatus.Done);
+        var child = NewChildDefinition();
+        child.Function = function; child.Status = TickerStatus.InProgress; child.AcquisitionToken = generation;
+        var grandchild = NewChildDefinition();
+        grandchild.Function = function; grandchild.Status = TickerStatus.Failed;
+        grandchild.ExecutedAt = Now.AddMinutes(-2); grandchild.ElapsedTime = 1234;
+        child.Children.Add(grandchild); root.Children.Add(child);
+        var boundary = NewTimeTicker(function: function, status: TickerStatus.Done);
+        boundary.ExecutedAt = Now.AddHours(-1);
+        var future = NewTimeTicker(function: function, status: TickerStatus.Done);
+        future.ExecutedAt = Now.AddMinutes(1);
+        var skipped = NewTimeTicker(function: function, status: TickerStatus.Skipped);
+        skipped.ExecutedAt = Now.AddMinutes(-1);
+        await Provider.AddTimeTickers([root, boundary, future, skipped]);
+        var cron = NewCron(function);
+        await Provider.InsertCronTickers([cron], default);
+        var success = NewOccurrence(cron.Id, TickerStatus.Done);
+        success.ExecutedAt = Now; success.ElapsedTime = 42;
+        var dispatcher = NewOccurrence(cron.Id, TickerStatus.Done, Now.AddMinutes(-2));
+        dispatcher.ExecutedAt = Now; dispatcher.ChainRootId = root.Id;
+        await Provider.InsertCronTickerOccurrences([success, dispatcher], default);
+
+        var snapshot = await Provider.ReadMonitoringSnapshotAsync(function, Now.AddHours(-1), Now);
+        Assert.Null(snapshot.Error);
+        Assert.Equal(new[] { grandchild.Id, success.Id }, snapshot.Completed.Select(x => x.Id));
+        Assert.False(snapshot.Completed[0].IsCron);
+        Assert.Equal(1234, snapshot.Completed[0].ElapsedMilliseconds);
+        Assert.True(snapshot.Completed[1].IsCron);
+        Assert.Equal(42, snapshot.Completed[1].ElapsedMilliseconds);
+        var running = Assert.Single(snapshot.Running);
+        Assert.Equal(child.Id, running.Id);
+        Assert.Equal(generation, running.Generation);
+    }
+
+    [Fact]
+    public async Task IntegrationMonitoring_MetadataPageIsBoundedAndOrdered_WithOneLookahead()
+    {
+        var size = TickerQ.Utilities.Integrations.TickerMonitoringSnapshot.PageSize;
+        var rows = Enumerable.Range(1, size + 30).Reverse().Select(i =>
+        {
+            var row = NewTimeTicker(function: "paged", status: TickerStatus.Done);
+            row.ExecutedAt = Now.AddSeconds(-size - 31 + i);
+            return row;
+        }).ToArray();
+        var running = NewTimeTicker(function: "paged", status: TickerStatus.InProgress);
+        await Provider.AddTimeTickers(rows.Append(running).ToArray());
+        var first = await Provider.ReadMonitoringSnapshotAsync("paged", Now.AddHours(-1), Now);
+        Assert.Equal(size + 1, first.Completed.Length);
+        Assert.Equal(rows.OrderBy(x => x.ExecutedAt).Take(size + 1).Select(x => x.Id), first.Completed.Select(x => x.Id));
+        Assert.Empty(first.Running);
+        var next = await Provider.ReadMonitoringSnapshotAsync("paged", first.Completed[size - 1].CompletedUtc!.Value, Now);
+        Assert.Equal(30, next.Completed.Length);
+        Assert.Equal(running.Id, Assert.Single(next.Running).Id);
+    }
+
+    [Fact]
+    public async Task IntegrationMonitoring_MetadataSignalsExcessActiveExecutions_WithBoundedResults()
+    {
+        await Provider.AddTimeTickers(Enumerable.Range(0, 1020)
+            .Select(_ => NewTimeTicker(function: "busy", status: TickerStatus.InProgress)).ToArray());
+        var snapshot = await Provider.ReadMonitoringSnapshotAsync("busy", Now.AddHours(-1), Now);
+        Assert.Empty(snapshot.Completed);
+        Assert.Equal(1001, snapshot.Running.Length);
+    }
+
+    [Fact]
+    public async Task IntegrationMonitoring_MetadataRejectsExcessCronDefinitions()
+    {
+        await Provider.InsertCronTickers(Enumerable.Range(0, 201).Select(_ => NewCron("too-many")).ToArray(), default);
+        var snapshot = await Provider.ReadMonitoringSnapshotAsync("too-many", Now.AddHours(-1), Now);
+        Assert.Contains("200 cron definitions", snapshot.Error);
+        Assert.Empty(snapshot.Completed);
+    }
+
+    [Fact]
+    public async Task IntegrationMonitoring_StateIsIndependent_AndConcurrentEditsAreAtomic()
+    {
+        var store = (TickerQ.Utilities.Integrations.ITickerIntegrationSettingsStore)Provider;
+        Assert.True(store.SupportsIntegrationMonitoring);
+        var settings = new TickerQ.Utilities.Integrations.IntegrationSettingsRecord(Guid.NewGuid(), "settings");
+        var state = new TickerQ.Utilities.Integrations.IntegrationSettingsRecord(Guid.NewGuid(), "encrypted-monitoring");
+        Assert.True(await store.SaveIntegrationSettingsAsync(settings, Guid.Empty));
+        Assert.Null(await store.ReadIntegrationMonitoringAsync());
+        Assert.True(await store.SaveIntegrationMonitoringAsync(state, Guid.Empty));
+        Assert.False(await store.SaveIntegrationMonitoringAsync(state, Guid.Empty));
+        var candidates = Enumerable.Range(0, 2).Select(_ => new TickerQ.Utilities.Integrations.IntegrationSettingsRecord(Guid.NewGuid(), "next-state")).ToArray();
+        var results = await Task.WhenAll(candidates.Select(x => store.SaveIntegrationMonitoringAsync(x, state.Version)));
+        Assert.Single(results, x => x);
+        Assert.Equal(candidates[Array.IndexOf(results, true)], await store.ReadIntegrationMonitoringAsync());
+        Assert.Equal(settings, await store.ReadIntegrationSettingsAsync());
+    }
+
+    [Fact]
+    public async Task IntegrationMonitoring_QueryIncludesNestedSteps_WithoutDuplicatingThem()
+    {
+        var root = NewTimeTicker(status: TickerStatus.Done);
+        var child = NewChildDefinition();
+        child.Function = "monitored-step";
+        child.Status = TickerStatus.InProgress;
+        var grandchild = NewChildDefinition();
+        grandchild.Function = "monitored-step";
+        child.Children.Add(grandchild);
+        root.Children.Add(child);
+        await Provider.AddTimeTickers([root]);
+        var steps = await Provider.TimeTickersMonitoringQuery()
+            .Where(x => x.Function == "monitored-step").ToArrayAsync();
+        Assert.Equal(2, steps.Length);
+        Assert.Contains(steps, x => x.Id == child.Id && x.Status == TickerStatus.InProgress);
+        Assert.Contains(steps, x => x.Id == grandchild.Id && x.Status == TickerStatus.Idle);
+        Assert.Equal(2, steps.Select(x => x.Id).Distinct().Count());
+    }
+
+    [Fact]
     public async Task IntegrationSettings_SaveReadAndConcurrentEdits_AreAtomic()
     {
         var store = (TickerQ.Utilities.Integrations.ITickerIntegrationSettingsStore)Provider;

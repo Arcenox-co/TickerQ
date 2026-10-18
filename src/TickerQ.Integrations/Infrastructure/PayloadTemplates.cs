@@ -7,7 +7,9 @@ namespace TickerQ.Integrations.Infrastructure;
 
 internal static partial class PayloadTemplates
 {
-    internal static readonly string[] Tokens = ["eventId", "application", "environment", "event", "function", "reason", "tickerId", "tickerType", "node", "retryCount", "retries", "occurredAtUtc", "dashboardUrl"];
+    internal static readonly string[] Tokens = ["eventId", "application", "environment", "event", "function", "reason", "tickerId", "tickerType", "node", "retryCount", "retries", "occurredAtUtc", "dashboardUrl", "monitorId", "monitorName", "incidentId",
+        "title", "severity", "statusIcon", "statusColor", "condition", "threshold", "observed", "occurredAt",
+        "monitorKind", "thresholdSeconds", "observedDurationSeconds", "failureCount", "failureThreshold", "deadlineUtc", "timeZoneId", "graceMinutes"];
 
     [GeneratedRegex(@"\{\{\s*([a-zA-Z][a-zA-Z0-9]*)\s*\}\}")]
     private static partial Regex Placeholder();
@@ -62,8 +64,10 @@ internal static partial class PayloadTemplates
             ["event"] = e.Kind ?? "", ["function"] = e.Function ?? "", ["reason"] = e.Reason ?? "", ["tickerId"] = e.TickerId.ToString(),
             ["tickerType"] = e.TickerType ?? "", ["node"] = e.Node ?? "", ["retryCount"] = e.RetryCount.ToString(CultureInfo.InvariantCulture),
             ["retries"] = e.Retries.ToString(CultureInfo.InvariantCulture), ["occurredAtUtc"] = e.OccurredAtUtc.ToString("O", CultureInfo.InvariantCulture),
-            ["dashboardUrl"] = message.DashboardUrl
+            ["dashboardUrl"] = message.DashboardUrl, ["monitorId"] = message.MonitorId?.ToString() ?? "",
+            ["monitorName"] = message.MonitorName ?? "", ["incidentId"] = message.IncidentId?.ToString() ?? ""
         };
+        foreach (var (key, value) in MessageContent.Values(message)) values[key] = value;
         string Substitute(string text)
         {
             // Validate the original template, never scan substituted event text for tokens.

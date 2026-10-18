@@ -30,6 +30,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataCard, PageHeader } from "@/components/cron/PageHeader";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
 import { DestinationEditor } from "@/components/integrations/DestinationEditor";
+import { MonitoringPanel } from "@/components/integrations/MonitoringPanel";
 import { RuleEditor } from "@/components/integrations/RuleEditor";
 import { ProviderIcon } from "@/components/integrations/Fields";
 import {
@@ -74,6 +75,7 @@ export default function IntegrationsPage() {
     queryFn: ({ signal }) => dashboardApi.getIntegrations(signal),
     enabled,
     refetchOnWindowFocus: false,
+    refetchInterval: 30000,
   });
   const header = (
     <PageHeader
@@ -296,7 +298,7 @@ function IntegrationManager({
       )}
       <Tabs value={tab} onValueChange={setTab} className="gap-5">
         <TabsList
-          className="w-full max-w-full border border-border bg-surface-1 p-1 sm:w-fit group-data-[orientation=horizontal]/tabs:h-10"
+          className="w-full max-w-full flex-wrap border border-border bg-surface-1 p-1 sm:w-fit group-data-[orientation=horizontal]/tabs:h-auto sm:group-data-[orientation=horizontal]/tabs:h-10"
           aria-label="Integration sections"
         >
           <TabsTrigger
@@ -314,6 +316,14 @@ function IntegrationManager({
             <ListFilter className="size-3.5" />
             Alert rules
             <Count value={config.rules.length} />
+          </TabsTrigger>
+          <TabsTrigger
+            value="monitoring"
+            className="gap-1.5 px-2 text-[11px] sm:gap-2 sm:px-3 sm:text-xs"
+          >
+            <Clock3 className="hidden size-3.5 sm:block" />
+            Monitoring
+            <Count value={config.monitors?.length ?? 0} />
           </TabsTrigger>
           <TabsTrigger
             value="activity"
@@ -638,6 +648,17 @@ function IntegrationManager({
             </div>
           )}
         </TabsContent>
+        <TabsContent value="monitoring">
+          <MonitoringPanel
+            config={config}
+            statuses={snapshot.monitors ?? []}
+            available={snapshot.monitoringAvailable ?? false}
+            pending={snapshot.monitoringPendingDeliveries ?? 0}
+            intervalSeconds={snapshot.monitoringCheckIntervalSeconds ?? 30}
+            busy={busy}
+            onSave={save}
+          />
+        </TabsContent>
         <TabsContent value="activity" className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-3">
             <Metric
@@ -654,8 +675,9 @@ function IntegrationManager({
             <div className="border-b border-border p-4">
               <h2 className="text-sm font-medium">Delivery activity</h2>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                Recent attempts on this node. History resets when the host
-                restarts. Refresh to update.
+                Monitoring deliveries are shared across replicas and retained
+                for up to 7 days (50 latest attempts). Other event and test
+                attempts are local to this node and reset on restart.
               </p>
             </div>
             {snapshot.recentDeliveries.length === 0 ? (
@@ -789,7 +811,7 @@ function IntegrationManager({
           confirm?.type === "test"
             ? "Sends a sample failure message using the saved connection, even if it is paused. No job will run."
             : confirm?.type === "delete-destination"
-              ? `This removes the integration from all alert rules.${removedRules ? ` ${removedRules} ${removedRules === 1 ? "rule uses" : "rules use"} only this integration and will also be removed.` : " Rules with other integrations will keep working."} Changes take effect immediately.`
+              ? `This removes the integration from all alert rules and monitors. Monitors using only this connection are also removed.${removedRules ? ` ${removedRules} ${removedRules === 1 ? "rule uses" : "rules use"} only this integration and will also be removed.` : " Rules with other integrations will keep working."} Changes take effect immediately.`
               : "This rule will stop sending alerts. Your integrations will stay connected."
         }
         confirmLabel={confirm?.type === "test" ? "Send test" : "Remove"}

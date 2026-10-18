@@ -1,16 +1,13 @@
-import { Eye, KeyRound, LogOut, UserCircle2 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Eye, LogOut, UserCircle2 } from "lucide-react";
 import tickerqLogo from "@/assets/tickerq-logo.svg";
 import { TimezoneSelector } from "@/components/layout/TimezoneSelector";
 import { useAuth } from "@/lib/auth/auth-context";
 import { getRuntimeConfig } from "@/lib/runtime-config";
-import { useLicense } from "@/services/hooks";
+import { WorkspaceLicense } from "./WorkspaceLicense";
 
-export function TopBar() {
+export function TopBar({ sidebarCollapsed = false }: { sidebarCollapsed?: boolean }) {
   const auth = useAuth();
   const cfg = getRuntimeConfig();
-  const { data: license } = useLicense();
-  const licenseLabel = license?.isEvaluation ? "Evaluation" : license?.plan?.trim();
   const showUser =
     auth.status === "authenticated" && auth.info?.loginAvailable === true;
 
@@ -28,17 +25,7 @@ export function TopBar() {
             <span className="hidden sm:inline shrink-0 text-muted-foreground/60 text-[10px]">v{cfg.version}</span>
           )}
         </div>
-        {licenseLabel && (
-          <Link
-            to="/license"
-            aria-label={`${licenseLabel} license — view license details`}
-            title={`${licenseLabel} license · ${license?.status}. View license details.`}
-            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-[10px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <KeyRound className="h-3 w-3 text-primary" aria-hidden="true" />
-            {licenseLabel}
-          </Link>
-        )}
+        <WorkspaceLicense compact className={sidebarCollapsed ? undefined : "md:hidden"} />
         {cfg.readOnly && (
           <span
             title="The dashboard is running in read-only mode — all mutations are disabled."

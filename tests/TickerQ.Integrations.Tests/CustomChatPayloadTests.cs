@@ -35,7 +35,7 @@ public class CustomChatPayloadTests
         Assert.Null(saved.Destinations[0].Url);
         var preview = engine.Preview(new() { Provider = provider, PayloadTemplate = saved.Destinations[0].PayloadTemplate });
         Assert.Equal(0, handler.Calls);
-        Assert.Contains("Custom: Example.ProcessOrders", preview.Payload);
+        Assert.Contains("Custom: Invoices.Generate", preview.Payload);
         Assert.Equal("Sent", (await engine.TestAsync(destination.Id)).Outcome);
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse(preview.Payload), JsonNode.Parse(handler.Body)));
 
@@ -51,7 +51,7 @@ public class CustomChatPayloadTests
         await configuration.SaveAsync(saved, default);
         Assert.Equal("Sent", (await engine.TestAsync(destination.Id)).Outcome);
         Assert.DoesNotContain("Custom:", handler.Body);
-        Assert.Contains("Function: Example.ProcessOrders", handler.Body);
+        Assert.Contains("Invoices.Generate", handler.Body);
         Assert.Equal(destination.Url, (await configuration.LoadAsync(default)).Destinations[0].Url);
     }
 

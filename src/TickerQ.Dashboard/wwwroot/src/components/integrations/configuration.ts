@@ -45,44 +45,19 @@ export const splitPatterns = (value: string) => [
       .filter(Boolean),
   ),
 ];
-export function sampleTemplate(provider: string): string {
-  if (provider === "slack")
-    return JSON.stringify({
-      text: "{{application}} · {{event}} · {{function}}",
-      blocks: [
-        { type: "header", text: { type: "plain_text", text: "{{application}} · Job alert" } },
-        { type: "section", text: { type: "plain_text", text: "{{function}} · {{event}}\n{{reason}}" } },
-        { type: "context", elements: [{ type: "plain_text", text: "{{environment}} · {{node}} · Job {{tickerId}}" }] },
-      ],
-      unfurl_links: false,
-      unfurl_media: false,
-    }, null, 2);
-  if (provider === "teams")
-    return JSON.stringify({
-      type: "message",
-      attachments: [{
-        contentType: "application/vnd.microsoft.card.adaptive",
-        content: {
-          $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
-          type: "AdaptiveCard",
-          version: "1.2",
-          body: [
-            { type: "TextBlock", text: "{{application}} · Job alert", weight: "Bolder", wrap: true },
-            { type: "TextBlock", text: "{{function}} · {{event}}\n{{reason}}", wrap: true },
-            { type: "FactSet", facts: [
-              { title: "Environment", value: "{{environment}}" },
-              { title: "Node", value: "{{node}}" },
-              { title: "Job ID", value: "{{tickerId}}" },
-            ] },
-          ],
-        },
-      }],
-    }, null, 2);
-  return JSON.stringify({
-    text: "{{function}} · {{event}}: {{reason}}",
-    jobId: "{{tickerId}}",
-    dashboard: "{{dashboardUrl}}",
-  }, null, 2);
+// Materialize the legacy shared template into all categories only when editing.
+// Viewing a connection never changes its saved configuration.
+export function editableDestination(
+  value: IntegrationDestination,
+): IntegrationDestination {
+  const copy = structuredClone(value);
+  copy.messageTemplates ??= {
+    jobAlert: copy.payloadTemplate ?? null,
+    monitoringAlert: copy.payloadTemplate ?? null,
+    recovery: copy.payloadTemplate ?? null,
+  };
+  copy.payloadTemplate = null;
+  return copy;
 }
 
 export function newDestination(provider: string): IntegrationDestination {
@@ -127,6 +102,12 @@ export function removeDestination(
   return {
     ...config,
     destinations: config.destinations.filter((d) => d.id !== id),
+    monitors: (config.monitors ?? [])
+      .map((m) => ({
+        ...m,
+        destinationIds: m.destinationIds.filter((value) => value !== id),
+      }))
+      .filter((m) => m.destinationIds.length > 0),
     // Rules cannot be saved without a destination. The confirmation explains this removal.
     rules: config.rules
       .map((r) => ({

@@ -18,6 +18,7 @@ The following package families are expressly designated as governed by that agre
 - `TickerQ.Instrumentation.OpenTelemetry`
 - `TickerQ.SourceGenerator`
 - `TickerQ.MongoDB`
+- `TickerQ.Integrations`
 - `TickerQ.SDK`
 - `TickerQ.RemoteExecutor`
 - `@tickerq/sdk`

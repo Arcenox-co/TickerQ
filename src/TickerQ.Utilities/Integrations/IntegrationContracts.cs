@@ -12,6 +12,11 @@ public sealed record IntegrationSettingsRecord(Guid Version, string ProtectedCon
 public interface ITickerIntegrationSettingsStore
 {
     bool IntegrationSettingsArePersistent => false;
+    bool SupportsIntegrationMonitoring => false;
+    Task<IntegrationSettingsRecord?> ReadIntegrationMonitoringAsync(CancellationToken cancellationToken = default)
+        => Task.FromException<IntegrationSettingsRecord?>(new NotSupportedException("This operational store does not support integration monitoring."));
+    Task<bool> SaveIntegrationMonitoringAsync(IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        => Task.FromException<bool>(new NotSupportedException("This operational store does not support integration monitoring."));
     Task<IntegrationSettingsRecord?> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
         => Task.FromException<IntegrationSettingsRecord?>(new NotSupportedException("This operational store does not support integration settings."));
     /// <summary>Compare-and-swap. Guid.Empty means that no settings exist yet.</summary>
@@ -29,11 +34,21 @@ public sealed class IntegrationDestination
     public string? Url { get; set; }
     /// <summary>Write-only. Null preserves saved headers; an empty dictionary removes them.</summary>
     public Dictionary<string, string>? Headers { get; set; }
-    /// <summary>Optional JSON template for Slack, Teams, or webhooks. Null uses the provider's built-in payload.</summary>
+    /// <summary>Legacy shared template. Used only when MessageTemplates is null.</summary>
     public string? PayloadTemplate { get; set; }
+    /// <summary>Templates by message category. Null preserves legacy shared-template behavior.</summary>
+    public IntegrationMessageTemplates? MessageTemplates { get; set; }
     public string? EndpointHost { get; set; }
     public bool HasUrl { get; set; }
     public bool HasHeaders { get; set; }
+}
+
+/// <summary>A null/blank category uses the provider's built-in message for that category.</summary>
+public sealed class IntegrationMessageTemplates
+{
+    public string? JobAlert { get; set; }
+    public string? MonitoringAlert { get; set; }
+    public string? Recovery { get; set; }
 }
 
 public sealed class IntegrationRule
@@ -55,6 +70,7 @@ public sealed class IntegrationConfiguration
     public Guid Version { get; set; }
     public List<IntegrationDestination> Destinations { get; set; } = [];
     public List<IntegrationRule> Rules { get; set; } = [];
+    public List<IntegrationMonitor> Monitors { get; set; } = [];
 }
 
 public sealed class IntegrationDeliveryStatus
@@ -70,6 +86,10 @@ public sealed class IntegrationSnapshot
     public bool Available { get; set; }
     public bool CanManage { get; set; }
     public bool Persistent { get; set; }
+    public bool MonitoringAvailable { get; set; }
+    public int MonitoringPendingDeliveries { get; set; }
+    public int MonitoringCheckIntervalSeconds { get; set; }
+    public List<IntegrationMonitorStatus> Monitors { get; set; } = [];
     public IntegrationConfiguration Configuration { get; set; } = new();
     public List<string> Providers { get; set; } = [];
     public List<string> TemplateTokens { get; set; } = [];
@@ -82,11 +102,17 @@ public sealed class IntegrationPreviewRequest
 {
     public string Provider { get; set; } = "webhook";
     public string? PayloadTemplate { get; set; }
+    /// <summary>job_alert | monitoring_alert | recovery.</summary>
+    public string MessageKind { get; set; } = "job_alert";
+    /// <summary>deadline | long_running | consecutive_failures; applies to monitoring previews.</summary>
+    public string MonitorKind { get; set; } = "long_running";
 }
 
 public sealed class IntegrationPreviewResponse
 {
     public string Payload { get; set; } = "";
+    /// <summary>Provider default with editable placeholders, for the selected sample category.</summary>
+    public string? DefaultTemplate { get; set; }
 }
 
 /// <summary>Optional module bridge: the dashboard has no dependency on the Integrations package.</summary>
@@ -101,4 +127,34 @@ public interface ITickerIntegrationAdminService
 public sealed class IntegrationConfigurationConflictException : Exception
 {
     public IntegrationConfigurationConflictException() : base("Integration settings changed. Reload before saving your changes.") { }
+}
+
+/// <summary>Monitors individual executions of one function, including chain steps.</summary>
+public sealed class IntegrationMonitor
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Name { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    public string Function { get; set; } = "";
+    /// <summary>deadline | long_running | consecutive_failures.</summary>
+    public string Kind { get; set; } = "deadline";
+    public List<Guid> DestinationIds { get; set; } = [];
+    public bool NotifyRecovery { get; set; } = true;
+    public string TimeZoneId { get; set; } = "UTC";
+    public string DeadlineLocalTime { get; set; } = "08:00";
+    public int GraceMinutes { get; set; } = 10;
+    public int DurationSeconds { get; set; } = 300;
+    public int FailureThreshold { get; set; } = 3;
+    public int LookbackHours { get; set; } = 24;
+}
+
+public sealed class IntegrationMonitorStatus
+{
+    public Guid MonitorId { get; set; }
+    /// <summary>waiting | healthy | incident | unknown | paused.</summary>
+    public string Status { get; set; } = "waiting";
+    public string Message { get; set; } = "Waiting for the first check.";
+    public DateTime? LastCheckedUtc { get; set; }
+    public DateTime? OpenedAtUtc { get; set; }
+    public DateTime? RecoveredAtUtc { get; set; }
 }

@@ -397,6 +397,15 @@ namespace TickerQ.Utilities.Interfaces
 
         #region Queryable
         ITickerQueryable<TTimeTicker> TimeTickersQuery();
+        /// <summary>Read-only execution query including independently stored and embedded chain steps.</summary>
+        ITickerQueryable<TTimeTicker> TimeTickersMonitoringQuery() => TimeTickersQuery();
+        /// <summary>
+        /// Reads bounded execution metadata for monitoring without materializing job payloads or graphs.
+        /// Implementations must apply the current runtime partition and the snapshot's paging contract.
+        /// </summary>
+        Task<Integrations.TickerMonitoringSnapshot> ReadMonitoringSnapshotAsync(
+            string function, DateTime afterUtc, DateTime throughUtc, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This provider does not support bounded monitoring queries.");
         ITickerQueryable<TCronTicker> CronTickersQuery();
         ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery();
         #endregion

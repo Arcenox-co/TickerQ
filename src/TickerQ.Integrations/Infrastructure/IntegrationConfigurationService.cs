@@ -1,4 +1,5 @@
 using System.Text.Json;
+using TickerQ.Integrations.Monitoring;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.DataProtection;
@@ -79,9 +80,22 @@ internal sealed class IntegrationConfigurationService(
                     || new[] { "Host", "Content-Type", "Content-Length", "Connection", "Cookie", "Transfer-Encoding", "Expect", "Upgrade", "Trailer", "TE" }.Contains(name, StringComparer.OrdinalIgnoreCase)
                     || name.StartsWith("Proxy-", StringComparison.OrdinalIgnoreCase) || name.StartsWith("Sec-", StringComparison.OrdinalIgnoreCase))
                     throw new ArgumentException("Invalid or reserved custom HTTP header.");
-            if (!string.IsNullOrWhiteSpace(d.PayloadTemplate)) PayloadTemplates.Render(d.PayloadTemplate, IntegrationEngine.Sample(options));
-            var payload = formatter.Format(d, IntegrationEngine.Sample(options)).ToJsonString();
-            if (System.Text.Encoding.UTF8.GetByteCount(payload) > 24000) throw new ArgumentException("Rendered payload is too large.");
+            // Validate every category, including dormant templates, before saving anything.
+            foreach (var category in MessageContent.Categories)
+            foreach (var kind in category == "job_alert" ? new[] { "long_running" } : new[] { "long_running", "deadline", "consecutive_failures" })
+            {
+                var sample = IntegrationEngine.Sample(options, category, kind);
+                try
+                {
+                    var template = MessageContent.Template(d, sample);
+                    if (!string.IsNullOrWhiteSpace(template)) PayloadTemplates.Render(template, sample);
+                    var payload = formatter.Format(d, sample).ToJsonString();
+                    if (System.Text.Encoding.UTF8.GetByteCount(payload) > 24000) throw new ArgumentException("Rendered payload is too large.");
+                }
+                catch (ArgumentException ex) { throw new ArgumentException($"{category} template: {ex.Message}", ex); }
+            }
+            // An explicit category set replaces the legacy shared template.
+            if (d.MessageTemplates != null) d.PayloadTemplate = null;
         }
         foreach (var rule in next.Rules)
         {
@@ -92,6 +106,11 @@ internal sealed class IntegrationConfigurationService(
             ValidatePatterns(rule.IncludeFunctions); ValidatePatterns(rule.ExcludeFunctions);
             if (rule.CooldownSeconds is < 0 or > 86400) throw new ArgumentException("Cooldown must be between 0 and 86,400 seconds.");
         }
+        if (next.Monitors == null || next.Monitors.Count > 20 || next.Monitors.Any(x => x == null) || next.Monitors.Select(x => x.Id).Distinct().Count() != next.Monitors.Count)
+            throw new ArgumentException("Use at most 20 monitors with distinct IDs.");
+        if (next.Monitors.Count > 0 && !store.SupportsIntegrationMonitoring)
+            throw new NotSupportedException("This operational store does not support integration monitoring.");
+        foreach (var monitor in next.Monitors) MonitorEvaluation.Validate(monitor, next);
         next.Version = Guid.NewGuid();
         var encrypted = _protector.Protect(JsonSerializer.Serialize(next, IntegrationJsonContext.Default.IntegrationConfiguration));
         if (encrypted.Length > 500000) throw new ArgumentException("Integration configuration is too large.");

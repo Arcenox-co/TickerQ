@@ -93,10 +93,11 @@ New writes use the encryption purpose `TickerQ.Integrations.Configuration.v1`. O
 
 1. Open **System → Integrations → Connections** and choose Slack, Microsoft Teams, or Custom webhook. Give the connection a name and enter its HTTPS webhook URL. Save the integration in its editor.
 2. Choose **Add rule** on the connection, or open **Alert rules → Create rule**. Select integrations and events, then choose all functions or specific names/patterns. Exclusions and cooldown are under advanced settings. Save the rule to start matching events.
-3. In **Configure**, preview the payload using sample values. Slack, Teams, and custom webhooks offer a default payload or a custom JSON template, with insertable placeholders. Headers are under **Advanced settings**; blank keeps saved values and **Remove saved headers** clears them.
-4. Use **Send test** on a saved connection to send a sample message after confirmation, including when paused. No job runs. **Activity** shows recent delivery attempts and suppressed/dropped counts on this node.
+3. In **Configure → Message templates**, choose **Job alert**, **Monitor alert**, or **Recovery**. Each has its own default or custom JSON template. Previews update with sample values without sending a message. Headers are under **Advanced settings**; blank keeps saved values and **Remove saved headers** clears them.
+4. Open **Monitoring → Create monitor** to configure a daily deadline, long-running execution, or repeated-failure condition for one function. Select its connections and whether to send recovery messages.
+5. Use **Send test** on a saved connection to send a sample message after confirmation, including when paused. No job runs. **Activity** combines recent delivery attempts from this node with persisted monitoring delivery history. Suppressed/dropped counters apply to event alerts on this node.
 
-Each integration and rule saves independently. Cancelling an editor discards its changes after confirmation. Removing an integration also removes any rules that use only that connection; the confirmation shows the affected count. Configure the package with `AddIntegrations` and grant dashboard access with `AllowIntegrationManagement`.
+Each integration and rule saves independently. Cancelling an editor discards its changes after confirmation. Removing an integration also removes any alert rules or monitors that use only that connection; the confirmation shows the affected count. Configure the package with `AddIntegrations` and grant dashboard access with `AllowIntegrationManagement`.
 
 Available events are final failure (`failed`), execution timeout (`timeout_cancelled`), abandoned-job recovery (`stale_recovered`), and request-contract drift (`contract_drift`). Rules operate on the events emitted by the scheduler; they do not add alerts for every retry, successful execution, or manual cancellation.
 
@@ -106,7 +107,13 @@ URLs and header values are write-only in the dashboard API. Blank URL/headers pr
 
 ## Custom Slack, Teams, and webhook payloads
 
-In **Integrations → edit a connection → Payload**, choose **Custom JSON** to edit that connection's message. The editor starts with a Slack Block Kit message, a Teams Adaptive Card message, or a generic webhook example. Use placeholders to insert job details, then **Preview payload** to see the rendered JSON with sample values. Preview does not send a message. Save the connection to use the template for alerts and test deliveries; select **Default** and save to restore the built-in format.
+In **Integrations → Configure → Message templates**, choose **Job alert**, **Monitor alert**, or **Recovery**. Each category can use the provider default or its own custom JSON. **Customize** starts with the current default layout and placeholders; **Use default** restores only the selected category. Switching categories preserves unsaved edits in the others.
+
+Default Slack messages use a status heading, compact detail fields, a reason, an incident/job reference and UTC timestamp, and an optional dashboard button. Teams uses the same content in an Adaptive Card with an alert/recovery heading color. Function monitors omit unrelated worker/retry fields and show their condition, threshold and observed result instead. Default webhooks retain their event envelope and add structured monitoring context.
+
+Preview updates automatically. Choose a long-running, repeated-failure, or deadline sample for monitoring and recovery. **View JSON** shows the rendered request; the local layout preview shows supported text elements and never loads images or follows payload links. The receiving application controls the final rendering. Previews do not send requests to the integration.
+
+Existing connections with a single `payloadTemplate` continue to use it for every category. The editor copies it into all three categories when saving an edit. API callers can set `messageTemplates: { jobAlert, monitoringAlert, recovery }`; a null/blank category uses its provider default, and the explicit object replaces the legacy shared template. Settings use the existing encrypted storage, so no database migration is needed.
 
 Slack templates accept message `text`, `blocks`, or `attachments`; see [Slack's incoming webhook format](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/). Teams templates use a `type: "message"` envelope with Adaptive Card attachments; see [Microsoft's Adaptive Card webhook format](https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/connectors-using#send-adaptive-cards-using-an-incoming-webhook). The server checks JSON, placeholders, size, and the basic provider envelope before saving. It does not validate every Block Kit or Adaptive Card element; the receiving platform still validates those. Slack's channel and sender identity remain controlled by the webhook's app configuration.
 
@@ -128,15 +135,67 @@ A custom destination sends an HTTP POST with `application/json`. Leave the templ
 
 Placeholders work only inside JSON string values, including nested objects and arrays. Values are escaped as JSON; no scripts, expressions, or property-name substitutions run. Unknown tokens are rejected. Numeric placeholders are strings; literal JSON numbers and booleans retain their types.
 
-Supported tokens: `eventId`, `application`, `environment`, `event`, `function`, `reason`, `tickerId`, `tickerType`, `node`, `retryCount`, `retries`, `occurredAtUtc`, `dashboardUrl`. Links open the configured dashboard URL. The event contract does not currently carry enough information to deep-link every cron occurrence or chain step.
+Supported tokens: `eventId`, `application`, `environment`, `event`, `function`, `reason`, `tickerId`, `tickerType`, `node`, `retryCount`, `retries`, `occurredAtUtc`, `dashboardUrl`, `monitorId`, `monitorName`, `incidentId`. These monitoring identifiers are populated for monitoring messages and empty for ordinary job events.
 
-## Delivery behavior and limits
+Additional placeholders:
+
+- Presentation: `title`, `severity` (`error`, `warning`, `success`), `statusIcon`, `statusColor` (Teams color), and `occurredAt` (readable UTC timestamp).
+- Monitoring summaries: `condition`, `threshold`, and `observed`, suitable for one template shared by different monitor conditions.
+- Structured monitoring values: `monitorKind`, `thresholdSeconds`, `observedDurationSeconds`, `failureCount`, `failureThreshold`, `deadlineUtc`, `timeZoneId`, and `graceMinutes`.
+
+Unavailable values become empty strings in custom templates and null in the default webhook. Default webhook counts/durations remain JSON numbers; custom placeholders inside strings are strings. Duration uses persisted execution time for completed runs, and time since first observed InProgress for active runs. Failure counts are retained observed counts and can be lower bounds. Recovery does not invent a completed job duration. `deadlineUtc` is the scheduled deadline before the separately reported grace period.
+
+An incident and its recovery share `incidentId`; each transition has its own `eventId`. Links open the configured dashboard URL. The event contract does not currently carry enough information to deep-link every cron occurrence or chain step.
+
+## Job monitoring and deadlines
+
+Monitoring is part of **`TickerQ.Integrations`** and uses the existing `AddIntegrations` registration, dashboard permission, connections, payload templates, and HTTP transport. No additional package or registration is required. Create rules in **System → Integrations → Monitoring**. No monitoring alerts are produced until a monitor is enabled.
+
+| Condition | Behavior |
+| --- | --- |
+| Daily deadline | Require a successful execution since local midnight by a chosen time, with a time zone and optional grace period. For example, monitor `Invoices.Generate` by `08:00`, `Europe/Berlin`, with 10 minutes of grace. It can alert even when no execution row exists. A late success can send recovery. |
+| Long-running execution | Alert when an active or completed execution meets the configured duration. Active timing starts at the first observation; completed runs use their recorded duration, including retry waits. This catches slow jobs that finish between checks. Queued time is excluded. A slow successful completion can produce an alert followed by recovery in the same check. It never cancels the job. |
+| Repeated failures | Alert after 2–20 consecutive final failures within a 1–168 hour lookback. Retries are not separate failures. Successful or cancelled executions break the streak; skipped executions are ignored. Recovery requires a subsequent success, not just old failures aging out. |
+
+Each monitor targets **one exact function name**, across its time tickers and cron occurrences in the current runtime namespace. Chain steps count as individual executions; a parent's success does not prove its entire chain finished. For a chain completion deadline, monitor the final successful step. Recurring-chain dispatcher occurrences are excluded to avoid counting the same function twice.
+
+Daily deadlines run every day. New or edited monitors start with the next deadline after their first check and do not alert retroactively. Daylight-saving gaps advance to the first valid minute; repeated local times use the later occurrence. A successful run during grace counts as meeting the expectation. Monitor time zones are independent of the dashboard display time zone.
+
+Checks default to approximately every 30 seconds. The interval can be changed within the existing registration:
+
+```csharp
+options.AddIntegrations(integrations =>
+    integrations.MonitoringInterval = TimeSpan.FromSeconds(30));
+```
+
+The supported range is 5 seconds to 5 minutes. Active jobs still have observation delay. Terminal executions are processed in completion order using a persisted checkpoint, so three failures followed by success between checks produce both the incident and recovery. A deadline uses the actual cutoff including grace; a late success produces recovery even when both are first observed together. Equal completion timestamps have no portable execution order: a success or cancellation conservatively breaks the failure streak for that timestamp.
+
+Reads use provider-independent queries in batches of up to 512 completions, with a one-second catch-up interval while more history remains. Timestamp groups are kept together; a group exceeding 512 produces an unavailable check instead of silently skipping rows. New monitors establish their baseline from retained history and start replay after their first check; an existing failure streak can alert immediately. Keep terminal rows until monitoring has processed them, including any delivery backlog. Deleting or rerunning a row before it is observed can remove its previous outcome. A captured success remains in monitor state after retention removes its row. Failed queries do not advance the checkpoint or confirm recovery. Editing a monitor restarts its observation window and discards pending deliveries for its previous version.
+
+### Persistent incident state and delivery
+
+- EF Core and MongoDB use a **separate record in the existing `IntegrationSettings` table/collection**, keyed by `monitor:<runtime-partition hash>`. No further schema migration is needed once the integrations settings table exists. Redis uses `<runtimePrefix>integrations:monitoring`. In-memory state is process-local and disappears on restart.
+- State is encrypted with Data Protection purpose `TickerQ.Integrations.Monitoring.v1`. Retain/share the same application name and key ring as configuration. State updates use version comparisons; a one-minute scan lease coordinates replicas without PostgreSQL-specific behavior. Custom providers must explicitly implement the monitoring storage capability; otherwise the dashboard reports it unavailable.
+- Each monitor opens one incident and sends one transition per enabled destination. Optional recovery is queued when success confirms recovery and the monitored condition is clear. Monitoring selects destinations directly; it does not need a separate Alert rule or use event-rule cooldowns.
+- A bounded persistent queue holds up to 256 delivery attempts. Detected transitions are saved first, including paired alert/recovery transitions, even when that queue is full. Each monitor retains at most one bounded observation batch of transitions and waits for them to enter the delivery queue before reading another batch. The checkpoint and transition records commit together. Pending counts include both stages; restart and queue pressure do not discard already detected incidents. Delivery runs separately from checks.
+- Each pending delivery has a ten-minute expiring lease. Failed delivery batches are retried after one and two minutes, with at most three batches; each batch uses the HTTP transport's retry policy below. Results appear in Activity. A crash after remote acceptance can cause a duplicate after lease expiry: receivers can deduplicate using the stable `eventId`. This is not exactly-once delivery or guaranteed escalation.
+- Persisted monitoring delivery history is bounded to the latest 50 results and seven days. It is operational feedback, not a permanent audit log. Pausing/removing a monitor or connection discards its pending deliveries; an already in-flight HTTP request may finish.
+
+Limits: 20 monitors per namespace, at most 200 matching cron definitions and 1,000 active executions per function. Exceeding query limits produces an unavailable check instead of a false healthy result.
+
+Monitoring uses `ReadMonitoringSnapshotAsync`, a dedicated provider contract for bounded execution metadata. It returns only IDs, status, completion time, elapsed duration and execution generation; it does not materialize request payloads, exception text, results or entity graphs. EF Core applies partition/function/time filters, ordering, limits and projections through LINQ in the database, with no provider-specific SQL. MongoDB applies equivalent server-side projections and limits. These query changes require no schema migration. Custom providers implementing monitoring must also implement this read contract; unsupported reads report an unavailable check.
+
+The Redis operational provider uses cursor scans and reads one stored JSON aggregate at a time, including nested chain steps, retaining at most 513 completed and 1,001 active metadata entries. Payload fields are skipped during parsing. Redis still transfers each complete JSON value, so peak read memory depends on the largest stored aggregate, and scan cost grows with retained history. This is a bounded-memory scan, not an indexed history query. Account for that cost when choosing retention and the monitoring interval on large Redis stores. The in-memory provider scans its existing rows without cloning payloads or rebuilding chain graphs.
+
+Monitoring runs inside your application. **If every replica is down, no checks or alerts can run until one returns.** Use an external uptime monitor for application-wide outages. Use the same package version and monitoring configuration across replicas.
+
+## Event alert delivery behavior and limits
 
 - Job execution only enqueues the event. A background worker sends HTTP requests, with at most four destinations in parallel.
 - Defaults: 1,000 queued events and 10 seconds per HTTP attempt. A full queue drops the new event, increments the visible counter, and logs a warning. Queue capacity and timeout are host options.
 - At most three attempts per delivery. Network failures, timeouts, HTTP 408/429, and 5xx are retried with 1s and 5s delays. `Retry-After` up to 60s is honored; longer delays are reported as failed. Other 4xx and redirects are not retried. HTTP success means the endpoint accepted the request, not that a person saw it.
 - Overlapping rules send once per destination per event. The smallest matching cooldown wins. Cooldown applies to attempts for the same destination, event kind, and function, including failed attempts. Zero disables it.
-- **Settings are persistent; delivery is best effort.** Pending events, cooldowns, counters, and the latest 50 delivery results are local to each process and reset on restart. There is no durable outbox, replay, cluster-wide cooldown, or exactly-once delivery. HTTP retries can duplicate a message; custom receivers can deduplicate with `eventId`.
+- **Event-alert settings are persistent; event delivery is best effort.** Pending events, cooldowns, counters, and the latest 50 delivery results are local to each process and reset on restart. These event alerts have no durable outbox, replay, cluster-wide cooldown, or exactly-once delivery. Monitoring transitions use the separate persistent queue described above. HTTP retries can duplicate a message; custom receivers can deduplicate with `eventId`.
 - Limits: 32 destinations, 100 rules, 16 headers per destination, 16,000 template characters, 24 KB rendered payload, and 256 KB dashboard request.
 - HTTPS is required. Redirects and HTTP proxies are disabled. DNS addresses are checked and the connection uses a validated address. Loopback/private destinations are blocked unless the host explicitly enables `AllowPrivateEndpoints`; this option cannot be changed from the dashboard.
 - Job request bodies and stack traces are not included. Failure reasons are flattened and truncated to 512 characters; that is **not** secret detection. Configure `ReasonSanitizer` if exception messages can contain application secrets or personal data. Delivery logs omit URLs, headers, response bodies, and exception messages.

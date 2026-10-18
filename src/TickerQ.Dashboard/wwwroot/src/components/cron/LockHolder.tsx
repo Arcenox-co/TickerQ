@@ -24,14 +24,14 @@ export function LockHolder({
         <TooltipTrigger asChild>
           <span
             tabIndex={0}
-            className="max-w-full truncate rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="max-w-full cursor-help truncate rounded-sm underline decoration-muted-foreground/40 decoration-dotted underline-offset-4 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {nodeName}
           </span>
         </TooltipTrigger>
-        <TooltipContent className="block max-w-xs space-y-1">
-          <span className="block text-[10px] font-medium">Execution owner ID</span>
-          <code className="block break-all text-[11px]">{value}</code>
+        <TooltipContent align="start" className="block w-80 max-w-[calc(100vw-2rem)] space-y-2 rounded-lg p-3 font-sans">
+          <span className="block text-[11px] font-medium text-muted-foreground">Execution owner ID</span>
+          <code className="block whitespace-normal break-all rounded-md border border-border/70 bg-surface-1 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-popover-foreground">{value}</code>
         </TooltipContent>
       </Tooltip>
       {showDetails && (

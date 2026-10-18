@@ -175,7 +175,8 @@ async function rootRequest<T>(path: string, signal?: AbortSignal): Promise<T> {
 export const dashboardApi = {
   getIntegrations: (signal?: AbortSignal) => get<IntegrationSnapshot>("/integrations", signal),
   saveIntegrations: (body: IntegrationConfiguration) => put<void>("/integrations", body),
-  previewIntegration: (provider: string, payloadTemplate: string | null) => post<{payload: string}>("/integrations/preview", { provider, payloadTemplate }),
+  previewIntegration: (provider: string, payloadTemplate: string | null, messageKind = "job_alert", monitorKind = "long_running") =>
+    post<import("./integration-types").IntegrationPreviewResponse>("/integrations/preview", { provider, payloadTemplate, messageKind, monitorKind }),
   testIntegration: (id: string) => post<IntegrationDeliveryStatus>(`/integrations/destinations/${id}/test`),
   // Scheduler options (root-level under /api/, not /api/dashboard/)
   getOptions: (signal?: AbortSignal) =>

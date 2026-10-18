@@ -55,7 +55,7 @@ public sealed class RedisRealScriptFixture : IAsyncLifetime
 public sealed class RedisRealScriptCollection : ICollectionFixture<RedisRealScriptFixture>;
 
 [Collection("RedisRealScript")]
-public sealed class RedisRealScriptTests
+public sealed partial class RedisRealScriptTests
 {
     private readonly RedisRealScriptFixture _fx;
     private readonly IDatabase _db;
@@ -87,6 +87,44 @@ public sealed class RedisRealScriptTests
         _provider = new TickerRedisPersistenceProvider<TimeTickerEntity, CronTickerEntity>(
             _db, _clock, _options, redisOptions,
             NullLogger<TickerRedisPersistenceProvider<TimeTickerEntity, CronTickerEntity>>.Instance);
+    }
+
+    [Fact]
+    public async Task IntegrationMonitoring_QueryIncludesNestedSteps_WithoutDuplicatingThem()
+    {
+        var root = new TimeTickerEntity { Id = Guid.NewGuid(), Function = "root", ExecutionTime = BaseNow, Status = TickerStatus.Done };
+        var child = new TimeTickerEntity { Id = Guid.NewGuid() };
+        child.Function = "monitored-step";
+        child.Status = TickerStatus.InProgress;
+        var grandchild = new TimeTickerEntity { Id = Guid.NewGuid() };
+        grandchild.Function = "monitored-step";
+        child.Children.Add(grandchild);
+        root.Children.Add(child);
+        await _provider.AddTimeTickers([root]);
+        var steps = await _provider.TimeTickersMonitoringQuery()
+            .Where(x => x.Function == "monitored-step").ToArrayAsync();
+        Assert.Equal(2, steps.Length);
+        Assert.Contains(steps, x => x.Id == child.Id && x.Status == TickerStatus.InProgress);
+        Assert.Contains(steps, x => x.Id == grandchild.Id && x.Status == TickerStatus.Idle);
+        Assert.Equal(2, steps.Select(x => x.Id).Distinct().Count());
+    }
+
+    [Fact]
+    public async Task IntegrationMonitoring_StateIsIndependent_AndConcurrentEditsAreAtomic()
+    {
+        var store = (TickerQ.Utilities.Integrations.ITickerIntegrationSettingsStore)_provider;
+        Assert.True(store.SupportsIntegrationMonitoring);
+        var settings = new TickerQ.Utilities.Integrations.IntegrationSettingsRecord(Guid.NewGuid(), "settings");
+        var state = new TickerQ.Utilities.Integrations.IntegrationSettingsRecord(Guid.NewGuid(), "encrypted-monitoring");
+        Assert.True(await store.SaveIntegrationSettingsAsync(settings, Guid.Empty));
+        Assert.Null(await store.ReadIntegrationMonitoringAsync());
+        Assert.True(await store.SaveIntegrationMonitoringAsync(state, Guid.Empty));
+        Assert.False(await store.SaveIntegrationMonitoringAsync(state, Guid.Empty));
+        var candidates = Enumerable.Range(0, 2).Select(_ => new TickerQ.Utilities.Integrations.IntegrationSettingsRecord(Guid.NewGuid(), "next-state")).ToArray();
+        var results = await Task.WhenAll(candidates.Select(x => store.SaveIntegrationMonitoringAsync(x, state.Version)));
+        Assert.Single(results, x => x);
+        Assert.Equal(candidates[Array.IndexOf(results, true)], await store.ReadIntegrationMonitoringAsync());
+        Assert.Equal(settings, await store.ReadIntegrationSettingsAsync());
     }
 
     [Fact]

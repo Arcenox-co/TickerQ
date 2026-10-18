@@ -811,6 +811,7 @@ TickerQ.Dashboard Real-time dashboard user interface
 TickerQ.Instrumentation.OpenTelemetry OpenTelemetry instrumentation
 TickerQ.SourceGenerator Compile-time function registration and generated code
 TickerQ.MongoDB MongoDB persistence provider
+TickerQ.Integrations Slack, Microsoft Teams, and custom webhook integrations
 TickerQ.SDK TickerQ Hub client and integration package
 TickerQ.RemoteExecutor TickerQ Hub remote-execution integration
 @tickerq/sdk TickerQ Hub JavaScript/TypeScript client and integration package

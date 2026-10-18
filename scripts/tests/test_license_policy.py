@@ -144,6 +144,7 @@ class LicensePolicyTests(unittest.TestCase):
         validator = load_validator()
 
         self.assertIn("TickerQ.MongoDB", validator.COMMERCIAL_PACKAGE_IDS)
+        self.assertIn("TickerQ.Integrations", validator.COMMERCIAL_PACKAGE_IDS)
         self.assertEqual(validator.COMMERCIAL_PACKAGE_IDS, validator.EXPECTED_PACKAGE_IDS)
         self.assertEqual("Arcenox,Alex Brown", validator.PACKAGE_AUTHORS["TickerQ.MongoDB"])
         self.assertFalse(hasattr(validator, "OSS_PACKAGE_IDS"))
@@ -158,9 +159,14 @@ class LicensePolicyTests(unittest.TestCase):
         license_text = commercial.read_text(encoding="utf-8")
         self.assertIn("Agreement version Version 1.0", license_text)
         self.assertIn("TickerQ.MongoDB MongoDB persistence provider", license_text)
+        self.assertIn(
+            "TickerQ.Integrations Slack, Microsoft Teams, and custom webhook integrations",
+            license_text,
+        )
         self.assertIn("@tickerq/sdk TickerQ Hub JavaScript/TypeScript client", license_text)
         self.assertIn("first immutable version 1.0.0 artifact", license_text)
         self.assertTrue(licensing.is_file())
+        self.assertIn("- `TickerQ.Integrations`", licensing.read_text(encoding="utf-8"))
         self.assertIn("Publication gate", licensing.read_text(encoding="utf-8"))
         self.assertTrue(notices.is_file())
         notice_text = notices.read_text(encoding="utf-8")

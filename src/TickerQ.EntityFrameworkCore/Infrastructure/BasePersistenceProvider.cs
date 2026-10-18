@@ -27,35 +27,46 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure;
 
-internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTicker>
+internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTicker>
     where TDbContext : DbContext
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
     public bool IntegrationSettingsArePersistent => true;
 
-    public async Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
+    public bool SupportsIntegrationMonitoring => true;
+    private string IntegrationMonitoringKey => "monitor:" + _runtimePartitionKey.Substring(_runtimePartitionKey.Length - 64);
+    public Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
+        => ReadIntegrationRecordAsync(_runtimePartitionKey, cancellationToken);
+    public Task<bool> SaveIntegrationSettingsAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        => SaveIntegrationRecordAsync(_runtimePartitionKey, record, expectedVersion, cancellationToken);
+    public Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationMonitoringAsync(CancellationToken cancellationToken = default)
+        => ReadIntegrationRecordAsync(IntegrationMonitoringKey, cancellationToken);
+    public Task<bool> SaveIntegrationMonitoringAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        => SaveIntegrationRecordAsync(IntegrationMonitoringKey, record, expectedVersion, cancellationToken);
+
+    private async Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationRecordAsync(string key, CancellationToken cancellationToken)
     {
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var row = await session.Context.Set<TickerQ.EntityFrameworkCore.Entities.IntegrationSettingsEntity>().AsNoTracking()
-            .SingleOrDefaultAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, cancellationToken).ConfigureAwait(false);
+            .SingleOrDefaultAsync(x => x.ApplicationNamespaceKey == key, cancellationToken).ConfigureAwait(false);
         return row == null ? null : new(row.Version, row.ProtectedConfiguration);
     }
 
-    public async Task<bool> SaveIntegrationSettingsAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+    private async Task<bool> SaveIntegrationRecordAsync(string key, TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken)
     {
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var rows = session.Context.Set<TickerQ.EntityFrameworkCore.Entities.IntegrationSettingsEntity>();
         if (expectedVersion != Guid.Empty)
-            return await rows.Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Version == expectedVersion)
+            return await rows.Where(x => x.ApplicationNamespaceKey == key && x.Version == expectedVersion)
                 .ExecuteUpdateAsync(s => s.SetProperty(x => x.Version, record.Version)
                     .SetProperty(x => x.ProtectedConfiguration, record.ProtectedConfiguration), cancellationToken).ConfigureAwait(false) == 1;
-        rows.Add(new() { ApplicationNamespaceKey = _runtimePartitionKey, Version = record.Version, ProtectedConfiguration = record.ProtectedConfiguration });
+        rows.Add(new() { ApplicationNamespaceKey = key, Version = record.Version, ProtectedConfiguration = record.ProtectedConfiguration });
         try { await session.Context.SaveChangesAsync(cancellationToken).ConfigureAwait(false); return true; }
         catch (DbUpdateException)
         {
             // Another administrator/replica may have inserted the singleton first.
-            if (await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, cancellationToken).ConfigureAwait(false)) return false;
+            if (await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == key, cancellationToken).ConfigureAwait(false)) return false;
             throw;
         }
     }
@@ -1265,6 +1276,12 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 return;
             var property = args.Entry.Property("ApplicationNamespaceKey");
             var current = property.CurrentValue as string;
+            // Monitoring shares the settings table, but owns a separate singleton.
+            // Only this provider's exact derived key is allowed; job entities and
+            // settings belonging to another runtime partition remain protected.
+            if (args.Entry.Entity is IntegrationSettingsEntity &&
+                StringComparer.Ordinal.Equals(current, IntegrationMonitoringKey))
+                return;
             if (!string.IsNullOrEmpty(current) &&
                 !StringComparer.Ordinal.Equals(current, TickerQRuntimePartition.LegacyGlobal.StorageKey) &&
                 !StringComparer.Ordinal.Equals(current, _runtimePartitionKey))

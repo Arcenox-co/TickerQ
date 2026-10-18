@@ -28,27 +28,37 @@ namespace TickerQ.MongoDB.Infrastructure
             _context.TimeTickers.CollectionNamespace.CollectionName + "_IntegrationSettings");
         public bool IntegrationSettingsArePersistent => true;
 
-        public async Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
+        public bool SupportsIntegrationMonitoring => true;
+        private string IntegrationMonitoringKey => "monitor:" + _runtimePartitionKey.Substring(_runtimePartitionKey.Length - 64);
+        public Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
+            => ReadIntegrationRecordAsync(_runtimePartitionKey, cancellationToken);
+        public Task<bool> SaveIntegrationSettingsAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+            => SaveIntegrationRecordAsync(_runtimePartitionKey, record, expectedVersion, cancellationToken);
+        public Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationMonitoringAsync(CancellationToken cancellationToken = default)
+            => ReadIntegrationRecordAsync(IntegrationMonitoringKey, cancellationToken);
+        public Task<bool> SaveIntegrationMonitoringAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+            => SaveIntegrationRecordAsync(IntegrationMonitoringKey, record, expectedVersion, cancellationToken);
+
+        private async Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationRecordAsync(string key, CancellationToken cancellationToken)
         {
-            var row = await IntegrationSettings.Find(Builders<BsonDocument>.Filter.Eq("_id", _runtimePartitionKey))
+            var row = await IntegrationSettings.Find(Builders<BsonDocument>.Filter.Eq("_id", key))
                 .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
             return row == null ? null : new(Guid.Parse(row["Version"].AsString), row["ProtectedConfiguration"].AsString);
         }
 
-        public async Task<bool> SaveIntegrationSettingsAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        private async Task<bool> SaveIntegrationRecordAsync(string key, TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken)
         {
-            var row = new BsonDocument { ["_id"] = _runtimePartitionKey, ["Version"] = record.Version.ToString(), ["ProtectedConfiguration"] = record.ProtectedConfiguration };
+            var row = new BsonDocument { ["_id"] = key, ["Version"] = record.Version.ToString(), ["ProtectedConfiguration"] = record.ProtectedConfiguration };
             if (expectedVersion == Guid.Empty)
             {
                 try { await IntegrationSettings.InsertOneAsync(row, cancellationToken: cancellationToken).ConfigureAwait(false); return true; }
                 catch (MongoWriteException ex) when (ex.WriteError.Category == ServerErrorCategory.DuplicateKey) { return false; }
             }
             var result = await IntegrationSettings.ReplaceOneAsync(
-                Builders<BsonDocument>.Filter.Eq("_id", _runtimePartitionKey) & Builders<BsonDocument>.Filter.Eq("Version", expectedVersion.ToString()),
+                Builders<BsonDocument>.Filter.Eq("_id", key) & Builders<BsonDocument>.Filter.Eq("Version", expectedVersion.ToString()),
                 row, cancellationToken: cancellationToken).ConfigureAwait(false);
             return result.MatchedCount == 1;
         }
-
         private readonly ITickerMongoContext<TTimeTicker, TCronTicker> _context;
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;

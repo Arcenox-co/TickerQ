@@ -39,10 +39,28 @@ namespace TickerQ.Provider
             }
         }
 
+        public bool SupportsIntegrationMonitoring => true;
+        public Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationMonitoringAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_partitionState.IntegrationLock) return Task.FromResult(_partitionState.IntegrationMonitoring);
+        }
+        public Task<bool> SaveIntegrationMonitoringAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_partitionState.IntegrationLock)
+            {
+                if ((_partitionState.IntegrationMonitoring?.Version ?? Guid.Empty) != expectedVersion) return Task.FromResult(false);
+                _partitionState.IntegrationMonitoring = record;
+                return Task.FromResult(true);
+            }
+        }
+
         private sealed class PartitionState
         {
             internal readonly object IntegrationLock = new();
             internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationSettings;
+            internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationMonitoring;
             internal readonly ConcurrentDictionary<Guid, TTimeTicker> TimeTickers = new();
             internal readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, byte>> ChildrenIndex = new();
             internal readonly ConcurrentDictionary<Guid, TCronTicker> CronTickers = new();

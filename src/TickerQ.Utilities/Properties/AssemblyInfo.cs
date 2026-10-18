@@ -5,6 +5,7 @@
 [assembly: InternalsVisibleTo("TickerQ.MongoDB")]
 [assembly: InternalsVisibleTo("TickerQ.Dashboard")]
 [assembly: InternalsVisibleTo("TickerQ.Integrations")]
+[assembly: InternalsVisibleTo("TickerQ.Integrations.Tests")]
 [assembly: InternalsVisibleTo("TickerQ.Tests")]
 [assembly: InternalsVisibleTo("TickerQ.SDK")]
 [assembly: InternalsVisibleTo("TickerQ.RemoteExecutor")]

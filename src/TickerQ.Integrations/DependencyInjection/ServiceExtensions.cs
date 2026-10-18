@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using TickerQ.Integrations.Infrastructure;
+using TickerQ.Integrations.Monitoring;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
@@ -32,7 +33,14 @@ public static class ServiceExtensions
             throw new ArgumentException("Application and environment labels must be at most 100 characters.");
         if (options.DashboardUrl != null && (!Uri.TryCreate(options.DashboardUrl, UriKind.Absolute, out var url) || url.Scheme is not ("https" or "http") || url.UserInfo.Length > 0))
             throw new ArgumentException("DashboardUrl must be an absolute HTTP(S) URL without credentials.");
-        tickerConfiguration.ExternalProviderConfigServiceAction += services => RegisterServices(services, options);
+        if (options.MonitoringInterval < TimeSpan.FromSeconds(5) || options.MonitoringInterval > TimeSpan.FromMinutes(5))
+            throw new ArgumentException("MonitoringInterval must be between 5 seconds and 5 minutes.");
+        tickerConfiguration.ExternalProviderConfigServiceAction += services =>
+        {
+            RegisterServices(services, options);
+            services.AddSingleton<IMonitoringExecutionSource, MonitoringExecutionSource<TTimeTicker, TCronTicker>>();
+            services.AddHostedService<IntegrationMonitoringService>();
+        };
         return tickerConfiguration;
     }
 
@@ -52,6 +60,7 @@ public static class ServiceExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIntegrationPayloadFormatter, TeamsFormatter>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIntegrationPayloadFormatter, WebhookFormatter>());
         services.AddSingleton<IntegrationConfigurationService>();
+        services.AddSingleton<MonitoringStateStore>();
         services.AddSingleton<IntegrationTransport>();
         services.AddSingleton<IntegrationEngine>();
         services.Replace(ServiceDescriptor.Singleton<ITickerQFailureNotifier>(sp => sp.GetRequiredService<IntegrationEngine>()));

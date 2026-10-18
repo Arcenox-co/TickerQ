@@ -23,18 +23,28 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
 {
     public bool IntegrationSettingsArePersistent => true;
 
-    public async Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
+    public bool SupportsIntegrationMonitoring => true;
+    public Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
+        => ReadIntegrationRecordAsync(Prefix + "integrations:settings", cancellationToken);
+    public Task<bool> SaveIntegrationSettingsAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        => SaveIntegrationRecordAsync(Prefix + "integrations:settings", record, expectedVersion, cancellationToken);
+    public Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationMonitoringAsync(CancellationToken cancellationToken = default)
+        => ReadIntegrationRecordAsync(Prefix + "integrations:monitoring", cancellationToken);
+    public Task<bool> SaveIntegrationMonitoringAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        => SaveIntegrationRecordAsync(Prefix + "integrations:monitoring", record, expectedVersion, cancellationToken);
+
+    private async Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationRecordAsync(string key, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var values = await Db.HashGetAsync(Prefix + "integrations:settings", new RedisValue[] { "version", "payload" }).ConfigureAwait(false);
+        var values = await Db.HashGetAsync(key, new RedisValue[] { "version", "payload" }).ConfigureAwait(false);
         return values[0].IsNull ? null : new(Guid.Parse(values[0].ToString()), values[1].ToString());
     }
 
-    public async Task<bool> SaveIntegrationSettingsAsync(TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+    private async Task<bool> SaveIntegrationRecordAsync(string key, TickerQ.Utilities.Integrations.IntegrationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         const string script = "local old = redis.call('HGET', KEYS[1], 'version'); if (old or '') ~= ARGV[1] then return 0 end; redis.call('HSET', KEYS[1], 'version', ARGV[2], 'payload', ARGV[3]); return 1";
-        return (long)await Db.ScriptEvaluateAsync(script, new RedisKey[] { Prefix + "integrations:settings" },
+        return (long)await Db.ScriptEvaluateAsync(script, new RedisKey[] { key },
             new RedisValue[] { expectedVersion == Guid.Empty ? "" : expectedVersion.ToString(), record.Version.ToString(), record.ProtectedConfiguration }).ConfigureAwait(false) == 1;
     }
 
@@ -121,6 +131,22 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
             return list;
         });
     }
+
+    public ITickerQueryable<TTimeTicker> TimeTickersMonitoringQuery()
+        => new InMemoryTickerQueryable<TTimeTicker>(async ct =>
+        {
+            var roots = await TimeTickersQuery().ToArrayAsync(ct).ConfigureAwait(false);
+            var jobs = new Dictionary<Guid, TTimeTicker>();
+            var pending = new Stack<TTimeTicker>(roots);
+            while (pending.Count > 0)
+            {
+                ct.ThrowIfCancellationRequested();
+                var job = pending.Pop();
+                if (!jobs.TryAdd(job.Id, job)) continue;
+                foreach (var child in job.Children ?? Array.Empty<TTimeTicker>()) pending.Push(child);
+            }
+            return jobs.Values.ToList();
+        });
 
     public ITickerQueryable<TCronTicker> CronTickersQuery()
     {

@@ -281,6 +281,11 @@ public class IntegrationTests
         Assert.Equal(row, await same.GetRequiredService<ITickerIntegrationSettingsStore>().ReadIntegrationSettingsAsync());
         Assert.Null(await other.GetRequiredService<ITickerIntegrationSettingsStore>().ReadIntegrationSettingsAsync());
         Assert.False(await store.SaveIntegrationSettingsAsync(row, Guid.Empty));
+        Assert.True(store.SupportsIntegrationMonitoring);
+        Assert.True(await store.SaveIntegrationMonitoringAsync(row, Guid.Empty));
+        Assert.Equal(row, await same.GetRequiredService<ITickerIntegrationSettingsStore>().ReadIntegrationMonitoringAsync());
+        Assert.Null(await other.GetRequiredService<ITickerIntegrationSettingsStore>().ReadIntegrationMonitoringAsync());
+        Assert.False(await store.SaveIntegrationMonitoringAsync(row, Guid.Empty));
     }
 
     [Fact]
