@@ -23,6 +23,31 @@ public class RequestContractIdentityMappingTests
         AssertIdentity(Assert.Single(Assert.Single(projected.Children).Children), 3, "grandchild");
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void QueueTimeProjection_ExcludesScheduledBranches(int scheduledDepth)
+    {
+        var root = Time("Root", 1, "root");
+        var inlineChild = Time("InlineChild", 2, "inline-child");
+        var inlineGrandchild = Time("InlineGrandchild", 3, "inline-grandchild");
+        root.Children.Add(inlineChild);
+        inlineChild.Children.Add(inlineGrandchild);
+        var scheduled = Time("Scheduled", 4, "scheduled");
+        scheduled.ExecutionTime = new DateTime(2026, 10, 18, 12, 0, 0, DateTimeKind.Utc);
+        scheduled.Children.Add(Time("ScheduledChild", 5, "scheduled-child"));
+        (scheduledDepth == 1 ? root : inlineChild).Children.Add(scheduled);
+
+        var project = MappingExtensions.ForQueueTimeTickers<TimeTickerEntity>().Compile();
+        var projected = project(root);
+        var child = Assert.Single(projected.Children);
+        Assert.Equal(inlineChild.Id, child.Id);
+        Assert.Equal(inlineGrandchild.Id, Assert.Single(child.Children).Id);
+        var independentlyProjected = project(scheduled);
+        Assert.Equal(scheduled.ExecutionTime, independentlyProjected.ExecutionTime);
+        Assert.Equal("ScheduledChild", Assert.Single(independentlyProjected.Children).Function);
+    }
+
     [Fact]
     public void CronProjections_PreserveIdentity()
     {

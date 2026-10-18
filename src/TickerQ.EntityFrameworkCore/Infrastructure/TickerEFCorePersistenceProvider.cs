@@ -932,8 +932,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 return await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
             }, cancellationToken).ConfigureAwait(false);
             
-            if(RedisContext.HasRedisConnection)
-                await RedisContext.DistributedCache.RemoveAsync(CronExpressionsCacheKey, cancellationToken).ConfigureAwait(false);
+            await InvalidateCronCacheAfterCommitAsync().ConfigureAwait(false);
             
             return result;
         }
@@ -975,8 +974,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 return await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
             }, cancellationToken).ConfigureAwait(false);
             
-            if(RedisContext.HasRedisConnection)
-                await RedisContext.DistributedCache.RemoveAsync(CronExpressionsCacheKey, cancellationToken).ConfigureAwait(false);
+            await InvalidateCronCacheAfterCommitAsync().ConfigureAwait(false);
             
             return result;
         }
@@ -991,8 +989,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     .ExecuteDeleteAsync(ct).ConfigureAwait(false);
             }, cancellationToken).ConfigureAwait(false);
             
-            if(RedisContext.HasRedisConnection)
-                await RedisContext.DistributedCache.RemoveAsync(CronExpressionsCacheKey, cancellationToken).ConfigureAwait(false);
+            await InvalidateCronCacheAfterCommitAsync().ConfigureAwait(false);
             
             return result;
         }

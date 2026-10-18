@@ -50,7 +50,8 @@ namespace TickerQ.Utilities.Infrastructure
                 StaleRestartCount = e.StaleRestartCount,
                 ExecutedAt = e.ExecutedAt,
                 ElapsedTime = e.ElapsedTime,
-                Children = e.Children.Select(ch => new TimeTickerEntity
+                // Scheduled descendants execute on their own schedule, not inline.
+                Children = e.Children.Where(ch => ch.ExecutionTime == null).Select(ch => new TimeTickerEntity
                 {
                     Id = ch.Id,
                     Function = ch.Function,
@@ -63,7 +64,7 @@ namespace TickerQ.Utilities.Infrastructure
                     ParentId = ch.ParentId,
                     ChainRootId = e.ChainRootId,
                     ChainGeneration = e.ChainGeneration,
-                    Children = ch.Children.Select(gch => new TimeTickerEntity
+                    Children = ch.Children.Where(gch => gch.ExecutionTime == null).Select(gch => new TimeTickerEntity
                     {
                         Function = gch.Function,
                         RequestContractVersion = gch.RequestContractVersion,

@@ -166,6 +166,29 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     public void EfProvider_SupportsLeaseBasedRecovery()
         => Assert.True(_provider.SupportsLeaseBasedRecovery);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CronExpressionCache_AndNullCacheFallback_ExcludePausedOrDisabledSchedules(bool nullCacheResult)
+    {
+        var active = CreateCronTicker(function: "active");
+        var paused = CreateCronTicker(function: "paused");
+        paused.IsSystemPaused = true;
+        var disabled = CreateCronTicker(function: "disabled");
+        disabled.IsEnabled = false;
+        _seedContext.AddRange(active, paused, disabled);
+        await _seedContext.SaveChangesAsync();
+        if (nullCacheResult)
+            _redisContext.GetOrSetArrayAsync(Arg.Any<string>(),
+                Arg.Any<Func<CancellationToken, Task<CronTickerEntity[]>>>(),
+                Arg.Any<TimeSpan?>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<CronTickerEntity[]>(null!));
+
+        var expressions = await _provider.GetAllCronTickerExpressions();
+
+        Assert.Equal(active.Id, Assert.Single(expressions).Id);
+    }
+
     private TestTickerQDbContext CreateVerifyContext() => new(_options);
 
     #region Helper Methods
@@ -191,6 +214,14 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
             UpdatedAt = updatedAt ?? _fixedNow.AddHours(-1),
             Request = Array.Empty<byte>()
         };
+    }
+
+    private TimeTickerEntity CreateChainChild(
+        TickerStatus status = TickerStatus.Idle, string function = "TestFunction")
+    {
+        var child = CreateTimeTicker(status: status, function: function);
+        child.ExecutionTime = null;
+        return child;
     }
 
     private CronTickerEntity CreateCronTicker(
@@ -944,7 +975,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     public async Task Generic_idle_child_update_rejects_stale_root_generation_after_reacquisition()
     {
         var root = CreateTimeTicker(status: TickerStatus.Idle);
-        var child = CreateTimeTicker(executionTime: null, status: TickerStatus.Idle, function: "generation-a-child");
+        var child = CreateChainChild(function: "generation-a-child");
         child.ParentId = root.Id;
         root.Children = [child];
         await SeedTimeTickers(root);
@@ -997,7 +1028,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     public async Task AcquireImmediateTimeTickersAsync_PersistsLateNullDescendantRepairBeforeFencedChildWrite()
     {
         var root = CreateTimeTicker(status: TickerStatus.Idle);
-        var child = CreateTimeTicker(executionTime: null, status: TickerStatus.Idle);
+        var child = CreateChainChild();
         child.ParentId = root.Id;
         root.Children = [child];
         await SeedTimeTickers(root);
@@ -1035,9 +1066,9 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     public async Task AcquireImmediateTimeTickersAsync_HydratesBeyondGrandchildren()
     {
         var root = CreateTimeTicker(status: TickerStatus.Idle);
-        var child = CreateTimeTicker(executionTime: null, status: TickerStatus.Idle);
-        var grandchild = CreateTimeTicker(executionTime: null, status: TickerStatus.Idle);
-        var greatGrandchild = CreateTimeTicker(executionTime: null, status: TickerStatus.Idle);
+        var child = CreateChainChild();
+        var grandchild = CreateChainChild();
+        var greatGrandchild = CreateChainChild();
         greatGrandchild.TimeoutSeconds = 37;
         child.ParentId = root.Id;
         grandchild.ParentId = child.Id;
@@ -1072,10 +1103,10 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         TickerStatus status, DateTime? rootExecutionTime)
     {
         var root = CreateTimeTicker(executionTime: rootExecutionTime, status: status);
-        var child = CreateTimeTicker(executionTime: null, status: status);
-        var grandchild = CreateTimeTicker(executionTime: null, status: status);
-        var greatGrandchild = CreateTimeTicker(executionTime: null, status: status);
-        var greatGreatGrandchild = CreateTimeTicker(executionTime: null, status: status);
+        var child = CreateChainChild(status);
+        var grandchild = CreateChainChild(status);
+        var greatGrandchild = CreateChainChild(status);
+        var greatGreatGrandchild = CreateChainChild(status);
 
         greatGrandchild.RequestContractVersion = 42;
         greatGrandchild.RequestContractFingerprint = "sha256:great-grandchild";
@@ -1161,6 +1192,93 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     {
         var results = await _provider.AcquireImmediateTimeTickersAsync(Array.Empty<Guid>(), CancellationToken.None);
         Assert.Empty(results);
+    }
+
+    [Theory]
+    [InlineData("earliest", 1)]
+    [InlineData("earliest", 2)]
+    [InlineData("earliest", 3)]
+    [InlineData("earliest", 5)]
+    [InlineData("fallback", 1)]
+    [InlineData("fallback", 2)]
+    [InlineData("fallback", 3)]
+    [InlineData("fallback", 5)]
+    [InlineData("immediate", 1)]
+    [InlineData("immediate", 2)]
+    [InlineData("immediate", 3)]
+    [InlineData("immediate", 5)]
+    [InlineData("ondemand", 1)]
+    [InlineData("ondemand", 2)]
+    [InlineData("ondemand", 3)]
+    [InlineData("ondemand", 5)]
+    public async Task QueueProjection_ScheduledDescendantIsAcquiredSeparately(string path, int scheduledDepth)
+    {
+        var root = CreateTimeTicker(executionTime: _fixedNow.AddMinutes(path == "fallback" ? -5 : 1));
+        var inlineNodes = new List<TimeTickerEntity> { root };
+        for (var depth = 1; depth <= 5; depth++)
+        {
+            var child = CreateChainChild();
+            inlineNodes[^1].Children.Add(child);
+            inlineNodes.Add(child);
+        }
+
+        var scheduled = CreateTimeTicker(executionTime: _fixedNow.AddHours(1));
+        scheduled.RunCondition = RunCondition.InProgress;
+        var scheduledChild = CreateChainChild();
+        scheduled.Children.Add(scheduledChild);
+        inlineNodes[scheduledDepth - 1].Children.Add(scheduled);
+        await SeedTimeTickers(root);
+
+        var projected = path switch
+        {
+            "earliest" => Assert.Single(await _provider.GetEarliestTimeTickers(CancellationToken.None)),
+            "fallback" => Assert.Single(await ToListAsync(_provider.QueueTimedOutTimeTickers(CancellationToken.None))),
+            "immediate" => Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([root.Id])),
+            _ => await _provider.AcquireTimeTickerOnDemandAsync(root.Id, _fixedNow)
+        };
+
+        // Every inline step survives, including beyond the two-level SQL projection;
+        // the scheduled branch and its own inline steps must not run with this root.
+        var projectedNode = projected;
+        foreach (var inlineNode in inlineNodes.Skip(1))
+        {
+            projectedNode = Assert.Single(projectedNode.Children);
+            Assert.Equal(inlineNode.Id, projectedNode.Id);
+        }
+        Assert.Empty(projectedNode.Children);
+
+        if (path == "earliest")
+            Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([root.Id]));
+
+        using (var db = CreateVerifyContext())
+        {
+            var stored = await db.Set<TimeTickerEntity>().AsNoTracking()
+                .SingleAsync(x => x.Id == scheduled.Id);
+            Assert.Equal(inlineNodes[scheduledDepth - 1].Id, stored.ParentId);
+            Assert.Equal(scheduled.ExecutionTime, stored.ExecutionTime);
+            Assert.Equal(TickerStatus.Idle, stored.Status);
+            Assert.Null(stored.ChainGeneration);
+            Assert.Null(stored.AcquisitionToken);
+        }
+
+        // The read hierarchy still contains the scheduled branch.
+        var readNode = await _provider.GetTimeTickerById(root.Id, CancellationToken.None);
+        foreach (var inlineNode in inlineNodes.Skip(1).Take(scheduledDepth - 1))
+            readNode = Assert.Single(readNode.Children, x => x.Id == inlineNode.Id);
+        Assert.Equal(scheduledChild.Id,
+            Assert.Single(Assert.Single(readNode.Children, x => x.Id == scheduled.Id).Children).Id);
+
+        _clock.UtcNow.Returns(scheduled.ExecutionTime!.Value);
+        var due = Assert.Single(await _provider.GetEarliestTimeTickers(CancellationToken.None));
+        Assert.Equal(scheduled.Id, due.Id);
+        Assert.Equal(scheduled.ExecutionTime, due.ExecutionTime);
+        Assert.Equal(scheduledChild.Id, Assert.Single(due.Children).Id);
+
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([scheduled.Id]));
+        Assert.Equal(scheduled.Id, acquired.ChainRootId);
+        Assert.Equal(scheduled.Id, Assert.Single(acquired.Children).ChainRootId);
+        Assert.Equal(acquired.ChainGeneration, Assert.Single(acquired.Children).ChainGeneration);
+        Assert.Empty(await _provider.AcquireImmediateTimeTickersAsync([scheduled.Id]));
     }
 
     [Fact]
@@ -1595,18 +1713,20 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetEarliestAvailableCronOccurrence_IgnoresOldOccurrences()
+    public async Task GetEarliestAvailableCronOccurrence_ReturnsOverdueOccurrenceWithOriginalTime()
     {
         var cron = CreateCronTicker();
         await SeedCronTickers(cron);
 
-        // Older than 1 second — outside main scheduler window
+        // Overdue occurrences must remain eligible for normal scheduling.
         var oldTime = _fixedNow.AddSeconds(-5);
         var occ = CreateCronOccurrence(cron.Id, executionTime: oldTime, status: TickerStatus.Idle);
         await SeedCronOccurrences(occ);
 
         var result = await _provider.GetEarliestAvailableCronOccurrence(new[] { cron.Id }, CancellationToken.None);
-        Assert.Null(result);
+        Assert.NotNull(result);
+        Assert.Equal(occ.Id, result.Id);
+        Assert.Equal(oldTime, result.ExecutionTime);
     }
 
     // =========================================================================

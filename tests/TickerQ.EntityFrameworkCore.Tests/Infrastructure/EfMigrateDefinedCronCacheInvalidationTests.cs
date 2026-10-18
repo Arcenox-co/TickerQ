@@ -19,7 +19,7 @@ namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure;
 /// Finding 2: <c>MigrateDefinedCronTickers</c> updates/removes/retires cron expressions, so a successful
 /// reconcile that can alter the visible cron definitions must invalidate the partitioned
 /// <c>"cron:expressions:{partition}"</c> <see cref="IDistributedCache"/> key — exactly like Insert/Update/Delete
-/// already do — with the caller's cancellation token forwarded. A reconcile that fails must NOT touch
+/// already do — independently of request cancellation after commit. A reconcile that fails must NOT touch
 /// the cache (a stale reconcile must not silently drop the coherent cached view).
 /// </summary>
 public sealed class EfMigrateDefinedCronCacheInvalidationTests : IAsyncLifetime
@@ -69,14 +69,14 @@ public sealed class EfMigrateDefinedCronCacheInvalidationTests : IAsyncLifetime
     public async Task DisposeAsync() => await _connection.DisposeAsync();
 
     [Fact]
-    public async Task SuccessfulReconcile_InvalidatesCronExpressionsCache_ForwardingToken()
+    public async Task SuccessfulReconcile_InvalidatesCronExpressionsCache_IndependentOfRequestCancellation()
     {
         using var cts = new CancellationTokenSource();
 
         await _provider.MigrateDefinedCronTickers(
             [new DefinedCronTickerSeed("cache-fn", "*/5 * * * *", 1, null)], cts.Token);
 
-        await _distributedCache.Received(1).RemoveAsync(CronExpressionsCacheKey, cts.Token);
+        await _distributedCache.Received(1).RemoveAsync(CronExpressionsCacheKey, CancellationToken.None);
     }
 
     [Fact]
@@ -90,6 +90,41 @@ public sealed class EfMigrateDefinedCronCacheInvalidationTests : IAsyncLifetime
 
         await _distributedCache.DidNotReceive()
             .RemoveAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CommittedCronMutations_SucceedEvenWhenRedisInvalidationFails(bool canceledCache)
+    {
+        _distributedCache.RemoveAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(_ =>
+            Task.FromException(canceledCache ? new OperationCanceledException("cache timeout") : new IOException("cache offline")));
+        var cron = new CronTickerEntity { Function = "committed", Expression = "0 * * * * *" };
+        Assert.Equal(1, await _provider.InsertCronTickers([cron], CancellationToken.None));
+        Assert.Equal(cron.Id, Assert.Single(await _provider.GetCronTickers(x => x.Function == "committed", CancellationToken.None)).Id);
+        cron.Expression = "0 */2 * * * *";
+        Assert.Equal(1, await _provider.UpdateCronTickers([cron], CancellationToken.None));
+        Assert.Equal(cron.Expression, Assert.Single(await _provider.GetCronTickers(x => x.Id == cron.Id, CancellationToken.None)).Expression);
+        Assert.Equal(1, await _provider.RemoveCronTickers([cron.Id], CancellationToken.None));
+        Assert.Empty(await _provider.GetCronTickers(x => x.Id == cron.Id, CancellationToken.None));
+        await _provider.MigrateDefinedCronTickers([new DefinedCronTickerSeed("new-code-job", "0 * * * * *")], CancellationToken.None);
+        Assert.Single(await _provider.GetCronTickers(x => x.Function == "new-code-job", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RequestCancellationAfterCommit_DoesNotCancelInvalidationOrMisreportInsert()
+    {
+        using var request = new CancellationTokenSource();
+        _distributedCache.RemoveAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            request.Cancel(); // Persistence has already completed by this point.
+            call.ArgAt<CancellationToken>(1).ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        });
+        var cron = new CronTickerEntity { Function = "committed", Expression = "0 * * * * *" };
+        Assert.Equal(1, await _provider.InsertCronTickers([cron], request.Token));
+        Assert.True(request.IsCancellationRequested);
+        Assert.Single(await _provider.GetCronTickers(x => x.Id == cron.Id, CancellationToken.None));
     }
 
     [Fact]

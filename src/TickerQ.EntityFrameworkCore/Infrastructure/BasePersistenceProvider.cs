@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 using System;
 using System.Collections.Generic;
@@ -277,7 +278,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     }
 
     protected async Task LockTimeTickerGraphMutationAsync(
-        TDbContext dbContext, CancellationToken cancellationToken)
+        TDbContext dbContext, CancellationToken cancellationToken, bool preservePendingChanges = false)
     {
         var metadata = dbContext.Set<TickerQStoreMetadata>();
             if (!await metadata.AsNoTracking().AnyAsync(
@@ -285,13 +286,21 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                          x.Id == TickerQStoreMetadata.TimeTickerGraphMutationSentinelId,
                     cancellationToken).ConfigureAwait(false))
             {
-                metadata.Add(new TickerQStoreMetadata
+                var sentinel = new TickerQStoreMetadata
                 {
                     ApplicationNamespaceKey = _runtimePartitionKey,
                     Id = TickerQStoreMetadata.TimeTickerGraphMutationSentinelId,
                     UpdatedAtUtc = _clock.UtcNow
-                });
-                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                };
+                if (preservePendingChanges)
+                    await metadata.Upsert(sentinel)
+                        .On(x => new { x.ApplicationNamespaceKey, x.Id }).NoUpdate()
+                        .RunAsync(cancellationToken).ConfigureAwait(false);
+                else
+                {
+                    metadata.Add(sentinel);
+                    await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
 
             var locked = await metadata
@@ -303,6 +312,44 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 throw new DbUpdateConcurrencyException("TickerQ could not acquire the TimeTicker graph mutation sentinel.");
             if (AfterTimeTickerGraphMutationFenceForTestAsync != null)
                 await AfterTimeTickerGraphMutationFenceForTestAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    // Called from the application's SaveChanges command interceptor, after EF has opened
+    // its transaction but before it writes any tracked business/ticker entities.
+    internal async Task LockStagedTickerSaveAsync(TDbContext context, bool hasTimeTickerGraphs, CancellationToken ct)
+    {
+        if (context.Database.CurrentTransaction == null)
+            throw new InvalidOperationException("Staged tickers require a database transaction.");
+        if (_runtimePartitionKey == TickerQRuntimePartition.LegacyGlobal.StorageKey &&
+            context.Database.CurrentTransaction.GetDbTransaction().IsolationLevel != IsolationLevel.Serializable)
+            throw new InvalidOperationException(
+                "Staging in the legacy global partition requires a Serializable transaction. " +
+                "Configure an application namespace or use BeginTransactionAsync(IsolationLevel.Serializable).");
+        if (!await LockLegacyWriteAdmissionAsync(context, ct).ConfigureAwait(false))
+            throw new InvalidOperationException("The legacy TickerQ partition has been adopted; staging is not allowed.");
+        if (hasTimeTickerGraphs)
+            await LockTimeTickerGraphMutationAsync(context, ct, preservePendingChanges: true).ConfigureAwait(false);
+        if (!await LockRunnableAdmissionAsync(context, ct, _runtimeActivationScopeKey).ConfigureAwait(false))
+            throw new InvalidOperationException("The TickerQ runtime activation epoch no longer permits scheduling.");
+    }
+
+    internal Task InvalidateStagedCronCacheAsync() => InvalidateCronCacheAfterCommitAsync();
+
+    protected async Task InvalidateCronCacheAfterCommitAsync()
+    {
+        if (!RedisContext.HasRedisConnection) return;
+        try
+        {
+            // The database has committed. Request cancellation must not suppress invalidation
+            // or turn a successful write into a reported failure that invites duplicate retries.
+            await RedisContext.DistributedCache.RemoveAsync(CronExpressionsCacheKey, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            _serviceProvider.GetService<ILoggerFactory>()?.CreateLogger("TickerQ.EntityFrameworkCore.Cache")
+                .LogWarning(error, "Cron changes were committed, but cache invalidation failed for {CacheKey}. Redis will retry; local reads bypass the pending cache.", CronExpressionsCacheKey);
+        }
     }
 
     /// <summary>Locks and validates durable runnable admission inside the caller's transaction.</summary>
@@ -1252,7 +1299,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         {
             var context = dbContext.Set<TTimeTicker>();
             var now = _clock.UtcNow;
-            var fallbackThreshold = now.AddSeconds(-1);  // Fallback picks up tasks older than main 1-second window
+            var fallbackThreshold = now.AddSeconds(-1);  // Recover overdue work missed by normal scheduling.
             var result = new List<TimeTickerEntity>();
             var timeTickersToUpdate = await context
                 .AsNoTracking()
@@ -1624,11 +1671,13 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         if (leafIds.Count == 0)
             return;
 
+        // Only inline descendants belong to this execution tree. A scheduled node
+        // starts its own execution tree, including any inline children beneath it.
         // Cheap EXISTS probe: does anything live below the grandchild layer?
         // 99% of chains stop at depth 3; in that case we pay one extra
         // sub-millisecond query and return.
         var hasDeeper = await context.AsNoTracking()
-            .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId.HasValue &&
+            .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ExecutionTime == null && x.ParentId.HasValue &&
                            leafIds.Contains(x.ParentId.Value), cancellationToken)
             .ConfigureAwait(false);
         if (!hasDeeper)
@@ -1640,7 +1689,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         {
             cancellationToken.ThrowIfCancellationRequested();
             var levelNodes = await context.AsNoTracking()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId.HasValue &&
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ExecutionTime == null && x.ParentId.HasValue &&
                             frontier.Contains(x.ParentId.Value))
                 .Select(e => new TimeTickerEntity
                 {
@@ -2014,10 +2063,70 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     {
         RuntimeManifestAdmission.Validate(manifest, _hasRuntimeActivationScopeBinding,
             _runtimeSchedulerEnabled, _runtimeActivationScopeKey, _runtimeActivationEpoch);
+        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
+        // Preserve the observation time across retries. A late retry must not overwrite a newer
+        // replica's heartbeat or manufacture another heartbeat write on every attempt.
+        var now = _clock.UtcNow;
+        const int maxAttempts = 16;
+        for (var attempt = 0; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                // Provider-specific detection (SQL Server, MySQL, PostgreSQL, etc.) stays with EF's
+                // configured strategy. The entire transaction, including reads and commit, is replayed.
+                await strategy.ExecuteAsync(ct => ReconcileDefinedCronTickersAttemptAsync(manifest, now, ct),
+                    cancellationToken).ConfigureAwait(false);
+                break;
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
+                attempt + 1 < maxAttempts && ShouldRetryDefinedCronReconciliation(exception, attempt))
+            {
+                // Also recover when provider retries are disabled: drivers can expose transient
+                // failures through DbException.IsTransient, including inside EF exception wrappers.
+                // Jitter prevents concurrently starting replicas from retrying in lockstep.
+                var maximumDelayMs = Math.Min(1000, 25 * (1 << Math.Min(attempt, 6)));
+                await Task.Delay(Random.Shared.Next(25, maximumDelayMs + 1), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        // A converged reconcile can add/update/retire seeded rows and so alter the visible cron
+        // definitions. Invalidate this partition's "cron:expressions" cache exactly like Insert/Update/Delete —
+        // only after a successful commit (a failed reconcile threw above and never reaches here, so a
+        // stale reconcile never drops the coherent cached view).
+        await InvalidateCronCacheAfterCommitAsync().ConfigureAwait(false);
+    }
+
+    private static bool ShouldRetryDefinedCronReconciliation(Exception exception, int attempt)
+    {
+        var updateFailure = false;
+        var transient = false;
+        for (var current = exception; current != null; current = current.InnerException)
+        {
+            // Respect cancellation and an explicitly configured provider policy's retry limit.
+            if (current is OperationCanceledException or RetryLimitExceededException)
+                return false;
+            if (current is DbUpdateConcurrencyException or DbException { IsTransient: true })
+                transient = true;
+            if (current is DbUpdateException)
+                updateFailure = true;
+        }
+
+        // EF has no provider-neutral unique-constraint exception. Retain the existing bounded
+        // write-conflict recovery for deterministic ID / SeedKey insert races, without swallowing
+        // persistent constraints or arbitrary application exceptions.
+        return transient || (updateFailure && attempt < 4);
+    }
+
+    private async Task ReconcileDefinedCronTickersAttemptAsync(
+        DefinedCronSeedManifest manifest, DateTime now, CancellationToken cancellationToken)
+    {
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var dbContext = session.Context;
-        var now = _clock.UtcNow;
-
+        await using var transaction = await dbContext.Database
+            .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         var grace = _schedulerOptions.DefinedCronRetirementGracePeriod;
         var functions = manifest.DesiredSeedFunctions.ToList();
         // Blocked seeds (canSeed == false) are present in the manifest but excluded from the desired set,
@@ -2028,291 +2137,265 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var blockedFunctions = manifest.Seeds.Where(s => !s.CanSeed).Select(s => s.Function).ToList();
         var cronSet = dbContext.Set<TCronTicker>();
 
-        // Retirement + adoption + upsert commit together in a single SaveChanges (one transaction), so a
-        // reconcile pass is atomic. The whole pass is retried on a unique/primary-key race: a concurrent
-        // node may have inserted the same deterministic row (or the SeedKey index may reject a duplicate);
-        // we re-read and converge. After the final attempt the DbUpdateException is NOT swallowed — it
-        // propagates so a genuine schema/constraint failure surfaces rather than being masked.
-        const int maxAttempts = 5;
-        for (var attempt = 1; ; attempt++)
+        if (!await LockLegacyWriteAdmissionAsync(dbContext, cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException(
+                "Legacy runtime writes are fenced after legacy partition adoption begins.");
+        var cronIdsRequiringPendingCleanup = new HashSet<Guid>();
+
+        // Phase A — non-destructive retirement of seeded rows no longer desired. Compared to the
+        // DESIRED SEED MANIFEST (never the global runtime registry): comparing to the registry
+        // conflated "function still registered" with "code still wants a seeded schedule", so removing
+        // only a cron expression left the stale seeded row firing forever (Slice 1). A blocked seed
+        // retires immediately; an absent seed honors the grace window. Rows and their occurrences are
+        // NEVER deleted here — retention owns history. Narrowing to seeded rows (non-empty
+        // InitIdentifier) protects dashboard/user rows (including SDK/remote `name@node` functions the
+        // initializer never seeds); they carry a null/empty seed identity and are never candidates.
+        var allSeeded = await cronSet
+            .Where(c => c.ApplicationNamespaceKey == _runtimePartitionKey &&
+                        !string.IsNullOrEmpty(c.InitIdentifier))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!manifest.IsLegacyGlobal)
         {
-            dbContext.ChangeTracker.Clear();
-            await using var transaction = await dbContext.Database
-                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
-            if (!await LockLegacyWriteAdmissionAsync(dbContext, cancellationToken).ConfigureAwait(false))
-                throw new InvalidOperationException(
-                    "Legacy runtime writes are fenced after legacy partition adoption begins.");
-            var cronIdsRequiringPendingCleanup = new HashSet<Guid>();
-
-            // Phase A — non-destructive retirement of seeded rows no longer desired. Compared to the
-            // DESIRED SEED MANIFEST (never the global runtime registry): comparing to the registry
-            // conflated "function still registered" with "code still wants a seeded schedule", so removing
-            // only a cron expression left the stale seeded row firing forever (Slice 1). A blocked seed
-            // retires immediately; an absent seed honors the grace window. Rows and their occurrences are
-            // NEVER deleted here — retention owns history. Narrowing to seeded rows (non-empty
-            // InitIdentifier) protects dashboard/user rows (including SDK/remote `name@node` functions the
-            // initializer never seeds); they carry a null/empty seed identity and are never candidates.
-            var allSeeded = await cronSet
-                .Where(c => c.ApplicationNamespaceKey == _runtimePartitionKey &&
-                            !string.IsNullOrEmpty(c.InitIdentifier))
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            if (!manifest.IsLegacyGlobal)
+            foreach (var functionGroup in manifest.Seeds.Where(s => s.CanSeed).GroupBy(s => s.Function))
             {
-                foreach (var functionGroup in manifest.Seeds.Where(s => s.CanSeed).GroupBy(s => s.Function))
-                {
-                    var documentedLegacyKeys = functionGroup
-                        .SelectMany(seed => CronSeedIdentity.LegacyAdoptionKeys(
-                            manifest.ApplicationNamespace, seed.StableDefinitionId))
-                        .ToHashSet(StringComparer.Ordinal);
-                    var legacy = allSeeded.Where(x => CronSeedIdentity.CanonicallyEquals(x.Function, functionGroup.Key)
-                        && x.SeedOwnerNamespace == null
-                        && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                            || documentedLegacyKeys.Contains(x.SeedKey))).ToArray();
-                    if (legacy.Length == 0) continue;
-                    if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
-                        throw new InvalidOperationException(
-                            $"Legacy defined-Cron function '{functionGroup.Key}' requires an explicit legacy ownership mapping before any application may mutate it.");
-                    if (!string.Equals(explicitOwner, manifest.ApplicationNamespace, StringComparison.Ordinal))
-                        continue;
-                    if (legacy.Length != 1 || functionGroup.Count() != 1)
-                        throw new InvalidOperationException(
-                            $"Ambiguous legacy defined-Cron ownership for function '{functionGroup.Key}' while application namespace " +
-                            $"'{manifest.ApplicationNamespace}' attempted adoption. No rows were mutated; resolve ownership explicitly.");
-                }
-            }
-
-            var orphaned = allSeeded.Where(c => manifest.IsLegacyGlobal
-                ? !functions.Contains(c.Function)
-                : CronSeedIdentity.CanonicallyEquals(c.SeedOwnerNamespace, manifest.ApplicationNamespace)
-                  && manifest.IsOrphanedSeedKey(c.SeedKey)).ToList();
-
-            foreach (var row in orphaned)
-            {
-                var immediate = blockedFunctions.Any(function =>
-                    CronSeedIdentity.CanonicallyEquals(function, row.Function));
-                if (CronSeedRetirement.ApplyRetirement(row, now, grace, immediate))
-                    row.UpdatedAt = now;
-                if (row.RetiredAt.HasValue)
-                    cronIdsRequiringPendingCleanup.Add(row.Id);
-            }
-
-            // Phase B — reconcile desired seeds into code-owned rows keyed by the stable SeedKey. Matching
-            // is restricted to seeded rows (non-empty InitIdentifier) so a user/dashboard row sharing a
-            // function name — carrying a null/non-seed identity — is never matched, expression-overwritten,
-            // or identity-stamped. Ownership rules:
-            //   * A legacy seeded row (null SeedKey) adopts its SeedKey IN PLACE — its primary key, which
-            //     occurrences reference, never changes.
-            //   * A brand-new row uses the deterministic id derived from the SeedKey so concurrent
-            //     first-time reconciles converge on one row via a primary-key collision.
-            //   * Duplicate legacy rows: a deterministic canonical row (lowest id) adopts the SeedKey and
-            //     stays enabled; every redundant duplicate is disabled and marked retired IN PLACE (kept
-            //     null-keyed so the unique SeedKey index stays satisfied) but never deleted — exactly one
-            //     enabled code-owned row per SeedKey results.
-            //   * A desired seed that (re)appeared has any framework retirement state cleared, restoring
-            //     only a framework-disabled row (a user-disabled row stays disabled).
-            var existing = allSeeded.Where(c => manifest.IsLegacyGlobal
-                ? functions.Contains(c.Function)
-                : functions.Any(function => CronSeedIdentity.CanonicallyEquals(c.Function, function))).ToList();
-
-            var byFunction = existing
-                .GroupBy(c => c.Function)
-                .ToDictionary(g => g.Key, g => g.OrderBy(c => c.Id).ToList());
-
-            foreach (var seed in manifest.Seeds)
-            {
-                if (!seed.CanSeed)
+                var documentedLegacyKeys = functionGroup
+                    .SelectMany(seed => CronSeedIdentity.LegacyAdoptionKeys(
+                        manifest.ApplicationNamespace, seed.StableDefinitionId))
+                    .ToHashSet(StringComparer.Ordinal);
+                var legacy = allSeeded.Where(x => CronSeedIdentity.CanonicallyEquals(x.Function, functionGroup.Key)
+                    && x.SeedOwnerNamespace == null
+                    && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
+                        || documentedLegacyKeys.Contains(x.SeedKey))).ToArray();
+                if (legacy.Length == 0) continue;
+                if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
+                    throw new InvalidOperationException(
+                        $"Legacy defined-Cron function '{functionGroup.Key}' requires an explicit legacy ownership mapping before any application may mutate it.");
+                if (!string.Equals(explicitOwner, manifest.ApplicationNamespace, StringComparison.Ordinal))
                     continue;
-
-                var seedKey = manifest.SeedKeyFor(seed);
-                var documentedLegacyKeys = manifest.IsLegacyGlobal
-                    ? Array.Empty<string>()
-                    : CronSeedIdentity.LegacyAdoptionKeys(
-                        manifest.ApplicationNamespace, seed.StableDefinitionId);
-                var acceptedSeedKeys = manifest.IsLegacyGlobal
-                    ? Array.Empty<string>()
-                    : CronSeedIdentity.AcceptedSeedKeys(
-                        manifest.ApplicationNamespace, seed.StableDefinitionId);
-
-                var group = manifest.IsLegacyGlobal
-                    ? (byFunction.TryGetValue(seed.Function, out var legacyGroup) ? legacyGroup : null)
-                    : existing.Where(x =>
-                            (acceptedSeedKeys.Contains(x.SeedKey, StringComparer.Ordinal)
-                             && CronSeedIdentity.CanonicallyEquals(x.SeedOwnerNamespace, manifest.ApplicationNamespace))
-                            || (CronSeedIdentity.CanonicallyEquals(x.Function, seed.Function) && x.SeedOwnerNamespace == null
-                                && manifest.MayAdoptLegacy(seed.Function)
-                                && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                                    || documentedLegacyKeys.Contains(x.SeedKey, StringComparer.Ordinal))))
-                        .OrderBy(x => x.Id).ToList();
-                if (group is { Count: > 0 })
-                {
-                    // Prefer the row that already owns this SeedKey, then an active row, then lowest id —
-                    // picking the lowest id blindly would re-assign an already-owned SeedKey to a legacy
-                    // null-key duplicate and violate the unique SeedKey index.
-                    var (cron, duplicates) = CronSeedCanonical.Select(group, seedKey);
-                    var changed = false;
-                    var definitionChanged = false;
-
-                    // Adopt the stable SeedKey onto a legacy row IN PLACE (never re-keys the row).
-                    if (cron.SeedKey == null)
-                    {
-                        cron.SeedKey = seedKey;
-                        changed = true;
-                    }
-                    else if (!manifest.IsLegacyGlobal && cron.SeedKey != seedKey)
-                    {
-                        cron.SeedKey = seedKey;
-                        changed = true;
-                    }
-                    if (!manifest.IsLegacyGlobal && cron.SeedOwnerNamespace != manifest.ApplicationNamespace)
-                    {
-                        cron.SeedOwnerNamespace = manifest.ApplicationNamespace;
-                        changed = true;
-                    }
-
-                    if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
-                    {
-                        cron.Expression = seed.Expression;
-                        changed = true;
-                        definitionChanged = true;
-                    }
-
-                    // Reconcile the authoritative contract identity onto seeded rows only.
-                    if (!string.IsNullOrEmpty(cron.InitIdentifier)
-                        && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
-                    {
-                        cron.RequestContractVersion = seed.RequestContractVersion;
-                        cron.RequestContractFingerprint = seed.RequestContractFingerprint;
-                        changed = true;
-                        definitionChanged = true;
-                    }
-
-                    if (cron.Retries != seed.Retries)
-                    {
-                        cron.Retries = seed.Retries;
-                        changed = true;
-                        definitionChanged = true;
-                    }
-                    if (!(cron.RetryIntervals ?? Array.Empty<int>()).SequenceEqual(
-                            seed.RetryIntervals ?? Array.Empty<int>()))
-                    {
-                        cron.RetryIntervals = seed.RetryIntervals;
-                        changed = true;
-                        definitionChanged = true;
-                    }
-                    if (cron.TimeoutSeconds != seed.TimeoutSeconds)
-                    {
-                        cron.TimeoutSeconds = seed.TimeoutSeconds;
-                        changed = true;
-                        definitionChanged = true;
-                    }
-
-                    if (definitionChanged)
-                    {
-                        cron.DefinitionRevision = Math.Max(1, cron.DefinitionRevision + 1);
-                        changed = true;
-                    }
-                    else if (cron.DefinitionRevision <= 0)
-                    {
-                        cron.DefinitionRevision = 1;
-                        changed = true;
-                    }
-
-                    // Desired-active seed: clear any framework retirement, restoring only framework-disabled state.
-                    if (CronSeedRetirement.ClearRetirement(cron))
-                        changed = true;
-
-                    // Advisory heartbeat for retirement grace accounting.
-                    cron.SeedLastSeenAt = now;
-
-                    if (changed)
-                        cron.UpdatedAt = now;
-                    if (definitionChanged)
-                        cronIdsRequiringPendingCleanup.Add(cron.Id);
-
-                    // Retire redundant duplicates in place (canonical already chosen); never delete.
-                    foreach (var dup in duplicates)
-                    {
-                        if (CronSeedRetirement.RetireDuplicate(dup, now))
-                            dup.UpdatedAt = now;
-                        if (dup.RetiredAt.HasValue)
-                            cronIdsRequiringPendingCleanup.Add(dup.Id);
-                    }
-                }
-                else
-                {
-                    var entity = new TCronTicker
-                    {
-                        Id = CronSeedIdentity.DeterministicId(seedKey),
-                        Function = seed.Function,
-                        Expression = seed.Expression,
-                        DefinitionRevision = 1,
-                        SeedKey = seedKey,
-                        SeedOwnerNamespace = manifest.ApplicationNamespace,
-                        SeedLastSeenAt = now,
-                        InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
-                        CreatedAt = now,
-                        UpdatedAt = now,
-                        Request = Array.Empty<byte>(),
-                        RequestContractVersion = seed.RequestContractVersion,
-                        RequestContractFingerprint = seed.RequestContractFingerprint,
-                        Retries = seed.Retries,
-                        RetryIntervals = seed.RetryIntervals,
-                        TimeoutSeconds = seed.TimeoutSeconds
-                    };
-                    await cronSet.AddAsync(entity, cancellationToken).ConfigureAwait(false);
-                }
-            }
-
-            try
-            {
-                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                if (cronIdsRequiringPendingCleanup.Count > 0)
-                {
-                    await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                    cronIdsRequiringPendingCleanup.Contains(x.CronTickerId))
-                        .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
-                        .Where(x => x.LockHolder == null || x.LockHolder == string.Empty)
-                        .Where(x => x.AcquisitionToken == null)
-                        .Where(x => x.LeaseUntil == null || x.LeaseUntil <= now)
-                        .ExecuteUpdateAsync(setter => setter
-                            .SetProperty(x => x.Status, TickerStatus.Skipped)
-                            .SetProperty(x => x.SkippedReason,
-                                "Quarantined because its Cron definition revision is stale after reconciliation.")
-                            .SetProperty(x => x.ExecutedAt, x => x.ExecutedAt ?? now)
-                            .SetProperty(x => x.LockHolder, (string)null)
-                            .SetProperty(x => x.LockedAt, (DateTime?)null)
-                            .SetProperty(x => x.LeaseUntil, (DateTime?)null)
-                            .SetProperty(x => x.AcquisitionToken, (Guid?)null)
-                            .SetProperty(x => x.UpdatedAt, now), cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                break;
-            }
-            catch (DbUpdateException) when (attempt < maxAttempts)
-            {
-                // Lost a unique/primary-key race with a concurrent reconcile. Re-read and converge.
+                if (legacy.Length != 1 || functionGroup.Count() != 1)
+                    throw new InvalidOperationException(
+                        $"Ambiguous legacy defined-Cron ownership for function '{functionGroup.Key}' while application namespace " +
+                        $"'{manifest.ApplicationNamespace}' attempted adoption. No rows were mutated; resolve ownership explicitly.");
             }
         }
 
-        // A converged reconcile can add/update/retire seeded rows and so alter the visible cron
-        // definitions. Invalidate this partition's "cron:expressions" cache exactly like Insert/Update/Delete —
-        // only after a successful SaveChanges (a failed reconcile threw above and never reaches here, so a
-        // stale reconcile never drops the coherent cached view).
-        if (RedisContext.HasRedisConnection)
-            await RedisContext.DistributedCache.RemoveAsync(CronExpressionsCacheKey, cancellationToken).ConfigureAwait(false);
+        var orphaned = allSeeded.Where(c => manifest.IsLegacyGlobal
+            ? !functions.Contains(c.Function)
+            : CronSeedIdentity.CanonicallyEquals(c.SeedOwnerNamespace, manifest.ApplicationNamespace)
+              && manifest.IsOrphanedSeedKey(c.SeedKey)).ToList();
+
+        foreach (var row in orphaned)
+        {
+            var immediate = blockedFunctions.Any(function =>
+                CronSeedIdentity.CanonicallyEquals(function, row.Function));
+            if (CronSeedRetirement.ApplyRetirement(row, now, grace, immediate))
+                row.UpdatedAt = now;
+            if (row.RetiredAt.HasValue)
+                cronIdsRequiringPendingCleanup.Add(row.Id);
+        }
+
+        // Phase B — reconcile desired seeds into code-owned rows keyed by the stable SeedKey. Matching
+        // is restricted to seeded rows (non-empty InitIdentifier) so a user/dashboard row sharing a
+        // function name — carrying a null/non-seed identity — is never matched, expression-overwritten,
+        // or identity-stamped. Ownership rules:
+        //   * A legacy seeded row (null SeedKey) adopts its SeedKey IN PLACE — its primary key, which
+        //     occurrences reference, never changes.
+        //   * A brand-new row uses the deterministic id derived from the SeedKey so concurrent
+        //     first-time reconciles converge on one row via a primary-key collision.
+        //   * Duplicate legacy rows: a deterministic canonical row (lowest id) adopts the SeedKey and
+        //     stays enabled; every redundant duplicate is disabled and marked retired IN PLACE (kept
+        //     null-keyed so the unique SeedKey index stays satisfied) but never deleted — exactly one
+        //     enabled code-owned row per SeedKey results.
+        //   * A desired seed that (re)appeared has any framework retirement state cleared, restoring
+        //     only a framework-disabled row (a user-disabled row stays disabled).
+        var existing = allSeeded.Where(c => manifest.IsLegacyGlobal
+            ? functions.Contains(c.Function)
+            : functions.Any(function => CronSeedIdentity.CanonicallyEquals(c.Function, function))).ToList();
+
+        var byFunction = existing
+            .GroupBy(c => c.Function)
+            .ToDictionary(g => g.Key, g => g.OrderBy(c => c.Id).ToList());
+
+        foreach (var seed in manifest.Seeds)
+        {
+            if (!seed.CanSeed)
+                continue;
+
+            var seedKey = manifest.SeedKeyFor(seed);
+            var documentedLegacyKeys = manifest.IsLegacyGlobal
+                ? Array.Empty<string>()
+                : CronSeedIdentity.LegacyAdoptionKeys(
+                    manifest.ApplicationNamespace, seed.StableDefinitionId);
+            var acceptedSeedKeys = manifest.IsLegacyGlobal
+                ? Array.Empty<string>()
+                : CronSeedIdentity.AcceptedSeedKeys(
+                    manifest.ApplicationNamespace, seed.StableDefinitionId);
+
+            var group = manifest.IsLegacyGlobal
+                ? (byFunction.TryGetValue(seed.Function, out var legacyGroup) ? legacyGroup : null)
+                : existing.Where(x =>
+                        (acceptedSeedKeys.Contains(x.SeedKey, StringComparer.Ordinal)
+                         && CronSeedIdentity.CanonicallyEquals(x.SeedOwnerNamespace, manifest.ApplicationNamespace))
+                        || (CronSeedIdentity.CanonicallyEquals(x.Function, seed.Function) && x.SeedOwnerNamespace == null
+                            && manifest.MayAdoptLegacy(seed.Function)
+                            && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
+                                || documentedLegacyKeys.Contains(x.SeedKey, StringComparer.Ordinal))))
+                    .OrderBy(x => x.Id).ToList();
+            if (group is { Count: > 0 })
+            {
+                // Prefer the row that already owns this SeedKey, then an active row, then lowest id —
+                // picking the lowest id blindly would re-assign an already-owned SeedKey to a legacy
+                // null-key duplicate and violate the unique SeedKey index.
+                var (cron, duplicates) = CronSeedCanonical.Select(group, seedKey);
+                var changed = false;
+                var definitionChanged = false;
+
+                // Adopt the stable SeedKey onto a legacy row IN PLACE (never re-keys the row).
+                if (cron.SeedKey == null)
+                {
+                    cron.SeedKey = seedKey;
+                    changed = true;
+                }
+                else if (!manifest.IsLegacyGlobal && cron.SeedKey != seedKey)
+                {
+                    cron.SeedKey = seedKey;
+                    changed = true;
+                }
+                if (!manifest.IsLegacyGlobal && cron.SeedOwnerNamespace != manifest.ApplicationNamespace)
+                {
+                    cron.SeedOwnerNamespace = manifest.ApplicationNamespace;
+                    changed = true;
+                }
+
+                if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
+                {
+                    cron.Expression = seed.Expression;
+                    changed = true;
+                    definitionChanged = true;
+                }
+
+                // Reconcile the authoritative contract identity onto seeded rows only.
+                if (!string.IsNullOrEmpty(cron.InitIdentifier)
+                    && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
+                {
+                    cron.RequestContractVersion = seed.RequestContractVersion;
+                    cron.RequestContractFingerprint = seed.RequestContractFingerprint;
+                    changed = true;
+                    definitionChanged = true;
+                }
+
+                if (cron.Retries != seed.Retries)
+                {
+                    cron.Retries = seed.Retries;
+                    changed = true;
+                    definitionChanged = true;
+                }
+                if (!(cron.RetryIntervals ?? Array.Empty<int>()).SequenceEqual(
+                        seed.RetryIntervals ?? Array.Empty<int>()))
+                {
+                    cron.RetryIntervals = seed.RetryIntervals;
+                    changed = true;
+                    definitionChanged = true;
+                }
+                if (cron.TimeoutSeconds != seed.TimeoutSeconds)
+                {
+                    cron.TimeoutSeconds = seed.TimeoutSeconds;
+                    changed = true;
+                    definitionChanged = true;
+                }
+
+                if (definitionChanged)
+                {
+                    cron.DefinitionRevision = Math.Max(1, cron.DefinitionRevision + 1);
+                    changed = true;
+                }
+                else if (cron.DefinitionRevision <= 0)
+                {
+                    cron.DefinitionRevision = 1;
+                    changed = true;
+                }
+
+                // Desired-active seed: clear any framework retirement, restoring only framework-disabled state.
+                if (CronSeedRetirement.ClearRetirement(cron))
+                    changed = true;
+
+                // A concurrent startup may have already recorded a newer observation.
+                if (!cron.SeedLastSeenAt.HasValue || cron.SeedLastSeenAt.Value < now)
+                    cron.SeedLastSeenAt = now;
+
+                if (changed)
+                    cron.UpdatedAt = now;
+                if (definitionChanged)
+                    cronIdsRequiringPendingCleanup.Add(cron.Id);
+
+                // Retire redundant duplicates in place (canonical already chosen); never delete.
+                foreach (var dup in duplicates)
+                {
+                    if (CronSeedRetirement.RetireDuplicate(dup, now))
+                        dup.UpdatedAt = now;
+                    if (dup.RetiredAt.HasValue)
+                        cronIdsRequiringPendingCleanup.Add(dup.Id);
+                }
+            }
+            else
+            {
+                var entity = new TCronTicker
+                {
+                    Id = CronSeedIdentity.DeterministicId(seedKey),
+                    Function = seed.Function,
+                    Expression = seed.Expression,
+                    DefinitionRevision = 1,
+                    SeedKey = seedKey,
+                    SeedOwnerNamespace = manifest.ApplicationNamespace,
+                    SeedLastSeenAt = now,
+                    InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                    Request = Array.Empty<byte>(),
+                    RequestContractVersion = seed.RequestContractVersion,
+                    RequestContractFingerprint = seed.RequestContractFingerprint,
+                    Retries = seed.Retries,
+                    RetryIntervals = seed.RetryIntervals,
+                    TimeoutSeconds = seed.TimeoutSeconds
+                };
+                await cronSet.AddAsync(entity, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (cronIdsRequiringPendingCleanup.Count > 0)
+        {
+            await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                            cronIdsRequiringPendingCleanup.Contains(x.CronTickerId))
+                .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
+                .Where(x => x.LockHolder == null || x.LockHolder == string.Empty)
+                .Where(x => x.AcquisitionToken == null)
+                .Where(x => x.LeaseUntil == null || x.LeaseUntil <= now)
+                .ExecuteUpdateAsync(setter => setter
+                    .SetProperty(x => x.Status, TickerStatus.Skipped)
+                    .SetProperty(x => x.SkippedReason,
+                        "Quarantined because its Cron definition revision is stale after reconciliation.")
+                    .SetProperty(x => x.ExecutedAt, x => x.ExecutedAt ?? now)
+                    .SetProperty(x => x.LockHolder, (string)null)
+                    .SetProperty(x => x.LockedAt, (DateTime?)null)
+                    .SetProperty(x => x.LeaseUntil, (DateTime?)null)
+                    .SetProperty(x => x.AcquisitionToken, (Guid?)null)
+                    .SetProperty(x => x.UpdatedAt, now), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
-        
+
     public async Task<CronTickerEntity[]> GetAllCronTickerExpressions(CancellationToken cancellationToken = default)
     {
         var result = await RedisContext.GetOrSetArrayAsync(
             cacheKey: CronExpressionsCacheKey,
             factory: async (ct) =>
             {
-                using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+                using var session = await CreateDbContextAsync(ct).ConfigureAwait(false);
                 var dbContext = session.Context;
                 return await dbContext.Set<TCronTicker>()
                     .AsNoTracking()
@@ -2332,7 +2415,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         var dbContext = session.Context;
         return await dbContext.Set<TCronTicker>()
             .AsNoTracking()
-            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.IsEnabled)
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.IsEnabled && !x.IsSystemPaused)
             .Select(MappingExtensions.ForCronTickerExpressions<CronTickerEntity>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -2396,7 +2479,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         {
             var context = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>();
             var now = _clock.UtcNow;
-            var fallbackThreshold = now.AddSeconds(-1);  // Fallback picks up tasks older than main 1-second window
+            var fallbackThreshold = now.AddSeconds(-1);  // Recover overdue work missed by normal scheduling.
             var result = new List<CronTickerOccurrenceEntity<TCronTicker>>();
 
             // A stale revision can never be restarted under the current definition. Once it is unleased,
@@ -2422,7 +2505,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                             x.DefinitionRevision == x.CronTicker.DefinitionRevision)
                 .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
-                .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks older than 1 second
+                .WhereCanAcquire(_lockHolder)
+                .Where(x => x.ExecutionTime <= fallbackThreshold)
                 .Select(MappingExtensions.ForQueueCronTickerOccurrence<CronTickerOccurrenceEntity<TCronTicker>, TCronTicker>())
                 .ToArrayAsync(ct).ConfigureAwait(false);
 
@@ -2434,6 +2518,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 var affected = await context
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                                 x.Id == cronTickerOccurrence.Id && x.UpdatedAt == cronTickerOccurrence.UpdatedAt)
+                    .Where(x => x.AcquisitionToken == cronTickerOccurrence.AcquisitionToken)
+                    .WhereCanAcquire(_lockHolder)
                     .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
                     .ExecuteUpdateAsync(setter => setter
                         .SetProperty(x => x.LockHolder, _lockHolder)
@@ -2597,6 +2683,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     private TCronTicker CronSnapshot(InternalManagerContext item) => new()
     {
         Id = item.Id, Function = item.FunctionName,
+        DefinitionRevision = item.DefinitionRevision,
         RequestContractVersion = item.RequestContractVersion,
         RequestContractFingerprint = item.RequestContractFingerprint,
         InitIdentifier = _lockHolder, Expression = item.Expression, Retries = item.Retries,
@@ -2607,8 +2694,6 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     {
         using (var admissionSession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false))
             if (!await IsRunnableAdmissionAllowedAsync(admissionSession.Context, cancellationToken).ConfigureAwait(false)) return null;
-        var now = _clock.UtcNow;
-        var mainSchedulerThreshold = now.AddSeconds(-1);
         var idList = ids.ToList();
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var dbContext = session.Context;
@@ -2617,7 +2702,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
             .Include(x => x.CronTicker)
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.CronTickerId))
             .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
-            .Where(x => x.ExecutionTime >= mainSchedulerThreshold)  // Only items within the 1-second main scheduler window
+            // Persisted overdue occurrences remain eligible; keep their original scheduled time.
             .WhereCanAcquire(_lockHolder)
             .OrderBy(x => x.ExecutionTime)
             .Select(MappingExtensions.ForLatestQueuedCronTickerOccurrence<CronTickerOccurrenceEntity<TCronTicker>, TCronTicker>())

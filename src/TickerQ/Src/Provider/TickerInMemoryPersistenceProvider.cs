@@ -2002,7 +2002,6 @@ namespace TickerQ.Provider
                     return null;
 
                 var now = _clock.UtcNow;
-                var mainSchedulerThreshold = now.AddSeconds(-1);
                 var query = CronOccurrences.Values.AsEnumerable();
 
                 if (ids != null && ids.Length > 0)
@@ -2014,7 +2013,6 @@ namespace TickerQ.Provider
                 return query
                     .Where(x => CanAcquireCronOccurrence(x))
                     .Where(IsCurrentCronOccurrence)
-                    .Where(x => x.ExecutionTime >= mainSchedulerThreshold)
                     .OrderBy(x => x.ExecutionTime)
                     .FirstOrDefault();
             }));
@@ -2050,6 +2048,11 @@ namespace TickerQ.Provider
                                 QuarantineStaleCronOccurrence(existingOccurrence, now);
                                 continue;
                             }
+
+                            // Discovery can race fallback acquisition or another scheduler.
+                            if (!CanAcquireCronOccurrence(existingOccurrence)
+                                || existingOccurrence.ExecutionTime != cronTickerOccurrences.Key)
+                                continue;
 
                             var updatedOccurrence = CloneCronOccurrence(existingOccurrence);
                             updatedOccurrence.LockHolder = _lockHolder;
@@ -2128,7 +2131,9 @@ namespace TickerQ.Provider
                     }
 
                     if (CronOccurrences.TryGetValue(occurrence.Id, out var existingOccurrence)
-                        && existingOccurrence.UpdatedAt <= occurrence.UpdatedAt)
+                        && CanAcquireCronOccurrence(existingOccurrence)
+                        && existingOccurrence.AcquisitionToken == occurrence.AcquisitionToken
+                        && existingOccurrence.UpdatedAt == occurrence.UpdatedAt)
                     {
                         var updatedOccurrence = CloneCronOccurrence(existingOccurrence);
                         updatedOccurrence.LockHolder = _lockHolder;
@@ -2798,7 +2803,7 @@ namespace TickerQ.Provider
 
         // Recursive descendants walker for the queue projection. Mirrors the EF
         // provider's probe-and-extend semantics: unbounded depth, only includes
-        // chain children (ExecutionTime == null) for the direct-children layer.
+        // chain children (ExecutionTime == null) at every depth.
         private List<TimeTickerEntity> BuildQueueDescendants(
             Guid parentId, Guid chainRootId, Guid? chainGeneration)
         {
@@ -2811,9 +2816,7 @@ namespace TickerQ.Provider
                 if (!TimeTickers.TryGetValue(childId, out var ch))
                     continue;
 
-                // Only chain children with null ExecutionTime, matching the EF
-                // .Include(x => x.Children.Where(y => y.ExecutionTime == null)) filter
-                // on the direct-children layer.
+                // Scheduled nodes and their subtrees are acquired separately.
                 if (ch.ExecutionTime != null)
                     continue;
 
@@ -2830,43 +2833,10 @@ namespace TickerQ.Provider
                     ParentId = ch.ParentId,
                     ChainRootId = chainRootId,
                     ChainGeneration = chainGeneration,
-                    Children = BuildQueueDescendantsAtAnyDepth(ch.Id, chainRootId, chainGeneration),
+                    Children = BuildQueueDescendants(ch.Id, chainRootId, chainGeneration),
                 });
             }
 
-            return children;
-        }
-
-        // Same as BuildQueueDescendants but without the ExecutionTime filter — once
-        // we're past the direct-children layer, every descendant is a chain node.
-        private List<TimeTickerEntity> BuildQueueDescendantsAtAnyDepth(
-            Guid parentId, Guid chainRootId, Guid? chainGeneration)
-        {
-            if (!ChildrenIndex.TryGetValue(parentId, out var directChildren) || directChildren.IsEmpty)
-                return new List<TimeTickerEntity>();
-
-            var children = new List<TimeTickerEntity>(directChildren.Count);
-            foreach (var childId in directChildren.Keys)
-            {
-                if (!TimeTickers.TryGetValue(childId, out var ch))
-                    continue;
-
-                children.Add(new TimeTickerEntity
-                {
-                    Id = ch.Id,
-                    Function = ch.Function,
-                    RequestContractVersion = ch.RequestContractVersion,
-                    RequestContractFingerprint = ch.RequestContractFingerprint,
-                    Retries = ch.Retries,
-                    RetryIntervals = ch.RetryIntervals,
-                    TimeoutSeconds = ch.TimeoutSeconds,
-                    RunCondition = ch.RunCondition,
-                    ParentId = ch.ParentId,
-                    ChainRootId = chainRootId,
-                    ChainGeneration = chainGeneration,
-                    Children = BuildQueueDescendantsAtAnyDepth(ch.Id, chainRootId, chainGeneration),
-                });
-            }
             return children;
         }
 

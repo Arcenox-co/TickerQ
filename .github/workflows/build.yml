@@ -146,6 +146,11 @@ jobs:
           dotnet test tests/TickerQ.SourceGenerator.Tests/ --configuration Release --no-build
           dotnet test hub/remoteExecutor/TickerQ.RemoteExecutor.Tests/ --configuration Release --no-build
 
+      - name: Verify EF concurrent seeding and transactional scheduling
+        env:
+          TICKERQ_POSTGRES_RACE_TESTS: "1"
+        run: dotnet test tests/TickerQ.EntityFrameworkCore.Tests/ --configuration Release --no-build --filter 'FullyQualifiedName~EfCorePostgreSqlCronSeedingTests|FullyQualifiedName~EfTransactionalSchedulingTests.PostgreSql'
+
       - name: Pack other projects
         run: |
           dotnet pack src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release --output ./nupkgs

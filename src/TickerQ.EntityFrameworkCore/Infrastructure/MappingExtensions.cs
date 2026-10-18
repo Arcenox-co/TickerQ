@@ -16,6 +16,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 Id = e.Id,
                 Expression = e.Expression,
+                DefinitionRevision = e.DefinitionRevision,
                 Function = e.Function,
                 RequestContractVersion = e.RequestContractVersion,
                 RequestContractFingerprint = e.RequestContractFingerprint,
@@ -52,7 +53,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 StaleRestartCount = e.StaleRestartCount,
                 ExecutedAt = e.ExecutedAt,
                 ElapsedTime = e.ElapsedTime,
-                Children = e.Children.Select(ch => new TimeTickerEntity
+                // Filter in the projection: a filtered Include does not constrain
+                // this execution tree. Scheduled children are acquired separately.
+                Children = e.Children.Where(ch => ch.ExecutionTime == null).Select(ch => new TimeTickerEntity
                 {
                     Id = ch.Id,
                     Function = ch.Function,
@@ -65,7 +68,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     ChainRootId = ch.ChainRootId,
                     ChainGeneration = ch.ChainGeneration,
                     RunCondition = ch.RunCondition,
-                    Children = ch.Children.Select(gch => new TimeTickerEntity
+                    Children = ch.Children.Where(gch => gch.ExecutionTime == null).Select(gch => new TimeTickerEntity
                     {
                         Function = gch.Function,
                         RequestContractVersion = gch.RequestContractVersion,
@@ -91,11 +94,13 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Id = e.Id,
                 UpdatedAt = e.UpdatedAt,
                 CronTickerId = e.CronTickerId,
+                DefinitionRevision = e.DefinitionRevision,
                 ExecutionTime = e.ExecutionTime,
                 AcquisitionToken = e.AcquisitionToken,
                 CronTicker = new TCronTicker
                 {
                     Id = e.CronTicker.Id,
+                    DefinitionRevision = e.CronTicker.DefinitionRevision,
                     Function = e.CronTicker.Function,
                     RequestContractVersion = e.CronTicker.RequestContractVersion,
                     RequestContractFingerprint = e.CronTicker.RequestContractFingerprint,
@@ -114,6 +119,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Id = e.Id,
                 CreatedAt = e.CreatedAt,
                 CronTickerId = e.CronTickerId,
+                DefinitionRevision = e.DefinitionRevision,
                 ExecutionTime = e.ExecutionTime,
                 AcquisitionToken = e.AcquisitionToken,
                 CronTicker = new TCronTicker
@@ -123,6 +129,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     RequestContractVersion = e.CronTicker.RequestContractVersion,
                     RequestContractFingerprint = e.CronTicker.RequestContractFingerprint,
                     Expression = e.CronTicker.Expression,
+                    DefinitionRevision = e.CronTicker.DefinitionRevision,
                     RetryIntervals = e.CronTicker.RetryIntervals,
                     Retries = e.CronTicker.Retries,
                     TimeoutSeconds = e.CronTicker.TimeoutSeconds

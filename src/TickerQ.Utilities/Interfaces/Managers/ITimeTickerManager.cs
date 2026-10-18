@@ -13,6 +13,17 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task<TickerResult<TTimeTicker>> AddAsync(TTimeTicker entity, CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Validates and tracks a new ticker in the scoped application DbContext configured by
+        /// UseApplicationDbContext. The caller must save and commit that context. Nothing is
+        /// dispatched before commit. Throws on validation/configuration errors; the returned
+        /// entity is staged, not yet persisted. Unsupported providers fail immediately.
+        /// </summary>
+        Task<TTimeTicker> StageAsync(TTimeTicker entity, CancellationToken cancellationToken = default)
+            => throw new InvalidOperationException(
+                "StageAsync requires the EF Core UseApplicationDbContext<TContext> integration and a scoped manager. " +
+                "Use AddAsync for independent scheduling.");
+
+        /// <summary>
         /// Idempotent add keyed by <paramref name="initIdentifier"/>: creates the
         /// ticker only if no time ticker with that identifier exists yet, otherwise
         /// returns the existing one untouched. Made for startup seeding

@@ -118,7 +118,9 @@ namespace TickerQ.Utilities.Managers
                 var timeSecond = new DateTime(timeTickerTime.Value.Year, timeTickerTime.Value.Month, timeTickerTime.Value.Day,
                     timeTickerTime.Value.Hour, timeTickerTime.Value.Minute, timeTickerTime.Value.Second);
 
-                if (cronSecond == timeSecond)
+                // Both kinds can be overdue at different timestamps. Dispatch both so a backlog
+                // of cron occurrences cannot push ready time tickers into fallback recovery.
+                if (cronSecond == timeSecond || (cronTime <= now && timeTickerTime <= now))
                 {
                     includeCron = true;
                     includeTimeTickers = true;

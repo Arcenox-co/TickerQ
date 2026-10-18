@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using NSubstitute;
 using NSubstitute.ReceivedExtensions;
+using Microsoft.Extensions.Logging;
 using TickerQ.BackgroundServices;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
@@ -39,7 +41,7 @@ public class TickerQFallbackBackgroundServiceTests
         TickerFunctionProvider.Build();
     }
 
-    private TickerQFallbackBackgroundService CreateService()
+    private TickerQFallbackBackgroundService CreateService(ILogger<TickerQFallbackBackgroundService>? logger = null)
     {
         return new TickerQFallbackBackgroundService(
             _internalManager,
@@ -47,7 +49,55 @@ public class TickerQFallbackBackgroundServiceTests
             _taskHandler,
             _taskScheduler,
             new TickerFunctionConcurrencyGate(),
-            LicenseTestState.Active());
+            LicenseTestState.Active(), logger: logger);
+    }
+
+    [Fact]
+    public async Task RecoveryFailure_IsLogged_AndNextScanStillRuns()
+    {
+        var failure = new InvalidOperationException("recovery store unavailable");
+        var logger = new RecordingLogger();
+        var retried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        _internalManager.RunTimedOutTickers(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+                return Task.FromException<InternalFunctionContext[]>(failure);
+            retried.TrySetResult();
+            return Task.FromResult(Array.Empty<InternalFunctionContext>());
+        });
+        using var service = CreateService(logger);
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await retried.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+        var log = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Error, log.Level);
+        Assert.Same(failure, log.Exception);
+        Assert.Contains("Retrying", log.Message);
+        Assert.True(service.ExecuteTask!.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task ShutdownDuringFailureDelay_CompletesWithoutFaultingService()
+    {
+        var failed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _internalManager.RunTimedOutTickers(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            failed.TrySetResult();
+            return Task.FromException<InternalFunctionContext[]>(new InvalidOperationException("store unavailable"));
+        });
+        _schedulerOptions.FallbackIntervalChecker = TimeSpan.FromMinutes(1);
+        using var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+        await failed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(service.ExecuteTask!.IsCompletedSuccessfully);
     }
 
     [Fact]
@@ -195,5 +245,15 @@ public class TickerQFallbackBackgroundServiceTests
 
         var exception = await Record.ExceptionAsync(() => service.StopAsync(CancellationToken.None));
         Assert.Null(exception);
+    }
+
+    private sealed class RecordingLogger : ILogger<TickerQFallbackBackgroundService>
+    {
+        public ConcurrentQueue<(LogLevel Level, Exception? Exception, string Message)> Entries { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Entries.Enqueue((logLevel, exception, formatter(state, exception)));
     }
 }

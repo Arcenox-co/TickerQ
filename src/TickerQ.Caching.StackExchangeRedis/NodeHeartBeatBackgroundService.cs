@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using TickerQ.Caching.StackExchangeRedis.DependencyInjection;
-using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 
@@ -11,7 +10,7 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
 {
     private int _started;
     private readonly ITickerQRedisContext _context;
-    private readonly PeriodicTimer _tickerHeartBeatPeriodicTimer;
+    private readonly TimeSpan _heartbeatInterval;
     private readonly IInternalTickerManager  _internalTickerManager;
     private readonly ILogger<NodeHeartBeatBackgroundService> _logger;
     private readonly ITickerQActivationGate _activationGate;
@@ -24,7 +23,9 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
         _internalTickerManager = internalTickerManager;
         _logger = logger;
         _activationGate = activationGate ?? throw new ArgumentNullException(nameof(activationGate));
-        _tickerHeartBeatPeriodicTimer = new PeriodicTimer(schedulerOptionsBuilder.NodeHeartbeatInterval);
+        _heartbeatInterval = schedulerOptionsBuilder.NodeHeartbeatInterval;
+        if (_heartbeatInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(schedulerOptionsBuilder.NodeHeartbeatInterval));
     }
     
     public override Task StartAsync(CancellationToken ct)
@@ -33,65 +34,64 @@ internal class NodeHeartBeatBackgroundService : BackgroundService
             ? Task.CompletedTask : base.StartAsync(ct);
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        // Heartbeat registration, dead-node discovery, and resource release are all persistence I/O.
-        await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
+    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+        => Task.WhenAll(
+            RunActivatedLoopAsync(_context.NotifyNodeAliveAsync, "renewal", stoppingToken),
+            RunActivatedLoopAsync(RecoverDeadNodesAsync, "recovery", stoppingToken),
+            RunLoopAsync(_context.RetryPendingInvalidationsAsync, TimeSpan.FromSeconds(5), "cache invalidation", stoppingToken));
 
-        while (!stoppingToken.IsCancellationRequested)
+    private async Task RunActivatedLoopAsync(Func<CancellationToken, Task> action, string operation, CancellationToken ct)
+    {
+        try
         {
+            await _activationGate.WaitForActivationAsync(ct).ConfigureAwait(false);
+            await RunLoopAsync(action, _heartbeatInterval, operation, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+    }
+
+    private async Task RunLoopAsync(Func<CancellationToken, Task> action, TimeSpan interval, string operation, CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var delay = interval;
+                try { await action(ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                catch (Exception error)
+                {
+                    _logger.LogError(error, "TickerQ Redis {Operation} failed; it will be retried.", operation);
+                    delay = TimeSpan.FromMilliseconds(Math.Min(interval.TotalMilliseconds, 5000));
+                }
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+    }
+
+    internal async Task RecoverDeadNodesAsync(CancellationToken ct)
+    {
+        var deadNodes = await _context.GetDeadNodesAsync(ct).ConfigureAwait(false);
+        foreach (var owner in deadNodes)
+        {
+            ct.ThrowIfCancellationRequested();
             try
             {
-                await RunTickerQFallbackAsync(stoppingToken);
+                await _internalTickerManager.ReleaseDeadNodeResources(owner, ct).ConfigureAwait(false);
+                await _context.AcknowledgeDeadNodeAsync(owner, ct).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception error)
             {
-                break;
-            }
-            catch (Exception e)
-            {
-                _logger.LogError("Heartbeat background service failed: {Exception}. Retrying in 5 seconds...", e);
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
+                _logger.LogError(error, "TickerQ recovery for owner {Owner} failed; registration is retained for retry.", owner);
             }
         }
     }
-    
-    private async Task RunTickerQFallbackAsync(CancellationToken stoppingToken)
-    {
-        await _context.NotifyNodeAliveAsync();
 
-        while (await _tickerHeartBeatPeriodicTimer.WaitForNextTickAsync(stoppingToken))
-        {
-            var deadNodes = await _context.GetDeadNodesAsync();
-            
-            if (deadNodes.Length != 0)
-            {
-                foreach (var deadNode in deadNodes)
-                {
-                    await _internalTickerManager.ReleaseDeadNodeResources(deadNode, stoppingToken);
-                }
-            }
-            
-            await _context.NotifyNodeAliveAsync();
-        }
-    }
-       
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref _started, 0);
-        await base.StopAsync(cancellationToken);
-    }
-
-    public override void Dispose()
-    {
-        _tickerHeartBeatPeriodicTimer.Dispose();
-        base.Dispose();
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 }

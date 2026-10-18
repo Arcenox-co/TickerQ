@@ -2787,12 +2787,10 @@ namespace TickerQ.MongoDB.Infrastructure
             if (!await IsRunnableAdmissionAllowedAsync(cancellationToken).ConfigureAwait(false))
                 return null;
             var now = _clock.UtcNow;
-            var mainSchedulerThreshold = now.AddSeconds(-1);
             var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
 
             var filter = InPartition(fb.And(
                 fb.In(x => x.CronTickerId, ids),
-                fb.Gte(x => x.ExecutionTime, mainSchedulerThreshold),
                 MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(_lockHolder)));
 
             var candidates = await _context.CronTickerOccurrences
@@ -2943,6 +2941,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 var filter = InPartition(fb.And(
                     fb.Eq(x => x.Id, occ.Id),
                     fb.Eq(x => x.UpdatedAt, occ.UpdatedAt),
+                    fb.Eq(x => x.AcquisitionToken, occ.AcquisitionToken),
                     fb.Eq(x => x.DefinitionRevision, authoritative.DefinitionRevision),
                     MongoUpdateBuilders.CanAcquireCronOccurrence<TCronTicker>(_lockHolder)));
 

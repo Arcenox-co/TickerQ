@@ -282,6 +282,53 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
         Assert.Equal(19, acquiredGrandchild.TimeoutSeconds);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(5)]
+    public async Task QueueProjection_ScheduledDescendantIsAcquiredSeparately(int scheduledDepth)
+    {
+        var root = CreateTicker();
+        var inlineNodes = new List<FakeTimeTicker> { root };
+        for (var depth = 1; depth <= 5; depth++)
+        {
+            var child = CreateTicker(useDefaultExecutionTime: false);
+            inlineNodes[^1].Children.Add(child);
+            inlineNodes.Add(child);
+        }
+
+        var scheduled = CreateTicker(executionTime: _now.AddHours(1));
+        var scheduledChild = CreateTicker(useDefaultExecutionTime: false);
+        scheduled.Children.Add(scheduledChild);
+        inlineNodes[scheduledDepth - 1].Children.Add(scheduled);
+        await InsertAndTrack(root);
+
+        var projected = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([root.Id]));
+        foreach (var inlineNode in inlineNodes.Skip(1))
+        {
+            projected = Assert.Single(projected.Children);
+            Assert.Equal(inlineNode.Id, projected.Id);
+        }
+        Assert.Empty(projected.Children);
+
+        var stored = await _provider.GetTimeTickerById(scheduled.Id, CancellationToken.None);
+        Assert.NotNull(stored);
+        Assert.Equal(inlineNodes[scheduledDepth - 1].Id, stored.ParentId);
+        Assert.Equal(scheduled.ExecutionTime, stored.ExecutionTime);
+        Assert.Equal(TickerStatus.Idle, stored.Status);
+        Assert.Null(stored.ChainGeneration);
+
+        _clock.UtcNow.Returns(scheduled.ExecutionTime!.Value);
+        var due = Assert.Single(await _provider.GetEarliestTimeTickers(CancellationToken.None));
+        Assert.Equal(scheduled.Id, due.Id);
+        Assert.Equal(scheduledChild.Id, Assert.Single(due.Children).Id);
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([scheduled.Id]));
+        Assert.Equal(scheduled.Id, acquired.ChainRootId);
+        Assert.Equal(scheduled.Id, Assert.Single(acquired.Children).ChainRootId);
+        Assert.Empty(await _provider.AcquireImmediateTimeTickersAsync([scheduled.Id]));
+    }
+
     [Fact]
     public async Task QueueTimedOutTimeTickers_ReturnsPersistedAcquisitionGeneration()
     {

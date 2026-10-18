@@ -38,6 +38,24 @@ more than once:
 idempotency key, guard external side effects, and treat a second delivery as possible,
 not exceptional.
 
+## Overdue cron occurrences
+
+On each scheduling pass, the normal scheduler considers persisted, acquirable cron
+occurrences even when their scheduled time is more than one second in the past.
+Continuous TimeTicker traffic does not exclude them: when both kinds of work are due,
+they can be dispatched in the same batch. Recovery preserves the occurrence's original
+`ExecutionTime` and the job's `ScheduledFor` value.
+
+The fallback service remains a recovery path for missed work. Its default idle scan
+interval is 30 seconds (`FallbackIntervalChecker`); normal scheduling can discover
+overdue cron work independently of that interval. Acquisition checks prevent the two
+paths from restarting an already-running occurrence or taking work owned by another
+live node. Store failures in fallback recovery are logged before retrying.
+
+This recovers existing occurrences; it does not create an occurrence for every cron slot
+missed while the application was offline. Actual start time still depends on available
+workers and concurrency limits.
+
 ## Lease fencing
 
 Every terminal write (marking a job `Done`, `Failed`, `Cancelled`, etc.) is **fenced by
@@ -99,6 +117,19 @@ now-dead predecessor are reclaimed through normal lease expiry, not a blind star
 
 ## Provider reliability capabilities
 
+Redis heartbeat owners are registered with atomic set operations, scoped by runtime
+partition and Redis `InstanceName`. Discovering a dead owner does not remove it. Its
+registration is acknowledged only after both cron and time-ticker resource recovery
+succeed; failed recovery remains available for retry. Acknowledgement atomically checks
+that the heartbeat has not renewed before removing the owner. Recovery is idempotent
+when multiple replicas observe the same dead owner.
+
+Heartbeat renewal, dead-node recovery, and pending cache invalidations run independently
+inside the existing Redis hosted service. Dashboard notifications are best effort, with
+at most one outstanding send, so a slow dashboard does not block renewal. During rolling
+upgrades, the service also discovers and acknowledges owners in the older JSON registry.
+Older binaries retain their previous coordination behavior until upgraded.
+
 Lease-based renewal and stale recovery require a provider that actually implements them.
 Rather than optimistically assuming support, TickerQ exposes an explicit capability that
 **fails closed**:
@@ -125,6 +156,35 @@ node:
 The renewal/recovery/held-id members default to "nothing renewed, nothing held, nothing
 recovered," so a partially-implemented custom provider can never report fake reliability
 success while inheriting real recovery behavior.
+
+## EF Core cron-expression cache
+
+When Redis caching is enabled alongside EF Core, the scheduler's cron-expression snapshot
+expires after ten minutes. Startup reconciliation and manager mutations invalidate the
+affected runtime partition after the database commit; staged cron additions invalidate
+after their transaction commits.
+
+Each cached snapshot carries an expiration and an invalidation generation. Readers reject
+a slow, stale refill that finishes after another replica invalidates the cache. A missing
+generation marker also forces a refresh. Redis stores one small generation marker per
+cache key without expiration, so removing a payload does not erase its invalidation history.
+
+Entries written by older versions without expiration are treated as misses and replaced
+on first read. No Redis flush or database migration is required. Upgrade all replicas to
+get the new behavior; older binaries do not understand the snapshot format and may cause
+extra database reads during a rolling deployment.
+
+Cache read/write failures log a warning and fall back to the database. Caller cancellation
+and database errors still propagate before a write commits. After commit, invalidation
+uses an independent token: a Redis error or late request cancellation cannot turn that
+committed write into a reported persistence failure. Failures are logged and retained for
+retry every five seconds. Local reads retry pending invalidations and bypass cached data
+while invalidation is failing. The retry queue is process-local; if that process exits
+before retry succeeds, the ten-minute snapshot expiry bounds stale reads on other replicas.
+
+The in-process cron parser retains at most 4,096 schedules, evicting the least recently
+used entry. Invalid expressions and normalized keys longer than 1,024 characters are
+not retained. Oversized valid expressions still parse and execute normally.
 
 ## Cooperative in-process timeouts
 

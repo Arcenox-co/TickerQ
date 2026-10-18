@@ -679,9 +679,9 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetEarliestAvailableCronOccurrence_SkipsOccurrencesOutsideSchedulerWindow()
+    public async Task GetEarliestAvailableCronOccurrence_ReturnsOverdueOccurrenceWithOriginalTime()
     {
-        // Arrange: occurrence far in the past, older than the 1-second threshold
+        // Overdue occurrences must remain eligible for normal scheduling.
         var cronTickerId = Guid.NewGuid();
         await SetupCronTicker(cronTickerId);
 
@@ -690,7 +690,7 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
         {
             Id = oldId,
             CronTickerId = cronTickerId,
-            ExecutionTime = _now.AddSeconds(-5), // 5 seconds ago, below mainSchedulerThreshold (now - 1s)
+            ExecutionTime = _now.AddSeconds(-5),
             Status = TickerStatus.Idle,
             CreatedAt = _now.AddSeconds(-5),
             UpdatedAt = _now.AddSeconds(-5)
@@ -702,8 +702,44 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
         var result = await _provider.GetEarliestAvailableCronOccurrence(
             new[] { cronTickerId }, CancellationToken.None);
 
-        // Assert: occurrence is before mainSchedulerThreshold, so it should not be returned
-        Assert.Null(result);
+        Assert.NotNull(result);
+        Assert.Equal(oldId, result.Id);
+        Assert.Equal(oldOccurrence.ExecutionTime, result.ExecutionTime);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OverdueCron_NormalAndFallbackAcquisition_CannotRestartRunningOccurrence(bool fallbackFirst)
+    {
+        var cronId = Guid.NewGuid();
+        await SetupCronTicker(cronId);
+        var occurrence = new CronTickerOccurrenceEntity<FakeCronTicker>
+        {
+            Id = Guid.NewGuid(), CronTickerId = cronId, Status = TickerStatus.Idle,
+            ExecutionTime = _now.AddSeconds(-5), CreatedAt = _now, UpdatedAt = _now
+        };
+        await _provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+        _createdCronOccurrenceIds.Add(occurrence.Id);
+        var discovered = (await _provider.GetEarliestAvailableCronOccurrence([cronId]))!;
+        var item = new InternalManagerContext(cronId)
+        {
+            DefinitionRevision = discovered.CronTicker.DefinitionRevision,
+            NextCronOccurrence = new NextCronOccurrence(occurrence.Id, occurrence.CreatedAt)
+        };
+
+        if (fallbackFirst)
+        {
+            Assert.Single(await CollectAsync(_provider.QueueTimedOutCronTickerOccurrences()));
+            Assert.Empty(await CollectAsync(_provider.QueueCronTickerOccurrences((occurrence.ExecutionTime, [item]))));
+        }
+        else
+        {
+            var queued = Assert.Single(await CollectAsync(_provider.QueueCronTickerOccurrences((occurrence.ExecutionTime, [item]))));
+            Assert.Single(await _provider.TransitionQueuedCronOccurrencesToInProgressAsync(
+                [new AcquisitionLease(queued.Id, queued.AcquisitionToken)]));
+            Assert.Empty(await CollectAsync(_provider.QueueTimedOutCronTickerOccurrences()));
+        }
     }
 
     #endregion

@@ -17,13 +17,15 @@ internal class NoOpTickerQRedisContext : ITickerQRedisContext
         return factory(cancellationToken);
     }
 
-    public Task<string[]> GetDeadNodesAsync()
+    public Task<string[]> GetDeadNodesAsync(CancellationToken cancellationToken = default)
     {
         return Task.FromResult(Array.Empty<string>());
     }
 
-    public Task NotifyNodeAliveAsync()
+    public Task NotifyNodeAliveAsync(CancellationToken cancellationToken = default)
     {
        return Task.CompletedTask;
     }
+    public Task AcknowledgeDeadNodeAsync(string owner, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    public Task RetryPendingInvalidationsAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 }

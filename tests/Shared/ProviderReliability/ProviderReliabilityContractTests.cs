@@ -9,6 +9,8 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Managers;
+using NSubstitute;
 
 using Xunit;
 
@@ -63,6 +65,129 @@ public abstract class ProviderReliabilityContractTests
     /// this to a small value; a real networked store can push it higher.
     /// </summary>
     protected virtual int RaceParallelism => 4;
+
+    [Theory]
+    [InlineData(-500, true)]
+    [InlineData(500, false)]
+    public async Task OverdueCron_NormalSchedulingPreservesScheduledTime_AndIncludesOtherDueWork(
+        int timeOffsetMilliseconds, bool timeIsDue)
+    {
+        var cron = NewCron(expression: "0 */5 * * * *");
+        cron.DefinitionRevision = 3;
+        await Provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = NewOccurrence(cron.Id, executionTime: Now.AddSeconds(-5));
+        occurrence.DefinitionRevision = 3;
+        await Provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+        var time = NewTimeTicker(executionTime: Now.AddMilliseconds(timeOffsetMilliseconds));
+        await Provider.AddTimeTickers([time], CancellationToken.None);
+
+        Assert.Equal(3, Assert.Single(await Provider.GetAllCronTickerExpressions(CancellationToken.None)).DefinitionRevision);
+        var discovered = await Provider.GetEarliestAvailableCronOccurrence([cron.Id]);
+        Assert.NotNull(discovered);
+        Assert.Equal(occurrence.Id, discovered.Id);
+        Assert.Equal(3, discovered.CronTicker.DefinitionRevision);
+        var clock = Substitute.For<ITickerClock>();
+        clock.UtcNow.Returns(Now);
+        var manager = new InternalTickerManager<TimeTickerEntity, CronTickerEntity>(Provider, clock,
+            Substitute.For<ITickerQNotificationHubSender>(), Options);
+
+        var (delay, jobs) = await manager.GetNextTickers();
+
+        Assert.Equal(TimeSpan.Zero, delay);
+        var cronJob = Assert.Single(jobs, job => job.Type == TickerType.CronTickerOccurrence);
+        Assert.Equal(occurrence.Id, cronJob.TickerId);
+        Assert.Equal(occurrence.ExecutionTime, cronJob.ExecutionTime);
+        Assert.Equal(timeIsDue ? 2 : 1, jobs.Length);
+        if (timeIsDue) Assert.Contains(jobs, job => job.TickerId == time.Id);
+        var running = await manager.SetTickersInProgress(jobs);
+        Assert.Equal(jobs.Length, running.Length);
+        Assert.Empty(await CollectCronAsync(Provider.QueueTimedOutCronTickerOccurrences()));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OverdueCron_NormalAndFallbackAcquisition_CannotRestartRunningOccurrence(bool fallbackFirst)
+    {
+        var cron = NewCron();
+        cron.DefinitionRevision = 3;
+        await Provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = NewOccurrence(cron.Id, executionTime: Now.AddSeconds(-5));
+        occurrence.DefinitionRevision = 3;
+        await Provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+        var discovered = (await Provider.GetEarliestAvailableCronOccurrence([cron.Id]))!;
+        var item = new InternalManagerContext(cron.Id)
+        {
+            FunctionName = cron.Function, Expression = cron.Expression,
+            DefinitionRevision = discovered.CronTicker.DefinitionRevision,
+            NextCronOccurrence = new NextCronOccurrence(occurrence.Id, occurrence.CreatedAt)
+        };
+        if (fallbackFirst)
+        {
+            Assert.Single(await CollectCronAsync(Provider.QueueTimedOutCronTickerOccurrences()));
+            Assert.Empty(await CollectCronAsync(Provider.QueueCronTickerOccurrences((occurrence.ExecutionTime, [item]))));
+        }
+        else
+        {
+            var queued = Assert.Single(await CollectCronAsync(Provider.QueueCronTickerOccurrences((occurrence.ExecutionTime, [item]))));
+            Assert.Single(await Provider.TransitionQueuedCronOccurrencesToInProgressAsync(
+                [new AcquisitionLease(queued.Id, queued.AcquisitionToken)]));
+            Assert.Empty(await CollectCronAsync(Provider.QueueTimedOutCronTickerOccurrences()));
+        }
+    }
+
+    [Fact]
+    public async Task OverdueCron_FallbackDuringQueuedHandoff_OnlyOneExecutionClaimWins()
+    {
+        var cron = NewCron();
+        await Provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = NewOccurrence(cron.Id, executionTime: Now.AddSeconds(-5));
+        await Provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+        var discovered = (await Provider.GetEarliestAvailableCronOccurrence([cron.Id]))!;
+        var item = new InternalManagerContext(cron.Id)
+        {
+            FunctionName = cron.Function, Expression = cron.Expression,
+            DefinitionRevision = discovered.CronTicker.DefinitionRevision,
+            NextCronOccurrence = new NextCronOccurrence(occurrence.Id, occurrence.CreatedAt)
+        };
+        var queued = Assert.Single(await CollectCronAsync(
+            Provider.QueueCronTickerOccurrences((occurrence.ExecutionTime, [item]))));
+
+        // Fallback may acquire the queued row or leave its live handoff alone. Whichever
+        // path wins, the old main-loop token must never start a second execution.
+        var recovered = await CollectCronAsync(Provider.QueueTimedOutCronTickerOccurrences());
+        var started = await Provider.TransitionQueuedCronOccurrencesToInProgressAsync(
+            [new AcquisitionLease(queued.Id, queued.AcquisitionToken)]);
+
+        Assert.Equal(occurrence.Id, Assert.Single(recovered.Select(x => x.Id).Concat(started)));
+        if (recovered.Count > 0)
+            Assert.NotEqual(queued.AcquisitionToken, recovered[0].AcquisitionToken);
+        Assert.Empty(await CollectCronAsync(Provider.QueueTimedOutCronTickerOccurrences()));
+    }
+
+    [Fact]
+    public async Task OverdueCron_OtherOwnerQueuedOccurrence_IsNotClaimedByMainOrFallback()
+    {
+        var cron = NewCron();
+        await Provider.InsertCronTickers([cron], CancellationToken.None);
+        var occurrence = NewOccurrence(cron.Id, TickerStatus.Queued, Now.AddSeconds(-5));
+        occurrence.LockHolder = "other-live-owner";
+        occurrence.LockedAt = Now;
+        occurrence.AcquisitionToken = Guid.NewGuid();
+        occurrence.LeaseUntil = Now.AddMinutes(1);
+        await Provider.InsertCronTickerOccurrences([occurrence], CancellationToken.None);
+
+        Assert.Null(await Provider.GetEarliestAvailableCronOccurrence([cron.Id]));
+        Assert.Empty(await CollectCronAsync(Provider.QueueTimedOutCronTickerOccurrences()));
+    }
+
+    private static async Task<List<CronTickerOccurrenceEntity<CronTickerEntity>>> CollectCronAsync(
+        IAsyncEnumerable<CronTickerOccurrenceEntity<CronTickerEntity>> source)
+    {
+        var result = new List<CronTickerOccurrenceEntity<CronTickerEntity>>();
+        await foreach (var item in source) result.Add(item);
+        return result;
+    }
 
     // ---------------------------------------------------------------------
     // 1. Acquisition race — exactly one concurrent acquirer wins.

@@ -444,13 +444,13 @@ namespace TickerQ.Utilities.Managers
                 ? _activationGate.WaitForActivationAsync(cancellationToken)
                 : Task.CompletedTask;
 
-        private static TickerValidatorException ValidateAndStampRequest(BaseTickerEntity entity, byte[] request)
+        internal static TickerValidatorException ValidateAndStampRequest(BaseTickerEntity entity, byte[] request)
         {
             var validation = TickerRequestPayloadValidator.Validate(entity.Function, request);
             return StampAcceptedRequest(entity, validation);
         }
 
-        private static TickerValidatorException ValidateAndStampTimeTickerGraph(IEnumerable<TTimeTicker> roots)
+        internal static TickerValidatorException ValidateAndStampTimeTickerGraph(IEnumerable<TTimeTicker> roots)
         {
             var snapshot = TickerFunctionProvider.Snapshot;
             var accepted = new List<(TTimeTicker Entity, TickerRequestValidationResult Validation)>();

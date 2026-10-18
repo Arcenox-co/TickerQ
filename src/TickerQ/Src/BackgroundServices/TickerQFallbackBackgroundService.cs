@@ -2,6 +2,8 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -19,8 +21,9 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
     private readonly TickerQLicenseStateProvider _licenseState;
     private readonly TimeSpan _fallbackJobPeriod;
     private readonly ITickerQActivationGate _activationGate;
+    private readonly ILogger<TickerQFallbackBackgroundService> _logger;
 
-    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, ITickerFunctionConcurrencyGate concurrencyGate, TickerQLicenseStateProvider licenseState, ITickerQActivationGate activationGate = null)
+    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, ITickerFunctionConcurrencyGate concurrencyGate, TickerQLicenseStateProvider licenseState, ITickerQActivationGate activationGate = null, ILogger<TickerQFallbackBackgroundService> logger = null)
     {
         _internalTickerManager = internalTickerManager;
         _fallbackJobPeriod = schedulerOptions.FallbackIntervalChecker;
@@ -29,6 +32,7 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
         _concurrencyGate = concurrencyGate;
         _licenseState = licenseState;
         _activationGate = activationGate;
+        _logger = logger ?? NullLogger<TickerQFallbackBackgroundService>.Instance;
     }
 
     public override Task StartAsync(CancellationToken ct)
@@ -131,11 +135,18 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
                 // Host is shutting down – exit gracefully.
                 break;
             }
-            catch (Exception)
+            catch (Exception exception)
             {
-                // Swallow unexpected exceptions so they don't bubble up
-                // and stop the host; wait a bit before retrying.
-                await Task.Delay(_fallbackJobPeriod, stoppingToken);
+                _logger.LogError(exception,
+                    "TickerQ fallback recovery failed. Retrying after {FallbackInterval}", _fallbackJobPeriod);
+                try
+                {
+                    await Task.Delay(_fallbackJobPeriod, stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
             }
         }
     }
