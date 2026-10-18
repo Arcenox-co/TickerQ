@@ -1,3 +1,5 @@
+import { parseAssistantEvent } from "../lib/assistant-stream.ts";
+import type { IntegrationRule, IntegrationMonitor } from "./integration-types";
 import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
 import { tokenStore } from "@/lib/auth/token-store";
 
@@ -26,7 +28,9 @@ export interface HistoryMessage {
  * never writes anything.
  */
 export interface AssistantProposal {
-  kind: "createTimeTicker" | "createCronTicker" | "updateCronTicker" | "createChain";
+  kind: "createTimeTicker" | "createCronTicker" | "updateCronTicker" | "createChain"
+    | "createCronChain" | "retryExecution" | "cancelExecution" | "deleteExecution"
+    | "createAlertRule" | "createMonitor";
   function: string;
   expression: string;
   currentExpression: string;
@@ -38,6 +42,17 @@ export interface AssistantProposal {
   isEnabled: boolean | null;
   /** Normalized chain tree as JSON (createChain only) — a single root ProposalChainNode. */
   chainJson: string;
+  skipIfAlreadyRunning?: boolean | null;
+  targetType?: "TimeTicker" | "CronOccurrence" | "CronTicker";
+  expectedStatus?: string;
+  expectedExecutedAt?: string | null;
+  expectedLockedAt?: string | null;
+  cronTickerId?: string | null;
+  warning?: string;
+  configurationVersion?: string | null;
+  rule?: IntegrationRule | null;
+  monitor?: IntegrationMonitor | null;
+  destinationNames?: string[];
 }
 
 /** One step of a proposed chain (parsed from AssistantProposal.chainJson). */
@@ -118,7 +133,7 @@ export async function streamChat(
       ...authHeaders(),
     },
     credentials: "include",
-    body: JSON.stringify({ messages, conversationId: options?.conversationId ?? null }),
+    body: JSON.stringify({ messages: messages.slice(-20), conversationId: options?.conversationId ?? null }),
     signal: options?.signal,
   });
 
@@ -131,35 +146,38 @@ export async function streamChat(
   const decoder = new TextDecoder();
   let buffer = "";
   let conversationId = "";
+  let completed = false;
 
   // Parse the SSE frames: each event is "data: {json}\n\n".
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let idx: number;
-    while ((idx = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
+      let idx: number;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
 
-      const line = frame.split("\n").find((l) => l.startsWith("data:"));
-      if (!line) continue;
-      const json = line.slice(5).trim();
-      if (!json) continue;
+        const line = frame.split("\n").find((l) => l.startsWith("data:"));
+        if (!line) continue;
+        const json = line.slice(5).trim();
+        if (!json) continue;
 
-      try {
-        const evt = JSON.parse(json) as { type: string; data: string };
+        const evt = parseAssistantEvent(json);
         if (evt.type === "delta") onDelta(evt.data);
         else if (evt.type === "proposal")
           options?.onProposal?.(JSON.parse(evt.data) as AssistantProposal);
-        else if (evt.type === "done") conversationId = evt.data;
-        else if (evt.type === "error") throw new Error(evt.data);
-      } catch (e) {
-        if (e instanceof Error && e.message && !json.includes('"type"')) throw e;
+        else if (evt.type === "done") { conversationId = evt.data; completed = true; }
+
       }
     }
-  }
 
-  return conversationId;
+    if (!completed) throw new Error("Assistant connection ended before the response completed. Please try again.");
+    return conversationId;
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }

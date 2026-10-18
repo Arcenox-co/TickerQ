@@ -17,3 +17,18 @@ export function proposalChainToTimeTickerNode(
     children: (node.children ?? []).map((child) => proposalChainToTimeTickerNode(child, false)),
   };
 }
+
+/** Cron definitions store children separately; the root remains the cron function. */
+export function proposalChainToCronTemplate(node: ProposalChainNode): import("../services/api-types.ts").CronChainTemplate {
+  const child = (step: ProposalChainNode): import("../services/api-types.ts").CronChainNode => ({
+    function: step.function,
+    description: step.description || null,
+    retries: step.retries ?? 0,
+    request: encodeRequestPayload(step.requestJson),
+    runCondition: step.runCondition as RunCondition,
+    onStale: "Restart",
+    children: (step.children ?? []).map(child),
+  });
+  if (!node.children?.length) throw new Error("A recurring chain requires child steps.");
+  return { deleteBehavior: "Restrict", children: node.children.map(child) };
+}

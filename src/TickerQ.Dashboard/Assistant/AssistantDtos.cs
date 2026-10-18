@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Integrations;
 
 namespace TickerQ.Dashboard.Assistant;
 
@@ -70,6 +71,18 @@ public sealed class AssistantProposal
     /// confirm maps it onto the existing POST /time-tickers/chain contract.
     /// </summary>
     public string ChainJson { get; set; } = "";
+
+    public bool? SkipIfAlreadyRunning { get; set; }
+    public string TargetType { get; set; } = "";
+    public string ExpectedStatus { get; set; } = "";
+    public DateTime? ExpectedExecutedAt { get; set; }
+    public DateTime? ExpectedLockedAt { get; set; }
+    public Guid? CronTickerId { get; set; }
+    public string Warning { get; set; } = "";
+    public Guid? ConfigurationVersion { get; set; }
+    public IntegrationRule? Rule { get; set; }
+    public IntegrationMonitor? Monitor { get; set; }
+    public List<string> DestinationNames { get; set; } = new();
 }
 
 /// <summary>One step of a proposed chain (createChain proposals).</summary>

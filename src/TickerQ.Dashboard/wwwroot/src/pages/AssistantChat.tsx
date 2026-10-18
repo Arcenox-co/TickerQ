@@ -23,9 +23,10 @@ type ChatItem =
 
 const SUGGESTIONS = [
   "Why are my jobs failing?",
-  "Show me the recent failures",
-  "Schedule CleanupTempFiles every day at 03:00",
+  "Inspect the logs for the most recent failed execution",
+  "Which registered functions can I schedule?",
   "Is the scheduler healthy right now?",
+  "Show my integrations and monitor status",
 ];
 
 // Fallback persistence when the server has NO history store: the chat
@@ -216,7 +217,7 @@ export default function AssistantChatPage() {
         const next = [...prev];
         const last = next[next.length - 1];
         if (last?.type === "message" && last.role === "assistant") {
-          next[next.length - 1] = { ...last, content: last.content || `⚠️ ${msg}` };
+          next[next.length - 1] = { ...last, content: `${last.content}${last.content ? "\n\n" : ""}⚠️ ${msg}` };
         }
         return next;
       });
@@ -311,13 +312,13 @@ export default function AssistantChatPage() {
         {/* Header */}
         <div className="flex items-center justify-between pb-4">
           <div className="flex items-center gap-3">
-            <div className="grid h-9 w-9 place-items-center rounded-xl bg-primary/15 text-primary">
+            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary/15 text-primary">
               <Bot className="h-5 w-5" />
             </div>
             <div className="leading-tight">
               <h1 className="text-lg font-semibold tracking-tight">Chat AI</h1>
               <p className="text-[11px] text-muted-foreground">
-                Ask about failures and health, or draft new schedules
+                Jobs, logs, workflows and monitoring
                 {model ? ` · ${model}` : ""}
               </p>
             </div>
@@ -327,7 +328,7 @@ export default function AssistantChatPage() {
               type="button"
               onClick={startNewChat}
               disabled={busy}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:bg-surface-2 disabled:opacity-40"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:bg-surface-2 disabled:opacity-40"
             >
               <Trash2 className="h-3 w-3" />
               New chat
@@ -338,7 +339,7 @@ export default function AssistantChatPage() {
         {/* Messages */}
         <div
           ref={scrollRef}
-          className="flex-1 space-y-4 overflow-y-auto scrollbar-thin rounded-xl border border-border bg-surface-0/50 p-5"
+          className="flex-1 space-y-4 overflow-y-auto scrollbar-thin rounded-xl border border-border bg-surface-0/50 p-3 sm:p-5"
         >
           {loadingThread && (
             <div className="flex items-center justify-center py-12 text-muted-foreground">
@@ -352,8 +353,8 @@ export default function AssistantChatPage() {
               <div>
                 <p className="text-sm font-medium">What do you want to know?</p>
                 <p className="mt-1 text-[12px] text-muted-foreground">
-                  I read your live ticker data and explain what I find — and I can draft
-                  new schedules for you to confirm.
+                  Inspect jobs, logs and monitors. Draft schedules, workflows and changes
+                  for you to review and confirm.
                 </p>
               </div>
               <div className="mt-2 grid w-full max-w-md grid-cols-1 gap-2 sm:grid-cols-2">
@@ -431,6 +432,7 @@ export default function AssistantChatPage() {
           />
           <button
             type="submit"
+            aria-label="Send message"
             disabled={busy || !input.trim()}
             className="grid h-[44px] w-[44px] shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground disabled:opacity-40"
           >

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,6 +14,9 @@ using Microsoft.Extensions.Logging;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities;
+using TickerQ.Utilities.Infrastructure;
+using TickerQ.Utilities.Integrations;
 
 namespace TickerQ.Dashboard.Assistant;
 
@@ -92,12 +96,18 @@ internal static class AssistantEndpoints
         var assistant = ctx.RequestServices.GetRequiredService<TickerAssistantService>();
         var data = ctx.RequestServices.GetRequiredService<ITickerDashboardDataService<TTimeTicker, TCronTicker>>();
 
-        var request = await JsonSerializer.DeserializeAsync(
-            ctx.Request.Body, AssistantJsonContext.Default.ChatRequest, ctx.RequestAborted);
-        if (request?.Messages == null || request.Messages.Count == 0)
+        ChatRequest request;
+        try { request = await ReadChatRequest(ctx); }
+        catch (BadHttpRequestException ex)
+        {
+            ctx.Response.StatusCode = ex.StatusCode;
+            await ctx.Response.WriteAsync(ex.Message, ctx.RequestAborted);
+            return;
+        }
+        catch (JsonException)
         {
             ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-            await ctx.Response.WriteAsync("A non-empty messages array is required.");
+            await ctx.Response.WriteAsync("Invalid chat JSON.", ctx.RequestAborted);
             return;
         }
 
@@ -129,7 +139,12 @@ internal static class AssistantEndpoints
 
         var chatOptions = new ChatOptions
         {
-            Tools = TickerAssistantTools.Build(data, allowProposals, emitProposal, ctx.RequestAborted),
+            Tools = TickerAssistantTools.Build(data, allowProposals, emitProposal, ctx.RequestAborted,
+                readLogs: ctx.RequestServices.GetService<ExecutionLogReader>() is { } reader ? reader.ReadAsync : null,
+                integrations: dashboardConfig.CanManageIntegrations(ctx)
+                    ? ctx.RequestServices.GetService<ITickerIntegrationAdminService>() : null,
+                schedulerTimeZone: ctx.RequestServices.GetService<SchedulerOptionsBuilder>()?.SchedulerTimeZone.Id ?? "UTC",
+                diagnostics: ctx.RequestServices.GetService<TickerQRuntimeDiagnostics>()),
             MaxOutputTokens = 1500,
         };
 
@@ -169,6 +184,31 @@ internal static class AssistantEndpoints
         {
             await WriteStreamingFailure(ctx, ex);
         }
+    }
+
+    internal static async Task<ChatRequest> ReadChatRequest(HttpContext ctx)
+    {
+        if (!ctx.Request.HasJsonContentType())
+            throw new BadHttpRequestException("Use application/json.", StatusCodes.Status415UnsupportedMediaType);
+        const int limit = 128 * 1024;
+        if (ctx.Request.ContentLength > limit)
+            throw new BadHttpRequestException("Chat request exceeds 128 KB.", StatusCodes.Status413PayloadTooLarge);
+        using var body = new MemoryStream();
+        var buffer = new byte[8192];
+        int count;
+        while ((count = await ctx.Request.Body.ReadAsync(buffer, ctx.RequestAborted)) > 0)
+        {
+            if (body.Length + count > limit)
+                throw new BadHttpRequestException("Chat request exceeds 128 KB.", StatusCodes.Status413PayloadTooLarge);
+            body.Write(buffer, 0, count);
+        }
+        var request = JsonSerializer.Deserialize(body.ToArray(), AssistantJsonContext.Default.ChatRequest);
+        if (request?.Messages == null || request.Messages.Count is < 1 or > 20 ||
+            request.Messages.Any(m => m == null || m.Role is not ("user" or "assistant") ||
+                string.IsNullOrWhiteSpace(m.Content) || m.Content.Length > 16384) ||
+            request.Messages.Sum(m => m.Content.Length) > 65536 || request.Messages[^1].Role != "user")
+            throw new BadHttpRequestException("Send up to 20 user/assistant messages, ending with a user message; limit each message to 16,384 characters and the total to 65,536.", StatusCodes.Status400BadRequest);
+        return request;
     }
 
     private static async Task WriteStreamingFailure(HttpContext ctx, Exception exception)

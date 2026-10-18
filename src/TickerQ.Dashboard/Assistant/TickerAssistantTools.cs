@@ -22,13 +22,17 @@ namespace TickerQ.Dashboard.Assistant;
 /// returned as compact text so the model spends its context on data, not JSON
 /// punctuation.
 /// </summary>
-internal static class TickerAssistantTools
+internal static partial class TickerAssistantTools
 {
     public static IList<AITool> Build<TTimeTicker, TCronTicker>(
         ITickerDashboardDataService<TTimeTicker, TCronTicker> data,
         bool allowProposals,
-        Func<AssistantProposal, Task> emitProposal,
-        CancellationToken ct)
+        Func<AssistantProposal, Task>? emitProposal,
+        CancellationToken ct,
+        Func<Guid, CancellationToken, Task<TickerQ.Utilities.Infrastructure.ExecutionLogReadResult>>? readLogs = null,
+        TickerQ.Utilities.Integrations.ITickerIntegrationAdminService? integrations = null,
+        string schedulerTimeZone = "UTC",
+        TickerQ.Utilities.Infrastructure.TickerQRuntimeDiagnostics? diagnostics = null)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
@@ -52,7 +56,11 @@ internal static class TickerAssistantTools
                 {
                     var filter = new ExecutionQueryFilter { PageSize = Clamp(limit, 50), SortDescending = true };
                     if (!string.IsNullOrWhiteSpace(functionName)) filter.FunctionName = functionName;
-                    if (TryParseStatus(status, out var st)) filter.Statuses = new[] { st };
+                    if (!string.IsNullOrWhiteSpace(status))
+                    {
+                        if (!TryParseStatus(status, out var st)) return "Invalid execution status.";
+                        filter.Statuses = new[] { st };
+                    }
                     var res = await data.GetExecutionsFlatAsync(filter, ct);
                     return FormatExecutions(res.Items, res.TotalCount);
                 },
@@ -86,7 +94,7 @@ internal static class TickerAssistantTools
                     sb.AppendLine($"Cron '{c.FunctionName}' id={c.Id} expr='{c.Expression}' enabled={c.IsEnabled} retries={c.Retries} desc={c.Description ?? "-"}");
                     sb.AppendLine("Recent occurrences:");
                     foreach (var o in occ.Items.ToList())
-                        sb.AppendLine($"  {o.Status} | scheduled {Fmt(o.ScheduledFor)} | executed {Fmt(o.ExecutedAt)} | retries {o.RetryCount} | {ErrorOf(o.ExceptionMessage, o.SkippedReason)}");
+                        sb.AppendLine($"  id={o.Id} chainRoot={o.ChainRootId} | {o.Status} | scheduled {Fmt(o.ScheduledFor)} | executed {Fmt(o.ExecutedAt)} | retries {o.RetryCount} | {ErrorOf(o.ExceptionMessage, o.SkippedReason)}");
                     return sb.ToString();
                 },
                 "get_cron_ticker",
@@ -111,7 +119,7 @@ internal static class TickerAssistantTools
                     var host = await data.GetHostStatusAsync(ct);
                     var stats = await data.GetOverallStatusesAsync(ct);
                     var counts = string.Join(", ", stats.Select(s => $"{s.Status}={s.Count}"));
-                    return $"Host running={host.IsRunning}, activeThreads={host.ActiveThreads}/{host.MaxConcurrency}. Status counts: {counts}";
+                    return $"Scheduler time zone={schedulerTimeZone}. Current UTC={DateTime.UtcNow:O}. Host running={host.IsRunning}, activeThreads={host.ActiveThreads}/{host.MaxConcurrency}. Status counts: {counts}";
                 },
                 "get_scheduler_status",
                 "Get overall scheduler health: whether the host is running, active worker threads, and the count of executions in each status."),
@@ -125,12 +133,14 @@ internal static class TickerAssistantTools
         {
             tools.Add(AIFunctionFactory.Create(
                 async (
-                    [System.ComponentModel.Description("Registered function name to run (must match exactly — use get_all tools to check).")] string functionName,
+                    [System.ComponentModel.Description("Registered function name to run (must match exactly — use list_functions to check).")] string functionName,
                     [System.ComponentModel.Description("When to run, ISO-8601 UTC (e.g. 2026-07-12T06:00:00Z). Must be in the future.")] string executionTimeUtc,
                     [System.ComponentModel.Description("Retry attempts on failure (0 for none).")] int retries,
                     [System.ComponentModel.Description("Optional short description. Empty allowed.")] string description,
                     [System.ComponentModel.Description("Optional JSON payload the job receives. Empty allowed.")] string requestJson) =>
                 {
+                    var payloadError = ValidatePayload(retries, requestJson);
+                    if (payloadError != null) return payloadError;
                     var invalid = await ValidateFunctionAsync(data, functionName, ct);
                     if (invalid != null) return invalid;
 
@@ -163,6 +173,8 @@ internal static class TickerAssistantTools
                     [System.ComponentModel.Description("Optional short description. Empty allowed.")] string description,
                     [System.ComponentModel.Description("Optional JSON payload the job receives. Empty allowed.")] string requestJson) =>
                 {
+                    var payloadError = ValidatePayload(retries, requestJson);
+                    if (payloadError != null) return payloadError;
                     var invalid = await ValidateFunctionAsync(data, functionName, ct);
                     if (invalid != null) return invalid;
 
@@ -196,6 +208,8 @@ internal static class TickerAssistantTools
                     var cron = await data.GetCronTickerByIdAsync(id, ct);
                     if (cron == null) return "No cron ticker with that id — use list_cron_tickers to find the right one.";
 
+                    if (retries < -1) return "Retries must be -1 (keep current) or non-negative.";
+                    if (!string.IsNullOrWhiteSpace(enabled) && !bool.TryParse(enabled, out _)) return "enabled must be true, false or empty.";
                     if (!string.IsNullOrWhiteSpace(newExpression))
                     {
                         var exprError = ValidateCronExpression(newExpression);
@@ -209,8 +223,7 @@ internal static class TickerAssistantTools
                         _ => null,
                     };
 
-                    // The proposal carries the COMPLETE desired state so the
-                    // confirm click sends one deterministic update.
+                    // Preserve unspecified fields; confirmation applies a narrow PATCH.
                     await emitProposal(new AssistantProposal
                     {
                         Kind = "updateCronTicker",
@@ -218,9 +231,9 @@ internal static class TickerAssistantTools
                         Function = cron.FunctionName,
                         Expression = string.IsNullOrWhiteSpace(newExpression) ? cron.Expression : newExpression.Trim(),
                         CurrentExpression = cron.Expression,
-                        Retries = retries >= 0 ? retries : cron.Retries,
-                        Description = string.IsNullOrWhiteSpace(description) ? (cron.Description ?? "") : description,
-                        IsEnabled = isEnabled ?? cron.IsEnabled,
+                        Retries = retries >= 0 ? retries : null,
+                        Description = string.IsNullOrWhiteSpace(description) ? null : description,
+                        IsEnabled = isEnabled,
                     });
                     return ProposalShown;
                 },
@@ -245,6 +258,7 @@ internal static class TickerAssistantTools
                     if (executionTime < DateTime.UtcNow.AddMinutes(-1))
                         return $"executionTimeUtc is in the past (now is {DateTime.UtcNow:yyyy-MM-ddTHH:mm:ss}Z). Pick a future time.";
 
+                    if (chainJson == null || chainJson.Length > 32768) return "Chain JSON must be at most 32 KB.";
                     AssistantChainNode root;
                     try
                     {
@@ -258,7 +272,8 @@ internal static class TickerAssistantTools
 
                     var functions = await data.GetAllFunctionsAsync(ct);
                     var registered = functions.Select(f => f.FunctionName).ToHashSet(StringComparer.Ordinal);
-                    var error = ValidateChainNode(root, registered, isRoot: true, depth: 1);
+                    var nodeCount = 0;
+                    var error = ValidateChainNode(root, registered, isRoot: true, depth: 1, ref nodeCount);
                     if (error != null) return error;
 
                     await emitProposal(new AssistantProposal
@@ -274,6 +289,13 @@ internal static class TickerAssistantTools
                 "Draft a CHAIN of time tickers (a workflow: steps that run after their parent completes, per runCondition) for the user to confirm. Nothing is created until the user clicks Confirm on the card."));
         }
 
+        AddOperationalTools(tools, data, allowProposals, emitProposal, ct, readLogs);
+        if (diagnostics != null)
+            tools.Add(AIFunctionFactory.Create(() =>
+                $"Node-local diagnostics. Fallback last success={diagnostics.LastSuccessfulFallbackScanUtc:O}; last failure={diagnostics.LastFallbackFailureUtc:O}; failures={diagnostics.FallbackScanFailures}. " +
+                $"Log writes available={diagnostics.LogWritesAvailable?.ToString() ?? "unknown"}; last flush={diagnostics.LastSuccessfulLogFlushUtc:O}; write failures={diagnostics.LogWriteFailures}. Missing timestamps mean no observation, not proof of failure.",
+                "get_runtime_diagnostics", "Read this node's overdue recovery and execution-log persistence health. This is not a cluster-wide health check."));
+        if (integrations != null) AddIntegrationTools(tools, data, integrations, allowProposals, emitProposal, ct);
         return tools;
     }
 
@@ -282,12 +304,16 @@ internal static class TickerAssistantTools
         "OnSuccess", "OnFailure", "OnCancelled", "OnFailureOrCancelled", "OnAnyCompletedStatus", "InProgress",
     };
 
-    private static string ValidateChainNode(AssistantChainNode node, HashSet<string> registered, bool isRoot, int depth)
+    private static string ValidateChainNode(AssistantChainNode node, HashSet<string> registered, bool isRoot, int depth, ref int nodeCount)
     {
+        if (node == null) return "Chain steps cannot be null.";
+        if (++nodeCount > 100) return "Chain has too many steps — max 100.";
+        var payloadError = ValidatePayload(node.Retries ?? 0, node.RequestJson);
+        if (payloadError != null) return payloadError;
         if (depth > 10) return "Chain too deep — max depth is 10.";
         if (string.IsNullOrWhiteSpace(node.Function)) return "Every chain step needs a function.";
         if (!registered.Contains(node.Function))
-            return $"Unknown function '{node.Function}'. Registered functions: {string.Join(", ", registered)}";
+            return $"Unknown function '{node.Function}'. Use list_functions to find registered names.";
 
         if (isRoot)
         {
@@ -302,7 +328,7 @@ internal static class TickerAssistantTools
         if (node.Children is { Count: > 5 }) return $"Step '{node.Function}' has too many children — max 5.";
         foreach (var child in node.Children ?? Enumerable.Empty<AssistantChainNode>().ToList())
         {
-            var error = ValidateChainNode(child, registered, isRoot: false, depth + 1);
+            var error = ValidateChainNode(child, registered, isRoot: false, depth + 1, ref nodeCount);
             if (error != null) return error;
         }
         return null;
@@ -321,23 +347,32 @@ internal static class TickerAssistantTools
         var functions = await data.GetAllFunctionsAsync(ct);
         if (functions.Any(f => string.Equals(f.FunctionName, functionName, StringComparison.Ordinal)))
             return null;
-        var available = string.Join(", ", functions.Select(f => f.FunctionName));
+        var available = string.Join(", ", functions.Take(50).Select(f => f.FunctionName));
         return $"Unknown function '{functionName}'. Registered functions: {available}";
     }
 
     private static string ValidateCronExpression(string expression)
     {
-        // TickerQ accepts standard 5-field cron and 6-field (leading seconds).
-        var parts = (expression ?? "").Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Length is 5 or 6
-            ? null
-            : "Invalid cron expression — expected 5 fields (minute hour day-of-month month day-of-week, e.g. '0 6 * * 1-5') or 6 with leading seconds.";
+        if (expression == null || expression.Length > 256 || expression.Contains('%') ||
+            !TickerQ.Utilities.CronExpression.TryParse(expression, out _))
+            return "Invalid cron expression. Use a valid 5-field or 6-field expression, without configuration placeholders.";
+        return null;
+    }
+
+    private static string? ValidatePayload(int retries, string? requestJson)
+    {
+        if (retries < 0) return "Retries cannot be negative.";
+        if (string.IsNullOrWhiteSpace(requestJson)) return null;
+        if (requestJson.Length > 16384) return "Job payload must be at most 16 KB.";
+        try { using var document = JsonDocument.Parse(requestJson); }
+        catch (JsonException) { return "Job payload must be valid JSON."; }
+        return null;
     }
 
     private static int Clamp(int v, int max) => v < 1 ? 10 : (v > max ? max : v);
 
     private static bool TryParseStatus(string? s, out TickerStatus status)
-        => Enum.TryParse(s, ignoreCase: true, out status) && !string.IsNullOrWhiteSpace(s);
+        => Enum.TryParse(s, ignoreCase: true, out status) && Enum.IsDefined(status) && !string.IsNullOrWhiteSpace(s);
 
     private static string Fmt(DateTime? t)
         => t.HasValue ? t.Value.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "Z" : "-";
@@ -359,7 +394,7 @@ internal static class TickerAssistantTools
         {
             sb.AppendLine(
                 $"- {e.FunctionName} [{e.Type}] id={e.Id} | {e.Status} | scheduled {Fmt(e.ScheduledFor)} | executed {Fmt(e.ExecutedAt)} " +
-                $"| retries {e.RetryCount}/{e.Retries} | node={e.LockHolder ?? "-"} | {ErrorOf(e.ExceptionMessage, e.SkippedReason)}");
+                $"| elapsed={e.ElapsedTime}ms | retries {e.RetryCount}/{e.Retries} | node={e.LockHolder ?? "-"} | {ErrorOf(e.ExceptionMessage, e.SkippedReason)}");
         }
         return sb.ToString();
     }

@@ -210,3 +210,64 @@ See [chain deletion behavior and storage upgrades](../../docs/chain-deletion.md)
 Cron Tickers supports **Create recurring chain** and **Add chain / Edit chain** on an existing schedule. Every trigger creates an independent execution graph; its row offers **View chain** for job statuses and logs. Choose whether overlapping chains are allowed or the new trigger is skipped while a prior chain has unfinished jobs. See [recurring chain setup, storage upgrades and execution semantics](../../docs/recurring-chains.md).
 
 Cron create/edit forms expose **Skip if already running** per schedule. See [cron overlap policy](../../docs/cron-overlap.md) for runtime scope and migration requirements.
+
+## AI assistant
+
+Configure an `IChatClient` through the existing dashboard builder:
+
+```csharp
+options.AddDashboard(dashboard =>
+{
+    dashboard.AddAssistant(ai => ai
+        .UseChatClient(serviceProvider => serviceProvider.GetRequiredService<IChatClient>())
+        .WithMaxToolIterations(8));
+    // Optional: reuse your host application's authorization policy.
+    dashboard.AllowIntegrationManagement(context => context.User.IsInRole("Admin"));
+});
+```
+
+The assistant can inspect registered functions and their request contracts, executions,
+cron definitions, chain steps, retained execution logs, and node-local runtime health.
+With integration-management permission and `TickerQ.Integrations` configured, it can
+also inspect destinations, rules, monitoring state and recent delivery outcomes.
+Webhook URLs, headers, message templates and delivery response bodies are excluded
+from integration tool results.
+
+The assistant drafts confirmation cards for:
+
+- One-time jobs, cron schedules, and one-time or recurring chains.
+- Cron schedule updates, including enabling/disabling a schedule.
+- Execution retries, cancellation, and deletion.
+- New alert rules and deadline, long-running or consecutive-failure monitors, using
+  existing integration destinations and optional recovery notifications.
+
+Examples: “Read the logs for the most recent failed execution”; “Run Prepare then
+Publish every weekday at 08:00”; “Alert Operations if GenerateInvoices fails three
+times”; “Monitor GenerateInvoices: finish by 08:00 Europe/Belgrade, with ten minutes
+of grace and a recovery message.”
+
+**Changes require a Confirm click.** Tools never write data or send test messages.
+Confirmation uses the normal authenticated dashboard APIs, including their read-only,
+license and integration-management checks. Execution cards recheck observed status
+and execution timestamps before submitting; the underlying APIs still enforce current
+state. Integration proposals retain the configuration version and fail on concurrent
+edits. Read-only users receive no proposal tools.
+
+A running cancellation requests cooperation through the handler's cancellation token;
+it does not prove that the job stopped. Retrying a cron execution creates a fresh
+occurrence using the current cron definition, while retrying a time ticker re-runs
+that ticker, without resetting an entire chain. Deletion cards explain their permanent
+effect. Monitors track individual function executions, including chain steps, rather
+than completion of a whole workflow.
+
+Cron proposals show the scheduler time zone. Deadline monitors have their own explicit
+time zone. Configure new destinations and edit webhook secrets/templates in Integrations.
+
+Logs and job data inspected by the assistant are sent to your configured model provider
+and may appear in conversation history. Apply your application's log redaction and
+model/data policies accordingly. Log reads verify that the execution belongs to the
+current runtime and return at most 100 retained lines and 24,000 characters; retention,
+truncation and storage availability can limit what the assistant sees. Request contracts
+are capped at 12,000 characters. Chat requests use the last 20 turns, with a 128 KB body
+limit and limits of 16,384 characters per message and 65,536 in total. AI proposals cap
+chains at 100 steps, ten levels, and five children per step.
