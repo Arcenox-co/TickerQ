@@ -204,6 +204,7 @@ jobs:
             TickerQ.Caching.StackExchangeRedis
             TickerQ.SourceGenerator
             TickerQ.MongoDB
+            TickerQ.Notifications
             TickerQ.SDK
             TickerQ.RemoteExecutor
           )

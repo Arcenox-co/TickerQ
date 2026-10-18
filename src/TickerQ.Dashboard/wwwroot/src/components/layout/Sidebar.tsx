@@ -7,9 +7,13 @@ import {
   Timer,
   Sparkles,
   BadgeCheck,
+  Bell,
+  Info,
+  Activity,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
+import { getRuntimeConfig } from "@/lib/runtime-config";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
@@ -43,7 +47,10 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   {
     label: "System",
     items: [
+      { path: "/diagnostics", label: "Diagnostics", icon: Activity },
+      { path: "/about", label: "About", icon: Info },
       { path: "/license", label: "License", icon: BadgeCheck },
+      { path: "/notifications", label: "Notifications", icon: Bell },
     ],
   },
 ];
@@ -56,19 +63,19 @@ export function Sidebar() {
     <aside
       className={cn(
         "flex flex-col border-r border-border bg-sidebar transition-all duration-200 shrink-0 relative",
-        collapsed ? "w-[52px]" : "w-52"
+        collapsed ? "w-[52px]" : "w-[52px] md:w-52"
       )}
     >
       <nav className="flex-1 py-3 px-2 overflow-y-auto scrollbar-thin">
         {navGroups.map((group, gi) => (
           <div key={group.label} className={cn(gi > 0 && "mt-5")}>
             {!collapsed && (
-              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/50 px-2.5 mb-1.5">
+              <p className="hidden md:block text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/50 px-2.5 mb-1.5">
                 {group.label}
               </p>
             )}
             <div className="space-y-0.5">
-              {group.items.map((item) => {
+              {group.items.filter(item => item.path !== "/notifications" || getRuntimeConfig().notificationsEnabled).map((item) => {
                 const isActive = item.end
                   ? pathname === item.path
                   : pathname.startsWith(item.path);
@@ -77,9 +84,11 @@ export function Sidebar() {
                     key={item.path}
                     to={item.path}
                     end={item.end}
+                    aria-label={item.label}
+                    title={item.label}
                     className={cn(
                       "flex items-center gap-2.5 rounded-lg text-[13px] transition-all duration-150 group relative",
-                      collapsed ? "px-0 py-2 justify-center" : "px-2.5 py-[7px]",
+                      collapsed ? "px-0 py-2 justify-center" : "px-0 py-2 justify-center md:px-2.5 md:py-[7px] md:justify-start",
                       isActive
                         ? "bg-primary/8 text-foreground font-medium"
                         : "text-muted-foreground hover:text-foreground hover:bg-surface-2/60"
@@ -96,7 +105,7 @@ export function Sidebar() {
                           : "text-muted-foreground/70 group-hover:text-foreground"
                       )}
                     />
-                    {!collapsed && <span>{item.label}</span>}
+                    {!collapsed && <span className="hidden md:inline">{item.label}</span>}
                   </NavLink>
                 );
               })}
@@ -105,7 +114,7 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="p-2 border-t border-border">
+      <div className="hidden md:block p-2 border-t border-border">
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}

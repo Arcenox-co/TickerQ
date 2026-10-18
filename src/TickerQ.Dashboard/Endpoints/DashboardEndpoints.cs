@@ -82,6 +82,7 @@ public static class DashboardEndpoints
 
         d.MapPost("/time-tickers/query", QueryTimeTickers<TTimeTicker, TCronTicker>);
         d.MapGet("/time-tickers/{id:guid}", GetTimeTickerById<TTimeTicker, TCronTicker>);
+        d.MapGet("/time-tickers/{id:guid}/chain", GetTimeTickerChain<TTimeTicker, TCronTicker>);
         d.MapGet("/time-tickers/{id:guid}/children", GetTimeTickerChildren<TTimeTicker, TCronTicker>);
         d.MapGet("/time-tickers/{id:guid}/request", GetTimeTickerRequest<TTimeTicker, TCronTicker>);
 
@@ -90,6 +91,7 @@ public static class DashboardEndpoints
 
         d.MapPost("/cron-occurrences/{cronTickerId:guid}/query", QueryCronOccurrences<TTimeTicker, TCronTicker>);
         d.MapGet("/cron-occurrences/{id:guid}", GetCronOccurrenceById<TTimeTicker, TCronTicker>);
+        d.MapGet("/cron-tickers/{id:guid}/request", GetCronTickerRequest<TTimeTicker, TCronTicker>);
         d.MapGet("/cron-occurrences/{id:guid}/request", GetCronOccurrenceRequest<TTimeTicker, TCronTicker>);
 
         d.MapPost("/executions/query", QueryExecutions<TTimeTicker, TCronTicker>);
@@ -113,6 +115,8 @@ public static class DashboardEndpoints
         d.MapGet("/graphs/cron-occurrences/{cronTickerId:guid}", GetCronOccurrencesGraph<TTimeTicker, TCronTicker>);
 
         d.MapGet("/log-tail/{tickerId:guid}", GetTickerLogTail);
+        d.MapPost("/log-tail/query", GetTickerLogBatch);
+        d.MapGet("/diagnostics", GetRuntimeDiagnostics);
 
         // ===== Writes — mirror DashboardOperationService proto RPCs =====
         // Registered on their own sub-group so read-only mode can reject the
@@ -146,6 +150,8 @@ public static class DashboardEndpoints
             });
         }
 
+        d.MapNotifications(w, config);
+
         w.MapPost("/host/start", StartHost<TTimeTicker, TCronTicker>);
         w.MapPost("/host/stop", StopHost<TTimeTicker, TCronTicker>);
         w.MapPost("/host/restart", RestartHost<TTimeTicker, TCronTicker>);
@@ -164,6 +170,7 @@ public static class DashboardEndpoints
         w.MapPost("/time-tickers/{id:guid}/run", RunTimeTickerOnDemand<TTimeTicker, TCronTicker>);
         w.MapPost("/time-tickers/{id:guid}/duplicate", DuplicateTimeTicker<TTimeTicker, TCronTicker>);
         w.MapPatch("/time-tickers/{id:guid}", UpdateTimeTicker<TTimeTicker, TCronTicker>);
+        w.MapPatch("/time-tickers/{id:guid}/delete-behavior", SetChainDeleteBehavior<TTimeTicker, TCronTicker>);
         w.MapPost("/time-tickers/chain", AddTimeTickerChain<TTimeTicker, TCronTicker>);
         w.MapPut("/time-tickers/chain/{rootId:guid}", ReplaceTimeTickerChain<TTimeTicker, TCronTicker>);
 
@@ -302,6 +309,7 @@ public static class DashboardEndpoints
         var executionContext = context.RequestServices.GetRequiredService<TickerExecutionContext>();
         var schedulerOptions = context.RequestServices.GetRequiredService<SchedulerOptionsBuilder>();
         var retention = context.RequestServices.GetRequiredService<JobRetentionOptions>();
+        var logs = context.RequestServices.GetService<ExecutionLogOptions>() ?? new();
         await WriteJson(context, new DashboardOptionsResponse
         {
             MaxConcurrency = schedulerOptions.MaxConcurrency,
@@ -313,6 +321,13 @@ public static class DashboardEndpoints
             FallbackIntervalChecker = schedulerOptions.FallbackIntervalChecker,
             DefaultExecutionTimeout = schedulerOptions.DefaultExecutionTimeout,
             StaleJobRecoveryEnabled = schedulerOptions.StaleJobRecoveryEnabled,
+            ExecutionLogs = new ExecutionLogConfigResponse
+            {
+                Enabled = logs.Enabled, PersistToDatabase = logs.PersistToDatabase, MinimumLevel = logs.MinimumLevel.ToString(),
+                MaxLinesPerExecution = logs.MaxLinesPerExecution, MaxBytesPerExecution = logs.MaxBytesPerExecution,
+                MaxStoredExecutions = logs.MaxStoredExecutions, Retention = logs.Retention,
+                MemoryRetention = logs.MemoryRetention, FlushInterval = logs.FlushInterval
+            },
             Retention = new RetentionConfigResponse
             {
                 Enabled = retention.IsEnabled,
@@ -378,12 +393,41 @@ public static class DashboardEndpoints
         await WriteJson(c, dto, Json(c));
     }
 
+    private static async Task GetTimeTickerChain<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        c.Response.Headers.CacheControl = "no-store";
+        try
+        {
+            var chain = await DataService<TTimeTicker, TCronTicker>(c).GetTimeTickerChainAsync(id, c.RequestAborted);
+            if (chain.Count == 0) { c.Response.StatusCode = 404; return; }
+            await WriteJson(c, chain, Json(c));
+        }
+        catch (ArgumentOutOfRangeException ex) when (ex.ParamName == "rootId")
+        {
+            c.Response.StatusCode = 400;
+            await WriteJson(c, new ErrorResponseBody { Error = "Chain exceeds the safe traversal limits (500 nodes / 20 child levels)." }, Json(c));
+        }
+    }
+
     private static async Task GetTimeTickerChildren<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
         var children = await DataService<TTimeTicker, TCronTicker>(c).GetTimeTickerChildrenAsync(id, c.RequestAborted);
         await WriteJson(c, children, Json(c));
+    }
+
+    private static async Task GetCronTickerRequest<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        c.Response.Headers.CacheControl = "no-store";
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var cron = await persistence.GetCronTickerById(id, c.RequestAborted);
+        if (cron == null) { c.Response.StatusCode = 404; return; }
+        await WriteJson(c, new TickerRequestPayloadResponse { Payload = cron.Request }, Json(c));
     }
 
     private static async Task GetTimeTickerRequest<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
@@ -569,31 +613,93 @@ public static class DashboardEndpoints
         return (past, future);
     }
 
-    // Log tail — served from the in-process capture store (ILogger lines emitted
-    // inside a ticker execution, kept in bounded per-ticker buffers for ~30 min).
-    // The store is registered by AddTickerQ; tolerate its absence so the panel
-    // renders the "no logs" state instead of 500.
-    private static Task GetTickerLogTail(HttpContext c, Guid tickerId)
+    // Bounded diagnostic tail, combining the local unflushed buffer with optional shared storage.
+    private static async Task GetTickerLogTail(HttpContext c, Guid tickerId)
     {
         var body = new TickerLogTailResponseBody();
-
-        if (c.RequestServices.GetService<ITickerExecutionLogStore>() is { } store)
+        c.Response.Headers.CacheControl = "no-store";
+        var options = c.RequestServices.GetService<ExecutionLogOptions>() ?? new();
+        body.Storage = !options.Enabled ? "disabled" : options.PersistToDatabase ? "database" : "memory";
+        var result = c.RequestServices.GetService<ExecutionLogReader>() is { } reader
+            ? await reader.ReadAsync(tickerId, c.RequestAborted)
+            : new ExecutionLogReadResult(c.RequestServices.GetService<ITickerExecutionLogStore>()?.GetTail(tickerId)
+                ?? Array.Empty<TickerExecutionLogLine>(), false, !options.PersistToDatabase);
+        body.Truncated = result.Truncated;
+        body.PersistenceAvailable = result.PersistenceAvailable;
+        body.WriteHealth = GetLogWriteHealth(c);
+        foreach (var line in result.Lines)
         {
-            foreach (var line in store.GetTail(tickerId))
+            body.Lines.Add(new TickerLogLineResponse
             {
-                body.Lines.Add(new TickerLogLineResponse
-                {
-                    UnixMs = line.UnixMs,
-                    Level = line.Level,
-                    Source = string.Empty,
-                    Message = line.Message,
-                    Category = line.Category,
-                    FunctionName = line.FunctionName,
-                });
-            }
+                Id = line.Id,
+                UnixMs = line.UnixMs,
+                Level = line.Level,
+                Source = line.LifecycleEvent == TickerLifecycleEvent.None ? string.Empty : "scheduler",
+                LifecycleEvent = line.LifecycleEvent == TickerLifecycleEvent.None ? null : line.LifecycleEvent.ToString(),
+                Status = line.Status?.ToString(),
+                Attempt = line.Attempt,
+                Message = line.Message,
+                Category = line.Category,
+                FunctionName = line.FunctionName,
+            });
         }
+        await WriteJson(c, body, Json(c));
+    }
 
-        return WriteJson(c, body, Json(c));
+    private static ExecutionLogHealthResponse GetLogWriteHealth(HttpContext c)
+    {
+        var health = c.RequestServices.GetService<TickerQRuntimeDiagnostics>();
+        var buffer = c.RequestServices.GetService<InMemoryTickerExecutionLogStore>()?.Health;
+        return new ExecutionLogHealthResponse
+        {
+            WritesAvailable = health?.LogWritesAvailable,
+            LastSuccessfulFlushUtc = health?.LastSuccessfulLogFlushUtc,
+            LastFailureUtc = health?.LastLogWriteFailureUtc,
+            WriteFailures = health?.LogWriteFailures ?? 0,
+            PendingWrites = buffer?.PendingWrites ?? 0,
+            DroppedUnflushedExecutions = buffer?.DroppedUnflushedExecutions ?? 0
+        };
+    }
+
+    private static async Task GetRuntimeDiagnostics(HttpContext c)
+    {
+        c.Response.Headers.CacheControl = "no-store";
+        var health = c.RequestServices.GetService<TickerQRuntimeDiagnostics>();
+        await WriteJson(c, new RuntimeDiagnosticsResponse
+        {
+            Node = c.RequestServices.GetRequiredService<SchedulerOptionsBuilder>().NodeIdentifier,
+            LastSuccessfulFallbackScanUtc = health?.LastSuccessfulFallbackScanUtc,
+            LastFallbackFailureUtc = health?.LastFallbackFailureUtc,
+            FallbackScanFailures = health?.FallbackScanFailures ?? 0,
+            ExecutionLogs = GetLogWriteHealth(c)
+        }, Json(c));
+    }
+
+    private static async Task GetTickerLogBatch(HttpContext c)
+    {
+        var request = await ReadJsonAsync<TickerLogBatchRequest>(c, Json(c));
+        if (request?.Items == null || request.Items.Count is < 1 or > ExecutionLogReader.MaximumBatchSize
+            || request.Items.Any(x => x == null || x.TickerId == Guid.Empty || x.Cursor?.Length > 64)
+            || request.Items.Select(x => x.TickerId).Distinct().Count() != request.Items.Count)
+        {
+            c.Response.StatusCode = 400;
+            await WriteJson(c, new ErrorResponseBody { Error = "Provide 1–50 unique ticker IDs with valid log cursors." }, Json(c));
+            return;
+        }
+        c.Response.Headers.CacheControl = "no-store";
+        var options = c.RequestServices.GetRequiredService<ExecutionLogOptions>();
+        var reader = c.RequestServices.GetRequiredService<ExecutionLogReader>();
+        var results = await reader.ReadBatchAsync(request.Items.Select(x => x.TickerId).ToArray(), c.RequestAborted);
+        var response = new TickerLogBatchResponse();
+        var health = GetLogWriteHealth(c);
+        foreach (var item in request.Items)
+        {
+            var delta = LogTailDelta.Create(item.TickerId, results[item.TickerId], item.Cursor);
+            delta.Tail.Storage = !options.Enabled ? "disabled" : options.PersistToDatabase ? "database" : "memory";
+            delta.Tail.WriteHealth = health;
+            response.Items.Add(delta);
+        }
+        await WriteJson(c, response, Json(c));
     }
 
     // ===== Writes =====
@@ -731,7 +837,14 @@ public static class DashboardEndpoints
     {
         var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
         var result = await manager.DeleteAsync(id, c.RequestAborted);
-        c.Response.StatusCode = result.IsSucceeded ? 204 : 404;
+        if (!result.IsSucceeded) { await WriteTickerError(c, result.Exception); return; }
+        if (result.AffectedRows == 0)
+        {
+            c.Response.StatusCode = 409;
+            await WriteJson(c, new ErrorResponseBody { Error = "No job was deleted. The chain may be protected, active, missing, or changed. Refresh and try again." }, Json(c));
+            return;
+        }
+        c.Response.StatusCode = 204;
     }
 
     // ===== Bulk operations (multi-select on the dashboard tables) =====
@@ -745,6 +858,13 @@ public static class DashboardEndpoints
 
         var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
         var result = await manager.DeleteBatchAsync(body.Ids, c.RequestAborted);
+        if (!result.IsSucceeded) { await WriteTickerError(c, result.Exception); return; }
+        if (result.AffectedRows == 0)
+        {
+            c.Response.StatusCode = 409;
+            await WriteJson(c, new ErrorResponseBody { Error = "No jobs were deleted. Selected chains may be protected, active, missing, or changed. Refresh and try again." }, Json(c));
+            return;
+        }
         await WriteJson(c, new BulkActionResponseBody { Affected = result.AffectedRows }, Json(c));
     }
 
@@ -821,6 +941,18 @@ public static class DashboardEndpoints
             c.Response.StatusCode = 409;
             return;
         }
+        c.Response.StatusCode = 204;
+    }
+
+    private static async Task SetChainDeleteBehavior<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<SetChainDeleteBehaviorRequest>(c, Json(c));
+        if (body?.DeleteBehavior is not { } behavior) { c.Response.StatusCode = 400; return; }
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+        var result = await manager.SetDeleteBehaviorAsync(id, behavior, c.RequestAborted);
+        if (!result.IsSucceeded) { await WriteTickerError(c, result.Exception); return; }
         c.Response.StatusCode = 204;
     }
 
@@ -966,10 +1098,12 @@ public static class DashboardEndpoints
         {
             Function = body.Function,
             Expression = body.Expression,
+            Chain = body.Chain,
             Description = body.Description,
             Retries = body.Retries ?? 0,
             Request = body.Request,
             RetryIntervals = body.RetryIntervalsSeconds,
+            SkipIfAlreadyRunning = body.SkipIfAlreadyRunning ?? false,
             IsEnabled = body.IsEnabled ?? true,
             OnStale = body.OnStale ?? StaleAction.Restart,
             TimeoutSeconds = body.TimeoutSeconds is > 0 ? body.TimeoutSeconds : null,
@@ -999,10 +1133,12 @@ public static class DashboardEndpoints
 
         if (!string.IsNullOrWhiteSpace(body.Function))     entity.Function       = body.Function;
         if (!string.IsNullOrWhiteSpace(body.Expression))   entity.Expression     = body.Expression;
+        if (body.ReplaceChain || body.Chain != null)        entity.Chain          = body.Chain;
         if (body.Description != null)                      entity.Description    = body.Description;
         if (body.Retries.HasValue)                         entity.Retries        = body.Retries.Value;
         if (body.RetryIntervalsSeconds != null)            entity.RetryIntervals = body.RetryIntervalsSeconds.Length > 0 ? body.RetryIntervalsSeconds : null;
         if (body.Request != null)                          entity.Request        = body.Request.Length > 0 ? body.Request : null;
+        if (body.SkipIfAlreadyRunning.HasValue)             entity.SkipIfAlreadyRunning = body.SkipIfAlreadyRunning.Value;
         if (body.IsEnabled.HasValue)                       entity.IsEnabled      = body.IsEnabled.Value;
         if (body.OnStale.HasValue)                         entity.OnStale        = body.OnStale.Value;
         if (body.TimeoutSeconds.HasValue)                  entity.TimeoutSeconds = body.TimeoutSeconds.Value > 0 ? body.TimeoutSeconds.Value : null;
@@ -1018,8 +1154,12 @@ public static class DashboardEndpoints
     {
         var body = await ReadJsonAsync<ToggleCronTickerBody>(c, Json(c));
         if (body == null) { c.Response.StatusCode = 400; return; }
-        var ok = await DataService<TTimeTicker, TCronTicker>(c).ToggleCronTickerAsync(id, body.IsEnabled, c.RequestAborted);
-        c.Response.StatusCode = ok ? 204 : 404;
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        if (await persistence.GetCronTickerById(id, c.RequestAborted) == null) { c.Response.StatusCode = 404; return; }
+        var manager = c.RequestServices.GetRequiredService<ICronTickerManager<TCronTicker>>();
+        var result = await manager.SetEnabledAsync(id, body.IsEnabled, c.RequestAborted);
+        if (!result.IsSucceeded) { await WriteTickerError(c, result.Exception); return; }
+        c.Response.StatusCode = 204;
     }
 
     private static async Task RunCronTickerOnDemand<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
@@ -1062,6 +1202,7 @@ public static class DashboardEndpoints
             Request = node.Request,
             RetryIntervals = node.RetryIntervalsSeconds,
             OnStale = node.OnStale ?? StaleAction.Restart,
+            DeleteBehavior = node.DeleteBehavior ?? ChainDeleteBehavior.Cascade,
             TimeoutSeconds = node.TimeoutSeconds is > 0 ? node.TimeoutSeconds : null,
         };
 
@@ -1110,6 +1251,7 @@ public static class DashboardEndpoints
             Request = src.Request,
             RunCondition = src.RunCondition,
             OnStale = src.OnStale,
+            DeleteBehavior = src.DeleteBehavior,
             TimeoutSeconds = src.TimeoutSeconds,
         };
 

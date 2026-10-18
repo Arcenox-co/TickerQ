@@ -222,8 +222,10 @@ namespace TickerQ.Licensing
                 case (4, LicenseKind.Full):
                     if (payload.Plan == LicensePlan.Community)
                         return "paid license must not be Community";
-                    if (payload.RuntimeExpiresAt != payload.IssuedAt.AddYears(1))
-                        return "invalid full-license term";
+                    // The portal fixes coverage at payment confirmation and can issue or reissue a
+                    // certificate later in that term. Honor the signed expiry instead of requiring a
+                    // new year from IssuedAt. The common checks still require expiry after issuance;
+                    // annual term policy is enforced by the issuer using its subscription records.
                     // The anchor limits contractual fallback rights, not active-term upgrades or runtime
                     // continuity. Validate its shape without treating a line match as proof of entitlement.
                     if (!IsFunctionalMinorLine(payload.AnchoredMinorLine))

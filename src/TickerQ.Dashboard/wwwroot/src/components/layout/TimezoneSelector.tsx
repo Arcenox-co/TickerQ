@@ -123,6 +123,7 @@ export function TimezoneSelector() {
       <PopoverTrigger asChild>
         <button
           type="button"
+          aria-label="Choose display time zone"
           title={`${displayTimezone} · ${offsetLabel}${dstActive ? " (DST)" : ""}`}
           className={cn(
             "group h-7 inline-flex items-center gap-2 rounded-lg border border-border bg-transparent pl-2 pr-2.5 text-[11px] transition-colors",
@@ -131,13 +132,13 @@ export function TimezoneSelector() {
           )}
         >
           <Globe className="h-3 w-3 shrink-0 text-primary/70 group-hover:text-primary transition-colors" />
-          <span className="font-medium tabular-nums leading-none">{clock}</span>
-          <span className="text-muted-foreground/60">·</span>
-          <span className="tabular-nums leading-none">{offsetLabel}</span>
-          <span className="text-muted-foreground/40 leading-none">{shortLabel(displayTimezone)}</span>
+          <span className="hidden sm:inline font-medium tabular-nums leading-none">{clock}</span>
+          <span className="hidden sm:inline text-muted-foreground/60">·</span>
+          <span className="hidden sm:inline tabular-nums leading-none">{offsetLabel}</span>
+          <span className="hidden sm:inline text-muted-foreground/40 leading-none">{shortLabel(displayTimezone)}</span>
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-[360px] p-0" align="end" sideOffset={6}>
+      <PopoverContent className="w-[360px] max-w-[calc(100vw-1rem)] p-0" align="end" sideOffset={6}>
         {/* Status header — shows the currently selected timezone + live time */}
         <div className="px-3 pt-3 pb-2 border-b border-border bg-surface-0/40">
           <div className="flex items-center justify-between gap-2">

@@ -22,6 +22,7 @@ export interface TickerQAuthConfig {
 }
 
 export interface TickerQRuntimeConfig {
+  notificationsEnabled: boolean;
   basePath: string;
   backendDomain: string;
   /** Dashboard package version (assembly informational version). */
@@ -46,6 +47,7 @@ declare global {
 }
 
 const DEFAULTS: TickerQRuntimeConfig = {
+  notificationsEnabled: false,
   basePath: "/",
   backendDomain: "",
   version: "",

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Serialization.Metadata;
@@ -38,6 +38,8 @@ namespace TickerQ.Utilities.Interfaces.Managers
 
         Task ReleaseAcquiredResources(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
         Task<InternalFunctionContext[]> SetTickersInProgress(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
+        Task<bool> TryDispatchCronChainAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
+            => Task.FromResult(false);
         Task UpdateTickerAsync(InternalFunctionContext context, CancellationToken cancellationToken = default);
         Task UpdateTickerFromRemoteAsync(InternalFunctionContext context, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("The configured manager does not support acknowledged remote terminal updates.");

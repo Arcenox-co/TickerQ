@@ -14,6 +14,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Checkbox } from "@/components/ui/checkbox";
+import { CronOverlapField } from "@/components/cron/CronOverlapField";
+import { CronSchedulePresets } from "@/components/cron/CronSchedulePresets";
 import { TextField } from "@/components/form-fields/text-field";
 
 import { NumberField } from "@/components/form-fields/number-field";
@@ -39,6 +41,7 @@ import {
 import { createDraftState, selectFunction } from "@/lib/function-draft";
 
 const schema = z.object({
+  skipIfAlreadyRunning: z.boolean(),
   function: z.string().trim().min(1, "Function is required"),
   expression: z
     .string()
@@ -60,14 +63,6 @@ const schema = z.object({
 });
 
 type FormValues = z.infer<typeof schema>;
-
-const PRESETS: { label: string; value: string }[] = [
-  { label: "Every minute", value: "* * * * *" },
-  { label: "Every 5 minutes", value: "*/5 * * * *" },
-  { label: "Every hour", value: "0 * * * *" },
-  { label: "Every day at midnight", value: "0 0 * * *" },
-  { label: "Every Monday 9am", value: "0 9 * * 1" },
-];
 
 export function CreateCronTickerDialog({
   open,
@@ -95,6 +90,7 @@ export function CreateCronTickerDialog({
       requestJson: "",
       onStale: "Restart",
       timeoutSeconds: 0,
+      skipIfAlreadyRunning: false,
     },
   });
 
@@ -206,24 +202,9 @@ export function CreateCronTickerDialog({
                       Cron expression{" "}
                       <span className="text-status-error">*</span>
                     </span>
-                    <select
-                      value=""
-                      onChange={(e) => {
-                        if (e.target.value) {
-                          form.setValue("expression", e.target.value, {
-                            shouldValidate: true,
-                          });
-                        }
-                      }}
-                      className="h-6 rounded-md border border-border bg-card px-2 text-[11px] text-muted-foreground hover:text-foreground"
-                    >
-                      <option value="">Presets…</option>
-                      {PRESETS.map((p) => (
-                        <option key={p.value} value={p.value}>
-                          {p.label}
-                        </option>
-                      ))}
-                    </select>
+                    <CronSchedulePresets onSelect={(expression) =>
+                      form.setValue("expression", expression, { shouldValidate: true, shouldDirty: true })
+                    } />
                   </div>
                   <TextField
                     control={form.control}
@@ -296,6 +277,9 @@ export function CreateCronTickerDialog({
                   onValidityChange={(valid) => { requestEditorValid.current = valid; }}
                   error={form.formState.errors.requestJson?.message}
                 />
+
+                <CronOverlapField checked={form.watch("skipIfAlreadyRunning")}
+                  onChange={value => form.setValue("skipIfAlreadyRunning", value, { shouldDirty: true })} />
 
                 <label className="flex items-center gap-2 text-[12px] text-muted-foreground cursor-pointer select-none">
                   <Checkbox

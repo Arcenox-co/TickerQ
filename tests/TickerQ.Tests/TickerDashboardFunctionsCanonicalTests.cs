@@ -117,7 +117,7 @@ public class TickerDashboardFunctionsCanonicalTests : IDisposable
     {
         TickerFunctionProvider.RegisterFunctions(new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
         {
-            ["Transport.Job"] = ("0 * * * *", TickerTaskPriority.High, NoOpDelegate, 0),
+            ["Transport.Job"] = ("0 * * * *", TickerTaskPriority.High, NoOpDelegate, 2),
             ["Transport.Bare"] = (null, TickerTaskPriority.Normal, NoOpDelegate, 0)
         });
         TickerFunctionProvider.RegisterDescriptors(new Dictionary<string, TickerFunctionDescriptor>
@@ -142,6 +142,7 @@ public class TickerDashboardFunctionsCanonicalTests : IDisposable
 
         var typed = Assert.Single(functions, x => x.FunctionName == "Transport.Job");
         Assert.Equal(4, typed.ContractVersion);
+        Assert.Equal(2, typed.MaxConcurrency);
         Assert.NotNull(typed.RequestContract);
         Assert.Equal("Transport.Request", typed.RequestContract!.TypeName);
         Assert.Equal("application/json", typed.RequestContract.MediaType);
@@ -158,6 +159,7 @@ public class TickerDashboardFunctionsCanonicalTests : IDisposable
 
         var bare = Assert.Single(functions, x => x.FunctionName == "Transport.Bare");
         Assert.Equal(1, bare.ContractVersion);
+        Assert.Equal(0, bare.MaxConcurrency);
         Assert.Null(bare.RequestContract);
         Assert.Null(bare.RequestType);
         Assert.Null(bare.RequestExample);

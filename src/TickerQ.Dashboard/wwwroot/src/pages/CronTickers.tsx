@@ -1,13 +1,14 @@
+import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Pencil, Plus, Power, PowerOff, Trash2 } from "lucide-react";
+import { GitBranch, Minus, Pencil, Plus, Power, PowerOff, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/cron/PageHeader";
 import { DataTable } from "@/components/cron/DataTable";
 import { BulkActionBar } from "@/components/cron/BulkActionBar";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
-import { PriorityBadge, StatusBadge } from "@/components/cron/StatusBadges";
+import { ChainTypeBadge, PriorityBadge } from "@/components/cron/StatusBadges";
 import {
   FilterChip,
   FilterPopover,
@@ -21,6 +22,7 @@ import {
 import { CreateCronTickerDialog } from "@/components/cron/CreateCronTickerDialog";
 import { EditCronTickerDialog } from "@/components/cron/EditCronTickerDialog";
 import { nextRunFromExpression } from "@/components/cron/CronExpressionPreview";
+import { describeCronExpression } from "@/lib/cron/description";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -62,6 +64,11 @@ export default function CronTickersPage() {
   const [recentlyCreatedId, setRecentlyCreatedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<CronTickerFlatDto | null>(null);
+  const [pendingToggle, setPendingToggle] = useState<{
+    cron: CronTickerFlatDto;
+    isEnabled: boolean;
+  } | null>(null);
 
   useEffect(() => {
     setPage(1);
@@ -113,11 +120,13 @@ export default function CronTickersPage() {
     return () => window.clearTimeout(t);
   }, [recentlyCreatedId, data?.items]);
 
-  async function handleToggle(row: CronTickerFlatDto) {
-    const next = !row.isEnabled;
+  async function handleToggle() {
+    if (!pendingToggle || readOnly || toggleMutation.isPending) return;
+    const { cron, isEnabled: next } = pendingToggle;
     try {
-      await toggleMutation.mutateAsync({ id: row.id, body: { isEnabled: next } });
+      await toggleMutation.mutateAsync({ id: cron.id, body: { isEnabled: next } });
       toast.success(next ? "Cron enabled" : "Cron disabled");
+      setPendingToggle(null);
     } catch (err) {
       toast.error(next ? "Failed to enable" : "Failed to disable", {
         description: err instanceof Error ? err.message : "An error occurred",
@@ -125,11 +134,19 @@ export default function CronTickersPage() {
     }
   }
 
-  async function handleDelete(row: CronTickerFlatDto) {
+  async function handleDelete() {
+    if (!pendingDelete || readOnly || deleteMutation.isPending) return;
+    const row = pendingDelete;
     setDeletingIds((prev) => new Set(prev).add(row.id));
     try {
       await deleteMutation.mutateAsync(row.id);
       toast.success("Cron ticker deleted");
+      setPendingDelete(null);
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(row.id);
+        return next;
+      });
     } catch (err) {
       toast.error("Failed to delete", {
         description: err instanceof Error ? err.message : "An error occurred",
@@ -144,7 +161,7 @@ export default function CronTickersPage() {
   }
 
   async function handleBulkDelete() {
-    if (selected.size === 0) return;
+    if (selected.size === 0 || readOnly || bulkDeleteMutation.isPending) return;
     const ids = Array.from(selected);
     setDeletingIds((prev) => new Set([...prev, ...ids]));
     try {
@@ -153,6 +170,7 @@ export default function CronTickersPage() {
         res.affected === 1 ? "Cron ticker deleted" : `${res.affected} cron tickers deleted`
       );
       setSelected(new Set());
+      setConfirmBulkDelete(false);
     } catch (err) {
       toast.error("Failed to delete", {
         description: err instanceof Error ? err.message : "An error occurred",
@@ -163,7 +181,6 @@ export default function CronTickersPage() {
         for (const id of ids) next.delete(id);
         return next;
       });
-      setConfirmBulkDelete(false);
     }
   }
 
@@ -173,9 +190,23 @@ export default function CronTickersPage() {
         accessorKey: "functionName",
         header: "Function",
         cell: ({ row }) => (
-          <span className="font-mono text-[11px] font-medium text-foreground">
-            {row.original.functionName}
-          </span>
+          <div className="flex items-center gap-2">
+            {row.original.chain
+              ? <GitBranch aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-primary/60" />
+              : <Minus aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />}
+            <span className="font-mono text-[11px] font-medium text-foreground">
+              {row.original.functionName}
+            </span>
+          </div>
+        ),
+      },
+      {
+        id: "type",
+        header: "Type",
+        cell: ({ row }) => (
+          <ChainTypeBadge isChain={!!row.original.chain}
+            childCount={row.original.chain?.children.length}
+            onClick={() => navigate(`/cron-tickers/${row.original.id}`)} />
         ),
       },
       {
@@ -186,11 +217,9 @@ export default function CronTickersPage() {
             <span className="font-mono text-[11px] text-foreground">
               {row.original.expression}
             </span>
-            {row.original.description && (
-              <p className="text-[10px] text-muted-foreground/50 mt-0.5">
-                {row.original.description}
-              </p>
-            )}
+            <p className="mt-0.5 max-w-xs whitespace-normal text-[10px] leading-4 text-muted-foreground">
+              {describeCronExpression(row.original.expression) ?? "Invalid cron expression"}
+            </p>
           </div>
         ),
       },
@@ -203,10 +232,12 @@ export default function CronTickersPage() {
           return (
             <button
               type="button"
-              disabled={readOnly}
+              disabled={readOnly || toggleMutation.isPending}
+              aria-label={`${r.isEnabled ? "Disable" : "Enable"} ${r.functionName}`}
               onClick={(e) => {
                 e.stopPropagation();
-                if (!readOnly) handleToggle(r);
+                if (!readOnly && !toggleMutation.isPending)
+                  setPendingToggle({ cron: r, isEnabled: !r.isEnabled });
               }}
               title={
                 readOnly
@@ -238,7 +269,7 @@ export default function CronTickersPage() {
         header: "Last Status",
         cell: ({ row }) =>
           row.original.lastRunStatus ? (
-            <StatusBadge status={row.original.lastRunStatus} />
+            <ExecutionStatus status={row.original.lastRunStatus} summary={row.original.lastRunChainSummary} isChain={!!row.original.lastRunChainRootId} />
           ) : (
             <span className="text-[11px] text-muted-foreground/40">—</span>
           ),
@@ -304,7 +335,12 @@ export default function CronTickersPage() {
                         ? "text-muted-foreground/50 hover:text-status-cancelled"
                         : "text-muted-foreground/50 hover:text-status-healthy"
                     )}
-                    onClick={() => handleToggle(r)}
+                    disabled={toggleMutation.isPending}
+                    aria-label={`${r.isEnabled ? "Disable" : "Enable"} ${r.functionName}`}
+                    onClick={() => {
+                      if (!readOnly && !toggleMutation.isPending)
+                        setPendingToggle({ cron: r, isEnabled: !r.isEnabled });
+                    }}
                   >
                     {r.isEnabled ? (
                       <PowerOff className="h-3 w-3" />
@@ -322,6 +358,7 @@ export default function CronTickersPage() {
                     variant="ghost"
                     size="sm"
                     className="h-7 w-7 p-0 text-muted-foreground/50 hover:text-primary rounded-lg"
+                    aria-label={`Edit ${r.functionName}`}
                     onClick={() => setEditingCron(r)}
                   >
                     <Pencil className="h-3 w-3" />
@@ -336,7 +373,9 @@ export default function CronTickersPage() {
                     variant="ghost"
                     size="sm"
                     className="h-7 w-7 p-0 text-muted-foreground/50 hover:text-status-error rounded-lg"
-                    onClick={() => handleDelete(r)}
+                    aria-label={`Delete ${r.functionName}`}
+                    disabled={deleteMutation.isPending || bulkDeleteMutation.isPending}
+                    onClick={() => setPendingDelete(r)}
                   >
                     <Trash2 className="h-3 w-3" />
                   </Button>
@@ -350,7 +389,7 @@ export default function CronTickersPage() {
           ]),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [readOnly]
+    [readOnly, toggleMutation.isPending, deleteMutation.isPending, bulkDeleteMutation.isPending]
   );
 
   const toolbar = (
@@ -358,6 +397,7 @@ export default function CronTickersPage() {
       <div className="flex items-center gap-2 flex-wrap">
         <SearchInput value={search} onChange={setSearch} placeholder="Search by function…" />
         <FilterPopover
+          statusLabel="Last trigger status"
           statusFilter={statusFilter}
           onStatusChange={setStatusFilter}
           functionFilter={functionFilter}
@@ -404,6 +444,7 @@ export default function CronTickersPage() {
         count={data?.totalCount ?? items.length}
         description="Recurring scheduled job definitions."
       >
+        {!readOnly && <Button variant="outline" size="sm" className="h-8 text-xs rounded-lg" onClick={() => navigate("/cron-tickers/new-chain?cron=new")}>Create recurring chain</Button>}
         {!readOnly && (
           <Button
             variant="gradient"
@@ -473,6 +514,7 @@ export default function CronTickersPage() {
             retryIntervalsSeconds: parseIntervals(values.retryIntervalsSeconds),
             request: encodeRequestPayload(values.requestJson),
             isEnabled: values.isEnabled,
+            skipIfAlreadyRunning: values.skipIfAlreadyRunning,
             onStale: values.onStale,
             timeoutSeconds:
               values.timeoutSeconds && values.timeoutSeconds > 0 ? values.timeoutSeconds : null,
@@ -481,6 +523,71 @@ export default function CronTickersPage() {
           setRecentlyCreatedId(res.id);
         }}
       />
+
+      <ConfirmDialog
+        open={!!pendingToggle}
+        onOpenChange={(open) => {
+          if (!open && !toggleMutation.isPending) setPendingToggle(null);
+        }}
+        title={pendingToggle?.isEnabled ? "Enable cron ticker?" : "Disable cron ticker?"}
+        description={pendingToggle?.isEnabled
+          ? "Enable scheduled runs for this cron ticker using its current cron expression."
+          : "Disable scheduled runs for this cron ticker. You can enable it again later."}
+        confirmLabel={pendingToggle?.isEnabled ? "Enable" : "Disable"}
+        confirmVariant={pendingToggle?.isEnabled ? "gradient" : "default"}
+        isPending={toggleMutation.isPending}
+        onConfirm={handleToggle}
+      >
+        {pendingToggle && (
+          <div className="space-y-3">
+            <dl className="space-y-2 rounded-lg border border-border bg-card p-3 text-xs">
+              <div className="space-y-1">
+                <dt className="text-muted-foreground">Function</dt>
+                <dd className="break-all font-mono font-medium">{pendingToggle.cron.functionName}</dd>
+              </div>
+              <div className="space-y-1">
+                <dt className="text-muted-foreground">Cron expression</dt>
+                <dd className="break-all font-mono">{pendingToggle.cron.expression}</dd>
+              </div>
+              <div className="space-y-1">
+                <dt className="text-muted-foreground">Ticker ID</dt>
+                <dd className="break-all font-mono text-muted-foreground">{pendingToggle.cron.id}</dd>
+              </div>
+            </dl>
+            {pendingToggle.isEnabled && pendingToggle.cron.isSystemPaused && (
+              <p className="text-xs leading-relaxed text-status-warning">The SDK node is offline. This ticker will remain system-paused until the node reconnects.</p>
+            )}
+          </div>
+        )}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
+        title="Delete cron ticker?"
+        description="Permanently deletes this cron ticker and its occurrence history. This cannot be undone."
+        confirmLabel="Delete ticker"
+        confirmVariant="destructive"
+        isPending={deleteMutation.isPending}
+        onConfirm={handleDelete}
+      >
+        {pendingDelete && (
+          <dl className="space-y-2 rounded-lg border border-border bg-card p-3 text-xs">
+            <div className="space-y-1">
+              <dt className="text-muted-foreground">Function</dt>
+              <dd className="break-all font-mono font-medium">{pendingDelete.functionName}</dd>
+            </div>
+            <div className="space-y-1">
+              <dt className="text-muted-foreground">Cron expression</dt>
+              <dd className="break-all font-mono">{pendingDelete.expression}</dd>
+            </div>
+            <div className="space-y-1">
+              <dt className="text-muted-foreground">Ticker ID</dt>
+              <dd className="break-all font-mono text-muted-foreground">{pendingDelete.id}</dd>
+            </div>
+          </dl>
+        )}
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={confirmBulkDelete}
@@ -516,6 +623,7 @@ export default function CronTickersPage() {
               retries: values.retries ?? null,
               retryIntervalsSeconds: parseIntervals(values.retryIntervalsSeconds),
               isEnabled: values.isEnabled,
+              skipIfAlreadyRunning: values.skipIfAlreadyRunning,
               onStale: values.onStale,
               timeoutSeconds: values.timeoutSeconds ?? 0,
             },

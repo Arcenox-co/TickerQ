@@ -1,3 +1,4 @@
+import type { NotificationConfiguration, NotificationSnapshot, NotificationDeliveryStatus } from "./notification-types";
 import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
 import { formatApiErrorMessage } from "@/lib/api-error-message";
 import { tokenStore } from "@/lib/auth/token-store";
@@ -5,6 +6,7 @@ import { refresh as refreshToken } from "@/lib/auth/auth-api";
 import { fireUnauthenticated } from "@/lib/auth/auth-events";
 import type {
   AddCronTickerRequest,
+  ChainDeleteBehavior,
   DashboardOptionsResponse,
   AddTickerResponse,
   AddTimeTickerChainRequest,
@@ -27,6 +29,8 @@ import type {
   PaginationResult,
   StatusCount,
   TickerLogTailResponse,
+  TickerLogBatchItem,
+  RuntimeDiagnostics,
   TickerRequestPayloadResponse,
   TimeTickerFlatDto,
   TimeTickerQueryFilter,
@@ -169,6 +173,10 @@ async function rootRequest<T>(path: string, signal?: AbortSignal): Promise<T> {
 // ===== Reads =====
 
 export const dashboardApi = {
+  getNotifications: (signal?: AbortSignal) => get<NotificationSnapshot>("/notifications", signal),
+  saveNotifications: (body: NotificationConfiguration) => put<void>("/notifications", body),
+  previewNotification: (provider: string, payloadTemplate: string | null) => post<{payload: string}>("/notifications/preview", { provider, payloadTemplate }),
+  testNotification: (id: string) => post<NotificationDeliveryStatus>(`/notifications/destinations/${id}/test`),
   // Scheduler options (root-level under /api/, not /api/dashboard/)
   getOptions: (signal?: AbortSignal) =>
     rootRequest<DashboardOptionsResponse>("/api/options", signal),
@@ -206,6 +214,8 @@ export const dashboardApi = {
     ),
   getCronOccurrence: (id: string, signal?: AbortSignal) =>
     get<CronOccurrenceFlatDto>(`/cron-occurrences/${id}`, signal),
+  getCronTickerRequest: (id: string, signal?: AbortSignal) =>
+    get<TickerRequestPayloadResponse>(`/cron-tickers/${id}/request`, signal),
   getCronOccurrenceRequest: (id: string, signal?: AbortSignal) =>
     get<TickerRequestPayloadResponse>(`/cron-occurrences/${id}/request`, signal),
 
@@ -273,6 +283,11 @@ export const dashboardApi = {
   getCronOccurrencesGraph: (cronTickerId: string, signal?: AbortSignal) =>
     get<GraphBucketDto[]>(`/graphs/cron-occurrences/${cronTickerId}`, signal),
 
+  getTimeTickerChain: (id: string, signal?: AbortSignal) => get<TimeTickerFlatDto[]>(`/time-tickers/${id}/chain`, signal),
+  getRuntimeDiagnostics: (signal?: AbortSignal) => get<RuntimeDiagnostics>("/diagnostics", signal),
+  getLogBatch: (items: { tickerId: string; cursor?: string }[], signal?: AbortSignal) =>
+    post<{ items: TickerLogBatchItem[] }>("/log-tail/query", { items }, signal),
+
   // Logs
   getLogTail: (tickerId: string, signal?: AbortSignal) =>
     get<TickerLogTailResponse>(`/log-tail/${tickerId}`, signal),
@@ -291,6 +306,8 @@ export const dashboardApi = {
   addTimeTicker: (body: AddTimeTickerRequest) =>
     post<AddTickerResponse>("/time-tickers", body),
   deleteTimeTicker: (id: string) => del<void>(`/time-tickers/${id}`),
+  setChainDeleteBehavior: (id: string, deleteBehavior: ChainDeleteBehavior) =>
+    patch<void>(`/time-tickers/${id}/delete-behavior`, { deleteBehavior }),
   bulkDeleteTimeTickers: (ids: string[]) =>
     post<BulkActionResponse>("/time-tickers/bulk-delete", { ids }),
   bulkDeleteCronTickers: (ids: string[]) =>

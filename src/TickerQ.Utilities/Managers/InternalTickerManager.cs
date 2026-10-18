@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
@@ -6,6 +6,7 @@ using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Interfaces;
@@ -23,18 +24,61 @@ namespace TickerQ.Utilities.Managers
         private readonly ITickerQNotificationHubSender _notificationHubSender;
         private readonly SchedulerOptionsBuilder _schedulerOptions;
         private readonly string _runtimePartitionKey;
+        private readonly TickerLifecycleLogger _lifecycle;
+
+        public InternalTickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
+            ITickerClock clock, ITickerQNotificationHubSender notificationHubSender, SchedulerOptionsBuilder schedulerOptions)
+            : this(persistenceProvider, clock, notificationHubSender, schedulerOptions, null) { }
 
         public InternalTickerManager(
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerClock clock,
             ITickerQNotificationHubSender notificationHubSender,
-            SchedulerOptionsBuilder schedulerOptions)
+            SchedulerOptionsBuilder schedulerOptions,
+            TickerLifecycleLogger lifecycle)
         {
             _persistenceProvider = persistenceProvider;
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             _notificationHubSender = notificationHubSender;
             _schedulerOptions = schedulerOptions;
+            _lifecycle = lifecycle;
             _runtimePartitionKey = (schedulerOptions.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal).StorageKey;
+        }
+
+        public async Task<bool> TryDispatchCronChainAsync(InternalFunctionContext context, bool isDue,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_persistenceProvider.SupportsCronChains)
+            {
+                if (context.ParentId.HasValue &&
+                    (await _persistenceProvider.GetCronTickerById(context.ParentId.Value, cancellationToken).ConfigureAwait(false))?.Chain != null)
+                    throw new NotSupportedException("This provider topology cannot atomically publish recurring chains.");
+                return false;
+            }
+            var result = await _persistenceProvider.MaterializeCronChainAsync(context, isDue, cancellationToken).ConfigureAwait(false);
+            if (result == CronChainDispatchResult.NotConfigured) return false;
+            if (result == CronChainDispatchResult.LostOwnership)
+                throw new InvalidOperationException("Cron chain publication lost its acquisition or definition. The occurrence can be recovered safely.");
+            context.Status = result == CronChainDispatchResult.Skipped ? TickerStatus.Skipped :
+                isDue ? TickerStatus.DueDone : TickerStatus.Done;
+            _lifecycle?.ChainLaunched(context);
+            if (result == CronChainDispatchResult.Created && _lifecycle?.Enabled == true)
+            {
+                try
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    var root = await _persistenceProvider.GetTimeTickerById(context.TickerId, timeout.Token).ConfigureAwait(false);
+                    _lifecycle.CreatedTree(root, _runtimePartitionKey);
+                }
+                catch { /* Diagnostics do not affect a committed recurring chain. */ }
+            }
+            if (_notificationHubSender != null)
+            {
+                if (result is CronChainDispatchResult.Created or CronChainDispatchResult.AlreadyCreated)
+                    await _notificationHubSender.AddTimeTickerNotifyAsync(context.TickerId).ConfigureAwait(false);
+                await _notificationHubSender.UpdateCronOccurrenceAsync(context.ParentId.Value, context.TickerId).ConfigureAwait(false);
+            }
+            return true;
         }
 
         public bool SupportsReconciliationActivationEpoch =>
@@ -209,6 +253,7 @@ namespace TickerQ.Utilities.Managers
                 var context = BuildTimeTickerContext(updatedTimeTicker);
                 context.ExecutionTime = updatedTimeTicker.ExecutionTime ?? _clock.UtcNow;
                 results.Add(context);
+                _lifecycle?.Queued(context);
 
                 await _notificationHubSender.UpdateTimeTickerNotifyAsync(updatedTimeTicker.Id);
             }
@@ -233,11 +278,14 @@ namespace TickerQ.Utilities.Managers
                     Type = TickerType.CronTickerOccurrence,
                     Retries = occurrence.CronTicker.Retries,
                     RetryIntervals = occurrence.CronTicker.RetryIntervals,
+                    SkipIfAlreadyRunning = occurrence.CronTicker.SkipIfAlreadyRunning,
                     TimeoutSeconds = occurrence.CronTicker.TimeoutSeconds,
                     AcquisitionToken = occurrence.AcquisitionToken,
                     ExecutionTime = occurrence.ExecutionTime
                 });
                 
+                _lifecycle?.Created(occurrence.Id, occurrence.CronTicker.Function, TickerType.CronTickerOccurrence, occurrence.CreatedAt, _runtimePartitionKey);
+                _lifecycle?.Queued(results[^1]);
                 if (occurrence.CreatedAt == occurrence.UpdatedAt && _notificationHubSender != null)
                     await _notificationHubSender.AddCronOccurrenceAsync(occurrence.CronTickerId, occurrence.Id).ConfigureAwait(false);
                 else if(_notificationHubSender != null)
@@ -291,6 +339,7 @@ namespace TickerQ.Utilities.Managers
                         Expression = cronTicker.Expression,
                         Retries = cronTicker.Retries,
                         RetryIntervals = cronTicker.RetryIntervals,
+                        SkipIfAlreadyRunning = cronTicker.SkipIfAlreadyRunning,
                         TimeoutSeconds = cronTicker.TimeoutSeconds,
                     };
 
@@ -308,6 +357,7 @@ namespace TickerQ.Utilities.Managers
                         Expression = cronTicker.Expression,
                         Retries = cronTicker.Retries,
                         RetryIntervals = cronTicker.RetryIntervals,
+                        SkipIfAlreadyRunning = cronTicker.SkipIfAlreadyRunning,
                         TimeoutSeconds = cronTicker.TimeoutSeconds,
                     });
                 }
@@ -326,6 +376,7 @@ namespace TickerQ.Utilities.Managers
                     Expression = earliestStored.CronTicker.Expression,
                     Retries = earliestStored.CronTicker.Retries,
                     RetryIntervals = earliestStored.CronTicker.RetryIntervals,
+                    SkipIfAlreadyRunning = earliestStored.CronTicker.SkipIfAlreadyRunning,
                     TimeoutSeconds = earliestStored.CronTicker.TimeoutSeconds,
                     NextCronOccurrence = new NextCronOccurrence(earliestStored.Id, earliestStored.CreatedAt)
                 };
@@ -444,15 +495,30 @@ namespace TickerQ.Utilities.Managers
                     throw new TickerResultNotAcknowledgedException(
                         $"Successful completion for TickerFunction '{functionContext.FunctionName}' " +
                         $"(ticker {functionContext.TickerId}) was not acknowledged. Children are not released.");
+                _lifecycle?.Committed(functionContext);
                 await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);
                 return;
             }
 
+            var affected = 0;
             if (functionContext.Type == TickerType.CronTickerOccurrence)
-                await _persistenceProvider.UpdateCronTickerOccurrence(functionContext, cancellationToken).ConfigureAwait(false);
+            {
+                // The legacy cron update has no row count. Use the provider's existing
+                // acknowledged terminal contract for failures/cancellation/skips so a stale
+                // lease cannot be reported as a committed outcome.
+                if (terminal && functionContext.Status is (TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped) &&
+                    _persistenceProvider.SupportsAcknowledgedTerminalUpdates)
+                {
+                    if (!await _persistenceProvider.CommitTerminalTickerAsync(functionContext, cancellationToken).ConfigureAwait(false))
+                        throw new TickerTerminalUpdateNotAcknowledgedException("Cron completion was not acknowledged by its acquisition generation.");
+                    affected = 1;
+                }
+                else
+                    await _persistenceProvider.UpdateCronTickerOccurrence(functionContext, cancellationToken).ConfigureAwait(false);
+            }
             else
             {
-                var affected = await _persistenceProvider.UpdateTimeTicker(functionContext, cancellationToken).ConfigureAwait(false);
+                affected = await _persistenceProvider.UpdateTimeTicker(functionContext, cancellationToken).ConfigureAwait(false);
                 // Ownership and aggregate-generation fencing lives in the provider. Never notify or
                 // release descendants after a rejected child/result mutation.
                 if (affected == 0 && (publishesResult || functionContext.ParentId != null))
@@ -470,6 +536,7 @@ namespace TickerQ.Utilities.Managers
                 }
             }
 
+            if (affected > 0) _lifecycle?.Committed(functionContext);
             await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);
         }
 
@@ -498,6 +565,7 @@ namespace TickerQ.Utilities.Managers
                 throw new TickerTerminalUpdateNotAcknowledgedException(message);
             }
 
+            _lifecycle?.Committed(functionContext);
             await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);
         }
 
@@ -542,6 +610,7 @@ namespace TickerQ.Utilities.Managers
                 throw new TickerTerminalUpdateNotAcknowledgedException(message);
             }
 
+            _lifecycle?.Committed(functionContext);
             await NotifyTickerUpdateAsync(functionContext).ConfigureAwait(false);
         }
 
@@ -656,6 +725,7 @@ namespace TickerQ.Utilities.Managers
                     Type = TickerType.CronTickerOccurrence,
                     Retries = timedOutCronTicker.CronTicker.Retries,
                     RetryIntervals = timedOutCronTicker.CronTicker.RetryIntervals,
+                    SkipIfAlreadyRunning = timedOutCronTicker.CronTicker.SkipIfAlreadyRunning,
                     TimeoutSeconds = timedOutCronTicker.CronTicker.TimeoutSeconds,
                     ParentId = timedOutCronTicker.CronTickerId,
                     AcquisitionToken = timedOutCronTicker.AcquisitionToken,

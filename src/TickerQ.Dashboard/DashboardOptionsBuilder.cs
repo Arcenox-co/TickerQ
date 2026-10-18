@@ -32,6 +32,16 @@ public class DashboardOptionsBuilder
     internal bool CustomCorsPolicyConfigured { get; set; }
     internal bool AnonymousDashboardAcknowledged { get; set; }
     internal AssistantOptionsBuilder? Assistant { get; set; }
+    internal Func<HttpContext, bool>? NotificationManagementPredicate { get; private set; }
+    internal bool CanManageNotifications(HttpContext context) => NotificationManagementPredicate?.Invoke(context) == true;
+
+    /// <summary>Explicit permission to manage notification destinations, secrets, rules and test delivery.</summary>
+    public DashboardOptionsBuilder AllowNotificationManagement(Func<HttpContext, bool> authorize)
+    {
+        NotificationManagementPredicate = authorize ?? throw new ArgumentNullException(nameof(authorize));
+        return this;
+    }
+
 
     /// <summary>
     /// Effective read-only decision for one request: the global flag wins,

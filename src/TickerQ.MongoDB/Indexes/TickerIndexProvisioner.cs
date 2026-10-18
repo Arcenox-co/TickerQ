@@ -108,6 +108,8 @@ namespace TickerQ.MongoDB.Indexes
             {
                 new CreateIndexModel<TTimeTicker>(keys.Ascending(x => x.ApplicationNamespaceKey).Ascending(x => x.Id),
                     new CreateIndexOptions { Name = "UX_TimeTicker_Partition_Id", Unique = true }),
+                new CreateIndexModel<TTimeTicker>(keys.Ascending(x => x.ApplicationNamespaceKey).Ascending(x => x.OriginCronTickerId).Ascending(x => x.Status),
+                    new CreateIndexOptions { Name = "IX_TimeTicker_OriginCronTickerId_Status" }),
                 new CreateIndexModel<TTimeTicker>(keys.Ascending(x => x.ApplicationNamespaceKey).Ascending(x => x.ExecutionTime),
                     new CreateIndexOptions { Name = "IX_TimeTicker_ExecutionTime" }),
                 new CreateIndexModel<TTimeTicker>(keys.Ascending(x => x.ApplicationNamespaceKey).Ascending(x => x.Status).Ascending(x => x.ExecutionTime),

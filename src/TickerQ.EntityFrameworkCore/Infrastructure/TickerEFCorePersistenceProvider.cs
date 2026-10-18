@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 
 using System;
 using System.Data;
@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using TickerQ.EntityFrameworkCore.Entities;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -17,7 +18,7 @@ using System.Collections.Generic;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
-    internal class TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker> :
+    internal partial class TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker> :
         BasePersistenceProvider<TDbContext, TTimeTicker, TCronTicker>,
         ITickerPersistenceProvider<TTimeTicker, TCronTicker>
         where TDbContext : DbContext
@@ -337,6 +338,15 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             return true;
         }
 
+        public Task<int> SetTimeTickerDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
+        {
+            if (!Enum.IsDefined(typeof(ChainDeleteBehavior), behavior)) throw new ArgumentOutOfRangeException(nameof(behavior));
+            return ExecuteTimeTickerGraphMutationAsync(false, 0, (db, ct) => db.Set<TTimeTicker>()
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == rootId && x.ParentId == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.DeleteBehavior, behavior)
+                    .SetProperty(x => x.UpdatedAt, _clock.UtcNow), ct), cancellationToken);
+        }
+
         public async Task<int> RemoveTimeTickers(Guid[] timeTickerIds, CancellationToken cancellationToken)
         {
             if (timeTickerIds == null || timeTickerIds.Length == 0) return 0;
@@ -382,6 +392,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     frontier = next.Select(x => x.Id).ToList();
                 }
 
+                if (ChainDeletionPolicy.BlocksDeletion(root.DeleteBehavior,
+                        snapshots.Values.Where(x => x.Id != root.Id).Select(x => x.Status))) continue;
+
                 if (snapshots.Values.Any(x => x.Status == TickerStatus.InProgress ||
                                               x.AcquisitionToken.HasValue ||
                                               x.LeaseUntil > now))
@@ -397,7 +410,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 {
                     currentSafe += await set.AsNoTracking().CountAsync(
                         x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == snapshot.Id &&
-                             x.ParentId == snapshot.ParentId && x.Status == snapshot.Status &&
+                             x.ParentId == snapshot.ParentId && x.Status == snapshot.Status && x.DeleteBehavior == snapshot.DeleteBehavior &&
                              x.AcquisitionToken == snapshot.AcquisitionToken &&
                              x.LeaseUntil == snapshot.LeaseUntil && x.UpdatedAt == snapshot.UpdatedAt &&
                              x.Status != TickerStatus.InProgress && x.AcquisitionToken == null &&
@@ -413,7 +426,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     {
                         deleted += await set.Where(
                                 x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == snapshot.Id &&
-                                     x.ParentId == snapshot.ParentId && x.Status == snapshot.Status &&
+                                     x.ParentId == snapshot.ParentId && x.Status == snapshot.Status && x.DeleteBehavior == snapshot.DeleteBehavior &&
                                      x.AcquisitionToken == snapshot.AcquisitionToken &&
                                      x.LeaseUntil == snapshot.LeaseUntil && x.UpdatedAt == snapshot.UpdatedAt)
                             .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
@@ -454,6 +467,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         .ToListAsync(ct).ConfigureAwait(false);
                     var oldRoot = oldAggregate.SingleOrDefault(x => x.Id == oldRootId);
                     if (oldRoot == null || oldRoot.ParentId.HasValue) return 0;
+                    if (ChainDeletionPolicy.BlocksDeletion(oldRoot.DeleteBehavior,
+                            oldAggregate.Where(x => x.Id != oldRootId).Select(x => x.Status))) return 0;
                     if (oldAggregate.Any(x => x.Status == TickerStatus.InProgress ||
                                               x.AcquisitionToken.HasValue ||
                                               (x.LeaseUntil.HasValue && x.LeaseUntil > now)))
@@ -818,7 +833,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 // deepest-first delete would otherwise orphan. Also reconfirm the root is still a root.
                 var rootStillRoot = await set.AsNoTracking()
                     .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                   x.Id == rootId && x.ParentId == null, cancellationToken)
+                                   x.Id == rootId && x.ParentId == null &&
+                                   (subtreeSize == 1 || x.DeleteBehavior == ChainDeleteBehavior.Cascade ||
+                                    x.DeleteBehavior == ChainDeleteBehavior.Restrict), cancellationToken)
                     .ConfigureAwait(false);
                 var hasPhantomChild = await set.AsNoTracking()
                     .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&

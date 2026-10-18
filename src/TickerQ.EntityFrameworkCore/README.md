@@ -115,6 +115,15 @@ with SQL Server) for its full transient-error handling. TickerQ also performs bo
 EF write conflicts and database exceptions marked `IsTransient`; it does not suppress permanent
 failures or override an exhausted provider retry policy.
 
+## Notification settings
+
+The optional [TickerQ.Notifications](../TickerQ.Notifications/README.md) package stores
+its encrypted configuration in a `NotificationSettings` table, one row per runtime
+namespace. Generate and apply an EF migration before enabling it. The model customizer
+and standalone TickerQ context include the mapping; manually configured models must add
+`NotificationSettingsConfigurations` with their configured schema. The package guide
+covers setup and sharing Data Protection keys across replicas.
+
 ## Database schema upgrades
 
 See **[Upgrading CronTicker and TimeTicker storage](../../docs/upgrading-cron-time-tickers.md)**

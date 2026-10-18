@@ -7,6 +7,8 @@ namespace TickerQ.Utilities.DashboardDtos
     {
         public Guid Id { get; set; }
         public Guid CronTickerId { get; set; }
+        public Guid? ChainRootId { get; set; }
+        public ChainExecutionSummaryDto ChainSummary { get; set; }
         public string FunctionName { get; set; }
         public TickerStatus Status { get; set; }
         public DateTime ScheduledFor { get; set; }
@@ -18,6 +20,8 @@ namespace TickerQ.Utilities.DashboardDtos
         public DateTime CreatedAt { get; set; }
         /// <summary>The instance/replica that claimed this occurrence (entity's LockHolder). Null until claimed.</summary>
         public string LockHolder { get; set; }
+        /// <summary>The generated chain root's holder when the occurrence has released its own lock.</summary>
+        public string ChainLockHolder { get; set; }
         /// <summary>When the occurrence was claimed (LockHolder set). Null until claimed.</summary>
         public DateTime? LockedAt { get; set; }
     }

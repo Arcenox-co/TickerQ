@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { useQueries } from "@tanstack/react-query";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   ArrowDownToLine,
   GitBranch,
@@ -51,17 +51,24 @@ import {
   tickersToChainNode,
   type ChainNode,
 } from "@/lib/cron/chain-node";
+import { cronToChainNode, chainNodeToCronTemplate } from "@/lib/cron/cron-chain";
+import { CronExpressionPreview } from "@/components/cron/CronExpressionPreview";
+import { CronOverlapField } from "@/components/cron/CronOverlapField";
+import { CronSchedulePresets } from "@/components/cron/CronSchedulePresets";
 import { decodeRequestPayload } from "@/lib/request-payload";
 import {
   qk,
   useAddTimeTickerChain,
   useAllFunctions,
   useChainTickers,
+  useCronTicker,
+  useAddCronTicker,
+  useUpdateCronTicker,
   useReplaceTimeTickerChain,
 } from "@/services/hooks";
 import { dashboardApi } from "@/services/dashboard-api";
 import { isReadOnly } from "@/lib/runtime-config";
-import type { FunctionInfoDto, StaleAction } from "@/services/api-types";
+import type { ChainDeleteBehavior, FunctionInfoDto, StaleAction } from "@/services/api-types";
 import {
   initialPayloadForFunction,
   RequestPayloadEditor,
@@ -99,6 +106,7 @@ function makeSlot(active = false): ChainNode {
     requestJson: "",
     requestValid: true,
     onStale: "Restart",
+    deleteBehavior: "Cascade",
     timeoutSeconds: 0,
     active,
     scheduledAt: "",
@@ -308,6 +316,7 @@ function ActiveNode({
 function NodeEditor({
   node,
   isRoot,
+  recurring = false,
   functionNames,
   functions,
   onUpdate,
@@ -316,6 +325,7 @@ function NodeEditor({
 }: {
   node: ChainNode;
   isRoot: boolean;
+  recurring?: boolean;
   functionNames: string[];
   functions: FunctionInfoDto[];
   onUpdate: (updates: Partial<ChainNode>) => void;
@@ -388,6 +398,20 @@ function NodeEditor({
               />
             )}
           </div>
+
+          {isRoot && (
+            <div className="space-y-1.5">
+              <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">Chain deletion</Label>
+              <Select value={node.deleteBehavior ?? "Cascade"} onValueChange={(value) => onUpdate({ deleteBehavior: value as ChainDeleteBehavior })}>
+                <SelectTrigger aria-label="Chain deletion behavior" className="h-9 w-full bg-surface-0 border-border text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Cascade">Cascade — delete the whole chain</SelectItem>
+                  <SelectItem value="Restrict">Restrict — wait for children to finish</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">Restrict waits until every descendant is Done, DueDone, Failed, Cancelled, or Skipped. The restriction lifts automatically; retention ages and active-job safety checks still apply.</p>
+            </div>
+          )}
 
           {!isRoot && (
             <div className="space-y-1.5">
@@ -517,7 +541,7 @@ function NodeEditor({
             </div>
           </div>
 
-          {isRoot && (
+          {isRoot && !recurring && (
             <div className="space-y-1.5">
               <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
                 Schedule
@@ -599,7 +623,22 @@ export default function ChainBuilderPage() {
 function ChainBuilderPageInner() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const editId = searchParams.get("edit");
+  const location = useLocation();
+  const cronId = searchParams.get("cron") ?? (location.pathname.endsWith("/cron-tickers/new-chain") ? "new" : null);
+  const recurring = cronId !== null;
+  const existingCronId = cronId && cronId !== "new" ? cronId : null;
+  const editId = recurring ? null : searchParams.get("edit");
+  const backPath = recurring ? (existingCronId ? `/cron-tickers/${existingCronId}` : "/cron-tickers") : "/time-tickers";
+  const [expression, setExpression] = useState("0 9 * * *");
+  const [skipIfAlreadyRunning, setSkipIfAlreadyRunning] = useState(false);
+  const cronQuery = useCronTicker(existingCronId ?? "");
+  const cronPayload = useQuery({
+    queryKey: ["cron-tickers", existingCronId, "request"],
+    queryFn: ({ signal }) => dashboardApi.getCronTickerRequest(existingCronId!, signal),
+    enabled: !!existingCronId,
+  });
+  const addCronMutation = useAddCronTicker();
+  const updateCronMutation = useUpdateCronTicker();
   const isEditing = !!editId;
 
   const { data: fns } = useAllFunctions();
@@ -628,7 +667,7 @@ function ChainBuilderPageInner() {
   const payloadsFailed = payloadQueries.some(
     (q) => q.isError || (q.isSuccess && q.data == null)
   );
-  const hydrationFailed = editChainQuery.isError || payloadsFailed;
+  const hydrationFailed = editChainQuery.isError || payloadsFailed || (recurring && (cronQuery.isError || cronPayload.isError));
   const allLoaded =
     isEditing &&
     !!editTickers?.length &&
@@ -637,23 +676,26 @@ function ChainBuilderPageInner() {
     payloadQueries.length === editTickers.length &&
     payloadQueries.every((q) => q.isSuccess && q.data != null);
 
-  const [root, setRoot] = useState<ChainNode>(() => makeInitialTree());
+  const [root, setRoot] = useState<ChainNode>(() => ({ ...makeInitialTree(), deleteBehavior: recurring ? "Restrict" : "Cascade" }));
   const [prefilled, setPrefilled] = useState(false);
 
-  useEffect(() => {
-    if (!isEditing || prefilled || !allLoaded || !editId || !editTickers) return;
+  // Initialize the editable draft once when its complete server snapshot arrives.
+  // Guarded render updates avoid an extra stale paint and never overwrite subsequent edits.
+  if (isEditing && !prefilled && allLoaded && editId && editTickers) {
     const payloadMap = new Map<string, string>();
-    editTickers.forEach((t, i) => {
+    editTickers.forEach((ticker, i) => {
       const raw = payloadQueries[i]?.data?.payload;
-      if (raw) payloadMap.set(t.id, decodeRequestPayload(raw));
+      if (raw) payloadMap.set(ticker.id, decodeRequestPayload(raw));
     });
     const tree = tickersToChainNode(editTickers, editId, payloadMap);
-    if (tree) {
-      setRoot(tree);
-      setPrefilled(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isEditing, prefilled, allLoaded, editId, editTickers]);
+    if (tree) { setRoot(tree); setPrefilled(true); }
+  }
+  if (existingCronId && !prefilled && cronQuery.data && cronPayload.isSuccess) {
+    setRoot(cronToChainNode(cronQuery.data, cronPayload.data?.payload ?? null));
+    setExpression(cronQuery.data.expression);
+    setSkipIfAlreadyRunning(cronQuery.data.skipIfAlreadyRunning ?? false);
+    setPrefilled(true);
+  }
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
@@ -780,17 +822,24 @@ function ChainBuilderPageInner() {
   const handleMouseUp = useCallback(() => setIsPanning(false), []);
 
   useEffect(() => {
-    if (containerRef.current) {
-      const rect = containerRef.current.getBoundingClientRect();
+    if ((isEditing || existingCronId) && !prefilled) return;
+    const element = containerRef.current;
+    if (!element) return;
+    const fit = () => {
+      const rect = element.getBoundingClientRect();
       const positions = computeLayout(root);
-      const maxX = Math.max(...positions.map((p) => p.x + NODE_W)) + 40;
-      const scaleX = (rect.width - 60) / maxX;
-      const scale = Math.min(scaleX, 1);
+      const minX = Math.min(...positions.map(p => p.x));
+      const width = Math.max(...positions.map(p => p.x + NODE_W)) - minX;
+      const scale = Math.min(Math.max(0.3, (rect.width - 40) / width), 1);
       setZoom(scale);
-      setPan({ x: (rect.width - maxX * scale) / 2, y: 32 });
-    }
+      setPan({ x: (rect.width - width * scale) / 2 - minX * scale, y: 32 });
+    };
+    const observer = new ResizeObserver(fit);
+    observer.observe(element);
+    return () => observer.disconnect();
+    // Fit the complete initial draft, then only on viewport changes; preserve user zoom during edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [prefilled, isEditing, existingCronId]);
 
   function validateTree(n: ChainNode): string | null {
     if (n.active) {
@@ -831,8 +880,29 @@ function ChainBuilderPageInner() {
       toast.error(validationError);
       return;
     }
+    if (recurring && (root.children.filter(c => c.active).length === 0 || !expression.trim())) {
+      toast.error("Set a cron expression and add at least one child job.");
+      return;
+    }
+    if (existingCronId && (!prefilled || hydrationFailed)) return;
     setSubmitting(true);
     try {
+      if (recurring) {
+        const node = chainNodeToRequest(root);
+        const body = { function: node.function, description: node.description, expression,
+          request: node.request ?? "", retries: node.retries ?? 0,
+          retryIntervalsSeconds: node.retryIntervalsSeconds ?? [], onStale: node.onStale,
+          timeoutSeconds: node.timeoutSeconds ?? 0, skipIfAlreadyRunning, chain: chainNodeToCronTemplate(root) };
+        if (existingCronId) {
+          await updateCronMutation.mutateAsync({ id: existingCronId, body: { ...body, replaceChain: true } });
+          navigate(`/cron-tickers/${existingCronId}`);
+        } else {
+          const created = await addCronMutation.mutateAsync(body);
+          navigate(`/cron-tickers/${created.id}`);
+        }
+        toast.success("Recurring chain saved. Each future run creates a new chain.");
+        return;
+      }
       const executionTime = root.scheduledAt
         ? new Date(root.scheduledAt).toISOString()
         : new Date().toISOString();
@@ -849,7 +919,7 @@ function ChainBuilderPageInner() {
           ? `Chain replaced — ${result.createdCount} ${jobLabel} scheduled`
           : `Chain created — ${result.createdCount} ${jobLabel} scheduled`
       );
-      navigate("/time-tickers");
+      navigate(backPath);
     } catch (err) {
       toast.error(isEditing ? "Failed to replace chain" : "Failed to create chain", {
         description: err instanceof Error ? err.message : "Unknown error",
@@ -875,7 +945,7 @@ function ChainBuilderPageInner() {
 
   return (
     <div className="relative flex flex-col h-[calc(100vh-44px-24px-24px)] -m-6">
-      {isEditing && !prefilled && (
+      {(isEditing || !!existingCronId) && !prefilled && (
         <div className="absolute inset-0 z-50 bg-background/60 backdrop-blur-[1px] flex items-center justify-center">
           {hydrationFailed ? (
             <div role="alert" className="max-w-sm rounded-lg border border-destructive/40 bg-background p-4 text-center shadow-lg">
@@ -889,6 +959,8 @@ function ChainBuilderPageInner() {
                 className="mt-3"
                 onClick={() => {
                   void editChainQuery.refetch();
+                  void cronQuery.refetch();
+                  void cronPayload.refetch();
                   payloadQueries.forEach((query) => void query.refetch());
                 }}
               >
@@ -904,30 +976,30 @@ function ChainBuilderPageInner() {
         </div>
       )}
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-surface-0/50 shrink-0">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-border bg-surface-0/50 shrink-0">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => navigate("/time-tickers")}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => navigate(backPath)}
+            className="shrink-0 whitespace-nowrap text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             ← Back to list
           </button>
           <div className="h-4 w-px bg-border" />
           <GitBranch className="h-3.5 w-3.5 text-primary" />
           <span className="font-mono text-sm font-semibold">
-            {isEditing ? "Edit Chain Job" : "New Chain Job"}
+            {recurring ? (existingCronId ? "Edit Recurring Chain" : "New Recurring Chain") : isEditing ? "Edit Chain Job" : "New Chain Job"}
           </span>
           {isEditing && (
             <button
               type="button"
-              onClick={() => navigate("/time-tickers")}
+              onClick={() => navigate(backPath)}
               className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
             >
               Cancel edit
             </button>
           )}
         </div>
-        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+        <div className="flex w-full flex-wrap items-center gap-2 text-[11px] text-muted-foreground lg:w-auto">
           <span className="tabular-nums">
             {totalActive} {totalActive === 1 ? "job" : "jobs"} configured
           </span>
@@ -961,7 +1033,7 @@ function ChainBuilderPageInner() {
             size="sm"
             className="h-7 text-xs"
             onClick={handleSubmit}
-            disabled={!root.functionName || submitting || (isEditing && !prefilled)}
+            disabled={!root.functionName || submitting || ((isEditing || !!existingCronId) && !prefilled) || hydrationFailed}
           >
             {submitting ? (
               <>
@@ -971,12 +1043,33 @@ function ChainBuilderPageInner() {
             ) : isEditing ? (
               "Replace Chain"
             ) : (
-              "Create Chain"
+              recurring ? "Save recurring chain" : "Create Chain"
             )}
           </Button>
         </div>
       </div>
 
+      {recurring && (
+        <section aria-label="Recurring chain settings" className="shrink-0 border-b border-border bg-card px-4 py-2.5">
+          <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+            <div className="min-w-0 space-y-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label htmlFor="chain-cron-expression" className="text-[11px] text-muted-foreground">Cron schedule</Label>
+                <CronSchedulePresets onSelect={setExpression} />
+              </div>
+              <Input id="chain-cron-expression" value={expression} onChange={e => setExpression(e.target.value)} className="h-7 w-full font-mono text-xs" />
+              <CronExpressionPreview expression={expression} stacked />
+            </div>
+            <div className="min-w-0">
+              <CronOverlapField checked={skipIfAlreadyRunning} onChange={setSkipIfAlreadyRunning} isChain compact />
+            </div>
+          </div>
+          <p className="mt-2 flex items-start gap-1.5 border-t border-border/50 pt-2 text-[11px] leading-4 text-muted-foreground">
+            <GitBranch aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-primary/70" />
+            Each run creates a new chain. Edits affect future runs; existing chains keep their steps.
+          </p>
+        </section>
+      )}
       {/* Hint / Undo bar */}
       {previousRoot ? (
         <div className="flex items-center justify-between px-4 py-2 border-b border-border/50 bg-primary/5 text-[11px] text-primary shrink-0 animate-fade-in">
@@ -1144,6 +1237,7 @@ function ChainBuilderPageInner() {
           key={selectedId}
           node={selectedNode}
           isRoot={isSelectedRoot}
+          recurring={recurring}
           functionNames={functionNames}
           functions={fns ?? []}
           onUpdate={(updates) => updateNode(selectedId!, updates)}
@@ -1175,7 +1269,7 @@ function ChainBuilderPageInner() {
                 key={tpl.id}
                 onClick={() => {
                   setPreviousRoot(cloneTree(root));
-                  setRoot(tpl.build(functionNames));
+                  setRoot({ ...tpl.build(functionNames), deleteBehavior: root.deleteBehavior });
                   setSelectedId(null);
                   setShowTemplates(false);
                 }}

@@ -185,8 +185,10 @@ public class TickerCancellationTokenManagerTests : IDisposable
         var parentId = Guid.NewGuid();
         var generation = Guid.NewGuid();
         var first = MakeContext(tickerId, parentId);
+        first.Type = TickerType.TimeTicker;
         first.ChainGeneration = generation;
         var duplicate = MakeContext(tickerId, parentId);
+        duplicate.Type = TickerType.TimeTicker;
         duplicate.ChainGeneration = generation;
         var liveSource = TickerCancellationTokenManager.TryRegisterAcquired(first, isDue: false)!;
 

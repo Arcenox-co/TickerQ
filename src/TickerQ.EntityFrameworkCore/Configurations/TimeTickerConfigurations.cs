@@ -13,6 +13,7 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
         public void Configure(EntityTypeBuilder<TTimeTicker> builder)
         {
+            builder.HasIndex(x => new { x.ApplicationNamespaceKey, x.OriginCronTickerId, x.Status });
             builder.HasKey(x => new { x.ApplicationNamespaceKey, x.Id });
             builder.Property(x => x.ApplicationNamespaceKey).IsRequired().HasMaxLength(80);
 
@@ -44,6 +45,9 @@ namespace TickerQ.EntityFrameworkCore.Configurations
                 .HasForeignKey(x => new { x.ApplicationNamespaceKey, x.ParentId })
                 .HasPrincipalKey(x => new { x.ApplicationNamespaceKey, x.Id })
                 .OnDelete(DeleteBehavior.NoAction);
+
+            builder.Property(x => x.DeleteBehavior)
+                .HasDefaultValue(TickerQ.Utilities.Enums.ChainDeleteBehavior.Cascade);
             
             builder.HasIndex("ApplicationNamespaceKey", "ExecutionTime")
                 .HasDatabaseName("IX_TimeTicker_ExecutionTime");

@@ -29,6 +29,8 @@ public static class ServiceBuilder
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
             RegisterTransactionalScheduling<TContext, TTimeTicker, TCronTicker>(services);
             RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(builder, services);
+            if (builder.ExecutionLogs?.PersistToDatabase == true)
+                services.AddSingleton<ITickerExecutionLogPersistence, EfExecutionLogPersistence<TContext>>();
             // Bootstrapper enumeration preserves registration order: optional schema migration and
             // mandatory data upgrade/validation both complete before readiness or scheduler access.
             RegisterStoreUpgrade<TContext, TTimeTicker, TCronTicker>(builder, services);
@@ -104,12 +106,15 @@ public static class ServiceBuilder
             {
                 var optionsBuilder = new DbContextOptionsBuilder<TContext>();
                 optionsAction.Invoke(optionsBuilder);
+                TickerModelOptionsExtension.Configure(optionsBuilder, builder);
                 optionsBuilder.UseApplicationServiceProvider(sp);
                 return new PooledDbContextFactory<TContext>(optionsBuilder.Options, builder.PoolSize);
             });
             services.TryAddScoped<TContext>(sp => sp.GetRequiredService<IDbContextFactory<TContext>>().CreateDbContext());
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
             RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(builder, services);
+            if (builder.ExecutionLogs?.PersistToDatabase == true)
+                services.AddSingleton<ITickerExecutionLogPersistence, EfExecutionLogPersistence<TContext>>();
             // Bootstrapper enumeration preserves registration order: optional schema migration and
             // mandatory data upgrade/validation both complete before readiness or scheduler access.
             RegisterStoreUpgrade<TContext, TTimeTicker, TCronTicker>(builder, services);
@@ -165,7 +170,10 @@ public static class ServiceBuilder
     {
         public void Configure(IServiceProvider serviceProvider, DbContextOptionsBuilder optionsBuilder)
         {
+            TickerModelOptionsExtension.Configure(optionsBuilder,
+                serviceProvider.GetRequiredService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>());
             optionsBuilder
+                .UseApplicationServiceProvider(serviceProvider)
                 .ReplaceService<IModelCustomizer, TickerModelCustomizer<TTimeTicker, TCronTicker>>();
         }
     }

@@ -72,6 +72,8 @@ public class MongoTestFixture : IAsyncLifetime
 
     public async Task DropAllAsync()
     {
+        await Database.GetCollection<BsonDocument>(TimeTickers.CollectionNamespace.CollectionName + "_NotificationSettings")
+            .DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
         await TimeTickers.DeleteManyAsync(Builders<TimeTickerEntity>.Filter.Empty);
         await CronTickers.DeleteManyAsync(Builders<CronTickerEntity>.Filter.Empty);
         await CronTickerOccurrences.DeleteManyAsync(Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Filter.Empty);

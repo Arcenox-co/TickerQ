@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 
@@ -34,6 +35,15 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task<TickerResult<TTimeTicker>> AddOnceAsync(string initIdentifier, TTimeTicker entity, CancellationToken cancellationToken = default);
         Task<TickerResult<TTimeTicker>> UpdateAsync(TTimeTicker timeTicker, CancellationToken cancellationToken = default);
         Task<TickerResult<TTimeTicker>> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+        /// <summary>Atomically admits a root ticker to run now. An active ticker or chain child cannot be acquired. Success means accepted, not completed; AffectedRows is 1.</summary>
+        Task<TickerResult<TTimeTicker>> RunNowAsync(Guid id, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support running time tickers on demand.");
+        /// <summary>Requests cooperative cancellation of one running execution on this host and runtime partition. Use CancelAsync for a pending job. AffectedRows is 1 when signalled, otherwise 0.</summary>
+        Task<TickerResult<TTimeTicker>> RequestCancellationAsync(Guid id, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support cancelling time tickers.");
+        /// <summary>Changes only the root's deletion policy, including for completed chains.</summary>
+        Task<TickerResult<TTimeTicker>> SetDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support updating chain deletion policies.");
 
         /// <summary>
         /// Cancels a persisted Idle or Queued ticker and its pending descendants atomically.

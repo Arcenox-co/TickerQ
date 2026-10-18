@@ -1,6 +1,7 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 
@@ -48,12 +49,17 @@ namespace TickerQ.Utilities.Infrastructure
     /// <summary>One captured ILogger call, tagged with the execution that produced it.</summary>
     internal sealed class TickerExecutionLogLine
     {
+        public Guid Id { get; set; } = Guid.NewGuid();
         public Guid TickerId { get; set; }
         public long UnixMs { get; set; }
         public int Level { get; set; }
         public string Message { get; set; } = string.Empty;
         public string Category { get; set; } = string.Empty;
         public string FunctionName { get; set; } = string.Empty;
+        public bool Truncated { get; set; }
+        public TickerLifecycleEvent LifecycleEvent { get; set; }
+        public TickerQ.Utilities.Enums.TickerStatus? Status { get; set; }
+        public int Attempt { get; set; }
     }
 
     /// <summary>
@@ -67,68 +73,125 @@ namespace TickerQ.Utilities.Infrastructure
     }
 
     /// <summary>
-    /// Bounded per-ticker ring buffers with a ~30 minute idle TTL, so a chatty
-    /// function can never grow memory unbounded and finished runs stay inspectable
-    /// for a while. Mirrors the SDK-side capture contract.
+    /// Bounded diagnostic tails. Limits apply to encoded payload bytes as well as line and execution counts.
     /// </summary>
     internal sealed class InMemoryTickerExecutionLogStore : ITickerExecutionLogStore
     {
-        private const int MaxLinesPerTicker = 1000;
-        private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(30);
-        private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
-
-        private readonly ConcurrentDictionary<Guid, Buffer> _buffers = new ConcurrentDictionary<Guid, Buffer>();
-        private long _lastSweepUtcTicks;
+        private readonly Dictionary<Guid, Buffer> _buffers = new();
+        private readonly object _gate = new();
+        private readonly ExecutionLogOptions _options;
+        private int _bytes;
+        private long _evicted;
+        private long _droppedUnflushed;
+        private long _nextPrune;
+        public InMemoryTickerExecutionLogStore(ExecutionLogOptions options = null) => _options = options ?? new();
+        public long EvictedExecutions => Interlocked.Read(ref _evicted);
+        public (int PendingWrites, long DroppedUnflushedExecutions) Health
+        {
+            get
+            {
+                lock (_gate) return (_options.PersistToDatabase
+                    ? _buffers.Count(x => x.Value.Version > x.Value.PersistedVersion) : 0, _droppedUnflushed);
+            }
+        }
 
         public void Add(TickerExecutionLogLine line)
         {
-            _buffers.GetOrAdd(line.TickerId, _ => new Buffer()).Add(line);
-            SweepIfDue();
+            if (!_options.Enabled) return;
+            line.Message = Clip(line.Message, _options.MaxMessageBytes, out var truncated);
+            line.Category = Clip(line.Category, 256, out _);
+            line.FunctionName = Clip(line.FunctionName, 256, out _);
+            line.Truncated |= truncated;
+            var size = ExecutionLogCodec.LineSize(line);
+            lock (_gate)
+            {
+                PruneLocked(DateTime.UtcNow.Ticks);
+                if (!_buffers.TryGetValue(line.TickerId, out var buffer))
+                {
+                    while (_buffers.Count >= _options.MaxBufferedExecutions) EvictOldest();
+                    _buffers[line.TickerId] = buffer = new Buffer();
+                }
+                if (line.LifecycleEvent != TickerLifecycleEvent.None && buffer.Lines.Any(x => x.Line.Id == line.Id)) return;
+                buffer.Lines.Enqueue((line, size));
+                buffer.Bytes += size; _bytes += size;
+                buffer.Truncated |= line.Truncated;
+                while (buffer.Lines.Count > _options.MaxLinesPerExecution || buffer.Bytes + 8 > _options.MaxBytesPerExecution)
+                {
+                    var removed = buffer.Lines.Dequeue();
+                    buffer.Bytes -= removed.Size; _bytes -= removed.Size;
+                    buffer.Truncated = true;
+                }
+                buffer.Version = Math.Max(DateTime.UtcNow.Ticks, buffer.Version + 1);
+                while (_bytes > _options.MaxBufferedBytes) EvictOldest();
+            }
         }
 
-        public IReadOnlyList<TickerExecutionLogLine> GetTail(Guid tickerId)
-            => _buffers.TryGetValue(tickerId, out var buffer)
-                ? buffer.Snapshot()
-                : Array.Empty<TickerExecutionLogLine>();
+        public IReadOnlyList<TickerExecutionLogLine> GetTail(Guid tickerId) => Snapshot(tickerId)?.Lines ?? Array.Empty<TickerExecutionLogLine>();
 
-        // Amortized eviction on the write path — no timer/hosted service needed.
-        private void SweepIfDue()
+        public ExecutionLogSnapshot Snapshot(Guid id)
         {
-            var now = DateTime.UtcNow.Ticks;
-            var last = Interlocked.Read(ref _lastSweepUtcTicks);
-            if (now - last < SweepInterval.Ticks) return;
-            if (Interlocked.CompareExchange(ref _lastSweepUtcTicks, now, last) != last) return;
-
-            foreach (var kv in _buffers)
+            lock (_gate)
             {
-                if (now - kv.Value.LastWriteUtcTicks > Ttl.Ticks)
-                    _buffers.TryRemove(kv.Key, out _);
+                PruneLocked(DateTime.UtcNow.Ticks);
+                if (_buffers.TryGetValue(id, out var expired) && DateTime.UtcNow.Ticks - expired.Version > _options.MemoryRetention.Ticks)
+                    Remove(id);
+                return _buffers.TryGetValue(id, out var b) ? Copy(id, b) : null;
             }
+        }
+
+        public ExecutionLogSnapshot[] Pending(int count)
+        {
+            lock (_gate)
+            {
+                PruneLocked(DateTime.UtcNow.Ticks);
+                return _buffers.Where(x => x.Value.Version > x.Value.PersistedVersion)
+                    .OrderBy(x => x.Value.PersistedVersion).ThenBy(x => x.Value.Version)
+                    .Take(count).Select(x => Copy(x.Key, x.Value)).ToArray();
+            }
+        }
+
+        public void MarkPersisted(Guid id, long version)
+        { lock (_gate) if (_buffers.TryGetValue(id, out var b)) b.PersistedVersion = Math.Max(b.PersistedVersion, version); }
+
+        public void Prune() { lock (_gate) PruneLocked(DateTime.UtcNow.Ticks); }
+
+        private static ExecutionLogSnapshot Copy(Guid id, Buffer b) => new(id, b.Version,
+            b.Lines.Select(x => x.Line).ToArray(), b.Truncated);
+
+        private void PruneLocked(long now)
+        {
+            if (now < _nextPrune) return;
+            _nextPrune = now + Math.Min(_options.MemoryRetention.Ticks, TimeSpan.TicksPerMinute);
+            foreach (var id in _buffers.Where(x => now - x.Value.Version > _options.MemoryRetention.Ticks).Select(x => x.Key).ToArray())
+                Remove(id);
+        }
+
+        private void EvictOldest() { Remove(_buffers.MinBy(x => x.Value.Version).Key); Interlocked.Increment(ref _evicted); }
+        private void Remove(Guid id)
+        {
+            var buffer = _buffers[id];
+            if (_options.PersistToDatabase && buffer.Version > buffer.PersistedVersion) _droppedUnflushed++;
+            _bytes -= buffer.Bytes;
+            _buffers.Remove(id);
+        }
+
+        internal static string Clip(string value, int maxBytes, out bool truncated)
+        {
+            value ??= string.Empty;
+            truncated = Encoding.UTF8.GetByteCount(value) > maxBytes;
+            if (!truncated) return value;
+            var bytes = new byte[maxBytes - 3];
+            Encoding.UTF8.GetEncoder().Convert(value.AsSpan(), bytes, true, out _, out var used, out _);
+            return Encoding.UTF8.GetString(bytes, 0, used) + "…";
         }
 
         private sealed class Buffer
         {
-            private readonly Queue<TickerExecutionLogLine> _lines = new Queue<TickerExecutionLogLine>();
-            private long _lastWriteUtcTicks = DateTime.UtcNow.Ticks;
-
-            public long LastWriteUtcTicks => Interlocked.Read(ref _lastWriteUtcTicks);
-
-            public void Add(TickerExecutionLogLine line)
-            {
-                lock (_lines)
-                {
-                    _lines.Enqueue(line);
-                    if (_lines.Count > MaxLinesPerTicker)
-                        _lines.Dequeue();
-                }
-                Interlocked.Exchange(ref _lastWriteUtcTicks, DateTime.UtcNow.Ticks);
-            }
-
-            public IReadOnlyList<TickerExecutionLogLine> Snapshot()
-            {
-                lock (_lines)
-                    return _lines.ToArray();
-            }
+            public readonly Queue<(TickerExecutionLogLine Line, int Size)> Lines = new();
+            public int Bytes;
+            public long Version;
+            public long PersistedVersion;
+            public bool Truncated;
         }
     }
 
@@ -141,13 +204,15 @@ namespace TickerQ.Utilities.Infrastructure
     internal sealed class TickerExecutionLoggerProvider : ILoggerProvider
     {
         private readonly ITickerExecutionLogStore _store;
+        private readonly ExecutionLogOptions _options;
 
-        public TickerExecutionLoggerProvider(ITickerExecutionLogStore store)
+        public TickerExecutionLoggerProvider(ITickerExecutionLogStore store, ExecutionLogOptions options = null)
         {
             _store = store;
+            _options = options ?? new();
         }
 
-        public ILogger CreateLogger(string categoryName) => new CaptureLogger(categoryName, _store);
+        public ILogger CreateLogger(string categoryName) => new CaptureLogger(categoryName, _store, _options);
 
         public void Dispose() { }
 
@@ -155,23 +220,25 @@ namespace TickerQ.Utilities.Infrastructure
         {
             private readonly string _category;
             private readonly ITickerExecutionLogStore _store;
+            private readonly ExecutionLogOptions _options;
 
-            public CaptureLogger(string category, ITickerExecutionLogStore store)
+            public CaptureLogger(string category, ITickerExecutionLogStore store, ExecutionLogOptions options)
             {
                 _category = category;
                 _store = store;
+                _options = options;
             }
 
             public IDisposable BeginScope<TState>(TState state) => NullScope.Instance;
 
             public bool IsEnabled(LogLevel logLevel)
-                => logLevel != LogLevel.None && TickerExecutionLogScope.Current != null;
+                => _options.Enabled && logLevel >= _options.MinimumLevel && logLevel != LogLevel.None && TickerExecutionLogScope.Current != null;
 
             public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
                 Exception exception, Func<TState, Exception, string> formatter)
             {
                 var scope = TickerExecutionLogScope.Current;
-                if (scope == null || logLevel == LogLevel.None) return;
+                if (!IsEnabled(logLevel)) return;
 
                 string message;
                 try { message = formatter(state, exception); }
@@ -184,15 +251,20 @@ namespace TickerQ.Utilities.Infrastructure
                 if (string.IsNullOrEmpty(message) && exception != null)
                     message = exception.Message ?? string.Empty;
 
-                _store.Add(new TickerExecutionLogLine
+                try
                 {
-                    TickerId = scope.TickerId,
-                    UnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    Level = (int)logLevel,
-                    Message = message ?? string.Empty,
-                    Category = _category ?? string.Empty,
-                    FunctionName = scope.FunctionName ?? string.Empty
-                });
+                    if (_options.Redact != null) message = _options.Redact(message);
+                    _store.Add(new TickerExecutionLogLine
+                    {
+                        TickerId = scope.TickerId,
+                        UnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        Level = (int)logLevel,
+                        Message = message ?? string.Empty,
+                        Category = _category ?? string.Empty,
+                        FunctionName = scope.FunctionName ?? string.Empty
+                    });
+                }
+                catch { /* Diagnostic capture must never fail a job. */ }
             }
 
             private sealed class NullScope : IDisposable

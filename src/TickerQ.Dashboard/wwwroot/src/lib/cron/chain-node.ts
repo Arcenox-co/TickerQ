@@ -2,12 +2,13 @@ import type { RunCondition } from "./run-condition";
 import { parseIntervalsList } from "./status-config.ts";
 import { parseUtc } from "./format.ts";
 import { encodeRequestPayload } from "../request-payload.ts";
-import type { StaleAction, TimeTickerFlatDto, TimeTickerNode } from "../../services/api-types";
+import type { ChainDeleteBehavior, StaleAction, TimeTickerFlatDto, TimeTickerNode } from "../../services/api-types";
 
 // ── Editor state for a single chain node ──
 // Everything here is user-editable and must round-trip through the flat DTO
 // (read) and the request node (write) without losing any replaceable field.
 export interface ChainNode {
+  deleteBehavior?: ChainDeleteBehavior;
   id: string;
   functionName: string;
   runCondition: RunCondition;
@@ -74,6 +75,7 @@ export function tickersToChainNode(
     requestJson: payloadMap.get(t.id) ?? "",
     requestValid: true,
     onStale: t.onStale ?? "Restart",
+    deleteBehavior: isRoot ? (t.deleteBehavior ?? "Cascade") : "Cascade",
     timeoutSeconds: t.timeoutSeconds ?? 0,
     active: true,
     scheduledAt: isRoot ? toDatetimeLocal(t.scheduledFor) : "",
@@ -94,6 +96,7 @@ export function chainNodeToRequest(node: ChainNode): TimeTickerNode {
     request: encodeRequestPayload(node.requestJson),
     runCondition: node.runCondition,
     onStale: node.onStale,
+    deleteBehavior: node.deleteBehavior ?? "Cascade",
     timeoutSeconds: node.timeoutSeconds > 0 ? node.timeoutSeconds : null,
     children: node.children.filter((c) => c.active).map(chainNodeToRequest),
   };

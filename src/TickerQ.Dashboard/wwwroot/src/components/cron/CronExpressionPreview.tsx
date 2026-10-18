@@ -20,9 +20,11 @@ export function toSchedulerCronExpression(expression: string): string {
 export function CronExpressionPreview({
   expression,
   className,
+  stacked = false,
 }: {
   expression: string;
   className?: string;
+  stacked?: boolean;
 }) {
   const [tickKey, setTickKey] = useState(0);
   const { timezone } = useTimezone();
@@ -75,16 +77,19 @@ export function CronExpressionPreview({
   return (
     <p
       className={cn(
-        "flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground",
+        "text-[11px] text-muted-foreground",
+        stacked
+          ? "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-1.5 gap-y-1 leading-4"
+          : "flex flex-wrap items-center gap-1",
         className
       )}
     >
-      <CalendarClock className="h-3 w-3 text-primary shrink-0" />
-      <span className="text-foreground/80">{result.description}</span>
-      <span className="text-muted-foreground/40">·</span>
-      <span className="text-muted-foreground/80">
-        Next:{" "}
-        <span className="font-mono tabular-nums text-foreground/80">
+      <CalendarClock className={cn("h-3 w-3 text-primary shrink-0", stacked && "mt-0.5")} />
+      <span className="min-w-0 text-foreground/80">{result.description}</span>
+      {!stacked && <span className="text-muted-foreground/40">·</span>}
+      <span className={cn("text-muted-foreground/80", stacked && "col-start-2")}>
+        {stacked ? "Next run:" : "Next:"}{" "}
+        <span className="inline-block font-mono tabular-nums text-foreground/80">
           {formatAbsolute(result.next, timezone)}
         </span>
       </span>

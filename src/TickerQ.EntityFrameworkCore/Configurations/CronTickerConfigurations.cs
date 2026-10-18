@@ -14,6 +14,13 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
         public void Configure(EntityTypeBuilder<TCronTicker> builder)
         {
+            builder.Property(x => x.Chain)
+                .HasConversion(x => TickerQ.Utilities.Infrastructure.CronChainMaterializer.Serialize(x),
+                    x => TickerQ.Utilities.Infrastructure.CronChainMaterializer.Deserialize(x))
+                .Metadata.SetValueComparer(new Microsoft.EntityFrameworkCore.ChangeTracking.ValueComparer<TickerQ.Utilities.Models.CronChainTemplate>(
+                    (a, b) => TickerQ.Utilities.Infrastructure.CronChainMaterializer.Serialize(a) == TickerQ.Utilities.Infrastructure.CronChainMaterializer.Serialize(b),
+                    a => a == null ? 0 : TickerQ.Utilities.Infrastructure.CronChainMaterializer.Serialize(a).GetHashCode(),
+                    a => TickerQ.Utilities.Infrastructure.CronChainMaterializer.Deserialize(TickerQ.Utilities.Infrastructure.CronChainMaterializer.Serialize(a))));
             builder.HasKey("ApplicationNamespaceKey", "Id");
             builder.Property(e => e.ApplicationNamespaceKey).IsRequired().HasMaxLength(80);
                 

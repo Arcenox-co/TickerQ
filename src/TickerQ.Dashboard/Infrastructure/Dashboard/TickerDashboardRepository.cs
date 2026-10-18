@@ -5,11 +5,13 @@ using System.Linq.Expressions;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using TickerQ.Utilities;
 using TickerQ.Utilities.DashboardDtos;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Dashboard.Infrastructure.Dashboard
@@ -21,10 +23,12 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
         private readonly ITickerPersistenceProvider<TTimeTicker, TCronTicker> _persistenceProvider;
         private readonly ITickerQHostScheduler _tickerQHostScheduler;
         private readonly ITickerQDispatcher _dispatcher;
+        private readonly TickerLifecycleLogger _lifecycle;
         private readonly ITickerQNotificationHubSender _notificationHubSender;
         private readonly TickerExecutionContext _executionContext;
         private readonly DashboardOptionsBuilder _dashboardOptions;
         private readonly string _runtimePartitionKey;
+        private readonly ILogger<TickerDashboardRepository<TTimeTicker, TCronTicker>> _logger;
         public TickerDashboardRepository(
             TickerExecutionContext executionContext,
             ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
@@ -32,7 +36,9 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             ITickerQNotificationHubSender notificationHubSender, 
             DashboardOptionsBuilder dashboardOptions,
             ITickerQDispatcher dispatcher,
-            SchedulerOptionsBuilder schedulerOptions = null)
+            SchedulerOptionsBuilder schedulerOptions = null,
+            ILogger<TickerDashboardRepository<TTimeTicker, TCronTicker>> logger = null,
+            TickerLifecycleLogger lifecycle = null)
         {
             _runtimePartitionKey = (schedulerOptions?.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal).StorageKey;
             _persistenceProvider = persistenceProvider ?? throw new ArgumentNullException(nameof(persistenceProvider));
@@ -41,6 +47,8 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             _executionContext = executionContext ??  throw new ArgumentNullException(nameof(executionContext));
             _dashboardOptions = dashboardOptions ?? throw new ArgumentNullException(nameof(dashboardOptions));
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+            _logger = logger;
+            _lifecycle = lifecycle;
         }
 
         public async Task<TTimeTicker[]> GetTimeTickersAsync(CancellationToken cancellationToken)
@@ -419,105 +427,13 @@ namespace TickerQ.Dashboard.Infrastructure.Dashboard
             );
         }
         
-        public async Task<bool> RunTimeTickerOnDemandAsync(Guid id, CancellationToken cancellationToken = default)
-        {
-            var acquired = await _persistenceProvider
-                .AcquireTimeTickerOnDemandAsync(id, DateTime.UtcNow, cancellationToken)
-                .ConfigureAwait(false);
-            if (acquired == null)
-                return false;
+        public Task<bool> RunTimeTickerOnDemandAsync(Guid id, CancellationToken cancellationToken = default)
+            => OnDemandTimeExecution.RunAsync(_persistenceProvider, _dispatcher, _notificationHubSender,
+                _executionContext.RuntimePartition.StorageKey, id, DateTime.UtcNow, cancellationToken, _logger);
 
-            var context = BuildOnDemandTimeContext(acquired);
-            await _dispatcher.DispatchAsync([context], CancellationToken.None).ConfigureAwait(false);
-            if (_notificationHubSender != null)
-                await _notificationHubSender.UpdateTimeTickerNotifyAsync(id).ConfigureAwait(false);
-            return true;
-        }
-
-        private static InternalFunctionContext BuildOnDemandTimeContext(TimeTickerEntity ticker)
-        {
-            var context = new InternalFunctionContext
-            {
-                FunctionName = ticker.Function,
-                RequestContractVersion = ticker.RequestContractVersion,
-                RequestContractFingerprint = ticker.RequestContractFingerprint,
-                TickerId = ticker.Id,
-                Type = TickerType.TimeTicker,
-                Retries = ticker.Retries,
-                RetryIntervals = ticker.RetryIntervals,
-                TimeoutSeconds = ticker.TimeoutSeconds,
-                ParentId = ticker.ParentId,
-                AcquisitionToken = ticker.AcquisitionToken,
-                ExecutionTime = ticker.ExecutionTime ?? DateTime.UtcNow,
-                RunCondition = ticker.RunCondition ?? RunCondition.OnAnyCompletedStatus,
-                TimeTickerChildren = ticker.Children?.Select(BuildOnDemandTimeContext).ToList() ?? []
-            };
-            if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
-            {
-                context.CachedDelegate = tickerItem.Delegate;
-                context.CachedPriority = tickerItem.Priority;
-                context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
-            }
-            return context;
-        }
-
-        public async Task AddOnDemandCronTickerOccurrenceAsync(Guid id, CancellationToken cancellationToken)
-        {
-            var now = DateTime.UtcNow;
-            var onDemandOccurrence = new CronTickerOccurrenceEntity<TCronTicker>
-            {
-                Id = Guid.NewGuid(),
-                Status = TickerStatus.Idle,
-                ExecutionTime = now,
-                LockedAt = null,
-                CronTickerId = id
-            };
-
-            await _persistenceProvider.InsertCronTickerOccurrences([onDemandOccurrence], cancellationToken);
-
-            // Acquire and run immediately
-            var acquired = await _persistenceProvider
-                .AcquireImmediateCronOccurrencesAsync([onDemandOccurrence.Id], cancellationToken)
-                .ConfigureAwait(false);
-
-            CronTickerOccurrenceEntity<TCronTicker>? acquiredOccurrence = null;
-
-            if (acquired.Length > 0)
-            {
-                var occurrence = acquired[0];
-                acquiredOccurrence = occurrence;
-                var context = new InternalFunctionContext
-                {
-                    ParentId = occurrence.CronTickerId,
-                    FunctionName = occurrence.CronTicker.Function,
-                    RequestContractVersion = occurrence.CronTicker.RequestContractVersion,
-                    RequestContractFingerprint = occurrence.CronTicker.RequestContractFingerprint,
-                    TickerId = occurrence.Id,
-                    Type = TickerType.CronTickerOccurrence,
-                    Retries = occurrence.CronTicker.Retries,
-                    RetryIntervals = occurrence.CronTicker.RetryIntervals,
-                    TimeoutSeconds = occurrence.CronTicker.TimeoutSeconds,
-                    AcquisitionToken = occurrence.AcquisitionToken,
-                    ExecutionTime = occurrence.ExecutionTime
-                };
-
-                // Populate cached delegate and priority so the dispatcher can execute the job
-                if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
-                {
-                    context.CachedDelegate = tickerItem.Delegate;
-                    context.CachedPriority = tickerItem.Priority;
-                    context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
-                }
-
-                // CancellationToken.None on purpose: the job must outlive the HTTP request
-                // that triggered it (see TickerManager immediate dispatch).
-                await _dispatcher.DispatchAsync([context], System.Threading.CancellationToken.None).ConfigureAwait(false);
-            }
-
-            // Notify dashboard about the new occurrence (prefer the acquired version if available)
-            if (_notificationHubSender != null)
-                await _notificationHubSender.AddCronOccurrenceAsync(id, (acquiredOccurrence ?? onDemandOccurrence).Id);
-        }
+        public Task AddOnDemandCronTickerOccurrenceAsync(Guid id, CancellationToken cancellationToken)
+            => OnDemandCronExecution.RunAsync(_persistenceProvider, _dispatcher, _notificationHubSender,
+                _executionContext.RuntimePartition.StorageKey, id, cancellationToken, _logger, lifecycle: _lifecycle);
 
         public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetCronTickersOccurrencesAsync(Guid cronTickerId, CancellationToken cancellationToken)
         {

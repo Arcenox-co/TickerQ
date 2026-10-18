@@ -129,7 +129,7 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
             entity.SeedLastSeenAt != null || entity.RetirementRequestedAt != null ||
             entity.RetiredAt != null || entity.SeedWasEnabledBeforeRetirement != null)
             throw new InvalidOperationException("StageAsync accepts new user-owned cron schedules, not code-owned or retired seeds.");
-        if (TickerManager<TTimeTicker, TCronTicker>.ValidateAndStampRequest(entity, entity.Request) is { } error)
+        if (TickerManager<TTimeTicker, TCronTicker>.ValidateAndStampCron(entity, supportsCronChains: true) is { } error)
             throw error;
         if (string.IsNullOrWhiteSpace(entity.Expression) ||
             CronScheduleCache.GetNextOccurrenceOrDefault(entity.Expression, clock.UtcNow) == null)

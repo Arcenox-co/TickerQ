@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -47,6 +48,8 @@ internal sealed class WebhookFailureNotifier : ITickerQFailureNotifier
     internal long DroppedCount => Interlocked.Read(ref _droppedCount);
     internal ChannelReader<TickerFailureEvent> Reader => _channel.Reader;
 
+    internal void Complete() => _channel.Writer.TryComplete();
+
     public void Notify(TickerFailureEvent failureEvent)
     {
         var sanitize = Options.ReasonSanitizer ?? FailureWebhookOptions.DefaultReasonSanitizer;
@@ -63,7 +66,7 @@ internal sealed class WebhookFailureNotifier : ITickerQFailureNotifier
             Node = failureEvent.Node,
         };
 
-        _channel.Writer.TryWrite(queued);
+        if (!_channel.Writer.TryWrite(queued)) RecordDrop();
     }
 
     private void RecordDrop()
@@ -71,7 +74,7 @@ internal sealed class WebhookFailureNotifier : ITickerQFailureNotifier
         var count = Interlocked.Increment(ref _droppedCount);
         if (count == 1 || (count & (count - 1)) == 0)
             _logger.LogWarning(
-                "TickerQ failure webhook queue dropped {DroppedCount} events due to capacity {Capacity}",
+                "TickerQ failure webhook queue dropped {DroppedCount} events (queue full or closed; capacity {Capacity})",
                 count, Capacity);
     }
 }
@@ -82,33 +85,60 @@ internal sealed class TickerQWebhookNotifierBackgroundService : BackgroundServic
 
     private readonly WebhookFailureNotifier _notifier;
     private readonly ILogger<TickerQWebhookNotifierBackgroundService> _logger;
-    private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private readonly HttpClient _httpClient;
 
     public TickerQWebhookNotifierBackgroundService(
         WebhookFailureNotifier notifier,
         ILogger<TickerQWebhookNotifierBackgroundService> logger)
+        : this(notifier, logger, new HttpClient { Timeout = TimeSpan.FromSeconds(10) }) { }
+
+    internal TickerQWebhookNotifierBackgroundService(WebhookFailureNotifier notifier,
+        ILogger<TickerQWebhookNotifierBackgroundService> logger, HttpClient httpClient)
     {
+        _httpClient = httpClient;
         _notifier = notifier;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var evt in _notifier.Reader.ReadAllAsync(stoppingToken))
+        try
         {
-            try
+            await foreach (var evt in _notifier.Reader.ReadAllAsync(stoppingToken))
             {
-                await SendWithRetriesAsync(evt, stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failure webhook delivery gave up for {Function} ({Kind})", evt.Function, evt.Kind);
+                try
+                {
+                    await SendWithRetriesAsync(evt, stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failure webhook delivery gave up for {Function} ({Kind})", evt.Function, evt.Kind);
+                }
             }
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        // DI registration keeps this pump alive until scheduler/recovery producers stop.
+        // Complete the writer first, allowing ReadAllAsync to finish the existing queue.
+        _notifier.Complete();
+        using var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        drain.CancelAfter(_notifier.Options.ShutdownDrainTimeout);
+        if (ExecuteTask != null)
+        {
+            try { await ExecuteTask.WaitAsync(drain.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (drain.IsCancellationRequested)
+            {
+                _logger.LogWarning("Failure webhook shutdown drain timed out; undelivered notifications may be lost");
+            }
+        }
+        await base.StopAsync(drain.Token).ConfigureAwait(false);
     }
 
     private async Task SendWithRetriesAsync(TickerFailureEvent evt, CancellationToken ct)
@@ -132,12 +162,22 @@ internal sealed class TickerQWebhookNotifierBackgroundService : BackgroundServic
                 response.EnsureSuccessStatusCode();
                 return;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException && attempt < SendRetryDelays.Length)
+            catch (Exception ex) when (attempt < SendRetryDelays.Length && IsTransient(ex, ct))
             {
                 _logger.LogDebug(ex, "Failure webhook attempt {Attempt} failed; retrying", attempt + 1);
                 await Task.Delay(SendRetryDelays[attempt], ct);
             }
         }
+    }
+
+    private static bool IsTransient(Exception exception, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return false;
+        // HttpClient timeouts surface as OperationCanceledException even when the caller is active.
+        if (exception is OperationCanceledException) return true;
+        return exception is HttpRequestException request &&
+            (request.StatusCode == null || request.StatusCode == HttpStatusCode.RequestTimeout ||
+             request.StatusCode == HttpStatusCode.TooManyRequests || (int)request.StatusCode >= 500);
     }
 
     public override void Dispose()

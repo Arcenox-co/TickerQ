@@ -44,8 +44,7 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
             _taskHandler,
             _taskScheduler,
             _internalManager,
-            _schedulerOptions,
-            new TickerFunctionConcurrencyGate(), LicenseTestState.Active());
+            _schedulerOptions, LicenseTestState.Active());
     }
 
     [Fact]
@@ -246,8 +245,7 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
             ShutdownDrainTimeout = TimeSpan.FromSeconds(10)
         };
         var service = new TickerQSchedulerBackgroundService(
-            _executionContext, _taskHandler, scheduler, _internalManager, options,
-            new TickerFunctionConcurrencyGate(), LicenseTestState.Active());
+            _executionContext, _taskHandler, scheduler, _internalManager, options, LicenseTestState.Active());
 
         // Act: StopAsync must block in the drain window while the execution is in flight.
         var stopTask = service.StopAsync(CancellationToken.None);
@@ -276,8 +274,7 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
             ShutdownDrainTimeout = TimeSpan.FromSeconds(5)
         };
         var service = new TickerQSchedulerBackgroundService(
-            _executionContext, _taskHandler, _taskScheduler, _internalManager, options,
-            new TickerFunctionConcurrencyGate(), LicenseTestState.Active());
+            _executionContext, _taskHandler, _taskScheduler, _internalManager, options, LicenseTestState.Active());
         var context = new InternalFunctionContext
         {
             TickerId = Guid.NewGuid(),
@@ -343,8 +340,7 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
             ShutdownDrainTimeout = TimeSpan.FromSeconds(5)
         };
         var service = new TickerQSchedulerBackgroundService(
-            _executionContext, _taskHandler, _taskScheduler, _internalManager, options,
-            new TickerFunctionConcurrencyGate(), LicenseTestState.Active());
+            _executionContext, _taskHandler, _taskScheduler, _internalManager, options, LicenseTestState.Active());
 
         await service.StartAsync(CancellationToken.None);
         Assert.True(await acquisitionCommitted.Task.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -528,10 +524,10 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
                 return ValueTask.FromException(new InvalidOperationException("frozen during publication"));
             });
         var service = CreateService();
-        var queueMethod = typeof(TickerQSchedulerBackgroundService).GetMethod(
-            "QueueAcquiredExecution", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var queue = (AcquiredExecutionQueue)typeof(TickerQSchedulerBackgroundService).GetField(
+            "_acquiredQueue", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(service)!;
 
-        await (Task)queueMethod.Invoke(service, [context, stopping.Token])!;
+        await queue.PublishAsync([context], false, stopping.Token);
         Assert.True(await releaseStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(1, TickerCancellationTokenManager.ActiveCount);
 
@@ -564,10 +560,10 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
                 Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromException(new InvalidOperationException("queue rejected")));
         var service = CreateService();
-        var queueMethod = typeof(TickerQSchedulerBackgroundService).GetMethod(
-            "QueueAcquiredExecution", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var queue = (AcquiredExecutionQueue)typeof(TickerQSchedulerBackgroundService).GetField(
+            "_acquiredQueue", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(service)!;
 
-        await (Task)queueMethod.Invoke(service, [context, CancellationToken.None])!;
+        await queue.PublishAsync([context], false, CancellationToken.None);
 
         await _internalManager.Received(1).ReleaseAcquiredResources(
             Arg.Is<InternalFunctionContext[]>(items => items.Length == 1

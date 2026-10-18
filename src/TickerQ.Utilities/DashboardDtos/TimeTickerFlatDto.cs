@@ -6,6 +6,10 @@ namespace TickerQ.Utilities.DashboardDtos
     public class TimeTickerFlatDto
     {
         public Guid Id { get; set; }
+        /// <summary>Identifies the source when this DTO is used in the mixed overview feed.</summary>
+        public ExecutionType Type { get; set; } = ExecutionType.TimeTicker;
+        /// <summary>Parent definition for an upcoming cron occurrence; null for time tickers.</summary>
+        public Guid? CronTickerId { get; set; }
         public string FunctionName { get; set; }
         public TickerStatus Status { get; set; }
         public DateTime? ScheduledFor { get; set; }
@@ -15,9 +19,12 @@ namespace TickerQ.Utilities.DashboardDtos
         public TickerTaskPriority Priority { get; set; }
         public DateTime CreatedAt { get; set; }
         public int ChildCount { get; set; }
+        public ChainExecutionSummaryDto ChainSummary { get; set; }
         public string ExceptionMessage { get; set; }
         public string SkippedReason { get; set; }
         public Guid? ParentId { get; set; }
+        public Guid? OriginCronTickerId { get; set; }
+        public ChainDeleteBehavior DeleteBehavior { get; set; }
         public RunCondition? RunCondition { get; set; }
         public DateTime? ExecutedAt { get; set; }
         public string Description { get; set; }

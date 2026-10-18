@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Checkbox } from "@/components/ui/checkbox";
+import { CronOverlapField } from "@/components/cron/CronOverlapField";
 import { TextField } from "@/components/form-fields/text-field";
 import { NumberField } from "@/components/form-fields/number-field";
 import { SelectField } from "@/components/form-fields/select-field";
@@ -29,6 +30,7 @@ import {
 import type { CronTickerFlatDto } from "@/services/api-types";
 
 const schema = z.object({
+  skipIfAlreadyRunning: z.boolean(),
   expression: z
     .string()
     .trim()
@@ -69,6 +71,7 @@ export function EditCronTickerDialog({
       retryIntervalsSeconds: "",
       onStale: "Restart",
       timeoutSeconds: 0,
+      skipIfAlreadyRunning: false,
     },
   });
   const [enabled, setEnabled] = useState(true);
@@ -83,6 +86,7 @@ export function EditCronTickerDialog({
         retryIntervalsSeconds: cron.retryIntervalsSeconds?.join(", ") ?? "",
         onStale: cron.onStale ?? "Restart",
         timeoutSeconds: cron.timeoutSeconds ?? 0,
+        skipIfAlreadyRunning: cron.skipIfAlreadyRunning ?? false,
       });
       setEnabled(cron.isEnabled);
     }
@@ -191,6 +195,9 @@ export function EditCronTickerDialog({
                     max={86400}
                   />
                 </div>
+
+                <CronOverlapField checked={form.watch("skipIfAlreadyRunning")}
+                  onChange={value => form.setValue("skipIfAlreadyRunning", value, { shouldDirty: true })} isChain={!!cron?.chain} />
 
                 <label className="flex items-center gap-2 text-[12px] text-muted-foreground cursor-pointer select-none">
                   <Checkbox

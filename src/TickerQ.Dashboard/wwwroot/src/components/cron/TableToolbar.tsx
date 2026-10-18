@@ -71,6 +71,7 @@ export function SearchInput({
 }
 
 export interface FilterPopoverProps {
+  statusLabel?: string;
   statusFilter: TickerStatus[];
   onStatusChange: (next: TickerStatus[]) => void;
   functionFilter: string;
@@ -81,6 +82,7 @@ export interface FilterPopoverProps {
 }
 
 export function FilterPopover({
+  statusLabel = "Status",
   statusFilter,
   onStatusChange,
   functionFilter,
@@ -110,7 +112,7 @@ export function FilterPopover({
       <PopoverContent align="start" className="w-80 p-0">
         <div className="px-3 py-2.5 border-b border-border/50 space-y-1.5">
           <div className="text-[10px] uppercase tracking-wide text-muted-foreground/60">
-            Status
+            {statusLabel}
           </div>
           <div className="grid grid-cols-2 gap-x-2 gap-y-1">
             {ALL_STATUSES.map((s) => {

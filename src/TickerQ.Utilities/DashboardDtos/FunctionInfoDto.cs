@@ -21,6 +21,9 @@ namespace TickerQ.Utilities.DashboardDtos
 
         public TickerTaskPriority Priority { get; set; }
         public string CronExpression { get; set; }
+
+        /// <summary>Per-function execution limit on this host. Non-positive means no limit; null means unavailable.</summary>
+        public int? MaxConcurrency { get; set; }
     }
 
     public class FunctionRequestContractDto

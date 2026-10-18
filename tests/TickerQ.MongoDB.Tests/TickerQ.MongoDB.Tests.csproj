@@ -16,6 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../Shared/ExecutionLogPersistenceContract.cs" Link="Shared/ExecutionLogPersistenceContract.cs" />
     <Using Include="Xunit" />
   </ItemGroup>
 
@@ -32,4 +33,9 @@
     <ProjectReference Include="..\..\src\TickerQ.MongoDB\TickerQ.MongoDB.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="../Shared/ChainDeleteBehaviorContract.cs" Link="Shared/ChainDeleteBehaviorContract.cs" />
+    <Compile Include="../Shared/OverdueAcquisitionContract.cs" Link="Shared/OverdueAcquisitionContract.cs" />
+  </ItemGroup>
+  <ItemGroup><Compile Include="../Shared/CronChainContract.cs" Link="Shared/CronChainContract.cs" /></ItemGroup>
 </Project>

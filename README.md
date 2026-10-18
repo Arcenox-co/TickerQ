@@ -266,6 +266,7 @@ contracts worth understanding before you deploy:
 - **[Dashboard security & deployment hardening](docs/security.md)** — explicit CORS
   allow-lists, trusted forwarded proxies, the anonymous-dashboard opt-in, JWT signing keys,
   and sliding token-renewal semantics.
+- **[Notifications](src/TickerQ.Notifications/README.md)** — optional Slack, Teams, and custom webhooks with dashboard-managed destinations, function rules, and payload templates.
 - **[Observability](docs/observability.md)** — OpenTelemetry setup and safe tags, plus the
   bounded failure-webhook drop metric and reason sanitizer.
 

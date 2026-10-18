@@ -1298,7 +1298,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     {
         var threshold = Clock.UtcNow.AddMilliseconds(-100);
 
-        var dueIds = await Db.SortedSetRangeByScoreAsync(TimeTickerPendingKey, double.NegativeInfinity, ToScore(threshold)).ConfigureAwait(false);
+        var dueIds = await Db.SortedSetRangeByScoreAsync(TimeTickerPendingKey, double.NegativeInfinity, ToScore(threshold),
+            take: _schedulerOptions.FallbackBatchSize).ConfigureAwait(false);
 
         foreach (var redisValue in dueIds)
         {
@@ -2133,6 +2134,9 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                 RequestContractVersion = c.RequestContractVersion,
                 RequestContractFingerprint = c.RequestContractFingerprint,
                 RetryIntervals = c.RetryIntervals,
+                SkipIfAlreadyRunning = c.SkipIfAlreadyRunning,
+                DefinitionRevision = c.DefinitionRevision,
+                TimeoutSeconds = c.TimeoutSeconds,
                 Retries = c.Retries
             })
             .ToArray();
@@ -2309,7 +2313,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     {
         var threshold = Clock.UtcNow.AddMilliseconds(-100);
 
-        var dueIds = await Db.SortedSetRangeByScoreAsync(CronOccurrencePendingKey, double.NegativeInfinity, ToScore(threshold)).ConfigureAwait(false);
+        var dueIds = await Db.SortedSetRangeByScoreAsync(CronOccurrencePendingKey, double.NegativeInfinity, ToScore(threshold),
+            take: _schedulerOptions.FallbackBatchSize).ConfigureAwait(false);
         foreach (var redisValue in dueIds)
         {
             cancellationToken.ThrowIfCancellationRequested();

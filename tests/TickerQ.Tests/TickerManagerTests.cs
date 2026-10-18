@@ -16,7 +16,7 @@ using TickerQ.Utilities.Models;
 namespace TickerQ.Tests;
 
 [Collection("TickerFunctionProviderState")]
-public class TickerManagerTests : IDisposable
+public partial class TickerManagerTests : IDisposable
 {
     private const string ValidFunctionName = "TestFunction";
     private const string TypedFunctionName = "TypedFunction";
@@ -91,6 +91,41 @@ public class TickerManagerTests : IDisposable
 
         _timeTickerManager = manager;
         _cronTickerManager = manager;
+    }
+
+    [Fact]
+    public async Task RecurringChain_Rejects_invalid_child_before_persistence()
+    {
+        _persistenceProvider.SupportsCronChains.Returns(true);
+        var cron = new CronTickerEntity { Function = ValidFunctionName, Expression = ValidCronExpression,
+            Chain = new CronChainTemplate { Children = [new CronChainNode { Function = InvalidFunctionName }] } };
+        var result = await _cronTickerManager.AddAsync(cron);
+        Assert.False(result.IsSucceeded);
+        await _persistenceProvider.DidNotReceive().InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RecurringChain_Stamps_and_snapshots_child_request_contracts()
+    {
+        _persistenceProvider.SupportsCronChains.Returns(true);
+        _persistenceProvider.InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>()).Returns(1);
+        var child = new CronChainNode { Function = TypedFunctionName, Request = Encoding.UTF8.GetBytes("{\"OrderId\":\"123\"}") };
+        var cron = new CronTickerEntity { Function = ValidFunctionName, Expression = ValidCronExpression,
+            Chain = new CronChainTemplate { Children = [child] } };
+        Assert.True((await _cronTickerManager.AddAsync(cron)).IsSucceeded);
+        Assert.Equal(7, cron.Chain.Children[0].RequestContractVersion);
+        Assert.False(string.IsNullOrWhiteSpace(cron.Chain.Children[0].RequestContractFingerprint));
+        child.Function = "Changed by caller";
+        Assert.Equal(TypedFunctionName, cron.Chain.Children[0].Function);
+    }
+
+    [Fact]
+    public async Task RecurringChain_Rejects_a_provider_without_atomic_support()
+    {
+        var cron = new CronTickerEntity { Function = ValidFunctionName, Expression = ValidCronExpression,
+            Chain = new CronChainTemplate { Children = [new CronChainNode { Function = ValidFunctionName }] } };
+        Assert.False((await _cronTickerManager.AddAsync(cron)).IsSucceeded);
+        await _persistenceProvider.DidNotReceive().InsertCronTickers(Arg.Any<CronTickerEntity[]>(), Arg.Any<CancellationToken>());
     }
 
     public void Dispose()
@@ -1137,6 +1172,66 @@ public class TickerManagerTests : IDisposable
     // ---------------------------------------------------------------
     // DeleteTimeTickerAsync
     // ---------------------------------------------------------------
+
+    [Fact]
+    public async Task DeleteBehavior_Restrict_blocks_single_bulk_and_replacement_before_writes()
+    {
+        var root = new TimeTickerEntity { Id = Guid.NewGuid(), Function = ValidFunctionName, ExecutionTime = FixedUtcNow,
+            DeleteBehavior = ChainDeleteBehavior.Restrict, Children = [new() { Function = ValidFunctionName }] };
+        _persistenceProvider.GetTimeTickerById(root.Id, Arg.Any<CancellationToken>()).Returns(root);
+        var single = await _timeTickerManager.DeleteAsync(root.Id);
+        var batch = await _timeTickerManager.DeleteBatchAsync([Guid.NewGuid(), root.Id]);
+        var replacement = await _timeTickerManager.ReplaceChainAsync(root.Id, new() { Function = ValidFunctionName });
+        foreach (var result in new[] { single, batch, replacement })
+        {
+            Assert.False(result.IsSucceeded);
+            Assert.Contains("Restrict", result.Exception.Message);
+        }
+        await _persistenceProvider.DidNotReceiveWithAnyArgs().RemoveTimeTickers(default, default);
+        await _persistenceProvider.DidNotReceiveWithAnyArgs().ReplaceTimeTickerChainAsync(default, default, default);
+    }
+
+    [Fact]
+    public async Task DeleteBehavior_rechecks_nested_descendants_and_lifts_without_a_policy_change()
+    {
+        var unfinished = new TimeTickerEntity { Id = Guid.NewGuid(), Function = ValidFunctionName, Status = TickerStatus.Queued };
+        var root = new TimeTickerEntity { Id = Guid.NewGuid(), Function = ValidFunctionName, Status = TickerStatus.Done,
+            DeleteBehavior = ChainDeleteBehavior.Restrict,
+            Children = [new() { Id = Guid.NewGuid(), Function = ValidFunctionName, Status = TickerStatus.Done, Children = [unfinished] }] };
+        _persistenceProvider.GetTimeTickerById(root.Id, Arg.Any<CancellationToken>()).Returns(root);
+        _persistenceProvider.RemoveTimeTickers(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>()).Returns(3);
+        Assert.False((await _timeTickerManager.DeleteAsync(root.Id)).IsSucceeded);
+        await _persistenceProvider.DidNotReceiveWithAnyArgs().RemoveTimeTickers(default, default);
+        unfinished.Status = TickerStatus.Skipped;
+        Assert.True((await _timeTickerManager.DeleteAsync(root.Id)).IsSucceeded);
+        Assert.True((await _timeTickerManager.DeleteBatchAsync([root.Id])).IsSucceeded);
+        Assert.Equal(ChainDeleteBehavior.Restrict, root.DeleteBehavior);
+    }
+
+    [Fact]
+    public async Task DeleteBehavior_change_uses_metadata_operation_without_rescheduling()
+    {
+        var id = Guid.NewGuid();
+        _persistenceProvider.SetTimeTickerDeleteBehaviorAsync(id, ChainDeleteBehavior.Cascade, Arg.Any<CancellationToken>()).Returns(1);
+        var result = await _timeTickerManager.SetDeleteBehaviorAsync(id, ChainDeleteBehavior.Cascade);
+        Assert.True(result.IsSucceeded);
+        await _persistenceProvider.Received(1).SetTimeTickerDeleteBehaviorAsync(id, ChainDeleteBehavior.Cascade, Arg.Any<CancellationToken>());
+        await _persistenceProvider.DidNotReceiveWithAnyArgs().UpdateTimeTickers(default, default);
+        _hostScheduler.DidNotReceive().Restart();
+        Assert.False((await _timeTickerManager.SetDeleteBehaviorAsync(id, (ChainDeleteBehavior)42)).IsSucceeded);
+        await _persistenceProvider.DidNotReceive().SetTimeTickerDeleteBehaviorAsync(id, (ChainDeleteBehavior)42, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteBehavior_rejects_unknown_and_child_policies_on_create()
+    {
+        var invalid = new TimeTickerEntity { Function = ValidFunctionName, ExecutionTime = FixedUtcNow, DeleteBehavior = (ChainDeleteBehavior)42 };
+        Assert.False((await _timeTickerManager.AddAsync(invalid)).IsSucceeded);
+        invalid.DeleteBehavior = ChainDeleteBehavior.Cascade;
+        invalid.Children.Add(new() { Function = ValidFunctionName, DeleteBehavior = ChainDeleteBehavior.Restrict });
+        Assert.False((await _timeTickerManager.AddAsync(invalid)).IsSucceeded);
+        await _persistenceProvider.DidNotReceiveWithAnyArgs().AddTimeTickers(default, default);
+    }
 
     [Fact]
     public async Task DeleteTimeTickerAsync_ExistingTicker_ReturnsSuccess()

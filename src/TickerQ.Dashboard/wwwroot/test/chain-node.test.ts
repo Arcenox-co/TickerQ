@@ -231,3 +231,20 @@ test("full round trip preserves the exact UTF-8 payload bytes for every node", (
   assert.equal(req.children![1].request, null);
   assert.equal(decodeRequestPayload(req.children![0].children![0].request), GRANDCHILD_JSON);
 });
+
+test("chain deletion policy survives editing and duplication without assigning it to children", () => {
+  const tree = tickersToChainNode([
+    flat({ id: "root-policy", functionName: "Root", deleteBehavior: "Restrict" }),
+    flat({ id: "child-policy", functionName: "Child", parentId: "root-policy" }),
+  ], "root-policy", new Map());
+  assert.ok(tree);
+  const request = chainNodeToRequest(tree);
+  assert.equal(request.deleteBehavior, "Restrict");
+  assert.equal(request.children?.[0].deleteBehavior, "Cascade");
+});
+
+test("older chain responses default to cascade", () => {
+  const tree = tickersToChainNode([flat({ id: "old-root", functionName: "Root" })], "old-root", new Map());
+  assert.ok(tree);
+  assert.equal(chainNodeToRequest(tree).deleteBehavior, "Cascade");
+});

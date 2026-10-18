@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Licensing;
@@ -15,24 +16,29 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
 {
     private int _started;
     private readonly IInternalTickerManager _internalTickerManager;
-    private readonly ITickerExecutionTaskHandler _tickerExecutionTaskHandler;
+    private readonly AcquiredExecutionQueue _acquiredQueue;
+    private readonly bool _ownsAcquiredQueue;
     private readonly ITickerQTaskScheduler _tickerQTaskScheduler;
-    private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
     private readonly TickerQLicenseStateProvider _licenseState;
     private readonly TimeSpan _fallbackJobPeriod;
     private readonly ITickerQActivationGate _activationGate;
     private readonly ILogger<TickerQFallbackBackgroundService> _logger;
+    private readonly TickerQRuntimeDiagnostics _diagnostics;
+    private DateTime _nextWarning;
 
-    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, ITickerFunctionConcurrencyGate concurrencyGate, TickerQLicenseStateProvider licenseState, ITickerQActivationGate activationGate = null, ILogger<TickerQFallbackBackgroundService> logger = null)
+    public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, TickerQLicenseStateProvider licenseState, ITickerQActivationGate activationGate = null,
+        ILogger<TickerQFallbackBackgroundService> logger = null, TickerQRuntimeDiagnostics diagnostics = null, AcquiredExecutionQueue acquiredQueue = null)
     {
         _internalTickerManager = internalTickerManager;
         _fallbackJobPeriod = schedulerOptions.FallbackIntervalChecker;
-        _tickerExecutionTaskHandler = tickerExecutionTaskHandler;
         _tickerQTaskScheduler = tickerQTaskScheduler;
-        _concurrencyGate = concurrencyGate;
         _licenseState = licenseState;
         _activationGate = activationGate;
         _logger = logger ?? NullLogger<TickerQFallbackBackgroundService>.Instance;
+        _diagnostics = diagnostics;
+        _ownsAcquiredQueue = acquiredQueue == null;
+        _acquiredQueue = acquiredQueue ?? new AcquiredExecutionQueue(internalTickerManager,
+            tickerExecutionTaskHandler, tickerQTaskScheduler, _logger, licenseState);
     }
 
     public override Task StartAsync(CancellationToken ct)
@@ -65,68 +71,16 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
 
                 if (functions.Length != 0)
                 {
-                    foreach (var function in functions)
-                    {
-                        if (TickerFunctionProvider.TickerFunctions.TryGetValue(function.FunctionName, out var tickerItem))
-                        {
-                            function.CachedDelegate = tickerItem.Delegate;
-                            function.CachedPriority = tickerItem.Priority;
-                            function.CachedMaxConcurrency = tickerItem.MaxConcurrency;
-                        }
-
-                        foreach (var child in function.TimeTickerChildren)
-                        {
-                            if (TickerFunctionProvider.TickerFunctions.TryGetValue(child.FunctionName, out var childItem))
-                            {
-                                child.CachedDelegate = childItem.Delegate;
-                                child.CachedPriority = childItem.Priority;
-                                child.CachedMaxConcurrency = childItem.MaxConcurrency;
-                            }
-
-                            foreach (var grandChild in child.TimeTickerChildren)
-                            {
-                                if (TickerFunctionProvider.TickerFunctions.TryGetValue(grandChild.FunctionName, out var grandChildItem))
-                                {
-                                    grandChild.CachedDelegate = grandChildItem.Delegate;
-                                    grandChild.CachedPriority = grandChildItem.Priority;
-                                    grandChild.CachedMaxConcurrency = grandChildItem.MaxConcurrency;
-                                }
-                            }
-                        }
-
-                        try
-                        {
-                            var semaphore = _concurrencyGate.GetSemaphoreOrNull(function.FunctionName, function.CachedMaxConcurrency);
-
-                            await _tickerQTaskScheduler.QueueAsync(
-                                async ct =>
-                                {
-                                    if (semaphore != null)
-                                        await semaphore.WaitAsync(ct).ConfigureAwait(false);
-
-                                    try
-                                    {
-                                        await _tickerExecutionTaskHandler.ExecuteTaskAsync(function, true, ct).ConfigureAwait(false);
-                                    }
-                                    finally
-                                    {
-                                        semaphore?.Release();
-                                    }
-                                },
-                                function.CachedPriority,
-                                stoppingToken);
-                        }
-                        catch (InvalidOperationException) when (_tickerQTaskScheduler.IsFrozen || _tickerQTaskScheduler.IsDisposed)
-                        {
-                            // Scheduler is frozen/disposed – ignore and let loop delay
-                            break;
-                        }
-                    }
-
+                    TickerExecutionContext.CacheFunctionReferences(functions.AsSpan());
+                    if (await _acquiredQueue.PublishAsync(functions, true, stoppingToken).ConfigureAwait(false))
+                        _diagnostics?.FallbackSucceeded();
+                    else
+                        _diagnostics?.FallbackFailed();
                     await Task.Delay(TimeSpan.FromMilliseconds(10), stoppingToken);
                 }
                 else
                 {
+                    _diagnostics?.FallbackSucceeded();
                     await Task.Delay(_fallbackJobPeriod, stoppingToken);
                 }
             }
@@ -135,18 +89,17 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
                 // Host is shutting down – exit gracefully.
                 break;
             }
-            catch (Exception exception)
+            catch (Exception ex)
             {
-                _logger.LogError(exception,
-                    "TickerQ fallback recovery failed. Retrying after {FallbackInterval}", _fallbackJobPeriod);
-                try
+                _diagnostics?.FallbackFailed();
+                if (DateTime.UtcNow >= _nextWarning)
                 {
-                    await Task.Delay(_fallbackJobPeriod, stoppingToken);
+                    _nextWarning = DateTime.UtcNow.AddMinutes(1);
+                    _logger.LogWarning(ex, "TickerQ overdue-work scan failed; retrying after {RetryDelay}. Last successful scan: {LastSuccessUtc}.",
+                        _fallbackJobPeriod, _diagnostics?.LastSuccessfulFallbackScanUtc);
                 }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
+                try { await Task.Delay(_fallbackJobPeriod, stoppingToken); }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             }
         }
     }
@@ -156,5 +109,11 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
     {
         Interlocked.Exchange(ref _started, 0);
         await base.StopAsync(cancellationToken);
+        if (_ownsAcquiredQueue) await _acquiredQueue.StopAsync(cancellationToken).ConfigureAwait(false);
+    }
+    public override void Dispose()
+    {
+        if (_ownsAcquiredQueue) _acquiredQueue.Dispose();
+        base.Dispose();
     }
 }

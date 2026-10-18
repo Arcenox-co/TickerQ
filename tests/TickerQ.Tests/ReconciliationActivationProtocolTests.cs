@@ -84,7 +84,6 @@ public sealed class ReconciliationActivationProtocolTests : IDisposable
             Substitute.For<ITickerQTaskScheduler>(),
             manager,
             new SchedulerOptionsBuilder(),
-            new TickerFunctionConcurrencyGate(),
             LicenseTestState.Active(),
             activationGate: gate);
 
@@ -121,7 +120,6 @@ public sealed class ReconciliationActivationProtocolTests : IDisposable
             new SchedulerOptionsBuilder { FallbackIntervalChecker = TimeSpan.FromMilliseconds(30) },
             Substitute.For<ITickerExecutionTaskHandler>(),
             taskScheduler,
-            new TickerFunctionConcurrencyGate(),
             LicenseTestState.Active(),
             activationGate: gate);
 

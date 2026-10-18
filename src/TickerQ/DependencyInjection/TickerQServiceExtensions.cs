@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -17,6 +18,7 @@ using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Managers;
+using TickerQ.Utilities.Models;
 using TickerQ.Utilities.Temps;
 
 namespace TickerQ.DependencyInjection
@@ -34,6 +36,7 @@ namespace TickerQ.DependencyInjection
             var schedulerOptionsBuilder = new SchedulerOptionsBuilder();
             var optionInstance = new TickerOptionsBuilder<TTimeTicker,TCronTicker>(tickerExecutionContext, schedulerOptionsBuilder);
             optionsBuilder?.Invoke(optionInstance);
+            schedulerOptionsBuilder.Validate();
             schedulerOptionsBuilder.ReconciliationEpoch = optionInstance.ReconciliationEpoch;
             // Freeze runtime admission before registering factories that may construct a provider or
             // manager. Scoped protocol APIs remain free to administer other applications' records, but
@@ -88,7 +91,21 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<TickerQLicenseStateProvider>();
             services.AddHostedService<TickerQLicenseHostedService>();
 
-            // Retention capability validation must be the first TickerQ hosted service so an
+            optionInstance.ExecutionLogs.Validate();
+            services.AddSingleton(optionInstance.ExecutionLogs);
+            services.AddSingleton<InMemoryTickerExecutionLogStore>();
+            services.AddSingleton<ITickerExecutionLogStore>(sp => sp.GetRequiredService<InMemoryTickerExecutionLogStore>());
+            services.AddSingleton<ExecutionLogReader>();
+            services.AddSingleton<TickerLifecycleLogger>();
+            services.AddSingleton<TickerQRuntimeDiagnostics>();
+            if (optionInstance.ExecutionLogs.Enabled)
+            {
+                services.TryAddEnumerable(ServiceDescriptor.Singleton<ILoggerProvider, TickerExecutionLoggerProvider>());
+                // Stop after the scheduler drains, so its final lines can be flushed.
+                services.AddHostedService<TickerQExecutionLogBackgroundService>();
+            }
+
+            // Retention capability validation precedes initialization so an
             // unsupported provider fails before initialization, scheduler, or worker side effects.
             // It remains absent when background services are disabled, preserving queue-only hosts.
             if (optionInstance.RegisterBackgroundServices && optionInstance.JobRetention.IsEnabled)
@@ -107,6 +124,25 @@ namespace TickerQ.DependencyInjection
             services.AddHostedService(sp => sp.GetRequiredService<TickerQInitializerHostedService>());
 
             // Only register background services if enabled (default is true)
+            // Stop the webhook pump after every job/failure producer has drained.
+            // Failure notifications: built-in webhook when configured, else no-op.
+            // TryAdd lets users register their own ITickerQFailureNotifier beforehand.
+            if (optionInstance.FailureWebhook != null)
+            {
+                if (services.Any(s => s.ServiceType == typeof(Utilities.Notifications.ITickerNotificationAdminService)))
+                    throw new InvalidOperationException("Use either AddNotifications or NotifyFailuresViaWebhook. Move the existing webhook into a notification destination before enabling the optional package.");
+                services.AddSingleton(optionInstance.FailureWebhook);
+                if (optionInstance.FailureWebhook.ShutdownDrainTimeout < TimeSpan.Zero ||
+                    optionInstance.FailureWebhook.ShutdownDrainTimeout.TotalMilliseconds > uint.MaxValue - 1)
+                    throw new ArgumentOutOfRangeException(nameof(FailureWebhookOptions.ShutdownDrainTimeout));
+                services.AddSingleton(sp => new WebhookFailureNotifier(
+                    optionInstance.FailureWebhook,
+                    sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<WebhookFailureNotifier>>()));
+                services.TryAddSingleton<ITickerQFailureNotifier>(sp => sp.GetRequiredService<WebhookFailureNotifier>());
+                services.AddHostedService<TickerQWebhookNotifierBackgroundService>();
+            }
+            services.TryAddSingleton<ITickerQFailureNotifier, NoOpTickerQFailureNotifier>();
+
             if (optionInstance.RegisterBackgroundServices)
             {
                 // Registered BEFORE the scheduler service on purpose: hosted services
@@ -116,6 +152,10 @@ namespace TickerQ.DependencyInjection
                 if (schedulerOptionsBuilder.StaleJobRecoveryEnabled)
                     services.AddHostedService<TickerQStaleJobRecoveryBackgroundService>();
 
+                services.AddSingleton(sp => new AcquiredExecutionQueue(
+                    sp.GetRequiredService<IInternalTickerManager>(), sp.GetRequiredService<ITickerExecutionTaskHandler>(),
+                    sp.GetRequiredService<ITickerQTaskScheduler>(), sp.GetRequiredService<ILogger<AcquiredExecutionQueue>>(),
+                    sp.GetRequiredService<TickerQLicenseStateProvider>()));
                 services.AddSingleton<TickerQSchedulerBackgroundService>();
                 services.AddSingleton<ITickerQHostScheduler>(provider =>
                     provider.GetRequiredService<TickerQSchedulerBackgroundService>());
@@ -148,34 +188,29 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerFunctionConcurrencyGate, TickerFunctionConcurrencyGate>();
             services.AddSingleton<ITickerExecutionTaskHandler, TickerExecutionTaskHandler>();
             services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
-            // In-process function log capture: ILogger lines emitted inside a ticker
-            // execution land in a bounded in-memory store the dashboard's log tail reads.
-            services.AddSingleton<ITickerExecutionLogStore, InMemoryTickerExecutionLogStore>();
-            services.TryAddEnumerable(ServiceDescriptor.Singleton<ILoggerProvider, TickerExecutionLoggerProvider>());
-            services.AddSingleton<ITickerDashboardDataService<TTimeTicker, TCronTicker>, TickerDashboardDataService<TTimeTicker, TCronTicker>>();
+            services.AddSingleton<ITickerDashboardDataService<TTimeTicker, TCronTicker>>(sp =>
+                new TickerDashboardDataService<TTimeTicker, TCronTicker>(
+                    sp.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>(),
+                    sp.GetRequiredService<ITickerQHostScheduler>(),
+                    sp.GetRequiredService<ITickerQTaskScheduler>(), schedulerOptionsBuilder,
+                    sp.GetRequiredService<ITickerQDispatcher>(),
+                    sp.GetRequiredService<ITickerQNotificationHubSender>(),
+                    sp.GetService<ILogger<TickerDashboardDataService<TTimeTicker, TCronTicker>>>(),
+                    sp.GetRequiredService<TickerLifecycleLogger>()));
 
             optionInstance.ExternalProviderConfigServiceAction?.Invoke(services);
 
             // Register in-memory persistence as fallback — only used when no external provider
             // (EF Core, Redis, SDK) has been configured via ExternalProviderConfigServiceAction above.
             services.TryAddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
+            services.TryAddSingleton<Utilities.Notifications.ITickerNotificationSettingsStore>(sp =>
+                sp.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>());
 
             optionInstance.DashboardServiceAction?.Invoke(services);
 
             if (optionInstance.TickerExceptionHandlerType != null)
                 services.AddSingleton(typeof(ITickerExceptionHandler), optionInstance.TickerExceptionHandlerType);
 
-            // Failure notifications: built-in webhook when configured, else no-op.
-            // TryAdd lets users register their own ITickerQFailureNotifier beforehand.
-            if (optionInstance.FailureWebhook != null)
-            {
-                services.AddSingleton(sp => new WebhookFailureNotifier(
-                    optionInstance.FailureWebhook,
-                    sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<WebhookFailureNotifier>>()));
-                services.TryAddSingleton<ITickerQFailureNotifier>(sp => sp.GetRequiredService<WebhookFailureNotifier>());
-                services.AddHostedService<TickerQWebhookNotifierBackgroundService>();
-            }
-            services.TryAddSingleton<ITickerQFailureNotifier, NoOpTickerQFailureNotifier>();
 
             services.AddSingleton(_ => optionInstance);
             services.AddSingleton(_ => tickerExecutionContext);

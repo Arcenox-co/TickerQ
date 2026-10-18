@@ -42,7 +42,7 @@ public sealed class LicenseEnforcementTests
         var handler = Substitute.For<ITickerExecutionTaskHandler>();
         var license = MissingLicenseProvider();
         var dispatcher = new TickerQDispatcher(
-            scheduler, handler, new TickerFunctionConcurrencyGate(), license);
+            scheduler, handler, license);
         var context = new InternalFunctionContext
         {
             TickerId = Guid.NewGuid(),
@@ -173,7 +173,7 @@ public sealed class LicenseEnforcementTests
             manager,
             new SchedulerOptionsBuilder(),
             Substitute.For<ITickerQFailureNotifier>(),
-            license,
+            license, new TickerFunctionConcurrencyGate(),
             _ => null);
         var context = new InternalFunctionContext
         {
@@ -226,7 +226,7 @@ public sealed class LicenseEnforcementTests
             Substitute.For<IInternalTickerManager>(),
             new SchedulerOptionsBuilder(),
             Substitute.For<ITickerQFailureNotifier>(),
-            license,
+            license, new TickerFunctionConcurrencyGate(),
             _ => null);
     }
 }

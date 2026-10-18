@@ -8,6 +8,7 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
 import { tokenStore } from "@/lib/auth/token-store";
+import { CronGroups } from "./cron-groups";
 
 /**
  * SignalR client for the TickerQ notification hub. The backend already
@@ -21,6 +22,8 @@ import { tokenStore } from "@/lib/auth/token-store";
  * by cronTickerId) call `joinCronGroup` on mount and `leaveCronGroup` on unmount.
  */
 let connection: HubConnection | null = null;
+const cronGroups = new CronGroups();
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function hubUrl(): string {
   const cfg = getRuntimeConfig();
@@ -58,6 +61,9 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
   const invalidateTimeAll = () =>
     inv(
       ["time-tickers"],
+      // Child changes update aggregate chain progress and inherited lock holders.
+      ["cron-occurrences"],
+      ["cron-tickers"],
       ["executions"],
       ["overview"],
       ["stats"],
@@ -72,6 +78,7 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
   const invalidateOccAll = () =>
     inv(
       ["cron-occurrences"],
+      ["cron-tickers"],
       ["executions"],
       ["overview"],
       ["stats"],
@@ -97,6 +104,8 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
   // JoinGroup(cronTickerId)) ----
   conn.on("AddCronOccurrenceNotification", invalidateOccAll);
   conn.on("UpdateCronOccurrenceNotification", invalidateOccAll);
+  // Cover changes between the initial REST read and joining the live group.
+  conn.on("GroupJoined", invalidateOccAll);
 
   // ---- Host status / scheduler health ----
   conn.on("GetHostStatusNotification", () => inv(["host", "status"]));
@@ -104,21 +113,53 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
   conn.on("GetNextOccurrenceNotification", () => inv(["host", "next-ticker"]));
   conn.on("UpdateHostExceptionNotification", () => inv(["host", "status"]));
 
-  conn.onreconnected(() => {
-    // After a drop, our React Query cache may be stale — force a full refresh.
+  const restoreSubscriptions = async () => {
+    if (connection !== conn) return;
+    // SignalR assigns a new connection after reconnect; group membership is lost.
+    await cronGroups.connect(conn).catch((err) => {
+      console.warn("[TickerQ hub] failed to restore cron subscriptions:", err);
+    });
+    if (connection !== conn || conn.state !== HubConnectionState.Connected) return;
     invalidateTimeAll();
     invalidateCronAll();
     invalidateOccAll();
     inv(["host", "status"], ["host", "next-ticker"]);
-  });
+  };
 
-  conn.start().catch((err) => {
-    // The hub is best-effort: log and let polling fallbacks (host-status's
-    // refetchInterval) keep the UI alive. Reconnection policy will retry.
-    console.warn("[TickerQ hub] failed to start:", err);
+  const scheduleStart = () => {
+    if (connection !== conn || retryTimer !== undefined) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      if (connection === conn && conn.state === HubConnectionState.Disconnected) {
+        void startConnection();
+      }
+    }, 5_000);
+  };
+  const startConnection = async () => {
+    try {
+      await conn.start();
+      await restoreSubscriptions();
+    } catch (err) {
+      if (connection !== conn) return;
+      // Automatic reconnect does not retry a failed initial start.
+      console.warn("[TickerQ hub] failed to start:", err);
+      scheduleStart();
+    }
+  };
+
+  conn.onreconnecting(() => {
+    if (connection === conn) cronGroups.disconnect();
+  });
+  conn.onreconnected(restoreSubscriptions);
+  conn.onclose(() => {
+    if (connection !== conn) return;
+    cronGroups.disconnect();
+    // Also recover after the automatic reconnect attempts have been exhausted.
+    scheduleStart();
   });
 
   connection = conn;
+  void startConnection();
   return conn;
 }
 
@@ -135,6 +176,9 @@ export async function stopTickerHub(): Promise<void> {
   if (!connection) return;
   const conn = connection;
   connection = null;
+  clearTimeout(retryTimer);
+  retryTimer = undefined;
+  cronGroups.disconnect();
   try {
     await conn.stop();
   } catch {
@@ -143,12 +187,14 @@ export async function stopTickerHub(): Promise<void> {
 }
 
 /** Subscribe to a cron's occurrence broadcasts (server fires to a Group keyed by cronTickerId). */
-export function joinCronGroup(cronTickerId: string): Promise<void> | void {
-  if (!connection || connection.state !== HubConnectionState.Connected) return;
-  return connection.invoke("JoinGroup", cronTickerId).catch(() => {});
+export function joinCronGroup(cronTickerId: string): Promise<void> {
+  return cronGroups.join(cronTickerId).catch((err) => {
+    console.warn("[TickerQ hub] failed to join cron group:", err);
+  });
 }
 
-export function leaveCronGroup(cronTickerId: string): Promise<void> | void {
-  if (!connection || connection.state !== HubConnectionState.Connected) return;
-  return connection.invoke("LeaveGroup", cronTickerId).catch(() => {});
+export function leaveCronGroup(cronTickerId: string): Promise<void> {
+  return cronGroups.leave(cronTickerId).catch((err) => {
+    console.warn("[TickerQ hub] failed to leave cron group:", err);
+  });
 }

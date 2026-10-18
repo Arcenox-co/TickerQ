@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
@@ -30,6 +31,12 @@ internal sealed class EfStagingTimeTickerManager<TTimeTicker>(
         => inner.DeleteAsync(id, cancellationToken);
     public Task<TickerResult<TTimeTicker>> CancelAsync(Guid id, CancellationToken cancellationToken = default)
         => inner.CancelAsync(id, cancellationToken);
+    public Task<TickerResult<TTimeTicker>> RunNowAsync(Guid id, CancellationToken cancellationToken = default)
+        => inner.RunNowAsync(id, cancellationToken);
+    public Task<TickerResult<TTimeTicker>> RequestCancellationAsync(Guid id, CancellationToken cancellationToken = default)
+        => inner.RequestCancellationAsync(id, cancellationToken);
+    public Task<TickerResult<TTimeTicker>> SetDeleteBehaviorAsync(Guid id, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
+        => inner.SetDeleteBehaviorAsync(id, behavior, cancellationToken);
     public Task<TickerResult<TTimeTicker>> ReplaceChainAsync(Guid oldRootId, TTimeTicker newRoot, CancellationToken cancellationToken = default)
         => inner.ReplaceChainAsync(oldRootId, newRoot, cancellationToken);
     public Task<TickerResult<List<TTimeTicker>>> AddBatchAsync(List<TTimeTicker> entities, CancellationToken cancellationToken = default)

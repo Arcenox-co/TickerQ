@@ -23,15 +23,16 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private readonly TimeSpan _minPollingInterval;
     private SafeCancellationTokenSource _schedulerLoopCancellationTokenSource;
     private readonly ITickerQTaskScheduler  _taskScheduler;
-    private readonly ITickerExecutionTaskHandler  _taskHandler;
-    private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
+    private readonly AcquiredExecutionQueue _acquiredQueue;
+    private readonly bool _ownsAcquiredQueue;
     private readonly ITickerQActivationGate _activationGate;
     private readonly TickerQLicenseStateProvider _licenseState;
     private readonly SemaphoreSlim _acquisitionPublicationGate = new(1, 1);
     private int _started;
     private int _stopping;
     public bool SkipFirstRun;
-    public bool IsRunning => _started == 1;
+    public bool IsRunning => Volatile.Read(ref _started) == 1;
+    private DateTime _nextFailureWarning;
 
 
     public TickerQSchedulerBackgroundService(
@@ -40,21 +41,20 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         ITickerQTaskScheduler taskScheduler,
         IInternalTickerManager  internalTickerManager,
         SchedulerOptionsBuilder schedulerOptions,
-        ITickerFunctionConcurrencyGate concurrencyGate,
         TickerQLicenseStateProvider licenseState,
         ILogger<TickerQSchedulerBackgroundService> logger = null,
-        ITickerQActivationGate activationGate = null)
+        ITickerQActivationGate activationGate = null, AcquiredExecutionQueue acquiredQueue = null)
     {
         _executionContext = executionContext;
-        _taskHandler = taskHandler;
         _taskScheduler = taskScheduler;
         _internalTickerManager = internalTickerManager ?? throw new ArgumentNullException(nameof(internalTickerManager));
-        _concurrencyGate = concurrencyGate;
         _licenseState = licenseState;
         _activationGate = activationGate;
         _schedulerOptions = schedulerOptions;
         _logger = logger ?? NullLogger<TickerQSchedulerBackgroundService>.Instance;
         _minPollingInterval = ResolveMinPollingInterval(schedulerOptions);
+        _ownsAcquiredQueue = acquiredQueue == null;
+        _acquiredQueue = acquiredQueue ?? new AcquiredExecutionQueue(internalTickerManager, taskHandler, taskScheduler, _logger, licenseState);
         _restartThrottle = new RestartThrottleManager(() => _schedulerLoopCancellationTokenSource?.Cancel());
     }
 
@@ -77,56 +77,62 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             return Task.CompletedTask;
 
         Interlocked.Exchange(ref _stopping, 0);
+        _acquiredQueue.Resume();
         _taskScheduler.Resume();
         return base.StartAsync(ct);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_licenseState.ExecutionAllowed)
-            return;
-
-        if (_activationGate != null)
-            await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
-
-        if (!_licenseState.ExecutionAllowed)
-            return;
-
-        while (!stoppingToken.IsCancellationRequested && _licenseState.ExecutionAllowed)
+        try
         {
-            _schedulerLoopCancellationTokenSource = SafeCancellationTokenSource.CreateLinked(stoppingToken);
+            if (!_licenseState.ExecutionAllowed)
+                return;
 
-            try
+            if (_activationGate != null)
+                await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
+
+            if (!_licenseState.ExecutionAllowed)
+                return;
+
+            while (!stoppingToken.IsCancellationRequested && _licenseState.ExecutionAllowed)
             {
-                await RunTickerQSchedulerAsync(stoppingToken, _schedulerLoopCancellationTokenSource.Token);
-            }
-            catch (OperationCanceledException) when (_schedulerLoopCancellationTokenSource.Token.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
-            {
-                // This is a restart request - release resources and continue loop
-                await _internalTickerManager.ReleaseAcquiredResources(_executionContext.Functions, stoppingToken);
-                // Small delay to allow resources to be released
-                await Task.Delay(100, stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                // Application is shutting down - release resources and exit
-                await _internalTickerManager.ReleaseAcquiredResources(_executionContext.Functions, CancellationToken.None);
-                break;
-            }
-            catch (Exception ex)
-            {
-                await ReleaseAllResourcesAsync(ex);
-                // Continue running - don't exit the scheduler loop on exceptions
-                // Add a small delay to prevent tight loop if errors persist
-                await Task.Delay(1000, stoppingToken);
-            }
-            finally
-            {
-                _executionContext.SetFunctions(null);
-                _schedulerLoopCancellationTokenSource?.Dispose();
-                _schedulerLoopCancellationTokenSource = null;
+                _schedulerLoopCancellationTokenSource = SafeCancellationTokenSource.CreateLinked(stoppingToken);
+
+                try
+                {
+                    await RunTickerQSchedulerAsync(stoppingToken, _schedulerLoopCancellationTokenSource.Token);
+                }
+                catch (OperationCanceledException) when (_schedulerLoopCancellationTokenSource.Token.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+                {
+                    // This is a restart request - release resources and continue loop
+                    await ReleaseAllResourcesAsync(null);
+                    // Small delay to allow resources to be released
+                    await Task.Delay(100, stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    // Application is shutting down - release resources and exit
+                    await ReleaseAllResourcesAsync(null);
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    await ReleaseAllResourcesAsync(ex);
+                    // Continue running - don't exit the scheduler loop on exceptions
+                    // Add a small delay to prevent tight loop if errors persist
+                    await Task.Delay(1000, stoppingToken);
+                }
+                finally
+                {
+                    _executionContext.SetFunctions(null);
+                    _schedulerLoopCancellationTokenSource?.Dispose();
+                    _schedulerLoopCancellationTokenSource = null;
+                }
             }
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        finally { Interlocked.Exchange(ref _started, 0); }
     }
 
     private async Task RunTickerQSchedulerAsync(CancellationToken stoppingToken, CancellationToken cancellationToken)
@@ -167,20 +173,12 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                         return;
                     }
 
-                    for (var index = 0; index < pendingPublication.Length; index++)
-                    {
-                        if (!_licenseState.ExecutionAllowed)
-                        {
-                            await _internalTickerManager.ReleaseAcquiredResources(
-                                    pendingPublication[index..], CancellationToken.None)
-                                .ConfigureAwait(false);
-                            _executionContext.SetFunctions(null);
-                            return;
-                        }
-                        await QueueAcquiredExecution(pendingPublication[index], stoppingToken)
-                            .ConfigureAwait(false);
-                        _executionContext.SetFunctions(pendingPublication[(index + 1)..]);
-                    }
+                    // Transfer ownership of the entire batch to the common dispatcher. It releases
+                    // only unpublished generations if admission fails; active jobs retain their leases.
+                    _executionContext.SetFunctions(null);
+                    await _acquiredQueue.PublishAsync(pendingPublication, false, stoppingToken)
+                        .ConfigureAwait(false);
+                    if (!_licenseState.ExecutionAllowed) return;
                 }
                 finally
                 {
@@ -212,181 +210,9 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 _executionContext.SetNextPlannedOccurrence(DateTime.UtcNow.Add(sleepDuration));
             }
 
-            var notify = _executionContext.NotifyCoreAction;
-            if (notify != null)
-            {
-                notify(_executionContext.GetNextPlannedOccurrence(), CoreNotifyActionType.NotifyNextOccurence);
-            }
+            NotifySafely(_executionContext.GetNextPlannedOccurrence(), CoreNotifyActionType.NotifyNextOccurence);
 
             await Task.Delay(sleepDuration, cancellationToken);
-        }
-    }
-
-    /// <summary>
-    /// Registers an acquired root ticker with the cancellation manager immediately (so lease renewal
-    /// keeps its DB row alive while it waits in the queue and on its concurrency semaphore) and then
-    /// queues its execution. The registration is visible from this point until the queued delegate's
-    /// finally unregisters it; a queue-publication failure unregisters here instead so nothing leaks.
-    /// </summary>
-    private async Task QueueAcquiredExecution(InternalFunctionContext function, CancellationToken stoppingToken)
-    {
-        var semaphore = _concurrencyGate.GetSemaphoreOrNull(function.FunctionName, function.CachedMaxConcurrency);
-        var registeredSource = TickerCancellationTokenManager.TryRegisterAcquired(
-            function, isDue: false, out var generationConflict, stoppingToken);
-        if (registeredSource == null)
-        {
-            if (generationConflict)
-                await _internalTickerManager.ReleaseAcquiredResources([function], CancellationToken.None)
-                    .ConfigureAwait(false);
-            return;
-        }
-
-        var lifecycle = new AcquiredExecutionLifecycle(
-            new TickerExecutionKey(
-                function.RuntimePartitionKey ?? TickerQRuntimePartition.LegacyGlobal.StorageKey,
-                function.Type, function.TickerId), registeredSource, stoppingToken,
-            async owner =>
-            {
-                try
-                {
-                    await _internalTickerManager.ReleaseAcquiredResources([function], CancellationToken.None)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception releaseException)
-                {
-                    _logger.LogError(releaseException,
-                        "Failed to release queued {TickerType} {TickerId} during shutdown; stale recovery will heal its generation",
-                        function.Type, function.TickerId);
-                }
-                finally
-                {
-                    owner.CompleteCancellationRelease();
-                }
-            });
-        if (!lifecycle.IsQueued)
-            return;
-
-        try
-        {
-            await _taskScheduler.QueueAsync(async _ =>
-            {
-                if (!lifecycle.TryBeginExecution())
-                    return;
-
-                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(
-                    stoppingToken, registeredSource.Token);
-
-                var acquiredSemaphore = false;
-                try
-                {
-                    if (semaphore != null)
-                    {
-                        await semaphore.WaitAsync(waitCts.Token).ConfigureAwait(false);
-                        acquiredSemaphore = true;
-                    }
-
-                    await _taskHandler
-                        .ExecuteRegisteredTaskAsync(function, false, registeredSource, waitCts.Token)
-                        .ConfigureAwait(false);
-                }
-                finally
-                {
-                    if (acquiredSemaphore)
-                        semaphore.Release();
-
-                    lifecycle.CompleteExecution();
-                }
-            }, function.CachedPriority, CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            if (lifecycle.AbandonIfQueued())
-            {
-                await _internalTickerManager.ReleaseAcquiredResources([function], CancellationToken.None)
-                    .ConfigureAwait(false);
-                _logger.LogError(ex,
-                    "Failed to publish {TickerType} {TickerId} to the scheduler queue; its acquired generation was released",
-                    function.Type, function.TickerId);
-                return;
-            }
-
-            if (lifecycle.IsCancellationReleasePending)
-            {
-                _logger.LogInformation(
-                    "Queue publication for {TickerType} {TickerId} faulted while shutdown was releasing its acquired generation",
-                    function.Type, function.TickerId);
-                return;
-            }
-
-            if (lifecycle.HasBegunExecution)
-                _logger.LogWarning(ex,
-                    "Scheduler queue reported a fault after {TickerType} {TickerId} began execution; execution retains persistence ownership",
-                    function.Type, function.TickerId);
-        }
-    }
-
-    private sealed class AcquiredExecutionLifecycle
-    {
-        private readonly TickerExecutionKey _key;
-        private readonly CancellationTokenSource _source;
-        private readonly CancellationTokenRegistration _stoppingRegistration;
-        private readonly Func<AcquiredExecutionLifecycle, Task> _releaseQueuedExecution;
-        private int _state; // 0 = queued, 1 = executing, 2 = completed, 3 = cancellation release pending
-
-        internal AcquiredExecutionLifecycle(
-            TickerExecutionKey key,
-            CancellationTokenSource source,
-            CancellationToken stoppingToken,
-            Func<AcquiredExecutionLifecycle, Task> releaseQueuedExecution)
-        {
-            _key = key;
-            _source = source;
-            _releaseQueuedExecution = releaseQueuedExecution;
-            _stoppingRegistration = stoppingToken.UnsafeRegister(
-                static state => ((AcquiredExecutionLifecycle)state).ReleaseIfQueued(), this);
-        }
-
-        internal bool IsQueued => Volatile.Read(ref _state) == 0;
-        internal bool HasBegunExecution => Volatile.Read(ref _state) == 1;
-        internal bool IsCancellationReleasePending => Volatile.Read(ref _state) == 3;
-
-        internal bool TryBeginExecution()
-        {
-            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
-                return false;
-
-            _stoppingRegistration.Dispose();
-            return true;
-        }
-
-        internal void CompleteExecution()
-        {
-            if (Interlocked.CompareExchange(ref _state, 2, 1) != 1)
-                return;
-
-            TickerCancellationTokenManager.RemoveTickerCancellationToken(_key, _source);
-        }
-
-        internal bool AbandonIfQueued()
-        {
-            if (Interlocked.CompareExchange(ref _state, 2, 0) != 0)
-                return false;
-
-            _stoppingRegistration.Dispose();
-            TickerCancellationTokenManager.RemoveTickerCancellationToken(_key, _source);
-            return true;
-        }
-
-        internal void CompleteCancellationRelease()
-        {
-            if (Interlocked.CompareExchange(ref _state, 2, 3) == 3)
-                TickerCancellationTokenManager.RemoveTickerCancellationToken(_key, _source);
-        }
-
-        private void ReleaseIfQueued()
-        {
-            if (Interlocked.CompareExchange(ref _state, 3, 0) == 0)
-                _ = _releaseQueuedExecution(this);
         }
     }
 
@@ -404,8 +230,15 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
 
     private async Task ReleaseAllResourcesAsync(Exception ex)
     {
-        if (ex != null && _executionContext.NotifyCoreAction != null)
-            _executionContext.NotifyCoreAction(ex.ToString(), CoreNotifyActionType.NotifyHostExceptionMessage);
+        if (ex != null)
+        {
+            if (DateTime.UtcNow >= _nextFailureWarning)
+            {
+                _nextFailureWarning = DateTime.UtcNow.AddMinutes(1);
+                _logger.LogWarning(ex, "TickerQ scheduler cycle failed; retrying. Repeated failures are logged at most once per minute");
+            }
+            NotifySafely(ex.ToString(), CoreNotifyActionType.NotifyHostExceptionMessage);
+        }
 
         try
         {
@@ -418,6 +251,15 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             // The persistence lease remains authoritative and stale-job recovery can safely heal it.
             _logger.LogError(releaseException,
                 "Failed to release the scheduler's current acquired generations after an execution-loop fault");
+        }
+    }
+
+    private void NotifySafely(object value, CoreNotifyActionType action)
+    {
+        try { _executionContext.NotifyCoreAction?.Invoke(value, action); }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "TickerQ scheduler notification failed; scheduler execution continues");
         }
     }
 
@@ -507,6 +349,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 _logger.LogInformation("Shutdown: all in-flight tickers finished");
         }
 
+        await _acquiredQueue.StopAsync(cancellationToken).ConfigureAwait(false);
         await base.StopAsync(cancellationToken);
     }
 
@@ -515,6 +358,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         Interlocked.Exchange(ref _stopping, 1);
         _taskScheduler.Freeze();
         _restartThrottle.Dispose();
+        if (_ownsAcquiredQueue) _acquiredQueue.Dispose();
         // BackgroundService.Dispose cancels but does not join ExecuteAsync, so an active
         // acquisition may still need to release the admission semaphore.
         base.Dispose();

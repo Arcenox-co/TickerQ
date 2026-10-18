@@ -11,15 +11,19 @@ export default function ChainFlowchartPage() {
   const { id = "" } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const from = searchParams.get("from");
+  const cronId = searchParams.get("cron");
+  const occurrenceId = searchParams.get("occurrence");
   const navigate = useNavigate();
 
   return (
     <div className="h-[calc(100vh-44px-24px-24px)] -m-6">
       <ChainFlowchartView
         rootId={id}
-        from={from === "executions" ? "executions" : "time-tickers"}
+        from={cronId ? "cron-tickers" : from === "executions" ? "executions" : "time-tickers"}
         onBack={() =>
-          navigate(from === "executions" ? "/executions" : "/time-tickers")
+          navigate(cronId
+            ? `/cron-tickers/${cronId}${occurrenceId ? `?${new URLSearchParams({ occurrence: occurrenceId })}` : ""}`
+            : from === "executions" ? "/executions" : "/time-tickers")
         }
         onEditChain={(rid) => navigate(`/time-tickers/new-chain?edit=${rid}`)}
       />

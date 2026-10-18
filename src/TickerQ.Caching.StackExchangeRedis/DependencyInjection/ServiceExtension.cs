@@ -52,6 +52,9 @@ public static class ServiceExtension
                         sp.GetRequiredKeyedService<IConnectionMultiplexer>("tickerq")),
                 }));
             services.AddSingleton(_ => options);
+            if (tickerConfiguration.ExecutionLogs.PersistToDatabase)
+                services.AddSingleton<ITickerExecutionLogPersistence>(sp => new RedisExecutionLogPersistence(
+                    sp.GetRequiredKeyedService<IDatabase>("tickerq"), options.InstanceName));
             services.TryAddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerRedisPersistenceProvider<TTimeTicker, TCronTicker>>();
         };
 

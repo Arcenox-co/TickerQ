@@ -1,64 +1,67 @@
-import { useMemo, useState } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, Loader2, Terminal } from "lucide-react";
 import { dashboardApi } from "@/services/dashboard-api";
-import { qk, useChainTickers } from "@/services/hooks";
+import { useChainTickers } from "@/services/hooks";
 import {
-  levelColor,
+  logColor,
   mapLogLine,
   type LogEntry,
-} from "@/components/cron/LogsPanel";
+} from "@/lib/cron/log-format";
 import { useTimezone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
+import { fetchChainLogs, needsChainLogRefresh, type ChainLogState } from "@/lib/cron/chain-logs";
+import { LogTailNotice } from "./LogTailNotice";
 
 /**
  * Merged log tail across every ticker in a chain, ordered by timestamp, each
  * line prefixed with its `[function]`. Tail-only (no SignalR).
  */
 export function ChainLogsPanel({ rootId }: { rootId: string }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const client = useQueryClient();
   const { data: tickers, isLoading: treeLoading } = useChainTickers(rootId);
   const list = useMemo(() => tickers ?? [], [tickers]);
 
-  const results = useQueries({
-    queries: list.map((t) => ({
-      queryKey: qk.logTail(t.id),
-      queryFn: ({ signal }: { signal: AbortSignal }) =>
-        dashboardApi.getLogTail(t.id, signal),
-      enabled: !!t.id,
-      // Live-tail any chain member that hasn't finished yet; the chain tree
-      // query polls alongside, so statuses flip and polling stops per job.
-      refetchInterval:
-        t.status === "Idle" || t.status === "Queued" || t.status === "InProgress"
-          ? 1_500
-          : (false as const),
-    })),
+  const forceRefresh = useRef(false);
+  const queryKey = ["chain-log-batch", rootId];
+  const result = useQuery<ChainLogState>({
+    queryKey,
+    enabled: !collapsed && list.length > 0,
+    queryFn: async ({ signal }) => {
+      const previous = client.getQueryData<ChainLogState>(queryKey);
+      const force = forceRefresh.current || !needsChainLogRefresh(list, previous);
+      const data = await fetchChainLogs(list, previous,
+        items => dashboardApi.getLogBatch(items, signal), force);
+      forceRefresh.current = false;
+      return data;
+    },
+    refetchInterval: query => !collapsed && needsChainLogRefresh(list, query.state.data) ? 1_500 : false,
+    refetchIntervalInBackground: false,
   });
-
-  const [collapsed, setCollapsed] = useState(false);
+  const tails = Object.values(result.data?.entries ?? {}).map(entry => entry.tail);
   const { timezone } = useTimezone();
 
   const logs = useMemo<(LogEntry & { color: string })[]>(() => {
     const rows: { unixMs: number; entry: LogEntry & { color: string } }[] = [];
-    list.forEach((t, i) => {
-      const lines = results[i]?.data?.lines ?? [];
-      const succeeded = t.status === "Done" || t.status === "DueDone";
+    list.forEach(t => {
+      const lines = result.data?.entries[t.id]?.tail.lines ?? [];
       for (const ln of lines) {
         const entry = mapLogLine(ln, t.functionName, timezone);
         rows.push({
           unixMs: ln.unixMs,
-          entry: { ...entry, color: levelColor(entry.level, succeeded) },
+          entry: { ...entry, color: logColor(entry) },
         });
       }
     });
     rows.sort((a, b) => a.unixMs - b.unixMs);
     return rows.map((r) => r.entry);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [list, results.map((r) => r.dataUpdatedAt).join(","), timezone]);
+  }, [list, result.data, timezone]);
 
-  const loading = treeLoading || results.some((r) => r.isLoading);
+  const loading = treeLoading || result.isLoading;
 
   return (
-    <div className="rounded-lg border border-border bg-card overflow-hidden">
+    <div className="@container rounded-lg border border-border bg-card overflow-hidden">
       <button
         type="button"
         onClick={() => setCollapsed((c) => !c)}
@@ -71,6 +74,14 @@ export function ChainLogsPanel({ rootId }: { rootId: string }) {
         </span>
         <ChevronDown className={cn("h-3 w-3 transition-transform", collapsed && "-rotate-90")} />
       </button>
+      {!collapsed && <LogTailNotice
+        data={tails.length ? { lines: [], storage: tails[0].storage,
+          truncated: result.data?.displayTruncated || tails.some(t => t.truncated),
+          persistenceAvailable: !tails.some(t => t.persistenceAvailable === false),
+          writeHealth: result.data?.writeHealth } : undefined}
+        isError={result.isError}
+        onRefresh={() => { forceRefresh.current = true; void result.refetch(); }}
+      />}
       {!collapsed && (
         <div className="font-mono text-[11px] leading-[20px] p-2 max-h-[320px] overflow-y-auto scrollbar-thin">
           {loading ? (
@@ -83,14 +94,14 @@ export function ChainLogsPanel({ rootId }: { rootId: string }) {
             logs.map((log, i) => (
               <div
                 key={i}
-                className="flex items-start gap-2 px-1.5 py-[1px] rounded-sm hover:bg-surface-2/30"
+                className="flex flex-col @md:flex-row items-start gap-0.5 @md:gap-2 px-1.5 py-[1px] rounded-sm hover:bg-surface-2/30"
               >
                 {log.timestamp && (
                   <span className="text-muted-foreground/50 shrink-0 tabular-nums">
                     {log.timestamp}
                   </span>
                 )}
-                <span className={cn("flex-1 whitespace-pre-wrap break-all", log.color)}>
+                <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]", log.color)}>
                   {log.message}
                 </span>
               </div>

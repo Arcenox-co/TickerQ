@@ -323,6 +323,7 @@ namespace TickerQ.Dashboard.DependencyInjection
             var envConfig = new FrontendConfigResponse
             {
                 BasePath = frontendBasePath,
+                NotificationsEnabled = httpContext.RequestServices.GetService<TickerQ.Utilities.Notifications.ITickerNotificationAdminService>() != null,
                 BackendDomain = config.BackendDomain,
                 Version = PackageVersion.Value,
                 Title = config.Title,
@@ -420,7 +421,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                 return pathBase;
 
             // Normalize to avoid double slashes
-            if (pathBase.EndsWith("/"))
+            if (pathBase.EndsWith('/'))
                 pathBase = pathBase.TrimEnd('/');
 
             // basePath is already normalized to start with '/'

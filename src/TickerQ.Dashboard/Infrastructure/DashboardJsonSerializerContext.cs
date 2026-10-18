@@ -119,6 +119,7 @@ namespace TickerQ.Dashboard.Infrastructure;
 [JsonSerializable(typeof(UpdateCronTickerRequestApi))]
 [JsonSerializable(typeof(ToggleCronTickerBody))]
 [JsonSerializable(typeof(TimeTickerNodeRequest))]
+[JsonSerializable(typeof(SetChainDeleteBehaviorRequest))]
 [JsonSerializable(typeof(AddTimeTickerChainRequest))]
 [JsonSerializable(typeof(BulkIdsRequest))]
 [JsonSerializable(typeof(BulkRetryRequest))]
@@ -135,6 +136,9 @@ namespace TickerQ.Dashboard.Infrastructure;
 [JsonSerializable(typeof(TickerLogLineResponse))]
 [JsonSerializable(typeof(IList<TickerLogLineResponse>))]
 [JsonSerializable(typeof(TickerLogTailResponseBody))]
+[JsonSerializable(typeof(TickerLogBatchRequest))]
+[JsonSerializable(typeof(TickerLogBatchResponse))]
+[JsonSerializable(typeof(RuntimeDiagnosticsResponse))]
 internal partial class DashboardJsonSerializerContext : JsonSerializerContext
 {
 }

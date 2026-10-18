@@ -1,15 +1,18 @@
+import { ExecutionStatus } from "./ExecutionStatus";
+import { isChainActive } from "@/lib/cron/chain-summary";
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Copy, Pencil, Play, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { ResizableSidePanel } from "@/components/cron/ResizableSidePanel";
-import { StatusBadge } from "@/components/cron/StatusBadges";
 import { LogsPanel } from "@/components/cron/LogsPanel";
 import { ChainLogsPanel } from "@/components/cron/ChainLogsPanel";
 import { PayloadPreview } from "@/components/cron/PayloadPreview";
 import { EditTimeTickerFields } from "@/components/cron/EditTimeTickerFields";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
 import { CancelTickerButton } from "@/components/cron/CancelTickerButton";
+import { LockHolder } from "@/components/cron/LockHolder";
+import { ChainDeleteBehaviorControl } from "@/components/cron/ChainDeleteBehaviorControl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { nowAsDatetimeLocal } from "@/components/form-fields/datetime-field";
@@ -53,7 +56,7 @@ export function TimeTickerDetailPanel({
   const liveQ = useTimeTicker(ticker?.id ?? null, {
     refetchInterval: (query) => {
       const s = query.state.data?.status ?? ticker?.status;
-      return s && ACTIVE.includes(s) ? 2_000 : false;
+      return (s && ACTIVE.includes(s)) || isChainActive(query.state.data?.chainSummary ?? ticker?.chainSummary) ? 2_000 : false;
     },
   });
 
@@ -113,7 +116,7 @@ export function TimeTickerDetailPanel({
           <div className="min-w-0">
             <div className="font-mono text-sm font-semibold truncate">{bare}</div>
             {lockHolder && (
-              <div className="font-mono text-[11px] text-muted-foreground/60">{lockHolder}</div>
+              <LockHolder value={lockHolder} className="text-muted-foreground/60" />
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -135,7 +138,7 @@ export function TimeTickerDetailPanel({
                 )}
               </Button>
             )}
-            <StatusBadge status={t.status} />
+            <ExecutionStatus status={t.status} summary={t.chainSummary} isChain={isChain} />
             <button
               type="button"
               onClick={onClose}
@@ -190,9 +193,20 @@ export function TimeTickerDetailPanel({
             label="Retries"
             value={t.retries > 0 ? `${t.retryCount}/${t.retries}` : "—"}
           />
+          {lockHolder && (
+            <div className="col-span-3 min-w-0">
+              <p className="text-muted-foreground/60 uppercase tracking-wider mb-1">Node</p>
+              <LockHolder value={lockHolder} showDetails />
+            </div>
+          )}
         </div>
 
         {/* Description */}
+        {!t.parentId && isChain && (
+          <div className="px-5 py-3 border-b border-border">
+            <ChainDeleteBehaviorControl key={t.id} ticker={t} />
+          </div>
+        )}
         {t.description && (
           <div className="px-5 py-3 border-b border-border text-[12px] text-muted-foreground whitespace-pre-wrap">
             {t.description}

@@ -1,70 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2, Terminal } from "lucide-react";
 import { useLogTail } from "@/services/hooks";
-import { formatLogTimestamp } from "@/lib/cron/format";
+import { extractReason, hasCompletion, logColor, mapLogLine, type LogEntry } from "@/lib/cron/log-format";
 import { useTimezone } from "@/lib/timezone";
 import type { TickerStatus } from "@/lib/cron/status-config";
-import type { TickerLogLine } from "@/services/api-types";
 import { cn } from "@/lib/utils";
-
-export type LogLevel = "info" | "warn" | "error" | "debug" | "success";
-
-export const LEVEL_STYLES: Record<LogLevel, { color: string }> = {
-  info: { color: "text-muted-foreground" },
-  debug: { color: "text-muted-foreground/50" },
-  warn: { color: "text-status-warning" },
-  error: { color: "text-status-error" },
-  success: { color: "text-status-healthy" },
-};
+import { LogTailNotice } from "./LogTailNotice";
 
 /**
- * Line color for a log level, given the execution's final status. On a
- * successful run the neutral (info/debug) lines render green — warn/error
- * keep their own colors so mixed runs stay readable.
- */
-export function levelColor(level: LogLevel, succeeded: boolean): string {
-  if (succeeded && (level === "info" || level === "debug"))
-    return LEVEL_STYLES.success.color;
-  return LEVEL_STYLES[level].color;
-}
-
-export interface LogEntry {
-  timestamp: string;
-  level: LogLevel;
-  message: string;
-}
-
-export function mapLevel(level: number): LogLevel {
-  return level >= 4 ? "error" : level === 3 ? "warn" : level <= 1 ? "debug" : "info";
-}
-
-export function mapLogLine(line: TickerLogLine, prefix?: string, tz?: string): LogEntry {
-  const src = prefix ?? (line.source || "");
-  return {
-    timestamp: formatLogTimestamp(line.unixMs, tz),
-    level: mapLevel(line.level),
-    message: src ? `[${src}] ${line.message}` : line.message,
-  };
-}
-
-/**
- * ExceptionMessage is either a plain reason string (e.g. the stale-job watchdog)
- * or the executor's serialized {"Message","StackTrace"} JSON — show just the
- * human-readable message either way.
- */
-export function extractReason(raw: string): string {
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed.Message === "string") return parsed.Message;
-  } catch {
-    // plain string — use as-is
-  }
-  return raw;
-}
-
-/**
- * Embeddable terminal-style log tail. Tail-only (no SignalR live append — the
- * dashboard has no realtime client); refreshes when React Query invalidates.
+ * Embeddable log tail with bounded polling and a final refresh after completion.
  */
 export function LogsPanel({
   functionName,
@@ -83,24 +27,22 @@ export function LogsPanel({
   className?: string;
 }) {
   // Poll the tail while the ticker is pending/running so lines stream in live;
-  // once it lands on a terminal status the tail is frozen and polling stops.
+  // after completion, the hook fetches the final persisted tail.
   const live = status === "Idle" || status === "Queued" || status === "InProgress";
-  const { data, isLoading } = useLogTail(tickerId, live);
   const [collapsed, setCollapsed] = useState(false);
+  const { data, isLoading, isError, refetch } = useLogTail(tickerId, live, !collapsed);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const { timezone } = useTimezone();
-  const succeeded = status === "Done" || status === "DueDone";
 
   const logs = useMemo<LogEntry[]>(() => {
     const lines = (data?.lines ?? []).map((l) => mapLogLine(l, undefined, timezone));
-    if (lines.length === 0) {
-      if (status === "Failed" && exceptionMessage)
-        return [{ timestamp: "", level: "error", message: `[scheduler] ${extractReason(exceptionMessage)}` }];
-      if (status === "Cancelled" && exceptionMessage)
-        return [{ timestamp: "", level: "warn", message: `[scheduler] Cancelled: ${extractReason(exceptionMessage)}` }];
-      if (status === "Skipped" && skippedReason)
-        return [{ timestamp: "", level: "warn", message: `[scheduler] Skipped: ${skippedReason}` }];
-    }
+    if (hasCompletion(data?.lines ?? [], status)) return lines;
+    if (status === "Failed" && exceptionMessage)
+      return [...lines, { timestamp: "", level: "error", lifecycleEvent: "Completed", status, message: `[scheduler] ${extractReason(exceptionMessage)}` }];
+    if (status === "Cancelled" && exceptionMessage)
+      return [...lines, { timestamp: "", level: "warn", lifecycleEvent: "Completed", status, message: `[scheduler] Cancelled: ${extractReason(exceptionMessage)}` }];
+    if (status === "Skipped" && skippedReason)
+      return [...lines, { timestamp: "", level: "warn", lifecycleEvent: "Completed", status, message: `[scheduler] Skipped: ${skippedReason}` }];
     return lines;
   }, [data, status, exceptionMessage, skippedReason, timezone]);
 
@@ -111,7 +53,7 @@ export function LogsPanel({
   }, [logs, status]);
 
   return (
-    <div className={cn("rounded-lg border border-border bg-card overflow-hidden", className)}>
+    <div className={cn("@container rounded-lg border border-border bg-card overflow-hidden", className)}>
       <button
         type="button"
         onClick={() => setCollapsed((c) => !c)}
@@ -127,6 +69,7 @@ export function LogsPanel({
         </span>
         <ChevronDown className={cn("h-3 w-3 transition-transform", collapsed && "-rotate-90")} />
       </button>
+      {!collapsed && <LogTailNotice data={data} isError={isError} onRefresh={() => { void refetch(); }} />}
       {!collapsed && (
         <div
           ref={scrollRef}
@@ -140,22 +83,22 @@ export function LogsPanel({
             <div className="px-1.5 py-1 text-muted-foreground/60">
               {status === "InProgress"
                 ? "Waiting for the first log line…"
-                : "No logs available. Logs appear while a function executes and are kept in memory for ~30 minutes."}
+                : "No captured lines are available. The tail may have expired or been evicted."}
             </div>
           ) : (
             logs.map((log, i) => {
-              const color = levelColor(log.level, succeeded);
+              const color = logColor(log);
               return (
                 <div
                   key={i}
-                  className="flex items-start gap-2 px-1.5 py-[1px] rounded-sm hover:bg-surface-2/30"
+                  className="flex flex-col @md:flex-row items-start gap-0.5 @md:gap-2 px-1.5 py-[1px] rounded-sm hover:bg-surface-2/30"
                 >
                   {log.timestamp && (
                     <span className="text-muted-foreground/50 shrink-0 tabular-nums">
                       {log.timestamp}
                     </span>
                   )}
-                  <span className={cn("flex-1 whitespace-pre-wrap break-all", color)}>
+                  <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]", color)}>
                     {log.message}
                   </span>
                 </div>

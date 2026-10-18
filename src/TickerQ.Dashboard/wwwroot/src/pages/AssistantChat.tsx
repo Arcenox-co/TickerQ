@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, Loader2, MessageSquare, Plus, SendHorizonal, Sparkles, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
 import { ChatMarkdown } from "@/components/assistant/ChatMarkdown";
 import { ProposalCard, type ProposalStatus } from "@/components/assistant/ProposalCard";
 import { getRuntimeConfig, isAssistantEnabled } from "@/lib/runtime-config";
@@ -69,6 +70,9 @@ export default function AssistantChatPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loadingThread, setLoadingThread] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<ConversationSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -133,14 +137,21 @@ export default function AssistantChatPage() {
     }
   }
 
-  async function removeConversation(id: string) {
+  async function removeConversation() {
+    if (!pendingDelete || deleting || busy || loadingThread) return;
+    const { id } = pendingDelete;
+    setDeleting(true);
+    setDeleteError(null);
     try {
       await deleteConversation(id);
-    } catch {
-      /* best-effort */
+      if (id === activeId) startNewChat();
+      setPendingDelete(null);
+      refreshConversations();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Failed to delete conversation. Please try again.");
+    } finally {
+      setDeleting(false);
     }
-    if (id === activeId) startNewChat();
-    refreshConversations();
   }
 
   function setProposalStatus(index: number, status: ProposalStatus) {
@@ -266,9 +277,11 @@ export default function AssistantChatPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => void removeConversation(c.id)}
+                  onClick={() => { setDeleteError(null); setPendingDelete(c); }}
+                  disabled={busy || loadingThread || deleting}
                   title="Delete conversation"
-                  className="hidden shrink-0 text-muted-foreground/40 hover:text-status-error group-hover:block"
+                  aria-label={`Delete conversation ${c.title || "Untitled"}`}
+                  className="shrink-0 text-muted-foreground/40 opacity-0 hover:text-status-error group-hover:opacity-100 focus:opacity-100 disabled:opacity-40"
                 >
                   <Trash2 className="h-3 w-3" />
                 </button>
@@ -277,6 +290,21 @@ export default function AssistantChatPage() {
           </div>
         </aside>
       )}
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
+        title="Delete conversation?"
+        description="Permanently deletes this conversation and its messages. This cannot be undone."
+        confirmLabel="Delete conversation"
+        confirmVariant="destructive"
+        isPending={deleting}
+        confirmDisabled={busy || loadingThread}
+        onConfirm={removeConversation}
+      >
+        <p className="break-words rounded-lg border border-border bg-card p-3 text-sm">{pendingDelete?.title || "Untitled"}</p>
+        {deleteError && <p role="alert" className="text-xs text-status-error">{deleteError}</p>}
+      </ConfirmDialog>
 
       {/* Chat column */}
       <div className="flex min-w-0 flex-1 flex-col">

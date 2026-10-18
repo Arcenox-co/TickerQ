@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -32,18 +32,25 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     private static readonly Dictionary<TickerType, string> TickerTypeNamesLower =
         Enum.GetValues<TickerType>().ToDictionary(t => t, t => t.ToString().ToLowerInvariant());
 
+    // Track admitted executions, not queued cancellation registrations. Otherwise two
+    // occurrences acquired together can both see a sibling and both skip.
+    private readonly object _cronAdmissionLock = new();
+    private readonly Dictionary<(string Partition, Guid CronId), int> _activeCronExecutions = new();
+
     private readonly IServiceProvider _serviceProvider;
+    private readonly TickerLifecycleLogger _lifecycle;
     private readonly ITickerClock _clock;
     private readonly ITickerQInstrumentation _tickerQInstrumentation;
     private readonly IInternalTickerManager _internalTickerManager;
     private readonly SchedulerOptionsBuilder _schedulerOptions;
     private readonly ITickerQFailureNotifier _failureNotifier;
     private readonly TickerQLicenseStateProvider _licenseState;
+    private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
     private readonly Func<string, TickerFunctionDescriptor> _descriptorResolver;
 
-    public TickerExecutionTaskHandler(IServiceProvider serviceProvider, ITickerClock clock, ITickerQInstrumentation tickerQInstrumentation, IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerQFailureNotifier failureNotifier, TickerQLicenseStateProvider licenseState)
+    public TickerExecutionTaskHandler(IServiceProvider serviceProvider, ITickerClock clock, ITickerQInstrumentation tickerQInstrumentation, IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerQFailureNotifier failureNotifier, TickerQLicenseStateProvider licenseState, ITickerFunctionConcurrencyGate concurrencyGate)
         : this(
-            serviceProvider, clock, tickerQInstrumentation, internalTickerManager, schedulerOptions, failureNotifier, licenseState,
+            serviceProvider, clock, tickerQInstrumentation, internalTickerManager, schedulerOptions, failureNotifier, licenseState, concurrencyGate,
             functionName => TickerFunctionProvider.TickerFunctionDescriptors.TryGetValue(functionName, out var descriptor)
                 ? descriptor
                 : null)
@@ -58,15 +65,18 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         SchedulerOptionsBuilder schedulerOptions,
         ITickerQFailureNotifier failureNotifier,
         TickerQLicenseStateProvider licenseState,
+        ITickerFunctionConcurrencyGate concurrencyGate,
         Func<string, TickerFunctionDescriptor> descriptorResolver)
     {
         _serviceProvider = serviceProvider;
+        _lifecycle = serviceProvider.GetService<TickerLifecycleLogger>();
         _clock = clock;
         _tickerQInstrumentation = tickerQInstrumentation;
         _internalTickerManager = internalTickerManager;
         _schedulerOptions = schedulerOptions;
         _failureNotifier = failureNotifier;
         _licenseState = licenseState ?? throw new ArgumentNullException(nameof(licenseState));
+        _concurrencyGate = concurrencyGate ?? throw new ArgumentNullException(nameof(concurrencyGate));
         _descriptorResolver = descriptorResolver ?? throw new ArgumentNullException(nameof(descriptorResolver));
     }
 
@@ -187,6 +197,13 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
         if (context.Type == TickerType.CronTickerOccurrence)
         {
+            if (await _internalTickerManager.TryDispatchCronChainAsync(context, isDue, cancellationToken).ConfigureAwait(false))
+            {
+                // Publication is durable. Wake the scheduler rather than waiting on another worker
+                // from this worker, which would deadlock a host configured with one worker.
+                _serviceProvider.GetService<ITickerQHostScheduler>()?.Restart();
+                return;
+            }
             // Root occurrence: reuse the acquisition-time registration if the caller supplied one.
             await RunContextFunctionAsync(
                 context, isDue, cancellationToken, isChild, preRegisteredSource: registeredSource);
@@ -293,7 +310,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             // Root registered at acquisition time by the scheduler: reuse its source and leave
             // removal/disposal to the owner (the scheduler delegate's finally) — running it here too
             // would double-remove and risk disposing the source out from under the owner.
-            await RunContextFunctionCoreAsync(
+            await RunCronGuardedFunctionAsync(
                 context, isDue, cancellationToken, preRegisteredSource, isChild, mode).ConfigureAwait(false);
             return;
         }
@@ -311,7 +328,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
         try
         {
-            await RunContextFunctionCoreAsync(
+            await RunCronGuardedFunctionAsync(
                 context, isDue, cancellationToken, cancellationTokenSource, isChild, mode).ConfigureAwait(false);
         }
         finally
@@ -320,6 +337,62 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 new TickerExecutionKey(
                     context.RuntimePartitionKey ?? TickerQRuntimePartition.LegacyGlobal.StorageKey,
                     context.Type, context.TickerId), cancellationTokenSource);
+        }
+    }
+
+    private async Task RunCronGuardedFunctionAsync(
+        InternalFunctionContext context, bool isDue, CancellationToken cancellationToken,
+        CancellationTokenSource cancellationTokenSource, bool isChild, ExecutionMode mode)
+    {
+        if (mode != ExecutionMode.Scheduler || context.Type != TickerType.CronTickerOccurrence)
+        {
+            await RunContextFunctionCoreAsync(context, isDue, cancellationToken,
+                cancellationTokenSource, isChild, mode).ConfigureAwait(false);
+            return;
+        }
+        if (!context.ParentId.HasValue)
+        {
+            if (context.SkipIfAlreadyRunning)
+                throw new InvalidOperationException("A cron overlap policy requires the owning cron ID.");
+            await RunContextFunctionCoreAsync(context, isDue, cancellationToken,
+                cancellationTokenSource, isChild, mode).ConfigureAwait(false);
+            return;
+        }
+
+        var key = (context.RuntimePartitionKey ?? TickerQRuntimePartition.LegacyGlobal.StorageKey, context.ParentId.Value);
+        bool skip;
+        lock (_cronAdmissionLock)
+        {
+            _activeCronExecutions.TryGetValue(key, out var active);
+            skip = context.SkipIfAlreadyRunning && active > 0;
+            if (!skip) _activeCronExecutions[key] = active + 1;
+        }
+        if (skip)
+        {
+            const string reason = "Another execution of this cron job is already running on this scheduler host.";
+            context.ResultEnvelope = null;
+            context.SetProperty(x => x.Status, TickerStatus.Skipped)
+                .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
+                .SetProperty(x => x.ElapsedTime, 0L)
+                .SetProperty(x => x.ExceptionDetails, reason);
+            _tickerQInstrumentation.LogJobSkipped(context.TickerId, context.FunctionName, reason);
+            await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+        try
+        {
+            // Includes retry waits and cooperative timeout cleanup, until the body has truly exited.
+            await RunContextFunctionCoreAsync(context, isDue, cancellationToken,
+                cancellationTokenSource, isChild, mode).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_cronAdmissionLock)
+            {
+                var remaining = _activeCronExecutions[key] - 1;
+                if (remaining == 0) _activeCronExecutions.Remove(key);
+                else _activeCronExecutions[key] = remaining;
+            }
         }
     }
 
@@ -393,25 +466,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             // can pass it along — without these the SDK would see Retries=0.
             Retries = context.Retries,
             RetryIntervals = context.RetryIntervals,
-            RequestCancelOperationAction = () => cancellationTokenSource.Cancel(),
-            CronOccurrenceOperations = new CronOccurrenceOperations
-            {
-                SkipIfAlreadyRunningAction = () =>
-                {
-                    if (context.Type == TickerType.TimeTicker)
-                        return;
-
-                    // Check for other running occurrences of the same parent (excluding self)
-                    // Since we're already registered, we need to exclude ourselves from the check
-                    var isRunning = context.ParentId.HasValue &&
-                                    TickerCancellationTokenManager.IsParentRunningExcludingSelf(
-                                        context.RuntimePartitionKey ?? TickerQRuntimePartition.LegacyGlobal.StorageKey,
-                                        context.ParentId.Value, context.TickerId);
-
-                    if (isRunning)
-                        throw new TerminateExecutionException("Another CronOccurrence is already running!");
-                },
-            }
+            RequestCancelOperationAction = () => cancellationTokenSource.Cancel()
         };
 
         Exception lastException = null;
@@ -427,6 +482,13 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             usesRemoteRetryPolicy ? context.RetryCount : context.Retries,
             DefinedCronExecutionLimits.MaxRetries);
 
+        // Gate individual function attempts, never the whole tree: roots and descendants
+        // share the same host-wide permit, released before traversing children or retrying.
+        // SDK worker mode already acquires this gate at its transport execution boundary.
+        var semaphore = mode == ExecutionMode.Scheduler
+            ? _concurrencyGate.GetSemaphoreOrNull(context.FunctionName, context.CachedMaxConcurrency)
+            : null;
+
         for (var attempt = context.RetryCount; attempt <= finalAttempt; attempt++)
         {
             tickerFunctionContext.RetryCount = attempt;
@@ -435,10 +497,18 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             jobActivity?.SetTag("tickerq.job.current_attempt", attempt + 1);
 
             CancellationTokenSource attemptCts = null;
+            var acquiredSemaphore = false;
             try
             {
                 if (!usesRemoteRetryPolicy &&
                     await WaitForRetry(context, cancellationToken, attempt, cancellationTokenSource, mode)) break;
+
+                if (semaphore != null)
+                {
+                    await semaphore.WaitAsync(cancellationTokenSource.Token).ConfigureAwait(false);
+                    acquiredSemaphore = true;
+                }
+                cancellationTokenSource.Token.ThrowIfCancellationRequested();
 
                 stopWatch.Restart();
 
@@ -485,6 +555,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     // concurrency, or graph orchestration after the entry gate; no local or remote
                     // delegate may begin once the shared offline authority becomes blocking.
                     EnsureLicensedForExecution();
+                    _lifecycle?.Started(context, attempt);
                     var execTask = context.CachedDelegate(attemptCts.Token, scope.ServiceProvider, tickerFunctionContext);
                     var timeoutPending = false;
 
@@ -677,6 +748,8 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             finally
             {
                 attemptCts?.Dispose();
+                if (acquiredSemaphore)
+                    semaphore.Release();
             }
         }
 
@@ -892,6 +965,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
         var executableRetryInterval = Math.Min(
             retryInterval, DefinedCronExecutionLimits.MaxRetryIntervalSeconds);
+        _lifecycle?.RetryScheduled(context, attempt, executableRetryInterval);
         await Task.Delay(TimeSpan.FromSeconds(executableRetryInterval), cancellationTokenSource.Token);
 
         return false;

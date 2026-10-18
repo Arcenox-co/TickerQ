@@ -90,6 +90,22 @@ public sealed class RedisRealScriptTests
     }
 
     [Fact]
+    public async Task NotificationSettings_SaveReadAndConcurrentEdits_AreAtomic()
+    {
+        var store = (TickerQ.Utilities.Notifications.ITickerNotificationSettingsStore)_provider;
+        Assert.True(store.NotificationSettingsArePersistent);
+        Assert.Null(await store.ReadNotificationSettingsAsync());
+        var first = new TickerQ.Utilities.Notifications.NotificationSettingsRecord(Guid.NewGuid(), "protected-first");
+        Assert.True(await store.SaveNotificationSettingsAsync(first, Guid.Empty));
+        Assert.Equal(first, await store.ReadNotificationSettingsAsync());
+        Assert.False(await store.SaveNotificationSettingsAsync(first, Guid.Empty));
+        var candidates = Enumerable.Range(0, 2).Select(_ => new TickerQ.Utilities.Notifications.NotificationSettingsRecord(Guid.NewGuid(), "protected-next")).ToArray();
+        var results = await Task.WhenAll(candidates.Select(x => store.SaveNotificationSettingsAsync(x, first.Version)));
+        Assert.Single(results, x => x);
+        Assert.Equal(candidates[Array.IndexOf(results, true)], await store.ReadNotificationSettingsAsync());
+    }
+
+    [Fact]
     public async Task CancelPending_QueuedChain_CancelsNestedChildren_AndFencesSnapshot()
     {
         var root = NewIdleTicker();

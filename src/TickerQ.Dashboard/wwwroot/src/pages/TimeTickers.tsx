@@ -1,11 +1,14 @@
+import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
-import { GitBranch, Minus, Plus, Trash2, Workflow } from "lucide-react";
+import { GitBranch, Minus, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/cron/PageHeader";
 import { DataTable } from "@/components/cron/DataTable";
-import { PriorityBadge, StatusBadge } from "@/components/cron/StatusBadges";
+import { LockHolder } from "@/components/cron/LockHolder";
+import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
+import { ChainTypeBadge, PriorityBadge } from "@/components/cron/StatusBadges";
 import {
   FilterChip,
   FilterPopover,
@@ -23,6 +26,7 @@ import {
   useAddTimeTicker,
   useAllFunctions,
   useBulkDeleteTimeTickers,
+  useTimeTicker,
   useTimeTickers,
   useTimeTickersGraph,
 } from "@/services/hooks";
@@ -42,6 +46,9 @@ const PAGE_SIZE = 25;
 
 export default function TimeTickersPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const detailId = searchParams.get("ticker");
+  const detailQuery = useTimeTicker(detailId);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TickerStatus[]>([]);
   const [functionFilter, setFunctionFilter] = useState("");
@@ -49,7 +56,7 @@ export default function TimeTickersPage() {
   const [page, setPage] = useState(1);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [activeRow, setActiveRow] = useState<TimeTickerFlatDto | null>(null);
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<string[] | null>(null);
   const [recentlyCreatedId, setRecentlyCreatedId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"all" | "chains" | "standalone">("all");
   const [scheduledFrom, setScheduledFrom] = useState("");
@@ -85,6 +92,16 @@ export default function TimeTickersPage() {
   const bulkDeleteMutation = useBulkDeleteTimeTickers();
 
   const items = data?.items ?? [];
+  const activeRow = detailId ? detailQuery.data ?? items.find(item => item.id === detailId) ?? null : null;
+  function setActiveRow(row: TimeTickerFlatDto | null) {
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous);
+      if (row) next.set("ticker", row.id);
+      else next.delete("ticker");
+      return next;
+    });
+  }
+  const hasRestrictedSelection = items.some((item) => pendingDeleteIds?.includes(item.id) && item.childCount > 0 && item.deleteBehavior === "Restrict");
   const volumeData = useMemo(
     () => (graph ? bucketsToVolume(graph) : emptyVolumeData()),
     [graph]
@@ -118,8 +135,8 @@ export default function TimeTickersPage() {
   }
 
   async function handleBulkDelete() {
-    if (selected.size === 0) return;
-    const ids = Array.from(selected);
+    if (!pendingDeleteIds?.length || readOnly || bulkDeleteMutation.isPending) return;
+    const ids = pendingDeleteIds;
     setDeletingIds((prev) => new Set([...prev, ...ids]));
     try {
       // One round-trip regardless of selection size.
@@ -128,6 +145,8 @@ export default function TimeTickersPage() {
         res.affected === 1 ? "Time ticker deleted" : `${res.affected} time tickers deleted`
       );
       setSelected(new Set());
+      setPendingDeleteIds(null);
+      if (activeRow && ids.includes(activeRow.id)) setActiveRow(null);
     } catch (err) {
       toast.error("Failed to delete", {
         description: err instanceof Error ? err.message : "An error occurred",
@@ -174,7 +193,7 @@ export default function TimeTickersPage() {
         header: "Function",
         cell: ({ row }) => {
           const isChain = row.original.childCount > 0;
-          const Icon = isChain ? Workflow : Minus;
+          const Icon = isChain ? GitBranch : Minus;
           return (
             <div className="flex items-start gap-2">
               <Icon
@@ -199,29 +218,15 @@ export default function TimeTickersPage() {
       {
         accessorKey: "type",
         header: "Type",
-        cell: ({ row }) =>
-          row.original.childCount > 0 ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                navigate(`/time-tickers/${row.original.id}/flowchart`);
-              }}
-              title="View chain flowchart"
-              className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary uppercase tracking-wide transition-colors hover:bg-primary/20"
-            >
-              <Workflow className="h-2.5 w-2.5" />
-              Chain
-              <span className="text-[9px] tabular-nums">{row.original.childCount}</span>
-            </button>
-          ) : (
-            <span className="text-[11px] text-muted-foreground">Standalone</span>
-          ),
+        cell: ({ row }) => (
+          <ChainTypeBadge isChain={row.original.childCount > 0} childCount={row.original.childCount}
+            onClick={() => navigate(`/time-tickers/${row.original.id}/flowchart`)} />
+        ),
       },
       {
         accessorKey: "status",
         header: "Status",
-        cell: ({ row }) => <StatusBadge status={row.original.status} />,
+        cell: ({ row }) => <ExecutionStatus status={row.original.status} summary={row.original.chainSummary} isChain={row.original.childCount > 0} />,
       },
       {
         accessorKey: "scheduledFor",
@@ -256,12 +261,8 @@ export default function TimeTickersPage() {
       },
       {
         id: "lockHolder",
-        header: "Lock Holder",
-        cell: ({ row }) => (
-          <span className="text-[11px] font-mono text-muted-foreground">
-            {row.original.lockHolder ?? "—"}
-          </span>
-        ),
+        header: "Node",
+        cell: ({ row }) => <LockHolder value={row.original.lockHolder} />,
       },
       {
         accessorKey: "createdAt",
@@ -299,6 +300,7 @@ export default function TimeTickersPage() {
         </div>
         <SearchInput value={search} onChange={setSearch} placeholder="Search by function…" />
         <FilterPopover
+          statusLabel="Root job status"
           statusFilter={statusFilter}
           onStatusChange={setStatusFilter}
           functionFilter={functionFilter}
@@ -316,7 +318,7 @@ export default function TimeTickersPage() {
               size="sm"
               className="h-8 text-xs rounded-lg gap-1.5 border-status-error/40 text-status-error hover:bg-status-error/10"
               disabled={selected.size === 0 || bulkDeleteMutation.isPending}
-              onClick={handleBulkDelete}
+              onClick={() => setPendingDeleteIds(Array.from(selected))}
             >
               <Trash2 className="h-3 w-3" />
               {selected.size <= 1 ? "Delete" : `Delete (${selected.size})`}
@@ -358,7 +360,7 @@ export default function TimeTickersPage() {
       {(statusFilter.length > 0 || functionFilter) && (
         <div className="flex items-center gap-2 flex-wrap">
           {statusFilter.length > 0 && (
-            <FilterChip label="Status" value={statusFilter.join(", ")} onRemove={() => setStatusFilter([])} />
+            <FilterChip label="Root job status" value={statusFilter.join(", ")} onRemove={() => setStatusFilter([])} />
           )}
           {functionFilter && (
             <FilterChip label="Function" value={functionFilter} onRemove={() => setFunctionFilter("")} />
@@ -370,6 +372,12 @@ export default function TimeTickersPage() {
 
   return (
     <div className="space-y-5">
+      {detailId && detailQuery.isPending && !activeRow && (
+        <p role="status" className="text-sm text-muted-foreground">Loading ticker details…</p>
+      )}
+      {detailId && detailQuery.isError && (
+        <QueryErrorNotice message="Could not load this ticker. It may have been deleted or is temporarily unavailable." onRetry={() => { void detailQuery.refetch(); }} />
+      )}
       <ExecutionVolumeChart data={volumeData} title="Time Ticker Executions (7d)" gradientPrefix="tt" />
 
       <PageHeader
@@ -424,6 +432,28 @@ export default function TimeTickersPage() {
         highlightedIds={recentlyCreatedId ? new Set([recentlyCreatedId]) : undefined}
         deletingIds={deletingIds}
       />
+
+      <ConfirmDialog
+        open={!!pendingDeleteIds}
+        onOpenChange={(open) => { if (!open) setPendingDeleteIds(null); }}
+        title={pendingDeleteIds?.length === 1 ? "Delete time ticker?" : "Delete selected time tickers?"}
+        description={hasRestrictedSelection
+          ? "A selected chain uses Restrict. It can be deleted once every descendant is Done, DueDone, Failed, Cancelled, or Skipped. The server checks the current statuses before permanently deleting eligible chains and their descendants. This cannot be undone."
+          : pendingDeleteIds?.length === 1
+          ? "Permanently deletes this time ticker and any child tickers in its chain. This cannot be undone."
+          : `Permanently deletes ${pendingDeleteIds?.length ?? 0} selected time tickers and any child tickers in their chains. This cannot be undone.`}
+        confirmLabel={pendingDeleteIds?.length === 1 ? "Delete ticker" : "Delete selected"}
+        confirmVariant="destructive"
+        isPending={bulkDeleteMutation.isPending}
+        onConfirm={handleBulkDelete}
+      >
+        <div className="rounded-lg border border-border bg-card p-3 text-xs">
+          <p className="mb-2 text-muted-foreground">Selected ticker IDs</p>
+          <ul className="max-h-40 space-y-1 overflow-y-auto font-mono">
+            {pendingDeleteIds?.map((id) => <li key={id} className="break-all">{id}</li>)}
+          </ul>
+        </div>
+      </ConfirmDialog>
 
       <CreateTimeTickerDialog
         open={createOpen}

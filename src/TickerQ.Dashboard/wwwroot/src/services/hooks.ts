@@ -1,3 +1,5 @@
+import { isChainActive } from "@/lib/cron/chain-summary";
+import { useEffect } from "react";
 import {
   useMutation,
   useQuery,
@@ -5,14 +7,9 @@ import {
   type UseQueryOptions,
 } from "@tanstack/react-query";
 import { dashboardApi } from "./dashboard-api";
-import {
-  assertChainLevelFits,
-  assertChainTraversalComplete,
-  CHAIN_MAX_DEPTH,
-  CHAIN_MAX_NODES,
-} from "@/lib/cron/chain-traversal";
 import type {
   AddCronTickerRequest,
+  ChainDeleteBehavior,
   AddTimeTickerChainRequest,
   AddTimeTickerRequest,
   BulkRetryItem,
@@ -108,6 +105,7 @@ export function useUpcoming(count = 10) {
   return useQuery({
     queryKey: qk.upcoming(count),
     queryFn: ({ signal }) => dashboardApi.getUpcoming(count, signal),
+    refetchInterval: query => query.state.data?.some(x => isChainActive(x.chainSummary)) ? 2_000 : false,
   });
 }
 
@@ -115,6 +113,7 @@ export function useRecentActivity(count = 10) {
   return useQuery({
     queryKey: qk.recent(count),
     queryFn: ({ signal }) => dashboardApi.getRecentActivity(count, signal),
+    refetchInterval: query => query.state.data?.some(x => isChainActive(x.chainSummary)) ? 2_000 : false,
   });
 }
 
@@ -129,6 +128,7 @@ export function useTimeTickers(filter: TimeTickerQueryFilter) {
   return useQuery<PaginationResult<TimeTickerFlatDto>>({
     queryKey: qk.timeTickers(filter),
     queryFn: ({ signal }) => dashboardApi.queryTimeTickers(filter, signal),
+    refetchInterval: query => query.state.data?.items.some(x => isChainActive(x.chainSummary)) ? 2_000 : false,
   });
 }
 
@@ -144,6 +144,7 @@ export function useCronTickers(filter: CronTickerQueryFilter) {
   return useQuery<PaginationResult<CronTickerFlatDto>>({
     queryKey: qk.cronTickers(filter),
     queryFn: ({ signal }) => dashboardApi.queryCronTickers(filter, signal),
+    refetchInterval: query => query.state.data?.items.some(x => isChainActive(x.lastRunChainSummary)) ? 2_000 : false,
   });
 }
 
@@ -155,14 +156,16 @@ export function useCronOccurrences(
     queryKey: qk.cronOccurrences(cronTickerId ?? "", filter),
     queryFn: ({ signal }) =>
       dashboardApi.queryCronOccurrences(cronTickerId!, filter, signal),
+    refetchInterval: query => query.state.data?.items.some(x => isChainActive(x.chainSummary)) ? 2_000 : false,
     enabled: !!cronTickerId,
   });
 }
 
-export function useExecutions(filter: ExecutionQueryFilter) {
+export function useExecutions(filter: ExecutionQueryFilter, followActiveRow = false) {
   return useQuery<PaginationResult<ExecutionFlatDto>>({
     queryKey: qk.executions(filter),
     queryFn: ({ signal }) => dashboardApi.queryExecutions(filter, signal),
+    refetchInterval: query => followActiveRow || query.state.data?.items.some(x => isChainActive(x.chainSummary)) ? 2_000 : false,
   });
 }
 
@@ -185,15 +188,23 @@ export function useCronTickersGraph(pastDays = 7, futureDays = 0) {
 /**
  * Log tail for one execution. Pass `live: true` while the ticker is still
  * pending/running — the tail then polls so captured lines stream into the
- * panel near-real-time (the dashboard has no SignalR client).
+ * panel near-real-time. Follow-up reads after completion allow buffered writes to finish.
  */
-export function useLogTail(tickerId: string | null, live = false) {
-  return useQuery({
+export function useLogTail(tickerId: string | null, live = false, visible = true) {
+  const query = useQuery({
     queryKey: qk.logTail(tickerId ?? ""),
     queryFn: ({ signal }) => dashboardApi.getLogTail(tickerId!, signal),
-    enabled: !!tickerId,
-    refetchInterval: live ? 1_500 : false,
+    enabled: !!tickerId && visible,
+    refetchInterval: live && visible ? 1_500 : false,
   });
+  const { refetch } = query;
+  useEffect(() => {
+    if (!tickerId || live || !visible) return;
+    // Fetch the terminal tail, then allow the default batched database writer to catch up.
+    const timers = [0, 1500, 3000, 6000].map(delay => setTimeout(() => { void refetch({ cancelRefetch: false }); }, delay));
+    return () => timers.forEach(clearTimeout);
+  }, [tickerId, live, visible, refetch]);
+  return query;
 }
 
 /** Single time ticker by id, with optional polling for live status updates. */
@@ -210,6 +221,7 @@ export function useCronTicker(id: string | null) {
   return useQuery({
     queryKey: qk.cronTicker(id ?? ""),
     queryFn: ({ signal }) => dashboardApi.getCronTicker(id!, signal),
+    refetchInterval: query => isChainActive(query.state.data?.lastRunChainSummary) ? 2_000 : false,
     enabled: !!id,
   });
 }
@@ -219,8 +231,8 @@ export function useCronOccurrence(id: string | null) {
     queryKey: qk.cronOccurrence(id ?? ""),
     queryFn: ({ signal }) => dashboardApi.getCronOccurrence(id!, signal),
     enabled: !!id,
-    refetchInterval: (query) =>
-      query.state.data && ACTIVE_STATUSES.includes(query.state.data.status) ? 2_000 : false,
+    refetchInterval: query => isChainActive(query.state.data?.chainSummary) ||
+      (query.state.data && ACTIVE_STATUSES.includes(query.state.data.status)) ? 2_000 : false,
   });
 }
 
@@ -260,45 +272,14 @@ export function useNodes() {
   });
 }
 
-// Flattened chain tree (root + descendants) via bounded BFS. Used by the chain
-// flowchart and the merged chain logs panel; parent/child structure is rebuilt
-// from each ticker's parentId.
-//
-// Depth bound matches the chain builder's MAX_DEPTH (20) so any chain the UI
-// can create also renders fully. The node cap is the real safety valve — it
-// bounds request fan-out on pathological trees regardless of depth.
+// One bounded server snapshot per refresh, shared by the flowchart and log panel.
 const ACTIVE_STATUSES = ["Idle", "Queued", "InProgress"];
-
 export function useChainTickers(rootId: string | null) {
   return useQuery<TimeTickerFlatDto[]>({
     queryKey: qk.chainTickers(rootId ?? ""),
     enabled: !!rootId,
-    // While any ticker in the chain is still pending/running, poll so statuses
-    // (and the live log panels keyed off them) track the chain's progress.
-    refetchInterval: (query) =>
-      query.state.data?.some((t) => ACTIVE_STATUSES.includes(t.status))
-        ? 2_000
-        : false,
-    queryFn: async ({ signal }) => {
-      const root = await dashboardApi.getTimeTicker(rootId!, signal);
-      const all: TimeTickerFlatDto[] = [root];
-      let frontier: TimeTickerFlatDto[] = [root];
-      for (
-        let depth = 0;
-        depth < CHAIN_MAX_DEPTH && frontier.length > 0 && all.length < CHAIN_MAX_NODES;
-        depth++
-      ) {
-        const childLists = await Promise.all(
-          frontier.map((t) => dashboardApi.getTimeTickerChildren(t.id, signal))
-        );
-        const next = childLists.flat();
-        assertChainLevelFits(all.length, next.length);
-        all.push(...next);
-        frontier = next;
-      }
-      assertChainTraversalComplete(frontier.length);
-      return all;
-    },
+    refetchInterval: (query) => query.state.data?.some(t => ACTIVE_STATUSES.includes(t.status)) ? 2_000 : false,
+    queryFn: ({ signal }) => dashboardApi.getTimeTickerChain(rootId!, signal),
   });
 }
 
@@ -309,6 +290,7 @@ function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["chain-tickers"] });
   qc.invalidateQueries({ queryKey: ["time-tickers"] });
   qc.invalidateQueries({ queryKey: ["cron-tickers"] });
+  qc.invalidateQueries({ queryKey: ["cron-occurrences"] });
   qc.invalidateQueries({ queryKey: ["executions"] });
   qc.invalidateQueries({ queryKey: ["overview"] });
   qc.invalidateQueries({ queryKey: ["stats"] });
@@ -380,6 +362,17 @@ export function useBulkRetryExecutions() {
     onSuccess: () => invalidateAll(qc),
   });
 }
+export function useSetChainDeleteBehavior() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, behavior }: { id: string; behavior: ChainDeleteBehavior }) => dashboardApi.setChainDeleteBehavior(id, behavior),
+    onSuccess: () => {
+      invalidateAll(qc);
+      return qc.invalidateQueries({ queryKey: ["chain-tickers"] });
+    },
+  });
+}
+
 export function useDeleteTimeTicker() {
   const qc = useQueryClient();
   return useMutation({
@@ -470,5 +463,14 @@ export function useDeleteCronOccurrence() {
   return useMutation({
     mutationFn: (id: string) => dashboardApi.deleteCronOccurrence(id),
     onSuccess: () => invalidateAll(qc),
+  });
+}
+
+export function useRuntimeDiagnostics() {
+  return useQuery({
+    queryKey: ["runtime-diagnostics"],
+    queryFn: ({ signal }) => dashboardApi.getRuntimeDiagnostics(signal),
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
   });
 }

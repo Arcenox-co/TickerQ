@@ -32,6 +32,34 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
+    public bool NotificationSettingsArePersistent => true;
+
+    public async Task<TickerQ.Utilities.Notifications.NotificationSettingsRecord> ReadNotificationSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var row = await session.Context.Set<TickerQ.EntityFrameworkCore.Entities.NotificationSettingsEntity>().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, cancellationToken).ConfigureAwait(false);
+        return row == null ? null : new(row.Version, row.ProtectedConfiguration);
+    }
+
+    public async Task<bool> SaveNotificationSettingsAsync(TickerQ.Utilities.Notifications.NotificationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var rows = session.Context.Set<TickerQ.EntityFrameworkCore.Entities.NotificationSettingsEntity>();
+        if (expectedVersion != Guid.Empty)
+            return await rows.Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Version == expectedVersion)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.Version, record.Version)
+                    .SetProperty(x => x.ProtectedConfiguration, record.ProtectedConfiguration), cancellationToken).ConfigureAwait(false) == 1;
+        rows.Add(new() { ApplicationNamespaceKey = _runtimePartitionKey, Version = record.Version, ProtectedConfiguration = record.ProtectedConfiguration });
+        try { await session.Context.SaveChangesAsync(cancellationToken).ConfigureAwait(false); return true; }
+        catch (DbUpdateException)
+        {
+            // Another administrator/replica may have inserted the singleton first.
+            if (await rows.AsNoTracking().AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, cancellationToken).ConfigureAwait(false)) return false;
+            throw;
+        }
+    }
+
     public BasePersistenceProvider(IServiceProvider serviceProvider, ITickerClock clock, SchedulerOptionsBuilder optionsBuilder, ITickerQRedisContext redisContext)
     {
         _clock = clock;
@@ -1308,7 +1336,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .Where(x => x.ExecutionTime <= fallbackThreshold)  // Only tasks older than 1 second
                 .Include(x => x.Children.Where(y => y.ExecutionTime == null))
                 .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
-                .ToArrayAsync(ct).ConfigureAwait(false);
+                .OrderBy(x => x.ExecutionTime).ThenBy(x => x.Id).Take(_schedulerOptions.FallbackBatchSize)
+                    .ToArrayAsync(ct).ConfigureAwait(false);
 
             // Probe-and-extend: the fast projection loads root + child + grandchild
             // (depth 3). If any chain actually goes deeper, BFS the rest in batch so
@@ -2554,7 +2583,8 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
                 .WhereCanAcquire(_lockHolder)
                 .Where(x => x.ExecutionTime <= fallbackThreshold)
                 .Select(MappingExtensions.ForQueueCronTickerOccurrence<CronTickerOccurrenceEntity<TCronTicker>, TCronTicker>())
-                .ToArrayAsync(ct).ConfigureAwait(false);
+                .OrderBy(x => x.ExecutionTime).ThenBy(x => x.Id).Take(_schedulerOptions.FallbackBatchSize)
+                    .ToArrayAsync(ct).ConfigureAwait(false);
 
             foreach (var cronTickerOccurrence in cronTickersToUpdate)
             {
@@ -2733,6 +2763,7 @@ internal abstract class BasePersistenceProvider<TDbContext, TTimeTicker, TCronTi
         RequestContractVersion = item.RequestContractVersion,
         RequestContractFingerprint = item.RequestContractFingerprint,
         InitIdentifier = _lockHolder, Expression = item.Expression, Retries = item.Retries,
+        SkipIfAlreadyRunning = item.SkipIfAlreadyRunning,
         RetryIntervals = item.RetryIntervals, TimeoutSeconds = item.TimeoutSeconds
     };
     

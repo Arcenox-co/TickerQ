@@ -20,6 +20,7 @@ public static class ServiceExtension
         where TCronTicker : CronTickerEntity, new()
     {
         var efCoreOptionBuilder = new TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>();
+        efCoreOptionBuilder.ExecutionLogs = tickerConfiguration.ExecutionLogs;
 
         efConfiguration?.Invoke(efCoreOptionBuilder);
 

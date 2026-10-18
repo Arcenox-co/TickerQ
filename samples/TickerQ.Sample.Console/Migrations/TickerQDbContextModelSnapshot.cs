@@ -141,6 +141,25 @@ namespace TickerQ.Sample.Console.Migrations
                     b.ToTable("NodeFinalizationOutbox", "ticker");
                 });
 
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.NotificationSettingsEntity", b =>
+                {
+                    b.Property<string>("ApplicationNamespaceKey")
+                        .HasMaxLength(80)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ProtectedConfiguration")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ApplicationNamespaceKey");
+
+                    b.ToTable("NotificationSettings", "ticker");
+                });
+
             modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.TickerQStoreMetadata", b =>
                 {
                     b.Property<string>("ApplicationNamespaceKey")
@@ -227,6 +246,9 @@ namespace TickerQ.Sample.Console.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Chain")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
@@ -299,6 +321,9 @@ namespace TickerQ.Sample.Console.Migrations
                     b.Property<bool?>("SeedWasEnabledBeforeRetirement")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("SkipIfAlreadyRunning")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int?>("TimeoutSeconds")
                         .HasColumnType("INTEGER");
 
@@ -333,6 +358,9 @@ namespace TickerQ.Sample.Console.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<Guid?>("AcquisitionToken")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("ChainRootId")
                         .HasColumnType("TEXT");
 
                     b.Property<DateTime>("CreatedAt")
@@ -427,6 +455,11 @@ namespace TickerQ.Sample.Console.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("DeleteBehavior")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0);
+
                     b.Property<string>("Description")
                         .HasColumnType("TEXT");
 
@@ -459,6 +492,9 @@ namespace TickerQ.Sample.Console.Migrations
 
                     b.Property<int>("OnStale")
                         .HasColumnType("INTEGER");
+
+                    b.Property<Guid?>("OriginCronTickerId")
+                        .HasColumnType("TEXT");
 
                     b.Property<Guid?>("ParentId")
                         .HasColumnType("TEXT");
@@ -509,6 +545,8 @@ namespace TickerQ.Sample.Console.Migrations
                         .HasDatabaseName("IX_TimeTicker_ExecutionTime");
 
                     b.HasIndex("ApplicationNamespaceKey", "ParentId");
+
+                    b.HasIndex("ApplicationNamespaceKey", "OriginCronTickerId", "Status");
 
                     b.HasIndex("ApplicationNamespaceKey", "Status", "ExecutedAt")
                         .HasDatabaseName("IX_TimeTicker_Status_ExecutedAt");

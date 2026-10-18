@@ -1,31 +1,39 @@
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ArrowLeft, Loader2, Play, Trash2, X } from "lucide-react";
+import { ArrowLeft, GitBranch, Loader2, Pencil, Play, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/cron/DataTable";
-import { StatusBadge, PriorityBadge } from "@/components/cron/StatusBadges";
+import { ChainTypeBadge, StatusBadge, PriorityBadge } from "@/components/cron/StatusBadges";
 import {
   ExecutionVolumeChart,
   bucketsToVolume,
   emptyVolumeData,
 } from "@/components/cron/ExecutionVolumeChart";
 import { CronExpressionPreview } from "@/components/cron/CronExpressionPreview";
+import { EditCronTickerDialog } from "@/components/cron/EditCronTickerDialog";
+import { parseIntervalsList } from "@/lib/cron/status-config";
+import { canViewOccurrenceChain } from "@/lib/cron/cron-chain";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
 import { CancelTickerButton } from "@/components/cron/CancelTickerButton";
 import { ResizableSidePanel } from "@/components/cron/ResizableSidePanel";
 import { PayloadPreview } from "@/components/cron/PayloadPreview";
 import { LogsPanel } from "@/components/cron/LogsPanel";
+import { ChainLogsPanel } from "@/components/cron/ChainLogsPanel";
+import { LockHolderValue } from "@/components/cron/LockHolderValue";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  useChainTickers,
   useCronOccurrence,
   useCronOccurrences,
   useCronTicker,
   useCronTickerGraphById,
   useDeleteCronOccurrence,
   useRunCronTicker,
+  useUpdateCronTicker,
 } from "@/services/hooks";
 import { useRowHighlight } from "@/lib/cron/useRowHighlight";
 import { joinCronGroup, leaveCronGroup } from "@/services/ticker-hub";
@@ -33,37 +41,60 @@ import { formatDuration, relativeTime } from "@/lib/cron/format";
 import { TimeCell } from "@/components/cron/TimeCell";
 import { QueryErrorNotice } from "@/components/cron/QueryErrorNotice";
 import { isReadOnly } from "@/lib/runtime-config";
-import type { CronOccurrenceFlatDto } from "@/services/api-types";
+import type { CronOccurrenceFlatDto, CronTickerFlatDto } from "@/services/api-types";
 
 const PAGE_SIZE = 25;
 
 export default function CronTickerDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
+  return <CronTickerDetail key={id} id={id} />;
+}
+
+function CronTickerDetail({ id }: { id: string }) {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const occurrenceId = searchParams.get("occurrence");
 
   const [occPage, setOccPage] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
-  const [occurrenceSnapshot, setActiveOcc] = useState<CronOccurrenceFlatDto | null>(null);
-  const activeOccurrenceQuery = useCronOccurrence(occurrenceSnapshot?.id ?? null);
-  const activeOcc = activeOccurrenceQuery.data ?? occurrenceSnapshot;
+  const [editingCron, setEditingCron] = useState<CronTickerFlatDto | null>(null);
   const [runConfirm, setRunConfirm] = useState(false);
+  const [removeChainConfirm, setRemoveChainConfirm] = useState(false);
   const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<CronOccurrenceFlatDto | null>(null);
 
   const readOnly = isReadOnly();
   const cronQuery = useCronTicker(id);
   const cron = cronQuery.data;
   const occFilter = useMemo(
-    () => ({ pageNumber: occPage, pageSize: PAGE_SIZE, sortDescending: true }),
+    () => ({ pageNumber: occPage, pageSize: PAGE_SIZE, sortBy: "createdAt", sortDescending: true }),
     [occPage]
   );
   const occQuery = useCronOccurrences(id, occFilter);
+  const activeOccQuery = useCronOccurrence(occurrenceId);
+  const currentOcc = activeOccQuery.data ?? occQuery.data?.items.find(o => o.id === occurrenceId);
+  const wrongCron = currentOcc != null && currentOcc.cronTickerId !== id;
+  const activeOcc = occurrenceId && currentOcc?.id === occurrenceId && !wrongCron ? currentOcc : null;
+  // Share the live snapshot already used by the occurrence's chain log panel.
+  const activeChainQuery = useChainTickers(activeOcc?.chainRootId ?? null);
+  const activeRoot = activeChainQuery.data?.find(job => job.id === activeOcc?.chainRootId);
+  const activeChainLockHolder = activeChainQuery.data ? activeRoot?.lockHolder : activeOcc?.chainLockHolder;
   const { data: graph } = useCronTickerGraphById(id, 7, 0);
 
   const runMutation = useRunCronTicker();
+  const updateCronMutation = useUpdateCronTicker();
   const deleteOccMutation = useDeleteCronOccurrence();
 
   const occItems = occQuery.data?.items ?? [];
+  function setActiveOcc(occurrence: CronOccurrenceFlatDto | null) {
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous);
+      if (occurrence) next.set("occurrence", occurrence.id);
+      else next.delete("occurrence");
+      return next;
+    });
+  }
   const occHighlight = useRowHighlight(
     occQuery.data?.items,
     (o) => o.id,
@@ -74,13 +105,6 @@ export default function CronTickerDetailPage() {
     () => (graph ? bucketsToVolume(graph) : emptyVolumeData()),
     [graph]
   );
-
-  // Reset page + selection when navigating between crons.
-  useEffect(() => {
-    setOccPage(1);
-    setSelected(new Set());
-    setActiveOcc(null);
-  }, [id]);
 
   // Subscribe to this cron's occurrence broadcasts (server fires to a Group
   // keyed by cronTickerId). Live row arrivals + status changes flow through
@@ -117,6 +141,8 @@ export default function CronTickerDetailPage() {
   async function handleRun() {
     try {
       await runMutation.mutateAsync(id);
+      setOccPage(1);
+      setSelected(new Set());
       toast.success("Cron queued for immediate run");
       setRunConfirm(false);
     } catch (err) {
@@ -124,11 +150,19 @@ export default function CronTickerDetailPage() {
     }
   }
 
-  async function handleDeleteOne(occId: string) {
+  async function handleDeleteOne() {
+    if (!pendingDelete || readOnly || deleteOccMutation.isPending) return;
+    const occId = pendingDelete.id;
     setDeletingIds((prev) => new Set(prev).add(occId));
     try {
       await deleteOccMutation.mutateAsync(occId);
       toast.success("Occurrence deleted");
+      setPendingDelete(null);
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(occId);
+        return next;
+      });
       if (activeOcc?.id === occId) setActiveOcc(null);
     } catch (err) {
       toast.error("Failed to delete", { description: errMsg(err) });
@@ -142,6 +176,7 @@ export default function CronTickerDetailPage() {
   }
 
   async function handleBulkDelete() {
+    if (readOnly || deleteOccMutation.isPending) return;
     const ids = Array.from(selected);
     if (ids.length === 0) return;
     setDeletingIds((prev) => new Set([...prev, ...ids]));
@@ -150,6 +185,7 @@ export default function CronTickerDetailPage() {
       toast.success(ids.length === 1 ? "Occurrence deleted" : `${ids.length} occurrences deleted`);
       setSelected(new Set());
       setBulkConfirm(false);
+      if (activeOcc && ids.includes(activeOcc.id)) setActiveOcc(null);
     } catch (err) {
       toast.error("Failed to delete", { description: errMsg(err) });
     } finally {
@@ -191,9 +227,22 @@ export default function CronTickerDetailPage() {
           ]
         : []),
       {
+        id: "type",
+        header: "Type",
+        cell: ({ row }) => <ChainTypeBadge
+            isChain={canViewOccurrenceChain(cron, row.original)}
+            onClick={canViewOccurrenceChain(cron, row.original)
+              ? () => navigate(`/cron-tickers/${id}/occurrences/${row.original.id}/flowchart`)
+              : undefined}
+          />,
+      },
+      {
         accessorKey: "status",
         header: "Status",
-        cell: ({ row }) => <StatusBadge status={row.original.status} />,
+        cell: ({ row }) => (
+          <ExecutionStatus status={row.original.status} summary={row.original.chainSummary}
+            isChain={!!row.original.chainRootId} />
+        ),
       },
       {
         accessorKey: "scheduledFor",
@@ -228,7 +277,8 @@ export default function CronTickerDetailPage() {
         header: "Lock Holder",
         cell: ({ row }) => (
           <span className="text-[11px] font-mono text-muted-foreground">
-            {row.original.lockHolder ?? "—"}
+            <LockHolderValue value={row.original.lockHolder ?? row.original.chainLockHolder}
+              inheritedFrom={!row.original.lockHolder && row.original.chainLockHolder ? "chain root" : undefined} />
           </span>
         ),
       },
@@ -239,7 +289,7 @@ export default function CronTickerDetailPage() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selected, occItems, allSelected, readOnly]
+    [selected, occItems, allSelected, readOnly, navigate, id, cron]
   );
 
   if (cronQuery.isLoading || !cron) {
@@ -290,6 +340,7 @@ export default function CronTickerDetailPage() {
         <div className="flex flex-col">
           <span className="font-mono text-sm font-semibold">{bare}</span>
         </div>
+        <ChainTypeBadge isChain={!!cron.chain} childCount={cron.chain?.children.length} />
         <div className="h-4 w-px bg-border" />
         <span className="text-[11px] text-muted-foreground">{stateLabel}</span>
         <PriorityBadge priority={cron.priority} />
@@ -301,6 +352,15 @@ export default function CronTickerDetailPage() {
           <span className="font-mono text-[11px] text-foreground">{cron.expression}</span>
           <CronExpressionPreview expression={cron.expression} />
         </div>
+        {!readOnly && <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setEditingCron(cron)}>
+          <Pencil className="mr-1.5 h-3 w-3" />Edit cron
+        </Button>}
+        {!readOnly && (
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => navigate(`/cron-tickers/new-chain?cron=${id}`)}>
+            <GitBranch className="mr-1.5 h-3 w-3" />{cron.chain ? "Edit chain" : "Add chain"}
+          </Button>
+        )}
+        {!readOnly && cron.chain && <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setRemoveChainConfirm(true)}>Remove chain</Button>}
         {!readOnly && (
           <Button
             variant="gradient"
@@ -312,17 +372,34 @@ export default function CronTickerDetailPage() {
           </Button>
         )}
       </div>
+      {cron.chain && <p className="text-xs text-muted-foreground px-1">Each trigger launches a separate chain. {cron.skipIfAlreadyRunning ? "New runs are skipped while any previous chain has unfinished jobs." : "Separate chain runs may overlap."} Open a chain to see every job’s status, results and logs.</p>}
+      {!cron.chain && <p className="text-xs text-muted-foreground px-1">{cron.skipIfAlreadyRunning
+        ? "Skip if already running: new runs are skipped while this cron job is active on this scheduler host."
+        : "Overlapping runs are allowed for this cron job."}</p>}
       {cron.description && (
         <p className="text-[12px] text-muted-foreground -mt-2 px-1">{cron.description}</p>
       )}
 
       <ExecutionVolumeChart
         data={volumeData}
-        title={`${bare} Executions (7d)`}
+        title={`${bare} ${cron.chain ? "Chain triggers" : "Executions"} (7d)`}
         gradientPrefix="cronDetail"
       />
 
       {bulkBar}
+
+      {occurrenceId && activeOccQuery.isPending && !activeOcc && (
+        <p role="status" className="text-sm text-muted-foreground">Loading occurrence details…</p>
+      )}
+      {occurrenceId && activeOccQuery.isError && (
+        <QueryErrorNotice
+          message="Could not load this occurrence. It may have been deleted or is temporarily unavailable."
+          onRetry={() => void activeOccQuery.refetch()}
+        />
+      )}
+      {occurrenceId && wrongCron && (
+        <QueryErrorNotice message="This occurrence belongs to a different cron ticker." />
+      )}
 
       {occQuery.isError && (
         <QueryErrorNotice
@@ -376,18 +453,66 @@ export default function CronTickerDetailPage() {
         onConfirm={handleBulkDelete}
       />
 
+      <ConfirmDialog
+        open={!!pendingDelete}
+        onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
+        title="Delete occurrence?"
+        description="Permanently removes this occurrence record. The cron schedule stays in place. This cannot be undone."
+        confirmLabel="Delete occurrence"
+        confirmVariant="destructive"
+        isPending={deleteOccMutation.isPending}
+        onConfirm={handleDeleteOne}
+      >
+        {pendingDelete && (
+          <dl className="space-y-2 rounded-lg border border-border bg-card p-3 text-xs">
+            <div className="space-y-1">
+              <dt className="text-muted-foreground">Function</dt>
+              <dd className="break-all font-mono font-medium">{pendingDelete.functionName}</dd>
+            </div>
+            <div className="space-y-1">
+              <dt className="text-muted-foreground">Occurrence ID</dt>
+              <dd className="break-all font-mono text-muted-foreground">{pendingDelete.id}</dd>
+            </div>
+          </dl>
+        )}
+      </ConfirmDialog>
+
+      <ConfirmDialog open={removeChainConfirm} onOpenChange={setRemoveChainConfirm}
+        title="Remove recurring chain?"
+        description="Future occurrences will run only the cron’s root function. Existing chains keep their jobs and history."
+        confirmLabel="Remove chain" confirmVariant="destructive" isPending={updateCronMutation.isPending}
+        onConfirm={async () => {
+          try {
+            await updateCronMutation.mutateAsync({ id, body: { replaceChain: true, chain: null } });
+            setRemoveChainConfirm(false); toast.success("Future runs will execute the root function only.");
+          } catch (error) { toast.error(error instanceof Error ? error.message : "Could not remove chain"); }
+        }} />
+
       {/* Occurrence detail panel */}
-      <ResizableSidePanel open={!!activeOcc} onClose={() => setActiveOcc(null)}>
+      <EditCronTickerDialog cron={editingCron} open={editingCron !== null} onOpenChange={open => { if (!open) setEditingCron(null); }}
+        onSubmit={async values => {
+          await updateCronMutation.mutateAsync({ id, body: {
+            expression: values.expression, description: values.description ?? "",
+            retries: values.retries ?? 0, retryIntervalsSeconds: parseIntervalsList(values.retryIntervalsSeconds ?? "") ?? [],
+            isEnabled: values.isEnabled, skipIfAlreadyRunning: values.skipIfAlreadyRunning,
+            onStale: values.onStale, timeoutSeconds: values.timeoutSeconds ?? 0,
+          } });
+        }} />
+      <ResizableSidePanel open={!!activeOcc} onClose={() => { if (!pendingDelete) setActiveOcc(null); }}>
         {activeOcc && (
           <div className="flex flex-col">
             <div className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
-              <div className="font-mono text-sm font-semibold truncate">
-                {activeOcc.functionName}
+              <div className="min-w-0 space-y-1">
+                <div className="font-mono text-sm font-semibold truncate">{activeOcc.functionName}</div>
+                <div className="font-mono text-[11px] text-muted-foreground/60 break-all">{activeOcc.id}</div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <StatusBadge status={activeOcc.status} />
+                {canViewOccurrenceChain(cron, activeOcc) && (
+                  <ChainTypeBadge isChain onClick={() => navigate(`/cron-tickers/${id}/occurrences/${activeOcc.id}/flowchart?details=1`)} />
+                )}
                 <button
                   type="button"
+                  aria-label="Close occurrence details"
                   onClick={() => setActiveOcc(null)}
                   className="text-muted-foreground/60 hover:text-foreground"
                 >
@@ -403,8 +528,8 @@ export default function CronTickerDetailPage() {
                   variant="ghost"
                   size="sm"
                   className="h-7 text-xs text-muted-foreground hover:text-status-error"
-                  disabled={deletingIds.has(activeOcc.id)}
-                  onClick={() => handleDeleteOne(activeOcc.id)}
+                  disabled={deleteOccMutation.isPending || deletingIds.has(activeOcc.id)}
+                  onClick={() => setPendingDelete(activeOcc)}
                 >
                   <Trash2 className="h-3 w-3 mr-1" /> Delete
                 </Button>
@@ -412,24 +537,37 @@ export default function CronTickerDetailPage() {
             )}
 
             <div className="px-5 py-3 border-b border-border grid grid-cols-3 gap-3 text-[11px]">
+              {activeOcc.chainRootId && <div className="col-span-2">
+                <p className="text-muted-foreground/60 uppercase tracking-wider mb-1">Chain status</p>
+                <ExecutionStatus status={activeOcc.status} summary={activeOcc.chainSummary} isChain />
+              </div>}
+              <div>
+                <p className="text-muted-foreground/60 uppercase tracking-wider mb-1">{activeOcc.chainRootId ? "Trigger status" : "Status"}</p>
+                <StatusBadge status={activeOcc.status} />
+              </div>
               <Meta label="Scheduled" value={relativeTime(activeOcc.scheduledFor)} />
               <Meta
-                label="Duration"
+                label={activeOcc.chainRootId ? "Trigger duration" : "Duration"}
                 value={activeOcc.executedAt ? formatDuration(activeOcc.elapsedTime) : "—"}
               />
-              <Meta label="Lock Holder" value={activeOcc.lockHolder ?? "—"} />
+              <Meta label="Retries" value={String(activeOcc.retryCount)} />
+              <div>
+                <p className="text-muted-foreground/60 uppercase tracking-wider mb-1">Lock Holder</p>
+                <LockHolderValue value={activeOcc.lockHolder ?? activeChainLockHolder}
+                  inheritedFrom={!activeOcc.lockHolder && activeChainLockHolder ? "chain root" : undefined} />
+              </div>
             </div>
 
             <div className="p-4 space-y-3">
-              <PayloadPreview kind="cron-occurrence" id={activeOcc.id} />
-              <LogsPanel
+              <PayloadPreview kind={activeOcc.chainRootId ? "time" : "cron-occurrence"} id={activeOcc.chainRootId ?? activeOcc.id} />
+              {activeOcc.chainRootId ? <ChainLogsPanel key={activeOcc.chainRootId} rootId={activeOcc.chainRootId} /> : <LogsPanel
                 functionName={activeOcc.functionName}
                 status={activeOcc.status}
                 tickerId={activeOcc.id}
                 exceptionMessage={activeOcc.exceptionMessage}
                 skippedReason={activeOcc.skippedReason}
                 executedAt={activeOcc.executedAt}
-              />
+              />}
             </div>
           </div>
         )}
@@ -438,9 +576,9 @@ export default function CronTickerDetailPage() {
   );
 }
 
-function Meta({ label, value }: { label: string; value: string }) {
+function Meta({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div>
+    <div className="min-w-0">
       <p className="text-muted-foreground/60 uppercase tracking-wider mb-1">{label}</p>
       <p className="tabular-nums">{value}</p>
     </div>

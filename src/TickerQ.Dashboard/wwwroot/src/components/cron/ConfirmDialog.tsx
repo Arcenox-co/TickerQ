@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 
 import {
   Dialog,
@@ -24,6 +24,7 @@ export function ConfirmDialog({
   dismissLabel = "Cancel",
   confirmVariant = "gradient",
   isPending = false,
+  confirmDisabled = false,
   onConfirm,
   children,
 }: {
@@ -35,12 +36,37 @@ export function ConfirmDialog({
   dismissLabel?: string;
   confirmVariant?: "gradient" | "destructive" | "default";
   isPending?: boolean;
+  confirmDisabled?: boolean;
   onConfirm: () => void | Promise<void>;
   children?: ReactNode;
 }) {
+  const confirming = useRef(false);
+
+  function handleOpenChange(next: boolean) {
+    if (!next && (isPending || confirming.current)) return;
+    onOpenChange(next);
+  }
+
+  async function handleConfirm() {
+    if (isPending || confirmDisabled || confirming.current) return;
+    confirming.current = true;
+    try {
+      await onConfirm();
+    } finally {
+      confirming.current = false;
+    }
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[440px]">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent
+        className="sm:max-w-[440px]"
+        onEscapeKeyDown={(event) => {
+          // Escape belongs to this dialog, not the detail panel behind it.
+          event.stopPropagation();
+          if (isPending || confirming.current) event.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle className="text-base">{title}</DialogTitle>
           {description ? (
@@ -56,8 +82,9 @@ export function ConfirmDialog({
             variant="outline"
             size="sm"
             className="h-8 text-xs rounded-lg"
-            onClick={() => onOpenChange(false)}
+            onClick={() => handleOpenChange(false)}
             disabled={isPending}
+            autoFocus={confirmVariant === "destructive"}
           >
             {dismissLabel}
           </Button>
@@ -66,9 +93,9 @@ export function ConfirmDialog({
             variant={confirmVariant}
             size="sm"
             className="h-8 text-xs rounded-lg"
-            onClick={() => void onConfirm()}
-            disabled={isPending}
-            autoFocus
+            onClick={() => void handleConfirm()}
+            disabled={isPending || confirmDisabled}
+            autoFocus={confirmVariant !== "destructive"}
           >
             {isPending ? "Working…" : confirmLabel}
           </Button>

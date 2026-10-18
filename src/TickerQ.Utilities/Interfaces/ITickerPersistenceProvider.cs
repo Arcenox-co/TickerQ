@@ -1,14 +1,15 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Interfaces
 {
-    public interface ITickerPersistenceProvider<TTimeTicker, TCronTicker>
+    public interface ITickerPersistenceProvider<TTimeTicker, TCronTicker> : Notifications.ITickerNotificationSettingsStore
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
     {
@@ -48,6 +49,12 @@ namespace TickerQ.Utilities.Interfaces
                 $"{nameof(RepairTimeTickerChainsAsync)} is required before scheduling but is not supported by this persistence provider."));
         #endregion
         
+        /// <summary>Atomic recurring-chain publication, fenced by the occurrence acquisition token.</summary>
+        bool SupportsCronChains => false;
+        Task<CronChainDispatchResult> MaterializeCronChainAsync(InternalFunctionContext context, bool isDue,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This persistence provider does not support recurring chains.");
+
         #region Cron_Ticker_Core_Methods
         /// <summary>
         /// Legacy seeding contract retained for source/binary compatibility with third-party providers.
@@ -408,6 +415,13 @@ namespace TickerQ.Utilities.Interfaces
         Task<int> CancelPendingTimeTickerAsync(Guid id, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This provider does not support pending ticker cancellation.");
         Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default);
+        /// <summary>
+        /// Atomically updates only a root's deletion policy, preserving its execution state and children.
+        /// Returns zero if the root is missing or changed concurrently. Explicit deletion and retention
+        /// must enforce the stored policy inside their own atomic deletion boundary.
+        /// </summary>
+        Task<int> SetTimeTickerDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This provider does not support updating chain deletion policies.");
         /// <summary>
         /// Atomically replaces the entire time-ticker chain aggregate rooted at
         /// <paramref name="oldRootId"/> with <paramref name="newRoot"/> (root plus its whole

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Text.Json.Serialization;
 using TickerQ.Utilities.Entities.BaseEntity;
 using TickerQ.Utilities.Enums;
@@ -73,10 +73,20 @@ namespace TickerQ.Utilities.Entities
         [JsonInclude]
         public virtual bool? SeedWasEnabledBeforeRetirement { get; set; }
 
+        /// <summary>Optional recurring chain. A fresh durable time-ticker graph is created for each occurrence.</summary>
+        public virtual TickerQ.Utilities.Models.CronChainTemplate Chain { get; set; }
+
         public virtual string Expression { get; set; }
         public virtual byte[] Request { get; set; }
         public virtual int Retries { get; set; }
         public virtual int[] RetryIntervals { get; set; }
+        /// <summary>
+        /// Skip a new run when this cron already has an active execution on this scheduler host.
+        /// Recurring chains check for unfinished jobs in any previous run in the runtime partition.
+        /// False allows overlapping runs. This policy belongs to the cron, not its function.
+        /// </summary>
+        public virtual bool SkipIfAlreadyRunning { get; set; }
+
         public virtual bool IsEnabled { get; set; } = true;
 
         /// <summary>

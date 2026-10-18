@@ -97,6 +97,16 @@ namespace TickerQ.Utilities
         /// </summary>
         public JobRetentionOptions JobRetention { get; } = new JobRetentionOptions();
 
+        public ExecutionLogOptions ExecutionLogs { get; } = new ExecutionLogOptions();
+
+        /// <summary>Configure bounded log capture and optional persistence through the operational store.</summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureExecutionLogs(Action<ExecutionLogOptions> configure)
+        {
+            configure?.Invoke(ExecutionLogs);
+            ExecutionLogs.Validate();
+            return this;
+        }
+
         /// <summary>
         /// Enable and configure the built-in job-retention maintenance loop, which periodically deletes
         /// historical terminal ticker records older than the per-status windows you set. Cron definitions
@@ -110,8 +120,10 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Gets or sets the minimum interval between database polls.
-        /// Prevents tight loops when tasks are due or when the database is empty.
+        /// Lower bound on the scheduler's calculated wait until the next occurrence.
+        /// This is not a fixed polling cadence: later occurrences allow longer waits,
+        /// and scheduler notifications can interrupt the wait. Immediate dispatch is separate.
+        /// Negative values are treated as zero by the scheduling loop.
         /// </summary>
         public TimeSpan MinPollingInterval
         {
@@ -514,9 +526,13 @@ namespace TickerQ.Utilities
         public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
         public TimeSpan IdleWorkerTimeOut { get; set; } = TimeSpan.FromMinutes(1);
         public TimeSpan FallbackIntervalChecker { get; set; } = TimeSpan.FromSeconds(30);
+        /// <summary>Maximum overdue roots of each ticker type acquired per built-in provider scan.</summary>
+        public int FallbackBatchSize { get; set; } = 100;
         /// <summary>
-        /// Gets or sets the minimum interval between database polls.
-        /// Prevents tight loops when tasks are due or when the database is empty.
+        /// Lower bound on the scheduler's calculated wait until the next occurrence.
+        /// This is not a fixed polling cadence: later occurrences allow longer waits,
+        /// and scheduler notifications can interrupt the wait. Immediate dispatch is separate.
+        /// Negative values are treated as zero by the scheduling loop.
         /// </summary>
         public TimeSpan MinPollingInterval { get; set; } = TimeSpan.FromSeconds(1);
         /// <summary>
@@ -620,5 +636,31 @@ namespace TickerQ.Utilities
         /// by the host's own shutdown timeout (<c>HostOptions.ShutdownTimeout</c>).
         /// </summary>
         public TimeSpan ShutdownDrainTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+        internal void Validate()
+        {
+            if (MaxConcurrency < 1) throw new ArgumentOutOfRangeException(nameof(MaxConcurrency), "At least one worker is required.");
+            if (FallbackBatchSize < 1 || FallbackBatchSize > 10000)
+                throw new ArgumentOutOfRangeException(nameof(FallbackBatchSize), "Use a batch size between 1 and 10000.");
+            ValidateTimer(IdleWorkerTimeOut, nameof(IdleWorkerTimeOut));
+            ValidateTimer(FallbackIntervalChecker, nameof(FallbackIntervalChecker));
+            ValidateTimer(LeaseRenewalInterval, nameof(LeaseRenewalInterval));
+            ValidateTimer(LeaseDuration, nameof(LeaseDuration));
+            ValidateTimer(QueuedLockTimeout, nameof(QueuedLockTimeout));
+            ValidateTimer(ShutdownDrainTimeout, nameof(ShutdownDrainTimeout), allowZero: true);
+            // Preserve the documented negative-as-zero scheduler wait behavior.
+            ValidateTimer(MinPollingInterval < TimeSpan.Zero ? TimeSpan.Zero : MinPollingInterval,
+                nameof(MinPollingInterval), allowZero: true);
+            if (LeaseDuration.Ticks / 3 < LeaseRenewalInterval.Ticks)
+                throw new ArgumentException("LeaseDuration must be at least three times LeaseRenewalInterval.", nameof(LeaseDuration));
+            if (MaxStaleRestarts < 0) throw new ArgumentOutOfRangeException(nameof(MaxStaleRestarts));
+        }
+
+        private static void ValidateTimer(TimeSpan value, string name, bool allowZero = false)
+        {
+            if (value < (allowZero ? TimeSpan.Zero : TimeSpan.FromMilliseconds(1))
+                || value.TotalMilliseconds > uint.MaxValue - 1)
+                throw new ArgumentOutOfRangeException(name, "Duration must fit a finite .NET timer; positive intervals must be at least 1 ms.");
+        }
     }
 }

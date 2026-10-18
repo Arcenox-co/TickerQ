@@ -27,7 +27,6 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
         IsDue = tickerFunctionContext.IsDue;
         ScheduledFor = tickerFunctionContext.ScheduledFor;
         RequestCancelOperationAction = tickerFunctionContext.RequestCancelOperationAction;
-        CronOccurrenceOperations = tickerFunctionContext.CronOccurrenceOperations;
         FunctionName = tickerFunctionContext.FunctionName;
         // Result state is shared by reference with the originating base context so a
         // SetResult call on this typed wrapper reaches the single sink the runtime reads,
@@ -71,7 +70,6 @@ public class TickerFunctionContext
     /// </summary>
     public DateTime ScheduledFor { get; internal set; }
     public string FunctionName { get; internal set; }
-    public CronOccurrenceOperations CronOccurrenceOperations { get; internal set; }
 
     /// <summary>
     /// Shared sink the runtime reads after a successful terminal execution to publish this
@@ -205,11 +203,4 @@ public class TickerFunctionContext
         ParentResultEnvelope.EnsureSupportedVersion();
         return ParentResultEnvelope;
     }
-}
-
-public class CronOccurrenceOperations
-{
-    internal Action SkipIfAlreadyRunningAction { get; set; }
-    public void SkipIfAlreadyRunning()
-        => SkipIfAlreadyRunningAction();
 }

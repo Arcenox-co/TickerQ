@@ -37,6 +37,8 @@ public class DashboardRunNowTests
         };
         provider.AcquireTimeTickerOnDemandAsync(root.Id, Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
             .Returns(root);
+        provider.GetTimeTickerById(root.Id, Arg.Any<CancellationToken>()).Returns(root);
+        dispatcher.IsEnabled.Returns(true);
         var repository = CreateRepository(provider, dispatcher, notifier);
 
         var result = await repository.RunTimeTickerOnDemandAsync(root.Id);
@@ -58,6 +60,8 @@ public class DashboardRunNowTests
         var dispatcher = Substitute.For<ITickerQDispatcher>();
         var notifier = Substitute.For<ITickerQNotificationHubSender>();
         var id = Guid.NewGuid();
+        dispatcher.IsEnabled.Returns(true);
+        provider.GetTimeTickerById(id, Arg.Any<CancellationToken>()).Returns(new TimeTickerEntity { Id = id });
         provider.AcquireTimeTickerOnDemandAsync(id, Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
             .Returns((TimeTickerEntity)null);
         var repository = CreateRepository(provider, dispatcher, notifier);

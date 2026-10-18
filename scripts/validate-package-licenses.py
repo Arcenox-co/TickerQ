@@ -19,6 +19,7 @@ COMMERCIAL_PACKAGE_IDS = {
     "TickerQ.Instrumentation.OpenTelemetry",
     "TickerQ.SourceGenerator",
     "TickerQ.MongoDB",
+    "TickerQ.Notifications",
     "TickerQ.SDK",
     "TickerQ.RemoteExecutor",
 }

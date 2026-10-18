@@ -7,6 +7,8 @@ namespace TickerQ.Utilities.Models
     public class FailureWebhookOptions
     {
         public string Url { get; set; }
+        /// <summary>Maximum time to drain queued alerts after job producers stop. Also bounded by the host shutdown deadline.</summary>
+        public TimeSpan ShutdownDrainTimeout { get; set; } = TimeSpan.FromSeconds(10);
         /// <summary>Extra request headers, e.g. an auth token.</summary>
         public IDictionary<string, string> Headers { get; set; }
 

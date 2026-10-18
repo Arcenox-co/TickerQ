@@ -1,265 +1,253 @@
+using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using TickerQ.Dispatcher;
+using TickerQ.Utilities;
+using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
 
-public class TickerQDispatcherConcurrencyTests
+[Collection("TickerCancellationTokenState")]
+public sealed class TickerQDispatcherConcurrencyTests : IDisposable
 {
-    private readonly ITickerQTaskScheduler _taskScheduler;
-    private readonly ITickerExecutionTaskHandler _taskHandler;
+    private readonly ServiceProvider _services = new ServiceCollection().BuildServiceProvider();
+    private readonly TickerFunctionConcurrencyGate _gate = new();
+    private readonly IInternalTickerManager _manager = Substitute.For<IInternalTickerManager>();
+    private readonly ITickerQInstrumentation _instrumentation = Substitute.For<ITickerQInstrumentation>();
+    private readonly TickerQDispatcher _dispatcher;
+    private readonly List<Func<CancellationToken, Task>> _queued = [];
+    private int _active;
+    private int _peak;
+    private int _completed;
 
     public TickerQDispatcherConcurrencyTests()
     {
-        _taskScheduler = Substitute.For<ITickerQTaskScheduler>();
-        _taskHandler = Substitute.For<ITickerExecutionTaskHandler>();
-    }
-
-    [Fact]
-    public void Constructor_ThrowsArgumentNullException_WhenConcurrencyGateIsNull()
-    {
-        var act = () => new TickerQDispatcher(_taskScheduler, _taskHandler, null!, LicenseTestState.Active());
-
-        var ex = Assert.Throws<ArgumentNullException>(act);
-        Assert.Equal("concurrencyGate", ex.ParamName);
-    }
-
-    [Fact]
-    public async Task DispatchAsync_ZeroMaxConcurrency_DoesNotAcquireSemaphore()
-    {
-        var gate = new TickerFunctionConcurrencyGate();
-        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate, LicenseTestState.Active());
-
-        Func<CancellationToken, Task>? capturedWork = null;
-        _taskScheduler.QueueAsync(
-            Arg.Any<Func<CancellationToken, Task>>(),
-            Arg.Any<TickerTaskPriority>(),
-            Arg.Any<CancellationToken>())
-            .ReturnsForAnyArgs(ci =>
+        var clock = Substitute.For<ITickerClock>();
+        clock.UtcNow.Returns(DateTime.UtcNow);
+        var license = LicenseTestState.Active(clock);
+        var handler = new TickerExecutionTaskHandler(_services, clock, _instrumentation, _manager,
+            new SchedulerOptionsBuilder { TimeoutGracePeriod = TimeSpan.Zero },
+            Substitute.For<ITickerQFailureNotifier>(), license, _gate);
+        var scheduler = Substitute.For<ITickerQTaskScheduler>();
+        scheduler.QueueAsync(Arg.Any<Func<CancellationToken, Task>>(),
+                Arg.Any<TickerTaskPriority>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
             {
-                capturedWork = ci.ArgAt<Func<CancellationToken, Task>>(0);
+                _queued.Add(call.ArgAt<Func<CancellationToken, Task>>(0));
                 return ValueTask.CompletedTask;
             });
+        _dispatcher = new TickerQDispatcher(scheduler, handler, license);
+    }
 
-        var context = new InternalFunctionContext
-        {
-            TickerId = Guid.NewGuid(),
-            FunctionName = "Unlimited",
-            CachedPriority = TickerTaskPriority.Normal,
-            CachedMaxConcurrency = 0,
-            TimeTickerChildren = []
-        };
+    public void Dispose()
+    {
+        TickerCancellationTokenManager.CleanUpTickerCancellationTokens();
+        _services.Dispose();
+    }
 
-        await dispatcher.DispatchAsync([context]);
+    [Theory]
+    [InlineData(TickerType.TimeTicker)]
+    [InlineData(TickerType.CronTickerOccurrence)]
+    public async Task StandaloneJobs_OfSameFunction_AreSerialized(TickerType type)
+    {
+        var jobs = Enumerable.Range(0, 4).Select(_ => Job("Serial", TrackedBody)).ToArray();
+        foreach (var job in jobs) job.Type = type;
+        await Run(jobs);
+        Assert.Equal(1, _peak);
+        Assert.Equal(4, _completed);
+        Assert.All(jobs, job => Assert.Equal(TickerStatus.Done, job.Status));
+    }
 
-        Assert.NotNull(capturedWork);
-        await capturedWork!(CancellationToken.None);
-
-        // No semaphore should have been created for maxConcurrency=0
-        var semaphore = gate.GetSemaphoreOrNull("Unlimited", 0);
-        Assert.Null(semaphore);
-
-        await _taskHandler.Received(1).ExecuteTaskAsync(
-            Arg.Any<InternalFunctionContext>(), false, Arg.Any<CancellationToken>());
+    [Theory]
+    [InlineData(RunCondition.OnSuccess, 1)]
+    [InlineData(RunCondition.InProgress, 1)]
+    [InlineData(RunCondition.OnSuccess, 2)]
+    [InlineData(RunCondition.InProgress, 2)]
+    public async Task SiblingJobs_RespectTheirFunctionLimit(RunCondition condition, int limit)
+    {
+        var root = Job("Parent", NoOp);
+        for (var i = 0; i < 5; i++) AddChild(root, Job("Serial", TrackedBody, limit), condition);
+        await Run(root);
+        Assert.InRange(_peak, 1, limit);
+        Assert.Equal(5, _completed);
+        Assert.All(root.TimeTickerChildren, child => Assert.Equal(TickerStatus.Done, child.Status));
     }
 
     [Fact]
-    public async Task DispatchAsync_WithMaxConcurrency_AcquiresAndReleasesSemaphore()
+    public async Task StandaloneAndNestedJobs_ShareOneFunctionLimit()
     {
-        var gate = new TickerFunctionConcurrencyGate();
-        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate, LicenseTestState.Active());
+        var root = Job("Parent", NoOp);
+        var child = Job("Branch", NoOp);
+        AddChild(root, child);
+        AddChild(child, Job("Serial", TrackedBody));
+        AddChild(child, Job("Serial", TrackedBody));
+        await Run(root, Job("Serial", TrackedBody), Job("Serial", TrackedBody));
+        Assert.Equal(1, _peak);
+        Assert.Equal(4, _completed);
+    }
 
-        Func<CancellationToken, Task>? capturedWork = null;
-        _taskScheduler.QueueAsync(
-            Arg.Any<Func<CancellationToken, Task>>(),
-            Arg.Any<TickerTaskPriority>(),
-            Arg.Any<CancellationToken>())
-            .ReturnsForAnyArgs(ci =>
-            {
-                capturedWork = ci.ArgAt<Func<CancellationToken, Task>>(0);
-                return ValueTask.CompletedTask;
-            });
-
-        var context = new InternalFunctionContext
+    [Theory]
+    [InlineData(RunCondition.OnSuccess)]
+    [InlineData(RunCondition.InProgress)]
+    public async Task SameFunction_ThroughoutDeepChain_CompletesWithoutDeadlock(RunCondition condition)
+    {
+        var root = Job("Serial", TrackedBody);
+        var parent = root;
+        for (var i = 0; i < 6; i++)
         {
-            TickerId = Guid.NewGuid(),
-            FunctionName = "Limited",
-            CachedPriority = TickerTaskPriority.Normal,
-            CachedMaxConcurrency = 1,
-            TimeTickerChildren = []
-        };
+            var child = Job("Serial", TrackedBody);
+            AddChild(parent, child, condition);
+            parent = child;
+        }
+        await Run(root);
+        Assert.Equal(1, _peak);
+        Assert.Equal(7, _completed);
+        Assert.Equal(TickerStatus.Done, parent.Status);
+    }
 
-        await dispatcher.DispatchAsync([context]);
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(2, false)]
+    [InlineData(1, true)]
+    public async Task AvailableCapacity_AllowsIndependentJobsToOverlap(int limit, bool differentFunctions)
+    {
+        var bothEntered = Signal();
+        var entered = 0;
+        async Task Body(CancellationToken ct, IServiceProvider _, TickerFunctionContext __)
+        {
+            if (Interlocked.Increment(ref entered) == 2) bothEntered.TrySetResult();
+            await bothEntered.Task.WaitAsync(TimeSpan.FromSeconds(3), ct);
+        }
+        var root = Job("Parent", NoOp);
+        AddChild(root, Job("A", Body, limit));
+        AddChild(root, Job(differentFunctions ? "B" : "A", Body, limit));
+        await Run(root);
+        Assert.Equal(2, entered);
+        Assert.All(root.TimeTickerChildren, child => Assert.Equal(TickerStatus.Done, child.Status));
+    }
 
-        var semaphore = gate.GetSemaphoreOrNull("Limited", 1);
-        Assert.NotNull(semaphore);
-        Assert.Equal(1, semaphore!.CurrentCount);
-
-        // Execute the work — semaphore should be acquired then released
-        await capturedWork!(CancellationToken.None);
-
-        // After execution completes, semaphore should be released back
-        Assert.Equal(1, semaphore.CurrentCount);
-
-        await _taskHandler.Received(1).ExecuteTaskAsync(
-            Arg.Any<InternalFunctionContext>(), false, Arg.Any<CancellationToken>());
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedOrCancelledChild_ReleasesPermitForSibling(bool cancel)
+    {
+        var attempts = 0;
+        var root = Job("Parent", NoOp);
+        var failing = Job("Serial", (_, _, _) =>
+        {
+            Interlocked.Increment(ref attempts);
+            throw cancel ? new TaskCanceledException("cancelled") : new InvalidOperationException("failure");
+        });
+        failing.Retries = 2;
+        failing.RetryIntervals = [0];
+        AddChild(root, failing);
+        var succeeding = Job("Serial", TrackedBody);
+        AddChild(root, succeeding);
+        await Run(root);
+        Assert.Equal(cancel ? TickerStatus.Cancelled : TickerStatus.Failed, failing.Status);
+        Assert.Equal(cancel ? 1 : 3, attempts);
+        Assert.Equal(TickerStatus.Done, succeeding.Status);
+        Assert.Equal(1, _gate.GetSemaphoreOrNull("Serial", 1)!.CurrentCount);
     }
 
     [Fact]
-    public async Task DispatchAsync_WithMaxConcurrency_ReleasesSemaphoreOnException()
+    public async Task CancellationWhileWaiting_DoesNotInvokeChildOrReleaseAnotherJobsPermit()
     {
-        var gate = new TickerFunctionConcurrencyGate();
-        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate, LicenseTestState.Active());
-
-        _taskHandler.ExecuteTaskAsync(
-            Arg.Any<InternalFunctionContext>(),
-            Arg.Any<bool>(),
-            Arg.Any<CancellationToken>())
-            .Returns<Task>(_ => throw new InvalidOperationException("Task failed"));
-
-        Func<CancellationToken, Task>? capturedWork = null;
-        _taskScheduler.QueueAsync(
-            Arg.Any<Func<CancellationToken, Task>>(),
-            Arg.Any<TickerTaskPriority>(),
-            Arg.Any<CancellationToken>())
-            .ReturnsForAnyArgs(ci =>
-            {
-                capturedWork = ci.ArgAt<Func<CancellationToken, Task>>(0);
-                return ValueTask.CompletedTask;
-            });
-
-        var context = new InternalFunctionContext
+        var permit = _gate.GetSemaphoreOrNull("Serial", 1)!;
+        await permit.WaitAsync();
+        var root = Job("Parent", NoOp);
+        var invoked = false;
+        var child = Job("Serial", (_, _, _) => { invoked = true; return Task.CompletedTask; });
+        AddChild(root, child);
+        var waiting = Signal();
+        _manager.UpdateTickerAsync(child, Arg.Any<CancellationToken>()).Returns(_ =>
         {
-            TickerId = Guid.NewGuid(),
-            FunctionName = "FailingFunc",
-            CachedPriority = TickerTaskPriority.Normal,
-            CachedMaxConcurrency = 1,
-            TimeTickerChildren = []
-        };
-
-        await dispatcher.DispatchAsync([context]);
-
-        var semaphore = gate.GetSemaphoreOrNull("FailingFunc", 1);
-        Assert.Equal(1, semaphore!.CurrentCount);
-
-        // Execute the work — should throw but semaphore must still be released
-        await Assert.ThrowsAsync<InvalidOperationException>(() => capturedWork!(CancellationToken.None));
-
-        // Semaphore must be released even after exception
-        Assert.Equal(1, semaphore.CurrentCount);
+            if (child.Status == TickerStatus.InProgress) waiting.TrySetResult();
+            return Task.CompletedTask;
+        });
+        var run = Run(root);
+        try
+        {
+            await waiting.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.True(TickerCancellationTokenManager.RequestTickerCancellationById(child.TickerId));
+            await run;
+            Assert.False(invoked);
+            Assert.Equal(TickerStatus.Cancelled, child.Status);
+            Assert.Equal(0, permit.CurrentCount);
+            Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+        }
+        finally { permit.Release(); }
     }
 
     [Fact]
-    public async Task DispatchAsync_DifferentFunctions_HaveIndependentSemaphores()
+    public async Task Timeout_DoesNotReleasePermitUntilFunctionActuallyExits()
     {
-        var gate = new TickerFunctionConcurrencyGate();
-        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate, LicenseTestState.Active());
-
-        var capturedWorks = new List<Func<CancellationToken, Task>>();
-        _taskScheduler.QueueAsync(
-            Arg.Any<Func<CancellationToken, Task>>(),
-            Arg.Any<TickerTaskPriority>(),
-            Arg.Any<CancellationToken>())
-            .ReturnsForAnyArgs(ci =>
-            {
-                capturedWorks.Add(ci.ArgAt<Func<CancellationToken, Task>>(0));
-                return ValueTask.CompletedTask;
-            });
-
-        var contexts = new[]
+        var timeoutPending = Signal();
+        _instrumentation.When(i => i.LogJobTimeoutPending(Arg.Any<Guid>(), Arg.Any<string>(),
+                Arg.Any<TimeSpan>(), Arg.Any<TimeSpan>()))
+            .Do(_ => timeoutPending.TrySetResult());
+        var release = Signal();
+        var root = Job("Parent", NoOp);
+        var first = Job("Serial", (_, _, _) => release.Task);
+        first.TimeoutSeconds = 1;
+        var secondCalled = false;
+        var second = Job("Serial", (_, _, _) => { secondCalled = true; return Task.CompletedTask; });
+        AddChild(root, first);
+        AddChild(root, second);
+        var run = Run(root);
+        try
         {
-            new InternalFunctionContext
-            {
-                TickerId = Guid.NewGuid(),
-                FunctionName = "FuncA",
-                CachedPriority = TickerTaskPriority.Normal,
-                CachedMaxConcurrency = 1,
-                TimeTickerChildren = []
-            },
-            new InternalFunctionContext
-            {
-                TickerId = Guid.NewGuid(),
-                FunctionName = "FuncB",
-                CachedPriority = TickerTaskPriority.Normal,
-                CachedMaxConcurrency = 1,
-                TimeTickerChildren = []
-            }
-        };
-
-        await dispatcher.DispatchAsync(contexts);
-
-        var semaphoreA = gate.GetSemaphoreOrNull("FuncA", 1);
-        var semaphoreB = gate.GetSemaphoreOrNull("FuncB", 1);
-
-        Assert.NotSame(semaphoreA, semaphoreB);
+            await timeoutPending.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            Assert.False(secondCalled);
+            Assert.Equal(0, _gate.GetSemaphoreOrNull("Serial", 1)!.CurrentCount);
+        }
+        finally { release.TrySetResult(); await run; }
+        Assert.True(secondCalled);
+        Assert.Equal(TickerStatus.Cancelled, first.Status);
+        Assert.Equal(TickerStatus.Done, second.Status);
     }
 
-    [Fact]
-    public async Task DispatchAsync_MaxConcurrencyOne_SerializesExecution()
+    private async Task Run(params InternalFunctionContext[] contexts)
     {
-        var gate = new TickerFunctionConcurrencyGate();
-        var dispatcher = new TickerQDispatcher(_taskScheduler, _taskHandler, gate, LicenseTestState.Active());
-
-        var capturedWorks = new List<Func<CancellationToken, Task>>();
-        _taskScheduler.QueueAsync(
-            Arg.Any<Func<CancellationToken, Task>>(),
-            Arg.Any<TickerTaskPriority>(),
-            Arg.Any<CancellationToken>())
-            .ReturnsForAnyArgs(ci =>
-            {
-                capturedWorks.Add(ci.ArgAt<Func<CancellationToken, Task>>(0));
-                return ValueTask.CompletedTask;
-            });
-
-        var concurrentCount = 0;
-        var maxObserved = 0;
-        var executionOrder = new List<Guid>();
-
-        _taskHandler.ExecuteTaskAsync(
-            Arg.Any<InternalFunctionContext>(),
-            Arg.Any<bool>(),
-            Arg.Any<CancellationToken>())
-            .ReturnsForAnyArgs(async ci =>
-            {
-                var ctx = ci.ArgAt<InternalFunctionContext>(0);
-                var current = Interlocked.Increment(ref concurrentCount);
-                InterlockedMax(ref maxObserved, current);
-                lock (executionOrder) { executionOrder.Add(ctx.TickerId); }
-                await Task.Delay(30);
-                Interlocked.Decrement(ref concurrentCount);
-            });
-
-        var id1 = Guid.NewGuid();
-        var id2 = Guid.NewGuid();
-        var id3 = Guid.NewGuid();
-
-        var contexts = new[]
-        {
-            new InternalFunctionContext { TickerId = id1, FunctionName = "Serial", CachedMaxConcurrency = 1, TimeTickerChildren = [] },
-            new InternalFunctionContext { TickerId = id2, FunctionName = "Serial", CachedMaxConcurrency = 1, TimeTickerChildren = [] },
-            new InternalFunctionContext { TickerId = id3, FunctionName = "Serial", CachedMaxConcurrency = 1, TimeTickerChildren = [] }
-        };
-
-        await dispatcher.DispatchAsync(contexts);
-
-        Assert.Equal(3, capturedWorks.Count);
-
-        // Execute all work items concurrently — semaphore should serialize them
-        await Task.WhenAll(capturedWorks.Select(w => Task.Run(() => w(CancellationToken.None))));
-
-        Assert.Equal(1, maxObserved);
-        Assert.Equal(3, executionOrder.Count);
+        await _dispatcher.DispatchAsync(contexts);
+        var work = _queued.ToArray();
+        _queued.Clear();
+        await Task.WhenAll(work.Select(w => w(CancellationToken.None))).WaitAsync(TimeSpan.FromSeconds(10));
     }
 
-    private static void InterlockedMax(ref int location, int value)
+    private async Task TrackedBody(CancellationToken ct, IServiceProvider _, TickerFunctionContext __)
     {
-        int current;
+        var active = Interlocked.Increment(ref _active);
+        int previous;
         do
         {
-            current = Volatile.Read(ref location);
-            if (value <= current) return;
-        } while (Interlocked.CompareExchange(ref location, value, current) != current);
+            previous = Volatile.Read(ref _peak);
+            if (active <= previous) break;
+        } while (Interlocked.CompareExchange(ref _peak, active, previous) != previous);
+        try { await Task.Delay(20, ct); Interlocked.Increment(ref _completed); }
+        finally { Interlocked.Decrement(ref _active); }
+    }
+
+    private static Task NoOp(CancellationToken _, IServiceProvider __, TickerFunctionContext ___) => Task.CompletedTask;
+    private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static InternalFunctionContext Job(string name, TickerFunctionDelegate body, int limit = 1) => new()
+    {
+        TickerId = Guid.NewGuid(), FunctionName = name, Type = TickerType.TimeTicker,
+        AcquisitionToken = Guid.NewGuid(), ChainGeneration = Guid.NewGuid(),
+        ExecutionTime = DateTime.UtcNow, RetryIntervals = [], Status = TickerStatus.Idle,
+        CachedDelegate = body, CachedMaxConcurrency = limit, TimeTickerChildren = []
+    };
+
+    private static void AddChild(InternalFunctionContext parent, InternalFunctionContext child,
+        RunCondition condition = RunCondition.OnSuccess)
+    {
+        child.ParentId = parent.TickerId;
+        child.ChainGeneration = parent.ChainGeneration;
+        child.RunCondition = condition;
+        parent.TimeTickerChildren.Add(child);
     }
 }

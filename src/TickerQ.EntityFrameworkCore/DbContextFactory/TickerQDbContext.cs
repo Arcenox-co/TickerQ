@@ -25,11 +25,13 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
     {
         string schema;
         AssistantHistoryOptions assistantHistory;
+        var executionLogs = false;
         try
         {
             var optionBuilder = this.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>();
             schema = optionBuilder?.Schema ?? Constants.DefaultSchema;
             assistantHistory = optionBuilder?.AssistantHistory ?? AssistantHistoryOptions.Current;
+            executionLogs = optionBuilder?.ExecutionLogs?.PersistToDatabase == true;
         }
         catch (InvalidOperationException)
         {
@@ -45,6 +47,8 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
         modelBuilder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<TCronTicker>(schema));
         modelBuilder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations(schema));
         modelBuilder.ApplyConfiguration(new TickerQStoreMetadataConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new NotificationSettingsConfigurations(schema));
+        if (executionLogs) modelBuilder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
 
         // Assistant chat history tables — mapped only when opted in via
         // AddAssistantHistory(), so headless setups get no schema changes.

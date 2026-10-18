@@ -37,12 +37,14 @@ internal sealed class DuplicateTimeTickerRequest
 
 internal sealed class AddCronTickerRequest
 {
+    public TickerQ.Utilities.Models.CronChainTemplate? Chain { get; set; }
     public string Function { get; set; } = string.Empty;
     public string Expression { get; set; } = string.Empty;
     public string? Description { get; set; }
     public int? Retries { get; set; }
     public byte[]? Request { get; set; }
     public int[]? RetryIntervalsSeconds { get; set; }
+    public bool? SkipIfAlreadyRunning { get; set; }
     public bool? IsEnabled { get; set; }
     public StaleAction? OnStale { get; set; }
     public int? TimeoutSeconds { get; set; }
@@ -50,12 +52,15 @@ internal sealed class AddCronTickerRequest
 
 internal sealed class UpdateCronTickerRequestApi
 {
+    public TickerQ.Utilities.Models.CronChainTemplate? Chain { get; set; }
+    public bool ReplaceChain { get; set; }
     public string? Function { get; set; }
     public string? Expression { get; set; }
     public string? Description { get; set; }
     public int? Retries { get; set; }
     public int[]? RetryIntervalsSeconds { get; set; }
     public byte[]? Request { get; set; }
+    public bool? SkipIfAlreadyRunning { get; set; }
     public bool? IsEnabled { get; set; }
     public StaleAction? OnStale { get; set; }
     public int? TimeoutSeconds { get; set; }
@@ -68,6 +73,7 @@ internal sealed class ToggleCronTickerBody
 
 internal sealed class TimeTickerNodeRequest
 {
+    public ChainDeleteBehavior? DeleteBehavior { get; set; }
     public string Function { get; set; } = string.Empty;
     public string? Description { get; set; }
     public int? Retries { get; set; }
@@ -77,6 +83,11 @@ internal sealed class TimeTickerNodeRequest
     public StaleAction? OnStale { get; set; }
     public int? TimeoutSeconds { get; set; }
     public IList<TimeTickerNodeRequest>? Children { get; set; }
+}
+
+internal sealed class SetChainDeleteBehaviorRequest
+{
+    public ChainDeleteBehavior? DeleteBehavior { get; set; }
 }
 
 internal sealed class AddTimeTickerChainRequest
@@ -151,6 +162,10 @@ internal sealed class TickerRequestPayloadResponse
 
 internal sealed class TickerLogLineResponse
 {
+    public string? LifecycleEvent { get; set; }
+    public string? Status { get; set; }
+    public int Attempt { get; set; }
+    public System.Guid Id { get; set; }
     public long UnixMs { get; set; }
     public int Level { get; set; }
     public string Source { get; set; } = string.Empty;
@@ -162,4 +177,29 @@ internal sealed class TickerLogLineResponse
 internal sealed class TickerLogTailResponseBody
 {
     public IList<TickerLogLineResponse> Lines { get; set; } = new List<TickerLogLineResponse>();
+    public string Storage { get; set; } = "memory";
+    public bool Truncated { get; set; }
+    public bool PersistenceAvailable { get; set; } = true;
+    public ExecutionLogHealthResponse? WriteHealth { get; set; }
+}
+
+internal sealed class TickerLogBatchRequest
+{
+    public List<TickerLogCursorRequest> Items { get; set; } = new();
+}
+internal sealed class TickerLogCursorRequest
+{
+    public System.Guid TickerId { get; set; }
+    public string? Cursor { get; set; }
+}
+internal sealed class TickerLogBatchResponse
+{
+    public List<TickerLogBatchItemResponse> Items { get; set; } = new();
+}
+internal sealed class TickerLogBatchItemResponse
+{
+    public System.Guid TickerId { get; set; }
+    public string Cursor { get; set; } = string.Empty;
+    public bool Reset { get; set; }
+    public TickerLogTailResponseBody Tail { get; set; } = new();
 }

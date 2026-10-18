@@ -19,11 +19,36 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.MongoDB.Infrastructure
 {
-    internal sealed class TickerMongoPersistenceProvider<TTimeTicker, TCronTicker> :
+    internal sealed partial class TickerMongoPersistenceProvider<TTimeTicker, TCronTicker> :
         ITickerPersistenceProvider<TTimeTicker, TCronTicker>
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
+        private IMongoCollection<BsonDocument> NotificationSettings => _context.Database.GetCollection<BsonDocument>(
+            _context.TimeTickers.CollectionNamespace.CollectionName + "_NotificationSettings");
+        public bool NotificationSettingsArePersistent => true;
+
+        public async Task<TickerQ.Utilities.Notifications.NotificationSettingsRecord> ReadNotificationSettingsAsync(CancellationToken cancellationToken = default)
+        {
+            var row = await NotificationSettings.Find(Builders<BsonDocument>.Filter.Eq("_id", _runtimePartitionKey))
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            return row == null ? null : new(Guid.Parse(row["Version"].AsString), row["ProtectedConfiguration"].AsString);
+        }
+
+        public async Task<bool> SaveNotificationSettingsAsync(TickerQ.Utilities.Notifications.NotificationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        {
+            var row = new BsonDocument { ["_id"] = _runtimePartitionKey, ["Version"] = record.Version.ToString(), ["ProtectedConfiguration"] = record.ProtectedConfiguration };
+            if (expectedVersion == Guid.Empty)
+            {
+                try { await NotificationSettings.InsertOneAsync(row, cancellationToken: cancellationToken).ConfigureAwait(false); return true; }
+                catch (MongoWriteException ex) when (ex.WriteError.Category == ServerErrorCategory.DuplicateKey) { return false; }
+            }
+            var result = await NotificationSettings.ReplaceOneAsync(
+                Builders<BsonDocument>.Filter.Eq("_id", _runtimePartitionKey) & Builders<BsonDocument>.Filter.Eq("Version", expectedVersion.ToString()),
+                row, cancellationToken: cancellationToken).ConfigureAwait(false);
+            return result.MatchedCount == 1;
+        }
+
         private readonly ITickerMongoContext<TTimeTicker, TCronTicker> _context;
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
@@ -1916,7 +1941,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 fb.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
                 fb.Lte(x => x.ExecutionTime, fallbackThreshold));
 
-            var candidates = await coll.Find(candidatesFilter).ToListAsync(cancellationToken).ConfigureAwait(false);
+            var candidates = await coll.Find(candidatesFilter).SortBy(x => x.ExecutionTime).ThenBy(x => x.Id)
+                .Limit(_schedulerOptions.FallbackBatchSize).ToListAsync(cancellationToken).ConfigureAwait(false);
             var acquired = new List<TTimeTicker>();
             using var session = await _context.Database.Client
                 .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -2924,6 +2950,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     Expression = item.Expression,
                     Retries = item.Retries,
                     RetryIntervals = item.RetryIntervals,
+                    SkipIfAlreadyRunning = item.SkipIfAlreadyRunning,
                     TimeoutSeconds = item.TimeoutSeconds,
                     DefinitionRevision = item.DefinitionRevision
                 };
@@ -2944,7 +2971,8 @@ namespace TickerQ.MongoDB.Infrastructure
                 fb.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
                 fb.Lte(x => x.ExecutionTime, fallbackThreshold)));
 
-            var candidates = await coll.Find(candidatesFilter).ToListAsync(cancellationToken).ConfigureAwait(false);
+            var candidates = await coll.Find(candidatesFilter).SortBy(x => x.ExecutionTime).ThenBy(x => x.Id)
+                .Limit(_schedulerOptions.FallbackBatchSize).ToListAsync(cancellationToken).ConfigureAwait(false);
             if (candidates.Count == 0) yield break;
 
             var cronById = await LoadCronTickers(candidates.Select(c => c.CronTickerId).ToArray(), cancellationToken).ConfigureAwait(false);
@@ -3006,6 +3034,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     RequestContractFingerprint = authoritative.RequestContractFingerprint,
                     RetryIntervals = authoritative.RetryIntervals,
                     Retries = authoritative.Retries,
+                    SkipIfAlreadyRunning = authoritative.SkipIfAlreadyRunning,
                     TimeoutSeconds = authoritative.TimeoutSeconds,
                     DefinitionRevision = authoritative.DefinitionRevision
                 };
@@ -3808,7 +3837,10 @@ namespace TickerQ.MongoDB.Infrastructure
                 var rootStillRoot = await coll.CountDocumentsAsync(
                     session,
                     InPartition(fb.And(fb.Eq(x => x.Id, rootId),
-                        fb.Eq(x => x.ParentId, (Guid?)null), eligible)),
+                        fb.Eq(x => x.ParentId, (Guid?)null), eligible,
+                        chainIds.Count > 1 ? fb.Or(fb.Eq(x => x.DeleteBehavior, ChainDeleteBehavior.Cascade),
+                            fb.Eq(x => x.DeleteBehavior, ChainDeleteBehavior.Restrict),
+                            fb.Exists(x => x.DeleteBehavior, false)) : fb.Empty)),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
                 if (rootStillRoot != 1)
                 {
@@ -4194,6 +4226,8 @@ namespace TickerQ.MongoDB.Infrastructure
                     var oldAggregate = await _context.TimeTickers.Find(
                             session, InPartition(Builders<TTimeTicker>.Filter.In(x => x.Id, oldIds)))
                         .ToListAsync(ct).ConfigureAwait(false);
+                    if (ChainDeletionPolicy.BlocksDeletion(oldRoot.DeleteBehavior,
+                            oldAggregate.Where(x => x.Id != oldRootId).Select(x => x.Status))) return 0;
                     var now = _clock.UtcNow;
                     if (oldAggregate.Count != oldIds.Count ||
                         oldAggregate.Any(x => x.Status == TickerStatus.InProgress ||
@@ -4245,6 +4279,19 @@ namespace TickerQ.MongoDB.Infrastructure
                 NormalizeReplacementChain(child, node.Id, rootId, visited);
         }
 
+        public Task<int> SetTimeTickerDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
+        {
+            if (!Enum.IsDefined(typeof(ChainDeleteBehavior), behavior)) throw new ArgumentOutOfRangeException(nameof(behavior));
+            return ExecuteAdmittedGraphMutationAsync(async (session, ct) =>
+            {
+                var filter = InPartition(Builders<TTimeTicker>.Filter.And(
+                    Builders<TTimeTicker>.Filter.Eq(x => x.Id, rootId), Builders<TTimeTicker>.Filter.Eq(x => x.ParentId, (Guid?)null)));
+                var update = Builders<TTimeTicker>.Update.Set(x => x.DeleteBehavior, behavior).Set(x => x.UpdatedAt, _clock.UtcNow);
+                var result = await _context.TimeTickers.UpdateOneAsync(session, filter, update, cancellationToken: ct).ConfigureAwait(false);
+                return (int)result.MatchedCount;
+            }, _ => throw new NotSupportedException("Atomic chain deletion policy changes require Mongo replica set transactions."), cancellationToken);
+        }
+
         public async Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default)
         {
             if (tickerIds == null || tickerIds.Length == 0) return 0;
@@ -4278,6 +4325,8 @@ namespace TickerQ.MongoDB.Infrastructure
                         session, InPartition(fb.In(x => x.Id, allIds)))
                     .ToListAsync(cancellationToken).ConfigureAwait(false);
                 if (snapshots.Count == 0) continue;
+                if (ChainDeletionPolicy.BlocksDeletion(requestedRoot.DeleteBehavior,
+                        snapshots.Where(x => x.Id != id).Select(x => x.Status))) continue;
 
                 // The explicit delete is aggregate-atomic: one active status, acquisition token, or live
                 // lease anywhere in the subtree retains every node and every result sidecar.

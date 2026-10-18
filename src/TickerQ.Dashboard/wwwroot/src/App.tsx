@@ -9,8 +9,12 @@ import CronTickersPage from "@/pages/CronTickers";
 import CronTickerDetailPage from "@/pages/CronTickerDetail";
 import ChainBuilderPage from "@/pages/ChainBuilder";
 import ChainFlowchartPage from "@/pages/ChainFlowchart";
+import CronOccurrenceChainPage from "@/pages/CronOccurrenceChain";
 import AssistantChatPage from "@/pages/AssistantChat";
+import NotificationsPage from "@/pages/Notifications";
 import LicensePage from "@/pages/License";
+import AboutPage from "@/pages/About";
+import DiagnosticsPage from "@/pages/Diagnostics";
 import LoginPage from "@/pages/Login";
 import { startTickerHub } from "@/services/ticker-hub";
 import { RequireAuth } from "@/lib/auth/RequireAuth";
@@ -39,9 +43,14 @@ export default function App() {
           <Route path="time-tickers/new-chain" element={<ChainBuilderPage />} />
           <Route path="time-tickers/:id/flowchart" element={<ChainFlowchartPage />} />
           <Route path="cron-tickers" element={<CronTickersPage />} />
+          <Route path="cron-tickers/new-chain" element={<ChainBuilderPage />} />
           <Route path="cron-tickers/:id" element={<CronTickerDetailPage />} />
+          <Route path="cron-tickers/:id/occurrences/:occurrenceId/flowchart" element={<CronOccurrenceChainPage />} />
           <Route path="assistant" element={<AssistantChatPage />} />
           <Route path="license" element={<LicensePage />} />
+          <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="about" element={<AboutPage />} />
+          <Route path="diagnostics" element={<DiagnosticsPage />} />
         </Route>
       </Route>
     </Routes>

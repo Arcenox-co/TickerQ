@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using TickerQ.Utilities.Entities.BaseEntity;
@@ -36,7 +36,22 @@ namespace TickerQ.Utilities.Entities
         [JsonIgnore]
         public virtual TTicker Parent { get; internal set; }
         public virtual ICollection<TTicker> Children { get; set; } = new List<TTicker>();
+        // Preserve derived entity fields while rebuilding query relationships without
+        // exposing or changing the provider's live navigation collections.
+        internal TTicker CreateQuerySnapshot()
+        {
+            var snapshot = (TTicker)MemberwiseClone();
+            snapshot.Children = new List<TTicker>();
+            snapshot.Parent = null;
+            return snapshot;
+        }
         public virtual RunCondition? RunCondition { get; set; }
+        /// <summary>
+        /// Root-level policy for explicit deletion, chain replacement, and retention.
+        /// Restrict preserves the whole chain until every descendant reaches a terminal status. Descendant values are ignored.
+        /// Existing jobs default to Cascade. This does not change job execution or cancellation.
+        /// </summary>
+        public virtual ChainDeleteBehavior DeleteBehavior { get; set; } = ChainDeleteBehavior.Cascade;
         /// <summary>
         /// Lease expiry for the node currently executing this ticker. Stamped when the
         /// ticker goes InProgress and renewed periodically by the running node; an
@@ -54,6 +69,8 @@ namespace TickerQ.Utilities.Entities
         /// <summary>The durable root of the execution graph containing this ticker.</summary>
         [JsonInclude]
         public virtual Guid? ChainRootId { get; set; }
+        /// <summary>Origin schedule for every node in a recurring chain; null for ordinary time tickers.</summary>
+        public virtual Guid? OriginCronTickerId { get; set; }
         /// <summary>
         /// Generation shared by every descendant of the currently acquired root. Unlike
         /// <see cref="AcquisitionToken"/>, this remains after root completion so delayed

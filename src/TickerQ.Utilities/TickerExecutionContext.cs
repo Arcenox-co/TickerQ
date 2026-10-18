@@ -52,7 +52,7 @@ internal class TickerExecutionContext
       Functions = copy;
    }
 
-   private static void CacheFunctionReferences(Span<InternalFunctionContext> functions)
+   internal static void CacheFunctionReferences(Span<InternalFunctionContext> functions)
    {
       for (var i = 0; i < functions.Length; i++)
       {

@@ -4,7 +4,7 @@ This page documents the execution guarantees TickerQ makes, the ownership model 
 keeps distributed nodes from stepping on each other, and the knobs that control lease
 renewal, stale-job recovery, timeouts, and graceful shutdown.
 
-All options below live on `SchedulerOptionsBuilder`, configured through `AddTickerQ`:
+Scheduler options live on `SchedulerOptionsBuilder`, configured through `AddTickerQ`:
 
 ```csharp
 builder.Services.AddTickerQ(options =>
@@ -19,6 +19,36 @@ builder.Services.AddTickerQ(options =>
     });
 });
 ```
+
+## Per-function concurrency
+
+Set `maxConcurrency` on a function to limit how many jobs may invoke it at the same
+time in one application instance:
+
+```csharp
+[TickerFunction("ProcessInvoices", maxConcurrency: 1)]
+public async Task ProcessInvoices(TickerFunctionContext context, CancellationToken cancellationToken)
+{
+    await ProcessInvoicesAsync(cancellationToken);
+}
+```
+
+The limit is shared by every job using that registered function name, including
+standalone jobs, cron occurrences, chained children at every depth, run-now dispatch,
+and overdue recovery. Different function names have independent limits. The default
+`0` adds no per-function limit; the scheduler's worker capacity is configured separately.
+
+Each attempt acquires a slot before invoking the function and releases it when the
+attempt exits. Retry delays and child traversal do not hold the parent's slot, so a
+parent and child can safely use the same function with `maxConcurrency: 1`. A child
+with `RunCondition.InProgress` still waits for a slot if its function is at capacity.
+Waiting order is not guaranteed.
+
+Waiting is cancellable, and an acquired root stays visible to lease renewal while
+waiting. The execution timeout starts after a slot is acquired. If a timed-out function
+ignores cancellation, its slot remains occupied until the function actually exits.
+Await all work inside the handler: detached work that continues after it returns is
+outside this limit. This setting is local to the application instance, not a distributed lock.
 
 ## Execution guarantee: at-least-once
 
@@ -74,13 +104,17 @@ lease ownership**. A node may only write a terminal result for a row it still ow
 
 While a job is executing — or is *acquired and waiting* for a concurrency slot — its lease
 is periodically renewed so a live-but-busy node is never mistaken for a dead one. A single
-recovery loop per node handles both renewal and the stale-job watchdog.
+recovery service per node runs independent renewal and stale-job watchdog loops. A slow
+stale-job sweep cannot delay the next renewal. Each database operation receives a
+cancellation deadline equal to `LeaseRenewalInterval`; providers must honor cancellation.
+Renewals continue for already-owned executions even if the license expires while they drain.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `StaleJobRecoveryEnabled` | `true` | Master switch for lease renewal + stale watchdog. Disable to revert to "dead node leaves rows `InProgress` forever." |
 | `LeaseDuration` | `45s` | How long a lease lasts from each renewal. Must be comfortably larger than `LeaseRenewalInterval` (3× or more) so a transient DB hiccup or GC pause doesn't get a live job treated as stale. |
-| `LeaseRenewalInterval` | `15s` | How often the running node renews leases for its active jobs. |
+| `LeaseRenewalInterval` | `15s` | Renewal cadence and per-operation cancellation deadline for renewal/recovery. |
+| `FallbackBatchSize` | `100` | Maximum overdue roots of each ticker type acquired per scan by the built-in providers. Children stay attached to their root. |
 | `QueuedLockTimeout` | `2m` | Max age of the short persisted `Queued` handoff lock before recovery resets it to `Idle`. Protects the crash window between queue acquisition and the `InProgress` transition without releasing a live sibling. |
 | `MaxStaleRestarts` | `3` | Poison-job guard: after this many stale restarts the ticker is `Cancelled` instead, so a job that kills its host can't crash-loop the cluster. |
 
@@ -229,6 +263,29 @@ Drain completion is measured from the scheduler's authoritative queued + active-
 counts, not inferred from worker threads. If the timeout is hit, the remaining queued/active
 counts are logged and abandoned jobs are recovered later through lease expiry.
 
+The host shutdown deadline covers **all** services. Reserve time after scheduler drain for
+webhook delivery and execution-log persistence, for example:
+
+```csharp
+builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(options =>
+{
+    options.ShutdownTimeout = TimeSpan.FromSeconds(60);
+    options.ServicesStopConcurrently = false;
+});
+```
+
+The built-in webhook pump stops after scheduler/recovery producers. It completes its queue
+and drains for up to 10 seconds, bounded by the remaining host deadline. HTTP timeouts,
+network failures, 408, 429 and 5xx responses receive bounded retries; other 4xx responses
+are logged without retry. Alerts remain best-effort: process crashes, queue overflow, or
+an exhausted shutdown deadline can lose notifications.
+
+Scheduler timing options are validated during `AddTickerQ`: finite positive maintenance
+intervals, a lease at least three times the renewal interval, positive worker/batch counts,
+and a nonnegative shutdown drain. A zero drain remains supported. Overdue and regular
+scheduling share ownership registration and generation-fenced release; queued acquisitions
+remain visible to lease renewal before any worker-capacity wait.
+
 ## Global concurrency
 
 `SchedulerOptionsBuilder.MaxConcurrency` (default `Environment.ProcessorCount`) bounds the
@@ -254,5 +311,60 @@ authentication; the execution contract is:
   cron id so one cron fires once regardless of how many occurrences are selected. The
   response's `Affected` count reflects only rows that were actually revived.
 
-Run-now performs a real acquisition rather than merely bumping `ExecutionTime`, so a job
-runs **exactly once** per successful trigger even under concurrent clicks.
+Time run-now performs an atomic acquisition rather than merely changing `ExecutionTime`.
+Only one caller wins while that job is acquired. Cron run-now creates a new occurrence for
+each accepted request; `SkipIfAlreadyRunning` controls overlap for that cron definition.
+Neither operation guarantees exactly-once application side effects across retries or crashes.
+
+## Manager operations and committed results
+
+Both managers expose `RunNowAsync` and `RequestCancellationAsync` for running jobs.
+Time tickers also support `CancelAsync` to atomically cancel pending jobs and their pending descendants. Cron also exposes `SetEnabledAsync`
+and typed creation overloads for functions registered with `MapTicker<TFunction>`:
+
+```csharp
+var created = await cronManager.AddAsync<DailySummary>("0 0 8 * * *", cancellationToken);
+if (!created.IsSucceeded)
+    throw created.Exception;
+
+var manualRun = await cronManager.RunNowAsync(created.Result.Id, cancellationToken);
+if (!manualRun.IsSucceeded)
+    throw manualRun.Exception;
+
+// Cron cancellation takes the occurrence ID returned by RunNowAsync.
+var cancellation = await cronManager.RequestCancellationAsync(manualRun.Result.Id, cancellationToken);
+await cronManager.SetEnabledAsync(created.Result.Id, false, cancellationToken);
+
+// Time operations use the time ticker ID; run-now accepts root jobs only.
+var timeRun = await timeManager.RunNowAsync(timeTickerId, cancellationToken);
+var timeCancellation = await timeManager.RequestCancellationAsync(timeTickerId, cancellationToken);
+```
+
+For request-bearing functions use
+`AddAsync<TFunction, TRequest>(expression, request, cancellationToken)`; the manager resolves
+the registered function name and validates its request contract just as it does for entity-based
+creation. Use entity-based creation to configure retries, overlap policy, or a recurring chain.
+
+Run-now requires a running, licensed dispatcher. Success means the work was accepted, not
+that its handler finished successfully. Time run-now returns `AffectedRows = 1` without a
+`Result` entity. Cron run-now returns the new occurrence so callers can track its ID. Immediate
+dispatch and notifications continue independently of caller cancellation after persistence.
+If dispatch fails after acquisition, the result remains accepted, the error is logged, and
+normal lease-expiry recovery handles the persisted work when recovery is enabled.
+
+Cancellation is cooperative and applies only to executions registered on the current host
+in the manager's runtime partition. `AffectedRows` is `1` when a matching execution was
+signalled, or `0` when none was found. It does not delete a job, cancel an entire chain, or
+cancel work running on another server. Handlers must observe their cancellation token.
+Disabling a cron prevents future scheduling and does not cancel an active occurrence.
+
+Manager insert operations fail when the provider reports zero inserted rows; an empty add
+batch is a successful no-op. Update/delete operations preserve their existing semantics:
+check `AffectedRows` to distinguish a change from a successful no-op. Batch counts come from
+the provider and may include descendants; they are not necessarily the number of input roots.
+Batch atomicity remains provider-specific.
+
+Once persistence succeeds, a failed dashboard notification or scheduler follow-up is logged
+and does not turn the result into a failed save. Retrying a committed insert can create duplicate
+work. Dashboard notifications are best-effort refresh hints, including for updates, deletes,
+and cron enable/disable; clients can refetch persisted state if a notification is missed.

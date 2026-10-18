@@ -26,7 +26,7 @@ public sealed class LicenseEnforcementTests
             manager,
             new SchedulerOptionsBuilder(),
             Substitute.For<ITickerQFailureNotifier>(),
-            BlockedState(clock));
+            BlockedState(clock), new TickerFunctionConcurrencyGate());
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.ExecuteTaskAsync(null!, isDue: false));
@@ -43,7 +43,6 @@ public sealed class LicenseEnforcementTests
         var dispatcher = new TickerQDispatcher(
             scheduler,
             Substitute.For<ITickerExecutionTaskHandler>(),
-            new TickerFunctionConcurrencyGate(),
             BlockedState(clock));
 
         Assert.False(dispatcher.IsEnabled);
@@ -63,7 +62,6 @@ public sealed class LicenseEnforcementTests
             taskScheduler,
             Substitute.For<IInternalTickerManager>(),
             new SchedulerOptionsBuilder(),
-            new TickerFunctionConcurrencyGate(),
             BlockedState(clock));
 
         await service.StartAsync(CancellationToken.None);

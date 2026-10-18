@@ -12,7 +12,7 @@ using TickerQ.Utilities.Models;
 namespace TickerQ.BackgroundServices;
 
 /// <summary>
-/// Two halves of runtime stale-job recovery, one loop per node:
+/// Two independent loops per node for runtime stale-job recovery:
 /// 1. Lease renewal — every <see cref="SchedulerOptionsBuilder.LeaseRenewalInterval"/>,
 ///    one batched update pushes <c>LeaseUntil</c> forward for everything this node is
 ///    executing right now (no-op when idle). A renewal that comes back short means the
@@ -66,29 +66,37 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
             return;
         }
 
-        while (!stoppingToken.IsCancellationRequested && _licenseState.ExecutionAllowed)
+        await Task.WhenAll(
+            RunLoopAsync(renewal: true, stoppingToken),
+            RunLoopAsync(renewal: false, stoppingToken)).ConfigureAwait(false);
+    }
+
+    private async Task RunLoopAsync(bool renewal, CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(_schedulerOptions.LeaseRenewalInterval);
+        try
         {
-            try
+            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
             {
-                await Task.Delay(_schedulerOptions.LeaseRenewalInterval, stoppingToken);
-
-                if (!_licenseState.ExecutionAllowed)
-                    return;
-
-                await RenewLeasesAsync(stoppingToken);
-                await SweepStaleAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                // Never let a transient DB failure stop the host — a missed renewal
-                // is absorbed by the lease being a multiple of the renewal interval.
-                _logger.LogWarning(ex, "Stale-job recovery cycle failed; retrying next interval");
+                // A license transition blocks new recovery work, but existing delegates still need
+                // renewable ownership until they actually finish or shutdown cancels the service.
+                if (!renewal && !_licenseState.ExecutionAllowed) return;
+                try
+                {
+                    using var operation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                    operation.CancelAfter(_schedulerOptions.LeaseRenewalInterval);
+                    if (renewal) await RenewLeasesAsync(operation.Token).ConfigureAwait(false);
+                    else await SweepStaleAsync(operation.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "TickerQ {Operation} failed or timed out; retrying next interval",
+                        renewal ? "lease renewal" : "stale-job sweep");
+                }
             }
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
     }
 
     private async Task RenewLeasesAsync(CancellationToken ct)

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore.Query;
@@ -23,6 +23,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 RetryIntervals = e.RetryIntervals,
                 Retries = e.Retries,
                 TimeoutSeconds = e.TimeoutSeconds,
+                SkipIfAlreadyRunning = e.SkipIfAlreadyRunning,
                 IsEnabled = e.IsEnabled
             };
 
@@ -39,6 +40,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 TimeoutSeconds = e.TimeoutSeconds,
                 UpdatedAt = e.UpdatedAt,
                 ParentId = e.ParentId,
+                DeleteBehavior = e.DeleteBehavior,
                 ExecutionTime = e.ExecutionTime,
                 Status = e.Status,
                 LockHolder = e.LockHolder,
@@ -65,6 +67,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     RetryIntervals = ch.RetryIntervals,
                     TimeoutSeconds = ch.TimeoutSeconds,
                     ParentId = ch.ParentId,
+                    DeleteBehavior = ch.DeleteBehavior,
                     ChainRootId = ch.ChainRootId,
                     ChainGeneration = ch.ChainGeneration,
                     RunCondition = ch.RunCondition,
@@ -77,6 +80,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         RetryIntervals = gch.RetryIntervals,
                         TimeoutSeconds = gch.TimeoutSeconds,
                         ParentId = gch.ParentId,
+                        DeleteBehavior = gch.DeleteBehavior,
                         ChainRootId = gch.ChainRootId,
                         ChainGeneration = gch.ChainGeneration,
                         Id = gch.Id,
@@ -106,6 +110,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     RequestContractFingerprint = e.CronTicker.RequestContractFingerprint,
                     RetryIntervals = e.CronTicker.RetryIntervals,
                     Retries = e.CronTicker.Retries,
+                    SkipIfAlreadyRunning = e.CronTicker.SkipIfAlreadyRunning,
                     TimeoutSeconds = e.CronTicker.TimeoutSeconds
                 }
             };
@@ -132,6 +137,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     DefinitionRevision = e.CronTicker.DefinitionRevision,
                     RetryIntervals = e.CronTicker.RetryIntervals,
                     Retries = e.CronTicker.Retries,
+                    SkipIfAlreadyRunning = e.CronTicker.SkipIfAlreadyRunning,
                     TimeoutSeconds = e.CronTicker.TimeoutSeconds
                 }
             };

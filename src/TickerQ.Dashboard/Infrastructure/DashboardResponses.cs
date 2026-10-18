@@ -41,7 +41,7 @@ internal class DashboardOptionsResponse
     public string LastHostExceptionMessage { get; set; }
     public string SchedulerTimeZone { get; set; }
 
-    /// <summary>Minimum interval between database polls (guards against tight loops).</summary>
+    /// <summary>Lower bound on the calculated scheduler wait, not a fixed polling cadence.</summary>
     public TimeSpan MinPollingInterval { get; set; }
 
     /// <summary>Interval of the fallback due-work checker.</summary>
@@ -55,6 +55,39 @@ internal class DashboardOptionsResponse
 
     /// <summary>Historical-record retention state exposed to the dashboard.</summary>
     public RetentionConfigResponse Retention { get; set; }
+    public ExecutionLogConfigResponse ExecutionLogs { get; set; }
+}
+
+internal class ExecutionLogConfigResponse
+{
+    public bool Enabled { get; set; }
+    public bool PersistToDatabase { get; set; }
+    public string MinimumLevel { get; set; }
+    public int MaxLinesPerExecution { get; set; }
+    public int MaxBytesPerExecution { get; set; }
+    public int MaxStoredExecutions { get; set; }
+    public TimeSpan Retention { get; set; }
+    public TimeSpan MemoryRetention { get; set; }
+    public TimeSpan FlushInterval { get; set; }
+}
+
+internal sealed class ExecutionLogHealthResponse
+{
+    public bool? WritesAvailable { get; set; }
+    public int PendingWrites { get; set; }
+    public long DroppedUnflushedExecutions { get; set; }
+    public long WriteFailures { get; set; }
+    public DateTimeOffset? LastSuccessfulFlushUtc { get; set; }
+    public DateTimeOffset? LastFailureUtc { get; set; }
+}
+
+internal sealed class RuntimeDiagnosticsResponse
+{
+    public string Node { get; set; }
+    public DateTimeOffset? LastSuccessfulFallbackScanUtc { get; set; }
+    public DateTimeOffset? LastFallbackFailureUtc { get; set; }
+    public long FallbackScanFailures { get; set; }
+    public ExecutionLogHealthResponse ExecutionLogs { get; set; }
 }
 
 internal class RetentionConfigResponse
@@ -141,6 +174,7 @@ internal class TupleResponse<T1, T2>
 
 internal class FrontendConfigResponse
 {
+    public bool NotificationsEnabled { get; set; }
     public string BasePath { get; set; }
     public string BackendDomain { get; set; }
 

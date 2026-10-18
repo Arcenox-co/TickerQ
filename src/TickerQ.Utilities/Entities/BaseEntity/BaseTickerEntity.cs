@@ -6,6 +6,7 @@ namespace TickerQ.Utilities.Entities.BaseEntity
 {
     public class BaseTickerEntity
     {
+        internal BaseTickerEntity CreateShallowSnapshot() => (BaseTickerEntity)MemberwiseClone();
         [JsonIgnore]
         public virtual string ApplicationNamespaceKey { get; set; } = TickerQRuntimePartition.LegacyGlobal.StorageKey;
         public virtual Guid Id { get; set; } = Guid.NewGuid();

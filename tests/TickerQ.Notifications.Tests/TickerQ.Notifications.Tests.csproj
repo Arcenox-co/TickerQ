@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><IsPackable>false</IsPackable></PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="[10.0.13,11.0.0)" />
+    <ProjectReference Include="../../src/TickerQ.Notifications/TickerQ.Notifications.csproj" />
+    <ProjectReference Include="../../src/TickerQ/TickerQ.csproj" />
+    <ProjectReference Include="../../src/TickerQ.Dashboard/TickerQ.Dashboard.csproj" />
+    <Using Include="Xunit" />
+  </ItemGroup>
+</Project>

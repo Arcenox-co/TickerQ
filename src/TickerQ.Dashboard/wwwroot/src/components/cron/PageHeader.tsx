@@ -15,8 +15,8 @@ export function PageHeader({
   className?: string;
 }) {
   return (
-    <div className={cn("flex items-start justify-between gap-4", className)}>
-      <div className="space-y-1">
+    <div className={cn("flex flex-col items-start justify-between gap-4 sm:flex-row sm:flex-wrap", className)}>
+      <div className="min-w-0 space-y-1">
         <div className="flex items-center gap-2.5">
           <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
           {count !== undefined && (
@@ -30,7 +30,7 @@ export function PageHeader({
         )}
       </div>
       {children && (
-        <div className="flex items-center gap-2 shrink-0">{children}</div>
+        <div className="flex max-w-full flex-wrap items-center gap-2">{children}</div>
       )}
     </div>
   );

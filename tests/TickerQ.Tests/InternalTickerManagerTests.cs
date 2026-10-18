@@ -1057,6 +1057,7 @@ public class InternalTickerManagerTests
             {
                 Id = cronTickerId,
                 Function = "TimedOutCronFunc",
+                SkipIfAlreadyRunning = true,
                 Retries = 2,
                 RetryIntervals = new[] { 500, 1000 },
                 RequestContractVersion = 9,
@@ -1083,6 +1084,7 @@ public class InternalTickerManagerTests
         var cronResult = Assert.Single(results.Where(r => r.Type == TickerType.CronTickerOccurrence));
         Assert.Equal(cronOccurrenceId, cronResult.TickerId);
         Assert.Equal("TimedOutCronFunc", cronResult.FunctionName);
+        Assert.True(cronResult.SkipIfAlreadyRunning);
         Assert.Equal(cronTickerId, cronResult.ParentId);
         Assert.Equal(2, cronResult.Retries);
         Assert.Equal(9, cronResult.RequestContractVersion);

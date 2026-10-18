@@ -1,26 +1,27 @@
+import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
 import { useMemo } from "react";
+import { Link } from "react-router-dom";
 import {
   Activity,
+  ArrowUpRight,
   CheckCircle2,
   Clock,
   Code2,
-  Play,
-  RotateCcw,
-  Square,
   Timer,
   XCircle,
   Zap,
 } from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import { DataCard, DataCardHeader } from "@/components/cron/PageHeader";
+import { SchedulerHostCard } from "@/components/cron/SchedulerHostCard";
 import { MetricTile } from "@/components/cron/MetricTile";
-import { HealthDot, PriorityBadge, StatusBadge, TypeBadge } from "@/components/cron/StatusBadges";
+import { LockHolder } from "@/components/cron/LockHolder";
+import { PriorityBadge, TypeBadge } from "@/components/cron/StatusBadges";
 import {
   ExecutionVolumeChart,
   bucketsToVolume,
   emptyVolumeData,
 } from "@/components/cron/ExecutionVolumeChart";
-import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -31,12 +32,8 @@ import {
 } from "@/components/ui/table";
 import {
   useAllFunctions,
-  useHostStatus,
   useOverallStatuses,
   useRecentActivity,
-  useRestartHost,
-  useStartHost,
-  useStopHost,
   useTimeTickersGraph,
   useUpcoming,
 } from "@/services/hooks";
@@ -44,27 +41,40 @@ import { formatDuration } from "@/lib/cron/format";
 import { TimeCell } from "@/components/cron/TimeCell";
 import { QueryErrorNotice } from "@/components/cron/QueryErrorNotice";
 import { CHART_COLORS, CHART_TOOLTIP_STYLE } from "@/lib/cron/status-config";
-import { isReadOnly } from "@/lib/runtime-config";
-import type { TickerStatus } from "@/services/api-types";
+import type { ExecutionType, TickerStatus } from "@/services/api-types";
 
 const ACTIVE_STATUSES: TickerStatus[] = ["Idle", "Queued", "InProgress"];
 
+function TickerDetailsLink({ id, type, cronTickerId, functionName }: {
+  id: string;
+  type: ExecutionType;
+  cronTickerId?: string | null;
+  functionName: string;
+}) {
+  const isCron = type === "CronOccurrence";
+  if (isCron && !cronTickerId) return <span>{functionName}</span>;
+  const label = `View ${isCron ? "cron" : "time ticker"} details for ${functionName || id}`;
+  return (
+    <Link
+      to={isCron ? `/cron-tickers/${cronTickerId}?occurrence=${id}` : `/time-tickers?ticker=${id}`}
+      title={label}
+      aria-label={label}
+      className="group inline-flex max-w-[200px] items-center gap-1.5 rounded-sm text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+    >
+      <span className="truncate">{functionName || "Unnamed function"}</span>
+      <ArrowUpRight className="size-3.5 shrink-0 text-muted-foreground group-hover:text-primary group-focus-visible:text-primary" aria-hidden="true" />
+    </Link>
+  );
+}
+
 export default function OverviewPage() {
-  const hostQuery = useHostStatus();
   const overallQuery = useOverallStatuses();
-  const host = hostQuery.data;
   const overall = overallQuery.data;
   const { data: upcoming } = useUpcoming(10);
   const { data: recent } = useRecentActivity(10);
   const { data: fns } = useAllFunctions();
   const { data: graph } = useTimeTickersGraph(7, 0);
 
-  const readOnly = isReadOnly();
-  const startMutation = useStartHost();
-  const stopMutation = useStopHost();
-  const restartMutation = useRestartHost();
-
-  const isRunning = host?.isRunning ?? false;
   const volumeData = useMemo(
     () => (graph ? bucketsToVolume(graph) : emptyVolumeData()),
     [graph]
@@ -101,64 +111,12 @@ export default function OverviewPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <HealthDot status={isRunning ? "green" : "red"} className="h-2.5 w-2.5" />
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight">Scheduler Host</h1>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[11px] text-muted-foreground">
-                {isRunning
-                  ? `${host?.activeThreads ?? 0} / ${host?.maxConcurrency ?? 0} threads`
-                  : "Host stopped"}
-              </span>
-            </div>
-          </div>
-        </div>
+      <SchedulerHostCard />
 
-        {!readOnly && (
-          <div className="flex items-center gap-1.5">
-            {isRunning ? (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-[11px] bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-surface-2 rounded-lg"
-                  disabled={restartMutation.isPending}
-                  onClick={() => restartMutation.mutate()}
-                >
-                  <RotateCcw className="h-3 w-3 mr-1.5" /> Restart
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-[11px] bg-transparent border-status-error/30 text-status-error hover:bg-status-error/10 rounded-lg"
-                  disabled={stopMutation.isPending}
-                  onClick={() => stopMutation.mutate()}
-                >
-                  <Square className="h-3 w-3 mr-1.5" /> Stop
-                </Button>
-              </>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-[11px] bg-transparent border-status-healthy/30 text-status-healthy hover:bg-status-healthy/10 rounded-lg"
-                disabled={startMutation.isPending}
-                onClick={() => startMutation.mutate()}
-              >
-                <Play className="h-3 w-3 mr-1.5" /> Start
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
-
-      {(hostQuery.isError || overallQuery.isError) && (
+      {overallQuery.isError && (
         <QueryErrorNotice
-          message="Failed to load scheduler data — the values below may be stale or empty."
+          message="Failed to load execution counts — the values below may be stale or empty."
           onRetry={() => {
-            void hostQuery.refetch();
             void overallQuery.refetch();
           }}
         />
@@ -201,14 +159,14 @@ export default function OverviewPage() {
       {/* Chart + Status Distribution */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <ExecutionVolumeChart
-          className="lg:col-span-2"
+          className="min-w-0 overflow-hidden lg:col-span-2"
           data={volumeData}
           title="Execution Volume (7d)"
           gradientPrefix="ov"
           height={240}
         />
 
-        <DataCard>
+        <DataCard className="min-w-0 overflow-hidden">
           <DataCardHeader title="Status Distribution" />
           <div className="p-4">
             {pieData.length > 0 ? (
@@ -278,7 +236,7 @@ export default function OverviewPage() {
                   <TableHead className="text-[11px] text-muted-foreground/60 px-4 py-2">Function</TableHead>
                   <TableHead className="text-[11px] text-muted-foreground/60 px-4 py-2">Type</TableHead>
                   <TableHead className="text-[11px] text-muted-foreground/60 px-4 py-2">Scheduled For</TableHead>
-                  <TableHead className="text-[11px] text-muted-foreground/60 px-4 py-2">Lock Holder</TableHead>
+                  <TableHead className="text-[11px] text-muted-foreground/60 px-4 py-2">Node</TableHead>
                   <TableHead className="text-[11px] text-muted-foreground/60 px-4 py-2">Priority</TableHead>
                 </TableRow>
               </TableHeader>
@@ -291,13 +249,13 @@ export default function OverviewPage() {
                   </TableRow>
                 ) : (
                   (upcoming ?? []).map((t) => (
-                    <TableRow key={t.id} className="border-b border-border/30 last:border-0 hover:bg-surface-2/15">
+                    <TableRow key={`${t.type ?? "TimeTicker"}:${t.id}`} className="border-b border-border/30 last:border-0 hover:bg-surface-2/15">
                       <TableCell className="px-4 py-2 font-mono text-[11px]">
-                        {t.functionName}
+                        <TickerDetailsLink id={t.id} type={t.type ?? "TimeTicker"} cronTickerId={t.cronTickerId} functionName={t.functionName} />
                       </TableCell>
                       <TableCell className="px-4 py-2">
                         <TypeBadge
-                          type="Time"
+                          type={t.type === "CronOccurrence" ? "Cron" : "Time"}
                           chainChildCount={t.childCount}
                         />
                       </TableCell>
@@ -305,7 +263,7 @@ export default function OverviewPage() {
                         <TimeCell value={t.scheduledFor} />
                       </TableCell>
                       <TableCell className="px-4 py-2 font-mono text-[11px] text-muted-foreground">
-                        {t.lockHolder ?? "—"}
+                        <LockHolder value={t.lockHolder} />
                       </TableCell>
                       <TableCell className="px-4 py-2">
                         <PriorityBadge priority={t.priority} />
@@ -342,18 +300,19 @@ export default function OverviewPage() {
                   </TableRow>
                 ) : (
                   (recent ?? []).map((r) => (
-                    <TableRow key={r.id} className="border-b border-border/30 last:border-0 hover:bg-surface-2/15">
-                      <TableCell className="px-4 py-2 font-mono text-[11px] truncate max-w-[180px]">
-                        {r.functionName}
+                    <TableRow key={`${r.type}:${r.id}`} className="border-b border-border/30 last:border-0 hover:bg-surface-2/15">
+                      <TableCell className="px-4 py-2 font-mono text-[11px]">
+                        <TickerDetailsLink id={r.id} type={r.type} cronTickerId={r.cronTickerId} functionName={r.functionName} />
                       </TableCell>
                       <TableCell className="px-4 py-2">
                         <TypeBadge
                           type={r.type === "CronOccurrence" ? "Cron" : "Time"}
                           chainChildCount={r.childCount}
+                          isChain={!!r.chainRootId || r.childCount > 0}
                         />
                       </TableCell>
                       <TableCell className="px-4 py-2">
-                        <StatusBadge status={r.status} />
+                        <ExecutionStatus status={r.status} summary={r.chainSummary} isChain={!!r.chainRootId || r.childCount > 0} />
                       </TableCell>
                       <TableCell className="px-4 py-2 text-[11px] tabular-nums">
                         {r.executedAt ? formatDuration(r.elapsedTime) : "—"}

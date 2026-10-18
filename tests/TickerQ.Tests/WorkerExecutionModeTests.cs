@@ -115,7 +115,7 @@ public sealed class WorkerExecutionModeTests
             manager,
             new SchedulerOptionsBuilder(),
             Substitute.For<ITickerQFailureNotifier>(),
-            LicenseTestState.Active(clock),
+            LicenseTestState.Active(clock), new TickerFunctionConcurrencyGate(),
             _ => null);
     }
 

@@ -57,16 +57,21 @@ export interface DashboardOptionsResponse {
   lastHostExceptionMessage: string | null;
   /** IANA timezone name (e.g. "Europe/Ljubljana") configured on the scheduler. */
   schedulerTimeZone: string;
-  /** Minimum interval between database polls. .NET TimeSpan string. */
+  /** Minimum calculated scheduler wait, not a fixed polling cadence. Negative → zero. */
   minPollingInterval: string;
-  /** Interval of the fallback due-work checker. .NET TimeSpan string. */
+  /** Fallback delay after an empty/failed overdue-work check. .NET TimeSpan string. */
   fallbackIntervalChecker: string;
   /** Global per-attempt execution timeout (.NET TimeSpan string). Null → no timeout. */
   defaultExecutionTimeout: string | null;
-  /** True when the stale-job watchdog recovers jobs abandoned by a dead node. */
+  /** Configured recovery opt-in; effective recovery also requires provider lease support. */
   staleJobRecoveryEnabled: boolean;
   /** Effective historical-record retention policy. */
   retention: RetentionConfig;
+  executionLogs?: {
+    enabled: boolean; persistToDatabase: boolean; minimumLevel: string;
+    maxLinesPerExecution: number; maxBytesPerExecution: number; maxStoredExecutions: number;
+    retention: string; memoryRetention: string; flushInterval: string;
+  };
 }
 
 /** Non-secret view of the job-retention maintenance settings. A null window means
@@ -127,7 +132,23 @@ export interface PaginationResult<T> {
   lastItemIndex: number;
 }
 
+export type ChainDeleteBehavior = "Cascade" | "Restrict";
+
+export interface ChainExecutionSummaryDto {
+  status: "Waiting" | "Running" | "Completed" | "Failed" | "Cancelled" | "Unavailable";
+  totalCount: number;
+  finishedCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  skippedCount: number;
+}
+
 export interface TimeTickerFlatDto {
+  chainSummary?: ChainExecutionSummaryDto | null;
+  type?: ExecutionType;
+  cronTickerId?: string | null;
+  originCronTickerId?: string | null;
+  deleteBehavior?: ChainDeleteBehavior;
   id: string;
   functionName: string;
   status: TickerStatus;
@@ -151,7 +172,27 @@ export interface TimeTickerFlatDto {
   timeoutSeconds: number | null;
 }
 
+export interface CronChainNode {
+  function: string;
+  description?: string | null;
+  request?: string | null;
+  retries: number;
+  retryIntervals?: number[] | null;
+  runCondition: RunCondition;
+  onStale: StaleAction;
+  timeoutSeconds?: number | null;
+  children: CronChainNode[];
+}
+export interface CronChainTemplate {
+  deleteBehavior: ChainDeleteBehavior;
+  children: CronChainNode[];
+}
+
 export interface CronTickerFlatDto {
+  lastRunChainRootId?: string | null;
+  lastRunChainSummary?: ChainExecutionSummaryDto | null;
+  skipIfAlreadyRunning: boolean;
+  chain?: CronChainTemplate | null;
   id: string;
   functionName: string;
   expression: string;
@@ -170,6 +211,9 @@ export interface CronTickerFlatDto {
 }
 
 export interface CronOccurrenceFlatDto {
+  chainSummary?: ChainExecutionSummaryDto | null;
+  chainRootId?: string | null;
+  chainLockHolder?: string | null;
   id: string;
   cronTickerId: string;
   functionName: string;
@@ -186,6 +230,8 @@ export interface CronOccurrenceFlatDto {
 }
 
 export interface ExecutionFlatDto {
+  chainSummary?: ChainExecutionSummaryDto | null;
+  chainRootId?: string | null;
   id: string;
   type: ExecutionType;
   /** Parent cron ticker id — set for cron occurrences only. Enables "retry" without an extra lookup. */
@@ -249,8 +295,8 @@ export interface FunctionInfoDto {
   requestExample: string | null;
   priority: TickerTaskPriority;
   cronExpression: string | null;
-  /** Per-function concurrency limit. Zero means unlimited. */
-  maxConcurrency: number;
+  /** Per-function execution limit. Non-positive means no limit; null means unavailable. */
+  maxConcurrency: number | null;
 }
 
 export interface GraphBucketCountDto {
@@ -355,6 +401,8 @@ export interface DuplicateTimeTickerRequest {
 }
 
 export interface AddCronTickerRequest {
+  skipIfAlreadyRunning?: boolean;
+  chain?: CronChainTemplate | null;
   function: string;
   expression: string;
   description?: string | null;
@@ -367,6 +415,9 @@ export interface AddCronTickerRequest {
 }
 
 export interface UpdateCronTickerRequest {
+  skipIfAlreadyRunning?: boolean;
+  chain?: CronChainTemplate | null;
+  replaceChain?: boolean;
   function?: string | null;
   expression?: string | null;
   description?: string | null;
@@ -393,6 +444,7 @@ export interface ToggleCronTickerBody {
 }
 
 export interface TimeTickerNode {
+  deleteBehavior?: ChainDeleteBehavior;
   function: string;
   description?: string | null;
   retries?: number | null;
@@ -425,6 +477,10 @@ export interface TickerRequestPayloadResponse {
 }
 
 export interface TickerLogLine {
+  lifecycleEvent?: "Created" | "Queued" | "Started" | "RetryScheduled" | "Completed" | "ChainLaunched" | null;
+  status?: TickerStatus | null;
+  attempt?: number;
+  id?: string;
   unixMs: number;
   level: number;
   source: string;
@@ -435,4 +491,30 @@ export interface TickerLogLine {
 
 export interface TickerLogTailResponse {
   lines: TickerLogLine[];
+  storage?: "memory" | "database" | "disabled";
+  truncated?: boolean;
+  persistenceAvailable?: boolean;
+  writeHealth?: ExecutionLogHealth;
+}
+
+export interface ExecutionLogHealth {
+  writesAvailable: boolean | null;
+  pendingWrites: number;
+  droppedUnflushedExecutions: number;
+  writeFailures: number;
+  lastSuccessfulFlushUtc: string | null;
+  lastFailureUtc: string | null;
+}
+export interface RuntimeDiagnostics {
+  node: string;
+  lastSuccessfulFallbackScanUtc: string | null;
+  lastFallbackFailureUtc: string | null;
+  fallbackScanFailures: number;
+  executionLogs: ExecutionLogHealth;
+}
+export interface TickerLogBatchItem {
+  tickerId: string;
+  cursor: string;
+  reset: boolean;
+  tail: TickerLogTailResponse;
 }

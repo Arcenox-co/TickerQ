@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,14 +16,33 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Provider
 {
-    internal class
+    internal partial class
         TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker> : ITickerPersistenceProvider<TTimeTicker,
         TCronTicker>
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
+        public bool NotificationSettingsArePersistent => false;
+        public Task<TickerQ.Utilities.Notifications.NotificationSettingsRecord> ReadNotificationSettingsAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_partitionState.NotificationLock) return Task.FromResult(_partitionState.NotificationSettings);
+        }
+        public Task<bool> SaveNotificationSettingsAsync(TickerQ.Utilities.Notifications.NotificationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_partitionState.NotificationLock)
+            {
+                if ((_partitionState.NotificationSettings?.Version ?? Guid.Empty) != expectedVersion) return Task.FromResult(false);
+                _partitionState.NotificationSettings = record;
+                return Task.FromResult(true);
+            }
+        }
+
         private sealed class PartitionState
         {
+            internal readonly object NotificationLock = new();
+            internal TickerQ.Utilities.Notifications.NotificationSettingsRecord NotificationSettings;
             internal readonly ConcurrentDictionary<Guid, TTimeTicker> TimeTickers = new();
             internal readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, byte>> ChildrenIndex = new();
             internal readonly ConcurrentDictionary<Guid, TCronTicker> CronTickers = new();
@@ -137,6 +156,7 @@ namespace TickerQ.Provider
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
         private readonly TimeSpan _leaseDuration;
+        private readonly int _fallbackBatchSize;
         private readonly TimeSpan _retirementGracePeriod;
         private readonly long _reconciliationEpoch;
         private readonly string _runtimeActivationScopeKey;
@@ -148,6 +168,7 @@ namespace TickerQ.Provider
             _clock = serviceProvider.GetService<ITickerClock>() ?? new TickerSystemClock();
             var optionsBuilder = serviceProvider.GetService<SchedulerOptionsBuilder>();
             _lockHolder = optionsBuilder?.ExecutionOwnerId ?? $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
+            _fallbackBatchSize = optionsBuilder?.FallbackBatchSize ?? 100;
             _leaseDuration = optionsBuilder?.LeaseDuration ?? TimeSpan.FromMinutes(1);
             _retirementGracePeriod = optionsBuilder?.DefinedCronRetirementGracePeriod ?? TimeSpan.FromHours(24);
             _reconciliationEpoch = optionsBuilder?.ReconciliationEpoch ?? 1;
@@ -721,6 +742,7 @@ namespace TickerQ.Provider
                     .Where(x => x.ExecutionTime != null)
                     .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
                     .Where(x => x.ExecutionTime <= fallbackThreshold)
+                    .OrderBy(x => x.ExecutionTime).ThenBy(x => x.Id).Take(_fallbackBatchSize)
                     .ToArray();
 
                 foreach (var ticker in timeTickersToUpdate)
@@ -1249,6 +1271,21 @@ namespace TickerQ.Provider
             return count;
         }
 
+        public Task<int> SetTimeTickerDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!Enum.IsDefined(typeof(ChainDeleteBehavior), behavior)) throw new ArgumentOutOfRangeException(nameof(behavior));
+            return Task.FromResult(WriteGraph(() =>
+            {
+                if (!IsStructuralMutationActivationState() || !TimeTickers.TryGetValue(rootId, out var root) || root.ParentId.HasValue) return 0;
+                var updated = CloneTicker(root);
+                updated.Children = root.Children;
+                updated.DeleteBehavior = behavior;
+                updated.UpdatedAt = _clock.UtcNow;
+                return TimeTickers.TryUpdate(rootId, updated, root) ? 1 : 0;
+            }));
+        }
+
         public Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default)
         {
             // Cascade removal touches multiple graph entries; hold the write lock so a
@@ -1268,6 +1305,8 @@ namespace TickerQ.Provider
                         continue;
                     var aggregate = new List<TTimeTicker>();
                     CollectTimeTickerSubtree(id, aggregate, new HashSet<Guid>());
+                    if (ChainDeletionPolicy.BlocksDeletion(requestedRoot.DeleteBehavior,
+                            aggregate.Where(x => x.Id != id).Select(x => x.Status))) continue;
                     if (aggregate.Any(x => x.Status == TickerStatus.InProgress ||
                                            x.AcquisitionToken.HasValue ||
                                            x.LeaseUntil is { } leaseUntil && leaseUntil > now))
@@ -1458,6 +1497,8 @@ namespace TickerQ.Provider
                     return Task.FromResult(0);
                 var oldAggregate = new List<TTimeTicker>();
                 CollectTimeTickerSubtree(oldRootId, oldAggregate, new HashSet<Guid>());
+                if (ChainDeletionPolicy.BlocksDeletion(oldRoot.DeleteBehavior,
+                        oldAggregate.Where(x => x.Id != oldRootId).Select(x => x.Status))) return Task.FromResult(0);
                 var now = _clock.UtcNow;
                 if (oldAggregate.Any(x => x.Status == TickerStatus.InProgress ||
                                           x.AcquisitionToken.HasValue ||
@@ -2153,6 +2194,7 @@ namespace TickerQ.Provider
                 var occurrencesToUpdate = CronOccurrences.Values
                     .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
                     .Where(x => x.ExecutionTime <= fallbackThreshold)
+                    .OrderBy(x => x.ExecutionTime).ThenBy(x => x.Id).Take(_fallbackBatchSize)
                     .ToArray();
 
                 foreach (var occurrence in occurrencesToUpdate)
@@ -2534,6 +2576,9 @@ namespace TickerQ.Provider
                             root.Id, cutoffs, now, cutoffs.MaxNodesPerChain, subtree, cancellationToken))
                         continue; // any node ineligible → retain the whole chain, but the cursor still advanced
 
+                    if (ChainDeletionPolicy.BlocksDeletion(root.DeleteBehavior,
+                            subtree.Where(x => x.Id != root.Id).Select(x => x.Status))) continue;
+
                     foreach (var node in subtree)
                     {
                         if (TimeTickers.TryRemove(node.Id, out var removed) && removed.ParentId.HasValue)
@@ -2825,10 +2870,12 @@ namespace TickerQ.Provider
                 TimeoutSeconds = ticker.TimeoutSeconds,
                 UpdatedAt = ticker.UpdatedAt,
                 ParentId = ticker.ParentId,
+                DeleteBehavior = ticker.DeleteBehavior,
                 ExecutionTime = ticker.ExecutionTime,
                 AcquisitionToken = ticker.AcquisitionToken,
                 ChainRootId = ticker.Id,
                 ChainGeneration = ticker.ChainGeneration,
+                OriginCronTickerId = ticker.OriginCronTickerId,
                 Children = BuildQueueDescendants(ticker.Id, ticker.Id, ticker.ChainGeneration),
             };
 
@@ -2950,6 +2997,7 @@ namespace TickerQ.Provider
                 LockHolder = ticker.LockHolder,
                 LockedAt = ticker.LockedAt,
                 ParentId = ticker.ParentId,
+                DeleteBehavior = ticker.DeleteBehavior,
                 Request = ticker.Request,
                 ExceptionMessage = ticker.ExceptionMessage,
                 SkippedReason = ticker.SkippedReason,
@@ -2964,6 +3012,7 @@ namespace TickerQ.Provider
                 AcquisitionToken = ticker.AcquisitionToken,
                 ChainRootId = ticker.ChainRootId,
                 ChainGeneration = ticker.ChainGeneration,
+                OriginCronTickerId = ticker.OriginCronTickerId,
                 OnStale = ticker.OnStale,
                 StaleRestartCount = ticker.StaleRestartCount,
                 TimeoutSeconds = ticker.TimeoutSeconds,
@@ -2980,6 +3029,8 @@ namespace TickerQ.Provider
                 Id = occurrence.Id,
                 CronTicker = occurrence.CronTicker,
                 CronTickerId = occurrence.CronTickerId,
+                ChainRootId = occurrence.ChainRootId,
+                ApplicationNamespaceKey = occurrence.ApplicationNamespaceKey,
                 DefinitionRevision = occurrence.DefinitionRevision,
                 Status = occurrence.Status,
                 RetryCount = occurrence.RetryCount,
@@ -3125,8 +3176,27 @@ namespace TickerQ.Provider
 
         public ITickerQueryable<TTimeTicker> TimeTickersQuery()
         {
-            return new InMemoryTickerQueryable<TTimeTicker>(_ =>
-                Task.FromResult(ReadGraph(() => TimeTickers.Values.ToList())));
+            return new InMemoryTickerQueryable<TTimeTicker>(cancellationToken =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.FromResult(ReadGraph(() =>
+                {
+                    // Execution writes replace scalar rows and intentionally clear Children.
+                    // Reconstruct relationships from ParentId for filtering/counting, in one
+                    // snapshot and O(nodes) work rather than recursively cloning every subtree.
+                    var snapshot = TimeTickers.Values.ToDictionary(ticker => ticker.Id,
+                        ticker => ticker.CreateQuerySnapshot());
+                    foreach (var ticker in snapshot.Values)
+                    {
+                        if (ticker.ParentId.HasValue && snapshot.TryGetValue(ticker.ParentId.Value, out var parent))
+                        {
+                            parent.Children.Add(ticker);
+                            ticker.Parent = parent;
+                        }
+                    }
+                    return snapshot.Values.ToList();
+                }));
+            });
         }
 
         public ITickerQueryable<TCronTicker> CronTickersQuery()

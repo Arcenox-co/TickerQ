@@ -19,6 +19,7 @@ namespace TickerQ.Utilities.Infrastructure
                 RetryIntervals = e.RetryIntervals,
                 Retries = e.Retries,
                 TimeoutSeconds = e.TimeoutSeconds,
+                SkipIfAlreadyRunning = e.SkipIfAlreadyRunning,
                 IsEnabled = e.IsEnabled,
                 DefinitionRevision = e.DefinitionRevision
             };
@@ -36,6 +37,7 @@ namespace TickerQ.Utilities.Infrastructure
                 TimeoutSeconds = e.TimeoutSeconds,
                 UpdatedAt = e.UpdatedAt,
                 ParentId = e.ParentId,
+                DeleteBehavior = e.DeleteBehavior,
                 ExecutionTime = e.ExecutionTime,
                 Status = e.Status,
                 LockHolder = e.LockHolder,
@@ -62,6 +64,7 @@ namespace TickerQ.Utilities.Infrastructure
                     TimeoutSeconds = ch.TimeoutSeconds,
                     RunCondition = ch.RunCondition,
                     ParentId = ch.ParentId,
+                    DeleteBehavior = ch.DeleteBehavior,
                     ChainRootId = e.ChainRootId,
                     ChainGeneration = e.ChainGeneration,
                     Children = ch.Children.Where(gch => gch.ExecutionTime == null).Select(gch => new TimeTickerEntity
@@ -75,6 +78,7 @@ namespace TickerQ.Utilities.Infrastructure
                         Id = gch.Id,
                         RunCondition = gch.RunCondition,
                         ParentId = gch.ParentId,
+                        DeleteBehavior = gch.DeleteBehavior,
                         ChainRootId = e.ChainRootId,
                         ChainGeneration = e.ChainGeneration
                     }).ToArray()
@@ -101,6 +105,7 @@ namespace TickerQ.Utilities.Infrastructure
                     RequestContractFingerprint = e.CronTicker.RequestContractFingerprint,
                     RetryIntervals = e.CronTicker.RetryIntervals,
                     Retries = e.CronTicker.Retries,
+                    SkipIfAlreadyRunning = e.CronTicker.SkipIfAlreadyRunning,
                     TimeoutSeconds = e.CronTicker.TimeoutSeconds,
                     DefinitionRevision = e.CronTicker.DefinitionRevision
                 }
@@ -127,6 +132,7 @@ namespace TickerQ.Utilities.Infrastructure
                     Expression = e.CronTicker.Expression,
                     RetryIntervals = e.CronTicker.RetryIntervals,
                     Retries = e.CronTicker.Retries,
+                    SkipIfAlreadyRunning = e.CronTicker.SkipIfAlreadyRunning,
                     TimeoutSeconds = e.CronTicker.TimeoutSeconds,
                     DefinitionRevision = e.CronTicker.DefinitionRevision
                 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Models;
 
@@ -12,6 +12,8 @@ namespace TickerQ.Utilities.Entities
         public virtual string LockHolder { get; set; }
         public virtual DateTime ExecutionTime { get; set; }
         public virtual Guid CronTickerId { get; set; }
+        /// <summary>Root of the independently tracked chain dispatched by this occurrence; retained after cleanup.</summary>
+        public virtual Guid? ChainRootId { get; set; }
         /// <summary>
         /// Definition revision used to publish this logical recurring slot. A stale revision remains
         /// queryable as history but must never be acquired or executed.

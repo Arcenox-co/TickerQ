@@ -18,6 +18,7 @@ namespace TickerQ.EntityFrameworkCore
         internal int PoolSize { get; set; } = 1024;
         internal string Schema { get; set; } = "ticker";
         internal AssistantHistoryOptions AssistantHistory { get; set; }
+        internal TickerQ.Utilities.ExecutionLogOptions ExecutionLogs { get; set; }
         internal bool AutoMigrate { get; set; }
         internal TickerQRuntimePartition LegacyRuntimeOwner { get; private set; }
         internal long? LegacyRuntimeAdoptionEpoch { get; private set; }

@@ -1,5 +1,7 @@
 import { Terminal } from "lucide-react";
-import { extractReason } from "@/components/cron/LogsPanel";
+import { extractReason, hasCompletion, logColor, mapLogLine, type LogEntry } from "@/lib/cron/log-format";
+import { LogTailNotice } from "./LogTailNotice";
+import { useTimezone } from "@/lib/timezone";
 import {
   Sheet,
   SheetContent,
@@ -10,21 +12,8 @@ import { StatusBadge } from "@/components/cron/StatusBadges";
 import type { TickerStatus } from "@/lib/cron/status-config";
 import { formatDuration, relativeTime } from "@/lib/cron/format";
 import { useLogTail } from "@/services/hooks";
-import type { TickerLogLine } from "@/services/api-types";
 
-export interface LogEntry {
-  timestamp: string;
-  level: "info" | "warn" | "error" | "debug" | "success";
-  message: string;
-}
-
-const LEVEL_STYLES: Record<LogEntry["level"], { color: string }> = {
-  info:    { color: "text-muted-foreground" },
-  debug:   { color: "text-muted-foreground/50" },
-  warn:    { color: "text-status-warning" },
-  error:   { color: "text-status-error" },
-  success: { color: "text-status-healthy" },
-};
+export type { LogEntry } from "@/lib/cron/log-format";
 
 export interface LogsSidePanelTarget {
   id: string;
@@ -35,16 +24,6 @@ export interface LogsSidePanelTarget {
   retries?: { current: number; max: number } | null;
   exceptionMessage?: string | null;
   skippedReason?: string | null;
-}
-
-function mapLogLine(line: TickerLogLine): LogEntry {
-  const level: LogEntry["level"] =
-    line.level >= 4 ? "error" : line.level === 3 ? "warn" : line.level <= 1 ? "debug" : "info";
-  return {
-    timestamp: new Date(line.unixMs).toISOString().replace("T", " ").slice(0, 23),
-    level,
-    message: line.source ? `[${line.source}] ${line.message}` : line.message,
-  };
 }
 
 export function LogsSidePanel({
@@ -58,25 +37,25 @@ export function LogsSidePanel({
     target?.status === "Idle" ||
     target?.status === "Queued" ||
     target?.status === "InProgress";
-  const { data } = useLogTail(target?.id ?? null, live);
-  let logs: LogEntry[] = (data?.lines ?? []).map(mapLogLine);
+  const { data, isLoading, isError, refetch } = useLogTail(target?.id ?? null, live);
+  const { timezone } = useTimezone();
+  const logs: LogEntry[] = (data?.lines ?? []).map(line => mapLogLine(line, undefined, timezone));
 
-  // No captured lines — fall back to the scheduler-side outcome reason so
-  // Failed/Cancelled/Skipped executions still explain themselves.
-  if (logs.length === 0 && target) {
+  // Older/evicted tails still show the saved failure reason without duplicating captured outcomes.
+  if (target && !hasCompletion(data?.lines ?? [], target.status)) {
     if (target.status === "Failed" && target.exceptionMessage)
-      logs = [{ timestamp: "", level: "error", message: `[scheduler] ${extractReason(target.exceptionMessage)}` }];
+      logs.push({ timestamp: "", level: "error", lifecycleEvent: "Completed", status: target.status, message: `[scheduler] ${extractReason(target.exceptionMessage)}` });
     else if (target.status === "Cancelled" && target.exceptionMessage)
-      logs = [{ timestamp: "", level: "warn", message: `[scheduler] Cancelled: ${extractReason(target.exceptionMessage)}` }];
+      logs.push({ timestamp: "", level: "warn", lifecycleEvent: "Completed", status: target.status, message: `[scheduler] Cancelled: ${extractReason(target.exceptionMessage)}` });
     else if (target.status === "Skipped" && target.skippedReason)
-      logs = [{ timestamp: "", level: "warn", message: `[scheduler] Skipped: ${target.skippedReason}` }];
+      logs.push({ timestamp: "", level: "warn", lifecycleEvent: "Completed", status: target.status, message: `[scheduler] Skipped: ${target.skippedReason}` });
   }
 
   return (
     <Sheet open={target !== null} onOpenChange={(o) => !o && onClose()}>
       <SheetContent
         side="right"
-        className="w-[640px] sm:max-w-[640px] bg-surface-0 border-l border-border overflow-y-auto scrollbar-thin p-0 gap-0"
+        className="data-[side=right]:w-full data-[side=right]:sm:max-w-[640px] bg-surface-0 border-l border-border overflow-y-auto scrollbar-thin p-0 gap-0"
       >
         {target && (
           <>
@@ -126,27 +105,23 @@ export function LogsSidePanel({
                 Log tail
               </p>
               <div className="rounded-lg border border-border bg-card font-mono text-[11px] divide-y divide-border/30 max-h-[60vh] overflow-y-auto scrollbar-thin">
-                {logs.length === 0 ? (
+                <LogTailNotice data={data} isError={isError} onRefresh={() => { void refetch(); }} />
+                {isLoading ? <p className="p-4">Loading logs…</p> : logs.length === 0 ? (
                   <div className="p-4 text-center text-muted-foreground text-[11px]">
-                    No logs captured for this execution.
+                    {isError ? "Log request failed." : "No captured lines are available. The tail may have expired or been evicted."}
                   </div>
                 ) : (
                   logs.map((log, i) => {
-                    const succeeded =
-                      target?.status === "Done" || target?.status === "DueDone";
-                    const color =
-                      succeeded && (log.level === "info" || log.level === "debug")
-                        ? LEVEL_STYLES.success.color
-                        : LEVEL_STYLES[log.level].color;
+                    const color = logColor(log);
                     return (
                       <div
                         key={i}
-                        className="flex items-start gap-2 px-3 py-1.5"
+                        className="flex flex-col sm:flex-row items-start gap-1 sm:gap-2 px-3 py-1.5"
                       >
                         <span className="text-muted-foreground/60 shrink-0 tabular-nums">
                           {log.timestamp}
                         </span>
-                        <span className={`flex-1 whitespace-pre-wrap ${color}`}>
+                        <span className={`min-w-0 flex-1 whitespace-pre-wrap break-words ${color}`}>
                           {log.message}
                         </span>
                       </div>

@@ -5,6 +5,12 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
+      source_branch:
+        description: 'Source release line to synchronize'
+        required: true
+        default: 'main-commercial'
+        type: choice
+        options: ['main-commercial', 'main']
       target_branches:
         description: 'Comma-separated list of target branches (default: net8,net9)'
         required: false
@@ -17,7 +23,36 @@ on:
         type: boolean
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      targets: ${{ steps.config.outputs.targets }}
+    steps:
+      - id: config
+        env:
+          REQUESTED_TARGETS: ${{ inputs.target_branches }}
+          DEFAULT_TARGETS: ${{ vars.TARGET_BRANCHES || '["net8","net9"]' }}
+        run: |
+          python3 - <<'PYCONFIG'
+          import json, os
+          requested = os.environ['REQUESTED_TARGETS'].strip()
+          targets = [x.strip() for x in requested.split(',')] if requested else json.loads(os.environ['DEFAULT_TARGETS'])
+          if not targets or any(x not in ('net8', 'net9') for x in targets):
+              raise SystemExit('Only net8 and net9 are supported target branches')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('targets=' + json.dumps(list(dict.fromkeys(targets))) + '\n')
+          PYCONFIG
+
   sync-branches:
+    needs: prepare
+    env:
+      SOURCE_BRANCH: ${{ inputs.source_branch || vars.SYNC_SOURCE_BRANCH || 'main-commercial' }}
+      TARGET_BRANCH: ${{ matrix.target_branch }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_TARGET: ${{ github.event.release.target_commitish }}
+
     runs-on: ubuntu-latest
 
     permissions:
@@ -29,7 +64,7 @@ jobs:
 
     strategy:
       matrix:
-        target_branch: ${{ fromJSON(vars.TARGET_BRANCHES || '["net8","net9"]') }}
+        target_branch: ${{ fromJSON(needs.prepare.outputs.targets) }}
       fail-fast: false
 
     steps:
@@ -56,21 +91,30 @@ jobs:
       - name: Check if sync is needed
         id: check
         run: |
-          if ! git ls-remote --heads origin ${{ matrix.target_branch }} | grep -q ${{ matrix.target_branch }}; then
-            echo "needs_sync=false" >> $GITHUB_OUTPUT
-            echo "::warning::Target branch ${{ matrix.target_branch }} does not exist"
-            exit 0
+          set -euo pipefail
+          case "$SOURCE_BRANCH" in main|main-commercial) ;; *) echo "::error::Unsupported source branch"; exit 1 ;; esac
+          git show-ref --verify --quiet "refs/remotes/origin/$SOURCE_BRANCH"
+          source_ref="origin/$SOURCE_BRANCH"
+          if [ -n "$RELEASE_TAG" ]; then
+            # Never synchronize a release from another product line or include
+            # commits made after the released tag.
+            if [ "$RELEASE_TARGET" != "$SOURCE_BRANCH" ] && ! [[ "$RELEASE_TARGET" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            source_ref=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+            git merge-base --is-ancestor "$source_ref" "origin/$SOURCE_BRANCH"
           fi
-
-          git checkout main
-          git checkout ${{ matrix.target_branch }}
-
-          if git merge-base --is-ancestor main ${{ matrix.target_branch }}; then
-            echo "needs_sync=false" >> $GITHUB_OUTPUT
-            echo "No new commits to sync"
+          echo "SOURCE_REF=$source_ref" >> "$GITHUB_ENV"
+          if ! git show-ref --verify --quiet "refs/remotes/origin/$TARGET_BRANCH"; then
+            echo "::error::Target branch $TARGET_BRANCH does not exist"
+            exit 1
+          fi
+          git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+          if git merge-base --is-ancestor "$source_ref" "$TARGET_BRANCH"; then
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
           else
-            echo "needs_sync=true" >> $GITHUB_OUTPUT
-            echo "New commits found, sync needed"
+            echo "needs_sync=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Sync changes
@@ -79,22 +123,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          TARGET="${{ matrix.target_branch }}"
+          TARGET="$TARGET_BRANCH"
           DOTNET_VER=$(echo "$TARGET" | sed 's/[^0-9]*//g')
-          NEXT_VER=$((DOTNET_VER + 1))
 
           # Create sync branch from target
-          sync_branch="sync-main-to-${TARGET}-$(date +%Y%m%d-%H%M%S)"
+          sync_branch="sync-${SOURCE_BRANCH}-to-${TARGET}-$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$sync_branch" "$TARGET"
 
-          # ── Load .sync-exclude list from main ──
+          # ── Load .sync-exclude list from the source branch ──
           EXCLUDE_FILES=()
-          if git show main:.sync-exclude > /tmp/.sync-exclude 2>/dev/null; then
+          if git show "$SOURCE_REF":.sync-exclude > /tmp/.sync-exclude 2>/dev/null; then
             while IFS= read -r line; do
               line=$(echo "$line" | sed 's/#.*//' | xargs)
               [ -n "$line" ] && EXCLUDE_FILES+=("$line")
             done < /tmp/.sync-exclude
-            echo "Loaded ${#EXCLUDE_FILES[@]} files from .sync-exclude (main)"
+            echo "Loaded ${#EXCLUDE_FILES[@]} files from .sync-exclude ($SOURCE_BRANCH)"
           fi
 
           # ── Save excluded files from target branch before merge ──
@@ -108,34 +151,24 @@ jobs:
             fi
           done
 
-          # ── Load .sync-overrides rules from main ──
-          declare -A PRESERVE_VALUES
+          # ── Load .sync-overrides rules from the source branch ──
           OVERRIDE_RULES=()
-          if git show main:.sync-overrides > /tmp/.sync-overrides 2>/dev/null; then
+          if git show "$SOURCE_REF":.sync-overrides > /tmp/.sync-overrides 2>/dev/null; then
             while IFS= read -r line; do
               line=$(echo "$line" | sed 's/#.*//' | xargs)
               [ -n "$line" ] && OVERRIDE_RULES+=("$line")
             done < /tmp/.sync-overrides
-            echo "Loaded ${#OVERRIDE_RULES[@]} override rules from .sync-overrides (main)"
+            echo "Loaded ${#OVERRIDE_RULES[@]} override rules from .sync-overrides ($SOURCE_BRANCH)"
           fi
 
-          # ── Save "preserve" values from target branch before merge ──
-          for rule in "${OVERRIDE_RULES[@]}"; do
-            IFS='|' read -r file element action <<< "$rule"
-            if [ "$action" = "preserve" ] && [ -f "$file" ]; then
-              val=$(grep -oP "<${element}>\K[^<]+" "$file" 2>/dev/null || echo "")
-              if [ -n "$val" ]; then
-                PRESERVE_VALUES["${file}|${element}"]="$val"
-                echo "  Saved ${element}=${val} from $file"
-              fi
-            fi
-          done
+          git show "$SOURCE_REF":scripts/sync_version_overrides.py > /tmp/sync_version_overrides.py
+          python3 /tmp/sync_version_overrides.py --rules /tmp/.sync-overrides --preserved /tmp/sync-preserved.json --snapshot
 
-          # ── Merge main into sync branch ──
-          echo "🔀 Merging main into $TARGET..."
+          # ── Merge the selected source into the sync branch ──
+          echo "🔀 Merging $SOURCE_BRANCH into $TARGET..."
           merge_failed=false
-          if ! git merge main --no-edit -m "Merge main into ${TARGET}" 2>/dev/null; then
-            echo "⚠️  Merge conflicts detected — auto-resolving..."
+          if ! git merge "$SOURCE_REF" --no-edit -m "Merge ${SOURCE_BRANCH} into ${TARGET}" 2>/dev/null; then
+            echo "Merge conflicts detected; only explicit version overrides and exclusions may be resolved automatically."
 
             # Get list of conflicted files
             conflicted_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
@@ -153,10 +186,12 @@ jobs:
                 # Keep target branch version for excluded files
                 git checkout --ours -- "$file" 2>/dev/null || true
                 echo "  Kept $TARGET version: $file"
+              elif printf '%s\n' "${OVERRIDE_RULES[@]}" | cut -d'|' -f1 | grep -Fxq "$file"; then
+                # The validated override script reapplies target-specific values.
+                git checkout --theirs -- "$file"
               else
-                # Accept main version for everything else
-                git checkout --theirs -- "$file" 2>/dev/null || true
-                echo "  Accepted main version: $file"
+                echo "::error::Manual merge/backport required for $file"
+                exit 1
               fi
               git add "$file" 2>/dev/null || true
             done
@@ -189,50 +224,9 @@ jobs:
 
           # ── Apply .sync-overrides rules ──
           OVERRIDE_DETAILS=()
-          for rule in "${OVERRIDE_RULES[@]}"; do
-            IFS='|' read -r file element action <<< "$rule"
-            [ ! -f "$file" ] && continue
-
-            current_val=$(grep -oP "<${element}>\K[^<]+" "$file" 2>/dev/null || echo "")
-            [ -z "$current_val" ] && continue
-
-            case "$action" in
-              version-major)
-                new_val=$(echo "$current_val" | sed "s/^[0-9]\+\./$DOTNET_VER./")
-                ;;
-              framework)
-                new_val="net${DOTNET_VER}.0"
-                ;;
-              version-range)
-                new_val="[${DOTNET_VER}.0.0,${NEXT_VER}.0.0)"
-                ;;
-              preserve)
-                key="${file}|${element}"
-                new_val="${PRESERVE_VALUES[$key]:-$current_val}"
-                ;;
-              *)
-                echo "  Unknown action: $action"
-                continue
-                ;;
-            esac
-
-            if [ "$current_val" != "$new_val" ]; then
-              awk -v elem="$element" -v old="$current_val" -v new="$new_val" '{
-                target = "<" elem ">" old "</" elem ">"
-                replacement = "<" elem ">" new "</" elem ">"
-                idx = index($0, target)
-                if (idx > 0) {
-                  $0 = substr($0, 1, idx-1) replacement substr($0, idx + length(target))
-                }
-                print
-              }' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
-              git add "$file"
-              OVERRIDE_DETAILS+=("${file}|${element}|${current_val} -> ${new_val}")
-              echo "  Override: ${element} ${current_val} -> ${new_val} in ${file}"
-            else
-              echo "  Unchanged: ${element}=${current_val} in ${file}"
-            fi
-          done
+          python3 /tmp/sync_version_overrides.py --rules /tmp/.sync-overrides --preserved /tmp/sync-preserved.json --version "$DOTNET_VER" > /tmp/sync-overrides-applied.txt
+          mapfile -t OVERRIDE_DETAILS < /tmp/sync-overrides-applied.txt
+          cat /tmp/sync-overrides-applied.txt
 
           # ── Save details for PR comment ──
           {
@@ -288,19 +282,21 @@ jobs:
       - name: Create Pull Request
         if: steps.check.outputs.needs_sync == 'true' && env.sync_branch != ''
         run: |
-          PR_BODY="## Automated Branch Sync
+          cat > /tmp/sync-pr.md <<EOF
+          ## Automated Branch Sync
 
-          This PR merges recent changes from \`main\` into \`${{ matrix.target_branch }}\`.
+          This PR merges changes from \`$SOURCE_BRANCH\` (\`$SOURCE_REF\`) into \`$TARGET_BRANCH\`.
 
-          ---
-          _Created automatically by branch sync workflow_"
+          VersionPrefix, target framework and dependency ranges were checked by the override script.
+          Review preserved EF files in .sync-exclude for manual backports, then build and test the target before release.
+          EOF
 
           if [ "${{ env.push_repo }}" = "${{ github.repository }}" ]; then
             gh pr create \
               --base "${{ matrix.target_branch }}" \
               --head "${{ env.sync_branch }}" \
-              --title "Sync main → ${{ matrix.target_branch }}" \
-              --body "$PR_BODY" \
+              --title "Sync $SOURCE_BRANCH → ${{ matrix.target_branch }}" \
+              --body-file /tmp/sync-pr.md \
               2>&1 | tee pr_output.txt
           else
             FORK_OWNER=$(echo "${{ env.push_repo }}" | cut -d'/' -f1)
@@ -308,8 +304,8 @@ jobs:
               --base "${{ matrix.target_branch }}" \
               --head "${FORK_OWNER}:${{ env.sync_branch }}" \
               --repo "${{ github.repository }}" \
-              --title "Sync main → ${{ matrix.target_branch }}" \
-              --body "$PR_BODY" \
+              --title "Sync $SOURCE_BRANCH → ${{ matrix.target_branch }}" \
+              --body-file /tmp/sync-pr.md \
               2>&1 | tee pr_output.txt
           fi
 
@@ -370,7 +366,7 @@ jobs:
   summary:
     needs: sync-branches
     runs-on: ubuntu-latest
-    if: always() && github.ref == 'refs/heads/main'
+    if: always()
 
     steps:
       - name: Generate summary

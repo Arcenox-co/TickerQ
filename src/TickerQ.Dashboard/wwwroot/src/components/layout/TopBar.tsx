@@ -1,32 +1,48 @@
-import { Activity, Eye, LogOut, UserCircle2 } from "lucide-react";
+import { Eye, KeyRound, LogOut, UserCircle2 } from "lucide-react";
+import { Link } from "react-router-dom";
+import tickerqLogo from "@/assets/tickerq-logo.svg";
 import { TimezoneSelector } from "@/components/layout/TimezoneSelector";
 import { useAuth } from "@/lib/auth/auth-context";
 import { getRuntimeConfig } from "@/lib/runtime-config";
+import { useLicense } from "@/services/hooks";
 
 export function TopBar() {
   const auth = useAuth();
   const cfg = getRuntimeConfig();
+  const { data: license } = useLicense();
+  const licenseLabel = license?.isEvaluation ? "Evaluation" : license?.plan?.trim();
   const showUser =
     auth.status === "authenticated" && auth.info?.loginAvailable === true;
 
   return (
-    <header className="h-11 flex items-center justify-between px-4 border-b border-border bg-surface-0 shrink-0">
-      <div className="flex items-center gap-2 text-sm">
-        <div className="inline-flex items-center gap-1.5 rounded-md px-2 py-1">
+    <header className="h-11 flex items-center justify-between gap-2 px-2 sm:px-4 border-b border-border bg-surface-0 shrink-0">
+      <div className="flex min-w-0 items-center gap-2 text-sm">
+        <div className="inline-flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1">
           {cfg.logoUrl ? (
-            <img src={cfg.logoUrl} alt="" className="h-4 w-auto" />
+            <img src={cfg.logoUrl} alt="" className="h-4 w-auto shrink-0" />
           ) : (
-            <Activity className="h-3.5 w-3.5 text-primary" />
+            <img src={tickerqLogo} alt="" className="size-8 shrink-0" width={32} height={32} />
           )}
-          <span className="font-semibold text-foreground">{cfg.title}</span>
+          <span className="truncate font-semibold text-foreground" title={cfg.title}>{cfg.title}</span>
           {cfg.version && (
-            <span className="text-muted-foreground/60 text-[10px]">v{cfg.version}</span>
+            <span className="hidden sm:inline shrink-0 text-muted-foreground/60 text-[10px]">v{cfg.version}</span>
           )}
         </div>
+        {licenseLabel && (
+          <Link
+            to="/license"
+            aria-label={`${licenseLabel} license — view license details`}
+            title={`${licenseLabel} license · ${license?.status}. View license details.`}
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-[10px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <KeyRound className="h-3 w-3 text-primary" aria-hidden="true" />
+            {licenseLabel}
+          </Link>
+        )}
         {cfg.readOnly && (
           <span
             title="The dashboard is running in read-only mode — all mutations are disabled."
-            className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground"
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground"
           >
             <Eye className="h-3 w-3" />
             Read-only
@@ -34,16 +50,16 @@ export function TopBar() {
         )}
       </div>
 
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+      <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
         <TimezoneSelector />
-        <span className="inline-flex items-center gap-1.5">
+        <span className="hidden sm:inline-flex items-center gap-1.5">
           <span className="size-1.5 rounded-full bg-status-healthy animate-pulse-dot" />
           Connected
         </span>
         {showUser && (
           <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-border">
-            <UserCircle2 className="h-3.5 w-3.5 text-muted-foreground/60" />
-            <span className="text-foreground/80">{auth.username ?? "user"}</span>
+            <UserCircle2 className="hidden sm:block h-3.5 w-3.5 text-muted-foreground/60" />
+            <span className="hidden sm:block max-w-32 truncate text-foreground/80">{auth.username ?? "user"}</span>
             <button
               type="button"
               onClick={() => void auth.logout()}

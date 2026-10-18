@@ -76,6 +76,15 @@ Tag keys actually emitted:
 > file, line). It's build/source metadata rather than user data, but treat your trace
 > backend as you would source-path information.
 
+## Dashboard-managed notifications
+
+The optional [TickerQ.Notifications package](../src/TickerQ.Notifications/README.md) adds
+Slack, Teams Workflows, and custom JSON webhooks, with destinations and per-function rules
+edited in the dashboard. Settings are encrypted in the operational store; EF users must
+apply the new settings-table migration. Delivery uses a bounded, best-effort process-local
+queue. See the package guide for permissions, shared encryption keys, templates, retries,
+and delivery limitations. Use this package or the simple webhook option below, not both.
+
 ## Failure webhook (bounded, non-blocking)
 
 TickerQ ships a built-in failure notifier that POSTs a JSON payload to a webhook on terminal

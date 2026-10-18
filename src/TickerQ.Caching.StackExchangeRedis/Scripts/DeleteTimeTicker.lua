@@ -126,6 +126,21 @@ local function isSafe(node)
 end
 if not childrenContainersAreArrays(raw) or not isSafe(obj) or
    (obj.ParentId ~= nil and obj.ParentId ~= cjson.null and obj.ParentId ~= '') then return 0 end
+-- Missing policy is Cascade for existing documents. Unknown policies retain the whole chain.
+local function descendantsFinished(node)
+  if node.Children ~= nil and node.Children ~= cjson.null then
+    for _, child in ipairs(node.Children) do
+      -- Done, DueDone, Failed, Cancelled, Skipped. Idle/Queued/InProgress and unknown statuses wait.
+      if child.Status ~= 3 and child.Status ~= 4 and child.Status ~= 5 and child.Status ~= 6 and child.Status ~= 7 then return false end
+      if not descendantsFinished(child) then return false end
+    end
+  end
+  return true
+end
+if obj.Children ~= nil and obj.Children ~= cjson.null and next(obj.Children) ~= nil and
+   obj.DeleteBehavior ~= nil and obj.DeleteBehavior ~= 0 then
+  if obj.DeleteBehavior ~= 1 or not descendantsFinished(obj) then return 0 end
+end
 redis.call('DEL', KEYS[1])
 redis.call('SREM', KEYS[2], ARGV[1])
 redis.call('ZREM', KEYS[3], ARGV[1])

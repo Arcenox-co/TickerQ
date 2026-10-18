@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChainDeleteBehaviorControl } from "@/components/cron/ChainDeleteBehaviorControl";
+import { isChainDeletionRestricted } from "@/lib/cron/chain-deletion";
 import {
   ArrowLeft,
   Clock,
@@ -14,6 +16,8 @@ import { RunConditionBadge } from "@/components/cron/RunConditionBadge";
 import { LogsPanel } from "@/components/cron/LogsPanel";
 import { ChainLogsPanel } from "@/components/cron/ChainLogsPanel";
 import { CancelTickerButton } from "@/components/cron/CancelTickerButton";
+import { LockHolderValue } from "@/components/cron/LockHolderValue";
+import { resolveChainLockHolder } from "@/lib/cron/lock-holder";
 import { Button } from "@/components/ui/button";
 import { useChainTickers } from "@/services/hooks";
 import { STATUS_CONFIG, statusHsl } from "@/lib/cron/status-config";
@@ -95,9 +99,11 @@ function computeLayout(root: ChainTreeNode): Pos[] {
 export interface ChainFlowchartViewProps {
   rootId: string;
   /** Where the Back button returns to (label is derived). */
-  from?: "time-tickers" | "executions" | null;
+  from?: "time-tickers" | "cron-tickers" | "executions" | null;
   onBack: () => void;
   onEditChain?: (rootId: string) => void;
+  /** Read-only cron template while waiting for real job IDs and execution data. */
+  previewTickers?: TimeTickerFlatDto[];
 }
 
 export function ChainFlowchartView({
@@ -105,8 +111,9 @@ export function ChainFlowchartView({
   from,
   onBack,
   onEditChain,
+  previewTickers,
 }: ChainFlowchartViewProps) {
-  const backLabel = from === "executions" ? "Back to Executions" : "Back to list";
+  const backLabel = from === "cron-tickers" ? "Back to occurrences" : from === "executions" ? "Back to Executions" : "Back to list";
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -137,8 +144,9 @@ export function ChainFlowchartView({
   );
 
   const { timezone } = useTimezone();
-  const chainQuery = useChainTickers(rootId);
-  const list = chainQuery.data ?? [];
+  const isPreview = previewTickers !== undefined;
+  const chainQuery = useChainTickers(isPreview ? null : rootId);
+  const list = previewTickers ?? chainQuery.data ?? [];
 
   const { positions, nodeMap, maxX, maxY } = useMemo(() => {
     const tree = list.length ? buildTreeFromFlat(list, rootId) : null;
@@ -202,15 +210,17 @@ export function ChainFlowchartView({
 
   const totalCount = nodeMap.size;
   const selectedNode = selectedId ? nodeMap.get(selectedId) ?? null : null;
+  const selectedLockHolder = resolveChainLockHolder(selectedId ?? "", list);
   const rootNode = nodeMap.get(rootId);
+  const deletionRestricted = !!rootNode && isChainDeletionRestricted(rootNode.ticker, list);
   const canEditChain =
-    !!rootNode && (rootNode.ticker.status === "Idle" || rootNode.ticker.status === "Queued");
+    !isPreview && !!rootNode && !rootNode.ticker.originCronTickerId && (rootNode.ticker.status === "Idle" || rootNode.ticker.status === "Queued");
 
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-surface-0/50 shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-border bg-surface-0/50 shrink-0">
+        <div className="flex flex-wrap items-center gap-3">
           <button
             onClick={onBack}
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -220,11 +230,13 @@ export function ChainFlowchartView({
           <div className="h-4 w-px bg-border" />
           <GitBranch className="h-3.5 w-3.5 text-primary" />
           <span className="font-mono text-sm font-semibold">Chain Flowchart</span>
+          {isPreview && <span className="text-[11px] text-muted-foreground">Chain template</span>}
           {chainQuery.data && (
-            <span className="text-[11px] text-muted-foreground/70 font-mono">{rootId}</span>
+            <span className="break-all text-[11px] text-muted-foreground/70 font-mono">{rootId}</span>
           )}
         </div>
-        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+          {!isPreview && rootNode && <ChainDeleteBehaviorControl key={rootId} ticker={rootNode.ticker} />}
           {totalCount > 0 && (
             <span className="tabular-nums">
               {totalCount} {totalCount === 1 ? "job" : "jobs"}
@@ -236,6 +248,8 @@ export function ChainFlowchartView({
               size="sm"
               className="h-7 text-xs border-border text-muted-foreground"
               onClick={() => onEditChain(rootId)}
+              disabled={deletionRestricted}
+              title={deletionRestricted ? "Restrict waits until every descendant reaches a final status before replacing this chain." : undefined}
             >
               <Pencil className="h-3 w-3 mr-1.5" /> Edit chain
             </Button>
@@ -276,18 +290,18 @@ export function ChainFlowchartView({
           }
         }}
       >
-        {chainQuery.isLoading && (
+        {!isPreview && chainQuery.isLoading && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground gap-2">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading chain…
           </div>
         )}
-        {chainQuery.isError && (
+        {!isPreview && chainQuery.isError && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-status-error">
             Failed to load chain.
           </div>
         )}
 
-        {chainQuery.data && (
+        {(isPreview || chainQuery.data) && (
           <div
             className="absolute"
             style={{
@@ -430,9 +444,9 @@ export function ChainFlowchartView({
                           {RUN_CONDITION_CONFIG[t.runCondition].label}
                         </span>
                       )}
-                      <span className="text-[10px] text-muted-foreground ml-auto">
+                      {!isPreview && <span className="text-[10px] text-muted-foreground ml-auto">
                         {t.priority}
-                      </span>
+                      </span>}
                     </div>
                     <div
                       className={cn(
@@ -495,7 +509,9 @@ export function ChainFlowchartView({
           className="h-1.5 cursor-row-resize bg-border/50 hover:bg-primary/30 transition-colors shrink-0"
           title="Drag to resize"
         />
-        {selectedNode ? (
+        {isPreview ? (
+          <div className="p-4 text-xs text-muted-foreground">Logs will appear when this occurrence launches.</div>
+        ) : selectedNode ? (
           <>
             <div className="flex items-center justify-between px-4 py-2 border-y border-border bg-surface-0/40 shrink-0">
               <div className="flex items-center gap-3 text-[11px] min-w-0">
@@ -558,12 +574,16 @@ export function ChainFlowchartView({
             <Detail label="Status">
               <StatusBadge status={selectedNode.ticker.status} />
             </Detail>
+            <Detail label="Lock holder">
+              <LockHolderValue value={selectedLockHolder.value}
+                inheritedFrom={selectedLockHolder.inherited ? "parent job" : undefined} />
+            </Detail>
             {selectedNode.ticker.runCondition && (
               <Detail label="Run condition">
                 <RunConditionBadge condition={selectedNode.ticker.runCondition} />
               </Detail>
             )}
-            <Detail label="Priority">{selectedNode.ticker.priority}</Detail>
+            {!isPreview && <Detail label="Priority">{selectedNode.ticker.priority}</Detail>}
             <Detail label="Retries">
               {selectedNode.ticker.retryCount}/{selectedNode.ticker.retries}
             </Detail>
@@ -584,11 +604,11 @@ export function ChainFlowchartView({
                 </span>
               </Detail>
             )}
-            <Detail label="ID">
+            {!isPreview && <Detail label="ID">
               <span className="font-mono text-muted-foreground/70 break-all">
                 {selectedNode.ticker.id}
               </span>
-            </Detail>
+            </Detail>}
           </div>
         </div>
       )}

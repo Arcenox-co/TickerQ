@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -20,6 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../Shared/ExecutionLogPersistenceContract.cs" Link="Shared/ExecutionLogPersistenceContract.cs" />
     <Using Include="Xunit" />
   </ItemGroup>
 
@@ -36,4 +37,9 @@
     <ProjectReference Include="..\..\src\TickerQ.EntityFrameworkCore\TickerQ.EntityFrameworkCore.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="../Shared/ChainDeleteBehaviorContract.cs" Link="Shared/ChainDeleteBehaviorContract.cs" />
+    <Compile Include="../Shared/OverdueAcquisitionContract.cs" Link="Shared/OverdueAcquisitionContract.cs" />
+  </ItemGroup>
+  <ItemGroup><Compile Include="../Shared/CronChainContract.cs" Link="Shared/CronChainContract.cs" /></ItemGroup>
 </Project>

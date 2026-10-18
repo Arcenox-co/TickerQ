@@ -11,8 +11,8 @@ export function Shell({ children }: { children?: ReactNode }) {
       <LicenseBanner />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        <main className="relative flex-1 overflow-y-auto scrollbar-thin bg-background">
-          <div className="mx-auto p-6 animate-fade-in">
+        <main className="relative min-w-0 flex-1 overflow-y-auto scrollbar-thin bg-background">
+          <div className="mx-auto p-4 sm:p-6 animate-fade-in">
             {children ?? <Outlet />}
           </div>
         </main>

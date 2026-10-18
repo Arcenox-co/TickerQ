@@ -27,6 +27,29 @@ namespace TickerQ.Utilities.Interfaces
         Task<IList<TimeTickerFlatDto>> GetTimeTickerChildrenAsync(
             Guid parentId, CancellationToken cancellationToken = default);
 
+        /// <summary>Bounded chain snapshot (500 nodes, 20 child levels). Custom services retain a compatible fallback.</summary>
+        async Task<IList<TimeTickerFlatDto>> GetTimeTickerChainAsync(Guid rootId, CancellationToken cancellationToken = default)
+        {
+            var root = await GetTimeTickerByIdAsync(rootId, cancellationToken);
+            if (root == null) return new List<TimeTickerFlatDto>();
+            var all = new List<TimeTickerFlatDto> { root };
+            var seen = new HashSet<Guid> { root.Id };
+            var frontier = new List<TimeTickerFlatDto> { root };
+            for (var depth = 0; frontier.Count > 0; depth++)
+            {
+                var next = new List<TimeTickerFlatDto>();
+                foreach (var parent in frontier)
+                    foreach (var child in await GetTimeTickerChildrenAsync(parent.Id, cancellationToken))
+                    {
+                        if (depth >= 20 || all.Count >= 500 || !seen.Add(child.Id))
+                            throw new ArgumentOutOfRangeException(nameof(rootId), "Chain exceeds the safe traversal limits.");
+                        all.Add(child); next.Add(child);
+                    }
+                frontier = next;
+            }
+            return all;
+        }
+
         // Cron tickers
         Task<PaginationResult<CronTickerFlatDto>> GetCronTickersFlatAsync(
             CronTickerQueryFilter filter, CancellationToken cancellationToken = default);

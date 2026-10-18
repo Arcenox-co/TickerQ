@@ -57,6 +57,7 @@ namespace TickerQ.Utilities.Models
         /// for occurrences). Null inherits the global default; &lt;= 0 disables.
         /// </summary>
         public int? TimeoutSeconds { get; set; }
+        public bool SkipIfAlreadyRunning { get; set; }
         /// <summary>
         /// Current InProgress generation of the root row this context executes under. Set at
         /// acquisition (minted fresh on every transition to InProgress) and carried through

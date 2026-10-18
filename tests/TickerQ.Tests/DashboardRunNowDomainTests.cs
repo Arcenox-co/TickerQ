@@ -159,6 +159,7 @@ public class DashboardRunNowDomainTests
         var running = await SeedAsync(TickerStatus.InProgress, t => t.LockHolder = "live");
 
         var dispatcher = Substitute.For<ITickerQDispatcher>();
+        dispatcher.IsEnabled.Returns(true);
         var notifier = Substitute.For<ITickerQNotificationHubSender>();
         var repository = new TickerDashboardRepository<FakeTimeTicker, FakeCronTicker>(
             new TickerExecutionContext(),

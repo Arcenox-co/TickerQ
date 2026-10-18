@@ -36,6 +36,7 @@ public class TestTickerQDbContext : DbContext
         modelBuilder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<CronTickerEntity>("ticker"));
         modelBuilder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations("ticker"));
         modelBuilder.ApplyConfiguration(new TickerQStoreMetadataConfigurations("ticker"));
+        modelBuilder.ApplyConfiguration(new NotificationSettingsConfigurations("ticker"));
         base.OnModelCreating(modelBuilder);
     }
 }

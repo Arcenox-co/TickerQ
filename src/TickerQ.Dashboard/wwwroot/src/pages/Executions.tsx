@@ -1,3 +1,4 @@
+import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -6,7 +7,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/cron/PageHeader";
 import { DataTable } from "@/components/cron/DataTable";
-import { StatusBadge, TypeBadge } from "@/components/cron/StatusBadges";
+import { LockHolder } from "@/components/cron/LockHolder";
+import { TypeBadge } from "@/components/cron/StatusBadges";
 import {
   FilterChip,
   FilterPopover,
@@ -44,6 +46,9 @@ const PAGE_SIZE = 25;
 /** Terminal-failure statuses that offer the Retry affordance. */
 const RETRYABLE_STATUSES: TickerStatus[] = ["Failed", "Cancelled", "Skipped"];
 
+// A recurring-chain trigger and its time-ticker root intentionally share an ID.
+const executionKey = (row: ExecutionFlatDto) => `${row.type}:${row.id}`;
+
 export default function ExecutionsPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
@@ -77,7 +82,7 @@ export default function ExecutionsPage() {
     [search, statusFilter, functionFilter, page]
   );
 
-  const listQuery = useExecutions(filter);
+  const listQuery = useExecutions(filter, activeRow != null);
   const data = listQuery.data;
   const readOnly = isReadOnly();
   const runTimeMutation = useRunTimeTicker();
@@ -91,6 +96,9 @@ export default function ExecutionsPage() {
   );
 
   const items = data?.items ?? [];
+  const displayedRow = activeRow
+    ? items.find(item => executionKey(item) === executionKey(activeRow)) ?? activeRow
+    : null;
 
   // Aggregate stats (Total/Success/Failed/Active across ALL executions) +
   // page-local Avg Duration. Hub renders this strip above the table.
@@ -141,7 +149,7 @@ export default function ExecutionsPage() {
     () =>
       items.filter(
         (r) =>
-          selected.has(r.id) &&
+          selected.has(executionKey(r)) &&
           RETRYABLE_STATUSES.includes(r.status) &&
           (r.type === "TimeTicker" || r.cronTickerId != null)
       ),
@@ -200,9 +208,12 @@ export default function ExecutionsPage() {
         cell: ({ row }) => (
           <TypeBadge
             type={row.original.type === "CronOccurrence" ? "Cron" : "Time"}
-            chainChildCount={row.original.childCount}
+            chainChildCount={row.original.type === "TimeTicker" ? row.original.childCount : undefined}
+            isChain={row.original.type === "CronOccurrence" ? !!row.original.chainRootId : row.original.childCount > 0}
             onChainClick={
-              row.original.type === "TimeTicker" && row.original.childCount > 0
+              row.original.type === "CronOccurrence" && row.original.chainRootId
+                ? () => navigate(`/time-tickers/${row.original.chainRootId}/flowchart?from=executions`)
+                : row.original.type === "TimeTicker" && row.original.childCount > 0
                 ? () =>
                     navigate(
                       `/time-tickers/${row.original.id}/flowchart?from=executions`
@@ -224,7 +235,10 @@ export default function ExecutionsPage() {
       {
         accessorKey: "status",
         header: "Status",
-        cell: ({ row }) => <StatusBadge status={row.original.status} />,
+        cell: ({ row }) => (
+          <ExecutionStatus status={row.original.status} summary={row.original.chainSummary}
+            isChain={!!row.original.chainRootId || row.original.childCount > 0} />
+        ),
       },
       {
         accessorKey: "scheduledFor",
@@ -256,12 +270,8 @@ export default function ExecutionsPage() {
       },
       {
         id: "lockHolder",
-        header: "Lock Holder",
-        cell: ({ row }) => (
-          <span className="text-[11px] font-mono text-muted-foreground">
-            {row.original.lockHolder ?? "—"}
-          </span>
-        ),
+        header: "Node",
+        cell: ({ row }) => <LockHolder value={row.original.lockHolder} />,
       },
       ...(!readOnly
         ? [
@@ -308,6 +318,7 @@ export default function ExecutionsPage() {
           placeholder="Search by function or ID…"
         />
         <FilterPopover
+          statusLabel="Root / trigger status"
           statusFilter={statusFilter}
           onStatusChange={setStatusFilter}
           functionFilter={functionFilter}
@@ -324,7 +335,7 @@ export default function ExecutionsPage() {
         <div className="flex items-center gap-2 flex-wrap">
           {statusFilter.length > 0 && (
             <FilterChip
-              label="Status"
+              label="Root / trigger status"
               value={statusFilter.join(", ")}
               onRemove={() => setStatusFilter([])}
             />
@@ -395,6 +406,7 @@ export default function ExecutionsPage() {
       <DataTable
         columns={columns}
         data={items}
+        getRowId={executionKey}
         toolbar={toolbar}
         emptyMessage="No executions match the current filters."
         onRowClick={(row) => setActiveRow(row)}
@@ -411,19 +423,19 @@ export default function ExecutionsPage() {
 
       <LogsSidePanel
         target={
-          activeRow
+          displayedRow
             ? {
-                id: activeRow.id,
-                function: activeRow.functionName,
-                status: activeRow.status,
-                scheduledAt: activeRow.scheduledFor,
-                durationMs: activeRow.executedAt ? activeRow.elapsedTime : null,
+                id: displayedRow.id,
+                function: displayedRow.functionName,
+                status: displayedRow.status,
+                scheduledAt: displayedRow.scheduledFor,
+                durationMs: displayedRow.executedAt ? displayedRow.elapsedTime : null,
                 retries:
-                  activeRow.retries > 0
-                    ? { current: activeRow.retryCount, max: activeRow.retries }
+                  displayedRow.retries > 0
+                    ? { current: displayedRow.retryCount, max: displayedRow.retries }
                     : null,
-                exceptionMessage: activeRow.exceptionMessage,
-                skippedReason: activeRow.skippedReason,
+                exceptionMessage: displayedRow.exceptionMessage,
+                skippedReason: displayedRow.skippedReason,
               }
             : null
         }

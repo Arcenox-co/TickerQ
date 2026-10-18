@@ -72,7 +72,7 @@ public sealed class NodeCallbackDispatchTests
                 .BuildServiceProvider();
             var handler = new global::TickerQ.TickerExecutionTaskHandler(
                 services, clock, instrumentation, manager,
-                new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), licenseState);
+                new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), licenseState, new global::TickerQ.TickerFunctionConcurrencyGate());
             var childCalls = 0;
             var context = new InternalFunctionContext
             {

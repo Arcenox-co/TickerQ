@@ -15,14 +15,32 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Caching.StackExchangeRedis.Infrastructure;
 
-internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
+internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>,
     ITickerPersistenceProvider<TTimeTicker, TCronTicker>
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
+    public bool NotificationSettingsArePersistent => true;
+
+    public async Task<TickerQ.Utilities.Notifications.NotificationSettingsRecord> ReadNotificationSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var values = await Db.HashGetAsync(Prefix + "notifications:settings", new RedisValue[] { "version", "payload" }).ConfigureAwait(false);
+        return values[0].IsNull ? null : new(Guid.Parse(values[0].ToString()), values[1].ToString());
+    }
+
+    public async Task<bool> SaveNotificationSettingsAsync(TickerQ.Utilities.Notifications.NotificationSettingsRecord record, Guid expectedVersion, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        const string script = "local old = redis.call('HGET', KEYS[1], 'version'); if (old or '') ~= ARGV[1] then return 0 end; redis.call('HSET', KEYS[1], 'version', ARGV[2], 'payload', ARGV[3]); return 1";
+        return (long)await Db.ScriptEvaluateAsync(script, new RedisKey[] { Prefix + "notifications:settings" },
+            new RedisValue[] { expectedVersion == Guid.Empty ? "" : expectedVersion.ToString(), record.Version.ToString(), record.ProtectedConfiguration }).ConfigureAwait(false) == 1;
+    }
+
     private static readonly string AddTimeTickerOnceScript = LuaScriptLoader.Load("AddTimeTickerOnce");
     private static readonly string DeleteTimeTickerScript = LuaScriptLoader.Load("DeleteTimeTicker");
+    private static readonly string SetChainDeleteBehaviorScript = LuaScriptLoader.Load("SetChainDeleteBehavior");
     private static readonly string UpdateCronDefinitionQueueOnlyScript =
         LuaScriptLoader.Load("UpdateCronDefinitionQueueOnly");
     internal Func<CronTickerOccurrenceEntity<TCronTicker>, CancellationToken, Task>
@@ -325,6 +343,37 @@ internal sealed class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
             updated++;
         }
         return updated;
+    }
+
+    public async Task<int> SetTimeTickerDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
+    {
+        if (!Enum.IsDefined(typeof(ChainDeleteBehavior), behavior)) throw new ArgumentOutOfRangeException(nameof(behavior));
+        if (RuntimeAdmissionMisconfigured) return 0;
+        var cluster = IsClusterTopology(Db);
+        if (cluster && HasRuntimeActivationScopeBinding)
+            throw new NotSupportedException(
+                "Scoped scheduler update is unsupported on Redis Cluster without a shared partition hash slot.");
+        // Compare the complete document so a concurrent execution update is never overwritten.
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var raw = await Db.StringGetAsync(TimeTickerKey(rootId)).ConfigureAwait(false);
+            if (raw.IsNullOrEmpty) return 0;
+            var root = Serializer.DeserializeOrNull<TTimeTicker>(raw.ToString());
+            if (root == null || root.ParentId.HasValue) return 0;
+            root.DeleteBehavior = behavior;
+            root.UpdatedAt = Clock.UtcNow;
+            // Keep queue-only Cluster updates on one key, as with UpdateTimeTickers.
+            // Scoped standalone updates must check activation and CAS in one atomic operation.
+            var result = await Db.ScriptEvaluateAsync(cluster
+                    ? "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end redis.call('SET', KEYS[1], ARGV[2]) return 1"
+                    : SetChainDeleteBehaviorScript,
+                cluster ? new RedisKey[] { TimeTickerKey(rootId) }
+                    : new RedisKey[] { TimeTickerKey(rootId), RuntimeActivationMetadataKey },
+                new RedisValue[] { raw, Serializer.Serialize(root), RuntimeActivationEpoch, RuntimeAdmissionMode }).ConfigureAwait(false);
+            if ((long)result == 1) return 1;
+        }
+        return 0;
     }
 
     public async Task<int> RemoveTimeTickers(Guid[] tickerIds, CancellationToken cancellationToken = default)

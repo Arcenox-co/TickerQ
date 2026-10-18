@@ -19,11 +19,13 @@ namespace TickerQ.EntityFrameworkCore.Customizer
         {
             string schema;
             AssistantHistoryOptions assistantHistory;
+            var executionLogs = false;
             try
             {
                 var optionBuilder = context.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>();
                 schema = optionBuilder?.Schema ?? Constants.DefaultSchema;
                 assistantHistory = optionBuilder?.AssistantHistory ?? AssistantHistoryOptions.Current;
+                executionLogs = optionBuilder?.ExecutionLogs?.PersistToDatabase == true;
             }
             catch (InvalidOperationException)
             {
@@ -38,6 +40,8 @@ namespace TickerQ.EntityFrameworkCore.Customizer
             builder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<TCronTicker>(schema));
             builder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations(schema));
             builder.ApplyConfiguration(new TickerQStoreMetadataConfigurations(schema));
+            builder.ApplyConfiguration(new NotificationSettingsConfigurations(schema));
+            if (executionLogs) builder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
 
             // Opt-in assistant chat history tables (AddAssistantHistory()).
             if (assistantHistory != null)

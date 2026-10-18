@@ -34,13 +34,74 @@ public sealed class LicenseCertificateReaderTests : IDisposable
         Assert.False(state.IsEvaluation);
     }
 
-    [Fact]
-    public void Evaluate_V4FullWithNonAnnualTerm_IsInvalidAndBlocked()
+    [Theory]
+    [InlineData(0, 12086162, TickerQLicenseStatus.Active)]
+    [InlineData(1, 0, TickerQLicenseStatus.Active)]
+    [InlineData(180, 0, TickerQLicenseStatus.Active)]
+    [InlineData(364, 0, TickerQLicenseStatus.Expiring)]
+    public void Evaluate_V4FullIssuedAfterPayment_UsesSignedSubscriptionEnd(
+        int delayDays, int delayTicks, TickerQLicenseStatus expectedStatus)
     {
-        var issuedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var paidAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var issuedAt = paidAt.AddDays(delayDays).AddTicks(delayTicks);
+        var subscriptionEnd = paidAt.AddYears(1);
 
         var state = Evaluate(Payload(4, LicenseKind.Full, LicensePlan.Business,
-            issuedAt, issuedAt.AddDays(364), "5.x"), issuedAt.AddDays(1));
+            issuedAt, subscriptionEnd, "5.x"), issuedAt.AddSeconds(1));
+
+        Assert.Equal(expectedStatus, state.Status);
+        Assert.True(state.ExecutionAllowed);
+        Assert.Equal(subscriptionEnd, state.ExpiresAt);
+        Assert.Equal(issuedAt, state.IssuedAt);
+    }
+
+    [Fact]
+    public void Evaluate_ReissuedV4FullExpiresAtOriginalSubscriptionEnd()
+    {
+        var paidAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var subscriptionEnd = paidAt.AddYears(1);
+        var state = Evaluate(Payload(4, LicenseKind.Full, LicensePlan.Priority,
+            paidAt.AddMonths(6), subscriptionEnd, "5.x"), subscriptionEnd);
+
+        Assert.Equal(TickerQLicenseStatus.Expired, state.Status);
+        Assert.True(state.ExecutionAllowed);
+        Assert.Equal(subscriptionEnd, state.ExpiresAt);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(0)]
+    public void Evaluate_V4FullWithExpiryAtOrBeforeIssue_RemainsInvalid(int expiryOffsetSeconds)
+    {
+        var issuedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var state = Evaluate(Payload(4, LicenseKind.Full, LicensePlan.Business,
+            issuedAt, issuedAt.AddSeconds(expiryOffsetSeconds), "5.x"), issuedAt);
+
+        Assert.Equal(TickerQLicenseStatus.Invalid, state.Status);
+        Assert.False(state.ExecutionAllowed);
+        Assert.Contains("incoherent certificate dates", state.Message);
+    }
+
+    [Fact]
+    public void Evaluate_V4FullWithoutExpiry_RemainsInvalid()
+    {
+        var issuedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var state = Evaluate(Payload(4, LicenseKind.Full, LicensePlan.Business,
+            issuedAt, null, "5.x"), issuedAt);
+
+        Assert.Equal(TickerQLicenseStatus.Invalid, state.Status);
+        Assert.False(state.ExecutionAllowed);
+        Assert.Contains("missing runtime expiry", state.Message);
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Evaluate_LegacyFullWithNonAnnualTerm_RemainsInvalid(int schema)
+    {
+        var issuedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var state = Evaluate(Payload(schema, LicenseKind.Full, LicensePlan.Business,
+            issuedAt, issuedAt.AddDays(364), null), issuedAt.AddDays(1));
 
         Assert.Equal(TickerQLicenseStatus.Invalid, state.Status);
         Assert.False(state.ExecutionAllowed);

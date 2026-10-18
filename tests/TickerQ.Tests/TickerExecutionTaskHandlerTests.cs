@@ -49,7 +49,157 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         _serviceProvider = services.BuildServiceProvider();
 
-        _handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
+        _handler = new TickerExecutionTaskHandler(_serviceProvider, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
+    }
+
+    [Fact]
+    public async Task RecurringChain_Dispatches_the_graph_without_executing_the_root_twice()
+    {
+        var calls = 0;
+        var context = CreateContext(ct: (_, _, _) => { calls++; return Task.CompletedTask; }, type: TickerType.CronTickerOccurrence);
+        _internalManager.TryDispatchCronChainAsync(context, false, Arg.Any<CancellationToken>()).Returns(true);
+        await _handler.ExecuteTaskAsync(context, false);
+        Assert.Equal(0, calls);
+        await _internalManager.Received(1).TryDispatchCronChainAsync(context, false, Arg.Any<CancellationToken>());
+        await _internalManager.DidNotReceive().UpdateTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(true, false, false, true)]
+    [InlineData(false, false, false, false)]
+    [InlineData(true, true, false, false)]
+    [InlineData(true, false, true, false)]
+    public async Task CronOverlap_IsPerScheduleAndPartition(bool skip, bool otherCron, bool otherPartition, bool expectSkip)
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = CreateContext(async (_, _, _) => { entered.TrySetResult(); await release.Task; });
+        first.ParentId = Guid.NewGuid();
+        first.RuntimePartitionKey = "overlap-a";
+        first.SkipIfAlreadyRunning = skip;
+        var calls = 0;
+        var second = CreateContext((_, _, _) => { calls++; return Task.CompletedTask; });
+        second.ParentId = otherCron ? Guid.NewGuid() : first.ParentId;
+        second.RuntimePartitionKey = otherPartition ? "overlap-b" : first.RuntimePartitionKey;
+        second.SkipIfAlreadyRunning = skip;
+        var running = _handler.ExecuteTaskAsync(first, false);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await _handler.ExecuteTaskAsync(second, false).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(expectSkip ? 0 : 1, calls);
+            Assert.Equal(expectSkip ? TickerStatus.Skipped : TickerStatus.Done, second.Status);
+            if (expectSkip)
+            {
+                Assert.Contains("this cron job", second.ExceptionDetails);
+                await _internalManager.Received(1).UpdateTickerAsync(second, CancellationToken.None);
+            }
+        }
+        finally { release.TrySetResult(); await running; }
+
+        var after = CreateContext((_, _, _) => Task.CompletedTask);
+        after.ParentId = first.ParentId;
+        after.RuntimePartitionKey = first.RuntimePartitionKey;
+        after.SkipIfAlreadyRunning = true;
+        await _handler.ExecuteTaskAsync(after, false);
+        Assert.Equal(TickerStatus.Done, after.Status);
+    }
+
+    [Fact]
+    public async Task CronOverlap_PreRegisteredSimultaneousRuns_AdmitExactlyOne()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var go = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cronId = Guid.NewGuid();
+        var calls = 0;
+        var contexts = Enumerable.Range(0, 16).Select(_ =>
+        {
+            var c = CreateContext(async (_, _, _) => { Interlocked.Increment(ref calls); entered.TrySetResult(); await release.Task; });
+            c.ParentId = cronId; c.SkipIfAlreadyRunning = true; return c;
+        }).ToArray();
+        var sources = contexts.Select(c => TickerCancellationTokenManager.TryRegisterAcquired(c, false, out _)).ToArray();
+        var tasks = contexts.Select((c, i) => Task.Run(async () =>
+        {
+            await go.Task;
+            await _handler.ExecuteRegisteredTaskAsync(c, false, sources[i]!);
+        })).ToArray();
+        try
+        {
+            go.TrySetResult();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var remaining = tasks.ToList();
+            for (var i = 0; i < tasks.Length - 1; i++)
+            {
+                var finished = await Task.WhenAny(remaining).WaitAsync(TimeSpan.FromSeconds(5));
+                await finished; remaining.Remove(finished);
+            }
+            Assert.Equal(1, calls);
+            Assert.Equal(15, contexts.Count(c => c.Status == TickerStatus.Skipped));
+        }
+        finally { release.TrySetResult(); await Task.WhenAll(tasks); }
+        Assert.Single(contexts, c => c.Status == TickerStatus.Done);
+    }
+
+    [Fact]
+    public async Task CronOverlap_EnablingPolicyWhileAnAllowedRunIsActive_StillSkips()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = CreateContext(async (_, _, _) => await release.Task);
+        first.ParentId = Guid.NewGuid(); // previous run was admitted with the policy off
+        var running = _handler.ExecuteTaskAsync(first, false);
+        try
+        {
+            var next = CreateContext((_, _, _) => throw new InvalidOperationException("must not enter"));
+            next.ParentId = first.ParentId; next.SkipIfAlreadyRunning = true;
+            await _handler.ExecuteTaskAsync(next, false);
+            Assert.Equal(TickerStatus.Skipped, next.Status);
+        }
+        finally { release.TrySetResult(); await running; }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CronOverlap_ReleasesAdmission_AfterFailureOrPersistenceError(bool persistenceError)
+    {
+        var first = CreateContext((_, _, _) => throw new InvalidOperationException("handler failed"));
+        first.ParentId = Guid.NewGuid(); first.SkipIfAlreadyRunning = true;
+        if (persistenceError)
+        {
+            _internalManager.UpdateTickerAsync(first, Arg.Any<CancellationToken>())
+                .Returns<Task>(_ => throw new InvalidOperationException("store failed"));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => _handler.ExecuteTaskAsync(first, false));
+        }
+        else await _handler.ExecuteTaskAsync(first, false);
+        var next = CreateContext((_, _, _) => Task.CompletedTask);
+        next.ParentId = first.ParentId; next.SkipIfAlreadyRunning = true;
+        await _handler.ExecuteTaskAsync(next, false);
+        Assert.Equal(TickerStatus.Done, next.Status);
+    }
+
+    [Fact]
+    public async Task CronOverlap_HoldsAdmissionAcrossRetryAttempts()
+    {
+        var retryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = CreateContext(async (_, _, c) =>
+        {
+            if (c.RetryCount == 0) throw new InvalidOperationException("retry me");
+            retryEntered.TrySetResult(); await release.Task;
+        });
+        first.ParentId = Guid.NewGuid(); first.SkipIfAlreadyRunning = true; first.Retries = 1; first.RetryIntervals = [0];
+        var running = _handler.ExecuteTaskAsync(first, false);
+        try
+        {
+            await retryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var next = CreateContext((_, _, _) => throw new InvalidOperationException("must not enter"));
+            next.ParentId = first.ParentId; next.SkipIfAlreadyRunning = true;
+            await _handler.ExecuteTaskAsync(next, false);
+            Assert.Equal(TickerStatus.Skipped, next.Status);
+        }
+        finally { release.TrySetResult(); await running; }
+        Assert.Equal(TickerStatus.Done, first.Status);
     }
 
     #region Success Path
@@ -216,7 +366,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         var handler = new TickerExecutionTaskHandler(
             _serviceProvider, _clock, _instrumentation, _internalManager,
             new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
-            LicenseTestState.Active(_clock),
+            LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate(),
             _ => descriptor);
         var context = CreateContext(ct: (_, _, _) =>
         {
@@ -241,7 +391,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         var handler = new TickerExecutionTaskHandler(
             _serviceProvider, _clock, _instrumentation, _internalManager,
             new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
-            LicenseTestState.Active(_clock),
+            LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate(),
             _ => null);
         var context = CreateContext(ct: (_, _, _) =>
         {
@@ -270,7 +420,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         var handler = new TickerExecutionTaskHandler(
             _serviceProvider, _clock, _instrumentation, _internalManager,
             new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
-            LicenseTestState.Active(_clock),
+            LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate(),
             _ => descriptor);
         var context = CreateContext(ct: (_, _, _) =>
         {
@@ -299,7 +449,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         var handler = new TickerExecutionTaskHandler(
             _serviceProvider, _clock, _instrumentation, _internalManager,
             new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
-            LicenseTestState.Active(_clock),
+            LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate(),
             _ => descriptor);
         var context = CreateContext(ct: (_, _, _) =>
         {
@@ -346,7 +496,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
 
         var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
 
@@ -367,7 +517,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
 
         var context = CreateContext(ct: (_, _, _) => throw new InvalidOperationException("boom"));
         context.Retries = 2;
@@ -497,7 +647,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
         var sp = services.BuildServiceProvider();
-        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
+        var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager, new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
 
         var context = CreateContext(ct: (_, _, _) => throw new TaskCanceledException("cancelled"));
 
@@ -525,7 +675,8 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(exceptionHandler);
         using var sp = services.BuildServiceProvider();
         var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager,
-            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock),
+            new TickerFunctionConcurrencyGate());
         var context = CreateContext(ct: (_, _, _) => throw new TaskCanceledException());
 
         await handler.ExecuteTaskAsync(context, false);
@@ -893,7 +1044,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         };
         var handler = new TickerExecutionTaskHandler(
             serviceProvider, _clock, instrumentation, manager, options,
-            Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
+            Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
 
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         ScopedProbe capturedProbe = null;
@@ -956,7 +1107,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         await using var serviceProvider = services.BuildServiceProvider();
         var handler = new TickerExecutionTaskHandler(
             serviceProvider, _clock, instrumentation, manager,
-            new SchedulerOptionsBuilder(), notifier, LicenseTestState.Active(_clock));
+            new SchedulerOptionsBuilder(), notifier, LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
         var context = CreateContext(ct: (_, _, _) =>
             throw new InvalidOperationException("delegate failed"));
 
@@ -981,7 +1132,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             {
                 DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
                 TimeoutGracePeriod = TimeSpan.FromMilliseconds(200),
-            }, Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
+            }, Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
         var attempts = 0;
         var context = CreateContext(ct: async (_, _, _) =>
         {
@@ -1025,7 +1176,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             {
                 DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
                 TimeoutGracePeriod = TimeSpan.FromMilliseconds(50),
-            }, notifier, LicenseTestState.Active(_clock));
+            }, notifier, LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
         var context = CreateContext(ct: async (token, _, _) =>
             await Task.Delay(Timeout.InfiniteTimeSpan, token));
 
@@ -1057,7 +1208,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             {
                 DefaultExecutionTimeout = TimeSpan.FromMilliseconds(20),
                 TimeoutGracePeriod = TimeSpan.FromMilliseconds(50),
-            }, Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
+            }, Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
         var childRan = false;
         var parent = CreateContext(async (token, _, execution) =>
         {
@@ -1103,7 +1254,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         await using var serviceProvider = services.BuildServiceProvider();
         var handler = new TickerExecutionTaskHandler(
             serviceProvider, _clock, instrumentation, manager, new SchedulerOptionsBuilder(),
-            Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock));
+            Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
         var parent = CreateContext((_, _, executionContext) =>
         {
             executionContext.IsRemoteCallbackExecution = true;

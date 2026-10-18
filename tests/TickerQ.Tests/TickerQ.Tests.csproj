@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <ImplicitUsings>enable</ImplicitUsings>
@@ -35,4 +35,9 @@
       <None Update="Fixtures/Licensing/**" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="../Shared/ChainDeleteBehaviorContract.cs" Link="Shared/ChainDeleteBehaviorContract.cs" />
+    <Compile Include="../Shared/OverdueAcquisitionContract.cs" Link="Shared/OverdueAcquisitionContract.cs" />
+  </ItemGroup>
+  <ItemGroup><Compile Include="../Shared/CronChainContract.cs" Link="Shared/CronChainContract.cs" /></ItemGroup>
 </Project>

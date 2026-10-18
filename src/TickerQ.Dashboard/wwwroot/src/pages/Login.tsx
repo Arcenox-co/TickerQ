@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import { LogIn, Lock, User, Activity } from "lucide-react";
+import { LogIn, Lock, User } from "lucide-react";
+import tickerqLogo from "@/assets/tickerq-logo.svg";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -53,7 +54,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-surface-0 p-4">
       <div className="w-full max-w-sm">
         <div className="flex items-center justify-center gap-2 mb-6">
-          <Activity className="h-5 w-5 text-primary" />
+          <img src={tickerqLogo} alt="" className="size-10 shrink-0" width={40} height={40} />
           <span className="font-semibold text-lg">TickerQ</span>
           <span className="text-muted-foreground text-sm">Scheduler Dashboard</span>
         </div>
