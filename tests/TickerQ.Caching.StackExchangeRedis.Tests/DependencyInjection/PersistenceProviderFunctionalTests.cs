@@ -5,6 +5,8 @@ using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using NSubstitute;
+using StackExchange.Redis;
 using TickerQ.Caching.StackExchangeRedis.DependencyInjection;
 using TickerQ.DependencyInjection;
 using TickerQ.EntityFrameworkCore.Customizer;
@@ -124,7 +126,11 @@ public class PersistenceProviderFunctionalTests : IDisposable
 
             options.AddStackExchangeRedis(redis =>
             {
-                redis.Configuration = "localhost:6379";
+                // These tests exercise EF time-ticker CRUD, not Redis transport.
+                // Redis cache behavior is covered separately with isolated containers.
+                var multiplexer = Substitute.For<IConnectionMultiplexer>();
+                multiplexer.GetDatabase().Returns(Substitute.For<IDatabase>());
+                redis.ConnectionMultiplexer = multiplexer;
             });
         });
 
