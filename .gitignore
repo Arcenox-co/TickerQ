@@ -4,6 +4,7 @@ BenchmarkDotNet.Artifacts/
 project.lock.json
 .DS_Store
 *.pyc
+__pycache__/
 nupkg/
 
 # Visual Studio Code
@@ -33,10 +34,53 @@ msbuild.wrn
 .vs/
 .idea/
 
+# Test reports and coverage output
+[Tt]est[Rr]esults/
+*.trx
+*.coverage
+*.coveragexml
+coverage/
+.nyc_output/
+lcov.info
+playwright-report/
+test-results/
+
+# Local runtime logs
+logs/
+*.log
+
 # SQLite database files
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.sqlite3-journal
+
+# Local credentials and environment settings; keep shareable examples visible
+.env
+.env.*
+!.env.example
+!.env.template
+!.env.sample
+!.env.*.example
+!.env.*.template
+!.env.*.sample
+appsettings.Local.json
+appsettings.*.Local.json
+*.pfx
+*.p12
+data-protection/
+
+# Real customer certificates stay local; synthetic licensing fixtures are source
+*.tqlicense
+!/tests/TickerQ.Tests/Fixtures/Licensing/*.tqlicense
 
 # Source generator temp output
 tmpgen/
@@ -49,12 +93,20 @@ tickerq_open_issues.md
 
 # Node
 node_modules/
+*.tsbuildinfo
 
 # Local package build artifacts
 nupkgs/
+*.nupkg
+*.snupkg
 
-# Local working notes / tool config
+# Local AI tool state and working plans
+.hermes/
 .claude/
+.codex/
+.agents/
+
+# Local working notes
 *.bak
 BRANCH_ASSESSMENT-*.md
 RemoteScheduler-Dashboard-Plan.md
