@@ -25,14 +25,14 @@ The following package families are expressly designated as governed by that agre
 
 For NuGet packages, the commercial transition begins with functional line 5.x: version `10.5.0` for .NET 10 and parallel versions `9.5.0` for .NET 9 and `8.5.0` for .NET 8 when first distributed as the same functional release. For the previously unpublished npm package `@tickerq/sdk`, the transition begins with version `1.0.0` and includes every later semantic version unless an artifact's immutable distribution materials expressly provide otherwise. TickerQ Hub remains a hosted service governed by separately contracted hosted-service terms.
 
-- **Repository agreement:** [LICENSE.md](LICENSE.md), Version 1.0, dated October 13, 2026; pending publication
+- **Repository agreement:** [LICENSE.md](LICENSE.md), Version 1.0, dated October 13, 2026
 - **Required portal agreement version:** `public-master-v1.0`
-- **Required v1.0 PDF SHA-256:** [`licenses/public-master-v1.0.sha256`](licenses/public-master-v1.0.sha256) — pending until the matching PDF is published
+- **Required v1.0 PDF SHA-256:** [`licenses/public-master-v1.0.sha256`](licenses/public-master-v1.0.sha256), identifying the reviewed PDF including `TickerQ.Integrations`
 - **Current portal agreement endpoint:** https://license.tickerq.net/api/commercial-terms/current/view
-- **Previously recorded portal agreement:** `public-master-v1.0` (different text; not this agreement text)
-- **Prior portal PDF SHA-256:** `9663da243deba54d8b9a1ca87a3d7e94e4a1a96b744b3a37902307f0456ee640`
+- **Previous portal revision:** `public-master-v1.0`, without `TickerQ.Integrations`; PDF SHA-256 `047069f2ef3567cb651303294e1328823a59e7ce02c009496d22322969d50a50`. Its PDF and exact text are archived by digest in the portal repository.
+- **Earlier portal PDF SHA-256:** `9663da243deba54d8b9a1ca87a3d7e94e4a1a96b744b3a37902307f0456ee640`
 
-> **Publication gate:** Do not distribute an artifact governed by Version 1.0 until the licensing portal publishes matching Version 1.0 PDF and text representations and `licenses/public-master-v1.0.sha256` records the approved PDF's exact SHA-256. Automated NuGet and npm publication validates the version, exact text, and PDF digest and fails closed while the digest is pending. This initial commercial agreement uses v1.0. A matching version label alone is insufficient: the portal text and approved PDF must match this agreement. Preserve any previously published documents and acceptance records; the version label does not rewrite prior acceptances. The repository and Node SDK package carry identical copies of the same agreement.
+> **Publication gate:** Automated NuGet and npm publication validates the live portal version, exact agreement text, and approved PDF digest against this repository. Publication fails if any value differs or the digest is missing. This initial commercial agreement uses v1.0. A matching version label alone is insufficient: the portal text and approved PDF must match this agreement. Previously published documents and acceptance records retain their original PDF and digest; this publication does not rewrite prior acceptances. The repository and Node SDK package carry identical copies of the same agreement.
 
 ## Subscription and expiration behavior
 
@@ -72,13 +72,13 @@ Relative paths resolve from the host's content root. Make the file readable by t
 
 For a compliant compiled Integrated Product, Section 9 permits the distributor to include its unmodified certificate with the product or deliver it directly for installation with that product. No separate end-user TickerQ license or new certificate type is required solely to run it. End-user terms must restrict the certificate to that product and prohibit sharing it separately. Do not put the certificate in a public repository or offer it as a stand-alone download. Lawfully delivered end-user copies may retain the certificate for the continued runtime use allowed by Section 9. These permissions do not allow new distribution after the distributor's entitlement ends unless the applicable fallback rights permit it.
 
-## Finalizing the first commercial publication
+## Maintaining the published agreement
 
-The portal application is maintained outside this repository. The remaining publication steps are:
+The portal application is maintained outside this repository. For each future agreement update:
 
 1. Publish the final `LICENSE.md` as the portal's exact UTF-8 agreement text for `public-master-v1.0`, including its whitespace and final newline, and publish a PDF containing the same final terms. Review that PDF before approving it.
 2. Preserve any earlier documents and acceptance records. New acceptance records should retain the accepted document, its version and effective date, the accepting customer and individual, the acceptance time, and the PDF SHA-256. Reusing the initial version label does not change an earlier acceptance.
-3. Compute the approved PDF's SHA-256, for example with `shasum -a 256 /path/to/approved-public-master-v1.0.pdf`. Replace `PENDING_PUBLICATION` in `licenses/public-master-v1.0.sha256` with only the 64-character lowercase digest. Use the PDF that was reviewed and published; do not pin the older portal PDF merely to pass the gate.
+3. Compute the approved PDF's SHA-256, for example with `shasum -a 256 /path/to/approved-public-master-v1.0.pdf`. Update `licenses/public-master-v1.0.sha256` with only the 64-character lowercase digest. Use the PDF that was reviewed and published; do not pin an older portal PDF merely to pass the gate.
 4. Run the checks below from the repository root. Both must pass before publishing packages. The portal validator checks exact text, version, and PDF digest; it does not visually compare the PDF's contents with the text.
 
 ```bash

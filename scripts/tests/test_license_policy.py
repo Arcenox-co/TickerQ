@@ -193,7 +193,7 @@ class LicensePolicyTests(unittest.TestCase):
         self.assertFalse((ROOT / "licenses" / "OPEN-SOURCE.md").exists())
         self.assertRegex(
             (ROOT / "licenses" / "public-master-v1.0.sha256").read_text().strip(),
-            r"\A(?:PENDING_PUBLICATION|[0-9a-f]{64})\Z",
+            r"\A[0-9a-f]{64}\Z",
         )
 
     def test_node_package_designates_commercial_terms(self) -> None:
