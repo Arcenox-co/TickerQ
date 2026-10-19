@@ -5,8 +5,8 @@
 </h1>
 
 <p align="center">
-  <strong>Background job scheduling for .NET</strong><br />
-  Scheduled tasks, recurring workflows, and real-time visibility in one platform.
+  <strong>Background jobs and workflows for .NET</strong><br />
+  From a scheduled task to a recurring workflow. See every step along the way.
 </p>
 
 <p align="center">
@@ -19,52 +19,57 @@
 <p align="center">
   <a href="https://license.tickerq.net/register"><strong>Start for free</strong></a> ·
   <a href="https://tickerq.net/docs">Documentation</a> ·
+  <a href="https://tickerq.net/docs/dashboard">Explore the dashboard</a> ·
   <a href="https://license.tickerq.net/pricing">View plans</a> ·
   <a href="https://github.com/Arcenox-co/TickerQ/releases">Releases</a>
 </p>
 
 ---
 
-TickerQ helps .NET teams schedule background work, build job workflows, and monitor execution from a single dashboard. It supports everything from scheduled emails and reports to invoice processing and recurring data pipelines, with a choice of storage providers and optional integrations.
+**TickerQ brings scheduling, job chains, and execution visibility into your .NET application.** Run work on demand or on a schedule, coordinate dependent steps, and follow each execution through the dashboard. Use it for invoice processing, scheduled reports, data imports, notifications, and application maintenance.
 
-## Start for free
+> **Start for free.** Companies with annual consolidated gross revenue below **US$5 million** qualify for Community, including production use. Other eligible users include individuals, nonprofits, and education. [Check eligibility](#start-for-free) · [Get your license →](https://license.tickerq.net/register)
 
-**Free for companies with annual consolidated gross revenue below US$5 million.** The Community license includes production use and can be renewed annually at no charge while eligibility is maintained.
+<p align="center">
+  <a href="https://tickerq.net/docs/dashboard">
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main-commercial/docs/images/dashboard-overview.png" alt="TickerQ dashboard showing scheduler health, execution statistics, history, and navigation to jobs, diagnostics, and integrations" width="1200" />
+  </a>
+  <br />
+  <sub>A local monitoring demo with simulated failures and recovery. Workspace labels are anonymized.</sub>
+</p>
 
-Community is also available to individuals working solely on their own behalf, registered nonprofits, and eligible educational institutions, students, educators, and academic researchers for teaching, learning, or noncommercial academic research.
+## Why TickerQ
 
-The revenue threshold applies to the entire company group, including parents, subsidiaries, and entities under common control, for the most recently completed fiscal year. For client work, each client must qualify independently or hold a paid license.
+- **Write jobs in C#.** Use typed requests and compile-time function registration. The core scheduler supports Native AOT.
+- **Build complete workflows.** Connect jobs with conditional steps, pass results between them, and schedule a fresh chain for every recurring run.
+- **Keep execution under control.** Set retries, priorities, per-host function concurrency, and cron overlap policies. Cancel pending work or request cooperative cancellation of a running job.
+- **Commit jobs with business data.** Stage time jobs and cron schedules in the same EF Core transaction as your application changes.
+- **Choose your storage.** Use EF Core, MongoDB, or Redis for persistence, with in-memory storage for development.
+- **Run across application instances.** Coordinate workers through a shared operational store, isolate workloads with application namespaces, and recover interrupted work.
 
-Organizations outside Community eligibility can choose a commercial subscription or a one-time **30-day Evaluation** for internal, non-production use. Full eligibility and usage terms are defined in the [license agreement](LICENSE.md).
+For example, a daily invoice workflow can **prepare invoices → generate PDFs → send them to customers**, with retries and execution history for each step. [Explore recurring chains →](docs/recurring-chains.md)
 
-**[Start for free →](https://license.tickerq.net/register)** · [Compare plans](https://license.tickerq.net/pricing)
+## A dashboard for daily operations
 
-## Scheduling and workflows
+Understand what is scheduled, what is running, and what needs attention from the same interface.
 
-- **Flexible scheduling** — Run jobs immediately, at a specific time, or on a recurring cron schedule.
-- **Job chains** — Connect dependent steps, define execution conditions, and repeat complete workflows on a schedule.
-- **Execution controls** — Configure retries, priorities, per-host function concurrency, and cron overlap prevention.
-- **Persistent storage** — Choose EF Core, MongoDB, or Redis, with in-memory storage available for development.
-- **Transactional scheduling** — Save jobs and application data together in the same EF Core transaction.
-- **Distributed execution** — Coordinate multiple application instances through a shared operational store and recover interrupted work.
+- **Inspect each run:** live status, execution history, logs, results, and a visual view of job chains.
+- **Manage scheduled work:** create and edit jobs, trigger a run, pause cron schedules, and retry or cancel executions.
+- **Diagnose runtime issues:** review scheduler health, execution ownership, registered functions, and retention settings.
 
-Functions are registered at compile time through a source generator, with typed request support and Native AOT compatibility in the core scheduler.
+The optional **AI assistant** helps you explore jobs and logs in natural language and prepare jobs, schedules, or monitoring rules. It uses your configured model provider; you review and confirm changes before they are applied.
 
-## Dashboard
+## Alerts, deadlines, and recovery
 
-The [TickerQ dashboard](https://tickerq.net/docs/dashboard) provides live execution status, logs, history, and scheduler diagnostics. Inspect individual steps in a chain, retry failed jobs, pause schedules, and request cancellation from the same interface.
+Connect **Slack**, **Microsoft Teams**, or a **custom webhook** with `TickerQ.Integrations`. Choose which functions to monitor and configure destinations, alert rules, and message payloads from the dashboard.
 
-An optional **AI assistant** supports natural-language exploration of jobs and logs, along with proposed jobs, schedules, and monitoring rules. Changes require confirmation, and the assistant uses your configured model provider.
+Set a daily completion deadline, detect repeated failures, or flag jobs that run too long. Enable recovery messages when a monitored issue clears. OpenTelemetry instrumentation connects execution traces to your existing observability tools.
 
-## Integrations and monitoring
-
-**TickerQ.Integrations** connects job events to Slack, Microsoft Teams, and custom webhooks. Destinations, function filters, alert rules, and message payloads are managed from the dashboard.
-
-Monitor repeated failures, long-running jobs, and daily completion deadlines, with optional recovery messages when an issue clears. OpenTelemetry instrumentation adds execution tracing to your existing observability tools.
+[Explore integrations and monitoring →](src/TickerQ.Integrations)
 
 ## Packages
 
-TickerQ is modular. Add the storage provider, dashboard, and integrations your application needs.
+Add the packages your application needs. Installation and configuration are covered in the [documentation](https://tickerq.net/docs).
 
 | Package | Purpose |
 | --- | --- |
@@ -76,9 +81,31 @@ TickerQ is modular. Add the storage provider, dashboard, and integrations your a
 | [TickerQ.Integrations](src/TickerQ.Integrations) | Slack, Teams, webhooks, and job monitoring |
 | [TickerQ.Instrumentation.OpenTelemetry](src/TickerQ.Instrumentation.OpenTelemetry) | Execution tracing |
 
-[Utilities](src/TickerQ.Utilities) and the [source generator](src/TickerQ.SourceGenerator) provide shared contracts and compile-time registration. Use matching release versions across the .NET packages.
+[Utilities](src/TickerQ.Utilities) and the [source generator](src/TickerQ.SourceGenerator) provide shared contracts and compile-time registration. Keep .NET packages on matching release versions.
 
-For centralized scheduling across applications, see [TickerQ Hub](https://hub.tickerq.net), its [.NET SDK](hub/sdks/dotnet/TickerQ.SDK), [JavaScript/TypeScript SDK](hub/sdks/node), and [remote executor](hub/remoteExecutor/TickerQ.RemoteExecutor). Hub is a separate hosted service with its own terms.
+For centralized scheduling across applications, [TickerQ Hub](https://hub.tickerq.net) provides [.NET](hub/sdks/dotnet/TickerQ.SDK) and [JavaScript/TypeScript](hub/sdks/node) SDKs with [remote execution](hub/remoteExecutor/TickerQ.RemoteExecutor). Hub is a separate hosted service with its own terms.
+
+## Start for free
+
+| License | Who it is for | Use |
+| --- | --- | --- |
+| **Community** | Companies below US$5M annual consolidated gross revenue and other eligible users listed below | Free, including production use; annual renewal while eligible |
+| **Evaluation** | Organizations evaluating TickerQ | One-time 30-day evaluation for internal, non-production use |
+| **Commercial subscription** | Organizations outside Community eligibility, including companies at or above US$5M | Paid production use within the agreed scope |
+
+<details>
+<summary><strong>Community eligibility</strong></summary>
+
+- **Companies:** annual worldwide gross revenue below US$5 million across the entire control group, including parents, subsidiaries, and entities under common control, for the most recently completed fiscal year.
+- **Individuals:** using TickerQ solely on their own behalf, not for an employer or client.
+- **Nonprofits:** validly registered nonprofit organizations.
+- **Education:** eligible institutions, students, educators, and academic researchers using TickerQ primarily for teaching, learning, or noncommercial academic research.
+
+For client work, the client must qualify independently or hold a paid license. Community certificates last 12 months and require renewed eligibility confirmation before expiry. The [license agreement](LICENSE.md) defines the full eligibility and usage terms.
+
+</details>
+
+**[Get your free Community license →](https://license.tickerq.net/register)** · [Compare commercial plans](https://license.tickerq.net/pricing)
 
 ## Documentation and support
 
