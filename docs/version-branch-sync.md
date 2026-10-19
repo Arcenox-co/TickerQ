@@ -12,7 +12,7 @@ source branch's current commit.
 releases. Use `dry_run` to prepare and validate the merge without pushing it.
 
 `.sync-overrides` changes `VersionPrefix`, `TargetFramework` and the .NET dependency
-range. For example, `10.5.0-beta` becomes `8.5.0-beta` or `9.5.0-beta`. Target-specific
+range. For example, `10.5.0-rc.1` becomes `8.5.0-rc.1` or `9.5.0-rc.1`. Target-specific
 abstraction ranges are preserved. Missing, duplicated or invalid required properties
 stop the workflow before overrides are written; they are never silently skipped.
 

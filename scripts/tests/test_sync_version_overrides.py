@@ -25,7 +25,7 @@ class VersionSyncTests(unittest.TestCase):
                 apply(self.root, self.rules, major, saved)
                 result = self.file.read_text()
                 self.assertIn(f'<VersionPrefix>{major}.5.0</VersionPrefix>', result)
-                self.assertIn('<VersionSuffix>beta</VersionSuffix>', result)
+                self.assertIn('<VersionSuffix>rc.1</VersionSuffix>', result)
                 self.assertIn(f'<TargetFramework>net{major}.0</TargetFramework>', result)
                 self.assertIn(f'<DotNetVersion>[{major}.0.0,{major+1}.0.0)</DotNetVersion>', result)
                 self.assertIn('<DotNetAbstractionsVersion>[8.0.0,11.0.0)</DotNetAbstractionsVersion>', result)
