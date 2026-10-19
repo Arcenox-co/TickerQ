@@ -4,8 +4,13 @@ using Xunit;
 
 namespace TickerQ.Tests;
 
-public class CronScheduleCacheDstTests
+[Collection("CronScheduleCacheState")]
+public class CronScheduleCacheDstTests : IDisposable
 {
+    private readonly TimeZoneInfo _originalTimeZone = CronScheduleCache.TimeZoneInfo;
+
+    public void Dispose() => CronScheduleCache.TimeZoneInfo = _originalTimeZone;
+
     [Fact]
     public void GetNextOccurrenceOrDefault_Handles_DST_Gap_Without_Throwing()
     {

@@ -16,6 +16,7 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
 
+[Collection("CronScheduleCacheState")]
 public class InternalTickerManagerTests
 {
     public class FakeTimeTicker : TimeTickerEntity<FakeTimeTicker> { }

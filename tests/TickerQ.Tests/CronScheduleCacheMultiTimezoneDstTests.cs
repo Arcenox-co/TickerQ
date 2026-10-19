@@ -4,6 +4,7 @@ using Xunit;
 
 namespace TickerQ.Tests;
 
+[Collection("CronScheduleCacheState")]
 public class CronScheduleCacheMultiTimezoneDstTests : IDisposable
 {
     private readonly TimeZoneInfo _originalTimeZone;

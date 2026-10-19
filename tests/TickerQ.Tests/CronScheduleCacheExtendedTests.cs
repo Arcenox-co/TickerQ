@@ -12,8 +12,11 @@ namespace TickerQ.Tests;
 /// Each test uses unique cron expressions or invalidates after use to avoid
 /// cross-test interference from the static cache.
 /// </summary>
+[Collection("CronScheduleCacheState")]
 public class CronScheduleCacheExtendedTests : IDisposable
 {
+    private readonly TimeZoneInfo _originalTimeZone = CronScheduleCache.TimeZoneInfo;
+
     public CronScheduleCacheExtendedTests()
     {
         // Ensure UTC for deterministic results
@@ -22,8 +25,7 @@ public class CronScheduleCacheExtendedTests : IDisposable
 
     public void Dispose()
     {
-        // Restore default
-        CronScheduleCache.TimeZoneInfo = TimeZoneInfo.Utc;
+        CronScheduleCache.TimeZoneInfo = _originalTimeZone;
     }
 
     // ---------------------------------------------------------------
