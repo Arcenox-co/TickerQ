@@ -24,18 +24,40 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         string schema;
+        AssistantHistoryOptions assistantHistory;
+        var executionLogs = false;
         try
         {
-            schema = this.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>()?.Schema ?? Constants.DefaultSchema;
+            var optionBuilder = this.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>();
+            schema = optionBuilder?.Schema ?? Constants.DefaultSchema;
+            assistantHistory = optionBuilder?.AssistantHistory ?? AssistantHistoryOptions.Current;
+            executionLogs = optionBuilder?.ExecutionLogs?.PersistToDatabase == true;
         }
         catch (InvalidOperationException)
         {
             schema = Constants.DefaultSchema;
+            // Design-time (dotnet ef migrations) fallback — set by AddAssistantHistory().
+            assistantHistory = AssistantHistoryOptions.Current;
         }
 
         modelBuilder.ApplyConfiguration(new TimeTickerConfigurations<TTimeTicker>(schema));
         modelBuilder.ApplyConfiguration(new CronTickerConfigurations<TCronTicker>(schema));
         modelBuilder.ApplyConfiguration(new CronTickerOccurrenceConfigurations<TCronTicker>(schema));
+        modelBuilder.ApplyConfiguration(new TimeTickerResultConfigurations<TTimeTicker>(schema));
+        modelBuilder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<TCronTicker>(schema));
+        modelBuilder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new TickerQStoreMetadataConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
+        if (executionLogs) modelBuilder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
+
+        // Assistant chat history tables — mapped only when opted in via
+        // AddAssistantHistory(), so headless setups get no schema changes.
+        if (assistantHistory != null)
+        {
+            modelBuilder.ApplyConfiguration(new AssistantConversationConfigurations(schema));
+            modelBuilder.ApplyConfiguration(new AssistantMessageConfigurations(schema));
+        }
+
         base.OnModelCreating(modelBuilder);
     }
 }

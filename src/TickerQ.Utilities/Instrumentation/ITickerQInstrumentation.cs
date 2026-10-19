@@ -18,6 +18,7 @@ namespace TickerQ.Utilities.Instrumentation
         void LogJobAttemptFailed(Guid jobId, string functionName, int attempt, int maxRetries, long elapsedMs, Exception exception);
         /// <summary>Announces an upcoming retry. <paramref name="nextAttempt"/> is 1-indexed retry number. Logged as Warning.</summary>
         void LogJobRetryScheduled(Guid jobId, string functionName, int nextAttempt, int maxRetries, int intervalSeconds);
+        void LogJobTimeoutPending(Guid jobId, string functionName, TimeSpan timeout, TimeSpan grace);
         void LogJobCancelled(Guid jobId, string functionName, string reason);
         void LogJobSkipped(Guid jobId, string functionName, string reason);
         void LogSeedingDataStarted(string seedingDataType);

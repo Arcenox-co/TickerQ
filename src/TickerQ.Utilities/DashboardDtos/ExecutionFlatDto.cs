@@ -13,6 +13,16 @@ namespace TickerQ.Utilities.DashboardDtos
     {
         public Guid Id { get; set; }
         public ExecutionType Type { get; set; }
+
+        /// <summary>
+        /// Parent cron ticker id for cron occurrences — lets the dashboard's
+        /// "retry" action re-run the schedule on demand without an extra
+        /// lookup. Null for time-ticker executions.
+        /// </summary>
+        public Guid? CronTickerId { get; set; }
+        public Guid? ChainRootId { get; set; }
+        public ChainExecutionSummaryDto ChainSummary { get; set; }
+
         public string FunctionName { get; set; }
         public TickerStatus Status { get; set; }
         public DateTime ScheduledFor { get; set; }
@@ -39,8 +49,12 @@ namespace TickerQ.Utilities.DashboardDtos
         /// For time tickers: the number of direct chain children. Lets the
         /// executions table render a chain icon next to root rows so the user
         /// can spot which executions kicked off a workflow vs ran standalone.
-        /// Always 0 for cron occurrences (cron tickers don't chain).
+        /// For cron triggers, use ChainRootId to inspect the separately tracked chain.
         /// </summary>
         public int ChildCount { get; set; }
+        /// <summary>The instance/replica that claimed/ran this execution (entity's LockHolder). Null until claimed.</summary>
+        public string LockHolder { get; set; }
+        /// <summary>When the execution was claimed (LockHolder set). Null until claimed.</summary>
+        public DateTime? LockedAt { get; set; }
     }
 }

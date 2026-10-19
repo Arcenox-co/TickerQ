@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PackageId>TickerQ.Integrations</PackageId>
+    <Description>Optional Slack, Teams and custom webhook integrations for TickerQ, with dynamic routing and dashboard management.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../TickerQ.Utilities/TickerQ.Utilities.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="[10.0.13,11.0.0)" />
+    <PackageReference Include="Microsoft.AspNetCore.DataProtection" Version="[10.0.13,11.0.0)" />
+    <None Include="README.md" Pack="true" PackagePath="" />
+    <InternalsVisibleTo Include="TickerQ.Integrations.Tests" />
+  </ItemGroup>
+</Project>

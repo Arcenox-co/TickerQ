@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="$(DotNetVersion)" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="$(DotNetVersion)" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.13" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.12" PrivateAssets="All" />
+    <ProjectReference Include="../../src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="../../src/TickerQ/TickerQ.csproj" />
+    <ProjectReference Include="../../src/TickerQ.Dashboard/TickerQ.Dashboard.csproj" />
+    <ProjectReference Include="../../src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

@@ -1,7 +1,10 @@
 using System;
+using System.Linq;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using TickerQ.BackgroundServices;
 using TickerQ.Dispatcher;
 using TickerQ.Provider;
@@ -13,7 +16,9 @@ using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Managers;
+using TickerQ.Utilities.Models;
 using TickerQ.Utilities.Temps;
 
 namespace TickerQ.DependencyInjection
@@ -31,6 +36,17 @@ namespace TickerQ.DependencyInjection
             var schedulerOptionsBuilder = new SchedulerOptionsBuilder();
             var optionInstance = new TickerOptionsBuilder<TTimeTicker,TCronTicker>(tickerExecutionContext, schedulerOptionsBuilder);
             optionsBuilder?.Invoke(optionInstance);
+            schedulerOptionsBuilder.Validate();
+            schedulerOptionsBuilder.ReconciliationEpoch = optionInstance.ReconciliationEpoch;
+            // Freeze runtime admission before registering factories that may construct a provider or
+            // manager. Scoped protocol APIs remain free to administer other applications' records, but
+            // they can never redirect this process's configured execution scope.
+            schedulerOptionsBuilder.BindRuntimeActivationScope(
+                optionInstance.ApplicationNamespace,
+                optionInstance.ReconciliationEpoch,
+                optionInstance.RegisterBackgroundServices);
+            tickerExecutionContext.RuntimePartition = schedulerOptionsBuilder.RuntimePartition;
+            optionInstance.FreezeRuntimeBinding();
             CronScheduleCache.TimeZoneInfo = schedulerOptionsBuilder.SchedulerTimeZone;
 
             // Apply JSON serializer options for ticker requests if configured during service registration
@@ -41,12 +57,65 @@ namespace TickerQ.DependencyInjection
 
             // Configure whether ticker request payloads should use GZip compression
             TickerHelper.UseGZipCompression = optionInstance.RequestGZipCompressionEnabled;
-            services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
-            services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
+            if (optionInstance.RegisterBackgroundServices)
+            {
+                services.AddSingleton<ITimeTickerManager<TTimeTicker>, TickerManager<TTimeTicker, TCronTicker>>();
+                services.AddSingleton<ICronTickerManager<TCronTicker>, TickerManager<TTimeTicker, TCronTicker>>();
+            }
+            else
+            {
+                // Queue-only applications advertise their public managers as usable before host startup.
+                // Resolve both interfaces through one concrete manager and publish the process-local
+                // function registry at that resolution boundary; no persistence startup I/O occurs here.
+                services.AddSingleton<QueueOnlyFunctionRegistryReadiness>();
+                services.AddSingleton<TickerManager<TTimeTicker, TCronTicker>>();
+                services.AddSingleton<ITimeTickerManager<TTimeTicker>>(sp =>
+                {
+                    sp.GetRequiredService<QueueOnlyFunctionRegistryReadiness>().EnsureBuilt();
+                    return sp.GetRequiredService<TickerManager<TTimeTicker, TCronTicker>>();
+                });
+                services.AddSingleton<ICronTickerManager<TCronTicker>>(sp =>
+                {
+                    sp.GetRequiredService<QueueOnlyFunctionRegistryReadiness>().EnsureBuilt();
+                    return sp.GetRequiredService<TickerManager<TTimeTicker, TCronTicker>>();
+                });
+            }
             services.AddSingleton<IInternalTickerManager, InternalTickerManager<TTimeTicker, TCronTicker>>();
             services.AddSingleton<ITickerQRedisContext, NoOpTickerQRedisContext>();
             services.AddSingleton<ITickerQNotificationHubSender, NoOpTickerQNotificationHubSender>();
             services.AddSingleton<ITickerClock, TickerSystemClock>();
+            services.AddSingleton<ITickerQActivationGate, TickerQActivationGate>();
+
+            // Publish one fail-closed offline-license verdict before any persistence bootstrap,
+            // reconciliation, scheduler, recovery, retention, or execution service starts.
+            services.AddSingleton<TickerQLicenseStateProvider>();
+            services.AddHostedService<TickerQLicenseHostedService>();
+
+            optionInstance.ExecutionLogs.Validate();
+            services.AddSingleton(optionInstance.ExecutionLogs);
+            services.AddSingleton<InMemoryTickerExecutionLogStore>();
+            services.AddSingleton<ITickerExecutionLogStore>(sp => sp.GetRequiredService<InMemoryTickerExecutionLogStore>());
+            services.AddSingleton<ExecutionLogReader>();
+            services.AddSingleton<TickerLifecycleLogger>();
+            services.AddSingleton<TickerQRuntimeDiagnostics>();
+            if (optionInstance.ExecutionLogs.Enabled)
+            {
+                services.TryAddEnumerable(ServiceDescriptor.Singleton<ILoggerProvider, TickerExecutionLoggerProvider>());
+                // Stop after the scheduler drains, so its final lines can be flushed.
+                services.AddHostedService<TickerQExecutionLogBackgroundService>();
+            }
+
+            // Retention capability validation precedes initialization so an
+            // unsupported provider fails before initialization, scheduler, or worker side effects.
+            // It remains absent when background services are disabled, preserving queue-only hosts.
+            if (optionInstance.RegisterBackgroundServices && optionInstance.JobRetention.IsEnabled)
+                services.AddHostedService<TickerQRetentionCapabilityValidator>();
+
+            // Fail closed before initialization when a scheduler host cannot persist/fence activation epochs.
+            // Queue-only hosts register no pollers, so forcing this capability there would break otherwise
+            // source-compatible third-party providers without protecting any execution path.
+            if (optionInstance.RegisterBackgroundServices)
+                services.AddHostedService<TickerQReconciliationActivationCapabilityValidator>();
 
             // Register the initializer hosted service BEFORE scheduler services
             // to guarantee seeding completes before the scheduler starts polling.
@@ -55,8 +124,38 @@ namespace TickerQ.DependencyInjection
             services.AddHostedService(sp => sp.GetRequiredService<TickerQInitializerHostedService>());
 
             // Only register background services if enabled (default is true)
+            // Stop the webhook pump after every job/failure producer has drained.
+            // Failure notifications: built-in webhook when configured, else no-op.
+            // TryAdd lets users register their own ITickerQFailureNotifier beforehand.
+            if (optionInstance.FailureWebhook != null)
+            {
+                if (services.Any(s => s.ServiceType == typeof(Utilities.Integrations.ITickerIntegrationAdminService)))
+                    throw new InvalidOperationException("Use either AddIntegrations or NotifyFailuresViaWebhook. Move the existing webhook into an integration destination before enabling the optional package.");
+                services.AddSingleton(optionInstance.FailureWebhook);
+                if (optionInstance.FailureWebhook.ShutdownDrainTimeout < TimeSpan.Zero ||
+                    optionInstance.FailureWebhook.ShutdownDrainTimeout.TotalMilliseconds > uint.MaxValue - 1)
+                    throw new ArgumentOutOfRangeException(nameof(FailureWebhookOptions.ShutdownDrainTimeout));
+                services.AddSingleton(sp => new WebhookFailureNotifier(
+                    optionInstance.FailureWebhook,
+                    sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<WebhookFailureNotifier>>()));
+                services.TryAddSingleton<ITickerQFailureNotifier>(sp => sp.GetRequiredService<WebhookFailureNotifier>());
+                services.AddHostedService<TickerQWebhookNotifierBackgroundService>();
+            }
+            services.TryAddSingleton<ITickerQFailureNotifier, NoOpTickerQFailureNotifier>();
+
             if (optionInstance.RegisterBackgroundServices)
             {
+                // Registered BEFORE the scheduler service on purpose: hosted services
+                // stop in reverse registration order, so the lease renewal loop stays
+                // alive while the scheduler's StopAsync drains in-flight executions —
+                // a long drain must not let running jobs go stale mid-shutdown.
+                if (schedulerOptionsBuilder.StaleJobRecoveryEnabled)
+                    services.AddHostedService<TickerQStaleJobRecoveryBackgroundService>();
+
+                services.AddSingleton(sp => new AcquiredExecutionQueue(
+                    sp.GetRequiredService<IInternalTickerManager>(), sp.GetRequiredService<ITickerExecutionTaskHandler>(),
+                    sp.GetRequiredService<ITickerQTaskScheduler>(), sp.GetRequiredService<ILogger<AcquiredExecutionQueue>>(),
+                    sp.GetRequiredService<TickerQLicenseStateProvider>()));
                 services.AddSingleton<TickerQSchedulerBackgroundService>();
                 services.AddSingleton<ITickerQHostScheduler>(provider =>
                     provider.GetRequiredService<TickerQSchedulerBackgroundService>());
@@ -64,6 +163,13 @@ namespace TickerQ.DependencyInjection
                     provider.GetRequiredService<TickerQSchedulerBackgroundService>());
                 services.AddHostedService(provider => provider.GetRequiredService<TickerQFallbackBackgroundService>());
                 services.AddSingleton<TickerQFallbackBackgroundService>();
+
+                // Retention maintenance loop. Registered AFTER the scheduler on purpose: hosted services
+                // stop in reverse registration order, so retention stops FIRST — it must not be deleting
+                // rows while the scheduler drains in-flight executions on shutdown. Registered only when a
+                // retention window is configured; the provider-capability check happens at StartAsync.
+                if (optionInstance.JobRetention.IsEnabled)
+                    services.AddHostedService<TickerQRetentionBackgroundService>();
                 services.AddSingleton<ITickerQDispatcher, TickerQDispatcher>();
                 services.AddSingleton<ITickerQTaskScheduler>(sp =>
                 {
@@ -82,22 +188,38 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<ITickerFunctionConcurrencyGate, TickerFunctionConcurrencyGate>();
             services.AddSingleton<ITickerExecutionTaskHandler, TickerExecutionTaskHandler>();
             services.AddSingleton<ITickerQInstrumentation, LoggerInstrumentation>();
-            services.AddSingleton<ITickerDashboardDataService<TTimeTicker, TCronTicker>, TickerDashboardDataService<TTimeTicker, TCronTicker>>();
+            services.AddSingleton<ITickerDashboardDataService<TTimeTicker, TCronTicker>>(sp =>
+                new TickerDashboardDataService<TTimeTicker, TCronTicker>(
+                    sp.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>(),
+                    sp.GetRequiredService<ITickerQHostScheduler>(),
+                    sp.GetRequiredService<ITickerQTaskScheduler>(), schedulerOptionsBuilder,
+                    sp.GetRequiredService<ITickerQDispatcher>(),
+                    sp.GetRequiredService<ITickerQNotificationHubSender>(),
+                    sp.GetService<ILogger<TickerDashboardDataService<TTimeTicker, TCronTicker>>>(),
+                    sp.GetRequiredService<TickerLifecycleLogger>()));
 
             optionInstance.ExternalProviderConfigServiceAction?.Invoke(services);
 
             // Register in-memory persistence as fallback — only used when no external provider
             // (EF Core, Redis, SDK) has been configured via ExternalProviderConfigServiceAction above.
             services.TryAddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
+            services.TryAddSingleton<Utilities.Integrations.ITickerIntegrationSettingsStore>(sp =>
+                sp.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>());
 
             optionInstance.DashboardServiceAction?.Invoke(services);
 
             if (optionInstance.TickerExceptionHandlerType != null)
                 services.AddSingleton(typeof(ITickerExceptionHandler), optionInstance.TickerExceptionHandlerType);
 
+
             services.AddSingleton(_ => optionInstance);
             services.AddSingleton(_ => tickerExecutionContext);
             services.AddSingleton(_ => schedulerOptionsBuilder);
+
+            // Validate once more here in case windows were set directly on the options object without
+            // going through ConfigureJobRetention, then expose the retention options for the sweeper.
+            optionInstance.JobRetention.Validate();
+            services.AddSingleton(optionInstance.JobRetention);
 
             // Register AFTER initializer and scheduler to ensure it runs last
             services.AddHostedService<TickerQStartupValidator>();
@@ -141,7 +263,7 @@ namespace TickerQ.DependencyInjection
                         tickerExecutionContext.LastHostExceptionMessage = (string)value;
                     }
                     else if (type == CoreNotifyActionType.NotifyNextOccurence)
-                        notificationHubSender.UpdateNextOccurrence(value is DateTime dt ? (DateTime?)dt : null);
+                        notificationHubSender.UpdateNextOccurrence(value is DateTime dt ? dt : null);
                     else if (type == CoreNotifyActionType.NotifyHostStatus)
                         notificationHubSender.UpdateHostStatus(value is bool b && b);
                     else if (type == CoreNotifyActionType.NotifyThreadCount)
@@ -159,6 +281,31 @@ namespace TickerQ.DependencyInjection
             }
 
             return host;
+        }
+
+        private sealed class QueueOnlyFunctionRegistryReadiness
+        {
+            private readonly IServiceProvider _serviceProvider;
+            private readonly object _gate = new();
+            private bool _built;
+
+            public QueueOnlyFunctionRegistryReadiness(IServiceProvider serviceProvider)
+                => _serviceProvider = serviceProvider;
+
+            public void EnsureBuilt()
+            {
+                lock (_gate)
+                {
+                    if (_built)
+                        return;
+
+                    var configuration = _serviceProvider.GetService<IConfiguration>();
+                    if (configuration != null)
+                        TickerFunctionProvider.UpdateCronExpressionsFromIConfiguration(configuration);
+                    TickerFunctionProvider.Build();
+                    _built = true;
+                }
+            }
         }
     }
 }

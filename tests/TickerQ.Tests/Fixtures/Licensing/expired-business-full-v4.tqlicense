@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 4,
+  "algorithm": "Ed25519",
+  "keyId": "tickerq-golden-fixture-2026-09",
+  "payload": "eyJsaWNlbnNlSWQiOiIxMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDIiLCJ3b3Jrc3BhY2VJZCI6IjIwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMiIsIndvcmtzcGFjZU5hbWUiOiJTeW50aGV0aWMgRXhwaXJlZCBCdXNpbmVzcyIsInBsYW4iOjEsImlzc3VlZEF0IjoiMjAyNS0wOS0wMVQwMDowMDowMCswMDowMCIsInJ1bnRpbWVFeHBpcmVzQXQiOiIyMDI2LTA5LTAxVDAwOjAwOjAwKzAwOjAwIiwia2V5SWQiOiJ0aWNrZXJxLWdvbGRlbi1maXh0dXJlLTIwMjYtMDkiLCJzY2hlbWFWZXJzaW9uIjo0LCJsaWNlbnNlS2luZCI6MCwiYW5jaG9yZWRNaW5vckxpbmUiOiI1LngifQ",
+  "signature": "ecCTkAzBUINWW_V4JHeIolritqBBZc7sHY-PH8x-9hgx0rgaJwdH4MBRhmssGKIndjKNSEei5DHqkk7rPTZDDw"
+}

@@ -1,0 +1,12 @@
+{
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "@hookform/resolvers": "^5.2.2",
+    "@tanstack/react-table": "^8.21.3",
+    "cron-parser": "^5.5.0",
+    "cronstrue": "^3.14.0",
+    "date-fns": "^4.1.0",
+    "react-hook-form": "^7.75.0",
+    "zod": "^4.4.3"
+  }
+}

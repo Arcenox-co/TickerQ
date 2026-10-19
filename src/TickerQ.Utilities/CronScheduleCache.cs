@@ -1,7 +1,7 @@
 namespace TickerQ.Utilities;
 
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using NCrontab;
 
@@ -9,7 +9,8 @@ internal static partial class CronScheduleCache
 {
     public static TimeZoneInfo TimeZoneInfo { get; internal set; } = TimeZoneInfo.Local;
     
-    private static readonly ConcurrentDictionary<string, CrontabSchedule> Cache = new(StringComparer.Ordinal);
+    // Bound both entry count and retained key length; unusual long expressions still parse.
+    private static readonly BoundedScheduleCache Cache = new(4096, 1024);
 
     private static readonly CrontabSchedule.ParseOptions Opts = new()
     {
@@ -19,15 +20,32 @@ internal static partial class CronScheduleCache
     private static string Normalize(string expr)
     {
         ArgumentNullException.ThrowIfNull(expr);
-        
-        return ReplaceRegex().Replace(expr.Trim(), " "); 
+
+        var collapsed = ReplaceRegex().Replace(expr.Trim(), " ");
+
+        // Standard 5-part cron (no seconds) — prepend "0" so NCrontab's
+        // IncludingSeconds parser accepts it. Keeps 5- and 6-part spellings
+        // of the same schedule on one cache entry.
+        return CountParts(collapsed) == 5 ? "0 " + collapsed : collapsed;
+    }
+
+    private static int CountParts(string expr)
+    {
+        if (expr.Length == 0)
+            return 0;
+
+        var parts = 1;
+        foreach (var ch in expr)
+            if (ch == ' ')
+                parts++;
+        return parts;
     }
 
     public static CrontabSchedule Get(string expression)
     {
         var key = Normalize(expression);
 
-        return Cache.GetOrAdd(key, exp => CrontabSchedule.TryParse(exp, Opts));
+        return Cache.Get(key);
     }
 
     public static DateTime? GetNextOccurrenceOrDefault(string expression, DateTime dateTime)
@@ -77,7 +95,50 @@ internal static partial class CronScheduleCache
     }
 
     public static bool Invalidate(string expression) =>
-        Cache.TryRemove(Normalize(expression), out _);
+        Cache.Invalidate(Normalize(expression));
+
+    internal sealed class BoundedScheduleCache(int capacity, int maximumKeyLength)
+    {
+        private readonly object _gate = new();
+        private readonly Dictionary<string, LinkedListNode<(string Key, CrontabSchedule Schedule)>> _entries = new(StringComparer.Ordinal);
+        private readonly LinkedList<(string Key, CrontabSchedule Schedule)> _recency = new();
+        internal int Count { get { lock (_gate) return _entries.Count; } }
+
+        internal CrontabSchedule Get(string key)
+        {
+            lock (_gate)
+                if (_entries.TryGetValue(key, out var hit))
+                {
+                    _recency.Remove(hit);
+                    _recency.AddFirst(hit);
+                    return hit.Value.Schedule;
+                }
+            var parsed = CrontabSchedule.TryParse(key, Opts);
+            // Invalid input and oversized keys do not displace frequently used schedules.
+            if (parsed == null || key.Length > maximumKeyLength || capacity <= 0) return parsed;
+            lock (_gate)
+            {
+                if (_entries.TryGetValue(key, out var raced)) return raced.Value.Schedule;
+                if (_entries.Count >= capacity)
+                {
+                    _entries.Remove(_recency.Last.Value.Key);
+                    _recency.RemoveLast();
+                }
+                _entries.Add(key, _recency.AddFirst((key, parsed)));
+                return parsed;
+            }
+        }
+
+        internal bool Invalidate(string key)
+        {
+            lock (_gate)
+            {
+                if (!_entries.Remove(key, out var node)) return false;
+                _recency.Remove(node);
+                return true;
+            }
+        }
+    }
     
     [GeneratedRegex(@"\s+")]
     private static partial Regex ReplaceRegex();

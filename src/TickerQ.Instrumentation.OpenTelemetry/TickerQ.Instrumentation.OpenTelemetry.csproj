@@ -16,6 +16,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="TickerQ.Utilities" Version="$(Version)" />
+    <PackageReference Include="TickerQ.Utilities" Version="$(PackageVersion)" />
   </ItemGroup>
 </Project>

@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -10,14 +10,26 @@
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="$(DotNetVersion)" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="$(DotNetVersion)" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.13" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
     <PackageReference Include="NSubstitute" Version="5.3.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../../samples/TickerQ.Sample.Console/Migrations/20261018190000_RenameIntegrationSettings.cs" Link="Shared/RenameIntegrationSettings.cs" />
+    <Compile Include="../Shared/ExecutionLogPersistenceContract.cs" Link="Shared/ExecutionLogPersistenceContract.cs" />
     <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared cross-provider reliability contract, compiled into this assembly so it runs
+         against the EF Core provider with the same source the Mongo suite uses. -->
+    <Compile Include="..\Shared\ProviderReliability\ProviderReliabilityContractTests.cs" Link="Shared\ProviderReliabilityContractTests.cs" />
+    <Compile Include="..\Shared\ProviderReliability\DefinedCronMigrationContractTests.cs" Link="Shared\DefinedCronMigrationContractTests.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -26,4 +38,9 @@
     <ProjectReference Include="..\..\src\TickerQ.EntityFrameworkCore\TickerQ.EntityFrameworkCore.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="../Shared/ChainDeleteBehaviorContract.cs" Link="Shared/ChainDeleteBehaviorContract.cs" />
+    <Compile Include="../Shared/OverdueAcquisitionContract.cs" Link="Shared/OverdueAcquisitionContract.cs" />
+  </ItemGroup>
+  <ItemGroup><Compile Include="../Shared/CronChainContract.cs" Link="Shared/CronChainContract.cs" /></ItemGroup>
 </Project>

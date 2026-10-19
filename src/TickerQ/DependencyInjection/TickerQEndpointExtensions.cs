@@ -8,6 +8,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.DependencyInjection
 {
@@ -82,6 +83,7 @@ namespace TickerQ.DependencyInjection
             {
                 [functionName] = (string.Empty, TickerTaskPriority.Normal, new TickerFunctionDelegate((ct, sp, ctx) => handler(ctx, ct)), 0)
             });
+            RegisterCanonicalDescriptor(functionName, requestType: null); // request-less → Request == null
 
             return new TickerFunctionBuilder(functionName);
         }
@@ -98,6 +100,7 @@ namespace TickerQ.DependencyInjection
             {
                 [functionName] = (string.Empty, TickerTaskPriority.Normal, new TickerFunctionDelegate((ct, sp, ctx) => handler(ctx, sp, ct)), 0)
             });
+            RegisterCanonicalDescriptor(functionName, requestType: null); // request-less → Request == null
 
             return new TickerFunctionBuilder(functionName);
         }
@@ -123,6 +126,7 @@ namespace TickerQ.DependencyInjection
             {
                 [functionName] = (typeof(TRequest).FullName, typeof(TRequest))
             });
+            RegisterCanonicalDescriptor(functionName, typeof(TRequest));
 
             return new TickerFunctionBuilder(functionName);
         }
@@ -148,8 +152,30 @@ namespace TickerQ.DependencyInjection
             {
                 [functionName] = (typeof(TRequest).FullName, typeof(TRequest))
             });
+            RegisterCanonicalDescriptor(functionName, typeof(TRequest));
 
             return new TickerFunctionBuilder(functionName);
+        }
+
+        #endregion
+
+        #region Canonical descriptor wiring
+
+        /// <summary>
+        /// Publishes a canonical wire descriptor for a fluent/interface registration. Request-less
+        /// functions pass <paramref name="requestType"/> null → <c>Request == null</c>. Priority/cron
+        /// are reconciled with the functions registry at <see cref="TickerFunctionProvider.Build"/>.
+        /// </summary>
+        private static void RegisterCanonicalDescriptor(string functionName, Type requestType)
+        {
+            var request = requestType == null
+                ? null
+                : new TickerRequestContract(requestType.FullName ?? requestType.Name);
+
+            TickerFunctionProvider.RegisterDescriptors(new Dictionary<string, TickerFunctionDescriptor>
+            {
+                [functionName] = new TickerFunctionDescriptor(functionName, request: request)
+            }, origin: "map-ticker");
         }
 
         #endregion
@@ -174,6 +200,7 @@ namespace TickerQ.DependencyInjection
             });
 
             TickerFunctionProvider.RegisterTypeMapping(typeof(TFunction), name);
+            RegisterCanonicalDescriptor(name, requestType: null); // request-less → Request == null
 
             return new TickerFunctionBuilder(name);
         }
@@ -203,6 +230,7 @@ namespace TickerQ.DependencyInjection
             {
                 [name] = (typeof(TRequest).FullName, typeof(TRequest))
             });
+            RegisterCanonicalDescriptor(name, typeof(TRequest));
 
             TickerFunctionProvider.RegisterTypeMapping(typeof(TFunction), name);
 

@@ -1,4 +1,8 @@
 using System;
+using Microsoft.Extensions.DependencyInjection;
+using MongoDB.Bson;
+using TickerQ.MongoDB.Infrastructure;
+using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 
@@ -29,6 +33,16 @@ namespace TickerQ.MongoDB.DependencyInjection
                     "TickerQ.MongoDB: you must call UseTickerQMongoClient(...) or UseExistingMongoClient(...) on the option builder.");
 
             tickerConfiguration.ExternalProviderConfigServiceAction += optionBuilder.ConfigureServices;
+            tickerConfiguration.ExternalProviderConfigServiceAction += services =>
+            {
+                if (tickerConfiguration.ExecutionLogs.PersistToDatabase)
+                    services.AddSingleton<ITickerExecutionLogPersistence>(sp =>
+                    {
+                        var context = sp.GetRequiredService<ITickerMongoContext<TTimeTicker, TCronTicker>>();
+                        return new MongoExecutionLogPersistence(context.Database.GetCollection<BsonDocument>(
+                            context.TimeTickers.CollectionNamespace.CollectionName + "_ExecutionLogs"));
+                    });
+            };
             return tickerConfiguration;
         }
     }

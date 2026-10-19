@@ -6,6 +6,7 @@ namespace TickerQ.Utilities.DashboardDtos
     public class CronTickerFlatDto
     {
         public Guid Id { get; set; }
+        public TickerQ.Utilities.Models.CronChainTemplate Chain { get; set; }
         public string FunctionName { get; set; }
         public string Expression { get; set; }
         public string Description { get; set; }
@@ -14,9 +15,18 @@ namespace TickerQ.Utilities.DashboardDtos
         public DateTime CreatedAt { get; set; }
         public int OccurrenceCount { get; set; }
         public TickerStatus? LastRunStatus { get; set; }
+        public Guid? LastRunChainRootId { get; set; }
+        public ChainExecutionSummaryDto LastRunChainSummary { get; set; }
         public DateTime? LastRunAt { get; set; }
+        public bool SkipIfAlreadyRunning { get; set; }
         public bool IsEnabled { get; set; }
         /// <summary>True when the SDK node owning this cron's function is currently offline.</summary>
         public bool IsSystemPaused { get; set; }
+        /// <summary>Per-retry delay schedule (seconds). Surfaced so edit forms can prefill correctly.</summary>
+        public int[] RetryIntervalsSeconds { get; set; }
+        /// <summary>What the stale-job watchdog does with occurrences whose executing node dies mid-run.</summary>
+        public StaleAction OnStale { get; set; }
+        /// <summary>Max execution time per attempt (seconds); null inherits the global default.</summary>
+        public int? TimeoutSeconds { get; set; }
     }
 }

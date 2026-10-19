@@ -7,13 +7,9 @@
 export class TickerFunctionConcurrencyGate {
     private readonly semaphores: Map<string, Semaphore> = new Map();
 
-    /**
-     * Get or create a semaphore for the given function.
-     * Returns null if maxConcurrency is 0 (no limit).
-     */
+    /** Get or create a semaphore for the given function. */
     getSemaphore(functionName: string, maxConcurrency: number): Semaphore | null {
         if (maxConcurrency <= 0) return null;
-
         let sem = this.semaphores.get(functionName);
         if (!sem) {
             sem = new Semaphore(maxConcurrency);
@@ -23,50 +19,60 @@ export class TickerFunctionConcurrencyGate {
     }
 }
 
-/**
- * Async counting semaphore.
- */
+interface Waiter {
+    grant: () => void;
+    reject: (reason?: unknown) => void;
+    signal?: AbortSignal;
+    abort?: () => void;
+}
+
+/** Async counting semaphore with cancellation-safe waiter removal. */
 export class Semaphore {
     private currentCount: number;
-    private readonly maxCount: number;
-    private readonly waiters: Array<() => void> = [];
+    private readonly waiters: Waiter[] = [];
 
-    constructor(maxCount: number) {
-        this.maxCount = maxCount;
+    constructor(private readonly maxCount: number) {
         this.currentCount = maxCount;
     }
 
-    /**
-     * Acquire one slot. Resolves when a slot is available.
-     * Returns a release function that must be called when done.
-     */
-    async acquire(): Promise<() => void> {
+    async acquire(signal?: AbortSignal): Promise<() => void> {
+        if (signal?.aborted) throw abortError();
         if (this.currentCount > 0) {
             this.currentCount--;
             return () => this.release();
         }
 
-        return new Promise<() => void>((resolve) => {
-            this.waiters.push(() => {
-                this.currentCount--;
-                resolve(() => this.release());
-            });
+        return new Promise<() => void>((resolve, reject) => {
+            const waiter: Waiter = {
+                reject,
+                signal,
+                grant: () => {
+                    if (waiter.abort) signal?.removeEventListener('abort', waiter.abort);
+                    this.currentCount--;
+                    resolve(() => this.release());
+                },
+            };
+            waiter.abort = () => {
+                const index = this.waiters.indexOf(waiter);
+                if (index >= 0) this.waiters.splice(index, 1);
+                reject(abortError());
+            };
+            signal?.addEventListener('abort', waiter.abort, { once: true });
+            this.waiters.push(waiter);
         });
     }
 
     private release(): void {
         this.currentCount++;
         if (this.waiters.length > 0 && this.currentCount > 0) {
-            const next = this.waiters.shift()!;
-            next();
+            this.waiters.shift()!.grant();
         }
     }
 
-    get availableCount(): number {
-        return this.currentCount;
-    }
+    get availableCount(): number { return this.currentCount; }
+    get waitingCount(): number { return this.waiters.length; }
+}
 
-    get waitingCount(): number {
-        return this.waiters.length;
-    }
+function abortError(): Error {
+    return Object.assign(new Error('Semaphore wait was cancelled.'), { name: 'AbortError' });
 }

@@ -10,6 +10,8 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="$(DotNetVersion)" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="$(DotNetVersion)" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="$(DotNetVersion)" PrivateAssets="All" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.13" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.12" PrivateAssets="All" />
   </ItemGroup>
 
   <ItemGroup>

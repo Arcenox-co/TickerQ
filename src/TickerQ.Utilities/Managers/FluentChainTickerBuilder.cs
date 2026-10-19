@@ -596,6 +596,14 @@ namespace TickerQ.Utilities.Managers
             _parent = parent;
         }
 
+        /// <summary>Configures explicit deletion and retention for the whole chain.</summary>
+        public ParentBuilder<TTimeTicker> SetDeleteBehavior(ChainDeleteBehavior behavior)
+        {
+            if (!Enum.IsDefined(typeof(ChainDeleteBehavior), behavior)) throw new ArgumentOutOfRangeException(nameof(behavior));
+            _parent.DeleteBehavior = behavior;
+            return this;
+        }
+
         public ParentBuilder<TTimeTicker> SetFunction(string functionName)
         {
             _parent.Function = functionName;
@@ -616,7 +624,7 @@ namespace TickerQ.Utilities.Managers
 
         public ParentBuilder<TTimeTicker> SetRequest<T>(T request)
         {
-            _parent.Request = TickerHelper.CreateTickerRequest(request);
+            _parent.Request = TickerHelper.CreateTickerRequest(request, _parent.Function);
             return this;
         }
 
@@ -666,7 +674,7 @@ namespace TickerQ.Utilities.Managers
 
         public ChildBuilder<TTimeTicker> SetRequest<T>(T request)
         {
-            _child.Request = TickerHelper.CreateTickerRequest(request);
+            _child.Request = TickerHelper.CreateTickerRequest(request, _child.Function);
             return this;
         }
 
@@ -716,7 +724,7 @@ namespace TickerQ.Utilities.Managers
 
         public GrandChildBuilder<TTimeTicker> SetRequest<T>(T request)
         {
-            _grandChild.Request = TickerHelper.CreateTickerRequest(request);
+            _grandChild.Request = TickerHelper.CreateTickerRequest(request, _grandChild.Function);
             return this;
         }
 

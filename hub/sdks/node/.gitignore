@@ -2,5 +2,4 @@ node_modules/
 dist/
 *.tsbuildinfo
 .npm
-.env
-.env.*
+# Environment files and shareable templates use the repository-wide rules.

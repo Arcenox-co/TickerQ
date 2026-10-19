@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using NSubstitute;
+using StackExchange.Redis;
 using TickerQ.Caching.StackExchangeRedis.DependencyInjection;
 using TickerQ.DependencyInjection;
 using TickerQ.EntityFrameworkCore.Customizer;
@@ -26,7 +28,8 @@ public class PersistenceProviderRegistrationTests
         services.AddLogging();
 
         // Act
-        services.AddTickerQ();
+        services.AddTickerQ(options =>
+            options.UseApplicationNamespace("redis-provider-registration-tests"));
 
         // Assert
         var provider = services.BuildServiceProvider();
@@ -46,6 +49,7 @@ public class PersistenceProviderRegistrationTests
         // Act
         services.AddTickerQ(options =>
         {
+            options.UseApplicationNamespace("redis-provider-registration-tests");
             options.AddStackExchangeRedis(redis =>
             {
                 redis.Configuration = "localhost:6379,abortConnect=false";
@@ -75,6 +79,7 @@ public class PersistenceProviderRegistrationTests
         // Act
         services.AddTickerQ(options =>
         {
+            options.UseApplicationNamespace("redis-provider-registration-tests");
             options.AddOperationalStore(ef =>
             {
                 ef.UseApplicationDbContext<TestDbContext>(ConfigurationType.UseModelCustomizer);
@@ -104,6 +109,7 @@ public class PersistenceProviderRegistrationTests
         // Act — EF Core registered first, then Redis
         services.AddTickerQ(options =>
         {
+            options.UseApplicationNamespace("redis-provider-registration-tests");
             options.AddOperationalStore(ef =>
             {
                 ef.UseApplicationDbContext<TestDbContext>(ConfigurationType.UseModelCustomizer);
@@ -111,7 +117,10 @@ public class PersistenceProviderRegistrationTests
 
             options.AddStackExchangeRedis(redis =>
             {
-                redis.Configuration = "localhost:6379";
+                // Provider selection must not depend on an ambient Redis server.
+                var multiplexer = Substitute.For<IConnectionMultiplexer>();
+                multiplexer.GetDatabase().Returns(Substitute.For<IDatabase>());
+                redis.ConnectionMultiplexer = multiplexer;
             });
         });
 
@@ -138,9 +147,12 @@ public class PersistenceProviderRegistrationTests
         // Act — Redis registered first, then EF Core (reversed order)
         services.AddTickerQ(options =>
         {
+            options.UseApplicationNamespace("redis-provider-registration-tests");
             options.AddStackExchangeRedis(redis =>
             {
-                redis.Configuration = "localhost:6379";
+                var multiplexer = Substitute.For<IConnectionMultiplexer>();
+                multiplexer.GetDatabase().Returns(Substitute.For<IDatabase>());
+                redis.ConnectionMultiplexer = multiplexer;
             });
 
             options.AddOperationalStore(ef =>

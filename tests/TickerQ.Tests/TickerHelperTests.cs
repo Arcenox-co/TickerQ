@@ -139,14 +139,28 @@ public class TickerHelperTests : IDisposable
     }
 
     [Fact]
-    public void ReadTickerRequestAsString_WithCompression_ThrowsForNonGzipBytes()
+    public void ReadTickerRequestAsString_CompressionEnabled_StillReadsLegacyPlainBytes()
     {
+        const string json = "{\"legacy\":true}";
+        var plainBytes = Encoding.UTF8.GetBytes(json);
         TickerHelper.UseGZipCompression = true;
-        var plainBytes = Encoding.UTF8.GetBytes("not compressed");
 
-        var ex = Assert.Throws<Exception>(() => TickerHelper.ReadTickerRequestAsString(plainBytes));
+        var result = TickerHelper.ReadTickerRequestAsString(plainBytes);
 
-        Assert.Contains("not GZip compressed", ex.Message);
+        Assert.Equal(json, result);
+    }
+
+    [Fact]
+    public void ReadTickerRequestAsString_CompressionDisabled_StillReadsPersistedGzipBytes()
+    {
+        const string json = "{\"compressed\":true}";
+        TickerHelper.UseGZipCompression = true;
+        var compressedBytes = TickerHelper.CreateTickerRequest(Encoding.UTF8.GetBytes(json));
+        TickerHelper.UseGZipCompression = false;
+
+        var result = TickerHelper.ReadTickerRequestAsString(compressedBytes);
+
+        Assert.Equal(json, result);
     }
 
     #endregion

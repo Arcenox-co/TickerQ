@@ -31,6 +31,8 @@ namespace {{NAMESPACE}}
             };
             global::TickerQ.Utilities.TickerFunctionProvider.RegisterFunctions(tickerFunctionDelegateDict, {{METHOD_COUNT}});
             RegisterRequestTypes();
+            RegisterResultTypes();
+            RegisterDescriptors();
         }
 
 {{CONSTRUCTOR_METHODS}}
@@ -38,13 +40,23 @@ namespace {{NAMESPACE}}
         {
 {{REQUEST_TYPE_REGISTRATIONS}}
         }
+
+        private static void RegisterResultTypes()
+        {
+{{RESULT_TYPE_REGISTRATIONS}}
+        }
+
+        private static void RegisterDescriptors()
+        {
+{{DESCRIPTOR_REGISTRATIONS}}
+        }
     }
 }";
 
         /// <summary>
         /// Single delegate registration within Initialize()
         /// </summary>
-        internal const string DelegateRegistration = @"                [""{{FUNCTION_NAME}}""] = ({{CRON_EXPRESSION}}, (global::TickerQ.Utilities.Enums.TickerTaskPriority){{PRIORITY}}, new global::TickerQ.Utilities.TickerFunctionDelegate({{ASYNC_KEYWORD}}(cancellationToken, serviceProvider, context) =>
+        internal const string DelegateRegistration = @"                [{{FUNCTION_NAME}}] = ({{CRON_EXPRESSION}}, (global::TickerQ.Utilities.Enums.TickerTaskPriority){{PRIORITY}}, new global::TickerQ.Utilities.TickerFunctionDelegate({{ASYNC_KEYWORD}}(cancellationToken, serviceProvider, context) =>
                 {
 {{DELEGATE_BODY}}
                 }), {{MAX_CONCURRENCY}}),";
@@ -82,7 +94,8 @@ namespace {{NAMESPACE}}
         /// <summary>
         /// Delegate body: async instance method with generic context
         /// </summary>
-        internal const string DelegateBodyAsyncGenericContext = @"                    var genericContext = await global::TickerQ.Utilities.TickerRequestProvider.ToGenericContextAsync<{{GENERIC_TYPE}}>(context, cancellationToken);
+        internal const string DelegateBodyAsyncGenericContext = @"                    var requestTypeInfo = global::TickerQ.Utilities.TickerFunctionProvider.GetRequestTypeInfo<{{GENERIC_TYPE}}>({{FUNCTION_NAME}});
+                    var genericContext = await global::TickerQ.Utilities.TickerRequestProvider.ToGenericContextAsync<{{GENERIC_TYPE}}>(context, requestTypeInfo, cancellationToken);
                     await {{METHOD_CALL}};";
 
         /// <summary>
@@ -107,11 +120,52 @@ namespace {{NAMESPACE}}
         /// <summary>
         /// Single request type entry
         /// </summary>
-        internal const string RequestTypeEntry = @"                [""{{FUNCTION_NAME}}""] = (typeof({{REQUEST_TYPE}}).FullName, typeof({{REQUEST_TYPE}})),";
+        internal const string RequestTypeEntry = @"                [{{FUNCTION_NAME}}] = (typeof({{REQUEST_TYPE}}).FullName, typeof({{REQUEST_TYPE}})),";
 
         /// <summary>
-        /// TickerQRequestJsonContext.g.cs — generated JsonSerializerContext for all request types (AOT)
+        /// Deferred runtime JsonTypeInfo registration. Resolution occurs during Build(), after
+        /// AddTickerQ has finalized request serializer options and any user-provided AOT context.
         /// </summary>
+        internal const string RequestTypeInfoResolverRegistration = @"            var requestTypeInfoResolvers = new Dictionary<string, (Type, global::System.Func<global::System.Text.Json.JsonSerializerOptions, global::System.Text.Json.Serialization.Metadata.JsonTypeInfo>)>({{COUNT}})
+            {
+{{ENTRIES}}
+            };
+            global::TickerQ.Utilities.TickerFunctionProvider.RegisterRequestTypeInfoResolver(requestTypeInfoResolvers);";
+
+        internal const string RequestTypeInfoResolverEntry = @"                [{{FUNCTION_NAME}}] = (typeof({{REQUEST_TYPE}}), options => options.GetTypeInfo(typeof({{REQUEST_TYPE}}))),";
+
+        internal const string ResultTypeInfoResolverRegistration = @"            var resultTypeInfoResolvers = new Dictionary<string, (Type, global::System.Func<global::System.Text.Json.JsonSerializerOptions, global::System.Text.Json.Serialization.Metadata.JsonTypeInfo>)>({{COUNT}})
+            {
+{{ENTRIES}}
+            };
+            global::TickerQ.Utilities.TickerFunctionProvider.RegisterResultTypeInfoResolver(resultTypeInfoResolvers);";
+
+        internal const string ResultTypeInfoResolverEntry = @"                [{{FUNCTION_NAME}}] = (typeof({{RESULT_TYPE}}), options => options.GetTypeInfo(typeof({{RESULT_TYPE}}))),";
+
+        /// <summary>
+        /// Canonical descriptor registration block (emitted for ALL functions).
+        /// </summary>
+        internal const string DescriptorRegistration = @"            var descriptors = new Dictionary<string, global::TickerQ.Utilities.Models.TickerFunctionDescriptor>({{COUNT}})
+            {
+{{ENTRIES}}
+            };
+            global::TickerQ.Utilities.TickerFunctionProvider.RegisterDescriptors(descriptors, ""source-gen"");";
+
+        /// <summary>
+        /// Descriptor entry for a typed function whose wire shape could not be inferred: the request
+        /// contract carries the type name only (no schema, no example). Never a misleading schema.
+        /// </summary>
+        internal const string DescriptorEntryTyped = @"                [{{FUNCTION_NAME}}] = new global::TickerQ.Utilities.Models.TickerFunctionDescriptor({{FUNCTION_NAME}}, (global::TickerQ.Utilities.Enums.TickerTaskPriority){{PRIORITY}}, {{CRON_EXPRESSION}}, 1, new global::TickerQ.Utilities.Models.TickerRequestContract(typeof({{REQUEST_TYPE}}).FullName)),";
+
+        /// <summary>
+        /// Descriptor entry for a typed function with a compile-time JSON Schema 2020-12 document and one
+        /// deterministic default example, both embedded as inline JSON.
+        /// </summary>
+        internal const string DescriptorEntryTypedWithSchema = @"                [{{FUNCTION_NAME}}] = new global::TickerQ.Utilities.Models.TickerFunctionDescriptor({{FUNCTION_NAME}}, (global::TickerQ.Utilities.Enums.TickerTaskPriority){{PRIORITY}}, {{CRON_EXPRESSION}}, 1, new global::TickerQ.Utilities.Models.TickerRequestContract(typeof({{REQUEST_TYPE}}).FullName, schemaJson: {{SCHEMA_LITERAL}}, examples: new global::TickerQ.Utilities.Models.TickerRequestExample[] { new global::TickerQ.Utilities.Models.TickerRequestExample(""default"", ""Generated example"", {{EXAMPLE_LITERAL}}) })),";
+
+        /// <summary>Descriptor entry for a request-less function (null request).</summary>
+        internal const string DescriptorEntryRequestLess = @"                [{{FUNCTION_NAME}}] = new global::TickerQ.Utilities.Models.TickerFunctionDescriptor({{FUNCTION_NAME}}, (global::TickerQ.Utilities.Enums.TickerTaskPriority){{PRIORITY}}, {{CRON_EXPRESSION}}, 1, null),";
+
         /// <summary>
         /// TickerFunctions.g.cs — typed function references grouped by class
         /// </summary>
@@ -140,11 +194,11 @@ namespace {{NAMESPACE}}
         /// <summary>
         /// Single typed function ref (with request type)
         /// </summary>
-        internal const string FunctionRefGeneric = @"            public static readonly global::TickerQ.Utilities.TickerFunctionRef<{{REQUEST_TYPE}}> {{PROPERTY_NAME}} = new(""{{FUNCTION_NAME}}"");";
+        internal const string FunctionRefGeneric = @"            public static readonly global::TickerQ.Utilities.TickerFunctionRef<{{REQUEST_TYPE}}> {{PROPERTY_NAME}} = new({{FUNCTION_NAME}});";
 
         /// <summary>
         /// Single function ref (no request type)
         /// </summary>
-        internal const string FunctionRefSimple = @"            public static readonly global::TickerQ.Utilities.TickerFunctionRef {{PROPERTY_NAME}} = new(""{{FUNCTION_NAME}}"");";
+        internal const string FunctionRefSimple = @"            public static readonly global::TickerQ.Utilities.TickerFunctionRef {{PROPERTY_NAME}} = new({{FUNCTION_NAME}});";
     }
 }
