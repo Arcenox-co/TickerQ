@@ -8,6 +8,7 @@ using Xunit;
 
 namespace TickerQ.Tests;
 
+[Collection("TickerQTaskScheduler")]
 public class TickerQTaskSchedulerAdvancedTests
 {
     [Fact]

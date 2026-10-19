@@ -20,6 +20,7 @@ namespace TickerQ.Tests;
 /// assertion can never hang the suite. Deadlock-prone scenarios use a bounded WhenAny so
 /// a regression fails as a timeout assertion rather than a hang.
 /// </summary>
+[Collection("TickerQTaskScheduler")]
 public class TickerQTaskSchedulerConcurrencyTests
 {
     // ------------------------------------------------------------------
@@ -584,6 +585,7 @@ public class TickerQTaskSchedulerConcurrencyTests
         var activeStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseActive = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var pendingCts = new CancellationTokenSource();
+        int pendingExecutions = 0;
 
         try
         {
@@ -592,24 +594,34 @@ public class TickerQTaskSchedulerConcurrencyTests
                 activeStarted.TrySetResult(true);
                 await releaseActive.Task;
             }, TickerTaskPriority.Normal);
-            Assert.True(await WaitAsync(activeStarted.Task, TimeSpan.FromSeconds(3)));
+            // Starting the worker is setup, not the behavior being timed by this test.
+            Assert.True(await WaitAsync(activeStarted.Task, TimeSpan.FromSeconds(10)),
+                $"The first job must start before filling its queue. {scheduler.GetDiagnostics()}");
 
             // Fill the only worker queue to its fixed capacity while the worker is blocked.
             for (int i = 0; i < 1024; i++)
                 await scheduler.QueueAsync(_ => Task.CompletedTask, TickerTaskPriority.Normal);
 
+            Assert.Equal(1, scheduler.ActiveExecutionCount);
+            Assert.Equal(1024, scheduler.TotalQueuedTasks);
             var pending = scheduler.QueueAsync(
-                _ => Task.CompletedTask,
+                _ =>
+                {
+                    Interlocked.Increment(ref pendingExecutions);
+                    return Task.CompletedTask;
+                },
                 TickerTaskPriority.Normal,
                 pendingCts.Token).AsTask();
 
-            await Task.Delay(50);
+            // QueueAsync reaches its capacity wait before returning. The active job
+            // holds the only slot, so no delay is needed to establish backpressure.
             Assert.False(pending.IsCompleted, "The extra publication must be waiting for capacity");
 
             scheduler.Freeze();
             pendingCts.Cancel();
 
-            await Assert.ThrowsAsync<InvalidOperationException>(() => pending);
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => pending.WaitAsync(TimeSpan.FromSeconds(10)));
             Assert.Equal(1024, scheduler.TotalQueuedTasks);
         }
         finally
@@ -617,6 +629,11 @@ public class TickerQTaskSchedulerConcurrencyTests
             releaseActive.TrySetResult(true);
             await scheduler.DisposeAsync();
         }
+
+        Assert.Equal(0, Volatile.Read(ref pendingExecutions));
+        Assert.Equal(0, scheduler.TotalQueuedTasks);
+        Assert.Equal(0, scheduler.ActiveExecutionCount);
+        Assert.Equal(0, scheduler.ActiveWorkers);
     }
 
     // ------------------------------------------------------------------
