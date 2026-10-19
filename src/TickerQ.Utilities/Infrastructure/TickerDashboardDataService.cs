@@ -812,7 +812,12 @@ namespace TickerQ.Utilities.Infrastructure
             {
                 IsRunning = _hostScheduler?.IsRunning ?? false,
                 ActiveThreads = _taskScheduler?.ActiveWorkers ?? 0,
-                MaxConcurrency = _schedulerOptions?.MaxConcurrency ?? 0
+                MaxConcurrency = _schedulerOptions?.MaxConcurrency ?? 0,
+                ActiveExecutions = _taskScheduler?.ActiveExecutionCount ?? 0,
+                QueuedExecutions = _taskScheduler?.TotalQueuedTasks ?? 0,
+                ActiveWorkflows = _taskScheduler?.ActiveOrchestrationCount ?? 0,
+                WaitingForFunction = _taskScheduler?.WaitingForFunctionCount ?? 0,
+                RetryingExecutions = _taskScheduler?.RetryingCount ?? 0
             };
             return Task.FromResult(dto);
         }

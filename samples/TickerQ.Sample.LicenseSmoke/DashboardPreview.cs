@@ -42,7 +42,6 @@ internal static class DashboardPreview
                     ? TimeZoneInfo.FindSystemTimeZoneById("Europe/Berlin") : TimeZoneInfo.Utc;
                 scheduler.MinPollingInterval = TimeSpan.FromMilliseconds(example == "readonly" ? 1000 : 250);
                 scheduler.FallbackIntervalChecker = TimeSpan.FromSeconds(15);
-                scheduler.IdleWorkerTimeOut = TimeSpan.FromSeconds(30);
             });
             if (example != "basic")
             {

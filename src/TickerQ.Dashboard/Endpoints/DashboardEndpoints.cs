@@ -313,7 +313,6 @@ public static class DashboardEndpoints
         await WriteJson(context, new DashboardOptionsResponse
         {
             MaxConcurrency = schedulerOptions.MaxConcurrency,
-            IdleWorkerTimeOut = schedulerOptions.IdleWorkerTimeOut,
             CurrentMachine = schedulerOptions.NodeIdentifier,
             LastHostExceptionMessage = executionContext.LastHostExceptionMessage,
             SchedulerTimeZone = ToIanaTimeZoneId(schedulerOptions.SchedulerTimeZone),

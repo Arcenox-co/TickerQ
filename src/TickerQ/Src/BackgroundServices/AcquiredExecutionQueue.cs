@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -90,16 +91,47 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                 {
                     // Queue cancellation only interrupts admission. A successfully published callback
                     // has cancellation cleanup registered even if the scanner stops before dequeue.
-                    await _scheduler.QueueAsync(async _ =>
+                    async Task ExecuteAsync(CancellationToken schedulerToken)
                     {
+                        // Accepted orchestrations are invoked even when disposal races with
+                        // dispatch. Return their exact generation to persistence if not started.
+                        if (schedulerToken.IsCancellationRequested)
+                        {
+                            if (item.Life.AbandonIfQueued()) await ReleaseAsync(item.Function).ConfigureAwait(false);
+                            return;
+                        }
                         if (!item.Life.TryBeginExecution()) return;
                         try
                         {
+                            // The per-job source drives function gates, retry waits, children,
+                            // and attempts. Include scheduler disposal in that same lifetime.
+                            using var schedulerCancellation = schedulerToken.UnsafeRegister(_ =>
+                            {
+                                try { item.Source.Cancel(); }
+                                catch (AggregateException ex)
+                                {
+                                    _logger.LogWarning(ex,
+                                        "TickerQ job cancellation callback failed during scheduler shutdown");
+                                }
+                            }, null);
                             await _handler.ExecuteRegisteredTaskAsync(item.Function, isDue, item.Source,
                                 item.Source.Token).ConfigureAwait(false);
                         }
                         finally { item.Life.CompleteExecution(); }
-                    }, item.Function.CachedPriority, admissionToken).ConfigureAwait(false);
+                    }
+
+                    if (_scheduler is ITickerQExecutionScheduler executionScheduler)
+                    {
+                        if (!executionScheduler.TryQueueOrchestration(ExecuteAsync, admissionToken))
+                            throw new InvalidOperationException("The scheduler cannot admit more work right now.");
+                    }
+                    else
+                    {
+                        // Legacy schedulers combine admission and stop in one token. Preserve
+                        // their existing drain behavior: the acquired source owns execution.
+                        await _scheduler.QueueAsync(_ => ExecuteAsync(CancellationToken.None), item.Function.CachedPriority, admissionToken)
+                            .ConfigureAwait(false);
+                    }
                 }
                 catch (Exception ex)
                 {

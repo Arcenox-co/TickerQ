@@ -618,7 +618,7 @@ public class TickerQTaskSchedulerConcurrencyTests
             Assert.False(pending.IsCompleted, "The extra publication must be waiting for capacity");
 
             scheduler.Freeze();
-            pendingCts.Cancel();
+            // Freeze itself must release pending capacity writers; do not cancel their token.
 
             await Assert.ThrowsAsync<InvalidOperationException>(
                 () => pending.WaitAsync(TimeSpan.FromSeconds(10)));
@@ -644,7 +644,7 @@ public class TickerQTaskSchedulerConcurrencyTests
     [Fact]
     public async Task Disposal_Cancels_Cooperative_Active_Work()
     {
-        await using var scheduler = new TickerQTaskScheduler(2, idleWorkerTimeout: TimeSpan.FromSeconds(30));
+        await using var scheduler = new TickerQTaskScheduler(2);
 
         var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var observedCancellation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -687,7 +687,6 @@ public class TickerQTaskSchedulerConcurrencyTests
     {
         var scheduler = new TickerQTaskScheduler(
             maxConcurrency: 1,
-            idleWorkerTimeout: TimeSpan.FromSeconds(30),
             notifyDebounce: null,
             disposeDrainTimeout: TimeSpan.FromSeconds(2));
         var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -724,7 +723,6 @@ public class TickerQTaskSchedulerConcurrencyTests
     {
         var scheduler = new TickerQTaskScheduler(
             maxConcurrency: 1,
-            idleWorkerTimeout: TimeSpan.FromSeconds(30),
             notifyDebounce: null,
             disposeDrainTimeout: TimeSpan.FromMilliseconds(100));
 

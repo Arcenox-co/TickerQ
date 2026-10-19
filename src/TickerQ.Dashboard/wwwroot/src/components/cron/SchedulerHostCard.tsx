@@ -127,17 +127,17 @@ export function SchedulerHostCard() {
         <div className="flex flex-wrap items-center justify-between gap-4 border-t border-border px-4 py-3 sm:px-5">
           <dl className="grid grid-cols-2 gap-5 sm:gap-8">
             <div>
-              <dt className="min-h-8 text-xs text-muted-foreground">Current workers</dt>
+              <dt className="min-h-8 text-xs text-muted-foreground">Running attempts</dt>
               <dd className="mt-1">
-                <span className="block text-base font-semibold tabular-nums">{hostKnown ? host.activeThreads.toLocaleString() : "—"}</span>
-                <span className="mt-0.5 block text-[11px] text-muted-foreground">Includes idle workers</span>
+                <span className="block text-base font-semibold tabular-nums">{hostKnown && host.activeExecutions != null ? `${host.activeExecutions.toLocaleString()} / ${host.maxConcurrency.toLocaleString()}` : "—"}</span>
+                <span className="mt-0.5 block text-[11px] text-muted-foreground">Includes individual chain steps</span>
               </dd>
             </div>
             <div>
-              <dt className="min-h-8 text-xs text-muted-foreground">Maximum concurrent workers</dt>
+              <dt className="min-h-8 text-xs text-muted-foreground">Queued attempts</dt>
               <dd className="mt-1">
-                <span className="block text-base font-semibold tabular-nums">{hostKnown ? host.maxConcurrency.toLocaleString() : "—"}</span>
-                <span className="mt-0.5 block text-[11px] text-muted-foreground">Scheduler capacity on this host</span>
+                <span className="block text-base font-semibold tabular-nums">{hostKnown && host.queuedExecutions != null ? host.queuedExecutions.toLocaleString() : "—"}</span>
+                <span className="mt-0.5 block text-[11px] text-muted-foreground">Waiting for execution capacity</span>
               </dd>
             </div>
           </dl>

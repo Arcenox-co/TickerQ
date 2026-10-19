@@ -35,7 +35,7 @@ The timing fields describe separate mechanisms:
 | Configured default timeout | Per-attempt default, overridden by a job's timeout. Null or non-positive disables the default; the runtime caps timer durations. |
 | Minimum scheduler wait | Existing `MinPollingInterval` option. A floor on the calculated wait, not polling every N seconds. With a 1-second floor, a job due in 100 ms gives a 1-second wait; a job due in 10 minutes gives a 10-minute wait. Notifications can interrupt waits and immediate dispatch is separate. |
 | Overdue-job check delay | `FallbackIntervalChecker`: delay after an empty or failed fallback check; work can be checked sooner during catch-up. |
-| Idle worker retirement delay | `IdleWorkerTimeOut`: allows extra idle workers to retire; at least one remains available. |
+| Worker model | The built-in scheduler uses async consumers that wait without holding native threads, so idle worker retirement is unnecessary. |
 | Stale-job recovery configured | Configuration only; recovery additionally requires provider lease support. |
 | Your dashboard access / Authentication | Current request's access mode and configured authentication mode. |
 | Live updates / AI assistant configured | Feature configuration, not a health check of the connection or model service. |
@@ -48,9 +48,11 @@ Runnable basic, retention, and read-only examples are documented in the
 
 ## Scheduler host controls
 
-Overview groups scheduler state, worker threads, concurrency, and the runtime-health
-link in one host card. Worker threads include idle workers; the concurrency limit is
-the maximum concurrent executions per host, not a count of busy threads.
+Overview groups scheduler state, running attempts, queued attempts, and the runtime-health
+link in one host card. Running attempts are shown against the host's concurrency limit;
+each chain step counts individually. Diagnostics separates function-capacity waits, retry
+delays, and active workflows. Waiting for a function permit or a retry does not use an
+execution slot. Workflow counts overlap the attempt counts and should not be added to them.
 
 Start, Stop, and Restart require confirmation. Stop follows the host's configured
 shutdown behavior. Restart re-reads pending work by restarting the scheduling loop;

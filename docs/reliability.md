@@ -252,16 +252,18 @@ timeout fires:
 
 ## Graceful shutdown / drain
 
-On host shutdown TickerQ stops accepting new work, then waits for in-flight executions
-(queued, waiting-for-capacity, and executing) to finish:
+On host shutdown TickerQ stops accepting new root jobs, then waits for accepted workflows
+(queued, waiting for capacity, retrying, and executing) to finish. Accepted chains can
+continue scheduling their remaining steps during this drain:
 
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `ShutdownDrainTimeout` | `30s` | How long to wait for in-flight executions before letting the host exit. `Zero` disables draining (jobs are abandoned and later healed by stale-job recovery). Also bounded by `HostOptions.ShutdownTimeout`. |
 
-Drain completion is measured from the scheduler's authoritative queued + active-execution
-counts, not inferred from worker threads. If the timeout is hit, the remaining queued/active
-counts are logged and abandoned jobs are recovered later through lease expiry.
+Drain completion includes queued attempts, active executions, accepted workflows, and acquired
+ownership registrations. A retry delay or a chain between steps is still unfinished work.
+If the timeout is hit, the remaining counts are logged and abandoned jobs are recovered
+later through lease expiry.
 
 The host shutdown deadline covers **all** services. Reserve time after scheduler drain for
 webhook delivery and execution-log persistence, for example:
@@ -288,10 +290,40 @@ remain visible to lease renewal before any worker-capacity wait.
 
 ## Global concurrency
 
-`SchedulerOptionsBuilder.MaxConcurrency` (default `Environment.ProcessorCount`) bounds the
-number of **active executions**, not just worker-loop iterations. Accepted asynchronous work
-is awaited and tracked, so a burst of `LongRunning`/async jobs cannot exceed the configured
-ceiling.
+`SchedulerOptionsBuilder.MaxConcurrency` (default `Environment.ProcessorCount`) bounds
+**executing function attempts on one host**. Standalone jobs, cron occurrences, and every
+individual chain step share this budget. For example, a limit of four allows at most four
+function attempts across all chains and standalone jobs combined.
+
+An attempt retains its slot across asynchronous I/O and until its delegate actually exits,
+including a delegate that ignores timeout cancellation. Waiting for a per-function permit,
+waiting between retries, and coordinating child jobs do not occupy execution slots. A job
+can schedule another immediate job using its own function without waiting for that new
+job to finish; a per-function limit of one still prevents their bodies from overlapping.
+
+The built-in scheduler uses fixed asynchronous consumers and signals them when work arrives.
+Consumers wait without keeping native threads blocked, so idle worker retirement is
+unnecessary.
+
+The execution queue admits at most `MaxConcurrency * 1024` waiting items by default. Root
+workflow admission is also bounded. When root admission is full, acquired rows are released
+for a later scan; a committed manager mutation remains successful. These limits bound queue
+entries and admitted roots, not the size of their payloads or the number of nodes in a chain.
+Large chain graphs still require memory proportional to their live steps.
+
+`High`, `Normal`, and `Low` priorities use separate FIFO queues with weighted service of
+4:2:1 while all three queues have work. This favors higher priorities while allowing lower
+priorities to make progress. Priority does not preempt an already-running attempt and is
+applied after a function's concurrency permit becomes available.
+
+`LongRunning` uses the normal-priority queue and counts against the same execution limit.
+Its delegate starts on a dedicated thread; after an `await`, continuations can run on the
+CLR thread pool. Use asynchronous APIs for I/O and avoid `.Wait()` or `.Result` in ordinary
+job handlers. TickerQ's execution limit does not limit threads created by user code.
+
+The dashboard shows running attempts and queued attempts in Scheduler Host. Diagnostics
+also shows function-capacity waits, retry delays, and active workflows. A workflow may
+contain several running or waiting steps, so these counts are not additive.
 
 ## Run-now & bulk retry
 

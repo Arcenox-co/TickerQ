@@ -3,11 +3,17 @@ using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using TickerQ.BackgroundServices;
+using TickerQ.Dispatcher;
+using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Exceptions;
+using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Managers;
@@ -1470,6 +1476,92 @@ public partial class TickerManagerTests : IDisposable
     // ---------------------------------------------------------------
 
     [Fact]
+    public async Task AddAsync_FromItsOwnLimitedFunction_AdmitsNextJobWithoutWaitingForTheCurrentInvocation()
+    {
+        await using var scheduler = new TickerQTaskScheduler(maxConcurrency: 1);
+        await using var services = new ServiceCollection()
+            .AddSingleton<ITickerQTaskScheduler>(scheduler)
+            .BuildServiceProvider();
+        var internalManager = Substitute.For<IInternalTickerManager>();
+        var functionGate = new TickerFunctionConcurrencyGate();
+        var options = new SchedulerOptionsBuilder { MaxConcurrency = 1 };
+        options.BindRuntimeActivationScope(null, 1, schedulerEnabled: false);
+        var license = LicenseTestState.Active(_clock);
+        var handler = new TickerExecutionTaskHandler(services, _clock,
+            Substitute.For<ITickerQInstrumentation>(), internalManager, options,
+            Substitute.For<ITickerQFailureNotifier>(), license, functionGate);
+        using var acquiredQueue = new AcquiredExecutionQueue(
+            internalManager, handler, scheduler, NullLogger.Instance, license);
+        var dispatcher = new TickerQDispatcher(scheduler, handler, license, acquiredQueue);
+        ITimeTickerManager<TimeTickerEntity> manager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
+            _persistenceProvider, _hostScheduler, _clock, _notificationHubSender,
+            _executionContext, dispatcher, options, new TickerQActivationGate());
+
+        var parentId = Guid.NewGuid();
+        var child = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = ValidFunctionName, ExecutionTime = FixedUtcNow,
+            AcquisitionToken = Guid.NewGuid()
+        };
+        _persistenceProvider.AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>()).Returns(1);
+        _persistenceProvider.AcquireImmediateTimeTickersAsync(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
+            .Returns([child]);
+        var addReturned = new TaskCompletionSource<TickerResult<TimeTickerEntity>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var childEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var parentBodyExited = false;
+        var childEnteredTooSoon = false;
+        TickerFunctionDelegate body = async (ct, _, context) =>
+        {
+            if (context.Id == parentId)
+            {
+                var result = await manager.AddAsync(child, ct);
+                parentBodyExited = true;
+                addReturned.TrySetResult(result);
+            }
+            else
+            {
+                childEnteredTooSoon = !parentBodyExited;
+                childEntered.TrySetResult();
+            }
+        };
+        var root = new InternalFunctionContext
+        {
+            TickerId = parentId, FunctionName = ValidFunctionName, Type = TickerType.TimeTicker,
+            ExecutionTime = FixedUtcNow, AcquisitionToken = Guid.NewGuid(),
+            CachedDelegate = body, CachedMaxConcurrency = 1, TimeTickerChildren = []
+        };
+        var originalFunctions = TickerFunctionProvider.TickerFunctions;
+        var functions = originalFunctions.ToDictionary(x => x.Key, x => x.Value);
+        functions[ValidFunctionName] = ("", TickerTaskPriority.Normal, body, 1);
+        TickerFunctionProvider.ReplaceFunctions(functions);
+        TickerFunctionProvider.Build();
+        try
+        {
+            await dispatcher.DispatchAsync([root]);
+            var added = await addReturned.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await childEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(await scheduler.WaitForRunningTasksAsync(TimeSpan.FromSeconds(10)));
+
+            Assert.True(added.IsSucceeded);
+            Assert.Equal(child.Id, added.Result.Id);
+            Assert.False(childEnteredTooSoon);
+            Assert.Equal(TickerStatus.Done, root.Status);
+            await internalManager.Received().UpdateTickerAsync(
+                Arg.Is<InternalFunctionContext>(x => x.TickerId == child.Id && x.Status == TickerStatus.Done),
+                CancellationToken.None);
+            Assert.Equal(1, functionGate.GetSemaphoreOrNull(ValidFunctionName, 1)!.CurrentCount);
+            Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+        }
+        finally
+        {
+            await acquiredQueue.StopAsync(CancellationToken.None);
+            await scheduler.WaitForRunningTasksAsync(TimeSpan.FromSeconds(10));
+            TickerFunctionProvider.ReplaceFunctions(originalFunctions);
+            TickerFunctionProvider.Build();
+        }
+    }
+
+    [Fact]
     public async Task AddTimeTickerAsync_DispatcherEnabledAndImmediateExecution_DispatchesTicker()
     {
         _dispatcher.IsEnabled.Returns(true);
@@ -1534,6 +1626,33 @@ public partial class TickerManagerTests : IDisposable
         var child = Assert.Single(root.TimeTickerChildren);
         Assert.Equal(rootId, child.ChainRootId);
         Assert.Equal(generation, child.ChainGeneration);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AddTimeTickerAsync_RejectedImmediateAdmission_PreservesCommitAndWakesScheduler(bool wakeFails)
+    {
+        _dispatcher.IsEnabled.Returns(true);
+        var entity = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = ValidFunctionName, ExecutionTime = FixedUtcNow,
+            AcquisitionToken = Guid.NewGuid()
+        };
+        _persistenceProvider.AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>()).Returns(1);
+        _persistenceProvider.AcquireImmediateTimeTickersAsync(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
+            .Returns([entity]);
+        _dispatcher.DispatchAsync(Arg.Any<InternalFunctionContext[]>(), CancellationToken.None)
+            .Returns(Task.FromException(new InvalidOperationException("Scheduler admission is full.")));
+        if (wakeFails)
+            _hostScheduler.When(x => x.Restart()).Do(_ => throw new InvalidOperationException("Scheduler is stopping."));
+
+        var result = await _timeTickerManager.AddAsync(entity);
+
+        Assert.True(result.IsSucceeded);
+        Assert.Equal(entity.Id, result.Result.Id);
+        await _persistenceProvider.Received(1).AddTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        _hostScheduler.Received(1).Restart();
     }
 
     [Fact]

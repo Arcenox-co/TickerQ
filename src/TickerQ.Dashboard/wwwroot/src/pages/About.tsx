@@ -145,11 +145,11 @@ export default function AboutPage() {
               <DataCardHeader title="Scheduler configuration" />
               <dl>
                 <Detail label="Scheduler time zone" hint="Used to interpret cron schedules. The display time zone is selected separately in the toolbar.">{options?.schedulerTimeZone || unavailable(optionsQuery.isPending)}</Detail>
-                <Detail label="Maximum concurrent workers" hint="Scheduler worker capacity on this host. Each function can also have its own execution limit.">{options?.maxConcurrency ?? unavailable(optionsQuery.isPending)}</Detail>
+                <Detail label="Maximum concurrent executions" hint="Limits individual function attempts, including chain steps, on this host. Function limits can restrict this further.">{options?.maxConcurrency ?? unavailable(optionsQuery.isPending)}</Detail>
                 <Detail label="Configured default timeout" hint="Applies per attempt unless the job overrides it. Zero or negative values disable the default; runtime timer limits still apply.">{options ? formatTimeSpan(options.defaultExecutionTimeout, "No default timeout", true) : unavailable(optionsQuery.isPending)}</Detail>
                 <Detail label="Minimum scheduler wait" hint="Lower bound on the wait for the next scheduled job, not a fixed polling timer. Later jobs allow longer waits; notifications can interrupt them. Immediate dispatch is separate.">{options ? formatMinimumSchedulerWait(options.minPollingInterval) : unavailable(optionsQuery.isPending)}</Detail>
                 <Detail label="Overdue-job check delay" hint="Fallback delay when no overdue work is found or a check fails. Catch-up checks can run sooner while work remains.">{options ? formatTimeSpan(options.fallbackIntervalChecker) : unavailable(optionsQuery.isPending)}</Detail>
-                <Detail label="Idle worker retirement delay" hint="Extra workers can retire after being idle. The pool keeps at least one worker available.">{options ? formatTimeSpan(options.idleWorkerTimeOut, "Unavailable", true) : unavailable(optionsQuery.isPending)}</Detail>
+                <Detail label="Built-in worker model" hint="Async consumers wait without holding native threads, so idle worker retirement is unnecessary.">Async workers</Detail>
                 <Detail label="Stale-job recovery configured" hint="Recovery of jobs abandoned by a failed node requires a persistence provider that supports leases.">{options ? (options.staleJobRecoveryEnabled ? "Yes" : "No") : unavailable(optionsQuery.isPending)}</Detail>
               </dl>
             </DataCard>

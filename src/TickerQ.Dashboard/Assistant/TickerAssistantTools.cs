@@ -119,10 +119,12 @@ internal static partial class TickerAssistantTools
                     var host = await data.GetHostStatusAsync(ct);
                     var stats = await data.GetOverallStatusesAsync(ct);
                     var counts = string.Join(", ", stats.Select(s => $"{s.Status}={s.Count}"));
-                    return $"Scheduler time zone={schedulerTimeZone}. Current UTC={DateTime.UtcNow:O}. Host running={host.IsRunning}, activeThreads={host.ActiveThreads}/{host.MaxConcurrency}. Status counts: {counts}";
+                    return $"Scheduler time zone={schedulerTimeZone}. Current UTC={DateTime.UtcNow:O}. Host running={host.IsRunning}, " +
+                        $"runningAttempts={host.ActiveExecutions}/{host.MaxConcurrency}, queuedAttempts={host.QueuedExecutions}, " +
+                        $"functionWaits={host.WaitingForFunction}, retryDelays={host.RetryingExecutions}, activeWorkflows={host.ActiveWorkflows}. Status counts: {counts}";
                 },
                 "get_scheduler_status",
-                "Get overall scheduler health: whether the host is running, active worker threads, and the count of executions in each status."),
+                "Get overall scheduler health: host state, running and queued attempts, function-capacity waits, retry delays, active workflows, and execution status counts. Workflow and attempt counts overlap."),
         };
 
         // ── Proposal tools (never in read-only mode) ──

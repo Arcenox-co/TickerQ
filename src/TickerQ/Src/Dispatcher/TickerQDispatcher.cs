@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.BackgroundServices;
+using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Licensing;
 using TickerQ.Utilities.Models;
@@ -55,6 +56,16 @@ namespace TickerQ.Dispatcher
 
             foreach (var context in contexts)
             {
+                if (_taskScheduler is ITickerQExecutionScheduler executionScheduler)
+                {
+                    // A manager call made inside a function must return after admission, not
+                    // await another invocation that could need the caller's function permit.
+                    if (!executionScheduler.TryQueueOrchestration(
+                            ct => _taskHandler.ExecuteTaskAsync(context, false, ct), cancellationToken))
+                        throw new InvalidOperationException("The scheduler cannot admit more work right now.");
+                    continue;
+                }
+
                 await _taskScheduler.QueueAsync(
                     ct => _taskHandler.ExecuteTaskAsync(context, false, ct),
                     context.CachedPriority,

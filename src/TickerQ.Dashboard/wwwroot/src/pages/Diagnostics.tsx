@@ -70,8 +70,12 @@ export default function DiagnosticsPage() {
           <DataCardHeader title="Scheduler" />
           <dl>
             <Detail label="State">{host ? (host.isRunning ? "Running" : "Stopped") : missing(hostQuery.isPending)}</Detail>
-            <Detail label="Current workers" hint="Includes idle workers. This is not the number of executing jobs.">{host ? host.activeThreads.toLocaleString() : missing(hostQuery.isPending)}</Detail>
-            <Detail label="Maximum concurrent workers" hint="Scheduler worker capacity on this host. Each function can also have its own execution limit.">{host ? host.maxConcurrency.toLocaleString() : missing(hostQuery.isPending)}</Detail>
+            <Detail label="Running attempts" hint="Function attempts currently executing, including asynchronous I/O and individual chain steps.">{host?.activeExecutions?.toLocaleString() ?? missing(hostQuery.isPending)}</Detail>
+            <Detail label="Execution limit" hint="Maximum concurrent attempts on this host. Each function can also have its own limit.">{host ? host.maxConcurrency.toLocaleString() : missing(hostQuery.isPending)}</Detail>
+            <Detail label="Queued attempts" hint="Admitted attempts waiting for a global execution slot.">{host?.queuedExecutions?.toLocaleString() ?? missing(hostQuery.isPending)}</Detail>
+            <Detail label="Waiting for function capacity" hint="Waiting for a per-function concurrency permit. These jobs do not occupy execution slots.">{host?.waitingForFunction?.toLocaleString() ?? missing(hostQuery.isPending)}</Detail>
+            <Detail label="Retry delays" hint="Jobs waiting before another attempt. These jobs do not occupy execution slots.">{host?.retryingExecutions?.toLocaleString() ?? missing(hostQuery.isPending)}</Detail>
+            <Detail label="Active workflows" hint="Accepted root jobs and chains, including running, queued, and waiting work. This overlaps the other counts.">{host?.activeWorkflows?.toLocaleString() ?? missing(hostQuery.isPending)}</Detail>
           </dl>
           <div className="border-t border-border px-4 py-3">
             <Link to="/" className="inline-flex min-h-8 items-center gap-1.5 text-xs font-medium text-primary hover:underline">

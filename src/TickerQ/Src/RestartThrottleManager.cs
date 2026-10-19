@@ -6,16 +6,23 @@ namespace TickerQ;
 public sealed class RestartThrottleManager : IDisposable
 {
     private readonly Action _onRestartTriggered;
+    private readonly TimeProvider _timeProvider;
     private readonly object _lock = new();
-    private Timer _debounceTimer;
+    private ITimer _debounceTimer;
     private volatile bool _restartPending;
     private bool _disposed;
 
     private readonly TimeSpan _debounceWindow = TimeSpan.FromMilliseconds(50);
 
     public RestartThrottleManager(Action onRestartTriggered)
+        : this(onRestartTriggered, TimeProvider.System)
+    {
+    }
+
+    internal RestartThrottleManager(Action onRestartTriggered, TimeProvider timeProvider)
     {
         _onRestartTriggered = onRestartTriggered;
+        _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
     }
 
     public void RequestRestart()
@@ -31,7 +38,7 @@ public sealed class RestartThrottleManager : IDisposable
             // Create timer only when first needed
             if (_debounceTimer == null)
             {
-                _debounceTimer = new Timer(OnTimerCallback, null,
+                _debounceTimer = _timeProvider.CreateTimer(OnTimerCallback, null,
                     _debounceWindow, Timeout.InfiniteTimeSpan);
             }
             else

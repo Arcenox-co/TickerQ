@@ -1,5 +1,6 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Enums;
@@ -8,64 +9,49 @@ using TickerQ.Utilities.Interfaces;
 namespace TickerQ.TickerQThreadPool;
 
 /// <summary>
-/// Elastic work-stealing task scheduler.
-///
-/// Concurrency contract:
-///  - <see cref="TotalQueuedTasks"/> settles at exactly zero and never underflows: an
-///    item's queued ownership is published (counter incremented) BEFORE the item becomes
-///    dequeue-visible, and publication is atomic with <see cref="Freeze"/>/<see cref="DisposeAsync"/>.
-///  - At most <c>maxConcurrency</c> executions run at once. Normal and LongRunning work
-///    draw from the SAME budget; a worker owns each item's full async lifecycle.
-///  - Disposal cancels cooperative in-flight work through a token linked to the scheduler
-///    stop token, and never disposes shared state while a worker might still touch it.
-///  - Reentrant <see cref="QueueAsync"/> (from within one of this scheduler's own
-///    executions) runs inline under the owning slot, so nested scheduling cannot deadlock
-///    at low concurrency and cannot exceed the active-execution budget.
+/// Bounded, signaled asynchronous worker queue. A worker owns the entire async lifetime
+/// of a work item; normal and LongRunning work share the same concurrency budget.
+/// High, Normal and Low queues are FIFO and receive weighted fair service (4:2:1).
+/// LongRunning shares Normal admission priority and starts on a dedicated thread.
 /// </summary>
-public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskScheduler
+public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskScheduler, ITickerQExecutionScheduler
 {
-    private readonly int _maxConcurrency;
-    private readonly TimeSpan _idleWorkerTimeout;
-    private readonly int _maxCapacityPerWorker;
-
-    // Upper bound on how long DisposeAsync waits for in-flight executions to finish
-    // before deferring shared-resource cleanup to the last worker. Injectable so tests
-    // can exercise "work outlives the bounded wait" without a mandatory multi-second delay.
     private static readonly TimeSpan DefaultDisposeDrainTimeout = TimeSpan.FromSeconds(5);
+    private static readonly int[] PrioritySchedule = [0, 0, 0, 0, 1, 1, 2];
+    private readonly int _maxConcurrency;
+    private readonly int _queueCapacity;
+    private readonly int _orchestrationCapacity;
     private readonly TimeSpan _disposeDrainTimeout;
-
-    private const int DrainPollIntervalMs = 10;   // WaitForRunningTasksAsync poll cadence
-    private const int WorkerPollIntervalMs = 50;   // DisposeAsync worker-exit poll cadence
-
-    // Worker queues for work stealing
-    private readonly ConcurrentQueue<WorkItem>[] _workerQueues;
-
-    // Global state
+    private readonly object _stateLock = new();
+    private readonly Queue<WorkItem>[] _queues = [new(), new(), new()];
+    private readonly SemaphoreSlim _availableItems = new(0);
+    private readonly CancellationTokenSource _shutdownCts = new();
+    private readonly CancellationToken _stopToken;
+    private readonly SoftSchedulerNotifyDebounce _notifyDebounce;
+    private readonly Task _workersCompleted;
+    private readonly TaskCompletionSource<bool> _allStopped = NewSignal();
+    private volatile int _activeOrchestrations;
+    private int _waitingForFunction;
+    private int _retrying;
+    private TaskCompletionSource<bool> _capacityChanged;
+    private TaskCompletionSource<bool> _drained = NewSignal();
+    private Task _disposeTask;
+    private int _priorityCursor;
+    private long _admissionGeneration;
     private volatile int _totalQueuedTasks;
     private volatile int _activeExecutions;
     private volatile int _activeWorkers;
     private volatile bool _disposed;
     private volatile bool _isFrozen;
-    private volatile int _nextQueueIndex;
-
-    // Serializes lifecycle publication (counter increment + enqueue) with Freeze/DisposeAsync
-    // so no work can be published after freeze/disposal wins.
-    private readonly object _stateLock = new();
-
-    private readonly CancellationTokenSource _shutdownCts = new();
-    // Cached stop token. Read this instead of _shutdownCts.Token so cancellation checks
-    // never throw ObjectDisposedException after the CTS is (deferred-)disposed.
-    private readonly CancellationToken _stopToken;
-    private readonly SoftSchedulerNotifyDebounce _notifyDebounce;
-
-    // One-shot latch guarding disposal of shared CTS/notification state, so DisposeAsync
-    // and the last worker out can both attempt it and exactly one wins.
+    private int _shutdownSignalled;
+    private int _shutdownCallbacksFinished;
     private int _sharedReleased;
-    private Task _disposeTask;
 
-    // Ownership marker for reentrancy. The scope expires when its outer work item returns,
-    // so detached tasks that inherited the ExecutionContext cannot later run unaccounted.
+    // Direct reentrant QueueAsync calls keep the legacy inline/await-completion contract.
+    // Scopes expire and retain their children, preventing detached tasks from retaining
+    // an execution slot after its owning work item has completed.
     private static readonly AsyncLocal<ExecutionScope> _currentExecutionScope = new();
+    private static readonly AsyncLocal<ExecutionScope> _currentOrchestrationScope = new();
 
     private sealed class ExecutionScope
     {
@@ -121,139 +107,192 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         }
     }
 
-    // Thread-local flag to detect if we're on a TickerQ worker thread (used by the
-    // synchronization context for continuation routing).
-    [ThreadStatic] public static bool IsTickerQWorkerThread;
-    [ThreadStatic] private static int _threadWorkerIndex = -1;
-
-    public TickerQTaskScheduler(
-        int maxConcurrency,
-        TimeSpan? idleWorkerTimeout = null,
-        SoftSchedulerNotifyDebounce notifyDebounce = null)
-        : this(maxConcurrency, idleWorkerTimeout, notifyDebounce, DefaultDisposeDrainTimeout)
+    /// <summary>
+    /// Creates a queue with 1024 waiting items per configured execution slot.
+    /// Idle asynchronous workers wait for a signal without occupying an operating-system thread.
+    /// </summary>
+    public TickerQTaskScheduler(int maxConcurrency, SoftSchedulerNotifyDebounce notifyDebounce = null)
+        : this(maxConcurrency, notifyDebounce, DefaultDisposeDrainTimeout)
     {
     }
 
-    // Test-friendly constructor: allows the dispose drain timeout to be shortened so the
-    // "execution outlives bounded disposal" path can be exercised deterministically.
-    internal TickerQTaskScheduler(
-        int maxConcurrency,
-        TimeSpan? idleWorkerTimeout,
-        SoftSchedulerNotifyDebounce notifyDebounce,
-        TimeSpan disposeDrainTimeout)
+    /// <summary>Creates a scheduler with an explicit total waiting-queue capacity.</summary>
+    internal TickerQTaskScheduler(int maxConcurrency, int queueCapacity,
+        SoftSchedulerNotifyDebounce notifyDebounce = null)
+        : this(maxConcurrency, notifyDebounce, DefaultDisposeDrainTimeout, queueCapacity)
+    {
+    }
+
+    internal TickerQTaskScheduler(int maxConcurrency,
+        SoftSchedulerNotifyDebounce notifyDebounce, TimeSpan disposeDrainTimeout)
+        : this(maxConcurrency, notifyDebounce, disposeDrainTimeout,
+            (int)Math.Min((long)maxConcurrency * 1024, int.MaxValue))
+    {
+    }
+
+    internal TickerQTaskScheduler(int maxConcurrency, int queueCapacity, int orchestrationCapacity)
+        : this(maxConcurrency, null, DefaultDisposeDrainTimeout, queueCapacity, orchestrationCapacity)
+    {
+    }
+
+    private TickerQTaskScheduler(int maxConcurrency,
+        SoftSchedulerNotifyDebounce notifyDebounce, TimeSpan disposeDrainTimeout, int queueCapacity, int? orchestrationCapacity = null)
     {
         if (maxConcurrency <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxConcurrency), "Must be greater than zero");
+        if (queueCapacity <= 0)
+            throw new ArgumentOutOfRangeException(nameof(queueCapacity), "Must be greater than zero");
+        if (disposeDrainTimeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(disposeDrainTimeout));
 
         _maxConcurrency = maxConcurrency;
-        _idleWorkerTimeout = idleWorkerTimeout ?? TimeSpan.FromSeconds(60);
+        if (orchestrationCapacity <= 0)
+            throw new ArgumentOutOfRangeException(nameof(orchestrationCapacity));
+        _queueCapacity = queueCapacity;
+        _orchestrationCapacity = orchestrationCapacity ?? (int)Math.Min((long)queueCapacity + maxConcurrency, int.MaxValue);
         _disposeDrainTimeout = disposeDrainTimeout;
-        _maxCapacityPerWorker = 1024; // Fixed optimal capacity
         _notifyDebounce = notifyDebounce ?? new SoftSchedulerNotifyDebounce(_ => { });
         _stopToken = _shutdownCts.Token;
-
-        // Initialize all worker queues upfront for simplicity
-        _workerQueues = new ConcurrentQueue<WorkItem>[maxConcurrency];
-        for (int i = 0; i < maxConcurrency; i++)
+        _drained.TrySetResult(true);
+        _activeWorkers = maxConcurrency;
+        var workers = new Task[maxConcurrency];
+        // The scheduler can be resolved inside an application request/job scope. Worker
+        // consumers must not retain that caller's AsyncLocals or reentrancy ownership.
+        if (ExecutionContext.IsFlowSuppressed())
+            StartWorkers();
+        else
         {
-            _workerQueues[i] = new ConcurrentQueue<WorkItem>();
+            using (ExecutionContext.SuppressFlow())
+                StartWorkers();
         }
+        _workersCompleted = Task.WhenAll(workers);
+        ExecutionScope.Observe(_workersCompleted);
+        NotifyWorkers(maxConcurrency);
 
-        // Start at least one worker immediately to handle incoming tasks
-        TryStartWorker();
+        void StartWorkers()
+        {
+            for (var i = 0; i < workers.Length; i++)
+                workers[i] = Task.Run(WorkerLoopAsync);
+        }
     }
 
+    public int QueueCapacity => _queueCapacity;
+
     /// <summary>
-    /// Queues work to be executed by the scheduler.
-    /// The priority parameter only selects the execution thread type (LongRunning uses a
-    /// dedicated long-running thread); it does not change the shared concurrency budget.
+    /// Admits a work item, waiting asynchronously for capacity. Existing direct nested
+    /// calls execute within their owning scope and await completion for compatibility.
+    /// A cancelled admission completes without executing, as in earlier versions.
     /// </summary>
-    public ValueTask QueueAsync(
-        Func<CancellationToken, Task> work,
-        TickerTaskPriority priority,
+    public ValueTask QueueAsync(Func<CancellationToken, Task> work, TickerTaskPriority priority,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            return QueueAsyncDispatch(work, priority, cancellationToken);
+            if (work == null) throw new ArgumentNullException(nameof(work));
+            ExecutionScope nestedScope = null;
+            long generation;
+            lock (_stateLock)
+            {
+                ThrowIfUnavailable();
+                generation = _admissionGeneration;
+                var currentScope = _currentExecutionScope.Value;
+                if (ReferenceEquals(currentScope?.Owner, this) && currentScope.TryAcquireNested())
+                    nestedScope = currentScope;
+            }
+            if (nestedScope != null)
+            {
+                var task = ExecuteNestedAsync(nestedScope, work, priority, cancellationToken);
+                ExecutionScope.Observe(task);
+                return new ValueTask(task);
+            }
+            return QueueCoreAsync(work, priority, cancellationToken, generation);
         }
         catch (Exception ex)
         {
-            // Preserve the original async API behavior for synchronous validation/lifecycle errors.
             return ValueTask.FromException(ex);
         }
     }
 
-    private ValueTask QueueAsyncDispatch(
-        Func<CancellationToken, Task> work,
-        TickerTaskPriority priority,
-        CancellationToken cancellationToken)
+    private async ValueTask QueueCoreAsync(Func<CancellationToken, Task> work,
+        TickerTaskPriority priority, CancellationToken cancellationToken, long generation,
+        bool acceptedOrchestration = false, WorkItemCompletion completion = null, ExecutionContext executionContext = null)
     {
-        if (work == null)
-            throw new ArgumentNullException(nameof(work));
-
-        // Reentrancy: acquire nested ownership atomically with Freeze/DisposeAsync. Sibling
-        // nested delegates are serialized by their owning scope; each child receives a new
-        // scope for deeper recursion.
-        ExecutionScope nestedScope = null;
-        lock (_stateLock)
+        while (true)
         {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(TickerQTaskScheduler));
-            if (_isFrozen)
-                throw new InvalidOperationException("Scheduler is frozen");
-
-            var currentScope = _currentExecutionScope.Value;
-            if (ReferenceEquals(currentScope?.Owner, this) && currentScope.TryAcquireNested())
-                nestedScope = currentScope;
+            Task capacity;
+            lock (_stateLock)
+            {
+                if (_disposed && completion != null)
+                {
+                    completion.CancelBeforeStart(_stopToken);
+                    return;
+                }
+                ThrowIfUnavailable(generation, acceptedOrchestration);
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    completion?.CancelBeforeStart(cancellationToken);
+                    return;
+                }
+                if (_totalQueuedTasks < _queueCapacity)
+                {
+                    if (_totalQueuedTasks == 0 && _activeExecutions == 0 && _activeOrchestrations == 0)
+                        _drained = NewSignal();
+                    // Capacity reservation, publication and lifecycle checks are atomic.
+                    // Count before signaling, so a consumer cannot observe an unowned item.
+                    _totalQueuedTasks++;
+                    _queues[GetPriorityQueue(priority)].Enqueue(new WorkItem(work, cancellationToken, priority, completion, executionContext));
+                    _availableItems.Release();
+                    return;
+                }
+                capacity = (_capacityChanged ??= NewSignal()).Task;
+            }
+            try
+            {
+                await capacity.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Freeze/disposal wins over cancellation, preserving lifecycle rejection.
+                lock (_stateLock)
+                {
+                    if (_disposed && completion != null)
+                    {
+                        completion.CancelBeforeStart(_stopToken);
+                        return;
+                    }
+                    ThrowIfUnavailable(generation, acceptedOrchestration);
+                }
+                completion?.CancelBeforeStart(cancellationToken);
+                return;
+            }
         }
-
-        if (nestedScope != null)
-        {
-            var nestedTask = ExecuteNestedAsync(nestedScope, work, priority, cancellationToken);
-            ExecutionScope.Observe(nestedTask);
-            return new ValueTask(nestedTask);
-        }
-
-        return QueueCoreAsync(work, priority, cancellationToken);
     }
 
-    private async ValueTask QueueCoreAsync(
-        Func<CancellationToken, Task> work,
-        TickerTaskPriority priority,
-        CancellationToken cancellationToken)
+    private void ThrowIfUnavailable(long? generation = null, bool acceptedOrchestration = false)
     {
-        // Round-robin distribution across worker queues. LongRunning work shares the same
-        // queue and active-execution budget as normal work; its priority is carried on the
-        // WorkItem so the worker can honor the dedicated long-running thread on execution.
-        var queueIndex = GetNextQueueIndex();
-        var targetQueue = _workerQueues[queueIndex];
+        if (_disposed) throw new ObjectDisposedException(nameof(TickerQTaskScheduler));
+        if (!acceptedOrchestration && (_isFrozen || (generation.HasValue && generation.Value != _admissionGeneration)))
+            throw new InvalidOperationException("Scheduler is frozen");
+    }
 
-        // Asynchronous capacity backpressure. This can suspend, so Freeze/DisposeAsync may
-        // win in the meantime; the publication below re-checks state under _stateLock.
-        await WaitForCapacityAsync(targetQueue, cancellationToken).ConfigureAwait(false);
+    private static int GetPriorityQueue(TickerTaskPriority priority)
+        => priority == TickerTaskPriority.High ? 0 : priority == TickerTaskPriority.Low ? 2 : 1;
 
-        var workItem = new WorkItem(work, cancellationToken, priority);
+    private static TaskCompletionSource<bool> NewSignal()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        // Publish atomically with Freeze/DisposeAsync. Increment the queued counter BEFORE
-        // the item becomes dequeue-visible, so a worker can never dequeue-and-decrement an
-        // item whose ownership has not yet been published (no underflow / false drain).
-        lock (_stateLock)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(TickerQTaskScheduler));
+    // Must be called under _stateLock; continuations always run asynchronously.
+    private void SignalCapacityChanged()
+    {
+        var previous = _capacityChanged;
+        _capacityChanged = null;
+        previous?.TrySetResult(true);
+    }
 
-            if (_isFrozen)
-                throw new InvalidOperationException("Scheduler is frozen");
-
-            Interlocked.Increment(ref _totalQueuedTasks);
-            targetQueue.Enqueue(workItem);
-        }
-
-        // Worker management runs outside the lock (it may invoke the external notify
-        // callback and start threads). Safe: if disposal raced in, the item is already
-        // enqueued and will be drained, and TryStartWorker no-ops during shutdown.
-        EnsureWorkerAvailable();
+    private void SignalDrainedIfIdle()
+    {
+        if (_totalQueuedTasks == 0 && _activeExecutions == 0 && _activeOrchestrations == 0)
+            _drained.TrySetResult(true);
     }
 
     private async Task ExecuteNestedAsync(
@@ -333,594 +372,375 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         }
     }
 
-    private int GetNextQueueIndex()
+    private async Task WorkerLoopAsync()
     {
-        // Simple round-robin without complex CAS loop
-        var index = Interlocked.Increment(ref _nextQueueIndex);
-        return Math.Abs(index) % _maxConcurrency;
-    }
-
-    private async ValueTask WaitForCapacityAsync(
-        ConcurrentQueue<WorkItem> queue,
-        CancellationToken cancellationToken)
-    {
-        var waitCount = 0;
-        while (queue.Count >= _maxCapacityPerWorker
-               && !cancellationToken.IsCancellationRequested
-               && !_stopToken.IsCancellationRequested
-               && !_disposed)
-        {
-            if (++waitCount > 100) // After ~1 second, nudge a worker in case we're stuck
-            {
-                EnsureWorkerAvailable();
-                waitCount = 0;
-            }
-
-            try
-            {
-                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                break; // publication re-check throws the appropriate exception
-            }
-        }
-    }
-
-    private void EnsureWorkerAvailable()
-    {
-        // Always try to maintain at least one worker
-        if (_activeWorkers == 0)
-        {
-            TryStartWorker();
-            return;
-        }
-
-        // If there is queued work and we still have capacity, start another worker
-        var totalQueued = _totalQueuedTasks;
-        var activeWorkers = _activeWorkers;
-
-        if (totalQueued > 0 && activeWorkers < _maxConcurrency)
-        {
-            TryStartWorker();
-        }
-    }
-
-    private void TryStartWorker()
-    {
-        if (_stopToken.IsCancellationRequested || _disposed)
-            return;
-
-        // Try to increment active workers
-        var currentWorkers = _activeWorkers;
-        if (currentWorkers >= _maxConcurrency)
-            return;
-
-        if (Interlocked.CompareExchange(ref _activeWorkers, currentWorkers + 1, currentWorkers) == currentWorkers)
-        {
-            // Successfully reserved a worker slot
-            var workerId = currentWorkers; // Use the slot we just reserved
-            var thread = new Thread(() => WorkerLoop(workerId))
-            {
-                IsBackground = true,
-                Name = $"TickerQ.Worker-{workerId}"
-            };
-            thread.Start();
-
-            _notifyDebounce.NotifySafely(_activeWorkers);
-        }
-    }
-
-    private void WorkerLoop(int workerId)
-    {
-        // Set thread-local state
-        _threadWorkerIndex = workerId;
-        IsTickerQWorkerThread = true;
-
-        // Set a simple synchronization context if needed for continuations
-        var originalContext = SynchronizationContext.Current;
-        var tickerQContext = new TickerQSynchronizationContext(this);
-        SynchronizationContext.SetSynchronizationContext(tickerQContext);
-
         try
         {
-            // Run the async worker loop
-            Task.Run(async () => await WorkerLoopCoreAsync(workerId)).GetAwaiter().GetResult();
+            while (true)
+            {
+                await _availableItems.WaitAsync(_stopToken).ConfigureAwait(false);
+                WorkItem item;
+                lock (_stateLock)
+                {
+                    if (_disposed) return;
+                    item = DequeueFairly();
+                    // Publish active ownership before removing queued ownership so drain
+                    // observers never see a false zero during the handoff.
+                    _activeExecutions++;
+                    _totalQueuedTasks--;
+                    SignalCapacityChanged();
+                }
+                try
+                {
+                    if (item.Completion != null && !item.Completion.TryBegin()) continue;
+                    if (!item.UserToken.IsCancellationRequested && !_stopToken.IsCancellationRequested)
+                    {
+                        if (item.ExecutionContext == null)
+                            await ExecuteWorkAsync(item).ConfigureAwait(false);
+                        else
+                        {
+                            Task execution = null;
+                            ExecutionContext.Run(item.ExecutionContext, _ => execution = ExecuteWorkAsync(item), null);
+                            await execution.ConfigureAwait(false);
+                        }
+                    }
+                    else
+                        item.Completion?.CompleteCancellation(item.UserToken.IsCancellationRequested ? item.UserToken : _stopToken);
+                }
+                finally
+                {
+                    lock (_stateLock)
+                    {
+                        _activeExecutions--;
+                        SignalDrainedIfIdle();
+                    }
+                    item = default; // Do not retain the last job/request/ExecutionContext while idle.
+                }
+            }
+        }
+        catch (OperationCanceledException) when (_stopToken.IsCancellationRequested)
+        {
         }
         finally
         {
-            SynchronizationContext.SetSynchronizationContext(originalContext);
-
             var remaining = Interlocked.Decrement(ref _activeWorkers);
-            if (remaining == 0 && _disposed)
-            {
-                // Last worker out during disposal: release shared resources that
-                // DisposeAsync deferred because an execution outlived its bounded wait.
-                ReleaseSharedResourcesOnce();
-            }
-            else
-            {
-                // While workers remain, the notification state is guaranteed alive.
-                _notifyDebounce.NotifySafely(remaining);
-            }
+            NotifyWorkers(remaining);
+            CompleteStopIfIdle();
         }
     }
 
-    private async Task WorkerLoopCoreAsync(int workerId)
+    // All callers hold _stateLock. The finite cyclic schedule guarantees service to
+    // every nonempty priority lane, even under a continuously replenished High queue.
+    private WorkItem DequeueFairly()
     {
-        var lastWorkTime = DateTime.UtcNow;
-        var localQueue = _workerQueues[workerId];
-        var consecutiveStealFailures = 0;
-
-        // Cached stop token only — never read _shutdownCts.Token here, which can be
-        // disposed by the time a straggler execution loops back.
-        while (!_stopToken.IsCancellationRequested)
+        for (var i = 0; i < PrioritySchedule.Length; i++)
         {
-            WorkItem workItem = default;
-            bool foundWork = false;
-
-            // 1. Try local queue first (fastest path)
-            if (localQueue.TryDequeue(out workItem))
-            {
-                foundWork = true;
-                consecutiveStealFailures = 0;
-            }
-            // 2. Try work stealing if local queue is empty
-            else if (TryStealWork(workerId, out workItem))
-            {
-                foundWork = true;
-                consecutiveStealFailures = 0;
-            }
-            else
-            {
-                consecutiveStealFailures++;
-            }
-
-            if (foundWork)
-            {
-                lastWorkTime = DateTime.UtcNow;
-                await ExecuteWorkAsync(workItem);
-            }
-            else
-            {
-                // No work found - check if we should exit
-                if (DateTime.UtcNow - lastWorkTime > _idleWorkerTimeout)
-                {
-                    // Check ALL queues for any remaining work before exiting
-                    bool anyWorkRemaining = false;
-                    for (int i = 0; i < _maxConcurrency; i++)
-                    {
-                        if (_workerQueues[i].Count > 0)
-                        {
-                            anyWorkRemaining = true;
-                            break;
-                        }
-                    }
-
-                    // Only exit if there's really no work and we have more than the minimum
-                    // worker. The last worker never idle-exits, so it stays until shutdown.
-                    if (!anyWorkRemaining && _totalQueuedTasks == 0 && _activeWorkers > 1)
-                    {
-                        break; // Exit this worker
-                    }
-
-                    // Reset timer if we need to stay
-                    lastWorkTime = DateTime.UtcNow;
-                }
-
-                // Brief sleep to avoid spinning
-                if (consecutiveStealFailures > 3)
-                {
-                    await Task.Delay(Math.Min(consecutiveStealFailures * 2, 50));
-                }
-                else
-                {
-                    await Task.Yield();
-                }
-            }
+            var queue = _queues[PrioritySchedule[_priorityCursor]];
+            _priorityCursor = (_priorityCursor + 1) % PrioritySchedule.Length;
+            if (queue.Count > 0) return queue.Dequeue();
         }
-    }
-
-    private bool TryStealWork(int thiefWorkerId, out WorkItem workItem)
-    {
-        workItem = default;
-
-        // Try to steal from other workers
-        // Start from a different position each time to avoid patterns
-        var startIndex = (thiefWorkerId + 1) % _maxConcurrency;
-
-        // First pass: steal from queues with multiple items
-        for (int i = 0; i < _maxConcurrency - 1; i++)
-        {
-            var victimIndex = (startIndex + i) % _maxConcurrency;
-            if (victimIndex == thiefWorkerId)
-                continue; // Don't steal from ourselves
-
-            var victimQueue = _workerQueues[victimIndex];
-
-            // Only steal if victim has multiple items (leave at least one)
-            if (victimQueue.Count > 1 && victimQueue.TryDequeue(out workItem))
-            {
-                return true;
-            }
-        }
-
-        // Second pass: steal even single items if we're desperate
-        for (int i = 0; i < _maxConcurrency - 1; i++)
-        {
-            var victimIndex = (startIndex + i) % _maxConcurrency;
-            if (victimIndex == thiefWorkerId)
-                continue;
-
-            if (_workerQueues[victimIndex].TryDequeue(out workItem))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        throw new InvalidOperationException("A signaled scheduler item was not present in its queue.");
     }
 
     private async Task ExecuteWorkAsync(WorkItem workItem)
     {
-        // The item has been dequeued but is still counted as queued at this point. We keep
-        // the queued ownership until we know whether the work is accepted, so a concurrent
-        // WaitForRunningTasksAsync stays conservative (it never observes drained while a
-        // dequeued item is still being decided).
-
-        // Cancelled before acceptance: drop queued ownership only, never take an active
-        // slot, so the counters settle at queued-1 / active+0.
-        if (workItem.UserToken.IsCancellationRequested || _stopToken.IsCancellationRequested)
-        {
-            Interlocked.Decrement(ref _totalQueuedTasks);
-            return;
-        }
-
-        // Accepted work: hand ownership from the queued counter to the active-execution
-        // counter with a deliberate temporary overlap. We increment active BEFORE
-        // decrementing queued so that at no instant can a concurrent
-        // WaitForRunningTasksAsync observe queued==0 && active==0 for work that is about to
-        // run. The brief queued+active double-count is intentional and conservative — it
-        // can only delay a drain signal, never report drained early.
-        //
-        // The worker owns this task's full lifecycle: it awaits completion before dequeuing
-        // the next item, which is what bounds concurrent executions to maxConcurrency.
-        Interlocked.Increment(ref _activeExecutions);
-        Interlocked.Decrement(ref _totalQueuedTasks);
-
-        // Cooperative cancellation: the running delegate gets a token linked to BOTH the
-        // caller token and the scheduler stop token, so disposal can cancel active work.
-        // _stopToken's source is alive for the whole execution — it is only disposed after
-        // _activeWorkers reaches 0, which cannot happen while this execution is in flight.
-        var linked = CancellationTokenSource.CreateLinkedTokenSource(workItem.UserToken, _stopToken);
-
-        // Mark this async flow as executing inside one of our slots so reentrant QueueAsync
-        // runs inline instead of deadlocking on the queue. The expiring scope flows across
-        // async continuations but cannot be reused by detached tasks after this item closes.
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(workItem.UserToken, _stopToken);
         var previousScope = _currentExecutionScope.Value;
         var executionScope = new ExecutionScope(this);
         _currentExecutionScope.Value = executionScope;
+        Exception failure = null;
         try
         {
             if (workItem.Priority == TickerTaskPriority.LongRunning)
             {
-                // Preserve the dedicated long-running thread, but own its lifecycle: start
-                // it, unwrap the inner task, and await full completion here rather than
-                // firing and forgetting — so it consumes the same budget as normal work.
-                var task = Task.Factory.StartNew(
+                await Task.Factory.StartNew(
                     () => workItem.Work(linked.Token) ?? Task.CompletedTask,
-                    CancellationToken.None,
-                    TaskCreationOptions.LongRunning,
-                    TaskScheduler.Default).Unwrap();
-
-                await task.ConfigureAwait(false);
+                    CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)
+                    .Unwrap().ConfigureAwait(false);
             }
             else
             {
                 var task = workItem.Work(linked.Token);
-                if (task != null)
-                    await task.ConfigureAwait(false);
+                if (task != null) await task.ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException)
+        catch (Exception ex)
         {
-            // Expected - work cancelled cooperatively (caller token or shutdown).
-        }
-        catch (Exception)
-        {
-            // Swallow exceptions so one failed work item never kills the worker.
+            // Direct QueueAsync preserves fire-and-forget behavior; ExecuteAsync callers
+            // receive the original result after the attempt releases its complete lifetime.
+            failure = ex;
         }
         finally
         {
-            // Stop detached ExecutionContext copies from acquiring this slot, then keep the
-            // slot active until every inline child (including an ignored returned ValueTask)
-            // has completed.
             await executionScope.CloseAndWaitAsync().ConfigureAwait(false);
             _currentExecutionScope.Value = previousScope;
-            linked.Dispose();
-            // Release the active-execution slot only after full async completion.
-            Interlocked.Decrement(ref _activeExecutions);
         }
+        if (failure != null)
+            // Preserve an original OperationCanceledException too. Converting it into a
+            // generic TaskCanceledException changes the handler's cancellation/retry
+            // classification when the job token itself was never cancelled.
+            workItem.Completion?.CompleteFailure(failure);
+        else
+            workItem.Completion?.CompleteSuccess();
     }
 
-    /// <summary>
-    /// Posts a continuation work item to the scheduler.
-    /// Used by TickerQSynchronizationContext.
-    /// </summary>
-    internal void PostContinuation(SendOrPostCallback callback, object state)
-    {
-        if (_disposed || _stopToken.IsCancellationRequested)
-            return;
-
-        // Continuations get queued to the current worker's queue if possible
-        var queueIndex = _threadWorkerIndex >= 0 ? _threadWorkerIndex : GetNextQueueIndex();
-        var targetQueue = _workerQueues[queueIndex];
-
-        var workItem = new WorkItem(
-            ct =>
-            {
-                try
-                {
-                    callback(state);
-                }
-                catch
-                {
-                    // Swallow exceptions in continuations
-                }
-                return Task.CompletedTask;
-            },
-            CancellationToken.None);
-
-        // Publish atomically with disposal, counter before visibility (same as QueueAsync).
-        lock (_stateLock)
-        {
-            if (_disposed || _stopToken.IsCancellationRequested)
-                return;
-
-            Interlocked.Increment(ref _totalQueuedTasks);
-            targetQueue.Enqueue(workItem);
-        }
-
-        EnsureWorkerAvailable();
-    }
-
-    /// <summary>
-    /// Freezes the scheduler - prevents new tasks from being queued.
-    /// </summary>
+    /// <summary>Rejects new work and wakes pending capacity waiters. Accepted work drains.</summary>
     public void Freeze()
     {
         lock (_stateLock)
         {
+            if (!_isFrozen) _admissionGeneration++;
             _isFrozen = true;
+            SignalCapacityChanged();
         }
     }
 
-    /// <summary>
-    /// Resumes the scheduler - allows new tasks to be queued again.
-    /// </summary>
     public void Resume()
     {
         lock (_stateLock)
         {
-            _isFrozen = false;
+            if (!_disposed) _isFrozen = false;
         }
     }
 
-    /// <summary>
-    /// Gets whether the scheduler is currently frozen.
-    /// </summary>
     public bool IsFrozen => _isFrozen;
-
-    /// <summary>
-    /// Gets the current number of active worker threads.
-    /// </summary>
+    /// <summary>Live asynchronous queue consumers, not dedicated operating-system threads.</summary>
     public int ActiveWorkers => _activeWorkers;
-
-    /// <summary>
-    /// Gets the current number of in-flight async executions (work items that have been
-    /// dequeued and invoked but not yet fully completed). Distinct from the number of
-    /// worker threads.
-    /// </summary>
+    /// <summary>Dequeued work items whose complete asynchronous lifetime is still active.</summary>
     public int ActiveExecutionCount => _activeExecutions;
-
-    /// <summary>
-    /// Gets the current total number of queued tasks.
-    /// </summary>
+    public int ActiveOrchestrationCount => _activeOrchestrations;
+    public int WaitingForFunctionCount => Volatile.Read(ref _waitingForFunction);
+    public int RetryingCount => Volatile.Read(ref _retrying);
     public int TotalQueuedTasks => _totalQueuedTasks;
-
-    /// <summary>
-    /// Gets whether the scheduler has been disposed.
-    /// </summary>
     public bool IsDisposed => _disposed;
 
-    /// <summary>
-    /// Gets diagnostic information about the scheduler state.
-    /// </summary>
     public string GetDiagnostics()
     {
-        var text = $"=== TickerQ Work-Stealing Scheduler ===\n";
-        text += $"Status: {(_isFrozen ? "FROZEN" : (_disposed ? "DISPOSED" : "ACTIVE"))}\n";
-        text += $"Workers: {_activeWorkers}/{_maxConcurrency}\n";
-        text += $"Active Executions: {_activeExecutions}\n";
-        text += $"Total Queued (counter): {_totalQueuedTasks}\n\n";
-        text += "Queue Distribution:\n";
-
-        int totalInQueues = 0;
-        for (int i = 0; i < _maxConcurrency; i++)
-        {
-            var count = _workerQueues[i].Count;
-            totalInQueues += count;
-            if (count > 0)
-            {
-                text += $"  Queue[{i}]: {count} tasks\n";
-            }
-        }
-
-        if (totalInQueues == 0)
-        {
-            text += "  All queues empty\n";
-        }
-        else
-        {
-            text += $"  Total in queues: {totalInQueues}\n";
-        }
-
-        // The queued counter and a live queue snapshot are intentionally NOT atomic: an
-        // item is counted while it is dequeued-but-not-yet-transitioned to active, and a
-        // just-published item is counted an instant before it becomes visible. A transient
-        // difference here is expected and not a defect.
-        if (totalInQueues != _totalQueuedTasks)
-        {
-            text += $"\nNote: counter ({_totalQueuedTasks}) differs from live queue snapshot ({totalInQueues}); " +
-                    "expected transiently during the queued→active handoff.\n";
-        }
-
-        return text;
+        lock (_stateLock)
+            return $"=== TickerQ Async Scheduler ===\n" +
+                $"Status: {(_disposed ? "DISPOSED" : _isFrozen ? "FROZEN" : "ACTIVE")}\n" +
+                $"Workers: {_activeWorkers}/{_maxConcurrency} (asynchronous consumers)\n" +
+                $"Active Executions: {_activeExecutions}\n" +
+                $"Active Orchestrations: {_activeOrchestrations}/{_orchestrationCapacity}\n" +
+                $"Waiting For Function: {WaitingForFunctionCount}; Retrying: {RetryingCount}\n" +
+                $"Total Queued (counter): {_totalQueuedTasks}/{_queueCapacity}\n" +
+                $"Priority Queues: High={_queues[0].Count}, Normal={_queues[1].Count}, Low={_queues[2].Count}\n";
     }
 
-    /// <summary>
-    /// Waits until there is no queued and no in-flight work. Original timeout-only overload,
-    /// preserved for source/binary compatibility; forwards to the cancellation-aware overload.
-    /// </summary>
     public Task<bool> WaitForRunningTasksAsync(TimeSpan? timeout = null)
         => WaitForRunningTasksAsync(timeout, CancellationToken.None);
 
-    /// <summary>
-    /// Waits until there is no queued and no in-flight work. Completes true only when both
-    /// the queued counter and the active-execution counter reach zero — worker thread
-    /// liveness is deliberately ignored, since idle workers are not pending work.
-    ///
-    /// Returns false (without throwing) if the timeout elapses or the token is cancelled.
-    /// A pre-cancelled token returns false even when already idle, and the timeout is
-    /// strict: once the deadline passes, work finishing afterward cannot still yield true.
-    /// </summary>
     public async Task<bool> WaitForRunningTasksAsync(TimeSpan? timeout, CancellationToken cancellationToken)
     {
-        // Pre-cancelled cancellation returns false even if already idle.
-        if (cancellationToken.IsCancellationRequested)
-            return false;
-
-        // Already drained: return true immediately (even for a zero/elapsed timeout).
-        if (_totalQueuedTasks == 0 && _activeExecutions == 0)
-            return true;
-
-        // Not drained and no time to wait: strict false.
-        if (timeout.HasValue && timeout.Value <= TimeSpan.Zero)
-            return false;
-
-        var deadline = timeout.HasValue ? DateTime.UtcNow.Add(timeout.Value) : (DateTime?)null;
-
-        while (true)
+        if (cancellationToken.IsCancellationRequested) return false;
+        Task drained;
+        lock (_stateLock)
         {
-            try
-            {
-                await Task.Delay(DrainPollIntervalMs, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                return false;
-            }
-
-            if (cancellationToken.IsCancellationRequested)
-                return false;
-
-            // Strict timeout: after the delay, re-check the deadline BEFORE the counters so
-            // work that finishes after the deadline cannot still produce true.
-            if (deadline.HasValue && DateTime.UtcNow >= deadline.Value)
-                return false;
-
-            if (_totalQueuedTasks == 0 && _activeExecutions == 0)
-                return true;
+            if (_totalQueuedTasks == 0 && _activeExecutions == 0 && _activeOrchestrations == 0) return true;
+            drained = _drained.Task;
         }
+        if (timeout.HasValue && timeout.Value <= TimeSpan.Zero) return false;
+        var elapsed = Stopwatch.StartNew();
+        try
+        {
+            if (timeout.HasValue)
+                await drained.WaitAsync(timeout.Value, cancellationToken).ConfigureAwait(false);
+            else
+                await drained.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return !cancellationToken.IsCancellationRequested && (!timeout.HasValue || elapsed.Elapsed < timeout.Value);
+        }
+        catch (TimeoutException) { return false; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return false; }
     }
 
     public ValueTask DisposeAsync()
     {
-        TaskCompletionSource<bool> completion = null;
-        Task disposeTask;
+        TaskCompletionSource<bool> completion;
         lock (_stateLock)
         {
-            if (_disposeTask != null)
-                return new ValueTask(_disposeTask);
-
+            if (_disposeTask != null) return new ValueTask(_disposeTask);
             _disposed = true;
-            _isFrozen = true; // no new work may be published past this point
-            completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _isFrozen = true;
+            _admissionGeneration++;
+            SignalCapacityChanged();
+            completion = NewSignal();
             _disposeTask = completion.Task;
-            disposeTask = _disposeTask;
         }
-
-        // Start outside _stateLock: CancellationTokenSource.Cancel invokes callbacks
-        // synchronously, and user callbacks must never run while the lifecycle lock is held.
         _ = DisposeCoreAndCompleteAsync(completion);
-        return new ValueTask(disposeTask);
+        return new ValueTask(completion.Task);
     }
 
     private async Task DisposeCoreAndCompleteAsync(TaskCompletionSource<bool> completion)
     {
         try
         {
-            await DisposeCoreAsync().ConfigureAwait(false);
+            // Cancellation is observable immediately, but callbacks execute asynchronously.
+            // A user callback that blocks must not prevent draining the queue or starting
+            // the bounded shutdown wait. Shared resources stay alive until callbacks finish.
+            Task callbacks = Task.CompletedTask;
+            try { callbacks = _shutdownCts.CancelAsync(); }
+            catch (ObjectDisposedException) { }
+            finally
+            {
+                lock (_stateLock)
+                {
+                    foreach (var queue in _queues)
+                    {
+                        while (queue.Count > 0) queue.Dequeue().Completion?.CancelBeforeStart(_stopToken);
+                    }
+                    _totalQueuedTasks = 0;
+                    SignalCapacityChanged();
+                    SignalDrainedIfIdle();
+                }
+                Volatile.Write(ref _shutdownSignalled, 1);
+            }
+
+            _ = ObserveShutdownCallbacksAsync(callbacks);
+            CompleteStopIfIdle();
+            try { await _allStopped.Task.WaitAsync(_disposeDrainTimeout).ConfigureAwait(false); }
+            catch (TimeoutException) { /* Non-cooperative work releases its resources when its last worker exits. */ }
+            CompleteStopIfIdle();
             completion.TrySetResult(true);
         }
         catch (Exception ex)
         {
+            CompleteStopIfIdle();
             completion.TrySetException(ex);
         }
     }
 
-    private async Task DisposeCoreAsync()
+    bool ITickerQExecutionScheduler.TryQueueOrchestration(Func<CancellationToken, Task> work, CancellationToken admissionToken)
     {
-        // Signal cooperative shutdown. Safe: _shutdownCts is only disposed by
-        // ReleaseSharedResourcesOnce, which runs after _activeWorkers reaches 0, and no
-        // worker can reach 0 before observing this cancellation.
-        try
+        if (work == null) throw new ArgumentNullException(nameof(work));
+        lock (_stateLock)
         {
-            _shutdownCts.Cancel();
+            if (_disposed || _isFrozen || admissionToken.IsCancellationRequested || _activeOrchestrations >= _orchestrationCapacity)
+                return false;
+            if (_activeOrchestrations == 0 && _activeExecutions == 0 && _totalQueuedTasks == 0)
+                _drained = NewSignal();
+            _activeOrchestrations++;
         }
-        catch (ObjectDisposedException)
+        // Never inherit an executing parent's inline QueueAsync scope. The new root has
+        // its own accepted lifetime, even when admitted by a job at concurrency one.
+        Task task;
+        if (ExecutionContext.IsFlowSuppressed())
+            task = Task.Run(() => RunOrchestrationAsync(work));
+        else
         {
-            // Already released by the last worker out; nothing to signal.
+            using (ExecutionContext.SuppressFlow())
+                task = Task.Run(() => RunOrchestrationAsync(work));
         }
-
-        // Release the ownership of not-yet-started items exactly once so the queued counter
-        // can settle at zero. Items a worker already dequeued are released by that worker's
-        // queued->active transition; ConcurrentQueue hands each item to exactly one taker,
-        // so there is no double count.
-        DrainQueuedItems();
-
-        // Bounded wait for in-flight executions to finish. Cooperative work is cancelled
-        // above and should exit promptly.
-        var deadline = DateTime.UtcNow + _disposeDrainTimeout;
-        while (_activeWorkers > 0 && DateTime.UtcNow < deadline)
-        {
-            await Task.Delay(WorkerPollIntervalMs).ConfigureAwait(false);
-        }
-
-        // If every worker exited, release shared resources now. Otherwise a non-cooperative
-        // execution outlived the bounded wait; the LAST worker to exit releases them, so we
-        // must NOT dispose shared CTS/notification state here while a worker may still use it.
-        if (_activeWorkers == 0)
-            ReleaseSharedResourcesOnce();
+        ExecutionScope.Observe(task);
+        return true;
     }
 
-    private void DrainQueuedItems()
+    private async Task RunOrchestrationAsync(Func<CancellationToken, Task> work)
     {
-        for (int i = 0; i < _maxConcurrency; i++)
+        var scope = new ExecutionScope(this);
+        _currentOrchestrationScope.Value = scope;
+        try
         {
-            while (_workerQueues[i].TryDequeue(out _))
-            {
-                Interlocked.Decrement(ref _totalQueuedTasks);
-            }
+            // Always enter the accepted callback, even when already cancelled: acquired
+            // persistence generations need their execution/cleanup boundary to run.
+            // Admission cancellation belongs to the acquired-generation lifecycle until
+            // it begins; a scanner/request ending must not cancel a running job.
+            var task = work(_stopToken);
+            if (task != null) await task.ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (_stopToken.IsCancellationRequested) { }
+        finally
+        {
+            await scope.CloseAndWaitAsync().ConfigureAwait(false);
+            _currentOrchestrationScope.Value = null;
+            lock (_stateLock)
+            {
+                _activeOrchestrations--;
+                SignalDrainedIfIdle();
+            }
+            CompleteStopIfIdle();
+        }
+    }
+
+    async Task ITickerQExecutionScheduler.ExecuteAsync(Func<CancellationToken, Task> work,
+        TickerTaskPriority priority, CancellationToken token)
+    {
+        if (work == null) throw new ArgumentNullException(nameof(work));
+        ExecutionScope owner = null;
+        long generation;
+        lock (_stateLock)
+        {
+            if (_disposed) throw new TaskCanceledException("Scheduler is stopping.");
+            var scope = _currentOrchestrationScope.Value;
+            if (ReferenceEquals(scope?.Owner, this) && scope.TryAcquireNested()) owner = scope;
+            try { ThrowIfUnavailable(acceptedOrchestration: owner != null); }
+            catch { owner?.ReleaseNested(); throw; }
+            generation = _admissionGeneration;
+        }
+        try
+        {
+            var completion = new WorkItemCompletion();
+            using var userRegistration = token.Register(() => completion.CancelBeforeStart(token));
+            using var stopRegistration = _stopToken.Register(() => completion.CancelBeforeStart(_stopToken));
+            await QueueCoreAsync(work, priority, token, generation, owner != null, completion, ExecutionContext.Capture()).ConfigureAwait(false);
+            await completion.Task.ConfigureAwait(false);
+        }
+        finally { owner?.ReleaseNested(); }
+    }
+
+    IDisposable ITickerQExecutionScheduler.BeginFunctionWait() => new CounterScope(this, retry: false);
+    IDisposable ITickerQExecutionScheduler.BeginRetryDelay() => new CounterScope(this, retry: true);
+
+    private sealed class CounterScope : IDisposable
+    {
+        private TickerQTaskScheduler _owner;
+        private readonly bool _retry;
+        internal CounterScope(TickerQTaskScheduler owner, bool retry)
+        {
+            _owner = owner;
+            _retry = retry;
+            if (retry) Interlocked.Increment(ref owner._retrying);
+            else Interlocked.Increment(ref owner._waitingForFunction);
+        }
+        public void Dispose()
+        {
+            var owner = Interlocked.Exchange(ref _owner, null);
+            if (owner == null) return;
+            if (_retry) Interlocked.Decrement(ref owner._retrying);
+            else Interlocked.Decrement(ref owner._waitingForFunction);
+        }
+    }
+
+    private async Task ObserveShutdownCallbacksAsync(Task callbacks)
+    {
+        try { await callbacks.ConfigureAwait(false); }
+        catch (Exception ex) { Trace.TraceError("TickerQ cancellation callback failed during shutdown: {0}", ex); }
+        finally
+        {
+            Volatile.Write(ref _shutdownCallbacksFinished, 1);
+            CompleteStopIfIdle();
+        }
+    }
+
+    private void CompleteStopIfIdle()
+    {
+        if (!_disposed || Volatile.Read(ref _shutdownSignalled) == 0 ||
+            Volatile.Read(ref _shutdownCallbacksFinished) == 0 || _activeWorkers != 0 || _activeOrchestrations != 0)
+            return;
+        ReleaseSharedResourcesOnce();
+    }
+
+    private void NotifyWorkers(int count)
+    {
+        try { _notifyDebounce.NotifySafely(count); }
+        catch (Exception ex) { Trace.TraceError("TickerQ worker notification failed: {0}", ex); }
     }
 
     private void ReleaseSharedResourcesOnce()
     {
-        if (Interlocked.Exchange(ref _sharedReleased, 1) == 1)
-            return;
-
-        _notifyDebounce?.Dispose();
-        _shutdownCts?.Dispose();
+        if (Interlocked.Exchange(ref _sharedReleased, 1) != 0) return;
+        _notifyDebounce.Dispose();
+        _availableItems.Dispose();
+        _shutdownCts.Dispose();
+        _allStopped.TrySetResult(true);
     }
 }

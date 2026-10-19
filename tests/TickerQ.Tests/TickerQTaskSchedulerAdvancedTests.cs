@@ -16,17 +16,17 @@ public class TickerQTaskSchedulerAdvancedTests
     {
         // LongRunning work runs on a dedicated long-running thread, but it still consumes
         // the same global max-concurrency budget as Normal work (it does not bypass it).
-        var scheduler = new TickerQTaskScheduler(2);
-        var executed = new AsyncTestCountdown(1);
+        await using var scheduler = new TickerQTaskScheduler(2);
+        var executed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         await scheduler.QueueAsync(_ =>
         {
-            executed.Signal();
+            executed.TrySetResult(Thread.CurrentThread.IsThreadPoolThread);
             return Task.CompletedTask;
         }, TickerTaskPriority.LongRunning);
 
-        Assert.True(await executed.WaitAsync(TimeSpan.FromSeconds(3)), "LongRunning task should have executed");
-        await scheduler.DisposeAsync();
+        Assert.False(await executed.Task.WaitAsync(TimeSpan.FromSeconds(10)),
+            "The synchronous portion of LongRunning work must start outside the CLR thread pool.");
     }
 
     [Fact]
@@ -53,9 +53,9 @@ public class TickerQTaskSchedulerAdvancedTests
     public async Task WaitForRunningTasksAsync_Returns_True_After_All_Work_Completes()
     {
         // WaitForRunningTasksAsync completes on the queued + active-execution counters, not
-        // on worker-thread liveness, so it returns true once all work is done regardless of
+        // on consumer liveness, so it returns true once all work is done regardless of
         // whether idle workers are still alive. Disposal here just exercises the full path.
-        var scheduler = new TickerQTaskScheduler(2, idleWorkerTimeout: TimeSpan.FromMilliseconds(50));
+        var scheduler = new TickerQTaskScheduler(2);
         var executed = 0;
 
         for (int i = 0; i < 5; i++)
@@ -67,12 +67,8 @@ public class TickerQTaskSchedulerAdvancedTests
             }, TickerTaskPriority.Normal);
         }
 
-        // Wait for queued work to drain (check TotalQueuedTasks reaching <= 0)
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (scheduler.TotalQueuedTasks > 0 && DateTime.UtcNow < deadline)
-        {
-            await Task.Delay(10);
-        }
+        // An empty queue can still have its last attempt executing. Wait for both.
+        Assert.True(await scheduler.WaitForRunningTasksAsync(TimeSpan.FromSeconds(10)));
 
         Assert.Equal(0, scheduler.TotalQueuedTasks);   // exactly zero, not <= 0 (underflow guard)
         Assert.Equal(5, Volatile.Read(ref executed));
@@ -97,8 +93,7 @@ public class TickerQTaskSchedulerAdvancedTests
         var result = await scheduler.WaitForRunningTasksAsync(TimeSpan.FromMilliseconds(100));
 
         // The task is running (not queued), so the counter may have already been decremented.
-        // WaitForRunningTasksAsync checks _totalQueuedTasks and _activeWorkers.
-        // Workers are still alive, so it should return false due to _activeWorkers > 0.
+        // WaitForRunningTasksAsync must include the executing attempt after dequeue.
         Assert.False(result, "Should return false when timeout expires before work completes");
 
         blocker.Release();
@@ -141,17 +136,8 @@ public class TickerQTaskSchedulerAdvancedTests
         var scheduler = new TickerQTaskScheduler(1);
         await scheduler.DisposeAsync();
 
-        // After dispose, _isFrozen is true and _disposed is true.
-        // The GetDiagnostics checks _isFrozen first, so it will show FROZEN.
-        // Since the code checks: _isFrozen ? "FROZEN" : (_disposed ? "DISPOSED" : "ACTIVE")
-        // We verify the diagnostics reflect the disposed state via the FROZEN label
-        // (because DisposeAsync sets _isFrozen = true before _disposed matters for display).
         var diagnostics = scheduler.GetDiagnostics();
-
-        Assert.NotNull(diagnostics);
-        // DisposeAsync sets _isFrozen = true, so the ternary returns "FROZEN" not "DISPOSED".
-        // This is a known quirk of the implementation.
-        Assert.Contains("FROZEN", diagnostics);
+        Assert.Contains("DISPOSED", diagnostics);
         Assert.True(scheduler.IsDisposed);
     }
 
@@ -262,10 +248,9 @@ public class TickerQTaskSchedulerAdvancedTests
     }
 
     [Fact]
-    public async Task Worker_Threads_Info_Visible_In_Diagnostics()
+    public async Task Async_Consumer_Count_Remains_Visible_After_Drain()
     {
-        // Use a very short idle timeout so workers can exit quickly
-        var scheduler = new TickerQTaskScheduler(4, idleWorkerTimeout: TimeSpan.FromMilliseconds(200));
+        await using var scheduler = new TickerQTaskScheduler(4);
 
         // Queue a single task
         var done = new AsyncTestCountdown(1);
@@ -281,17 +266,14 @@ public class TickerQTaskSchedulerAdvancedTests
         var diagnostics = scheduler.GetDiagnostics();
         Assert.Contains("Workers:", diagnostics);
 
-        // The diagnostics should show the worker count in the format "Workers: X/4"
-        Assert.Contains("/4", diagnostics);
+        Assert.Contains("Workers: 4/4", diagnostics);
+        Assert.True(await scheduler.WaitForRunningTasksAsync(TimeSpan.FromSeconds(10)));
 
-        // Wait for idle workers to potentially exit
-        await Task.Delay(500);
-
+        // Draining work leaves idle consumers available for future submissions.
         var laterDiagnostics = scheduler.GetDiagnostics();
-        Assert.NotNull(laterDiagnostics);
-        Assert.Contains("Workers:", laterDiagnostics);
-
-        await scheduler.DisposeAsync();
+        Assert.Equal(4, scheduler.ActiveWorkers);
+        Assert.Equal(0, scheduler.ActiveExecutionCount);
+        Assert.Contains("Workers: 4/4", laterDiagnostics);
     }
 
     // =====================================================================
@@ -368,12 +350,12 @@ public class TickerQTaskSchedulerAdvancedTests
     }
 
     // Task 4: WaitForRunningTasksAsync must return true when all work is complete
-    // even though idle worker threads remain alive (worker liveness != pending work).
+    // even though idle async consumers remain alive (worker liveness != pending work).
     [Fact]
     public async Task WaitForRunningTasksAsync_True_When_Work_Done_Even_With_Idle_Workers_Alive()
     {
-        // Long idle timeout keeps worker threads alive after the queue drains.
-        var scheduler = new TickerQTaskScheduler(2, idleWorkerTimeout: TimeSpan.FromSeconds(30));
+        // Idle consumers remain available after the queue drains.
+        var scheduler = new TickerQTaskScheduler(2);
 
         var done = new AsyncTestCountdown(3);
         try
@@ -394,12 +376,12 @@ public class TickerQTaskSchedulerAdvancedTests
             while (scheduler.TotalQueuedTasks > 0 && DateTime.UtcNow < deadline)
                 await Task.Delay(10);
 
-            // Precondition: idle worker threads are still alive (scheduler not disposed).
+            // Precondition: idle consumers are still alive (scheduler not disposed).
             Assert.True(scheduler.ActiveWorkers > 0,
-                "Idle worker threads should still be alive for this scenario");
+                "Idle async consumers should still be alive for this scenario");
 
             // All queued/running work is complete, so this must return true even though
-            // idle worker threads remain — worker liveness is not completion state.
+            // idle consumers remain — worker liveness is not completion state.
             var result = await scheduler.WaitForRunningTasksAsync(TimeSpan.FromMilliseconds(500));
             Assert.True(result,
                 "WaitForRunningTasksAsync must return true when all work is complete, regardless of idle workers still being alive");
@@ -415,7 +397,7 @@ public class TickerQTaskSchedulerAdvancedTests
     [Fact]
     public async Task WaitForRunningTasksAsync_False_While_Incomplete_Then_True_After_Release_Without_Dispose()
     {
-        var scheduler = new TickerQTaskScheduler(2, idleWorkerTimeout: TimeSpan.FromSeconds(30));
+        var scheduler = new TickerQTaskScheduler(2);
 
         var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -459,11 +441,11 @@ public class TickerQTaskSchedulerAdvancedTests
     }
 
     // Task 5: Diagnostics must expose in-flight executions as a field DISTINCT from
-    // worker-thread count. The intended field is "Active Executions:".
+    // async-consumer count. The intended field is "Active Executions:".
     [Fact]
-    public async Task Diagnostics_Distinguish_Running_Executions_From_Worker_Threads()
+    public async Task Diagnostics_Distinguish_Running_Executions_From_Async_Consumers()
     {
-        var scheduler = new TickerQTaskScheduler(2, idleWorkerTimeout: TimeSpan.FromSeconds(30));
+        var scheduler = new TickerQTaskScheduler(2);
 
         var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -482,7 +464,7 @@ public class TickerQTaskSchedulerAdvancedTests
             var diagnostics = scheduler.GetDiagnostics();
 
             // Exactly one async execution is in flight (blocked on the gate). Diagnostics
-            // must surface it as its own field, separate from the worker-thread count.
+            // must surface it as its own field, separate from the async-consumer count.
             Assert.Contains("Active Executions:", diagnostics);
             Assert.Contains("Active Executions: 1", diagnostics);
         }

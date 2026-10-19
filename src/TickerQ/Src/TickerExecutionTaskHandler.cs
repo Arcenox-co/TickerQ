@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Exceptions;
+using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Base;
@@ -46,6 +47,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     private readonly ITickerQFailureNotifier _failureNotifier;
     private readonly TickerQLicenseStateProvider _licenseState;
     private readonly ITickerFunctionConcurrencyGate _concurrencyGate;
+    private readonly ITickerQExecutionScheduler _executionScheduler;
     private readonly Func<string, TickerFunctionDescriptor> _descriptorResolver;
 
     public TickerExecutionTaskHandler(IServiceProvider serviceProvider, ITickerClock clock, ITickerQInstrumentation tickerQInstrumentation, IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerQFailureNotifier failureNotifier, TickerQLicenseStateProvider licenseState, ITickerFunctionConcurrencyGate concurrencyGate)
@@ -77,6 +79,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         _failureNotifier = failureNotifier;
         _licenseState = licenseState ?? throw new ArgumentNullException(nameof(licenseState));
         _concurrencyGate = concurrencyGate ?? throw new ArgumentNullException(nameof(concurrencyGate));
+        _executionScheduler = serviceProvider.GetService<ITickerQTaskScheduler>() as ITickerQExecutionScheduler;
         _descriptorResolver = descriptorResolver ?? throw new ArgumentNullException(nameof(descriptorResolver));
     }
 
@@ -497,6 +500,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             jobActivity?.SetTag("tickerq.job.current_attempt", attempt + 1);
 
             CancellationTokenSource attemptCts = null;
+            CancellationToken executionAttemptToken = default;
             var acquiredSemaphore = false;
             try
             {
@@ -505,107 +509,126 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
                 if (semaphore != null)
                 {
-                    await semaphore.WaitAsync(cancellationTokenSource.Token).ConfigureAwait(false);
+                    // Avoid reporting an available function permit as a wait.
+                    if (!semaphore.Wait(0, cancellationTokenSource.Token))
+                    {
+                        using var waiting = _executionScheduler?.BeginFunctionWait();
+                        await semaphore.WaitAsync(cancellationTokenSource.Token).ConfigureAwait(false);
+                    }
                     acquiredSemaphore = true;
                 }
                 cancellationTokenSource.Token.ThrowIfCancellationRequested();
 
-                stopWatch.Restart();
-
-                // Discard any result an earlier failed attempt published so only the successful
-                // attempt's result can be committed — intermediate retry outputs never leak.
-                tickerFunctionContext.ResultSink.Reset();
-
-                if (context.CachedDelegate is null)
+                // Orchestration, retry delays, and function-gate waits do not own a host
+                // execution slot. Only an actual attempt enters the shared execution queue.
+                async Task InvokeAttemptAsync(CancellationToken executionToken)
                 {
-                    // Qualified function name (`name@nodeName`) with no
-                    // matching delegate almost always means the SDK that
-                    // owns it is currently offline — its functions get
-                    // unregistered from TickerFunctionProvider when the
-                    // worker stream drops. Surface as SdkOfflineSkipException
-                    // so the run lands as Skipped (with the SDK-offline
-                    // reason persisted) instead of burning user retries on
-                    // something that can't run until the node is back.
-                    if (!string.IsNullOrEmpty(context.FunctionName) && context.FunctionName.Contains('@'))
+                    executionAttemptToken = executionToken;
+                    executionToken.ThrowIfCancellationRequested();
+                    stopWatch.Restart();
+
+                    // Discard any result an earlier failed attempt published so only the successful
+                    // attempt's result can be committed — intermediate retry outputs never leak.
+                    tickerFunctionContext.ResultSink.Reset();
+
+                    if (context.CachedDelegate is null)
                     {
-                        var node = context.FunctionName[(context.FunctionName.IndexOf('@') + 1)..];
-                        throw new SdkOfflineSkipException(
-                            $"SDK node '{node}' is offline (function '{context.FunctionName}' is not currently registered).");
+                        // Qualified function name (`name@nodeName`) with no
+                        // matching delegate almost always means the SDK that
+                        // owns it is currently offline — its functions get
+                        // unregistered from TickerFunctionProvider when the
+                        // worker stream drops. Surface as SdkOfflineSkipException
+                        // so the run lands as Skipped (with the SDK-offline
+                        // reason persisted) instead of burning user retries on
+                        // something that can't run until the node is back.
+                        if (!string.IsNullOrEmpty(context.FunctionName) && context.FunctionName.Contains('@'))
+                        {
+                            var node = context.FunctionName[(context.FunctionName.IndexOf('@') + 1)..];
+                            throw new SdkOfflineSkipException(
+                                $"SDK node '{node}' is offline (function '{context.FunctionName}' is not currently registered).");
+                        }
+                        throw new InvalidOperationException(
+                            $"Ticker function '{context.FunctionName}' was not found in the registered functions. " +
+                            "Ensure the function is properly decorated with [TickerFunction] attribute and the containing class is registered.");
                     }
-                    throw new InvalidOperationException(
-                        $"Ticker function '{context.FunctionName}' was not found in the registered functions. " +
-                        "Ensure the function is properly decorated with [TickerFunction] attribute and the containing class is registered.");
+
+                    // Create service scope - will be disposed automatically via await using
+                    await using var scope = _serviceProvider.CreateAsyncScope();
+                    tickerFunctionContext.SetServiceScope(scope);
+
+                    // Per-attempt cancellation: linked to the job's CTS (user cancel /
+                    // shutdown) and additionally fired by the execution timeout.
+                    attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationTokenSource.Token, executionToken);
+                    if (effectiveTimeout is { } timeout)
+                        attemptCts.CancelAfter(timeout);
+
+                    // Ambient log scope: ILogger calls flowing on the function body's async
+                    // stack land in the in-memory log store the dashboard's log tail reads.
+                    using (TickerExecutionLogScope.Push(context.TickerId, context.FunctionName))
+                    {
+                        // Re-evaluate at the final invocation boundary. A run can wait behind retry delays,
+                        // concurrency, or graph orchestration after the entry gate; no local or remote
+                        // delegate may begin once the shared offline authority becomes blocking.
+                        EnsureLicensedForExecution();
+                        _lifecycle?.Started(context, attempt);
+                        var execTask = context.CachedDelegate(attemptCts.Token, scope.ServiceProvider, tickerFunctionContext);
+                        var timeoutPending = false;
+
+                        if (effectiveTimeout is { } t)
+                        {
+                            // Fire cooperative cancellation at timeout. If the delegate is still running
+                            // after grace, report the critical pending state but retain its registration,
+                            // renewable lease, and DI scope until the delegate actually exits.
+                            var grace = _schedulerOptions.TimeoutGracePeriod < TimeSpan.Zero
+                                ? TimeSpan.Zero
+                                : _schedulerOptions.TimeoutGracePeriod;
+                            var remainingTimerDelay = DefinedCronExecutionLimits.MaxTimerDelay - t;
+                            if (grace > remainingTimerDelay)
+                                grace = remainingTimerDelay;
+                            using var graceDelayCts = new CancellationTokenSource();
+                            var winner = await Task.WhenAny(execTask, Task.Delay(t + grace, graceDelayCts.Token));
+                            if (winner != execTask)
+                            {
+                                timeoutPending = true;
+                                _tickerQInstrumentation.LogJobTimeoutPending(
+                                    context.TickerId, context.FunctionName, t, grace);
+                                jobActivity?.SetTag("tickerq.job.timeout_pending", true);
+                            }
+                            else
+                            {
+                                graceDelayCts.Cancel();
+                            }
+                        }
+
+                        var timeoutElapsed = effectiveTimeout != null &&
+                                             attemptCts.IsCancellationRequested &&
+                                             !cancellationTokenSource.IsCancellationRequested &&
+                                             !executionToken.IsCancellationRequested;
+
+                        try
+                        {
+                            await execTask;
+                        }
+                        catch (Exception) when (timeoutPending || timeoutElapsed)
+                        {
+                            // The delegate has now exited. Its eventual exception is observed, but timeout
+                            // remains the authoritative terminal outcome and must not consume retry budget.
+                        }
+
+                        if (timeoutPending || timeoutElapsed)
+                        {
+                            throw new TickerExecutionTimeoutException(
+                                $"Exceeded execution timeout of {effectiveTimeout.Value.TotalSeconds:0.###}s; " +
+                                "the function has now exited after timeout cancellation.");
+                        }
+                    }
                 }
 
-                // Create service scope - will be disposed automatically via await using
-                await using var scope = _serviceProvider.CreateAsyncScope();
-                tickerFunctionContext.SetServiceScope(scope);
-
-                // Per-attempt cancellation: linked to the job's CTS (user cancel /
-                // shutdown) and additionally fired by the execution timeout.
-                attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationTokenSource.Token);
-                if (effectiveTimeout is { } timeout)
-                    attemptCts.CancelAfter(timeout);
-
-                // Ambient log scope: ILogger calls flowing on the function body's async
-                // stack land in the in-memory log store the dashboard's log tail reads.
-                using (TickerExecutionLogScope.Push(context.TickerId, context.FunctionName))
-                {
-                    // Re-evaluate at the final invocation boundary. A run can wait behind retry delays,
-                    // concurrency, or graph orchestration after the entry gate; no local or remote
-                    // delegate may begin once the shared offline authority becomes blocking.
-                    EnsureLicensedForExecution();
-                    _lifecycle?.Started(context, attempt);
-                    var execTask = context.CachedDelegate(attemptCts.Token, scope.ServiceProvider, tickerFunctionContext);
-                    var timeoutPending = false;
-
-                    if (effectiveTimeout is { } t)
-                    {
-                        // Fire cooperative cancellation at timeout. If the delegate is still running
-                        // after grace, report the critical pending state but retain its registration,
-                        // renewable lease, and DI scope until the delegate actually exits.
-                        var grace = _schedulerOptions.TimeoutGracePeriod < TimeSpan.Zero
-                            ? TimeSpan.Zero
-                            : _schedulerOptions.TimeoutGracePeriod;
-                        var remainingTimerDelay = DefinedCronExecutionLimits.MaxTimerDelay - t;
-                        if (grace > remainingTimerDelay)
-                            grace = remainingTimerDelay;
-                        using var graceDelayCts = new CancellationTokenSource();
-                        var winner = await Task.WhenAny(execTask, Task.Delay(t + grace, graceDelayCts.Token));
-                        if (winner != execTask)
-                        {
-                            timeoutPending = true;
-                            _tickerQInstrumentation.LogJobTimeoutPending(
-                                context.TickerId, context.FunctionName, t, grace);
-                            jobActivity?.SetTag("tickerq.job.timeout_pending", true);
-                        }
-                        else
-                        {
-                            graceDelayCts.Cancel();
-                        }
-                    }
-
-                    var timeoutElapsed = effectiveTimeout != null &&
-                                         attemptCts.IsCancellationRequested &&
-                                         !cancellationTokenSource.IsCancellationRequested;
-
-                    try
-                    {
-                        await execTask;
-                    }
-                    catch (Exception) when (timeoutPending || timeoutElapsed)
-                    {
-                        // The delegate has now exited. Its eventual exception is observed, but timeout
-                        // remains the authoritative terminal outcome and must not consume retry budget.
-                    }
-
-                    if (timeoutPending || timeoutElapsed)
-                    {
-                        throw new TickerExecutionTimeoutException(
-                            $"Exceeded execution timeout of {effectiveTimeout.Value.TotalSeconds:0.###}s; " +
-                            "the function has now exited after timeout cancellation.");
-                    }
-                }
+                if (mode == ExecutionMode.Scheduler && _executionScheduler != null)
+                    await _executionScheduler.ExecuteAsync(
+                        InvokeAttemptAsync, context.CachedPriority, cancellationTokenSource.Token).ConfigureAwait(false);
+                else
+                    await InvokeAttemptAsync(cancellationTokenSource.Token).ConfigureAwait(false);
 
                 success = true;
                 context.RetryCount = attempt;
@@ -617,8 +640,10 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     ex.Message, stopWatch, cancellationToken, mode);
                 return;
             }
-            catch (OperationCanceledException) when (attemptCts is { IsCancellationRequested: true } &&
-                                                     !cancellationTokenSource.IsCancellationRequested)
+            catch (OperationCanceledException) when (effectiveTimeout.HasValue &&
+                                                     attemptCts is { IsCancellationRequested: true } &&
+                                                     !cancellationTokenSource.IsCancellationRequested &&
+                                                     !executionAttemptToken.IsCancellationRequested)
             {
                 // Only the CancelAfter could have fired the attempt token without the
                 // parent — the function honored cancellation within the grace window.
@@ -628,7 +653,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 return;
             }
             catch (OperationCanceledException ex) when (
-                cancellationTokenSource.IsCancellationRequested || ex is TaskCanceledException)
+                cancellationTokenSource.IsCancellationRequested || executionAttemptToken.IsCancellationRequested || ex is TaskCanceledException)
             {
                 context.SetProperty(x => x.Status, TickerStatus.Cancelled)
                     .SetProperty(x => x.ExecutedAt, _clock.UtcNow)
@@ -966,6 +991,9 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         var executableRetryInterval = Math.Min(
             retryInterval, DefinedCronExecutionLimits.MaxRetryIntervalSeconds);
         _lifecycle?.RetryScheduled(context, attempt, executableRetryInterval);
+        using var retrying = mode == ExecutionMode.Scheduler && executableRetryInterval > 0
+            ? _executionScheduler?.BeginRetryDelay()
+            : null;
         await Task.Delay(TimeSpan.FromSeconds(executableRetryInterval), cancellationTokenSource.Token);
 
         return false;

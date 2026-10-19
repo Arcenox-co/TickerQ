@@ -1057,6 +1057,15 @@ namespace TickerQ.Utilities.Managers
             catch (Exception exception)
             {
                 _logger.LogError(exception, "Ticker mutation committed, but scheduler follow-up failed. The persisted job remains available for recovery.");
+                // A saturated in-process admission queue can decline an immediate dispatch.
+                // The mutation remains committed; wake normal acquisition to retry the job
+                // instead of waiting for an unrelated schedule or the fallback interval.
+                try { _tickerQHostScheduler.Restart(); }
+                catch (Exception wakeException)
+                {
+                    _logger.LogWarning(wakeException,
+                        "The scheduler could not be woken after a committed mutation; fallback recovery will retry it.");
+                }
             }
             return committed;
         }

@@ -312,11 +312,13 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         if (drainTimeout > TimeSpan.Zero &&
             (TickerCancellationTokenManager.ActiveCount > 0 ||
              _taskScheduler.TotalQueuedTasks > 0 ||
-             _taskScheduler.ActiveExecutionCount > 0))
+             _taskScheduler.ActiveExecutionCount > 0 ||
+             _taskScheduler.ActiveOrchestrationCount > 0))
         {
             _logger.LogInformation(
-                "Shutdown: draining {Active} in-flight and {Queued} queued ticker(s) (acquired window: {Acquired}) for up to {Timeout}s…",
+                "Shutdown: draining {Active} in-flight and {Queued} queued attempt(s), {Orchestrations} job orchestration(s) (acquired window: {Acquired}) for up to {Timeout}s…",
                 _taskScheduler.ActiveExecutionCount, _taskScheduler.TotalQueuedTasks,
+                _taskScheduler.ActiveOrchestrationCount,
                 TickerCancellationTokenManager.ActiveCount, drainTimeout.TotalSeconds);
 
             var deadline = DateTime.UtcNow + drainTimeout;
@@ -324,7 +326,8 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             {
                 if (TickerCancellationTokenManager.ActiveCount == 0 &&
                     _taskScheduler.TotalQueuedTasks == 0 &&
-                    _taskScheduler.ActiveExecutionCount == 0)
+                    _taskScheduler.ActiveExecutionCount == 0 &&
+                    _taskScheduler.ActiveOrchestrationCount == 0)
                     break;
 
                 try
@@ -341,10 +344,11 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
             var acquired = TickerCancellationTokenManager.ActiveCount;
             var queued = _taskScheduler.TotalQueuedTasks;
             var active = _taskScheduler.ActiveExecutionCount;
-            if (acquired > 0 || queued > 0 || active > 0)
+            var orchestrations = _taskScheduler.ActiveOrchestrationCount;
+            if (acquired > 0 || queued > 0 || active > 0 || orchestrations > 0)
                 _logger.LogWarning(
-                    "Shutdown: drain window elapsed with {Active} executing, {Queued} queued, and {Acquired} acquired/prequeue ticker(s) — they will be abandoned and healed by stale-job recovery",
-                    active, queued, acquired);
+                    "Shutdown: drain window elapsed with {Active} executing, {Queued} queued attempt(s), {Orchestrations} job orchestration(s), and {Acquired} acquired/prequeue ticker(s) — they will be abandoned and healed by stale-job recovery",
+                    active, queued, orchestrations, acquired);
             else
                 _logger.LogInformation("Shutdown: all in-flight tickers finished");
         }

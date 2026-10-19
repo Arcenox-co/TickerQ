@@ -51,7 +51,6 @@ export type NodeHealthStatus = "Healthy" | "Degraded" | "Down";
 export interface DashboardOptionsResponse {
   maxConcurrency: number;
   /** .NET TimeSpan string ("00:01:00"). */
-  idleWorkerTimeOut: string;
   /** The host machine identifier (e.g. NodeIdentifier). */
   currentMachine: string;
   lastHostExceptionMessage: string | null;
@@ -252,8 +251,14 @@ export interface ExecutionFlatDto {
 
 export interface HostStatusDto {
   isRunning: boolean;
+  /** Legacy field: logical async consumers, including idle consumers; not native threads. */
   activeThreads: number;
   maxConcurrency: number;
+  activeExecutions?: number;
+  queuedExecutions?: number;
+  activeWorkflows?: number;
+  waitingForFunction?: number;
+  retryingExecutions?: number;
 }
 
 export interface NextTickerDto {

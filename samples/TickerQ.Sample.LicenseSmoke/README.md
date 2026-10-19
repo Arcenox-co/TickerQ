@@ -51,7 +51,7 @@ and `--example readonly --port 5219`. Open `/tickerq/dashboard/about` on each po
 | Default attempt timeout | None | 2 minutes | 30 seconds |
 | Minimum scheduler wait | 1 second | 250 ms | 1 second |
 | Overdue-job check delay | 30 seconds | 15 seconds | 15 seconds |
-| Idle worker retirement | 1 minute | 30 seconds | 30 seconds |
+| Worker model | Async consumers | Async consumers | Async consumers |
 | Succeeded retention | Unconfigured | 30 days | 7 days |
 | Failed retention | Unconfigured | 90 days | 30 days |
 | Cancelled retention | Unconfigured | No automatic deletion | 7 days |

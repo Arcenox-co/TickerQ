@@ -6,8 +6,14 @@ namespace TickerQ.Utilities.DashboardDtos
     public class HostStatusDto
     {
         public bool IsRunning { get; set; }
+        /// <summary>Legacy wire name: counts logical async consumers, including idle consumers.</summary>
         public int ActiveThreads { get; set; }
         public int MaxConcurrency { get; set; }
+        public int ActiveExecutions { get; set; }
+        public int QueuedExecutions { get; set; }
+        public int ActiveWorkflows { get; set; }
+        public int WaitingForFunction { get; set; }
+        public int RetryingExecutions { get; set; }
     }
 
     public class NextTickerDto

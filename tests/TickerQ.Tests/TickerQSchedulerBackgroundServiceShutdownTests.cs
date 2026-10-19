@@ -266,6 +266,41 @@ public class TickerQSchedulerBackgroundServiceShutdownTests
     }
 
     [Fact]
+    public async Task StopAsync_Waits_For_Orchestration_Between_Function_Attempts()
+    {
+        await using var scheduler = new TickerQTaskScheduler(maxConcurrency: 1);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Assert.True(((ITickerQExecutionScheduler)scheduler).TryQueueOrchestration(async _ =>
+        {
+            started.TrySetResult();
+            await release.Task;
+        }));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        using var service = new TickerQSchedulerBackgroundService(
+            _executionContext, _taskHandler, scheduler, _internalManager,
+            new SchedulerOptionsBuilder { ShutdownDrainTimeout = TimeSpan.FromSeconds(10) },
+            LicenseTestState.Active());
+        var stopping = service.StopAsync(CancellationToken.None);
+        try
+        {
+            Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+            Assert.Equal(0, scheduler.ActiveExecutionCount);
+            Assert.Equal(0, scheduler.TotalQueuedTasks);
+            Assert.Equal(1, scheduler.ActiveOrchestrationCount);
+            Assert.False(stopping.IsCompleted,
+                "The drain must include orchestration even when no function attempt is running or queued.");
+        }
+        finally
+        {
+            release.TrySetResult();
+            await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        Assert.Equal(0, scheduler.ActiveOrchestrationCount);
+    }
+
+    [Fact]
     public async Task StopAsync_Waits_For_Acquired_Prequeue_Window_To_Close()
     {
         var options = new SchedulerOptionsBuilder

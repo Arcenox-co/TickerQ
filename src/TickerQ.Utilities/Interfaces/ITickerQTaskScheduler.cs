@@ -21,14 +21,24 @@ namespace TickerQ.Utilities.Interfaces
 
         bool IsFrozen { get; }
 
+        /// <summary>Live logical consumers, including idle consumers; not a native-thread count.</summary>
         int ActiveWorkers { get; }
 
         /// <summary>
-        /// Number of in-flight async executions, distinct from worker-thread count.
+        /// Number of executing attempts, including asynchronous work awaiting I/O.
         /// Default interface member so pre-existing third-party implementers keep compiling
         /// and running; the built-in scheduler overrides it with the real value.
         /// </summary>
         int ActiveExecutionCount => 0;
+
+        /// <summary>Accepted job workflows, including chains, function waits, and retries.</summary>
+        int ActiveOrchestrationCount => 0;
+
+        /// <summary>Job attempts waiting for their per-function concurrency permit.</summary>
+        int WaitingForFunctionCount => 0;
+
+        /// <summary>Jobs currently waiting between retry attempts.</summary>
+        int RetryingCount => 0;
 
         int TotalQueuedTasks { get; }
 
@@ -37,7 +47,8 @@ namespace TickerQ.Utilities.Interfaces
         string GetDiagnostics();
 
         /// <summary>
-        /// Waits until there is no queued and no in-flight work, bounded by <paramref name="timeout"/>.
+        /// Waits until queued work, executing attempts, and accepted workflows finish,
+        /// bounded by <paramref name="timeout"/>.
         /// Original overload, preserved for source/binary compatibility.
         /// </summary>
         Task<bool> WaitForRunningTasksAsync(TimeSpan? timeout = null);

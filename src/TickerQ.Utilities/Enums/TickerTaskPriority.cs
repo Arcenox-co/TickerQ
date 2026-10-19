@@ -3,23 +3,20 @@
     public enum TickerTaskPriority
     {
         /// <summary>
-        /// Long running tasks are executed in a separate thread.
-        /// Using Default TaskScheduler.
+        /// Uses the normal-priority queue and starts the delegate on a dedicated thread.
+        /// Async continuations may run on the CLR thread pool. Counts toward global concurrency.
         /// </summary>
         LongRunning,
         /// <summary>
-        /// High Priority Tasks are executed first.
-        /// Using TickerTaskScheduler
+        /// Receives four turns per weighted scheduling cycle while all priority queues have work.
         /// </summary>
         High,
         /// <summary>
-        /// Normal Priority Tasks are executed after high priority tasks.
-        /// Using TickerTaskScheduler
+        /// Receives two turns per weighted scheduling cycle while all priority queues have work.
         /// </summary>
         Normal,
         /// <summary>
-        /// Low Priority Tasks are executed last.
-        /// Using TickerTaskScheduler
+        /// Receives one turn per weighted scheduling cycle, preventing starvation by higher priorities.
         /// </summary>
         Low
     }

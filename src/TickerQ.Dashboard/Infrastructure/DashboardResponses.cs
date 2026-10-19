@@ -36,7 +36,6 @@ internal class AuthValidateResponse
 internal class DashboardOptionsResponse
 {
     public int MaxConcurrency { get; set; }
-    public TimeSpan IdleWorkerTimeOut { get; set; }
     public string CurrentMachine { get; set; }
     public string LastHostExceptionMessage { get; set; }
     public string SchedulerTimeZone { get; set; }

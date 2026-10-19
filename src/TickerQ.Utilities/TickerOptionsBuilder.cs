@@ -524,8 +524,8 @@ namespace TickerQ.Utilities
                 _reconciliationEpoch = value;
             }
         }
+        /// <summary>Maximum concurrent function attempts on this host, including individual chain steps.</summary>
         public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
-        public TimeSpan IdleWorkerTimeOut { get; set; } = TimeSpan.FromMinutes(1);
         public TimeSpan FallbackIntervalChecker { get; set; } = TimeSpan.FromSeconds(30);
         /// <summary>Maximum overdue roots of each ticker type acquired per built-in provider scan.</summary>
         public int FallbackBatchSize { get; set; } = 100;
@@ -643,7 +643,6 @@ namespace TickerQ.Utilities
             if (MaxConcurrency < 1) throw new ArgumentOutOfRangeException(nameof(MaxConcurrency), "At least one worker is required.");
             if (FallbackBatchSize < 1 || FallbackBatchSize > 10000)
                 throw new ArgumentOutOfRangeException(nameof(FallbackBatchSize), "Use a batch size between 1 and 10000.");
-            ValidateTimer(IdleWorkerTimeOut, nameof(IdleWorkerTimeOut));
             ValidateTimer(FallbackIntervalChecker, nameof(FallbackIntervalChecker));
             ValidateTimer(LeaseRenewalInterval, nameof(LeaseRenewalInterval));
             ValidateTimer(LeaseDuration, nameof(LeaseDuration));
