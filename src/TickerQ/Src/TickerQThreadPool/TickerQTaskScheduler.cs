@@ -116,6 +116,13 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
     {
     }
 
+    internal TickerQTaskScheduler(TickerQ.Utilities.SchedulerOptionsBuilder options,
+        SoftSchedulerNotifyDebounce notifyDebounce = null)
+        : this(options.MaxConcurrency, notifyDebounce, DefaultDisposeDrainTimeout,
+            options.MaxQueuedExecutions, options.MaxActiveWorkflows)
+    {
+    }
+
     /// <summary>Creates a scheduler with an explicit total waiting-queue capacity.</summary>
     internal TickerQTaskScheduler(int maxConcurrency, int queueCapacity,
         SoftSchedulerNotifyDebounce notifyDebounce = null)

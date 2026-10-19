@@ -1338,26 +1338,42 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
     public async Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!await IsActivationPublicationVisibleAsync(cancellationToken).ConfigureAwait(false)) return [];
         var now = Clock.UtcNow;
         var oneSecondAgoScore = ToScore(now.AddSeconds(-1));
 
         var first = await Db.SortedSetRangeByScoreWithScoresAsync(TimeTickerPendingKey, oneSecondAgoScore, double.PositiveInfinity, Exclude.None, Order.Ascending, 0, 1).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         if (first.Length == 0) return [];
 
         var earliestScore = first[0].Score;
         var minSecond = new DateTime((long)earliestScore, DateTimeKind.Utc);
         var maxScore = ToScore(minSecond.AddSeconds(1));
-
-        var entries = await Db.SortedSetRangeByScoreAsync(TimeTickerPendingKey, earliestScore, maxScore).ConfigureAwait(false);
-        var idsInWindow = ParseGuidSet(entries);
-
-        var tickers = await Serializer.LoadByIdsAsync<TTimeTicker>(idsInWindow, TimeTickerKey, cancellationToken).ConfigureAwait(false);
-
-        return tickers
-            .Where(t => CanAcquire(t.Status, t.LockHolder, LockHolder))
-            .Select(MapForQueue)
-            .ToArray();
+        var batchSize = _schedulerOptions.AcquisitionBatchSize;
+        var readSize = Math.Min(batchSize, RedisSerializer.ReadBatchSize);
+        var result = new List<TimeTickerEntity>(batchSize);
+        long offset = 0;
+        while (result.Count < batchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var entries = await Db.SortedSetRangeByScoreAsync(TimeTickerPendingKey, earliestScore, maxScore,
+                Exclude.Stop, Order.Ascending, offset, readSize).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (entries.Length == 0) break;
+            offset += entries.Length;
+            var tickers = await Serializer.LoadByIdsAsync<TTimeTicker>(ParseGuidSet(entries), TimeTickerKey,
+                cancellationToken).ConfigureAwait(false);
+            foreach (var ticker in tickers)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!CanAcquire(ticker.Status, ticker.LockHolder, LockHolder)) continue;
+                result.Add(MapForQueue(ticker));
+                if (result.Count == batchSize) break;
+            }
+            if (entries.Length < readSize) break;
+        }
+        return result.ToArray();
     }
 
     protected async Task<Guid?> FindTimeTickerAggregateIdAsync(Guid id, CancellationToken cancellationToken)
@@ -1591,12 +1607,15 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
     public async Task<TimeTickerEntity[]> AcquireImmediateTimeTickersAsync(Guid[] ids, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (ids == null || ids.Length == 0) return [];
 
         var acquired = new List<TimeTickerEntity>();
+        var acquiredIds = new HashSet<Guid>();
         foreach (var id in ids)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (acquiredIds.Contains(id)) continue;
 
             var ticker = await TryAcquireAsync<TTimeTicker>(
                 TimeTickerKey(id), TimeTickerResultKey(id),
@@ -1605,7 +1624,9 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             if (ticker == null) continue;
 
             await IndexManager.AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
+            acquiredIds.Add(id);
             acquired.Add(MapForQueue(ticker));
+            if (acquired.Count == _schedulerOptions.AcquisitionBatchSize) break;
         }
 
         return acquired.ToArray();

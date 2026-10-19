@@ -12,6 +12,26 @@ namespace TickerQ.Tests;
 public class TickerQTaskSchedulerAdvancedTests
 {
     [Fact]
+    public async Task SchedulerOptions_BoundWorkflowAdmissionIndependentlyOfWorkerCount()
+    {
+        await using var scheduler = new TickerQTaskScheduler(new TickerQ.Utilities.SchedulerOptionsBuilder
+        {
+            MaxConcurrency = 8, MaxQueuedExecutions = 2, MaxActiveWorkflows = 1
+        });
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var execution = (ITickerQExecutionScheduler)scheduler;
+        try
+        {
+            Assert.True(execution.TryQueueOrchestration(ct => release.Task.WaitAsync(ct)));
+            Assert.False(execution.TryQueueOrchestration(_ => Task.CompletedTask));
+            Assert.Equal(1, execution.ActiveOrchestrationCount);
+        }
+        finally { release.TrySetResult(); }
+        Assert.True(await scheduler.WaitForRunningTasksAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(execution.TryQueueOrchestration(_ => Task.CompletedTask));
+    }
+
+    [Fact]
     public async Task QueueAsync_LongRunning_Executes_On_Dedicated_Thread()
     {
         // LongRunning work runs on a dedicated long-running thread, but it still consumes

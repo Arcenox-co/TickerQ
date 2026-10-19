@@ -454,4 +454,20 @@ public class TickerOptionsBuilderTests
         var boolFlag = Assert.IsType<bool>(flag);
         Assert.False(boolFlag);
     }
+
+    [Theory]
+    [InlineData("AcquisitionBatchSize", 0)]
+    [InlineData("AcquisitionBatchSize", 10001)]
+    [InlineData("MaxQueuedExecutions", 0)]
+    [InlineData("MaxQueuedExecutions", 100001)]
+    [InlineData("MaxActiveWorkflows", 0)]
+    [InlineData("MaxActiveWorkflows", 10001)]
+    [InlineData("MaxConcurrentChainSteps", 0)]
+    [InlineData("MaxConcurrentChainSteps", 1001)]
+    public void MemoryCapacityOptions_RejectInvalidLimits(string property, int value)
+    {
+        var options = new SchedulerOptionsBuilder();
+        typeof(SchedulerOptionsBuilder).GetProperty(property)!.SetValue(options, value);
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.Validate());
+    }
 }

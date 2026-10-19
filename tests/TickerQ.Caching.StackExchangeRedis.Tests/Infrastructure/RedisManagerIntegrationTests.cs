@@ -164,6 +164,10 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
         _db.KeyDeleteAsync(Arg.Any<RedisKey>(), Arg.Any<CommandFlags>())
             .Returns(ci => _store.Remove((string)ci.ArgAt<RedisKey>(0)));
 
+        _db.SetScanAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<int>(),
+                Arg.Any<long>(), Arg.Any<int>(), Arg.Any<CommandFlags>())
+            .Returns(ci => ScanMembers(ci.ArgAt<RedisKey>(0)));
+
         // SetMembers
         _db.SetMembersAsync(Arg.Any<RedisKey>(), Arg.Any<CommandFlags>())
             .Returns(ci =>
@@ -718,4 +722,11 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
             Arg.Any<InternalFunctionContext[]>(),
             Arg.Any<CancellationToken>());
     }
+    private async IAsyncEnumerable<RedisValue> ScanMembers(RedisKey key)
+    {
+        if (_sets.TryGetValue((string)key, out var set))
+            foreach (var member in set) yield return member;
+        await Task.CompletedTask;
+    }
+
 }

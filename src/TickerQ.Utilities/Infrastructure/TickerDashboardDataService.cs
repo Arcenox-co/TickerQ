@@ -65,11 +65,9 @@ namespace TickerQ.Utilities.Infrastructure
             TimeTickerQueryFilter filter, CancellationToken cancellationToken = default)
         {
             filter ??= new TimeTickerQueryFilter();
-            // Pull Children along — MapTimeTicker reads ChildCount off the
-            // navigation, and the HasChildren filter below also needs it. Without
-            // this Include, every chain root would render as Standalone in the UI
-            // because Children stays null.
-            var query = _persistence.TimeTickersQuery().WithRelated(TickerRelation.Children);
+            // Native providers project scalars without loading navigation graphs.
+            // Legacy query providers retain their relationship-loading fallback.
+            var query = TimeMetadataQuery().WithRelated(TickerRelation.Children);
 
             if (!string.IsNullOrWhiteSpace(filter.FunctionName))
                 query = query.Where(x => x.Function.Contains(filter.FunctionName));
@@ -106,10 +104,10 @@ namespace TickerQ.Utilities.Infrastructure
             //   Standalone → roots that have no children
             if (filter.HasChildren.HasValue)
             {
-                if (filter.HasChildren.Value)
-                    query = query.Where(x => x.Children.Any());
-                else
-                    query = query.Where(x => !x.Children.Any());
+                query = await DashboardMetadataQueryable<TTimeTicker>.WhereHasChildrenAsync(query,
+                    filter.HasChildren.Value,
+                    filter.HasChildren.Value ? x => x.Children.Any() : x => !x.Children.Any(),
+                    cancellationToken).ConfigureAwait(false);
             }
 
             if (!string.IsNullOrWhiteSpace(filter.Search))
@@ -133,7 +131,9 @@ namespace TickerQ.Utilities.Infrastructure
         public async Task<TimeTickerFlatDto> GetTimeTickerByIdAsync(
             Guid id, CancellationToken cancellationToken = default)
         {
-            var entity = await _persistence.GetTimeTickerById(id, cancellationToken).ConfigureAwait(false);
+            var entity = DashboardTimeSource() is ITickerProjectionQueryable<TTimeTicker> { SupportsProjection: true }
+                ? await ChainMetadataQuery().Where(x => x.Id == id).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+                : await _persistence.GetTimeTickerById(id, cancellationToken).ConfigureAwait(false);
             if (entity == null) return null;
             var item = MapTimeTicker(entity);
             await PopulateTimeChainSummariesAsync(new[] { item }, cancellationToken).ConfigureAwait(false);
@@ -143,18 +143,20 @@ namespace TickerQ.Utilities.Infrastructure
         public async Task<IList<TimeTickerFlatDto>> GetTimeTickerChildrenAsync(
             Guid parentId, CancellationToken cancellationToken = default)
         {
-            var children = await _persistence.TimeTickersQuery()
+            var children = await ChainMetadataQuery()
                 .Where(x => x.ParentId == parentId)
                 .OrderBy(x => x.ExecutionTime)
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            return children.Select(MapTimeTicker).ToList();
+            var items = children.Select(MapTimeTicker).ToList();
+            await PopulateDirectChildCountsAsync(items, cancellationToken).ConfigureAwait(false);
+            return items;
         }
 
         public async Task<IList<TimeTickerFlatDto>> GetTimeTickerChainAsync(Guid rootId, CancellationToken cancellationToken = default)
         {
-            var root = await _persistence.TimeTickersQuery().AsNoTracking()
+            var root = await ChainMetadataQuery().AsNoTracking()
                 .Where(x => x.Id == rootId).FirstOrDefaultAsync(cancellationToken);
             if (root == null) return new List<TimeTickerFlatDto>();
             var all = new List<TimeTickerFlatDto> { MapTimeTicker(root) };
@@ -163,7 +165,7 @@ namespace TickerQ.Utilities.Infrastructure
             for (var depth = 0; frontier.Length > 0; depth++)
             {
                 // One bounded query per level, including one extra row to detect overflow.
-                var children = await _persistence.TimeTickersQuery().AsNoTracking()
+                var children = await ChainMetadataQuery().AsNoTracking()
                     .Where(x => x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
                     .OrderBy(x => x.Id).Take(501 - all.Count).ToArrayAsync(cancellationToken);
                 if (children.Length == 0) break;
@@ -184,7 +186,7 @@ namespace TickerQ.Utilities.Infrastructure
             CronTickerQueryFilter filter, CancellationToken cancellationToken = default)
         {
             filter ??= new CronTickerQueryFilter();
-            var query = _persistence.CronTickersQuery();
+            var query = CronMetadataQuery();
 
             if (!string.IsNullOrWhiteSpace(filter.FunctionName))
                 query = query.Where(x => x.Function.Contains(filter.FunctionName));
@@ -222,7 +224,7 @@ namespace TickerQ.Utilities.Infrastructure
         public async Task<CronTickerFlatDto> GetCronTickerByIdAsync(
             Guid id, CancellationToken cancellationToken = default)
         {
-            var entity = await _persistence.GetCronTickerById(id, cancellationToken).ConfigureAwait(false);
+            var entity = await ReadCronMetadataAsync(id, cancellationToken).ConfigureAwait(false);
             if (entity == null) return null;
             var item = await MapCronTickerWithLastRunAsync(entity, cancellationToken).ConfigureAwait(false);
             await PopulateCronChainSummariesAsync(new[] { item }, cancellationToken).ConfigureAwait(false);
@@ -235,7 +237,7 @@ namespace TickerQ.Utilities.Infrastructure
             Guid cronTickerId, CronOccurrenceQueryFilter filter, CancellationToken cancellationToken = default)
         {
             filter ??= new CronOccurrenceQueryFilter();
-            var query = _persistence.CronTickerOccurrencesQuery()
+            var query = OccurrenceMetadataQuery()
                 .Where(x => x.CronTickerId == cronTickerId);
 
             if (filter.Statuses is { Length: > 0 })
@@ -252,7 +254,7 @@ namespace TickerQ.Utilities.Infrastructure
             var result = await query.ToPaginatedAsync(filter.PageNumber, filter.PageSize, cancellationToken)
                 .ConfigureAwait(false);
 
-            var parentFunction = (await _persistence.GetCronTickerById(cronTickerId, cancellationToken).ConfigureAwait(false))?.Function;
+            var parentFunction = (await ReadCronMetadataAsync(cronTickerId, cancellationToken).ConfigureAwait(false))?.Function;
 
             var items = result.Items.Select(x => MapOccurrence(x, parentFunction)).ToArray();
             await PopulateOccurrenceChainsAsync(items, cancellationToken).ConfigureAwait(false);
@@ -262,14 +264,14 @@ namespace TickerQ.Utilities.Infrastructure
         public async Task<CronOccurrenceFlatDto> GetCronOccurrenceByIdAsync(
             Guid id, CancellationToken cancellationToken = default)
         {
-            var entity = await _persistence.CronTickerOccurrencesQuery()
+            var entity = await OccurrenceMetadataQuery()
                 .Where(x => x.Id == id)
                 .FirstOrDefaultAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             if (entity == null) return null;
 
-            var parent = await _persistence.GetCronTickerById(entity.CronTickerId, cancellationToken).ConfigureAwait(false);
+            var parent = await ReadCronMetadataAsync(entity.CronTickerId, cancellationToken).ConfigureAwait(false);
             var item = MapOccurrence(entity, parent?.Function);
             await PopulateOccurrenceChainsAsync(new[] { item }, cancellationToken).ConfigureAwait(false);
             return item;
@@ -308,10 +310,9 @@ namespace TickerQ.Utilities.Infrastructure
                 // Showing every child would 5x-pad a fan-out chain in the
                 // executions list and bury the rows the user actually scans.
                 //
-                // `WithRelated(Children)` is required for `MapTimeTickerToExecution`
-                // to read `e.Children?.Count`. Without it the navigation stays
-                // null and the chain badge never renders, even on real chain roots.
-                var timeQuery = _persistence.TimeTickersQuery()
+                // Legacy providers load relationships here. Native projections
+                // calculate child counts using the bounded chain-summary read below.
+                var timeQuery = TimeMetadataQuery()
                     .WithRelated(TickerRelation.Children)
                     .Where(x => x.ExecutedAt != null && x.ParentId == null);
                 timeQuery = ApplyExecutionTimeFilters(timeQuery, filter);
@@ -321,13 +322,13 @@ namespace TickerQ.Utilities.Infrastructure
 
             if (includeCron)
             {
-                var cronQuery = _persistence.CronTickerOccurrencesQuery()
+                var cronQuery = OccurrenceMetadataQuery()
                     .Where(x => x.ExecutedAt != null);
                 cronQuery = ApplyExecutionOccurrenceFilters(cronQuery, filter);
                 var cronItems = await cronQuery.ToArrayAsync(cancellationToken).ConfigureAwait(false);
                 foreach (var item in cronItems)
                 {
-                    var parent = await _persistence.GetCronTickerById(item.CronTickerId, cancellationToken).ConfigureAwait(false);
+                    var parent = await ReadCronMetadataAsync(item.CronTickerId, cancellationToken).ConfigureAwait(false);
                     all.Add(MapOccurrenceToExecution(item, parent?.Function, parent?.Retries ?? 0));
                 }
             }
@@ -370,8 +371,8 @@ namespace TickerQ.Utilities.Infrastructure
         public async Task<IList<(TickerStatus Status, int Count)>> GetOverallStatusesAsync(
             CancellationToken cancellationToken = default)
         {
-            var timeTickers = await _persistence.TimeTickersQuery().ToArrayAsync(cancellationToken).ConfigureAwait(false);
-            var occurrences = await _persistence.CronTickerOccurrencesQuery().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+            var timeTickers = await TimeMetadataQuery().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+            var occurrences = await OccurrenceMetadataQuery().ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
             var combined = timeTickers.Select(x => x.Status).Concat(occurrences.Select(x => x.Status));
 
@@ -401,14 +402,14 @@ namespace TickerQ.Utilities.Infrastructure
             // merge into a unified "next runs" list. Without the cron half the
             // overview's Next Scheduled card hid every recurring job that the
             // polling loop had already materialized as an Idle/Queued occurrence.
-            var upcomingTime = await _persistence.TimeTickersQuery()
+            var upcomingTime = await TimeMetadataQuery()
                 .Where(x => x.ExecutionTime > now &&
                            (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued))
                 .OrderBy(x => x.ExecutionTime)
                 .Take(count)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            var upcomingCron = await _persistence.CronTickerOccurrencesQuery()
+            var upcomingCron = await OccurrenceMetadataQuery()
                 .Where(x => x.ExecutionTime > now &&
                            (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued))
                 .OrderBy(x => x.ExecutionTime)
@@ -423,7 +424,7 @@ namespace TickerQ.Utilities.Infrastructure
                 // Resolve the parent cron's Function — occurrences carry the
                 // cron id but the function name lives on the parent row. Cache
                 // would be nice but `count` keeps this small and bounded.
-                var parent = await _persistence.GetCronTickerById(occ.CronTickerId, cancellationToken).ConfigureAwait(false);
+                var parent = await ReadCronMetadataAsync(occ.CronTickerId, cancellationToken).ConfigureAwait(false);
                 combined.Add(MapCronOccurrenceToTimeTickerDto(occ, parent));
             }
 
@@ -481,13 +482,13 @@ namespace TickerQ.Utilities.Infrastructure
         {
             if (count <= 0) count = 10;
 
-            var recentTime = await _persistence.TimeTickersQuery()
+            var recentTime = await TimeMetadataQuery()
                 .Where(x => x.ExecutedAt != null && x.ParentId == null)
                 .OrderByDescending(x => x.ExecutedAt)
                 .Take(count)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            var recentCron = await _persistence.CronTickerOccurrencesQuery()
+            var recentCron = await OccurrenceMetadataQuery()
                 .Where(x => x.ExecutedAt != null)
                 .OrderByDescending(x => x.ExecutedAt)
                 .Take(count)
@@ -498,7 +499,7 @@ namespace TickerQ.Utilities.Infrastructure
 
             foreach (var occ in recentCron)
             {
-                var parent = await _persistence.GetCronTickerById(occ.CronTickerId, cancellationToken).ConfigureAwait(false);
+                var parent = await ReadCronMetadataAsync(occ.CronTickerId, cancellationToken).ConfigureAwait(false);
                 combined.Add(MapOccurrenceToExecution(occ, parent?.Function, parent?.Retries ?? 0));
             }
 
@@ -555,14 +556,10 @@ namespace TickerQ.Utilities.Infrastructure
             if (TickerFunctionProvider.TickerFunctions.TryGetValue(c.Function, out var info))
                 priority = info.Priority;
 
-            var occurrences = await _persistence.CronTickerOccurrencesQuery()
-                .Where(x => x.CronTickerId == c.Id)
-                .ToArrayAsync(cancellationToken).ConfigureAwait(false);
-
-            var lastRun = occurrences
-                .Where(x => x.ExecutedAt != null)
-                .OrderByDescending(x => x.ExecutedAt)
-                .FirstOrDefault();
+            var occurrences = OccurrenceMetadataQuery().Where(x => x.CronTickerId == c.Id);
+            var occurrenceCount = await occurrences.CountAsync(cancellationToken).ConfigureAwait(false);
+            var lastRun = await occurrences.Where(x => x.ExecutedAt != null)
+                .OrderByDescending(x => x.ExecutedAt).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
 
             return new CronTickerFlatDto
             {
@@ -574,7 +571,7 @@ namespace TickerQ.Utilities.Infrastructure
                 Retries = c.Retries,
                 Priority = priority,
                 CreatedAt = c.CreatedAt,
-                OccurrenceCount = occurrences.Length,
+                OccurrenceCount = occurrenceCount,
                 LastRunStatus = lastRun?.Status,
                 LastRunChainRootId = lastRun?.ChainRootId,
                 LastRunAt = lastRun?.ExecutedAt,
@@ -826,14 +823,14 @@ namespace TickerQ.Utilities.Infrastructure
         {
             var now = DateTime.UtcNow;
 
-            var nextTime = await _persistence.TimeTickersQuery()
+            var nextTime = await TimeMetadataQuery()
                 .Where(x => x.ExecutionTime > now &&
                            (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued))
                 .OrderBy(x => x.ExecutionTime)
                 .Take(1)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            var nextOcc = await _persistence.CronTickerOccurrencesQuery()
+            var nextOcc = await OccurrenceMetadataQuery()
                 .Where(x => x.ExecutionTime > now &&
                            (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued))
                 .OrderBy(x => x.ExecutionTime)
@@ -856,7 +853,7 @@ namespace TickerQ.Utilities.Infrastructure
                 };
             }
 
-            var parent = co == null ? null : await _persistence.GetCronTickerById(co.CronTickerId, cancellationToken).ConfigureAwait(false);
+            var parent = co == null ? null : await ReadCronMetadataAsync(co.CronTickerId, cancellationToken).ConfigureAwait(false);
             return new NextTickerDto
             {
                 Id = co.Id,
@@ -880,7 +877,7 @@ namespace TickerQ.Utilities.Infrastructure
             // weeks ago but ran today shows up on today's bar — matching the
             // chart's "Executions" label. Falls back to ExecutionTime for
             // future/Idle/Queued rows that haven't run yet.
-            var tickers = await _persistence.TimeTickersQuery()
+            var tickers = await TimeMetadataQuery()
                 .Where(x => (x.ExecutedAt != null && x.ExecutedAt >= from && x.ExecutedAt < to)
                             || (x.ExecutionTime != null && x.ExecutionTime >= from && x.ExecutionTime < to))
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
@@ -900,7 +897,7 @@ namespace TickerQ.Utilities.Infrastructure
             var from = today.AddDays(-Math.Abs(pastDays));
             var to = today.AddDays(Math.Abs(futureDays)).AddDays(1);
 
-            var occs = await _persistence.CronTickerOccurrencesQuery()
+            var occs = await OccurrenceMetadataQuery()
                 .Where(x => x.ExecutionTime >= from && x.ExecutionTime < to)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
@@ -913,7 +910,7 @@ namespace TickerQ.Utilities.Infrastructure
             var from = today.AddDays(-Math.Abs(pastDays));
             var to = today.AddDays(Math.Abs(futureDays)).AddDays(1);
 
-            var occs = await _persistence.CronTickerOccurrencesQuery()
+            var occs = await OccurrenceMetadataQuery()
                 .Where(x => x.CronTickerId == cronTickerId && x.ExecutionTime >= from && x.ExecutionTime < to)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
@@ -922,7 +919,7 @@ namespace TickerQ.Utilities.Infrastructure
 
         public async Task<IList<GraphBucketDto>> GetCronOccurrencesGraphAsync(Guid cronTickerId, CancellationToken cancellationToken = default)
         {
-            var occs = await _persistence.CronTickerOccurrencesQuery()
+            var occs = await OccurrenceMetadataQuery()
                 .Where(x => x.CronTickerId == cronTickerId)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
@@ -975,7 +972,7 @@ namespace TickerQ.Utilities.Infrastructure
             }
             else if (type == TickerType.CronTickerOccurrence)
             {
-                var occurrence = await _persistence.CronTickerOccurrencesQuery()
+                var occurrence = await OccurrenceMetadataQuery()
                     .Where(x => x.Id == tickerId).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
                 if (occurrence?.Status != TickerStatus.InProgress) return false;
                 token = occurrence.AcquisitionToken;

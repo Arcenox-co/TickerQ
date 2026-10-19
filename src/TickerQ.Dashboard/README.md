@@ -273,3 +273,31 @@ truncation and storage availability can limit what the assistant sees. Request c
 are capped at 12,000 characters. Chat requests use the last 20 turns, with a 128 KB body
 limit and limits of 16,384 characters per message and 65,536 in total. AI proposals cap
 chains at 100 steps, ten levels, and five children per step.
+
+### Dashboard memory usage
+
+Built-in providers use dashboard metadata projections for lists, history, graphs and
+chain summaries. EF Core and MongoDB select fields before materializing rows, excluding
+request payloads and child navigation graphs. Chain summaries read flat descendants for
+the displayed roots, with the existing 500-node/20-level limit per chain. In-memory
+metadata reads retain scalar snapshots and child-existence markers. Ordinary entity
+queries and request/detail editing APIs retain their original payload behavior. Custom
+providers can opt into `ITickerProjectionQueryable<T>`; providers without that capability
+continue using the compatible entity-query path.
+
+Redis reads payloads in batches of at most 128 documents and keeps bounded sort candidates.
+Each scan retains unique IDs to avoid duplicate rows during Redis rehashing; that metadata
+still grows with the number of stored IDs. Deep sorted pages can require additional scans
+and do not provide a snapshot during concurrent writes. MongoDB's chain/standalone filter reads distinct
+parent IDs within the runtime partition without hydrating child documents. Dashboard
+execution-history merging and graph aggregation still scale with the number of matching
+metadata rows, so time filters and job retention remain useful for large histories.
+
+The browser remembers at most 2,048 recent row IDs for highlight animations, expires
+those IDs after the 30-second freshness window, and cleans its single animation timer
+on navigation. Assistant transcripts retain the latest 40 messages and 20 proposal cards,
+with a 65,536-character display limit per message. Proposal cards use stable identities
+so an asynchronous confirmation still updates the correct card after older items expire.
+Server-side conversation history remains stored on the server; reopening a conversation
+loads its recent message window. Browser fallback history retains the same 40-message
+limit and never persists proposal cards.

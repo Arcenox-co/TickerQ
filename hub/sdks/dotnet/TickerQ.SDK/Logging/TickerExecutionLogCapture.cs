@@ -52,20 +52,27 @@ internal sealed class TickerExecutionScope
 /// Singleton bounded channel that holds <see cref="LogLine"/> frames produced by
 /// <see cref="TickerExecutionLogger"/> until <see cref="WorkerStream.WorkerStreamHostedService"/>
 /// drains them onto the live worker stream. Bounded with DropOldest so a chatty
-/// function can never stall execution; on overflow we surface a synthetic "dropped N"
-/// notice once per drain cycle.
+/// function can never stall execution. Every overflow is counted and can be consumed
+/// by diagnostics through <see cref="TickerExecutionLogQueue.ConsumeDroppedCount"/>.
 /// </summary>
 internal sealed class TickerExecutionLogQueue
 {
     public const int Capacity = 2000;
+    public const int MaximumMessageCharacters = 4096;
+    public const int MaximumMetadataCharacters = 512;
 
-    private readonly Channel<LogLine> _channel = Channel.CreateBounded<LogLine>(
-        new BoundedChannelOptions(Capacity)
-        {
-            FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = true,
-            SingleWriter = false
-        });
+    private readonly Channel<LogLine> _channel;
+
+    public TickerExecutionLogQueue()
+    {
+        _channel = Channel.CreateBounded<LogLine>(
+            new BoundedChannelOptions(Capacity)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = false
+            }, _ => Interlocked.Increment(ref _dropped));
+    }
 
     private long _dropped;
 
@@ -73,21 +80,29 @@ internal sealed class TickerExecutionLogQueue
 
     public void TryEnqueue(LogLine line)
     {
-        // Bounded channel with DropOldest never refuses a write — the oldest frame
-        // is silently evicted instead. Track that as a drop so we can surface it.
-        if (!_channel.Writer.TryWrite(line))
+        // Clip before retention: a bounded line count alone permits arbitrarily
+        // large messages. Clone so callers cannot later mutate a queued protobuf.
+        var bounded = line.Clone();
+        bounded.TickerId = Clip(bounded.TickerId, MaximumMetadataCharacters);
+        bounded.Message = Clip(bounded.Message, MaximumMessageCharacters);
+        bounded.Category = Clip(bounded.Category, MaximumMetadataCharacters);
+        bounded.FunctionName = Clip(bounded.FunctionName, MaximumMetadataCharacters);
+        bounded.Source = Clip(bounded.Source, MaximumMetadataCharacters);
+        if (!_channel.Writer.TryWrite(bounded))
             Interlocked.Increment(ref _dropped);
     }
 
     /// <summary>Read-and-reset of the dropped counter for "[capture] dropped N lines" notices.</summary>
     public long ConsumeDroppedCount() => Interlocked.Exchange(ref _dropped, 0);
 
-    /// <summary>
-    /// Note an oldest-frame eviction. Bounded DropOldest channels do this silently —
-    /// we count drops by observing the writer's pre/post count instead. Hook left
-    /// here for explicit tracking; in practice the consume side does enough.
-    /// </summary>
-    public void NoteDropped() => Interlocked.Increment(ref _dropped);
+    private static string Clip(string text, int maximum)
+    {
+        if (text.Length <= maximum) return text;
+        var length = maximum - 1;
+        if (length > 0 && char.IsHighSurrogate(text[length - 1])) length--;
+        return text.Substring(0, length) + "…";
+    }
+
 }
 
 /// <summary>

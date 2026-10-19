@@ -51,4 +51,31 @@ public sealed class InMemoryDashboardChainRelationshipsTests
         Assert.Equal(1, Assert.Single(history.Items).ChildCount);
         Assert.Single((await provider.GetTimeTickerById(root.Id, default)).Children);
     }
+    [Fact]
+    public async Task Dashboard_metadata_omits_payloads_and_graphs_without_changing_normal_entity_queries()
+    {
+        var clock = Substitute.For<ITickerClock>(); clock.UtcNow.Returns(DateTime.UtcNow);
+        using var services = new ServiceCollection().AddSingleton(clock).AddSingleton(new SchedulerOptionsBuilder()).BuildServiceProvider();
+        TickerInMemoryPersistenceProvider<Job, Cron>.ResetAllStateForTests();
+        var provider = new TickerInMemoryPersistenceProvider<Job, Cron>(services);
+        var root = new Job { Function = "root", Request = new byte[1024 * 1024],
+            Children = [new Job { Function = "child", Request = new byte[1024 * 1024],
+                Children = [new Job { Function = "leaf", Request = new byte[1024 * 1024] }] }] };
+        await provider.AddTimeTickers([root]);
+        var rows = await ((ITickerDashboardQueryProvider<Job>)provider).TimeTickersDashboardQuery().ToArrayAsync();
+        Assert.Equal(3, rows.Length);
+        Assert.All(rows, row => Assert.Null(row.Request));
+        var marker = Assert.Single(rows.Single(x => x.Id == root.Id).Children);
+        Assert.Empty(marker.Children);
+        var normal = await provider.TimeTickersQuery().Where(x => x.Id == root.Id).FirstOrDefaultAsync();
+        Assert.Equal(1024 * 1024, normal.Request.Length);
+        Assert.Single(Assert.Single(normal.Children).Children);
+        var service = new TickerDashboardDataService<Job, Cron>(provider);
+        var dashboard = await service.GetTimeTickersFlatAsync(new TimeTickerQueryFilter { HasChildren = true });
+        Assert.Equal(3, Assert.Single(dashboard.Items).ChainSummary.TotalCount);
+        var child = Assert.Single(await service.GetTimeTickerChildrenAsync(root.Id));
+        Assert.Equal(1, child.ChildCount);
+        Assert.Equal(1, (await service.GetTimeTickerByIdAsync(child.Id)).ChildCount);
+    }
+
 }

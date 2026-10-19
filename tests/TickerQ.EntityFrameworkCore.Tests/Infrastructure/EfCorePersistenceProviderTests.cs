@@ -128,6 +128,48 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         await _connection.DisposeAsync();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Acquisition_batches_bound_roots_keep_complete_children_and_leave_remaining_work_eligible(bool overdue)
+    {
+        using var services = new ServiceCollection()
+            .AddSingleton<IDbContextFactory<TestTickerQDbContext>>(new PooledDbContextFactory<TestTickerQDbContext>(_options))
+            .BuildServiceProvider();
+        var options = new SchedulerOptionsBuilder { AcquisitionBatchSize = 2, FallbackBatchSize = 2 };
+        var bounded = new TestableProvider(services, _clock, options, _redisContext);
+        var roots = Enumerable.Range(0, 5).Select(i => new TimeTickerEntity
+        {
+            Function = "batch-root", ExecutionTime = _fixedNow.AddMilliseconds(overdue ? -5000 : 500),
+            Children = [new TimeTickerEntity { Function = "batch-child",
+                Children = [new TimeTickerEntity { Function = "batch-leaf" }] }]
+        }).ToArray();
+        await bounded.AddTimeTickers(roots, CancellationToken.None);
+        var seen = new HashSet<Guid>();
+        for (var batch = 0; batch < 3; batch++)
+        {
+            var rows = overdue
+                ? (await ToListAsync(bounded.QueueTimedOutTimeTickers(CancellationToken.None))).ToArray()
+                : await bounded.GetEarliestTimeTickers(CancellationToken.None);
+            Assert.Equal(batch < 2 ? 2 : 1, rows.Length);
+            Assert.All(rows, row =>
+            {
+                Assert.True(seen.Add(row.Id));
+                Assert.Single(Assert.Single(row.Children).Children);
+            });
+            if (!overdue)
+            {
+                var requested = new[] { Guid.NewGuid(), rows[0].Id, rows[0].Id }
+                    .Concat(rows.Skip(1).Select(x => x.Id)).Concat(roots.Select(x => x.Id)).ToArray();
+                Assert.Equal(rows.Length, (await bounded.AcquireImmediateTimeTickersAsync(requested)).Length);
+            }
+            using var verify = CreateVerifyContext();
+            Assert.Equal(5 - seen.Count, await verify.Set<TimeTickerEntity>()
+                .CountAsync(x => x.ParentId == null && x.Status == TickerStatus.Idle));
+        }
+        Assert.Equal(5, seen.Count);
+    }
+
     [Fact]
     public void SchedulerOptions_SameLogicalNode_UsesDistinctExecutionOwners()
     {

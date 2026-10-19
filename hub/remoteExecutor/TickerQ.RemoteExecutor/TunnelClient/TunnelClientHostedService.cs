@@ -34,12 +34,23 @@ public sealed class TunnelClientHostedService : BackgroundService
     // writes on the scheduler → hub stream so in-flight requests can't clobber each other.
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
-    // Active request stream writer when a tunnel session is open. The notification sender
-    // pulls this to push NotificationEvent frames; null when disconnected (events drop on the floor —
-    // the dashboard re-fetches on resume so eventual consistency is preserved).
+    // Active writer for existing integrations. Built-in notifications use the bounded
+    // connection-owned queue below; null indicates a disconnected tunnel.
     private volatile IClientStreamWriter<SchedulerEvent>? _activeWriter;
     public IClientStreamWriter<SchedulerEvent>? ActiveWriter => _activeWriter;
     public SemaphoreSlim WriteLock => _writeLock;
+    private volatile TunnelOutboundQueue? _outbound;
+    private long _droppedNotifications;
+    public long DroppedNotifications => Interlocked.Read(ref _droppedNotifications);
+    internal bool HasOutboundConnection => _outbound != null;
+    internal void RecordDroppedNotification() => Interlocked.Increment(ref _droppedNotifications);
+    internal bool TryEnqueueNotification(SchedulerEvent message)
+    {
+        var queue = _outbound;
+        if (queue != null) return queue.TryEnqueue(message);
+        RecordDroppedNotification();
+        return false;
+    }
 
     public TunnelClientHostedService(
         TunnelClientOptions options,
@@ -99,9 +110,10 @@ public sealed class TunnelClientHostedService : BackgroundService
             HttpHandler = BuildHubHandler()
         });
 
+        using var sessionStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        stoppingToken = sessionStop.Token;
         var client = new TunnelService.TunnelServiceClient(_hubChannel);
         using var call = client.Connect(cancellationToken: stoppingToken);
-        _activeWriter = call.RequestStream;
 
         await _writeLock.WaitAsync(stoppingToken).ConfigureAwait(false);
         try
@@ -130,12 +142,21 @@ public sealed class TunnelClientHostedService : BackgroundService
         // Publish current SDK snapshot now and on every change. The source of truth for
         // "live SDKs" is now WorkerStreamRegistry (one entry per open SDK worker stream).
         var workerRegistry = _serviceProvider.GetRequiredService<WorkerStreamRegistry>();
-        Action publishSdks = () => _ = PublishSdkReportAsync(call.RequestStream, workerRegistry, stoppingToken);
+        var outbound = new TunnelOutboundQueue(async (message, ct) =>
+        {
+            await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+            try { await call.RequestStream.WriteAsync(message, ct).ConfigureAwait(false); }
+            finally { _writeLock.Release(); }
+        }, RecordDroppedNotification, stoppingToken);
+        _outbound = outbound;
+        _activeWriter = call.RequestStream;
+        Action publishSdks = () => PublishSdkReport(outbound, workerRegistry);
         workerRegistry.Changed += publishSdks;
-        publishSdks();
+        var requests = new List<Task>();
         try
         {
 
+        publishSdks();
         while (await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false))
         {
             var cmd = call.ResponseStream.Current;
@@ -145,7 +166,16 @@ public sealed class TunnelClientHostedService : BackgroundService
                     _logger.LogInformation("Tunnel registered: env={EnvId}", cmd.RegisterAck.EnvironmentId);
                     break;
                 case HubCommand.PayloadOneofCase.Request:
-                    _ = Task.Run(() => HandleRequestAsync(call.RequestStream, cmd.Request, stoppingToken), stoppingToken);
+                    // Bound response producers too: a stalled tunnel must not retain
+                    // an unbounded number of replay tasks and response bodies.
+                    requests.RemoveAll(task => task.IsCompleted);
+                    if (requests.Count >= 16)
+                    {
+                        await Task.WhenAny(requests).ConfigureAwait(false);
+                        requests.RemoveAll(task => task.IsCompleted);
+                    }
+                    stoppingToken.ThrowIfCancellationRequested();
+                    requests.Add(HandleRequestAsync(call.RequestStream, cmd.Request, stoppingToken));
                     break;
                 case HubCommand.PayloadOneofCase.WebhookSignatureUpdated:
                     // Hub rotated the signature on the dashboard. Mutate the options
@@ -165,10 +195,14 @@ public sealed class TunnelClientHostedService : BackgroundService
         {
             workerRegistry.Changed -= publishSdks;
             _activeWriter = null;
+            _outbound = null;
+            await sessionStop.CancelAsync().ConfigureAwait(false);
+            await outbound.DisposeAsync().ConfigureAwait(false);
+            await Task.WhenAll(requests).ConfigureAwait(false);
         }
     }
 
-    private async Task PublishSdkReportAsync(IClientStreamWriter<SchedulerEvent> writer, WorkerStreamRegistry workerRegistry, CancellationToken ct)
+    private void PublishSdkReport(TunnelOutboundQueue outbound, WorkerStreamRegistry workerRegistry)
     {
         try
         {
@@ -195,15 +229,7 @@ public sealed class TunnelClientHostedService : BackgroundService
                 });
             }
 
-            await _writeLock.WaitAsync(ct).ConfigureAwait(false);
-            try
-            {
-                await writer.WriteAsync(new SchedulerEvent { Sdks = report }, ct).ConfigureAwait(false);
-            }
-            finally
-            {
-                _writeLock.Release();
-            }
+            outbound.TryEnqueue(new SchedulerEvent { Sdks = report });
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -251,18 +277,16 @@ public sealed class TunnelClientHostedService : BackgroundService
             response.StatusDetail = ex.Message;
         }
 
-        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await writer.WriteAsync(new SchedulerEvent { Response = response }, ct).ConfigureAwait(false);
+            await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+            try { await writer.WriteAsync(new SchedulerEvent { Response = response }, ct).ConfigureAwait(false); }
+            finally { _writeLock.Release(); }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to write tunnel response for {RequestId}", request.RequestId);
-        }
-        finally
-        {
-            _writeLock.Release();
         }
     }
 

@@ -1,8 +1,8 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
-using System.Linq;
 using System.Text;
 using TickerQ.Utilities.Models;
 
@@ -48,16 +48,7 @@ internal static class ExecutionLogCodec
             throw new InvalidDataException("Invalid log payload size.");
         using var input = new MemoryStream(record.Payload, writable: false);
         using var gzip = new GZipStream(input, CompressionMode.Decompress);
-        var bytes = new byte[MaximumPayloadBytes + 1];
-        var total = 0;
-        while (total < bytes.Length)
-        {
-            var read = gzip.Read(bytes, total, bytes.Length - total);
-            if (read == 0) break;
-            total += read;
-        }
-        if (total > MaximumPayloadBytes) throw new InvalidDataException("Log payload exceeds the decompression limit.");
-        using var stream = new MemoryStream(bytes, 0, total, writable: false);
+        using var stream = new LimitedReadStream(gzip, MaximumPayloadBytes);
         using var reader = new BinaryReader(stream, Encoding.UTF8);
         var version = reader.ReadInt32();
         if (version is not (1 or 2)) throw new InvalidDataException("Unsupported log payload version.");
@@ -84,7 +75,7 @@ internal static class ExecutionLogCodec
             }
             lines.Add(line);
         }
-        if (stream.Position != stream.Length) throw new InvalidDataException("Invalid log payload trailing bytes.");
+        if (stream.ReadByte() != -1) throw new InvalidDataException("Invalid log payload trailing bytes.");
         return lines;
     }
 
@@ -93,8 +84,55 @@ internal static class ExecutionLogCodec
     private static string ReadString(BinaryReader reader)
     {
         var length = reader.ReadInt32();
-        if (length < 0 || length > reader.BaseStream.Length - reader.BaseStream.Position)
+        var stream = (LimitedReadStream)reader.BaseStream;
+        if (length < 0 || length > stream.Remaining)
             throw new InvalidDataException("Invalid log text length.");
-        return Encoding.UTF8.GetString(reader.ReadBytes(length));
+        if (length == 0) return string.Empty;
+        var bytes = ArrayPool<byte>.Shared.Rent(length);
+        try
+        {
+            stream.ReadExactly(bytes.AsSpan(0, length));
+            return Encoding.UTF8.GetString(bytes, 0, length);
+        }
+        finally
+        {
+            // Logs may contain sensitive application data. Never leave it in a shared pool.
+            ArrayPool<byte>.Shared.Return(bytes, clearArray: true);
+        }
+    }
+
+    /// <summary>Enforces the archive's decompressed budget without allocating it up front.</summary>
+    private sealed class LimitedReadStream(Stream source, int limit) : Stream
+    {
+        private int _read;
+        public int Remaining => limit - _read;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _read; set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+        public override int Read(Span<byte> buffer)
+        {
+            if (buffer.IsEmpty) return 0;
+            if (Remaining == 0)
+            {
+                if (source.ReadByte() != -1)
+                    throw new InvalidDataException("Log payload exceeds the decompression limit.");
+                return 0;
+            }
+            var read = source.Read(buffer.Slice(0, Math.Min(buffer.Length, Remaining)));
+            _read += read;
+            return read;
+        }
+        public override int ReadByte()
+        {
+            Span<byte> value = stackalloc byte[1];
+            return Read(value) == 0 ? -1 : value[0];
+        }
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

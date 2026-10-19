@@ -175,12 +175,12 @@ namespace TickerQ.DependencyInjection
                 {
                     var notification = sp.GetRequiredService<ITickerQNotificationHubSender>();
                     var notifyDebounce = new SoftSchedulerNotifyDebounce((value) => notification.UpdateActiveThreads(value));
-                    return new TickerQTaskScheduler(schedulerOptionsBuilder.MaxConcurrency, notifyDebounce);
+                    return new TickerQTaskScheduler(schedulerOptionsBuilder, notifyDebounce);
                 });
             }
             else
             {
-                services.AddSingleton<ITickerQTaskScheduler>(_ => new TickerQTaskScheduler(schedulerOptionsBuilder.MaxConcurrency));
+                services.AddSingleton<ITickerQTaskScheduler>(_ => new TickerQTaskScheduler(schedulerOptionsBuilder));
                 // Register NoOp implementations when background services are disabled
                 services.AddSingleton<ITickerQHostScheduler, NoOpTickerQHostScheduler>();
                 services.AddSingleton<ITickerQDispatcher, NoOpTickerQDispatcher>();

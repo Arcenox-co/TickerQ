@@ -1,10 +1,7 @@
 using System;
-using System.Collections.Concurrent;
 using System.Text.Json;
-using System.Threading;
 using System.Threading.Tasks;
 using Google.Protobuf;
-using Grpc.Core;
 using Microsoft.Extensions.Logging;
 using TickerQ.RemoteExecutor.Logging;
 using TickerQ.RemoteExecutor.Tunnel;
@@ -38,17 +35,10 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
     private readonly ILogger<TunnelTickerQNotificationHubSender>? _logger;
     private long _sequence;
 
-    // Track which tickers have already emitted a terminal lifecycle log line.
-    // The internal manager fires UpdateTimeTickerFromInternalFunctionContext on
-    // multiple status transitions, sometimes more than once at completion — without
-    // dedup the panel renders a "Completed in Xms" line per call. We only want one
-    // per ticker run (across Done/DueDone/Failed/Cancelled).
-    private readonly ConcurrentDictionary<Guid, byte> _lifecycleEmitted = new();
+    private readonly TickerLifecycleCache _lifecycle = new();
+    private readonly object _pushGate = new();
 
-    // Last status seen per ticker — used to emit "Status: X → Y" transition lines.
-    // Without this we'd repeat the same line every time UpdateTimeTickerFromInternalFunctionContext
-    // fires with the same status (which it does for InProgress during execution).
-    private readonly ConcurrentDictionary<Guid, TickerStatus> _lastSeenStatus = new();
+    internal void SweepLifecycleState() => _lifecycle.Sweep();
 
     public TunnelTickerQNotificationHubSender(
         TunnelClientHostedService tunnel,
@@ -69,6 +59,7 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
     public Task PushTickerLogLineAsync(TickerLogLine line)
     {
         if (line == null) return Task.CompletedTask;
+        line = TickerLogRingBuffer.Normalize(line);
         _logBuffer.Append(line);
         return Push("time_ticker.log", "time-tickers", new
         {
@@ -146,7 +137,7 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
             status = (int)ctx.Status,
             elapsedMs = ctx.ElapsedTime,
             executedAt = ctx.ExecutedAt == default ? (DateTime?)null : ctx.ExecutedAt,
-            exceptionMessage = ctx.ExceptionDetails
+            exceptionMessage = Truncate(ctx.ExceptionDetails, TickerLogRingBuffer.MaximumMessageCharacters)
         };
         return Push("time_ticker.updated", "time-tickers", payload);
     }
@@ -199,27 +190,19 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
     ///
     /// Non-terminal transitions render as "Status: prev → next"; terminal transitions
     /// render as "Completed in Xms" / "Failed after Xms — …" / "Cancelled". Each
-    /// terminal status emits at most once per ticker — see <see cref="_lifecycleEmitted"/>.
+    /// terminal status emits at most once per ticker — see <see cref="_lifecycle"/>.
     /// </summary>
     public void EmitLifecycleLine(InternalFunctionContext ctx)
     {
         if (ctx.TickerId == Guid.Empty) return;
 
+        if (!_lifecycle.TryTransition(ctx, out var prev)) return;
         var status = ctx.Status;
-        var prev = _lastSeenStatus.TryGetValue(ctx.TickerId, out var p) ? (TickerStatus?)p : null;
-
-        // Skip if status didn't change — multiple SDK reports can carry the same status.
-        if (prev == status) return;
-        _lastSeenStatus[ctx.TickerId] = status;
-
         var isTerminal = status is TickerStatus.Done or TickerStatus.DueDone
             or TickerStatus.Failed or TickerStatus.Cancelled;
 
         if (isTerminal)
         {
-            // First-terminal-wins per ticker. Guards against retries that re-enter Done.
-            if (!_lifecycleEmitted.TryAdd(ctx.TickerId, 0)) return;
-
             var (level, msg) = status switch
             {
                 TickerStatus.Done or TickerStatus.DueDone =>
@@ -259,8 +242,7 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
         return serialized;
     }
 
-    private static string Truncate(string s, int max) =>
-        string.IsNullOrEmpty(s) || s.Length <= max ? s : s.Substring(0, max) + "…";
+    private static string Truncate(string? s, int max) => TickerLogRingBuffer.Clip(s, max);
 
     // ── Host / nodes ──
 
@@ -274,50 +256,43 @@ internal sealed class TunnelTickerQNotificationHubSender : ITickerQNotificationH
         => _ = Push("host.status", null, new { isRunning = active });
 
     public void UpdateHostException(string exceptionMessage)
-        => _ = Push("host.status", null, new { exceptionMessage });
+        => _ = Push("host.status", null, new { exceptionMessage = Truncate(exceptionMessage, TickerLogRingBuffer.MaximumMessageCharacters) });
 
     public Task UpdateNodeHeartBeatAsync(JsonElement nodeHeartBeat)
         => Push("node.heartbeat", null, nodeHeartBeat);
 
     // ── Internal pump ──
 
-    private async Task Push(string eventType, string? scope, object? payload)
+    private Task Push(string eventType, string? scope, object? payload)
     {
-        var writer = _tunnel.ActiveWriter;
-        if (writer == null)
+        // No producer task waits on the writer. One bounded, connection-owned pump
+        // serializes notifications; it drops excess frames and counts those drops.
+        lock (_pushGate)
         {
-            _logger?.LogInformation("[diag] Push DROPPED — no active writer ({EventType})", eventType);
-            return;
-        }
-        _logger?.LogInformation("[diag] Push {EventType} scope={Scope}", eventType, scope ?? "(none)");
-
-        try
-        {
-            var notification = new NotificationEvent
+            if (!_tunnel.HasOutboundConnection)
             {
-                EventType = eventType,
-                Scope = scope ?? string.Empty,
-                Sequence = Interlocked.Increment(ref _sequence),
-                EmittedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-            if (payload != null)
-                notification.PayloadJson = ByteString.CopyFrom(JsonSerializer.SerializeToUtf8Bytes(payload, Json));
-
-            await _tunnel.WriteLock.WaitAsync().ConfigureAwait(false);
+                _tunnel.RecordDroppedNotification();
+                return Task.CompletedTask;
+            }
             try
             {
-                await writer.WriteAsync(new SchedulerEvent { Notification = notification }).ConfigureAwait(false);
+                var notification = new NotificationEvent
+                {
+                    EventType = eventType,
+                    Scope = scope ?? string.Empty,
+                    Sequence = ++_sequence,
+                    EmittedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                };
+                if (payload != null)
+                    notification.PayloadJson = ByteString.CopyFrom(JsonSerializer.SerializeToUtf8Bytes(payload, Json));
+                _tunnel.TryEnqueueNotification(new SchedulerEvent { Notification = notification });
             }
-            finally
+            catch (Exception ex)
             {
-                _tunnel.WriteLock.Release();
+                _tunnel.RecordDroppedNotification();
+                _logger?.LogDebug(ex, "Failed to enqueue {EventType} notification through tunnel", eventType);
             }
         }
-        catch (RpcException) { /* tunnel torn down — drop */ }
-        catch (InvalidOperationException) { /* writer completed — drop */ }
-        catch (Exception ex)
-        {
-            _logger?.LogDebug(ex, "Failed to push {EventType} notification through tunnel", eventType);
-        }
+        return Task.CompletedTask;
     }
 }

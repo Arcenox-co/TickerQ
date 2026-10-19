@@ -10,16 +10,11 @@ import {
   getConversationMessages,
   listConversations,
   streamChat,
-  type AssistantProposal,
   type ChatTurn,
   type ConversationSummary,
 } from "@/services/assistant-api";
 
-// The transcript interleaves plain chat turns with proposal cards (mutations
-// the model drafted, awaiting the user's confirmation).
-type ChatItem =
-  | { type: "message"; role: "user" | "assistant"; content: string }
-  | { type: "proposal"; proposal: AssistantProposal; status: ProposalStatus };
+import { boundTranscript, chatMessage, MAX_CHAT_MESSAGES, MAX_CHAT_MESSAGE_CHARS, updateProposalStatus, type ChatItem } from "@/lib/assistant-transcript";
 
 const SUGGESTIONS = [
   "Why are my jobs failing?",
@@ -34,7 +29,7 @@ const SUGGESTIONS = [
 // (assistant.history), the server is the source of truth instead. Proposals
 // are ephemeral UI state and are not persisted in either mode.
 const STORAGE_KEY = "tickerq-assistant-chat";
-const MAX_STORED_MESSAGES = 40;
+const MAX_STORED_MESSAGES = MAX_CHAT_MESSAGES;
 
 function loadStoredItems(): ChatItem[] {
   try {
@@ -44,7 +39,8 @@ function loadStoredItems(): ChatItem[] {
     return Array.isArray(parsed)
       ? parsed
           .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-          .map((m) => ({ type: "message" as const, role: m.role, content: m.content }))
+          .slice(-MAX_STORED_MESSAGES)
+          .map((m) => chatMessage(m.role, m.content))
       : [];
   } catch {
     return [];
@@ -67,6 +63,7 @@ export default function AssistantChatPage() {
 
   const [input, setInput] = useState("");
   const [items, setItems] = useState<ChatItem[]>(() => (serverHistory ? [] : loadStoredItems()));
+  const [transcriptTrimmed, setTranscriptTrimmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -114,6 +111,7 @@ export default function AssistantChatPage() {
   function startNewChat() {
     abortRef.current?.abort();
     setItems([]);
+    setTranscriptTrimmed(false);
     setActiveId(null);
     if (!serverHistory) {
       try {
@@ -130,9 +128,11 @@ export default function AssistantChatPage() {
     setActiveId(id);
     try {
       const history = await getConversationMessages(id);
-      setItems(history.map((m) => ({ type: "message" as const, role: m.role, content: m.content })));
+      setItems(boundTranscript(history.slice(-MAX_CHAT_MESSAGES).map((m) => chatMessage(m.role, m.content))));
+      setTranscriptTrimmed(history.length > MAX_CHAT_MESSAGES);
     } catch {
       setItems([]);
+      setTranscriptTrimmed(false);
     } finally {
       setLoadingThread(false);
     }
@@ -155,26 +155,26 @@ export default function AssistantChatPage() {
     }
   }
 
-  function setProposalStatus(index: number, status: ProposalStatus) {
-    setItems((prev) =>
-      prev.map((item, i) => (i === index && item.type === "proposal" ? { ...item, status } : item))
-    );
+  function setProposalStatus(id: string, status: ProposalStatus) {
+    setItems((prev) => updateProposalStatus(prev, id, status));
   }
 
   async function send(text: string) {
-    const question = text.trim();
+    const question = text.trim().slice(0, MAX_CHAT_MESSAGE_CHARS);
     if (!question || busy) return;
+    if (items.filter((item) => item.type === "message").length + 2 > MAX_CHAT_MESSAGES)
+      setTranscriptTrimmed(true);
 
     const turns: ChatTurn[] = [
       ...items.filter((i): i is Extract<ChatItem, { type: "message" }> => i.type === "message"),
       { type: "message" as const, role: "user" as const, content: question },
     ].map((m) => ({ role: m.role, content: m.content }));
 
-    setItems((prev) => [
+    setItems((prev) => boundTranscript([
       ...prev,
-      { type: "message", role: "user", content: question },
-      { type: "message", role: "assistant", content: "" },
-    ]);
+      chatMessage("user", question),
+      chatMessage("assistant", ""),
+    ]));
     setInput("");
     setBusy(true);
 
@@ -189,7 +189,7 @@ export default function AssistantChatPage() {
             const next = [...prev];
             const last = next[next.length - 1];
             if (last?.type === "message" && last.role === "assistant") {
-              next[next.length - 1] = { ...last, content: last.content + delta };
+              next[next.length - 1] = { ...last, content: (last.content + delta).slice(0, MAX_CHAT_MESSAGE_CHARS) };
             }
             return next;
           }),
@@ -201,8 +201,8 @@ export default function AssistantChatPage() {
           onProposal: (proposal) =>
             setItems((prev) => {
               const next = [...prev];
-              next.splice(next.length - 1, 0, { type: "proposal", proposal, status: "pending" });
-              return next;
+              next.splice(next.length - 1, 0, { id: crypto.randomUUID(), type: "proposal", proposal, status: "pending" });
+              return boundTranscript(next);
             }),
           signal: ac.signal,
         }
@@ -217,7 +217,7 @@ export default function AssistantChatPage() {
         const next = [...prev];
         const last = next[next.length - 1];
         if (last?.type === "message" && last.role === "assistant") {
-          next[next.length - 1] = { ...last, content: `${last.content}${last.content ? "\n\n" : ""}⚠️ ${msg}` };
+          next[next.length - 1] = { ...last, content: `${last.content}${last.content ? "\n\n" : ""}⚠️ ${msg}`.slice(0, MAX_CHAT_MESSAGE_CHARS) };
         }
         return next;
       });
@@ -347,6 +347,13 @@ export default function AssistantChatPage() {
             </div>
           )}
 
+          {!loadingThread && transcriptTrimmed && (
+            <p className="text-center text-[11px] text-muted-foreground">
+              Showing the latest {MAX_CHAT_MESSAGES} messages.
+              {serverHistory ? " Earlier messages remain in saved conversation history." : ""}
+            </p>
+          )}
+
           {!loadingThread && items.length === 0 && (
             <div className="mt-16 flex flex-col items-center gap-4 text-center">
               <Sparkles className="h-7 w-7 text-primary/50" />
@@ -375,15 +382,15 @@ export default function AssistantChatPage() {
           {!loadingThread &&
             items.map((item, i) =>
               item.type === "proposal" ? (
-                <div key={i} className="flex justify-start">
+                <div key={item.id} className="flex justify-start">
                   <ProposalCard
                     proposal={item.proposal}
                     status={item.status}
-                    onStatusChange={(status) => setProposalStatus(i, status)}
+                    onStatusChange={(status) => setProposalStatus(item.id, status)}
                   />
                 </div>
               ) : (
-                <div key={i} className={cn("flex", item.role === "user" ? "justify-end" : "justify-start")}>
+                <div key={item.id} className={cn("flex", item.role === "user" ? "justify-end" : "justify-start")}>
                   <div
                     className={cn(
                       "max-w-[80%] rounded-2xl px-4 py-2.5 text-[13px] leading-relaxed",

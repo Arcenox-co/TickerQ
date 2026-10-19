@@ -499,25 +499,16 @@ internal sealed class WorkerStreamHostedService : BackgroundService
                 function.CachedMaxConcurrency = item.MaxConcurrency;
             }
 
-            // Concurrency gate is honored manually here since we no longer pass
-            // through the local TickerQTaskScheduler (its LongRunning path is
-            // fire-and-forget which would mask the real completion time, the
-            // exact bug we hit when the dashboard saw Done immediately).
+            // Worker-mode execution bypasses the local scheduler's admission path.
+            // Own the function permit here through the complete remote invocation.
             var concurrencyGate = scope.ServiceProvider.GetService<ITickerFunctionConcurrencyGate>();
-            var semaphore = concurrencyGate?.GetSemaphoreOrNull(function.FunctionName, function.CachedMaxConcurrency);
-            if (semaphore != null) await semaphore.WaitAsync(executionCts.Token).ConfigureAwait(false);
-            try
-            {
-                using var _ = TickerExecutionScope.Push(tickerId, (TickerType)req.Type, bareFunctionName);
-                var outcome = await taskHandler.ExecuteWorkerTaskAsync(
-                    function, req.IsDue, executionCts.Token).ConfigureAwait(false);
-                result = WorkerResultEnvelopeMapper.CreateExecutionResult(
-                    req.RequestId, outcome, executionCts.IsCancellationRequested);
-            }
-            finally
-            {
-                semaphore?.Release();
-            }
+            using var functionPermit = concurrencyGate == null ? null : await concurrencyGate
+                .AcquireAsync(function.FunctionName, function.CachedMaxConcurrency, executionCts.Token).ConfigureAwait(false);
+            using var _ = TickerExecutionScope.Push(tickerId, (TickerType)req.Type, bareFunctionName);
+            var outcome = await taskHandler.ExecuteWorkerTaskAsync(
+                function, req.IsDue, executionCts.Token).ConfigureAwait(false);
+            result = WorkerResultEnvelopeMapper.CreateExecutionResult(
+                req.RequestId, outcome, executionCts.IsCancellationRequested);
         }
         catch (OperationCanceledException) when (executionCts.IsCancellationRequested)
         {

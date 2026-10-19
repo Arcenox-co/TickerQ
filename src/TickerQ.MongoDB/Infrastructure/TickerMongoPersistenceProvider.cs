@@ -2073,7 +2073,8 @@ namespace TickerQ.MongoDB.Infrastructure
 
             var rows = await coll
                 .Find(windowFilter)
-                .Sort(Builders<TTimeTicker>.Sort.Ascending(x => x.ExecutionTime))
+                .Sort(Builders<TTimeTicker>.Sort.Ascending(x => x.ExecutionTime).Ascending(x => x.Id))
+                .Limit(_schedulerOptions.AcquisitionBatchSize)
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -2234,10 +2235,13 @@ namespace TickerQ.MongoDB.Infrastructure
                 .Set(x => x.Status, TickerStatus.InProgress)
                 .Set(x => x.UpdatedAt, now)
                 .Unset("LastNodeFinalizationIntent");
-            var rows = new List<TTimeTicker>(ids.Length);
+            var rows = new List<TTimeTicker>(Math.Min(ids.Length, _schedulerOptions.AcquisitionBatchSize));
+            var acquiredIds = new HashSet<Guid>();
 
-            foreach (var id in ids.Distinct())
+            foreach (var id in ids)
             {
+                if (rows.Count == _schedulerOptions.AcquisitionBatchSize) break;
+                if (acquiredIds.Contains(id)) continue;
                 using var session = await _context.Database.Client
                     .StartSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 try
@@ -2258,7 +2262,11 @@ namespace TickerQ.MongoDB.Infrastructure
                             await NormalizeChainDescendantsAsync(s, id, acquisitionToken, ct).ConfigureAwait(false);
                         return row;
                     }, GraphTransactionOptions, cancellationToken).ConfigureAwait(false);
-                    if (acquired != null) rows.Add(acquired);
+                    if (acquired != null)
+                    {
+                        rows.Add(acquired);
+                        acquiredIds.Add(id);
+                    }
                 }
                 catch (MongoCommandException ex) when (IsCanonicalTransactionsUnsupported(ex))
                 {
@@ -4747,7 +4755,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 {
                     if (relations.Any(r => r == TickerRelation.Children || r == TickerRelation.ChildrenDeep))
                         entity.Children = await LoadChildrenRecursive<TTimeTicker>(entity.Id, ct).ConfigureAwait(false);
-                });
+                }, BuildDashboardChildPredicateAsync);
 
         public ITickerQueryable<TCronTicker> CronTickersQuery()
             => new MongoTickerQueryable<TCronTicker>(

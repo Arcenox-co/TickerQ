@@ -773,6 +773,9 @@ namespace TickerQ.Utilities.Managers
                         }
                     }
 
+                    if (immediateTickers.Count > 0)
+                        _tickerQHostScheduler.RestartIfNeeded(_clock.UtcNow);
+
                     if (earliestForNonImmediate != default)
                     {
                         _tickerQHostScheduler.RestartIfNeeded(earliestForNonImmediate);

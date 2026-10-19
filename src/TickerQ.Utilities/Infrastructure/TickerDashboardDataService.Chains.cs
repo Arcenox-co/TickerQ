@@ -29,7 +29,7 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
         var rootIds = ids.Distinct().ToArray();
         var snapshots = new Dictionary<Guid, ChainSnapshot>();
         if (rootIds.Length == 0) return snapshots;
-        var roots = await _persistence.TimeTickersQuery().AsNoTracking()
+        var roots = await ChainMetadataQuery().AsNoTracking()
             .Where(x => rootIds.Contains(x.Id) && x.ParentId == null)
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
         var owners = new Dictionary<Guid, ChainSnapshot>();
@@ -46,7 +46,7 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
         {
             var parentIds = frontier.Select(x => x.Id).ToArray();
             var limit = snapshots.Count * 500 + 1;
-            var stored = await _persistence.TimeTickersQuery().AsNoTracking()
+            var stored = await ChainMetadataQuery().AsNoTracking()
                 .Where(x => x.ParentId.HasValue && parentIds.Contains(x.ParentId.Value))
                 .OrderBy(x => x.Id).Take(limit).ToArrayAsync(cancellationToken).ConfigureAwait(false);
             if (stored.Length == limit)
@@ -77,7 +77,9 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
 
     private async Task PopulateTimeChainSummariesAsync(IEnumerable<TimeTickerFlatDto> rows, CancellationToken ct)
     {
-        var items = rows.Where(x => x.Type == ExecutionType.TimeTicker && x.ParentId == null).ToArray();
+        var all = rows.ToArray();
+        await PopulateDirectChildCountsAsync(all.Where(x => x.ParentId.HasValue), ct).ConfigureAwait(false);
+        var items = all.Where(x => x.Type == ExecutionType.TimeTicker && x.ParentId == null).ToArray();
         var snapshots = await ReadChainSnapshotsAsync(items.Select(x => x.Id), ct).ConfigureAwait(false);
         foreach (var item in items)
             if (snapshots.TryGetValue(item.Id, out var chain))
@@ -85,6 +87,18 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
                 item.ChildCount = chain.ChildCount;
                 if (chain.Jobs.Count > 1 || !chain.Complete) item.ChainSummary = chain.Summary;
             }
+    }
+
+    private async Task PopulateDirectChildCountsAsync(IEnumerable<TimeTickerFlatDto> rows, CancellationToken ct)
+    {
+        var items = rows.ToArray();
+        if (items.Length == 0) return;
+        var ids = items.Select(x => x.Id).ToArray();
+        var children = await ChainMetadataQuery()
+            .Where(x => x.ParentId.HasValue && ids.Contains(x.ParentId.Value))
+            .ToArrayAsync(ct).ConfigureAwait(false);
+        var counts = children.GroupBy(x => x.ParentId.Value).ToDictionary(x => x.Key, x => x.Count());
+        foreach (var item in items) item.ChildCount = Math.Max(item.ChildCount, counts.GetValueOrDefault(item.Id));
     }
 
     private async Task PopulateExecutionChainSummariesAsync(IEnumerable<ExecutionFlatDto> rows, CancellationToken ct)

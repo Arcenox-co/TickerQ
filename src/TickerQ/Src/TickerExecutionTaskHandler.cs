@@ -21,7 +21,7 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ;
 
-internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
+internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 {
     private enum ExecutionMode
     {
@@ -162,142 +162,6 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     {
         EnsureLicensedForExecution();
         await ExecuteTreeAsync(context, isDue, registeredSource, cancellationToken, isChild: false);
-    }
-
-    private async Task ExecuteTreeAsync(
-        InternalFunctionContext context,
-        bool isDue,
-        CancellationTokenSource registeredSource,
-        CancellationToken cancellationToken,
-        bool isChild,
-        Guid? chainRootId = null,
-        Guid? chainAcquisitionToken = null)
-    {
-        context.ChainRootId = chainRootId ?? context.ChainRootId ?? context.TickerId;
-        if (isChild && !context.ChainGeneration.HasValue)
-            return;
-
-        // Remote transports need the root acquisition token as their signed dispatch identity.
-        // Assign it without staging an AcquisitionToken persistence mutation on the child; durable
-        // child ownership remains the aggregate ChainGeneration fence.
-        if (isChild)
-            context.AcquisitionToken = chainAcquisitionToken;
-
-        if (isChild)
-        {
-            // The parent's snapshot can contain a child cancelled since acquisition. Persist
-            // admission before invoking it OR releasing any of its concurrent descendants.
-            context.SetProperty(x => x.Status, TickerStatus.InProgress);
-            try
-            {
-                await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (TickerResultNotAcknowledgedException)
-            {
-                return;
-            }
-        }
-
-        if (context.Type == TickerType.CronTickerOccurrence)
-        {
-            if (await _internalTickerManager.TryDispatchCronChainAsync(context, isDue, cancellationToken).ConfigureAwait(false))
-            {
-                // Publication is durable. Wake the scheduler rather than waiting on another worker
-                // from this worker, which would deadlock a host configured with one worker.
-                _serviceProvider.GetService<ITickerQHostScheduler>()?.Restart();
-                return;
-            }
-            // Root occurrence: reuse the acquisition-time registration if the caller supplied one.
-            await RunContextFunctionAsync(
-                context, isDue, cancellationToken, isChild, preRegisteredSource: registeredSource);
-            return;
-        }
-
-        var childCount = context.TimeTickerChildren.Count;
-        var childrenToRunAfter = new InternalFunctionContext[childCount];
-        var tasksToRunNow = new Task[childCount + 1];
-
-        var childrenToRunAfterCount = 0;
-        var tasksToRunNowCount = 0;
-
-        var hasChildren = context.TimeTickerChildren.Count > 0;
-
-        // Add parent (root) task — reuses the acquisition-time registration when supplied; children
-        // below always self-register (preRegisteredSource stays null for them).
-        tasksToRunNow[tasksToRunNowCount++] =
-            RunContextFunctionAsync(
-                context, isDue, cancellationToken, isChild, preRegisteredSource: registeredSource);
-
-        if (hasChildren)
-        {
-            // Process children - separate InProgress from others
-            for (var i = 0; i < context.TimeTickerChildren.Count; i++)
-            {
-                var child = context.TimeTickerChildren[i];
-                
-                if (child.CachedDelegate != null)
-                {
-                    if (child.RunCondition == RunCondition.InProgress)
-                        tasksToRunNow[tasksToRunNowCount++] = SafeRecursiveExecution(
-                            child, context.ChainRootId.Value, context.AcquisitionToken, isDue, cancellationToken);
-                    else
-                    {
-                        childrenToRunAfter[childrenToRunAfterCount++] = child;
-                    }
-                }
-            }
-        }
-        
-        // Wait for concurrent tasks (parent + InProgress children)
-        await Task.WhenAll(tasksToRunNow.AsSpan(0, tasksToRunNowCount).ToArray());
-
-        // Process deferred children after parent completion
-        if (childrenToRunAfterCount > 0)
-        {
-            var childrenToSkip = new List<InternalFunctionContext>(30); // Pre-sized for performance
-            var childrenToRunAfterTask = new Task[childrenToRunAfterCount];
-            
-            var taskCount = 0;
-            
-            for (var i = 0; i < childrenToRunAfterCount; i++)
-            {
-                var child = childrenToRunAfter[i];
-                
-                if (child.CachedDelegate != null)
-                {
-                    if (ShouldRunChild(child, context.Status))
-                    {
-                        childrenToRunAfterTask[taskCount++] = SafeRecursiveExecution(
-                            child, context.ChainRootId.Value, context.AcquisitionToken, isDue, cancellationToken);
-                    }
-                    else
-                    {
-                        _tickerQInstrumentation.LogJobSkipped(
-                            child.TickerId,
-                            child.FunctionName,
-                            $"Condition {child.RunCondition} not met (Parent status: {context.Status})"
-                        );
-                        child.ParentId = context.TickerId;
-                        child.ChainRootId = context.ChainRootId;
-                        child.ChainGeneration = context.ChainGeneration;
-                        childrenToSkip.Add(child);
-
-                        // Recursively gather all descendants to skip
-                        GatherDescendantsToSkip(child, context.ChainRootId.Value,
-                            context.ChainGeneration, childrenToSkip);
-                    }
-                }
-            }
-
-            // Bulk update skipped children
-            if (childrenToSkip.Count > 0)
-                await _internalTickerManager.UpdateSkipTimeTickersWithUnifiedContextAsync(
-                    childrenToSkip.ToArray(), cancellationToken);
-            
-            // Wait for deferred tasks
-            if (taskCount > 0)
-                await Task.WhenAll(childrenToRunAfterTask.AsSpan(0, taskCount).ToArray());
-        }
     }
 
     private async Task RunContextFunctionAsync(
@@ -488,10 +352,6 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         // Gate individual function attempts, never the whole tree: roots and descendants
         // share the same host-wide permit, released before traversing children or retrying.
         // SDK worker mode already acquires this gate at its transport execution boundary.
-        var semaphore = mode == ExecutionMode.Scheduler
-            ? _concurrencyGate.GetSemaphoreOrNull(context.FunctionName, context.CachedMaxConcurrency)
-            : null;
-
         for (var attempt = context.RetryCount; attempt <= finalAttempt; attempt++)
         {
             tickerFunctionContext.RetryCount = attempt;
@@ -501,21 +361,23 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
             CancellationTokenSource attemptCts = null;
             CancellationToken executionAttemptToken = default;
-            var acquiredSemaphore = false;
+            IDisposable functionPermit = null;
             try
             {
                 if (!usesRemoteRetryPolicy &&
                     await WaitForRetry(context, cancellationToken, attempt, cancellationTokenSource, mode)) break;
 
-                if (semaphore != null)
+                if (mode == ExecutionMode.Scheduler && context.CachedMaxConcurrency > 0)
                 {
-                    // Avoid reporting an available function permit as a wait.
-                    if (!semaphore.Wait(0, cancellationTokenSource.Token))
+                    var acquisition = _concurrencyGate.AcquireAsync(context.FunctionName,
+                        context.CachedMaxConcurrency, cancellationTokenSource.Token);
+                    if (acquisition.IsCompletedSuccessfully)
+                        functionPermit = acquisition.Result;
+                    else
                     {
                         using var waiting = _executionScheduler?.BeginFunctionWait();
-                        await semaphore.WaitAsync(cancellationTokenSource.Token).ConfigureAwait(false);
+                        functionPermit = await acquisition.ConfigureAwait(false);
                     }
-                    acquiredSemaphore = true;
                 }
                 cancellationTokenSource.Token.ThrowIfCancellationRequested();
 
@@ -773,8 +635,7 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             finally
             {
                 attemptCts?.Dispose();
-                if (acquiredSemaphore)
-                    semaphore.Release();
+                functionPermit?.Dispose();
             }
         }
 
@@ -1043,36 +904,25 @@ internal class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         if (parent.TimeTickerChildren == null || parent.TimeTickerChildren.Count == 0)
             return;
 
-        foreach (var child in parent.TimeTickerChildren)
+        // Keep the same depth-first preorder without consuming the call stack for
+        // every generation of a skipped subtree. One frame per depth also avoids
+        // copying a wide sibling list into a second work queue.
+        var pending = new Stack<(InternalFunctionContext Parent, int NextChild)>();
+        pending.Push((parent, 0));
+        while (pending.TryPop(out var frame))
         {
-            child.ParentId = parent.TickerId;
+            var children = frame.Parent.TimeTickerChildren;
+            if (children == null || frame.NextChild >= children.Count)
+                continue;
+            var child = children[frame.NextChild];
+            pending.Push((frame.Parent, frame.NextChild + 1));
+            child.ParentId = frame.Parent.TickerId;
             child.ChainRootId = chainRootId;
             child.ChainGeneration = chainGeneration;
             skipList.Add(child);
-
-            // Recursively gather grandchildren
-            GatherDescendantsToSkip(child, chainRootId, chainGeneration, skipList);
+            if (child.TimeTickerChildren is { Count: > 0 })
+                pending.Push((child, 0));
         }
     }
 
-    private Task SafeRecursiveExecution(
-        InternalFunctionContext context,
-        Guid chainRootId,
-        Guid? chainAcquisitionToken,
-        bool isDue,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            return ExecuteTreeAsync(
-                context, isDue, registeredSource: null, cancellationToken, isChild: true,
-                chainRootId: chainRootId, chainAcquisitionToken: chainAcquisitionToken);
-        }
-        catch
-        {
-            // ignored
-        }
-
-        return Task.CompletedTask;
-    }
 }

@@ -23,6 +23,165 @@ public sealed class TickerQExecutionAdmissionTests
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
 
     [Theory]
+    [InlineData(RunCondition.InProgress)]
+    [InlineData(RunCondition.OnSuccess)]
+    public async Task WideChain_BoundsLiveStepTasks_AndEventuallyRunsEveryStep(RunCondition condition)
+    {
+        await using var rig = new ExecutionRig(16, configure: options => options.MaxConcurrentChainSteps = 3);
+        var release = Signal();
+        var occupied = Signal();
+        var counter = new ExecutionCounter();
+        var enqueued = 0;
+        rig.Instrumentation.When(x => x.LogJobEnqueued(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<string>()))
+            .Do(_ => Interlocked.Increment(ref enqueued));
+        var root = Job("Root", NoOp);
+        for (var i = 0; i < 60; i++)
+            AddChild(root, Job($"Child{i}", (ct, _, _) => counter.RunAsync(release.Task, ct, 3, occupied)), condition);
+        try
+        {
+            await rig.Dispatcher.DispatchAsync([root]);
+            await occupied.Task.WaitAsync(TestTimeout);
+            Assert.Equal(4, Volatile.Read(ref enqueued)); // root plus three live children
+            Assert.Equal(3, counter.Peak);
+        }
+        finally { release.TrySetResult(); }
+        await rig.AssertDrainedAsync();
+        Assert.Equal(60, counter.Completed);
+        Assert.Equal(3, counter.Peak);
+        Assert.All(root.TimeTickerChildren, child => Assert.Equal(TickerStatus.Done, child.Status));
+    }
+
+    [Fact]
+    public async Task BoundedChain_DeferredChildWaitsForConcurrentSubtree()
+    {
+        await using var rig = new ExecutionRig(4, configure: options => options.MaxConcurrentChainSteps = 2);
+        var entered = Signal();
+        var release = Signal();
+        var deferredEntered = false;
+        var root = Job("Root", NoOp);
+        var concurrent = Job("Concurrent", NoOp);
+        var grandchild = Job("Grandchild", async (ct, _, _) =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(ct);
+        });
+        AddChild(root, concurrent, RunCondition.InProgress);
+        AddChild(concurrent, grandchild, RunCondition.OnSuccess);
+        AddChild(root, Job("Deferred", (_, _, _) =>
+        {
+            deferredEntered = true;
+            Assert.Equal(TickerStatus.Done, grandchild.Status);
+            return Task.CompletedTask;
+        }), RunCondition.OnSuccess);
+        try
+        {
+            await rig.Dispatcher.DispatchAsync([root]);
+            await entered.Task.WaitAsync(TestTimeout);
+            Assert.False(deferredEntered);
+        }
+        finally { release.TrySetResult(); }
+        await rig.AssertDrainedAsync();
+        Assert.True(deferredEntered);
+    }
+
+    [Fact]
+    public async Task DeferredSkipInstrumentationFailure_DrainsRunningSiblingBeforePropagating()
+    {
+        await using var rig = new ExecutionRig(4, configure: options => options.MaxConcurrentChainSteps = 3);
+        var siblingEntered = Signal();
+        var releaseSibling = Signal();
+        var skipFailed = Signal();
+        var siblingExited = false;
+        var failure = new InvalidOperationException("Skip instrumentation failed.");
+        var root = Job("Root", NoOp);
+        var branch = Job("Branch", async (ct, _, _) => await siblingEntered.Task.WaitAsync(ct));
+        var skipped = Job("Skipped", NoOp);
+        var sibling = Job("Sibling", async (ct, _, _) =>
+        {
+            siblingEntered.TrySetResult();
+            await releaseSibling.Task.WaitAsync(ct);
+            siblingExited = true;
+        }, limit: 1);
+        AddChild(root, branch, RunCondition.InProgress);
+        AddChild(root, sibling, RunCondition.InProgress);
+        AddChild(branch, skipped, RunCondition.OnFailure);
+        rig.Instrumentation.When(x => x.LogJobSkipped(skipped.TickerId, skipped.FunctionName, Arg.Any<string>()))
+            .Do(_ =>
+            {
+                skipFailed.TrySetResult();
+                throw failure;
+            });
+
+        var run = rig.Handler.ExecuteTaskAsync(root, isDue: false);
+        Exception? actual = null;
+        try
+        {
+            await skipFailed.Task.WaitAsync(TestTimeout);
+            // Observe beyond the callback itself: a detached sibling would let the
+            // root task fault immediately instead of retaining its ownership.
+            await Assert.ThrowsAsync<TimeoutException>(() => run.WaitAsync(TimeSpan.FromMilliseconds(100)));
+            Assert.False(siblingExited);
+            Assert.Equal(1, rig.FunctionGate.RetainedGateCount);
+        }
+        finally
+        {
+            releaseSibling.TrySetResult();
+            actual = await Record.ExceptionAsync(() => run.WaitAsync(TestTimeout));
+        }
+
+        Assert.Same(failure, actual);
+        Assert.True(siblingExited);
+        Assert.Equal(TickerStatus.Done, sibling.Status);
+        Assert.Equal(0, rig.FunctionGate.RetainedGateCount);
+        await rig.AssertDrainedAsync();
+    }
+
+    [Fact]
+    public async Task DeepSkippedSubtree_PreservesDepthFirstOrderAndGenerationWithoutRecursiveTraversal()
+    {
+        await using var rig = new ExecutionRig(1);
+        var root = Job("Root", NoOp);
+        var skippedRoot = Job("SkippedRoot", NoOp);
+        AddChild(root, skippedRoot, RunCondition.OnFailure);
+        var expected = new List<InternalFunctionContext> { skippedRoot };
+        var parent = skippedRoot;
+        for (var i = 0; i < 30_000; i++)
+        {
+            var child = Job("SkippedDescendant", NoOp);
+            AddChild(parent, child, RunCondition.OnSuccess);
+            // The skip walk must apply the owning generation to every descendant.
+            child.ChainGeneration = null;
+            child.ChainRootId = Guid.Empty;
+            expected.Add(child);
+            parent = child;
+        }
+        var sibling = Job("SkippedSibling", NoOp);
+        AddChild(skippedRoot, sibling, RunCondition.OnAnyCompletedStatus);
+        expected.Add(sibling);
+        InternalFunctionContext[]? captured = null;
+        rig.Manager.UpdateSkipTimeTickersWithUnifiedContextAsync(
+                Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                captured = call.ArgAt<InternalFunctionContext[]>(0);
+                return Task.CompletedTask;
+            });
+
+        await rig.Handler.ExecuteTaskAsync(root, isDue: false).WaitAsync(TestTimeout);
+
+        Assert.NotNull(captured);
+        Assert.Equal(expected.Select(x => x.TickerId), captured.Select(x => x.TickerId));
+        Assert.All(captured, child =>
+        {
+            Assert.Equal(root.TickerId, child.ChainRootId);
+            Assert.Equal(root.ChainGeneration, child.ChainGeneration);
+        });
+        Assert.Equal(skippedRoot.TickerId, sibling.ParentId);
+        await rig.AssertDrainedAsync();
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task ImmediateSameFunctionDispatch_ReturnsAfterAdmission_WithoutWaitingForItsOwnPermit(
@@ -110,7 +269,7 @@ public sealed class TickerQExecutionAdmissionTests
     [InlineData(RunCondition.OnSuccess)]
     public async Task DeepSameFunctionChain_CompletesWithOneExecutionSlot(RunCondition condition)
     {
-        await using var rig = new ExecutionRig(1);
+        await using var rig = new ExecutionRig(1, configure: options => options.MaxConcurrentChainSteps = 1);
         var calls = 0;
         Task Body(CancellationToken _, IServiceProvider __, TickerFunctionContext ___)
         {
@@ -557,6 +716,7 @@ public sealed class TickerQExecutionAdmissionTests
         private readonly AcquiredExecutionQueue? _acquired;
         internal TickerQTaskScheduler Scheduler { get; }
         internal TickerQDispatcher Dispatcher { get; }
+        internal TickerExecutionTaskHandler Handler { get; }
         internal TickerFunctionConcurrencyGate FunctionGate { get; } = new();
         internal ITickerQInstrumentation Instrumentation { get; } = Substitute.For<ITickerQInstrumentation>();
         internal IInternalTickerManager Manager { get; } = Substitute.For<IInternalTickerManager>();
@@ -579,11 +739,11 @@ public sealed class TickerQExecutionAdmissionTests
             _services = new ServiceCollection()
                 .AddSingleton<ITickerQTaskScheduler>(Scheduler)
                 .BuildServiceProvider();
-            var handler = new TickerExecutionTaskHandler(_services, clock, Instrumentation, Manager,
+            Handler = new TickerExecutionTaskHandler(_services, clock, Instrumentation, Manager,
                 options, Substitute.For<ITickerQFailureNotifier>(), license, FunctionGate);
             if (useAcquiredQueue)
-                _acquired = new AcquiredExecutionQueue(Manager, handler, Scheduler, NullLogger.Instance, license);
-            Dispatcher = new TickerQDispatcher(Scheduler, handler, license, _acquired);
+                _acquired = new AcquiredExecutionQueue(Manager, Handler, Scheduler, NullLogger.Instance, license);
+            Dispatcher = new TickerQDispatcher(Scheduler, Handler, license, _acquired);
         }
 
         internal async Task AssertDrainedAsync()

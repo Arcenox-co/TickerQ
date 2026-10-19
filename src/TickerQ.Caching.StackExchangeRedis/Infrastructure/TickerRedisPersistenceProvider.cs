@@ -122,53 +122,19 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
 
     #region Queryable_Methods
     public ITickerQueryable<TTimeTicker> TimeTickersQuery()
-    {
-        return new InMemoryTickerQueryable<TTimeTicker>(async ct =>
-        {
-            if (!await IsActivationPublicationVisibleAsync(ct).ConfigureAwait(false)) return [];
-            var list = await Serializer.LoadAllFromSetAsync<TTimeTicker>(
-                TimeTickerIdsKey, TimeTickerKey, ct).ConfigureAwait(false);
-            return list;
-        });
-    }
+        => new RedisTickerQueryable<TTimeTicker>((predicates, ct) =>
+            ScanQueryAsync(TimeTickerIdsKey, TimeTickerKey, predicates, ct));
 
     public ITickerQueryable<TTimeTicker> TimeTickersMonitoringQuery()
-        => new InMemoryTickerQueryable<TTimeTicker>(async ct =>
-        {
-            var roots = await TimeTickersQuery().ToArrayAsync(ct).ConfigureAwait(false);
-            var jobs = new Dictionary<Guid, TTimeTicker>();
-            var pending = new Stack<TTimeTicker>(roots);
-            while (pending.Count > 0)
-            {
-                ct.ThrowIfCancellationRequested();
-                var job = pending.Pop();
-                if (!jobs.TryAdd(job.Id, job)) continue;
-                foreach (var child in job.Children ?? Array.Empty<TTimeTicker>()) pending.Push(child);
-            }
-            return jobs.Values.ToList();
-        });
+        => new RedisTickerQueryable<TTimeTicker>((_, ct) => ScanMonitoringQueryAsync(ct));
 
     public ITickerQueryable<TCronTicker> CronTickersQuery()
-    {
-        return new InMemoryTickerQueryable<TCronTicker>(async ct =>
-        {
-            if (!await IsActivationPublicationVisibleAsync(ct).ConfigureAwait(false)) return [];
-            var list = await Serializer.LoadAllFromSetAsync<TCronTicker>(
-                CronIdsKey, CronKey, ct).ConfigureAwait(false);
-            return list;
-        });
-    }
+        => new RedisTickerQueryable<TCronTicker>((predicates, ct) =>
+            ScanQueryAsync(CronIdsKey, CronKey, predicates, ct));
 
     public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
-    {
-        return new InMemoryTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>(async ct =>
-        {
-            if (!await IsActivationPublicationVisibleAsync(ct).ConfigureAwait(false)) return [];
-            var list = await Serializer.LoadAllFromSetAsync<CronTickerOccurrenceEntity<TCronTicker>>(
-                CronOccurrenceIdsKey, CronOccurrenceKey, ct).ConfigureAwait(false);
-            return list;
-        });
-    }
+        => new RedisTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>((predicates, ct) =>
+            ScanQueryAsync(CronOccurrenceIdsKey, CronOccurrenceKey, predicates, ct));
     #endregion
 
     #region Time_Ticker_Shared_Methods
@@ -193,12 +159,12 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
         return list.OrderByDescending(x => x.ExecutionTime).ToArray();
     }
 
-    public async Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(Expression<Func<TTimeTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+    public Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(Expression<Func<TTimeTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
     {
-        var all = await GetTimeTickers(predicate, cancellationToken).ConfigureAwait(false);
-        var total = all.Length;
-        var items = all.Skip((pageNumber - 1) * pageSize).Take(pageSize).ToArray();
-        return new PaginationResult<TTimeTicker>(items, total, pageNumber, pageSize);
+        var query = TimeTickersQuery().Where(row => row.ParentId == null);
+        if (predicate != null) query = query.Where(predicate);
+        return query.OrderByDescending(row => row.ExecutionTime)
+            .ToPaginatedAsync(pageNumber, pageSize, cancellationToken);
     }
 
     public async Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
@@ -482,12 +448,12 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
         return list.OrderByDescending(x => x.CreatedAt).ToArray();
     }
 
-    public async Task<PaginationResult<TCronTicker>> GetCronTickersPaginated(Expression<Func<TCronTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+    public Task<PaginationResult<TCronTicker>> GetCronTickersPaginated(Expression<Func<TCronTicker, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
     {
-        var all = await GetCronTickers(predicate, cancellationToken).ConfigureAwait(false);
-        var total = all.Length;
-        var items = all.Skip((pageNumber - 1) * pageSize).Take(pageSize).ToArray();
-        return new PaginationResult<TCronTicker>(items, total, pageNumber, pageSize);
+        var query = CronTickersQuery();
+        if (predicate != null) query = query.Where(predicate);
+        return query.OrderByDescending(row => row.CreatedAt)
+            .ToPaginatedAsync(pageNumber, pageSize, cancellationToken);
     }
 
     public async Task<int> InsertCronTickers(TCronTicker[] tickers, CancellationToken cancellationToken)
@@ -666,12 +632,12 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
         return list.OrderByDescending(x => x.ExecutionTime).ToArray();
     }
 
-    public async Task<PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>> GetAllCronTickerOccurrencesPaginated(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+    public Task<PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>> GetAllCronTickerOccurrencesPaginated(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
     {
-        var all = await GetAllCronTickerOccurrences(predicate, cancellationToken).ConfigureAwait(false);
-        var total = all.Length;
-        var items = all.Skip((pageNumber - 1) * pageSize).Take(pageSize).ToArray();
-        return new PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>(items, total, pageNumber, pageSize);
+        var query = CronTickerOccurrencesQuery();
+        if (predicate != null) query = query.Where(predicate);
+        return query.OrderByDescending(row => row.ExecutionTime)
+            .ToPaginatedAsync(pageNumber, pageSize, cancellationToken);
     }
 
     public async Task<int> InsertCronTickerOccurrences(CronTickerOccurrenceEntity<TCronTicker>[] cronTickerOccurrences, CancellationToken cancellationToken)

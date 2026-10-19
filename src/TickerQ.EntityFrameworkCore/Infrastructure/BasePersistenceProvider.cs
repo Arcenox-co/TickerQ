@@ -1704,13 +1704,15 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             minExecutionTime.Value.Minute, minExecutionTime.Value.Second,
             DateTimeKind.Utc);
     
-        // Fetch all tickers within that complete second (this ensures we get all tickers in the same second)
+        // Bound root materialization before projecting chains. Remaining rows stay available
+        // to subsequent scheduling/recovery scans instead of occupying the managed heap.
         var maxExecutionTime = minSecond.AddSeconds(1);
     
         var earliest = await baseQuery
             .Include(x => x.Children.Where(y => y.ExecutionTime == null))
             .Where(x => x.ExecutionTime >= minSecond && x.ExecutionTime < maxExecutionTime)
-            .OrderBy(x => x.ExecutionTime)
+            .OrderBy(x => x.ExecutionTime).ThenBy(x => x.Id)
+            .Take(_schedulerOptions.AcquisitionBatchSize)
             .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
 
@@ -2000,15 +2002,16 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     {
         if (ids == null || ids.Length == 0)
             return [];
-        var requestedIds = ids.Distinct().ToArray();
         return await ExecuteTimeTickerGraphMutationAsync(true, Array.Empty<TimeTickerEntity>(),
             async (dbContext, ct) =>
             {
                 var now = _clock.UtcNow;
                 var acquisitionToken = Guid.NewGuid();
-                var acquiredIds = new List<Guid>(requestedIds.Length);
-                foreach (var id in requestedIds)
+                var acquiredIds = new List<Guid>(Math.Min(ids.Length, _schedulerOptions.AcquisitionBatchSize));
+                foreach (var id in ids)
                 {
+                    if (acquiredIds.Count == _schedulerOptions.AcquisitionBatchSize) break;
+                    if (acquiredIds.Contains(id)) continue;
                     var affected = await dbContext.Set<TTimeTicker>()
                         .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == id)
                         .WhereCanAcquire(_lockHolder)

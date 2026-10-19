@@ -11,19 +11,21 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.MongoDB.Infrastructure
 {
-    internal sealed class MongoTickerQueryable<TEntity> : ITickerQueryable<TEntity>
+    internal sealed class MongoTickerQueryable<TEntity> : ITickerProjectionQueryable<TEntity>, ITickerChildQueryable<TEntity>
         where TEntity : class
     {
         private readonly IMongoCollection<TEntity> _collection;
         private readonly Func<TEntity, TickerRelation[], CancellationToken, Task> _relationLoader;
         private readonly IQueryable<TEntity> _query;
         private readonly TickerRelation[] _relations;
+        private readonly Func<bool, CancellationToken, Task<Expression<Func<TEntity, bool>>>> _childPredicate;
 
         public MongoTickerQueryable(
             IMongoCollection<TEntity> collection,
             Expression<Func<TEntity, bool>> partitionPredicate,
-            Func<TEntity, TickerRelation[], CancellationToken, Task> relationLoader)
-            : this(collection, relationLoader, collection.AsQueryable().Where(partitionPredicate), [])
+            Func<TEntity, TickerRelation[], CancellationToken, Task> relationLoader,
+            Func<bool, CancellationToken, Task<Expression<Func<TEntity, bool>>>> childPredicate = null)
+            : this(collection, relationLoader, collection.AsQueryable().Where(partitionPredicate), [], childPredicate)
         {
         }
 
@@ -31,16 +33,18 @@ namespace TickerQ.MongoDB.Infrastructure
             IMongoCollection<TEntity> collection,
             Func<TEntity, TickerRelation[], CancellationToken, Task> relationLoader,
             IQueryable<TEntity> query,
-            TickerRelation[] relations)
+            TickerRelation[] relations,
+            Func<bool, CancellationToken, Task<Expression<Func<TEntity, bool>>>> childPredicate)
         {
             _collection = collection;
             _relationLoader = relationLoader;
             _query = query;
             _relations = relations;
+            _childPredicate = childPredicate;
         }
 
         private MongoTickerQueryable<TEntity> With(IQueryable<TEntity> next)
-            => new(_collection, _relationLoader, next, _relations);
+            => new(_collection, _relationLoader, next, _relations, _childPredicate);
 
         public ITickerQueryable<TEntity> Where(Expression<Func<TEntity, bool>> predicate) => With(_query.Where(predicate));
         public ITickerQueryable<TEntity> OrderBy<TKey>(Expression<Func<TEntity, TKey>> keySelector) => With(_query.OrderBy(keySelector));
@@ -55,7 +59,7 @@ namespace TickerQ.MongoDB.Infrastructure
             var merged = new TickerRelation[_relations.Length + relations.Length];
             _relations.CopyTo(merged, 0);
             relations.CopyTo(merged, _relations.Length);
-            return new MongoTickerQueryable<TEntity>(_collection, _relationLoader, _query, merged);
+            return new MongoTickerQueryable<TEntity>(_collection, _relationLoader, _query, merged, _childPredicate);
         }
 
         public async Task<TEntity[]> ToArrayAsync(CancellationToken cancellationToken = default)
@@ -89,6 +93,28 @@ namespace TickerQ.MongoDB.Infrastructure
 
             await ApplyRelations(items, cancellationToken).ConfigureAwait(false);
             return new PaginationResult<TEntity>(items, count, pageNumber, pageSize);
+        }
+
+        public async Task<ITickerQueryable<TEntity>> WhereHasChildrenAsync(bool hasChildren,
+            CancellationToken cancellationToken = default)
+        {
+            if (_childPredicate == null) throw new NotSupportedException("This collection has no child relationship.");
+            return Where(await _childPredicate(hasChildren, cancellationToken).ConfigureAwait(false));
+        }
+
+        public async Task<TResult[]> ToArrayAsync<TResult>(Expression<Func<TEntity, TResult>> selector,
+            CancellationToken cancellationToken = default)
+            => (await _query.Select(selector).ToListAsync(cancellationToken).ConfigureAwait(false)).ToArray();
+
+        public async Task<PaginationResult<TResult>> ToPaginatedAsync<TResult>(Expression<Func<TEntity, TResult>> selector,
+            int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+        {
+            pageNumber = Math.Max(1, pageNumber);
+            pageSize = Math.Clamp(pageSize, 1, 1000);
+            var count = await _query.CountAsync(cancellationToken).ConfigureAwait(false);
+            var items = await _query.Skip((pageNumber - 1) * pageSize).Take(pageSize)
+                .Select(selector).ToListAsync(cancellationToken).ConfigureAwait(false);
+            return new PaginationResult<TResult>(items, count, pageNumber, pageSize);
         }
 
         private async Task ApplyRelations(System.Collections.Generic.IEnumerable<TEntity> items, CancellationToken ct)

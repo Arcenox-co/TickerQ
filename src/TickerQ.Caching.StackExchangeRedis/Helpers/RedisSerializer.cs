@@ -1,5 +1,6 @@
 #nullable disable
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
@@ -54,58 +55,70 @@ internal sealed class RedisSerializer
         }
     }
 
-    internal async Task<List<T>> LoadAllFromSetAsync<T>(string setKey, Func<Guid, string> keyBuilder, CancellationToken cancellationToken, Func<T, bool> predicate = null) where T : class
+    internal const int ReadBatchSize = 128;
+
+    internal async IAsyncEnumerable<T> ScanSetAsync<T>(string setKey, Func<Guid, string> keyBuilder,
+        [EnumeratorCancellation] CancellationToken cancellationToken) where T : class
     {
-        var members = await _db.SetMembersAsync(setKey).ConfigureAwait(false);
-        if (members.Length == 0) return [];
-
-        var keys = new RedisKey[members.Length];
-        var validCount = 0;
-
-        for (var i = 0; i < members.Length; i++)
-        {
-            if (!Guid.TryParse(members[i].ToString(), out var id)) continue;
-            keys[validCount] = keyBuilder(id);
-            validCount++;
-        }
-
-        if (validCount == 0) return [];
-
         cancellationToken.ThrowIfCancellationRequested();
-        var values = await _db.StringGetAsync(keys[..validCount]).ConfigureAwait(false);
-        var list = new List<T>(validCount);
-
-        for (var i = 0; i < values.Length; i++)
+        var keys = new List<RedisKey>(ReadBatchSize);
+        // SSCAN can repeat members during rehashing. Preserve the old set semantics
+        // without retaining full documents: only this O(ID count) metadata grows.
+        var seenIds = new HashSet<Guid>();
+        await foreach (var member in _db.SetScanAsync(setKey, pageSize: ReadBatchSize)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
-            if (values[i].IsNullOrEmpty) continue;
-            var item = DeserializeOrNull<T>((string)values[i]);
-            if (item != null && (predicate == null || predicate(item)))
-                list.Add(item);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!Guid.TryParse(member.ToString(), out var id) || !seenIds.Add(id)) continue;
+            keys.Add(keyBuilder(id));
+            if (keys.Count < ReadBatchSize) continue;
+            await foreach (var row in ReadBatchAsync<T>(keys.ToArray(), cancellationToken).ConfigureAwait(false))
+                yield return row;
+            keys.Clear();
         }
-
-        return list;
+        if (keys.Count > 0)
+            await foreach (var row in ReadBatchAsync<T>(keys.ToArray(), cancellationToken).ConfigureAwait(false))
+                yield return row;
     }
 
-    internal async Task<List<T>> LoadByIdsAsync<T>(Guid[] ids, Func<Guid, string> keyBuilder, CancellationToken cancellationToken) where T : class
+    private async IAsyncEnumerable<T> ReadBatchAsync<T>(RedisKey[] keys,
+        [EnumeratorCancellation] CancellationToken cancellationToken) where T : class
     {
-        if (ids.Length == 0) return [];
-
-        var keys = new RedisKey[ids.Length];
-        for (var i = 0; i < ids.Length; i++)
-            keys[i] = keyBuilder(ids[i]);
-
         cancellationToken.ThrowIfCancellationRequested();
         var values = await _db.StringGetAsync(keys).ConfigureAwait(false);
-        var list = new List<T>(ids.Length);
-
+        cancellationToken.ThrowIfCancellationRequested();
         for (var i = 0; i < values.Length; i++)
         {
-            if (values[i].IsNullOrEmpty) continue;
-            var item = DeserializeOrNull<T>((string)values[i]);
-            if (item != null) list.Add(item);
+            cancellationToken.ThrowIfCancellationRequested();
+            var value = values[i];
+            values[i] = RedisValue.Null;
+            if (value.IsNullOrEmpty) continue;
+            var row = DeserializeOrNull<T>((string)value);
+            if (row != null) yield return row;
         }
+    }
 
-        return list;
+    internal async Task<List<T>> LoadAllFromSetAsync<T>(string setKey, Func<Guid, string> keyBuilder,
+        CancellationToken cancellationToken, Func<T, bool> predicate = null) where T : class
+    {
+        var rows = new List<T>();
+        await foreach (var row in ScanSetAsync<T>(setKey, keyBuilder, cancellationToken).ConfigureAwait(false))
+            if (predicate == null || predicate(row)) rows.Add(row);
+        return rows;
+    }
+
+    internal async Task<List<T>> LoadByIdsAsync<T>(Guid[] ids, Func<Guid, string> keyBuilder,
+        CancellationToken cancellationToken) where T : class
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var rows = new List<T>();
+        for (var offset = 0; offset < ids.Length; offset += ReadBatchSize)
+        {
+            var keys = new RedisKey[Math.Min(ReadBatchSize, ids.Length - offset)];
+            for (var i = 0; i < keys.Length; i++) keys[i] = keyBuilder(ids[offset + i]);
+            await foreach (var row in ReadBatchAsync<T>(keys, cancellationToken).ConfigureAwait(false)) rows.Add(row);
+        }
+        return rows;
     }
 
     private JsonTypeInfo GetTypeInfo<T>() => _jsonOptions.GetTypeInfo(typeof(T));

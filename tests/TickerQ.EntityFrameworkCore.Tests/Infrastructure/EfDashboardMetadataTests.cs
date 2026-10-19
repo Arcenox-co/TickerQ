@@ -1,0 +1,84 @@
+using System.Data.Common;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
+using NSubstitute;
+using TickerQ.Utilities;
+using TickerQ.Utilities.DashboardDtos;
+using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
+using TickerQ.Utilities.Interfaces;
+
+namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure;
+
+public sealed class EfDashboardMetadataTests
+{
+    [Fact]
+    public async Task List_filters_counts_and_chain_summaries_do_not_select_payload_columns()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var capture = new QueryCapture();
+        var options = new DbContextOptionsBuilder<TestTickerQDbContext>()
+            .UseSqlite(connection).AddInterceptors(capture).Options;
+        await using var db = new TestTickerQDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+        using var services = new ServiceCollection()
+            .AddSingleton<IDbContextFactory<TestTickerQDbContext>>(new PooledDbContextFactory<TestTickerQDbContext>(options))
+            .BuildServiceProvider();
+        var clock = Substitute.For<ITickerClock>(); clock.UtcNow.Returns(DateTime.UtcNow);
+        var provider = new TestableProvider(services, clock, new SchedulerOptionsBuilder(), Substitute.For<ITickerQRedisContext>());
+        var payload = new byte[1024 * 1024];
+        var root = new TimeTickerEntity { Function = "chain", Request = payload, ExecutionTime = DateTime.UtcNow,
+            Children = [new TimeTickerEntity { Function = "child", Request = payload,
+                Children = [new TimeTickerEntity { Function = "leaf", Request = payload }] }] };
+        await provider.AddTimeTickers([root, new TimeTickerEntity { Function = "single", Request = payload }], CancellationToken.None);
+        var cron = new CronTickerEntity { Function = "cron", Expression = "* * * * *", Request = payload, Retries = 3 };
+        await provider.InsertCronTickers([cron], CancellationToken.None);
+        db.Add(new CronTickerOccurrenceEntity<CronTickerEntity>
+        {
+            Id = Guid.NewGuid(), CronTickerId = cron.Id, Status = TickerStatus.Done,
+            ExecutionTime = DateTime.UtcNow, ExecutedAt = DateTime.UtcNow,
+        });
+        db.Add(new TimeTickerEntity { Function = "foreign", ApplicationNamespaceKey = "other", Request = payload });
+        await db.SaveChangesAsync();
+        capture.Commands.Clear();
+
+        var dashboard = new TickerDashboardDataService<TimeTickerEntity, CronTickerEntity>(provider);
+        var chains = await dashboard.GetTimeTickersFlatAsync(new TimeTickerQueryFilter { HasChildren = true, PageSize = 1, SortBy = "functionname" });
+        var item = Assert.Single(chains.Items);
+        Assert.Equal(root.Id, item.Id);
+        Assert.Equal(1, chains.TotalCount);
+        Assert.Equal(1, item.ChildCount);
+        Assert.Equal(3, item.ChainSummary.TotalCount);
+        var singles = await dashboard.GetTimeTickersFlatAsync(new TimeTickerQueryFilter { HasChildren = false });
+        Assert.Equal("single", Assert.Single(singles.Items).FunctionName);
+        Assert.Equal(1, singles.TotalCount);
+        var all = await dashboard.GetTimeTickersFlatAsync(new TimeTickerQueryFilter { PageSize = 1, SortBy = "functionname", SortDescending = false });
+        Assert.Equal(2, all.TotalCount);
+        Assert.Equal("chain", Assert.Single(all.Items).FunctionName);
+        var schedule = Assert.Single((await dashboard.GetCronTickersFlatAsync(new CronTickerQueryFilter())).Items);
+        Assert.Equal(cron.Id, schedule.Id);
+        Assert.Equal(1, schedule.OccurrenceCount);
+        Assert.Equal(TickerStatus.Done, schedule.LastRunStatus);
+        Assert.Equal(3, schedule.Retries);
+        Assert.NotEmpty(capture.Commands);
+        Assert.All(capture.Commands, sql => Assert.DoesNotContain("\"Request\"", sql));
+        // Projection is a read optimization, never a mutation of stored payloads.
+        Assert.Equal(payload.Length, (await provider.GetTimeTickerById(root.Id, default)).Request.Length);
+    }
+
+    private sealed class QueryCapture : DbCommandInterceptor
+    {
+        public List<string> Commands { get; } = [];
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            Commands.Add(command.CommandText);
+            return ValueTask.FromResult(result);
+        }
+    }
+}

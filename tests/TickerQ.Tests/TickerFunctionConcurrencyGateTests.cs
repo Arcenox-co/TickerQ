@@ -8,6 +8,58 @@ public class TickerFunctionConcurrencyGateTests
     private readonly TickerFunctionConcurrencyGate _gate = new();
 
     [Fact]
+    public async Task OwnedPermits_ReclaimDynamicFunctionsAfterTheirLastHolder()
+    {
+        for (var i = 0; i < 2000; i++)
+        {
+            var permit = await _gate.AcquireAsync($"Dynamic-{i}", 1);
+            Assert.Equal(1, _gate.RetainedGateCount);
+            permit.Dispose();
+            permit.Dispose();
+        }
+        Assert.Equal(0, _gate.RetainedGateCount);
+    }
+
+    [Fact]
+    public async Task OwnedPermits_KeepWaitersOnTheSameGateAndReclaimCancelledWaiters()
+    {
+        var first = await _gate.AcquireAsync("Serial", 1);
+        using var cancellation = new CancellationTokenSource();
+        var cancelled = _gate.AcquireAsync("Serial", 1, cancellation.Token).AsTask();
+        var next = _gate.AcquireAsync("Serial", 1).AsTask();
+        Assert.False(next.IsCompleted);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+        Assert.Equal(1, _gate.RetainedGateCount);
+        first.Dispose();
+        var second = await next.WaitAsync(TimeSpan.FromSeconds(5));
+        var third = _gate.AcquireAsync("Serial", 1).AsTask();
+        Assert.False(third.IsCompleted);
+        second.Dispose();
+        (await third.WaitAsync(TimeSpan.FromSeconds(5))).Dispose();
+        Assert.Equal(0, _gate.RetainedGateCount);
+    }
+
+    [Fact]
+    public async Task OwnedPermits_ConcurrentReleaseAndAcquireNeverExceedsFunctionLimit()
+    {
+        var active = 0;
+        var peak = 0;
+        await Task.WhenAll(Enumerable.Range(0, 32).Select(async _ =>
+        {
+            for (var i = 0; i < 100; i++)
+            {
+                using var permit = await _gate.AcquireAsync("Serial", 1);
+                InterlockedMax(ref peak, Interlocked.Increment(ref active));
+                await Task.Yield();
+                Interlocked.Decrement(ref active);
+            }
+        }));
+        Assert.Equal(1, peak);
+        Assert.Equal(0, _gate.RetainedGateCount);
+    }
+
+    [Fact]
     public void GetSemaphoreOrNull_ZeroMaxConcurrency_ReturnsNull()
     {
         var result = _gate.GetSemaphoreOrNull("Func1", 0);

@@ -526,6 +526,14 @@ namespace TickerQ.Utilities
         }
         /// <summary>Maximum concurrent function attempts on this host, including individual chain steps.</summary>
         public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
+        /// <summary>Maximum time-ticker roots loaded in one scheduled or immediate acquisition.</summary>
+        public int AcquisitionBatchSize { get; set; } = 100;
+        /// <summary>Maximum handler attempts waiting in the built-in execution queue.</summary>
+        public int MaxQueuedExecutions { get; set; } = 1024;
+        /// <summary>Maximum admitted root workflows, including chains and jobs waiting to retry.</summary>
+        public int MaxActiveWorkflows { get; set; } = 128;
+        /// <summary>Maximum live step tasks per chain. Pending steps remain lightweight graph nodes.</summary>
+        public int MaxConcurrentChainSteps { get; set; } = 16;
         public TimeSpan FallbackIntervalChecker { get; set; } = TimeSpan.FromSeconds(30);
         /// <summary>Maximum overdue roots of each ticker type acquired per built-in provider scan.</summary>
         public int FallbackBatchSize { get; set; } = 100;
@@ -641,6 +649,10 @@ namespace TickerQ.Utilities
         internal void Validate()
         {
             if (MaxConcurrency < 1) throw new ArgumentOutOfRangeException(nameof(MaxConcurrency), "At least one worker is required.");
+            ValidateCapacity(AcquisitionBatchSize, nameof(AcquisitionBatchSize), 10000);
+            ValidateCapacity(MaxQueuedExecutions, nameof(MaxQueuedExecutions), 100000);
+            ValidateCapacity(MaxActiveWorkflows, nameof(MaxActiveWorkflows), 10000);
+            ValidateCapacity(MaxConcurrentChainSteps, nameof(MaxConcurrentChainSteps), 1000);
             if (FallbackBatchSize < 1 || FallbackBatchSize > 10000)
                 throw new ArgumentOutOfRangeException(nameof(FallbackBatchSize), "Use a batch size between 1 and 10000.");
             ValidateTimer(FallbackIntervalChecker, nameof(FallbackIntervalChecker));
@@ -661,6 +673,12 @@ namespace TickerQ.Utilities
             if (value < (allowZero ? TimeSpan.Zero : TimeSpan.FromMilliseconds(1))
                 || value.TotalMilliseconds > uint.MaxValue - 1)
                 throw new ArgumentOutOfRangeException(name, "Duration must fit a finite .NET timer; positive intervals must be at least 1 ms.");
+        }
+
+        private static void ValidateCapacity(int value, string name, int maximum)
+        {
+            if (value < 1 || value > maximum)
+                throw new ArgumentOutOfRangeException(name, $"Use a capacity between 1 and {maximum}.");
         }
     }
 }

@@ -305,11 +305,35 @@ The built-in scheduler uses fixed asynchronous consumers and signals them when w
 Consumers wait without keeping native threads blocked, so idle worker retirement is
 unnecessary.
 
-The execution queue admits at most `MaxConcurrency * 1024` waiting items by default. Root
-workflow admission is also bounded. When root admission is full, acquired rows are released
-for a later scan; a committed manager mutation remains successful. These limits bound queue
-entries and admitted roots, not the size of their payloads or the number of nodes in a chain.
-Large chain graphs still require memory proportional to their live steps.
+The built-in scheduler uses the following memory limits. Configure them through
+`options.ConfigureScheduler(scheduler => { ... })`:
+
+| Option | Default | What it bounds |
+|--------|---------|----------------|
+| `AcquisitionBatchSize` | `100` | Time-ticker roots loaded per scheduled or immediate acquisition, before loading their chains. |
+| `MaxActiveWorkflows` | `128` | Admitted roots, including chains, function waits and retry delays. |
+| `MaxQueuedExecutions` | `1024` | Attempts waiting in the execution queue, independent of CPU count. |
+| `MaxConcurrentChainSteps` | `16` | Live step tasks in each chain, including attempts waiting for capacity or retries. |
+
+When root admission is full, acquired rows are released for a later scan; a committed
+manager mutation remains successful. Roots beyond an acquisition batch remain in the store.
+The scheduler or overdue recovery acquires them later. Under sustained overload this can
+increase start latency; tune batch size and admission limits together with worker capacity.
+
+Chain traversal retains pending steps as graph references rather than creating an async
+task and cancellation registration for every child at once. `InProgress` children remain
+eligible alongside their parent, subject to capacity. Deferred children still wait for the
+parent and its concurrent subtrees. There is no guarantee that all sibling steps run at once.
+
+These are count limits, not a hard process-memory budget. A root's entire graph and request
+data still need memory, and application handlers allocate their own data. Keep requests small
+and reference large business records by ID. The in-memory provider also retains the stored
+jobs themselves: configure job retention when you want completed history removed. Using EF,
+MongoDB or Redis moves durable history outside the process, but active execution still uses RAM.
+
+Per-function concurrency permits are reclaimed when their last holder or waiter exits.
+The legacy raw-semaphore API retains its semaphore because callers can keep that reference;
+custom callers should use the owned `AcquireAsync` permit and dispose it after execution.
 
 `High`, `Normal`, and `Low` priorities use separate FIFO queues with weighted service of
 4:2:1 while all three queues have work. This favors higher priorities while allowing lower

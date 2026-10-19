@@ -15,6 +15,66 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     public Task InitializeAsync() => _f.DropAllAsync();
     public Task DisposeAsync() => Task.CompletedTask;
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Acquisition_batches_bound_roots_keep_complete_children_and_leave_remaining_work_eligible(bool overdue)
+    {
+        _f.Options.AcquisitionBatchSize = 2;
+        _f.Options.FallbackBatchSize = 2;
+        var roots = Enumerable.Range(0, 5).Select(i => new TimeTickerEntity
+        {
+            Function = "batch-root", ExecutionTime = _f.FixedNow.AddMilliseconds(overdue ? -5000 : 500),
+            Children = [new TimeTickerEntity { Function = "batch-child",
+                Children = [new TimeTickerEntity { Function = "batch-leaf" }] }]
+        }).ToArray();
+        await _f.Provider.AddTimeTickers(roots, CancellationToken.None);
+        var seen = new HashSet<Guid>();
+        for (var batch = 0; batch < 3; batch++)
+        {
+            var rows = new List<TimeTickerEntity>();
+            if (overdue)
+                await foreach (var row in _f.Provider.QueueTimedOutTimeTickers()) rows.Add(row);
+            else rows.AddRange(await _f.Provider.GetEarliestTimeTickers());
+            Assert.Equal(batch < 2 ? 2 : 1, rows.Count);
+            Assert.All(rows, row =>
+            {
+                Assert.True(seen.Add(row.Id));
+                Assert.Single(Assert.Single(row.Children).Children);
+            });
+            if (!overdue)
+            {
+                var requested = new[] { Guid.NewGuid(), rows[0].Id, rows[0].Id }
+                    .Concat(rows.Skip(1).Select(x => x.Id)).Concat(roots.Select(x => x.Id)).ToArray();
+                Assert.Equal(rows.Count, (await _f.Provider.AcquireImmediateTimeTickersAsync(requested)).Length);
+            }
+            Assert.Equal(5 - seen.Count, await _f.TimeTickers.CountDocumentsAsync(
+                x => x.ParentId == null && x.Status == TickerStatus.Idle));
+        }
+        Assert.Equal(5, seen.Count);
+    }
+
+    [Fact]
+    public async Task Dashboard_metadata_preserves_child_filters_counts_and_partitioned_chain_summaries()
+    {
+        var root = new TimeTickerEntity { Function = "chain", Request = new byte[1024 * 1024],
+            Children = [new TimeTickerEntity { Function = "child", Request = new byte[1024 * 1024],
+                Children = [new TimeTickerEntity { Function = "leaf" }] }] };
+        await _f.Provider.AddTimeTickers([root, new TimeTickerEntity { Function = "single" }], CancellationToken.None);
+        await _f.TimeTickers.InsertOneAsync(new TimeTickerEntity { Function = "foreign", ApplicationNamespaceKey = "other" });
+        var dashboard = new TickerQ.Utilities.Infrastructure.TickerDashboardDataService<TimeTickerEntity, CronTickerEntity>(_f.Provider);
+        var chains = await dashboard.GetTimeTickersFlatAsync(new TickerQ.Utilities.DashboardDtos.TimeTickerQueryFilter { HasChildren = true });
+        var chain = Assert.Single(chains.Items);
+        Assert.Equal(root.Id, chain.Id);
+        Assert.Equal(1, chains.TotalCount);
+        Assert.Equal(1, chain.ChildCount);
+        Assert.Equal(3, chain.ChainSummary.TotalCount);
+        var singles = await dashboard.GetTimeTickersFlatAsync(new TickerQ.Utilities.DashboardDtos.TimeTickerQueryFilter { HasChildren = false });
+        Assert.Equal("single", Assert.Single(singles.Items).FunctionName);
+        Assert.Equal(1, singles.TotalCount);
+        Assert.Equal(1024 * 1024, (await _f.Provider.GetTimeTickerById(root.Id, default)).Request.Length);
+    }
+
     [Fact]
     public async Task DropAllAsync_CreatesFreshProviderAndSchedulerOptions()
     {

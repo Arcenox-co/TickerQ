@@ -43,3 +43,21 @@ It does **not** restore obsolete HTTP function registration, Hub webhooks, queue
 - Context updates go through `IInternalTickerManager.UpdateTickerAsync`, never directly to a provider. Invalid payloads return `400`, stale/non-acknowledged fenced writes `409`, unsupported result providers `501`, and unexpected failures `500`. Node treats non-2xx completion acknowledgement as an execution failure.
 
 The upstream Hub/dispatcher must include the acquired row's `AcquisitionToken` in every inbound Node execution payload. A Hub version that omits it is intentionally incompatible with the secure default and must be upgraded before enabling this bridge.
+
+### In-memory log and tunnel limits
+
+Remote log tails retain at most 1,000 executions, 500 lines per execution, and
+16 MiB of accounted string/object memory across all executions. Messages are
+clipped to 4,096 UTF-16 characters and metadata fields to 512, preserving surrogate
+pairs. The buffer evicts least recently written executions when a global limit is
+reached; a periodic sweep removes tails idle for 30 minutes. Lifecycle deduplication
+also expires after 30 minutes and retains at most 4,096 executions. A new execution
+generation or restart resets terminal-event deduplication for a reused ticker ID.
+
+Each tunnel connection has a best-effort outbound notification/report queue capped
+at 256 frames and 2 MiB, including its in-flight frame. Excess frames are dropped;
+`TunnelClientHostedService.DroppedNotifications` includes overflow, disconnection,
+and failed-write drops. Accepted notifications preserve enqueue order. Disconnect
+cancels the writer and discards queued frames, and dashboard refreshes recover the
+current persisted state. Inbound dashboard calls have at most 16 concurrent replay
+operations so slow responses cannot accumulate unlimited tasks.

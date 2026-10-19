@@ -11,7 +11,7 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
-    internal class EfTickerQueryable<TDbContext, TEntity> : ITickerQueryable<TEntity>
+    internal class EfTickerQueryable<TDbContext, TEntity> : ITickerProjectionQueryable<TEntity>
         where TDbContext : DbContext
         where TEntity : class
     {
@@ -102,6 +102,27 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .ConfigureAwait(false);
 
             return new PaginationResult<TEntity>(items, count, pageNumber, pageSize);
+        }
+
+        public async Task<TResult[]> ToArrayAsync<TResult>(Expression<Func<TEntity, TResult>> selector,
+            CancellationToken cancellationToken = default)
+        {
+            using var session = await DbContextLease<TDbContext>.CreateAsync(_serviceProvider, cancellationToken).ConfigureAwait(false);
+            return await BuildQuery(session.Context).AsNoTracking().Select(selector)
+                .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<PaginationResult<TResult>> ToPaginatedAsync<TResult>(Expression<Func<TEntity, TResult>> selector,
+            int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+        {
+            pageNumber = Math.Max(1, pageNumber);
+            pageSize = Math.Clamp(pageSize, 1, 1000);
+            using var session = await DbContextLease<TDbContext>.CreateAsync(_serviceProvider, cancellationToken).ConfigureAwait(false);
+            var query = BuildQuery(session.Context).AsNoTracking();
+            var count = await query.CountAsync(cancellationToken).ConfigureAwait(false);
+            var items = await query.Skip((pageNumber - 1) * pageSize).Take(pageSize)
+                .Select(selector).ToArrayAsync(cancellationToken).ConfigureAwait(false);
+            return new PaginationResult<TResult>(items, count, pageNumber, pageSize);
         }
 
         private IQueryable<TEntity> BuildQuery(DbContext context)

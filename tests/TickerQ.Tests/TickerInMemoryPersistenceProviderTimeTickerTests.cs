@@ -56,6 +56,39 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
 
     #region Helpers
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcquisitionBatchLimit_PreservesChildrenAndLeavesRemainingRootsEligible(bool immediate)
+    {
+        using var services = new ServiceCollection().AddSingleton(_clock)
+            .AddSingleton(new SchedulerOptionsBuilder { AcquisitionBatchSize = 2 })
+            .BuildServiceProvider();
+        var provider = new TickerInMemoryPersistenceProvider<FakeTimeTicker, FakeCronTicker>(services);
+        var roots = Enumerable.Range(0, 7).Select(_ => CreateTicker()).ToArray();
+        foreach (var root in roots)
+            root.Children.Add(CreateTicker(useDefaultExecutionTime: false));
+        await provider.AddTimeTickers(roots);
+        var observed = new HashSet<Guid>();
+        while (observed.Count < roots.Length)
+        {
+            var remainingIds = roots.Where(root => !observed.Contains(root.Id)).Select(root => root.Id).ToArray();
+            var batch = immediate
+                ? await provider.AcquireImmediateTimeTickersAsync(remainingIds)
+                : await provider.GetEarliestTimeTickers();
+            Assert.InRange(batch.Length, 1, 2);
+            foreach (var item in batch)
+            {
+                Assert.True(observed.Add(item.Id));
+                Assert.Single(item.Children);
+            }
+            if (!immediate)
+                Assert.Equal(batch.Length, (await provider.AcquireImmediateTimeTickersAsync(
+                    batch.Select(item => item.Id).ToArray())).Length);
+        }
+        Assert.Empty(await provider.GetEarliestTimeTickers());
+    }
+
     [Fact]
     public async Task CancelPending_CancelsEntirePendingSubtree_AndRejectsQueuedSnapshot()
     {

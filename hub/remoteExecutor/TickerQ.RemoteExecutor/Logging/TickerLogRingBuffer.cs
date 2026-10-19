@@ -1,13 +1,9 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 
 namespace TickerQ.RemoteExecutor.Logging;
 
-/// <summary>
-/// One execution log line. Plain DTO — the buffer never stores protobuf-generated
-/// types directly so this layer doesn't depend on the gRPC code-gen.
-/// </summary>
+/// <summary>A log line received from an SDK or emitted by the scheduler.</summary>
 public sealed class TickerLogLine
 {
     public Guid TickerId { get; init; }
@@ -21,86 +17,131 @@ public sealed class TickerLogLine
 }
 
 /// <summary>
-/// Per-ticker in-memory ring buffer of recent log lines. Captures SDK ILogger
-/// output forwarded over the worker stream plus any scheduler-side lifecycle
-/// events. Used by the dashboard panel's tail-on-open hydration; live tailing
-/// goes through the existing tunnel notification fan-out and doesn't read here.
-///
-/// Bounded per ticker (default 500 lines) and time-decayed by
-/// <see cref="TickerLogRingBufferSweeper"/>.
+/// Recent logs, bounded by lines per execution, execution count and retained bytes.
+/// Least recently written executions are evicted first. Sparse executions allocate
+/// only a small queue, rather than an entire 500-line ring.
 /// </summary>
 public sealed class TickerLogRingBuffer
 {
-    private readonly ConcurrentDictionary<Guid, RingState> _byTicker = new();
+    public const int MaximumMessageCharacters = 4096;
+    public const int MaximumMetadataCharacters = 512;
+    private readonly object _gate = new();
+    private readonly Dictionary<Guid, RingState> _byTicker = new();
+    private readonly LinkedList<Guid> _oldest = new();
     private readonly int _capacity;
+    private readonly int _maxExecutions;
+    private readonly long _maxBytes;
+    private long _bytes;
+    private long _evicted;
 
-    public TickerLogRingBuffer(int capacity = 500)
+    public TickerLogRingBuffer(int capacity = 500, int maxExecutions = 1000, long maxBytes = 16 * 1024 * 1024)
     {
         if (capacity <= 0) throw new ArgumentOutOfRangeException(nameof(capacity));
+        if (maxExecutions <= 0) throw new ArgumentOutOfRangeException(nameof(maxExecutions));
+        if (maxBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxBytes));
         _capacity = capacity;
+        _maxExecutions = maxExecutions;
+        _maxBytes = maxBytes;
     }
+
+    public int ExecutionCount { get { lock (_gate) return _byTicker.Count; } }
+    public long BufferedBytes { get { lock (_gate) return _bytes; } }
+    public long EvictedExecutions { get { lock (_gate) return _evicted; } }
 
     public void Append(TickerLogLine line)
     {
         if (line == null || line.TickerId == Guid.Empty) return;
-        var state = _byTicker.GetOrAdd(line.TickerId, _ => new RingState(_capacity));
-        state.Append(line);
+        line = Normalize(line);
+        var bytes = Size(line);
+        lock (_gate)
+        {
+            if (bytes > _maxBytes) return;
+            if (!_byTicker.TryGetValue(line.TickerId, out var state))
+            {
+                while (_byTicker.Count >= _maxExecutions) EvictOldest();
+                state = new RingState(_oldest.AddLast(line.TickerId));
+                _byTicker.Add(line.TickerId, state);
+            }
+            else
+            {
+                _oldest.Remove(state.Node);
+                _oldest.AddLast(state.Node);
+            }
+            if (state.Lines.Count == _capacity)
+            {
+                var removedBytes = Size(state.Lines.Dequeue());
+                state.Bytes -= removedBytes;
+                _bytes -= removedBytes;
+            }
+            state.Lines.Enqueue(line);
+            state.LastTouchedUtc = DateTime.UtcNow;
+            state.Bytes += bytes;
+            _bytes += bytes;
+            while (_bytes > _maxBytes) EvictOldest();
+        }
     }
 
     public IReadOnlyList<TickerLogLine> GetTail(Guid tickerId)
     {
-        return _byTicker.TryGetValue(tickerId, out var state)
-            ? state.Snapshot()
-            : Array.Empty<TickerLogLine>();
+        lock (_gate)
+            return _byTicker.TryGetValue(tickerId, out var state) ? state.Lines.ToArray() : Array.Empty<TickerLogLine>();
     }
 
-    /// <summary>Drop entries whose last-touched timestamp is older than <paramref name="cutoffUtc"/>.</summary>
+    /// <summary>Drop entries last written before the cutoff.</summary>
     public int Sweep(DateTime cutoffUtc)
     {
-        var evicted = 0;
-        foreach (var kv in _byTicker)
+        lock (_gate)
         {
-            if (kv.Value.LastTouchedUtc < cutoffUtc &&
-                _byTicker.TryRemove(kv.Key, out _))
+            var evicted = 0;
+            while (_oldest.First is { } first && _byTicker[first.Value].LastTouchedUtc < cutoffUtc)
             {
+                EvictOldest();
                 evicted++;
             }
+            return evicted;
         }
-        return evicted;
     }
 
-    private sealed class RingState
+    internal static TickerLogLine Normalize(TickerLogLine line)
     {
-        private readonly TickerLogLine[] _ring;
-        private readonly object _lock = new();
-        private int _next;
-        private int _count;
-
-        public DateTime LastTouchedUtc { get; private set; } = DateTime.UtcNow;
-
-        public RingState(int capacity) { _ring = new TickerLogLine[capacity]; }
-
-        public void Append(TickerLogLine line)
+        if (line.Message is { Length: <= MaximumMessageCharacters } && line.Source is { Length: <= MaximumMetadataCharacters } &&
+            line.Category is { Length: <= MaximumMetadataCharacters } && line.FunctionName is { Length: <= MaximumMetadataCharacters })
+            return line;
+        return new TickerLogLine
         {
-            lock (_lock)
-            {
-                _ring[_next] = line;
-                _next = (_next + 1) % _ring.Length;
-                if (_count < _ring.Length) _count++;
-                LastTouchedUtc = DateTime.UtcNow;
-            }
-        }
+            TickerId = line.TickerId, TickerType = line.TickerType, UnixMs = line.UnixMs, Level = line.Level,
+            Message = Clip(line.Message, MaximumMessageCharacters), Source = Clip(line.Source, MaximumMetadataCharacters),
+            Category = Clip(line.Category, MaximumMetadataCharacters), FunctionName = Clip(line.FunctionName, MaximumMetadataCharacters)
+        };
+    }
 
-        public IReadOnlyList<TickerLogLine> Snapshot()
-        {
-            lock (_lock)
-            {
-                var result = new TickerLogLine[_count];
-                var start = _count < _ring.Length ? 0 : _next;
-                for (var i = 0; i < _count; i++)
-                    result[i] = _ring[(start + i) % _ring.Length];
-                return result;
-            }
-        }
+    internal static string Clip(string? text, int maximum)
+    {
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        if (text.Length <= maximum) return text;
+        var length = maximum - 1;
+        if (length > 0 && char.IsHighSurrogate(text[length - 1])) length--;
+        return text.Substring(0, length) + "…";
+    }
+
+    // UTF-16 strings plus a conservative allowance for each line, queue slot and string headers.
+    private static long Size(TickerLogLine line) => 256L + 2L *
+        (line.Message.Length + line.Source.Length + line.Category.Length + line.FunctionName.Length);
+
+    private void EvictOldest()
+    {
+        var first = _oldest.First!;
+        _bytes -= _byTicker[first.Value].Bytes;
+        _byTicker.Remove(first.Value);
+        _oldest.RemoveFirst();
+        _evicted++;
+    }
+
+    private sealed class RingState(LinkedListNode<Guid> node)
+    {
+        public readonly LinkedListNode<Guid> Node = node;
+        public readonly Queue<TickerLogLine> Lines = new(4);
+        public long Bytes;
+        public DateTime LastTouchedUtc;
     }
 }

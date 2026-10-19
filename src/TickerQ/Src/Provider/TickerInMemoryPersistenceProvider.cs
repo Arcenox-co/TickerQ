@@ -175,6 +175,7 @@ namespace TickerQ.Provider
         private readonly string _lockHolder;
         private readonly TimeSpan _leaseDuration;
         private readonly int _fallbackBatchSize;
+        private readonly int _acquisitionBatchSize;
         private readonly TimeSpan _retirementGracePeriod;
         private readonly long _reconciliationEpoch;
         private readonly string _runtimeActivationScopeKey;
@@ -187,6 +188,7 @@ namespace TickerQ.Provider
             var optionsBuilder = serviceProvider.GetService<SchedulerOptionsBuilder>();
             _lockHolder = optionsBuilder?.ExecutionOwnerId ?? $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
             _fallbackBatchSize = optionsBuilder?.FallbackBatchSize ?? 100;
+            _acquisitionBatchSize = optionsBuilder?.AcquisitionBatchSize ?? 100;
             _leaseDuration = optionsBuilder?.LeaseDuration ?? TimeSpan.FromMinutes(1);
             _retirementGracePeriod = optionsBuilder?.DefinedCronRetirementGracePeriod ?? TimeSpan.FromHours(24);
             _reconciliationEpoch = optionsBuilder?.ReconciliationEpoch ?? 1;
@@ -831,10 +833,8 @@ namespace TickerQ.Provider
                 var baseQuery = TimeTickers.Values
                     .Where(x => x.ExecutionTime != null)
                     .Where(CanAcquire)
-                    .Where(x => x.ExecutionTime >= oneSecondAgo)
-                    .ToArray();
-                var minExecutionTime = baseQuery.OrderBy(x => x.ExecutionTime)
-                    .Select(x => x.ExecutionTime).FirstOrDefault();
+                    .Where(x => x.ExecutionTime >= oneSecondAgo);
+                var minExecutionTime = baseQuery.Min(x => x.ExecutionTime);
                 if (minExecutionTime == null) return Array.Empty<TimeTickerEntity>();
                 var minSecond = new DateTime(
                     minExecutionTime.Value.Year, minExecutionTime.Value.Month, minExecutionTime.Value.Day,
@@ -843,7 +843,8 @@ namespace TickerQ.Provider
                 var maxExecutionTime = minSecond.AddSeconds(1);
                 return baseQuery
                     .Where(x => x.ExecutionTime >= minSecond && x.ExecutionTime < maxExecutionTime)
-                    .OrderBy(x => x.ExecutionTime)
+                    .OrderBy(x => x.ExecutionTime).ThenBy(x => x.Id)
+                    .Take(_acquisitionBatchSize)
                     .Select(ForQueueTimeTickers)
                     .ToArray();
             }));
@@ -991,6 +992,7 @@ namespace TickerQ.Provider
                 var acquired = new List<TimeTickerEntity>();
                 foreach (var id in ids)
                 {
+                    if (acquired.Count == _acquisitionBatchSize) break;
                     cancellationToken.ThrowIfCancellationRequested();
                     if (!TimeTickers.TryGetValue(id, out var ticker) || !CanAcquire(ticker))
                         continue;
@@ -3220,12 +3222,14 @@ namespace TickerQ.Provider
         public ITickerQueryable<TCronTicker> CronTickersQuery()
         {
             return new InMemoryTickerQueryable<TCronTicker>(_ =>
+                Task.FromResult(ReadGraph(() => CronTickers.Values.ToList())), _ =>
                 Task.FromResult(ReadGraph(() => CronTickers.Values.ToList())));
         }
 
         public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
         {
             return new InMemoryTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>(_ =>
+                Task.FromResult(ReadGraph(() => CronOccurrences.Values.ToList())), _ =>
                 Task.FromResult(ReadGraph(() => CronOccurrences.Values.ToList())));
         }
 

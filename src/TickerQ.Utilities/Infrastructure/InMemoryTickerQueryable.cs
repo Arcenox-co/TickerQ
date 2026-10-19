@@ -15,9 +15,11 @@ namespace TickerQ.Utilities.Infrastructure
     /// Loads all entities via the provided loader, then applies filters/sort/pagination in-memory.
     /// Suitable for Redis, in-memory, or any provider that doesn't have a native query pipeline.
     /// </summary>
-    public sealed class InMemoryTickerQueryable<TEntity> : ITickerQueryable<TEntity>
+    public sealed class InMemoryTickerQueryable<TEntity> : ITickerProjectionQueryable<TEntity>
     {
         private readonly Func<CancellationToken, Task<List<TEntity>>> _loader;
+        private readonly Func<CancellationToken, Task<List<TEntity>>> _projectionLoader;
+        public bool SupportsProjection => _projectionLoader != null;
         private readonly Func<IQueryable<TEntity>, IQueryable<TEntity>> _pipeline;
 
         /// <param name="loader">
@@ -25,22 +27,30 @@ namespace TickerQ.Utilities.Infrastructure
         /// Called once when a terminal method (ToArrayAsync, FirstOrDefaultAsync, etc.) is invoked.
         /// </param>
         public InMemoryTickerQueryable(Func<CancellationToken, Task<List<TEntity>>> loader)
-            : this(loader, q => q)
+            : this(loader, q => q, null)
+        {
+        }
+
+        public InMemoryTickerQueryable(Func<CancellationToken, Task<List<TEntity>>> loader,
+            Func<CancellationToken, Task<List<TEntity>>> projectionLoader)
+            : this(loader, q => q, projectionLoader)
         {
         }
 
         private InMemoryTickerQueryable(
             Func<CancellationToken, Task<List<TEntity>>> loader,
-            Func<IQueryable<TEntity>, IQueryable<TEntity>> pipeline)
+            Func<IQueryable<TEntity>, IQueryable<TEntity>> pipeline,
+            Func<CancellationToken, Task<List<TEntity>>> projectionLoader)
         {
             _loader = loader;
             _pipeline = pipeline;
+            _projectionLoader = projectionLoader;
         }
 
         private InMemoryTickerQueryable<TEntity> Append(Func<IQueryable<TEntity>, IQueryable<TEntity>> step)
         {
             var currentPipeline = _pipeline;
-            return new InMemoryTickerQueryable<TEntity>(_loader, q => step(currentPipeline(q)));
+            return new InMemoryTickerQueryable<TEntity>(_loader, q => step(currentPipeline(q)), _projectionLoader);
         }
 
         public ITickerQueryable<TEntity> Where(Expression<Func<TEntity, bool>> predicate)
@@ -80,6 +90,25 @@ namespace TickerQ.Utilities.Infrastructure
         {
             var items = await _loader(cancellationToken).ConfigureAwait(false);
             return _pipeline(items.AsQueryable()).Count();
+        }
+
+        public async Task<TResult[]> ToArrayAsync<TResult>(Expression<Func<TEntity, TResult>> selector,
+            CancellationToken cancellationToken = default)
+        {
+            var items = await (_projectionLoader ?? _loader)(cancellationToken).ConfigureAwait(false);
+            return _pipeline(items.AsQueryable()).Select(selector).ToArray();
+        }
+
+        public async Task<PaginationResult<TResult>> ToPaginatedAsync<TResult>(Expression<Func<TEntity, TResult>> selector,
+            int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+        {
+            pageNumber = Math.Max(1, pageNumber);
+            pageSize = Math.Clamp(pageSize, 1, 1000);
+            var items = await (_projectionLoader ?? _loader)(cancellationToken).ConfigureAwait(false);
+            var query = _pipeline(items.AsQueryable());
+            var count = query.Count();
+            var page = query.Skip((pageNumber - 1) * pageSize).Take(pageSize).Select(selector).ToArray();
+            return new PaginationResult<TResult>(page, count, pageNumber, pageSize);
         }
 
         public async Task<PaginationResult<TEntity>> ToPaginatedAsync(

@@ -298,6 +298,13 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
     private void SetupSetOperations()
     {
+        _db.SetScanAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<int>(),
+                Arg.Any<long>(), Arg.Any<int>(), Arg.Any<CommandFlags>())
+            .Returns(callInfo => ScanMembers(callInfo.ArgAt<RedisKey>(0)));
+        _db.SetContainsAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<CommandFlags>())
+            .Returns(callInfo => _sets.TryGetValue((string)callInfo.ArgAt<RedisKey>(0), out var set) &&
+                                 set.Contains((string)callInfo.ArgAt<RedisValue>(1)));
+
         _db.SetMembersAsync(Arg.Any<RedisKey>(), Arg.Any<CommandFlags>())
             .Returns(callInfo =>
             {
@@ -324,6 +331,13 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
             });
     }
 
+    private async IAsyncEnumerable<RedisValue> ScanMembers(RedisKey key)
+    {
+        if (_sets.TryGetValue((string)key, out var set))
+            foreach (var member in set) yield return member;
+        await Task.CompletedTask;
+    }
+
     private void SetupSortedSetOperations()
     {
         _db.SortedSetRangeByScoreAsync(Arg.Any<RedisKey>(), Arg.Any<double>(), Arg.Any<double>(),
@@ -333,9 +347,18 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                 var key = (string)callInfo.ArgAt<RedisKey>(0);
                 var min = callInfo.ArgAt<double>(1);
                 var max = callInfo.ArgAt<double>(2);
+                var exclude = callInfo.ArgAt<Exclude>(3);
+                var order = callInfo.ArgAt<Order>(4);
+                var skip = callInfo.ArgAt<long>(5);
+                var take = callInfo.ArgAt<long>(6);
                 if (!_sortedSets.TryGetValue(key, out var ss)) return Array.Empty<RedisValue>();
-                return ss.Where(kv => kv.Key >= min && kv.Key <= max)
-                    .Select(kv => (RedisValue)kv.Value).ToArray();
+                var rows = ss.Where(kv =>
+                    (exclude.HasFlag(Exclude.Start) ? kv.Key > min : kv.Key >= min) &&
+                    (exclude.HasFlag(Exclude.Stop) ? kv.Key < max : kv.Key <= max));
+                if (order == Order.Descending) rows = rows.Reverse();
+                rows = rows.Skip((int)skip);
+                if (take >= 0) rows = rows.Take((int)take);
+                return rows.Select(kv => (RedisValue)kv.Value).ToArray();
             });
 
         _db.SortedSetRangeByScoreWithScoresAsync(Arg.Any<RedisKey>(), Arg.Any<double>(), Arg.Any<double>(),
@@ -2555,6 +2578,68 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     // =========================================================================
     // 20. Pagination
     // =========================================================================
+
+    [Fact]
+    public async Task QueryScan_DeduplicatesRepeatedMembers_ForPagesCountsAndFullResults()
+    {
+        var tickers = Enumerable.Range(0, 5)
+            .Select(i => CreateTimeTicker(executionTime: _fixedNow.AddMinutes(i))).ToArray();
+        foreach (var ticker in tickers) SeedTimeTicker(ticker);
+        _db.SetScanAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<int>(),
+                Arg.Any<long>(), Arg.Any<int>(), Arg.Any<CommandFlags>())
+            .Returns(_ => RepeatedMembers());
+
+        var page = await _provider.TimeTickersQuery().OrderBy(row => row.ExecutionTime).ToPaginatedAsync(2, 3);
+        Assert.Equal(5, page.TotalCount);
+        Assert.Equal(tickers.Skip(3).Select(row => row.Id), page.Items.Select(row => row.Id));
+        var all = await _provider.GetTimeTickers(null!, CancellationToken.None);
+        Assert.Equal(5, all.ToDictionary(row => row.Id).Count);
+
+        async IAsyncEnumerable<RedisValue> RepeatedMembers()
+        {
+            foreach (var ticker in tickers) yield return ticker.Id.ToString();
+            foreach (var ticker in tickers.Reverse()) yield return ticker.Id.ToString();
+            await Task.CompletedTask;
+        }
+    }
+
+    [Fact]
+    public async Task QueryPagination_UsesBoundedMgetBatches_AndNeverLoadsAllSetMembers()
+    {
+        for (var i = 0; i < 420; i++)
+        {
+            var ticker = CreateTimeTicker(executionTime: _fixedNow.AddMinutes(i));
+            ticker.Request = new byte[8 * 1024];
+            SeedTimeTicker(ticker);
+        }
+        _db.ClearReceivedCalls();
+
+        var page = await _provider.TimeTickersQuery().OrderByDescending(row => row.ExecutionTime)
+            .ToPaginatedAsync(2, 5);
+
+        Assert.Equal(420, page.TotalCount);
+        Assert.Equal(5, page.Items.Count());
+        await _db.DidNotReceive().SetMembersAsync(Arg.Any<RedisKey>(), Arg.Any<CommandFlags>());
+        await _db.DidNotReceive().StringGetAsync(
+            Arg.Is<RedisKey[]>(keys => keys.Length > RedisSerializer.ReadBatchSize), Arg.Any<CommandFlags>());
+        await _db.Received().StringGetAsync(
+            Arg.Is<RedisKey[]>(keys => keys.Length == RedisSerializer.ReadBatchSize), Arg.Any<CommandFlags>());
+    }
+
+    [Fact]
+    public async Task QueryIdEquality_UsesMembershipAndSingleGet_WithoutScanning()
+    {
+        var ticker = CreateTimeTicker();
+        SeedTimeTicker(ticker);
+        _db.ClearReceivedCalls();
+
+        var found = await _provider.TimeTickersQuery().Where(row => row.Id == ticker.Id).FirstOrDefaultAsync();
+
+        Assert.Equal(ticker.Id, found.Id);
+        _db.DidNotReceive().SetScanAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<int>(),
+            Arg.Any<long>(), Arg.Any<int>(), Arg.Any<CommandFlags>());
+        await _db.DidNotReceive().StringGetAsync(Arg.Any<RedisKey[]>(), Arg.Any<CommandFlags>());
+    }
 
     [Fact]
     public async Task GetTimeTickersPaginated_ReturnsPaginatedResults()
