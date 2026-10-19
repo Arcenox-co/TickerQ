@@ -101,7 +101,7 @@ public class TickerQTaskSchedulerTests
         int active = 0;
         int peak = 0;
         int started = 0;
-        var allDone = new CountdownEvent(10);
+        var allDone = new AsyncTestCountdown(10);
 
         try
         {
@@ -141,7 +141,7 @@ public class TickerQTaskSchedulerTests
 
             // Releasing the gate must let all ten complete (nothing dropped or stalled).
             gate.TrySetResult(true);
-            Assert.True(allDone.Wait(TimeSpan.FromSeconds(10)),
+            Assert.True(await allDone.WaitAsync(TimeSpan.FromSeconds(10)),
                 "All ten work items must complete after the gate is released.");
         }
         finally

@@ -16,15 +16,15 @@ public class TickerQTaskSchedulerAdvancedTests
         // LongRunning work runs on a dedicated long-running thread, but it still consumes
         // the same global max-concurrency budget as Normal work (it does not bypass it).
         var scheduler = new TickerQTaskScheduler(2);
-        var executed = new ManualResetEventSlim(false);
+        var executed = new AsyncTestCountdown(1);
 
         await scheduler.QueueAsync(_ =>
         {
-            executed.Set();
+            executed.Signal();
             return Task.CompletedTask;
         }, TickerTaskPriority.LongRunning);
 
-        Assert.True(executed.Wait(TimeSpan.FromSeconds(3)), "LongRunning task should have executed");
+        Assert.True(await executed.WaitAsync(TimeSpan.FromSeconds(3)), "LongRunning task should have executed");
         await scheduler.DisposeAsync();
     }
 
@@ -33,7 +33,7 @@ public class TickerQTaskSchedulerAdvancedTests
     {
         var scheduler = new TickerQTaskScheduler(4);
         var count = 20;
-        var counter = new CountdownEvent(count);
+        var counter = new AsyncTestCountdown(count);
 
         for (int i = 0; i < count; i++)
         {
@@ -44,7 +44,7 @@ public class TickerQTaskSchedulerAdvancedTests
             }, TickerTaskPriority.Normal);
         }
 
-        Assert.True(counter.Wait(TimeSpan.FromSeconds(5)), $"All {count} tasks should have completed");
+        Assert.True(await counter.WaitAsync(TimeSpan.FromSeconds(5)), $"All {count} tasks should have completed");
         await scheduler.DisposeAsync();
     }
 
@@ -159,7 +159,7 @@ public class TickerQTaskSchedulerAdvancedTests
     {
         var scheduler = new TickerQTaskScheduler(8);
         var taskCount = 150;
-        var counter = new CountdownEvent(taskCount);
+        var counter = new AsyncTestCountdown(taskCount);
 
         var queueTasks = new Task[taskCount];
         for (int i = 0; i < taskCount; i++)
@@ -173,7 +173,7 @@ public class TickerQTaskSchedulerAdvancedTests
 
         await Task.WhenAll(queueTasks);
 
-        Assert.True(counter.Wait(TimeSpan.FromSeconds(10)),
+        Assert.True(await counter.WaitAsync(TimeSpan.FromSeconds(10)),
             $"All {taskCount} tasks should complete. Remaining: {counter.CurrentCount}");
         await scheduler.DisposeAsync();
     }
@@ -267,14 +267,14 @@ public class TickerQTaskSchedulerAdvancedTests
         var scheduler = new TickerQTaskScheduler(4, idleWorkerTimeout: TimeSpan.FromMilliseconds(200));
 
         // Queue a single task
-        var done = new ManualResetEventSlim(false);
+        var done = new AsyncTestCountdown(1);
         await scheduler.QueueAsync(_ =>
         {
-            done.Set();
+            done.Signal();
             return Task.CompletedTask;
         }, TickerTaskPriority.Normal);
 
-        Assert.True(done.Wait(TimeSpan.FromSeconds(2)), "Task should complete");
+        Assert.True(await done.WaitAsync(TimeSpan.FromSeconds(2)), "Task should complete");
 
         // Immediately after task execution, check diagnostics shows worker info
         var diagnostics = scheduler.GetDiagnostics();
@@ -312,7 +312,7 @@ public class TickerQTaskSchedulerAdvancedTests
         int active = 0;
         int peak = 0;
         int started = 0;
-        var allDone = new CountdownEvent(10);
+        var allDone = new AsyncTestCountdown(10);
 
         try
         {
@@ -350,7 +350,7 @@ public class TickerQTaskSchedulerAdvancedTests
 
             // Releasing the gate must let all ten LongRunning items complete.
             gate.TrySetResult(true);
-            Assert.True(allDone.Wait(TimeSpan.FromSeconds(10)),
+            Assert.True(await allDone.WaitAsync(TimeSpan.FromSeconds(10)),
                 "All ten LongRunning work items must complete after the gate is released.");
         }
         finally
@@ -374,7 +374,7 @@ public class TickerQTaskSchedulerAdvancedTests
         // Long idle timeout keeps worker threads alive after the queue drains.
         var scheduler = new TickerQTaskScheduler(2, idleWorkerTimeout: TimeSpan.FromSeconds(30));
 
-        var done = new CountdownEvent(3);
+        var done = new AsyncTestCountdown(3);
         try
         {
             for (int i = 0; i < 3; i++)
@@ -386,7 +386,7 @@ public class TickerQTaskSchedulerAdvancedTests
                 }, TickerTaskPriority.Normal);
             }
 
-            Assert.True(done.Wait(TimeSpan.FromSeconds(5)), "All queued work should have executed");
+            Assert.True(await done.WaitAsync(TimeSpan.FromSeconds(5)), "All queued work should have executed");
 
             // Let the queue counter settle to zero (bounded poll, not the primary signal).
             var deadline = DateTime.UtcNow.AddSeconds(2);

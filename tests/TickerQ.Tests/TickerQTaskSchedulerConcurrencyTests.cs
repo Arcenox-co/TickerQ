@@ -31,7 +31,7 @@ public class TickerQTaskSchedulerConcurrencyTests
     public async Task Counter_Settles_Exactly_Zero_After_Normal_Work()
     {
         await using var scheduler = new TickerQTaskScheduler(4);
-        var done = new CountdownEvent(50);
+        var done = new AsyncTestCountdown(50);
 
         for (int i = 0; i < 50; i++)
         {
@@ -42,7 +42,7 @@ public class TickerQTaskSchedulerConcurrencyTests
             }, TickerTaskPriority.Normal);
         }
 
-        Assert.True(done.Wait(TimeSpan.FromSeconds(10)), "All queued work should complete");
+        Assert.True(await done.WaitAsync(TimeSpan.FromSeconds(10)), "All queued work should complete");
 
         var (settled, minQueued) = await SettleAsync(scheduler, TimeSpan.FromSeconds(5));
         Assert.True(settled, "Counters must reach zero");
@@ -89,7 +89,7 @@ public class TickerQTaskSchedulerConcurrencyTests
 
         const int producers = 8;
         const int perProducer = 250;
-        var done = new CountdownEvent(producers * perProducer);
+        var done = new AsyncTestCountdown(producers * perProducer);
 
         int minQueued = int.MaxValue;
         using var samplerCts = new CancellationTokenSource();
@@ -123,7 +123,7 @@ public class TickerQTaskSchedulerConcurrencyTests
         }
 
         await Task.WhenAll(producerTasks);
-        Assert.True(done.Wait(TimeSpan.FromSeconds(30)), "All produced work should complete");
+        Assert.True(await done.WaitAsync(TimeSpan.FromSeconds(30)), "All produced work should complete");
 
         var (settled, sampledMin) = await SettleAsync(scheduler, TimeSpan.FromSeconds(5));
         samplerCts.Cancel();
@@ -151,7 +151,7 @@ public class TickerQTaskSchedulerConcurrencyTests
         var secondStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thirdStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         int active = 0, peak = 0, started = 0;
-        var allDone = new CountdownEvent(10);
+        var allDone = new AsyncTestCountdown(10);
 
         Func<CancellationToken, Task> body = async _ =>
         {
@@ -179,7 +179,7 @@ public class TickerQTaskSchedulerConcurrencyTests
             Assert.Equal(2, Volatile.Read(ref peak));
 
             gate.TrySetResult(true);
-            Assert.True(allDone.Wait(TimeSpan.FromSeconds(10)), "All ten mixed items must complete after release");
+            Assert.True(await allDone.WaitAsync(TimeSpan.FromSeconds(10)), "All ten mixed items must complete after release");
         }
         finally
         {
