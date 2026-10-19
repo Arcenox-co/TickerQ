@@ -32,7 +32,7 @@
 
 <p align="center">
   <a href="https://tickerq.net/docs/dashboard">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main-commercial/docs/images/dashboard-overview.png" alt="TickerQ dashboard showing scheduler health, execution statistics, history, and navigation to jobs, diagnostics, and integrations" width="1200" />
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard-overview.png" alt="TickerQ dashboard showing scheduler health, execution statistics, history, and navigation to jobs, diagnostics, and integrations" width="1200" />
   </a>
   <br />
   <sub>A local monitoring demo with simulated failures and recovery. Workspace labels are anonymized.</sub>
