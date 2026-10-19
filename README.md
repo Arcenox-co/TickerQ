@@ -18,8 +18,8 @@
 
 <p align="center">
   <a href="https://license.tickerq.net/register"><strong>Start for free</strong></a> ·
-  <a href="https://tickerq.net/docs">Documentation</a> ·
-  <a href="https://tickerq.net/docs/dashboard">Explore the dashboard</a> ·
+  <a href="https://tickerq.net/docs/5.x">Documentation</a> ·
+  <a href="https://tickerq.net/docs/5.x/dashboard/tour">Explore the dashboard</a> ·
   <a href="https://license.tickerq.net/pricing">View plans</a> ·
   <a href="https://github.com/Arcenox-co/TickerQ/releases">Releases</a>
 </p>
