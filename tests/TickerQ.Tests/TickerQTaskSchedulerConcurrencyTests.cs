@@ -627,7 +627,7 @@ public class TickerQTaskSchedulerConcurrencyTests
     [Fact]
     public async Task Disposal_Cancels_Cooperative_Active_Work()
     {
-        var scheduler = new TickerQTaskScheduler(2, idleWorkerTimeout: TimeSpan.FromSeconds(30));
+        await using var scheduler = new TickerQTaskScheduler(2, idleWorkerTimeout: TimeSpan.FromSeconds(30));
 
         var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var observedCancellation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -653,8 +653,16 @@ public class TickerQTaskSchedulerConcurrencyTests
 
         Assert.True(await WaitAsync(observedCancellation.Task, TimeSpan.FromSeconds(3)),
             "Cooperative active work must observe cancellation when the scheduler is disposed");
-        Assert.True(await WaitAsync(disposeTask, TimeSpan.FromSeconds(5)),
-            "Dispose should complete promptly once cooperative work cancels");
+        // Disposal itself has a five-second drain budget. Racing it against an equal
+        // test timeout makes timer/continuation scheduling on a busy runner decide the
+        // result. Allow scheduling headroom, then check that workers actually exited:
+        // returning only because the bounded drain expired must not pass this test.
+        Assert.True(await WaitAsync(disposeTask, TimeSpan.FromSeconds(10)),
+            $"Dispose should complete once cooperative work cancels. {scheduler.GetDiagnostics()}");
+        await disposeTask; // Observe disposal errors as well as completion.
+        Assert.Equal(0, scheduler.ActiveWorkers);
+        Assert.Equal(0, scheduler.ActiveExecutionCount);
+        Assert.Equal(0, scheduler.TotalQueuedTasks);
     }
 
     [Fact]
