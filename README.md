@@ -31,7 +31,7 @@
 > **Start for free.** Companies with annual consolidated gross revenue below **US$5 million** qualify for Community, including production use. Other eligible users include individuals, nonprofits, and education. [Check eligibility](#start-for-free) · [Get your license →](https://license.tickerq.net/register)
 
 <p align="center">
-  <a href="https://tickerq.net/docs/dashboard">
+  <a href="https://tickerq.net/docs/5.x/dashboard/tour">
     <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard-overview.png" alt="TickerQ dashboard showing scheduler health, execution statistics, history, and navigation to jobs, diagnostics, and integrations" width="1200" />
   </a>
   <br />
@@ -47,7 +47,7 @@
 - **Choose your storage.** Use EF Core, MongoDB, or Redis for persistence, with in-memory storage for development.
 - **Run across application instances.** Coordinate workers through a shared operational store, isolate workloads with application namespaces, and recover interrupted work.
 
-For example, a daily invoice workflow can **prepare invoices → generate PDFs → send them to customers**, with retries and execution history for each step. [Explore recurring chains →](docs/recurring-chains.md)
+For example, a daily invoice workflow can **prepare invoices → generate PDFs → send them to customers**, with retries and execution history for each step. [Explore recurring chains →](https://tickerq.net/docs/5.x/guides/recurring-chains)
 
 ## A dashboard for daily operations
 
@@ -65,11 +65,11 @@ Connect **Slack**, **Microsoft Teams**, or a **custom webhook** with `TickerQ.In
 
 Set a daily completion deadline, detect repeated failures, or flag jobs that run too long. Enable recovery messages when a monitored issue clears. OpenTelemetry instrumentation connects execution traces to your existing observability tools.
 
-[Explore integrations and monitoring →](src/TickerQ.Integrations)
+[Explore integrations and monitoring →](https://tickerq.net/docs/5.x/integrations)
 
 ## Packages
 
-Add the packages your application needs. Installation and configuration are covered in the [documentation](https://tickerq.net/docs).
+Add the packages your application needs. Installation and configuration are covered in the [documentation](https://tickerq.net/docs/5.x).
 
 | Package | Purpose |
 | --- | --- |
@@ -109,10 +109,10 @@ For client work, the client must qualify independently or hold a paid license. C
 
 ## Documentation and support
 
-Installation, configuration, and usage guides are available on the [documentation website](https://tickerq.net/docs).
+Installation, configuration, and usage guides are available on the [documentation website](https://tickerq.net/docs/5.x).
 
-- **Reference:** [API documentation](https://tickerq.net/docs/api-reference) and [release notes](https://github.com/Arcenox-co/TickerQ/releases).
-- **Deployment:** [reliability](docs/reliability.md), [storage upgrades](docs/upgrading-cron-time-tickers.md), and [dashboard security](docs/security.md).
+- **Reference:** [Manager API](https://tickerq.net/docs/5.x/guides/managers) and [release notes](https://tickerq.net/docs/5.x/changelog).
+- **Deployment:** [reliability](https://tickerq.net/docs/5.x/guides/reliability), [storage upgrades](https://tickerq.net/docs/5.x/guides/storage-upgrade), and [dashboard security](https://tickerq.net/docs/5.x/dashboard/authentication).
 - **Support:** [Discord community](https://discord.gg/ZJemWvp9MK) and [GitHub issues](https://github.com/Arcenox-co/TickerQ/issues).
 - **Contributions:** [contributing guide](CONTRIBUTING.md) and [CLA](CLA.md).
 
