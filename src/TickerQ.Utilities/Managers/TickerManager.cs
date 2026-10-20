@@ -2,7 +2,6 @@ using NCrontab;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -349,7 +348,8 @@ namespace TickerQ.Utilities.Managers
             {
                 var affectedRows = await _persistenceProvider.UpdateTimeTickers([timeTicker], cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                if (affectedRows <= 0) return new TickerResult<TTimeTicker>(timeTicker, affectedRows);
+                if (affectedRows <= 0) return new TickerResult<TTimeTicker>(new InvalidOperationException(
+                    "The ticker was not updated because it no longer exists or its execution state changed. Reload it before editing."));
                 await NotifyAsync(() => _notificationHubSender.UpdateTimeTickerNotifyAsync(timeTicker.Id)).ConfigureAwait(false);
                 return await CompleteMutationAsync(new TickerResult<TTimeTicker>(timeTicker, affectedRows), async () =>
                 {
@@ -581,7 +581,7 @@ namespace TickerQ.Utilities.Managers
             var snapshot = TickerFunctionProvider.Snapshot;
             var accepted = new List<(TTimeTicker Entity, TickerRequestValidationResult Validation)>();
             // Per-operation, reference-identity active-path set. A node reappearing while it is
-            // still on the current recursion stack is a cycle; a node reached again after it has
+            // still on the current traversal path is a cycle; a node reached again after it has
             // fully validated (shared DAG reference) is popped from the set and validates normally.
             var activePath = new HashSet<TTimeTicker>(ReferenceEqualityComparer.Instance);
 
@@ -606,35 +606,39 @@ namespace TickerQ.Utilities.Managers
             List<(TTimeTicker Entity, TickerRequestValidationResult Validation)> accepted,
             HashSet<TTimeTicker> activePath)
         {
-            if (entity is null)
-                return new TickerValidatorException("Ticker and chain children must not be null.");
-            if (entity.Children is null)
-                return new TickerValidatorException("Ticker Children must not be null. Use an empty collection for standalone jobs.");
-            if (!Enum.IsDefined(typeof(ChainDeleteBehavior), entity.DeleteBehavior))
-                return new TickerValidatorException("Unknown chain deletion behavior.");
-            if ((activePath.Count > 0 || entity.ParentId.HasValue) && entity.DeleteBehavior != ChainDeleteBehavior.Cascade)
-                return new TickerValidatorException("Set deletion behavior on the chain root only.");
-            // Reject cycles before recursing: an entity already on the active path would otherwise
-            // recurse forever and terminate the process with an uncatchable StackOverflowException.
-            if (!activePath.Add(entity))
-                return new TickerValidatorException(
-                    $"Cyclic time ticker graph detected for TickerFunction '{entity.Function}': " +
-                    "a ticker cannot appear within its own child hierarchy.");
-
-            var validation = TickerRequestPayloadValidator.Validate(snapshot, entity.Function, entity.Request);
-            if (!validation.IsValid)
-                return CreateRequestValidationException(entity.Function, validation);
-
-            accepted.Add((entity, validation));
-            foreach (var child in entity.Children)
+            var pending = new Stack<(TTimeTicker Entity, bool Exit)>();
+            pending.Push((entity, false));
+            while (pending.TryPop(out var item))
             {
-                if (ValidateTimeTickerGraph(child, snapshot, accepted, activePath) is { } error)
-                    return error;
-            }
+                var current = item.Entity;
+                if (item.Exit)
+                {
+                    activePath.Remove(current);
+                    continue;
+                }
+                if (current is null)
+                    return new TickerValidatorException("Ticker and chain children must not be null.");
+                if (current.Children is null)
+                    return new TickerValidatorException("Ticker Children must not be null. Use an empty collection for standalone jobs.");
+                if (!Enum.IsDefined(typeof(ChainDeleteBehavior), current.DeleteBehavior))
+                    return new TickerValidatorException("Unknown chain deletion behavior.");
+                if ((activePath.Count > 0 || current.ParentId.HasValue) && current.DeleteBehavior != ChainDeleteBehavior.Cascade)
+                    return new TickerValidatorException("Set deletion behavior on the chain root only.");
+                if (!activePath.Add(current))
+                    return new TickerValidatorException(
+                        $"Cyclic time ticker graph detected for TickerFunction '{current.Function}': " +
+                        "a ticker cannot appear within its own child hierarchy.");
 
-            // Pop on the way out so a node shared across sibling branches (a DAG, not a cycle)
-            // is not mistaken for an active-path cycle when reached again.
-            activePath.Remove(entity);
+                var validation = TickerRequestPayloadValidator.Validate(snapshot, current.Function, current.Request);
+                if (!validation.IsValid)
+                    return CreateRequestValidationException(current.Function, validation);
+                accepted.Add((current, validation));
+
+                // Exit markers preserve active-path cycle detection and shared DAG references
+                // without consuming the CLR stack for valid, deeply nested time chains.
+                pending.Push((current, true));
+                foreach (var child in current.Children.Reverse()) pending.Push((child, false));
+            }
             return null;
         }
 
@@ -664,33 +668,16 @@ namespace TickerQ.Utilities.Managers
 
         // Batch operations implementation
         private static void CacheFunctionReferences(Span<InternalFunctionContext> functions)
-        {
-            for (var i = 0; i < functions.Length; i++)
-            {
-                ref var context = ref functions[i];
-                if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
-                {
-                    context.CachedDelegate = tickerItem.Delegate;
-                    context.CachedPriority = tickerItem.Priority;
-                    context.CachedMaxConcurrency = tickerItem.MaxConcurrency;
-                }
-
-                if (context.TimeTickerChildren is { Count: > 0 })
-                {
-                    var childrenSpan = CollectionsMarshal.AsSpan(context.TimeTickerChildren);
-                    CacheFunctionReferences(childrenSpan);
-                }
-            }
-        }
+            => TickerExecutionContext.CacheFunctionReferences(functions);
 
         private InternalFunctionContext[] BuildImmediateContextsFromNonGeneric(IEnumerable<TimeTickerEntity> tickers)
         {
             return tickers.Select(BuildContextFromNonGeneric).ToArray();
         }
 
-        private InternalFunctionContext BuildContextFromNonGeneric(TimeTickerEntity ticker)
+        private InternalFunctionContext BuildContextFromNonGeneric(TimeTickerEntity root)
         {
-            return new InternalFunctionContext
+            return TimeTickerContextBuilder.Build(root, ticker => new InternalFunctionContext
             {
                 FunctionName = ticker.Function,
                 RuntimePartitionKey = _executionContext.RuntimePartition.StorageKey,
@@ -706,9 +693,8 @@ namespace TickerQ.Utilities.Managers
                 ChainRootId = ticker.ChainRootId,
                 ChainGeneration = ticker.ChainGeneration,
                 ExecutionTime = ticker.ExecutionTime ?? DateTime.UtcNow,
-                RunCondition = ticker.RunCondition ?? Enums.RunCondition.OnAnyCompletedStatus,
-                TimeTickerChildren = ticker.Children.Select(BuildContextFromNonGeneric).ToList()
-            };
+                RunCondition = ticker.RunCondition ?? Enums.RunCondition.OnAnyCompletedStatus
+            });
         }
 
         private async Task<TickerResult<List<TTimeTicker>>> AddTimeTickersBatchAsync(List<TTimeTicker> entities, CancellationToken cancellationToken = default)

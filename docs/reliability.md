@@ -100,6 +100,23 @@ lease ownership**. A node may only write a terminal result for a row it still ow
 - This prevents a slow or paused predecessor from overwriting a successor's result after
   the lease has been reclaimed.
 
+### Editing persisted time tickers
+
+Configuration updates in EF Core, MongoDB, and Redis compare the incoming execution
+snapshot with the current stored status, ownership, lease, and chain generation. An
+unowned Idle ticker can be edited normally. If execution advances after the ticker
+was read, the update fails without overwriting the newer state. Reload the ticker and
+reapply the intended configuration change. A missing ticker is never recreated by an
+update, and a rejected single-ticker update returns `IsSucceeded == false`.
+
+Use the dedicated acquisition, cancellation, and execution methods to change runtime
+state. MongoDB chain configuration updates require replica set transactions. Redis
+configuration edits preserve committed results and terminal evidence. General configuration
+updates do not reparent EF Core or Redis chains; use chain replacement to change their
+structure. MongoDB retains its transactional reparent operation for a complete terminal
+subtree between inactive roots, resolving the destination root and generation and
+rejecting cycles, foreign partitions, and stale execution snapshots.
+
 ### Lease renewal & stale-job recovery
 
 While a job is executing — or is *acquired and waiting* for a concurrency slot — its lease
@@ -265,6 +282,11 @@ ownership registrations. A retry delay or a chain between steps is still unfinis
 If the timeout is hit, the remaining counts are logged and abandoned jobs are recovered
 later through lease expiry.
 
+Acquired-job cancellation callbacks run asynchronously. A callback that blocks cannot hold
+host shutdown past its deadline: callback completion and queued-generation releases share
+a ten-second cleanup budget, bounded by the remaining host deadline. The cancellation source
+stays alive until its callbacks finish, including after shutdown stops waiting.
+
 The host shutdown deadline covers **all** services. Reserve time after scheduler drain for
 webhook delivery and execution-log persistence, for example:
 
@@ -319,11 +341,23 @@ When root admission is full, acquired rows are released for a later scan; a comm
 manager mutation remains successful. Roots beyond an acquisition batch remain in the store.
 The scheduler or overdue recovery acquires them later. Under sustained overload this can
 increase start latency; tune batch size and admission limits together with worker capacity.
+After rejected admission, overdue recovery waits for built-in scheduler capacity and its
+configured fallback interval before another acquisition attempt. Custom schedulers use the
+fallback interval. Saturation therefore does not cause a rapid acquire/release loop.
 
 Chain traversal retains pending steps as graph references rather than creating an async
 task and cancellation registration for every child at once. `InProgress` children remain
 eligible alongside their parent, subject to capacity. Deferred children still wait for the
 parent and its concurrent subtrees. There is no guarantee that all sibling steps run at once.
+
+Time-chain validation, execution-context construction, delegate caching, and in-memory graph
+operations use iterative traversal, so valid deep time chains do not consume a CLR stack
+frame per level. The whole graph still needs memory. Recurring cron-chain templates keep
+their separate limits of twenty child levels and five hundred jobs including the root.
+
+Exceptions from `ITickerExceptionHandler.HandleExceptionAsync` are logged separately from
+the failed job attempt. They do not consume extra retries, replace the original failure, or
+prevent the final job status from being persisted.
 
 These are count limits, not a hard process-memory budget. A root's entire graph and request
 data still need memory, and application handlers allocate their own data. Keep requests small

@@ -371,15 +371,19 @@ namespace TickerQ.Utilities.Infrastructure
         public async Task<IList<(TickerStatus Status, int Count)>> GetOverallStatusesAsync(
             CancellationToken cancellationToken = default)
         {
-            var timeTickers = await TimeMetadataQuery().ToArrayAsync(cancellationToken).ConfigureAwait(false);
-            var occurrences = await OccurrenceMetadataQuery().ToArrayAsync(cancellationToken).ConfigureAwait(false);
-
-            var combined = timeTickers.Select(x => x.Status).Concat(occurrences.Select(x => x.Status));
-
-            var statuses = Enum.GetValues<TickerStatus>();
-            var counts = combined.GroupBy(x => x).ToDictionary(g => g.Key, g => g.Count());
-
-            return statuses.Select(s => (s, counts.GetValueOrDefault(s, 0))).ToList();
+            IReadOnlyDictionary<TickerStatus, int> counts;
+            if (_persistence is ITickerDashboardStatisticsProvider statistics)
+                counts = await statistics.GetOverallJobStatusCountsAsync(cancellationToken).ConfigureAwait(false);
+            else
+            {
+                // Third-party providers retain their existing metadata/projection fallback.
+                var timeTickers = await TimeMetadataQuery().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+                var occurrences = await OccurrenceMetadataQuery().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+                counts = timeTickers.Select(x => x.Status).Concat(occurrences.Select(x => x.Status))
+                    .GroupBy(x => x).ToDictionary(g => g.Key, g => g.Count());
+            }
+            return Enum.GetValues<TickerStatus>().Select(status =>
+                (status, counts.TryGetValue(status, out var count) ? count : 0)).ToList();
         }
 
         public Task<IList<(string NodeName, int JobCount)>> GetNodeJobsAsync(

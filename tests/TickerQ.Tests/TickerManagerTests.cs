@@ -922,6 +922,17 @@ public partial class TickerManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateTimeTickerAsync_RejectedSnapshotReturnsFailure()
+    {
+        var ticker = new TimeTickerEntity { Function = ValidFunctionName, ExecutionTime = FixedUtcNow.AddMinutes(5) };
+        _persistenceProvider.UpdateTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>()).Returns(0);
+        var result = await _timeTickerManager.UpdateAsync(ticker, CancellationToken.None);
+        Assert.False(result.IsSucceeded);
+        Assert.Equal(0, result.AffectedRows);
+        Assert.Contains("execution state changed", result.Exception.Message);
+    }
+
+    [Fact]
     public async Task UpdateTimeTickerAsync_NullTicker_ReturnsFailureWithValidatorException()
     {
         var result = await _timeTickerManager.UpdateAsync(null!, CancellationToken.None);

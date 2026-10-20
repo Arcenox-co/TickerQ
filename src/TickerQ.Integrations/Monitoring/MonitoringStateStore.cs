@@ -25,6 +25,9 @@ internal sealed class MonitorState
     public DateTime? LastSuccessUtc { get; set; }
     public DateTime? ProcessedThroughUtc { get; set; }
     public DateTime? ReplayFromUtc { get; set; }
+    public List<MonitorExecution> SeenCompletions { get; set; } = [];
+    public bool ReplayTrackingInitialized { get; set; }
+    public DateTime? LastStreakBreakUtc { get; set; }
     public DateTime? LastDeadlineUtc { get; set; }
     public List<DateTime> ConsecutiveFailures { get; set; } = [];
     // One bounded observation batch per monitor. Drain it before observing another

@@ -15,6 +15,84 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     public Task InitializeAsync() => _f.DropAllAsync();
     public Task DisposeAsync() => Task.CompletedTask;
 
+    [Fact]
+    public async Task ConfigurationEdit_RejectsStaleIdleAndDeletedSnapshots()
+    {
+        var ticker = NewTimeTicker();
+        await _f.Provider.AddTimeTickers([ticker], CancellationToken.None);
+        ticker.Function = "edited";
+        Assert.Equal(1, await _f.Provider.UpdateTimeTickers([ticker]));
+        var acquired = Assert.Single(await _f.Provider.AcquireImmediateTimeTickersAsync([ticker.Id]));
+        ticker.Function = "stale";
+        Assert.Equal(0, await _f.Provider.UpdateTimeTickers([ticker]));
+        var persisted = await _f.Provider.GetTimeTickerById(ticker.Id);
+        Assert.Equal("edited", persisted.Function);
+        Assert.Equal(acquired.AcquisitionToken, persisted.AcquisitionToken);
+        await _f.TimeTickers.DeleteOneAsync(x => x.Id == ticker.Id);
+        Assert.Equal(0, await _f.Provider.UpdateTimeTickers([ticker]));
+        Assert.Null(await _f.Provider.GetTimeTickerById(ticker.Id));
+    }
+
+    [Fact]
+    public async Task ConfigurationEdit_RejectsStaleNestedLifecycleAndPreservesSeparateChildIdentity()
+    {
+        var root = NewTimeTicker();
+        root.Children = [NewTimeTicker()];
+        await _f.Provider.AddTimeTickers([root], CancellationToken.None);
+        var stale = await _f.Provider.GetTimeTickerById(root.Id);
+        var child = Assert.Single(stale.Children);
+        child.Function = "child-edited";
+        Assert.Equal(1, await _f.Provider.UpdateTimeTickers([child]));
+        var updatedChild = await _f.Provider.GetTimeTickerById(child.Id);
+        Assert.Equal(root.Id, updatedChild.ChainRootId);
+        Assert.Equal(root.Id, updatedChild.ParentId);
+        Assert.Equal("child-edited", updatedChild.Function);
+        var token = Guid.NewGuid();
+        await _f.TimeTickers.UpdateOneAsync(x => x.Id == child.Id,
+            Builders<TimeTickerEntity>.Update.Set(x => x.Status, TickerStatus.InProgress)
+                .Set(x => x.AcquisitionToken, token).Set(x => x.LeaseUntil, _f.FixedNow.AddMinutes(5)));
+        stale.Function = "must-not-write";
+        Assert.Equal(0, await _f.Provider.UpdateTimeTickers([stale]));
+        var persisted = await _f.Provider.GetTimeTickerById(root.Id);
+        Assert.Equal(root.Function, persisted.Function);
+        Assert.Equal(token, Assert.Single(persisted.Children).AcquisitionToken);
+    }
+
+    [Fact]
+    public async Task ConfigurationReparent_UsesDestinationRootGenerationAndRejectsCyclesForeignParentsAndStaleSnapshots()
+    {
+        var source = NewTimeTicker(status: TickerStatus.Done);
+        var child = NewTimeTicker(status: TickerStatus.Done);
+        var leaf = NewTimeTicker(status: TickerStatus.Done);
+        child.Children = [leaf];
+        source.Children = [child];
+        var destination = NewTimeTicker(status: TickerStatus.Done);
+        await _f.Provider.AddTimeTickers([source, destination], CancellationToken.None);
+        var generation = Guid.NewGuid();
+        await _f.TimeTickers.UpdateOneAsync(row => row.Id == destination.Id,
+            Builders<TimeTickerEntity>.Update.Set(row => row.ChainGeneration, generation));
+        var stale = await _f.Provider.GetTimeTickerById(child.Id);
+        var moved = await _f.Provider.GetTimeTickerById(child.Id);
+        moved.ParentId = leaf.Id;
+        Assert.Equal(0, await _f.Provider.UpdateTimeTickers([moved]));
+        moved.ParentId = Guid.NewGuid();
+        await _f.TimeTickers.InsertOneAsync(new TimeTickerEntity
+        {
+            Id = moved.ParentId.Value, ApplicationNamespaceKey = "foreign", Status = TickerStatus.Done
+        });
+        Assert.Equal(0, await _f.Provider.UpdateTimeTickers([moved]));
+        moved.ParentId = destination.Id;
+        Assert.Equal(2, await _f.Provider.UpdateTimeTickers([moved]));
+        var persisted = await _f.Provider.GetTimeTickerById(child.Id);
+        Assert.Equal(destination.Id, persisted.ParentId);
+        Assert.Equal(destination.Id, persisted.ChainRootId);
+        Assert.Equal(generation, persisted.ChainGeneration);
+        Assert.Equal(destination.Id, Assert.Single(persisted.Children).ChainRootId);
+        Assert.Equal(generation, Assert.Single(persisted.Children).ChainGeneration);
+        stale.Function = "must-not-write";
+        Assert.Equal(0, await _f.Provider.UpdateTimeTickers([stale]));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -73,6 +151,7 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
         Assert.Equal("single", Assert.Single(singles.Items).FunctionName);
         Assert.Equal(1, singles.TotalCount);
         Assert.Equal(1024 * 1024, (await _f.Provider.GetTimeTickerById(root.Id, default)).Request.Length);
+        Assert.Equal(4, (await _f.ConcreteProvider.GetOverallJobStatusCountsAsync())[TickerStatus.Idle]);
     }
 
     [Fact]

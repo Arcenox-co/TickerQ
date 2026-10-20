@@ -1,6 +1,6 @@
 import { parseAssistantEvent } from "../lib/assistant-stream.ts";
 import type { IntegrationRule, IntegrationMonitor } from "./integration-types";
-import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
+import { resolveDashboardUrl } from "@/lib/runtime-config";
 import { tokenStore } from "@/lib/auth/token-store";
 
 export interface ChatTurn {
@@ -66,9 +66,7 @@ export interface ProposalChainNode {
 }
 
 function apiUrl(path: string): string {
-  const root = normalizeBasePath(getRuntimeConfig().basePath);
-  const prefix = root === "/" ? "" : root;
-  return `${prefix}/api/assistant${path}`;
+  return resolveDashboardUrl(`/api/assistant${path}`);
 }
 
 function authHeaders(): Record<string, string> {

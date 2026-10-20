@@ -101,12 +101,13 @@ public partial class MonitoringTests
     {
         var config = Config("long_running"); config.Monitors[0].DurationSeconds = 5;
         var state = new MonitoringState(); Apply(state, config, new(Now, null, [], []));
-        Apply(state, config, new(Now.AddSeconds(30), Now.AddSeconds(21), [Completed(TickerStatus.Done, 21, 20000)], []));
+        var completed = Completed(TickerStatus.Done, 21, 20000);
+        Apply(state, config, new(Now.AddSeconds(30), Now.AddSeconds(21), [completed], []));
         AssertPair(state, "long_running");
         Assert.Equal(20, state.Deliveries[0].Message.ObservedDurationSeconds);
         Assert.Null(state.Deliveries[1].Message.ObservedDurationSeconds);
         state = Restart(state);
-        Apply(state, config, new(Now.AddSeconds(60), Now.AddSeconds(21), [Completed(TickerStatus.Done, 21, 20000)], []));
+        Apply(state, config, new(Now.AddSeconds(60), Now.AddSeconds(21), [completed], []));
         Assert.Equal(2, state.Deliveries.Count);
     }
 

@@ -22,6 +22,8 @@ internal sealed class AcquiredExecutionQueue : IDisposable
     private readonly ITickerQTaskScheduler _scheduler;
     private readonly ILogger _logger;
     private CancellationTokenSource _executionStop = new();
+    private readonly object _stopLock = new();
+    private Task _stopCallbacks;
     private readonly TickerQLicenseStateProvider _licenseState;
     private int _disposed;
     private readonly ConcurrentDictionary<Task, byte> _pendingReleases = new();
@@ -32,35 +34,73 @@ internal sealed class AcquiredExecutionQueue : IDisposable
 
     internal void Resume()
     {
-        if (!_executionStop.IsCancellationRequested) return;
-        _executionStop.Dispose();
-        _executionStop = new CancellationTokenSource();
+        lock (_stopLock)
+        {
+            if (_disposed != 0 || !_executionStop.IsCancellationRequested) return;
+            _ = DisposeSourceAfterCallbacksAsync(_executionStop, CancelExecutionAsync());
+            _executionStop = new CancellationTokenSource();
+            _stopCallbacks = null;
+        }
     }
 
-    internal void Stop()
+    internal void Stop() => _ = CancelExecutionAsync();
+
+    private Task CancelExecutionAsync()
     {
-        try { _executionStop.Cancel(); }
-        catch (AggregateException ex) { _logger.LogWarning(ex, "TickerQ job cancellation callback failed during shutdown"); }
+        lock (_stopLock)
+        {
+            // Mark cancellation immediately, but never execute arbitrary user callbacks
+            // on the host shutdown thread. Repeated stops observe the same callback task.
+            return _stopCallbacks ??= ObserveCallbacksAsync(_executionStop.CancelAsync());
+        }
     }
+
+    private async Task ObserveCallbacksAsync(Task callbacks)
+    {
+        try { await callbacks.ConfigureAwait(false); }
+        catch (Exception ex) { _logger.LogWarning(ex, "TickerQ job cancellation callback failed during shutdown"); }
+    }
+
+    private static async Task DisposeSourceAfterCallbacksAsync(CancellationTokenSource source, Task callbacks)
+    {
+        await callbacks.ConfigureAwait(false);
+        source.Dispose();
+    }
+
     internal async Task StopAsync(CancellationToken cancellationToken)
     {
-        Stop(); // Cancellation callbacks synchronously register their cleanup tasks.
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(10));
-        try { await Task.WhenAll(_pendingReleases.Keys.ToArray()).WaitAsync(deadline.Token).ConfigureAwait(false); }
+        try
+        {
+            // Finish registering queued cleanup before taking the snapshot. Both callback
+            // execution and persistence cleanup share the host's bounded shutdown wait.
+            await CancelExecutionAsync().WaitAsync(deadline.Token).ConfigureAwait(false);
+            await Task.WhenAll(_pendingReleases.Keys.ToArray()).WaitAsync(deadline.Token).ConfigureAwait(false);
+        }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested)
         { _logger.LogWarning("TickerQ acquired-job cleanup exceeded the shutdown deadline; stale recovery may be needed"); }
     }
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        Stop();
-        _executionStop.Dispose();
+        lock (_stopLock)
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            // A timed-out callback still owns its source. Dispose must also stay bounded;
+            // its eventual completion performs cleanup without blocking the host.
+            _ = DisposeSourceAfterCallbacksAsync(_executionStop, CancelExecutionAsync());
+        }
     }
 
     internal async Task<bool> PublishAsync(InternalFunctionContext[] functions, bool isDue, CancellationToken admissionToken)
     {
+        CancellationToken executionStop;
+        lock (_stopLock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            executionStop = _executionStop.Token;
+        }
         // Register the whole acquired batch before any queue-capacity wait. Executing work uses
         // the scheduler's drain lifetime, not the fallback scanner's earlier shutdown token.
         var pending = new List<(InternalFunctionContext Function, CancellationTokenSource Source, AcquiredExecutionLifecycle Life)>();
@@ -69,7 +109,7 @@ internal sealed class AcquiredExecutionQueue : IDisposable
             foreach (var function in functions)
             {
                 var source = TickerCancellationTokenManager.TryRegisterAcquired(function, isDue,
-                    out var conflict, _executionStop.Token);
+                    out var conflict, executionStop);
                 if (source == null)
                 {
                     if (conflict) await ReleaseAsync(function).ConfigureAwait(false);
@@ -77,7 +117,7 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                 }
                 var life = new AcquiredExecutionLifecycle(
                     new TickerExecutionKey(function.RuntimePartitionKey ?? TickerQRuntimePartition.LegacyGlobal.StorageKey,
-                        function.Type, function.TickerId), source, _executionStop.Token, admissionToken,
+                        function.Type, function.TickerId), source, executionStop, admissionToken,
                     owner => TrackCancellationReleaseAsync(owner, function));
                 pending.Add((function, source, life));
             }

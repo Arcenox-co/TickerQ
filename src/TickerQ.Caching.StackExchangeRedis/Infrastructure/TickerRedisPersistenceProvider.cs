@@ -48,11 +48,14 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
             new RedisValue[] { expectedVersion == Guid.Empty ? "" : expectedVersion.ToString(), record.Version.ToString(), record.ProtectedConfiguration }).ConfigureAwait(false) == 1;
     }
 
+    private static readonly string UpdateTimeTickerConfigurationScript = LuaScriptLoader.Load("UpdateTimeTickerConfiguration");
     private static readonly string AddTimeTickerOnceScript = LuaScriptLoader.Load("AddTimeTickerOnce");
     private static readonly string DeleteTimeTickerScript = LuaScriptLoader.Load("DeleteTimeTicker");
     private static readonly string SetChainDeleteBehaviorScript = LuaScriptLoader.Load("SetChainDeleteBehavior");
     private static readonly string UpdateCronDefinitionQueueOnlyScript =
         LuaScriptLoader.Load("UpdateCronDefinitionQueueOnly");
+    internal Func<Guid, CancellationToken, Task> BeforeTimeTickerConfigurationWriteForTestAsync { get; set; }
+    internal Func<Guid, CancellationToken, Task> BeforeTimeTickerRetentionDeleteForTestAsync { get; set; }
     internal Func<CronTickerOccurrenceEntity<TCronTicker>, CancellationToken, Task>
         BeforeCronOccurrenceDeleteForTestAsync { get; set; }
 
@@ -273,65 +276,63 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
     public async Task<int> UpdateTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
     {
         if (RuntimeAdmissionMisconfigured) return 0;
-        if (IsClusterTopology(Db))
-        {
-            if (HasRuntimeActivationScopeBinding)
-                throw new NotSupportedException(
-                    "Scoped scheduler update is unsupported on Redis Cluster without a shared partition hash slot.");
-            return await UpdateTimeTickersQueueOnlyClusterAsync(tickers, cancellationToken).ConfigureAwait(false);
-        }
-        var now = Clock.UtcNow;
+        var cluster = IsClusterTopology(Db);
+        if (cluster && HasRuntimeActivationScopeBinding)
+            throw new NotSupportedException("Scoped scheduler update is unsupported on Redis Cluster without a shared partition hash slot.");
         var updated = 0;
         foreach (var ticker in tickers)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            NormalizeAggregate(ticker, ticker.Id, ticker.ChainGeneration);
-            ticker.UpdatedAt = now;
-            var existing = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(ticker.Id)).ConfigureAwait(false);
-            if (existing == null) continue;
-            var aggregateIds = EnumerateAggregateIds(ticker)
-                .Concat(EnumerateAggregateIds(existing)).Distinct().ToArray();
-            var keys = new List<RedisKey>
-            {
-                TimeTickerKey(ticker.Id), TimeTickerIdsKey, TimeTickerPendingKey,
-                RuntimeActivationMetadataKey, TerminalMutationEvidenceKey
-            };
-            keys.AddRange(aggregateIds.Select(TimeTickerResultKey).Select(x => (RedisKey)x));
-            var pendingScore = ticker.ExecutionTime.HasValue &&
-                               CanAcquire(ticker.Status, ticker.LockHolder, LockHolder)
-                ? ToScore(ticker.ExecutionTime.Value).ToString(
-                    System.Globalization.CultureInfo.InvariantCulture)
-                : string.Empty;
-            var result = await Db.ScriptEvaluateAsync(AddTimeTickerOnceScript, keys.ToArray(),
-                new RedisValue[]
-                {
-                    ticker.Id.ToString(), Serializer.Serialize(ticker), pendingScore,
-                    "upsert", RuntimeActivationEpoch, RuntimeAdmissionMode
-                }.Concat(aggregateIds.Select(id =>
-                    (RedisValue)$"{(int)TickerType.TimeTicker}:{id:D}")).ToArray()).ConfigureAwait(false);
-            if ((long)result == 0) continue;
-            await IndexManager.AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
-            updated++;
-        }
-        return updated;
-    }
-
-    private async Task<int> UpdateTimeTickersQueueOnlyClusterAsync(
-        TTimeTicker[] tickers, CancellationToken cancellationToken)
-    {
-        var now = Clock.UtcNow;
-        var updated = 0;
-        foreach (var ticker in tickers)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            NormalizeAggregate(ticker, ticker.Id, ticker.ChainGeneration);
-            ticker.UpdatedAt = now;
-            if (!await Db.KeyExistsAsync(TimeTickerKey(ticker.Id)).ConfigureAwait(false))
+            if (!TimeTickerConfigurationSnapshot.TryFlatten(new[] { ticker }, out var incoming)) continue;
+            var rootId = ticker.ParentId.HasValue ? ticker.ChainRootId : ticker.Id;
+            if (!rootId.HasValue) continue;
+            var raw = await Db.StringGetAsync(TimeTickerKey(rootId.Value)).ConfigureAwait(false);
+            if (raw.IsNullOrEmpty) continue;
+            var existing = Serializer.DeserializeOrNull<TTimeTicker>(raw.ToString());
+            if (existing == null || !TimeTickerConfigurationSnapshot.TryFlatten(new[] { existing }, out var current) ||
+                !current.TryGetValue(ticker.Id, out var previous) ||
+                !TimeTickerConfigurationSnapshot.TryFlatten(new[] { previous }, out var previousSubtree) ||
+                incoming.Count != previousSubtree.Count || incoming.Values.Any(row =>
+                    !previousSubtree.TryGetValue(row.Id, out var old) || !TimeTickerConfigurationSnapshot.Matches(old, row)))
                 continue;
-            await Serializer.SetAsync(TimeTickerKey(ticker.Id), ticker).ConfigureAwait(false);
-            foreach (var id in EnumerateAggregateIds(ticker).Distinct())
-                await Db.KeyDeleteAsync(TimeTickerResultKey(id)).ConfigureAwait(false);
-            await IndexManager.AddTimeTickerIndexesAsync(ticker).ConfigureAwait(false);
+            ticker.UpdatedAt = Clock.UtcNow;
+            TTimeTicker replacement;
+            if (ticker.ParentId.HasValue)
+            {
+                if (!current.TryGetValue(ticker.ParentId.Value, out var parent) ||
+                    ticker.ChainGeneration != existing.ChainGeneration) continue;
+                parent.Children = parent.Children.Select(child => child.Id == ticker.Id ? ticker : child).ToList();
+                replacement = existing;
+            }
+            else replacement = ticker;
+            var pendingScore = replacement.ExecutionTime.HasValue && CanAcquire(replacement.Status, replacement.LockHolder, LockHolder)
+                ? ToScore(replacement.ExecutionTime.Value).ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+            var retentionIndex = !replacement.ParentId.HasValue && replacement.ExecutedAt.HasValue &&
+                                 !replacement.AcquisitionToken.HasValue &&
+                                 (!replacement.LeaseUntil.HasValue || replacement.LeaseUntil <= Clock.UtcNow)
+                ? replacement.Status switch
+                {
+                    TickerStatus.Done or TickerStatus.DueDone => 1,
+                    TickerStatus.Failed => 2,
+                    TickerStatus.Cancelled => 3,
+                    TickerStatus.Skipped => 4,
+                    _ => 0
+                } : 0;
+            var retentionScore = retentionIndex == 0 ? string.Empty
+                : ToScore(replacement.ExecutedAt.Value).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (BeforeTimeTickerConfigurationWriteForTestAsync != null)
+                await BeforeTimeTickerConfigurationWriteForTestAsync(rootId.Value, cancellationToken).ConfigureAwait(false);
+            var result = await Db.ScriptEvaluateAsync(cluster
+                    ? "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end redis.call('SET', KEYS[1], ARGV[2]) return 1"
+                    : UpdateTimeTickerConfigurationScript,
+                cluster ? new RedisKey[] { TimeTickerKey(rootId.Value) }
+                    : new RedisKey[] { TimeTickerKey(rootId.Value), RuntimeActivationMetadataKey, TimeTickerPendingKey,
+                        TimeTickerIdsKey, TimeTickerRetentionSucceededKey, TimeTickerRetentionFailedKey,
+                        TimeTickerRetentionCancelledKey, TimeTickerRetentionSkippedKey },
+                new RedisValue[] { raw, Serializer.Serialize(replacement), RuntimeActivationEpoch,
+                    RuntimeAdmissionMode, rootId.Value.ToString(), pendingScore, retentionIndex, retentionScore }).ConfigureAwait(false);
+            if ((long)result != 1) continue;
+            if (cluster) await IndexManager.AddTimeTickerIndexesAsync(replacement).ConfigureAwait(false);
             updated++;
         }
         return updated;
@@ -427,10 +428,18 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
 
     private static void NormalizeAggregate(TTimeTicker node, Guid rootId, Guid? generation)
     {
-        node.ChainRootId = rootId;
-        node.ChainGeneration = generation;
-        foreach (var child in node.Children ?? [])
-            NormalizeAggregate(child, rootId, generation);
+        var pending = new Stack<(TTimeTicker Row, Guid? Parent)>();
+        var seen = new HashSet<Guid>();
+        pending.Push((node, node.ParentId));
+        while (pending.Count > 0)
+        {
+            var (current, parent) = pending.Pop();
+            if (!seen.Add(current.Id)) throw new InvalidOperationException("A time ticker graph contains a duplicate or cyclic identity.");
+            current.ParentId = parent;
+            current.ChainRootId = rootId;
+            current.ChainGeneration = generation;
+            foreach (var child in current.Children ?? []) pending.Push((child, current.Id));
+        }
     }
     #endregion
 
@@ -756,50 +765,65 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
     {
         var reconciliation = await ReconcileRetentionIndexesAsync(batchSize, cancellationToken).ConfigureAwait(false);
         var candidates = await GetRetentionCandidatesAsync(
-            true, cutoffs, batchSize + 1, cancellationToken).ConfigureAwait(false);
-        var hasMore = reconciliation.HasMore || candidates.Count > batchSize;
+            true, cutoffs, batchSize + 1, cancellationToken, cursor).ConfigureAwait(false);
+        var hasMoreCandidates = candidates.Count > batchSize;
         var deleted = 0;
-
+        var nextCursor = RetentionCursor.Start;
         foreach (var candidate in candidates.Take(batchSize))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var result = await Db.ScriptEvaluateAsync(DeleteTimeTickerForRetentionScript,
-                [
-                    (RedisKey)TimeTickerKey(candidate.Id),
-                    TimeTickerIdsKey,
-                    TimeTickerPendingKey,
-                    TimeTickerRetentionSucceededKey,
-                    TimeTickerRetentionFailedKey,
-                    TimeTickerRetentionCancelledKey,
-                    TimeTickerRetentionSkippedKey,
-                    TimeTickerResultKey(candidate.Id),
-                    TerminalMutationEvidenceKey
-                ],
-                [
-                    candidate.FirstStatus,
-                    candidate.SecondStatus,
-                    candidate.Cutoff.ToUniversalTime().ToString("O"),
-                    Clock.UtcNow.ToUniversalTime().ToString("O"),
-                    candidate.Id.ToString()
-                ]).ConfigureAwait(false);
-
-            if ((long)result == 1)
+            nextCursor = RetentionCursor.After(candidate.ExecutedAt, candidate.Id);
+            var raw = await Db.StringGetAsync(TimeTickerKey(candidate.Id)).ConfigureAwait(false);
+            if (raw.IsNullOrEmpty)
             {
-                deleted++;
+                await IndexManager.RemoveTimeTickerIndexesAsync(candidate.Id).ConfigureAwait(false);
                 continue;
             }
-
-            // A reactivation or stale index won the race. Repair the indexes from the authoritative value.
-            var current = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(candidate.Id)).ConfigureAwait(false);
-            if (current == null)
-                await IndexManager.RemoveTimeTickerIndexesAsync(candidate.Id).ConfigureAwait(false);
-            else
-                await IndexManager.AddTimeTickerIndexesAsync(current).ConfigureAwait(false);
+            var root = Serializer.DeserializeOrNull<TTimeTicker>(raw.ToString());
+            if (root == null || root.ParentId.HasValue || root.Id != candidate.Id) continue;
+            var nodes = new List<TTimeTicker>();
+            var seen = new HashSet<Guid>();
+            var pending = new Stack<TTimeTicker>();
+            pending.Push(root);
+            var safe = true;
+            var now = Clock.UtcNow;
+            while (pending.Count > 0)
+            {
+                var node = pending.Pop();
+                var cutoff = cutoffs.ForStatus(node.Status);
+                if (node.Id == Guid.Empty || !seen.Add(node.Id) || nodes.Count >= cutoffs.MaxNodesPerChain ||
+                    !cutoff.HasValue || !node.ExecutedAt.HasValue || node.ExecutedAt.Value >= cutoff.Value ||
+                    node.AcquisitionToken.HasValue || node.LeaseUntil > now)
+                { safe = false; break; }
+                nodes.Add(node);
+                if (node.Children == null) continue;
+                foreach (var child in node.Children)
+                {
+                    if (child == null || child.ParentId != node.Id ||
+                        nodes.Count + pending.Count >= cutoffs.MaxNodesPerChain) { safe = false; break; }
+                    pending.Push(child);
+                }
+                if (!safe) break;
+            }
+            if (!safe) continue;
+            var keys = new List<RedisKey>
+            {
+                TimeTickerKey(candidate.Id), TimeTickerIdsKey, TimeTickerPendingKey,
+                TimeTickerRetentionSucceededKey, TimeTickerRetentionFailedKey,
+                TimeTickerRetentionCancelledKey, TimeTickerRetentionSkippedKey, TerminalMutationEvidenceKey
+            };
+            keys.AddRange(nodes.Select(node => (RedisKey)TimeTickerResultKey(node.Id)));
+            var arguments = new List<RedisValue> { raw, candidate.Id.ToString() };
+            arguments.AddRange(nodes.Select(node => (RedisValue)$"{(int)TickerType.TimeTicker}:{node.Id:D}"));
+            // Eligibility was checked on the complete bounded graph. Comparing the exact document
+            // inside Lua rechecks that snapshot atomically with graph/result/evidence deletion.
+            if (BeforeTimeTickerRetentionDeleteForTestAsync != null)
+                await BeforeTimeTickerRetentionDeleteForTestAsync(candidate.Id, cancellationToken).ConfigureAwait(false);
+            deleted += (int)(long)await Db.ScriptEvaluateAsync(DeleteTimeTickerForRetentionScript,
+                keys.ToArray(), arguments.ToArray()).ConfigureAwait(false);
         }
-
-        // Redis retention indexes contain only independently safe standalone roots. Stale entries are
-        // repaired above, so no blocked aggregate can starve later candidates and no cursor is required.
-        return new RetentionChainBatchResult(deleted, hasMore, RetentionCursor.Start);
+        return new RetentionChainBatchResult(deleted, reconciliation.HasMore || hasMoreCandidates,
+            hasMoreCandidates ? nextCursor : RetentionCursor.Start);
     }
 
     public async Task<RetentionBatchResult> DeleteEligibleCronTickerOccurrencesAsync(
@@ -856,7 +880,8 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
     }
 
     private async Task<List<RetentionCandidate>> GetRetentionCandidatesAsync(
-        bool timeTicker, RetentionCutoffs cutoffs, int take, CancellationToken cancellationToken)
+        bool timeTicker, RetentionCutoffs cutoffs, int take, CancellationToken cancellationToken,
+        RetentionCursor cursor = default)
     {
         var sources = new List<(RedisKey Key, DateTime Cutoff, int FirstStatus, int SecondStatus)>();
         AddRetentionSource(sources, timeTicker, cutoffs.SucceededBefore,
@@ -872,9 +897,29 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
         foreach (var source in sources)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var entries = await Db.SortedSetRangeByScoreWithScoresAsync(
-                source.Key, double.NegativeInfinity, ToScore(source.Cutoff),
-                Exclude.None, Order.Ascending, 0, take).ConfigureAwait(false);
+            SortedSetEntry[] entries;
+            if (cursor.HasValue)
+            {
+                // A temporary lexicographic sentinel gives O(log N + batch) keyset pagination,
+                // including arbitrarily many equal-score roots and a cursor row already deleted.
+                const string keyset = """
+                    local marker = ARGV[2] .. ':'
+                    redis.call('ZADD', KEYS[1], ARGV[1], marker)
+                    local rank = redis.call('ZRANK', KEYS[1], marker)
+                    local rows = redis.call('ZRANGE', KEYS[1], rank + 1, rank + tonumber(ARGV[3]), 'WITHSCORES')
+                    redis.call('ZREM', KEYS[1], marker)
+                    return rows
+                    """;
+                var result = (RedisResult[])await Db.ScriptEvaluateAsync(keyset, new[] { source.Key },
+                    new RedisValue[] { ToScore(cursor.ExecutedAt), cursor.Id.ToString(), take }).ConfigureAwait(false);
+                entries = Enumerable.Range(0, result.Length / 2)
+                    .Select(i => new SortedSetEntry(result[i * 2].ToString(), (double)result[i * 2 + 1]))
+                    .Where(entry => entry.Score <= ToScore(source.Cutoff)).ToArray();
+            }
+            else
+                entries = await Db.SortedSetRangeByScoreWithScoresAsync(
+                    source.Key, double.NegativeInfinity, ToScore(source.Cutoff),
+                    Exclude.None, Order.Ascending, 0, take).ConfigureAwait(false);
             foreach (var entry in entries)
             {
                 if (!Guid.TryParse(entry.Element.ToString(), out var id))
@@ -1141,8 +1186,7 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
                 local eligible = executedSeconds ~= nil
                     and (obj.AcquisitionToken == nil or obj.AcquisitionToken == cjson.null or obj.AcquisitionToken == '')
                     and leaseExpired
-                if isTime and ((obj.ParentId ~= nil and obj.ParentId ~= cjson.null and obj.ParentId ~= '')
-                    or (obj.Children ~= nil and obj.Children ~= cjson.null and next(obj.Children) ~= nil)) then
+                if isTime and (obj.ParentId ~= nil and obj.ParentId ~= cjson.null and obj.ParentId ~= '') then
                     eligible = false
                 end
                 if eligible then
@@ -1183,150 +1227,25 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
         """;
 
     private const string DeleteTimeTickerForRetentionScript = """
-        if #KEYS ~= 9 or #ARGV ~= 5 or ARGV[5] == '' then
+        -- Bounded aggregate retention CAS: validate every key before deleting any data.
+        if #KEYS < 9 or #ARGV ~= #KEYS - 6 or ARGV[1] == '' or ARGV[2] == '' then
             return redis.error_reply('invalid time retention deletion shape')
         end
-        local expectedTypes = {'string','set','zset','zset','zset','zset','zset','string','hash'}
+        local expectedTypes = {'string','set','zset','zset','zset','zset','zset','hash'}
         for index = 1, #KEYS do
-            local actualType = redis.call('TYPE', KEYS[index])['ok']
-            if actualType ~= 'none' and actualType ~= expectedTypes[index] then
+            local expected = expectedTypes[index] or 'string'
+            local actual = redis.call('TYPE', KEYS[index])['ok']
+            if actual ~= 'none' and actual ~= expected then
                 return redis.error_reply('time retention deletion key has an incompatible Redis type')
             end
         end
-        local firstStatus, secondStatus = tonumber(ARGV[1]), tonumber(ARGV[2])
-        if not firstStatus or firstStatus % 1 ~= 0 or not secondStatus or secondStatus % 1 ~= 0 then
-            return redis.error_reply('invalid time retention deletion status')
-        end
-        local function dateTimeParts(value)
-            if type(value) ~= 'string' then return nil end
-            local year, month, day, hour, minute, second, rest = string.match(value,
-                '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.*)$')
-            if not year then return nil end
-            year, month, day = tonumber(year), tonumber(month), tonumber(day)
-            hour, minute, second = tonumber(hour), tonumber(minute), tonumber(second)
-            if year < 1 or year > 9999 or month < 1 or month > 12 or
-               hour > 23 or minute > 59 or second > 59 then return nil end
-            local leap = year % 400 == 0 or (year % 4 == 0 and year % 100 ~= 0)
-            local monthDays = {31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
-            if day < 1 or day > monthDays[month] then return nil end
-            local fraction, suffix = '', rest
-            if string.sub(rest, 1, 1) == '.' then
-                fraction, suffix = string.match(rest, '^%.(%d+)(.*)$')
-                if not fraction or string.len(fraction) > 7 then return nil end
-            end
-            local offsetMinutes = 0
-            if suffix ~= 'Z' then
-                local sign, offsetHour, offsetMinute = string.match(suffix, '^([%+%-])(%d%d):(%d%d)$')
-                if not sign then return nil end
-                offsetHour, offsetMinute = tonumber(offsetHour), tonumber(offsetMinute)
-                if offsetHour > 14 or offsetMinute > 59 or (offsetHour == 14 and offsetMinute ~= 0) then return nil end
-                offsetMinutes = offsetHour * 60 + offsetMinute
-                if sign == '-' then offsetMinutes = -offsetMinutes end
-            end
-            local priorYear = year - 1
-            local days = priorYear * 365 + math.floor(priorYear / 4)
-                - math.floor(priorYear / 100) + math.floor(priorYear / 400)
-            local beforeMonth = {0,31,59,90,120,151,181,212,243,273,304,334}
-            days = days + beforeMonth[month] + day - 1
-            if month > 2 and leap then days = days + 1 end
-            local utcSeconds = days * 86400 + hour * 3600 + minute * 60 + second - offsetMinutes * 60
-            if utcSeconds < 0 or utcSeconds > 315537897599 then return nil end
-            return utcSeconds, tonumber(string.sub(fraction .. '0000000', 1, 7))
-        end
-        local cutoffSeconds, cutoffFraction = dateTimeParts(ARGV[3])
-        local nowSeconds, nowFraction = dateTimeParts(ARGV[4])
-        if not cutoffSeconds or not nowSeconds then
-            return redis.error_reply('invalid time retention deletion timestamp')
-        end
-        local function isArray(value)
-            if type(value) ~= 'table' then return false end
-            local count = 0
-            for key, _ in pairs(value) do
-                if type(key) ~= 'number' or key < 1 or key % 1 ~= 0 then return false end
-                count = count + 1
-            end
-            for index = 1, count do if value[index] == nil then return false end end
-            return true
-        end
-        local function validNode(obj)
-            if type(obj) ~= 'table' or type(obj.Id) ~= 'string' or obj.Id == '' or
-               type(obj.Status) ~= 'number' or obj.Status % 1 ~= 0 then return false end
-            if obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null and
-               (type(obj.ExecutedAt) ~= 'string' or (obj.ExecutedAt ~= '' and not dateTimeParts(obj.ExecutedAt))) then return false end
-            if obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null and
-               (type(obj.LeaseUntil) ~= 'string' or (obj.LeaseUntil ~= '' and not dateTimeParts(obj.LeaseUntil))) then return false end
-            if obj.AcquisitionToken ~= nil and obj.AcquisitionToken ~= cjson.null and type(obj.AcquisitionToken) ~= 'string' then return false end
-            if obj.ParentId ~= nil and obj.ParentId ~= cjson.null and type(obj.ParentId) ~= 'string' then return false end
-            if obj.Children ~= nil and obj.Children ~= cjson.null then
-                if not isArray(obj.Children) then return false end
-                for _, child in ipairs(obj.Children) do if not validNode(child) then return false end end
-            end
-            return true
-        end
-        local function childrenContainersAreArrays(raw)
-            local index, length = 1, string.len(raw)
-            while index <= length do
-                if string.sub(raw, index, index) == '"' then
-                    local start = index
-                    index = index + 1
-                    while index <= length do
-                        local char = string.sub(raw, index, index)
-                        if char == '\\' then index = index + 2
-                        elseif char == '"' then break
-                        else index = index + 1 end
-                    end
-                    if index > length then return false end
-                    local token = string.sub(raw, start, index)
-                    local nextIndex = index + 1
-                    while string.match(string.sub(raw, nextIndex, nextIndex), '%s') do nextIndex = nextIndex + 1 end
-                    if string.sub(raw, nextIndex, nextIndex) == ':' then
-                        local ok, key = pcall(cjson.decode, token)
-                        if not ok then return false end
-                        if key == 'Children' then
-                            nextIndex = nextIndex + 1
-                            while string.match(string.sub(raw, nextIndex, nextIndex), '%s') do nextIndex = nextIndex + 1 end
-                            if string.sub(raw, nextIndex, nextIndex) ~= '[' and
-                               string.sub(raw, nextIndex, nextIndex + 3) ~= 'null' then return false end
-                        end
-                    end
-                end
-                index = index + 1
-            end
-            return true
-        end
-        local raw = redis.call('GET', KEYS[1])
-        if not raw then return 0 end
-        local ok, obj = pcall(cjson.decode, raw)
-        if not ok or not childrenContainersAreArrays(raw) or not validNode(obj) or
-           string.lower(obj.Id) ~= string.lower(ARGV[5]) then
-            return redis.error_reply('cannot delete invalid time ticker document for retention')
-        end
-        if obj.Status ~= firstStatus and obj.Status ~= secondStatus then return 0 end
-        local executedSeconds, executedFraction = nil, nil
-        if obj.ExecutedAt ~= nil and obj.ExecutedAt ~= cjson.null and obj.ExecutedAt ~= '' then
-            executedSeconds, executedFraction = dateTimeParts(obj.ExecutedAt)
-        end
-        if executedSeconds == nil or executedSeconds > cutoffSeconds or
-           (executedSeconds == cutoffSeconds and executedFraction >= cutoffFraction) then return 0 end
-        if obj.AcquisitionToken ~= nil and obj.AcquisitionToken ~= cjson.null and obj.AcquisitionToken ~= '' then return 0 end
-        local leaseSeconds, leaseFraction = nil, nil
-        if obj.LeaseUntil ~= nil and obj.LeaseUntil ~= cjson.null and obj.LeaseUntil ~= '' then
-            leaseSeconds, leaseFraction = dateTimeParts(obj.LeaseUntil)
-        end
-        if leaseSeconds ~= nil and (leaseSeconds > nowSeconds or
-           (leaseSeconds == nowSeconds and leaseFraction > nowFraction)) then return 0 end
-        if obj.ParentId ~= nil and obj.ParentId ~= cjson.null and obj.ParentId ~= '' then return 0 end
-        if obj.Children ~= nil and obj.Children ~= cjson.null and next(obj.Children) ~= nil then return 0 end
+        if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
         redis.call('DEL', KEYS[1])
-        redis.call('SREM', KEYS[2], ARGV[5])
-        redis.call('ZREM', KEYS[3], ARGV[5])
-        redis.call('ZREM', KEYS[4], ARGV[5])
-        redis.call('ZREM', KEYS[5], ARGV[5])
-        redis.call('ZREM', KEYS[6], ARGV[5])
-        redis.call('ZREM', KEYS[7], ARGV[5])
-        redis.call('DEL', KEYS[8])
-        redis.call('HDEL', KEYS[9], '1:' .. string.lower(ARGV[5]))
-        return 1
+        redis.call('SREM', KEYS[2], ARGV[2])
+        for index = 3, 7 do redis.call('ZREM', KEYS[index], ARGV[2]) end
+        for index = 9, #KEYS do redis.call('DEL', KEYS[index]) end
+        for index = 3, #ARGV do redis.call('HDEL', KEYS[8], ARGV[index]) end
+        return #KEYS - 8
         """;
 
     private const string DeleteOccurrenceForRetentionScript = """

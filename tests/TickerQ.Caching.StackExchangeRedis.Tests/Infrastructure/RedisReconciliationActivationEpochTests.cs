@@ -367,7 +367,7 @@ public sealed class RedisReconciliationActivationEpochTests
     }
 
     [Fact]
-    public async Task Public_time_ticker_update_is_atomically_admitted_and_cleans_result()
+    public async Task Public_time_ticker_update_is_atomically_admitted_and_preserves_result()
     {
         var scope = new ReconciliationActivationScope("redis-public-update");
         var provider = NewProvider("public-update", 7, scope.ApplicationNamespace);
@@ -386,7 +386,7 @@ public sealed class RedisReconciliationActivationEpochTests
 
         await provider.CommitReconciliationActivationEpochAsync(scope, 7);
         Assert.Equal(1, await provider.UpdateTimeTickers([ticker], CancellationToken.None));
-        Assert.False(await _db.KeyExistsAsync(keys.TimeTickerResult(ticker.Id)));
+        Assert.Equal("stale-result", (string?)await _db.StringGetAsync(keys.TimeTickerResult(ticker.Id)));
         Assert.Equal(RedisKeyBuilder.ToScore(ticker.ExecutionTime.Value),
             await _db.SortedSetScoreAsync(keys.TimeTickerPending, ticker.Id.ToString()));
     }

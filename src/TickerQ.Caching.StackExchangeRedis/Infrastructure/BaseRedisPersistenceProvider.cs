@@ -1511,11 +1511,14 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         IEnumerable<TTimeTicker> children,
         Guid tickerId)
     {
-        foreach (var child in children)
+        var pending = new Stack<TTimeTicker>((children ?? []).Reverse());
+        var seen = new HashSet<Guid>();
+        while (pending.Count > 0)
         {
+            var child = pending.Pop();
+            if (!seen.Add(child.Id)) continue;
             if (child.Id == tickerId) return child;
-            var descendant = FindEmbeddedTimeTicker(child.Children, tickerId);
-            if (descendant != null) return descendant;
+            foreach (var descendant in (child.Children ?? []).Reverse()) pending.Push(descendant);
         }
 
         return null;
@@ -1563,7 +1566,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         var retentionIndex = 0;
         var retentionScore = string.Empty;
         var now = Clock.UtcNow;
-        if (!ticker.ParentId.HasValue && ticker.Children is not { Count: > 0 } &&
+        if (!ticker.ParentId.HasValue &&
             ticker.ExecutedAt is { } executedAt && !ticker.AcquisitionToken.HasValue &&
             !(ticker.LeaseUntil is { } leaseUntil && leaseUntil > now))
         {

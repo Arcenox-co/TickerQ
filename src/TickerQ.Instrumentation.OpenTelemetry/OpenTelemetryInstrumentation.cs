@@ -11,12 +11,10 @@ namespace TickerQ.Instrumentation.OpenTelemetry;
 internal class OpenTelemetryInstrumentation : TickerQBaseLoggerInstrumentation , ITickerQInstrumentation
 {
     internal const string ActivitySourceName = "TickerQ";
-    private readonly ILogger<OpenTelemetryInstrumentation> _logger;
     private static readonly ActivitySource ActivitySource = new(ActivitySourceName, "1.0.0");
 
     public OpenTelemetryInstrumentation(ILogger<OpenTelemetryInstrumentation> logger, SchedulerOptionsBuilder optionsBuilder) : base(logger, optionsBuilder.NodeIdentifier)
     {
-        _logger = logger;
     }
 
     public override Activity? StartJobActivity(string activityName, InternalFunctionContext context)
@@ -57,8 +55,7 @@ internal class OpenTelemetryInstrumentation : TickerQBaseLoggerInstrumentation ,
         var callerInfo = string.IsNullOrEmpty(enqueuedFrom) ? CallerInfoHelper.GetCallerInfo(6) : enqueuedFrom;
         activity?.SetTag("tickerq.job.enqueued_from", callerInfo);
             
-        _logger.LogInformation("TickerQ Job enqueued: {JobType} - {Function} ({JobId}) from {EnqueuedFrom}", 
-            jobType, functionName, jobId, callerInfo);
+        base.LogJobEnqueued(jobType, functionName, jobId, callerInfo);
     }
 
     public override void LogJobCompleted(Guid jobId, string functionName, long executionTimeMs, bool success)

@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -48,24 +47,24 @@ internal static class OnDemandTimeExecution
         return true;
     }
 
-    private static InternalFunctionContext BuildContext(TimeTickerEntity ticker, string partition) => new()
-    {
-        RuntimePartitionKey = partition,
-        FunctionName = ticker.Function,
-        RequestContractVersion = ticker.RequestContractVersion,
-        RequestContractFingerprint = ticker.RequestContractFingerprint,
-        TickerId = ticker.Id,
-        Type = TickerType.TimeTicker,
-        Status = ticker.Status,
-        Retries = ticker.Retries,
-        RetryIntervals = ticker.RetryIntervals,
-        TimeoutSeconds = ticker.TimeoutSeconds,
-        ParentId = ticker.ParentId,
-        AcquisitionToken = ticker.AcquisitionToken,
-        ChainRootId = ticker.ChainRootId,
-        ChainGeneration = ticker.ChainGeneration,
-        ExecutionTime = ticker.ExecutionTime ?? DateTime.UtcNow,
-        RunCondition = ticker.RunCondition ?? RunCondition.OnAnyCompletedStatus,
-        TimeTickerChildren = ticker.Children?.Select(child => BuildContext(child, partition)).ToList() ?? []
-    };
+    private static InternalFunctionContext BuildContext(TimeTickerEntity root, string partition) =>
+        TimeTickerContextBuilder.Build(root, ticker => new InternalFunctionContext
+        {
+            RuntimePartitionKey = partition,
+            FunctionName = ticker.Function,
+            RequestContractVersion = ticker.RequestContractVersion,
+            RequestContractFingerprint = ticker.RequestContractFingerprint,
+            TickerId = ticker.Id,
+            Type = TickerType.TimeTicker,
+            Status = ticker.Status,
+            Retries = ticker.Retries,
+            RetryIntervals = ticker.RetryIntervals,
+            TimeoutSeconds = ticker.TimeoutSeconds,
+            ParentId = ticker.ParentId,
+            AcquisitionToken = ticker.AcquisitionToken,
+            ChainRootId = ticker.ChainRootId,
+            ChainGeneration = ticker.ChainGeneration,
+            ExecutionTime = ticker.ExecutionTime ?? DateTime.UtcNow,
+            RunCondition = ticker.RunCondition ?? RunCondition.OnAnyCompletedStatus
+        });
 }

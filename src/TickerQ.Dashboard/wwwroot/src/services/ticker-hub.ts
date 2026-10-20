@@ -6,7 +6,7 @@ import {
 } from "@microsoft/signalr";
 import type { QueryClient } from "@tanstack/react-query";
 
-import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
+import { getRuntimeConfig, resolveDashboardUrl } from "@/lib/runtime-config";
 import { tokenStore } from "@/lib/auth/token-store";
 import { CronGroups } from "./cron-groups";
 
@@ -27,12 +27,10 @@ let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function hubUrl(): string {
   const cfg = getRuntimeConfig();
-  const basePath = normalizeBasePath(cfg.basePath);
-  const prefix = basePath === "/" ? "" : basePath;
   // The hub route comes from the server's runtime config so backend route
   // changes can never strand the SPA.
   const hubPath = cfg.realtime.hubPath.replace(/^\//, "");
-  return `${prefix}/${hubPath}`;
+  return resolveDashboardUrl(`/${hubPath}`);
 }
 
 export function startTickerHub(qc: QueryClient): HubConnection | null {

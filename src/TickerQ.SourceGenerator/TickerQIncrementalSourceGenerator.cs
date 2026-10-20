@@ -83,7 +83,7 @@ namespace TickerQ.SourceGenerator
         {
             var methods = new List<TickerMethodModel>();
             var constructors = new List<ConstructorModel>();
-            var validatedClasses = new HashSet<string>();
+            var validatedClasses = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             var usedFunctionNames = new HashSet<string>();
 
             foreach (var (classDecl, methodDecl) in methodPairs)
@@ -92,7 +92,7 @@ namespace TickerQ.SourceGenerator
 
                 TickerFunctionValidator.ValidateClassAndMethod(classDecl, methodDecl, compilation, productionContext);
 
-                if (validatedClasses.Add(classDecl.Identifier.Text + classDecl.SyntaxTree.FilePath))
+                if (validatedClasses.Add(semanticModel.GetDeclaredSymbol(classDecl)))
                 {
                     ConstructorValidator.ValidateMultipleConstructors(classDecl, semanticModel, productionContext);
                     TickerFunctionValidator.ValidateNotNestedClass(classDecl, productionContext);
@@ -124,10 +124,13 @@ namespace TickerQ.SourceGenerator
             }
 
             // Analyze constructors for distinct classes
+            var constructorClasses = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             var distinctClasses = methodPairs.Select(p => p.ClassDecl).Distinct();
             foreach (var classDecl in distinctClasses)
             {
                 var semanticModel = compilation.GetSemanticModel(classDecl.SyntaxTree);
+                if (!constructorClasses.Add(semanticModel.GetDeclaredSymbol(classDecl)))
+                    continue;
                 var ctor = ConstructorAnalyzer.Analyze(classDecl, semanticModel);
                 if (ctor != null)
                     constructors.Add(ctor);

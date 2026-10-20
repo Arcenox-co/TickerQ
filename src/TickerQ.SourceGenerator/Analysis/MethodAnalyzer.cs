@@ -120,6 +120,7 @@ namespace TickerQ.SourceGenerator.Analysis
                 if (typeName.Contains("CancellationToken"))
                 {
                     model.HasCancellationToken = true;
+                    model.InvocationArguments.Add("cancellationToken");
                 }
                 else if (typeName.StartsWith(
                     SourceGeneratorConstants.BaseGenericTickerFunctionContextTypeName.Replace("`1", "<"),
@@ -127,6 +128,7 @@ namespace TickerQ.SourceGenerator.Analysis
                 {
                     model.UsesGenericContext = true;
                     model.HasContext = true;
+                    model.InvocationArguments.Add("genericContext");
 
                     if (typeSymbol is INamedTypeSymbol namedContext && namedContext.TypeArguments.Length == 1)
                     {
@@ -139,6 +141,7 @@ namespace TickerQ.SourceGenerator.Analysis
                 else if (typeName.Contains("TickerFunctionContext"))
                 {
                     model.HasContext = true;
+                    model.InvocationArguments.Add("context");
                 }
             }
         }

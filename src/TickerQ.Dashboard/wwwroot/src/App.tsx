@@ -1,24 +1,27 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Route, Routes } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { Shell } from "@/components/layout/Shell";
-import OverviewPage from "@/pages/Overview";
-import ExecutionsPage from "@/pages/Executions";
-import TimeTickersPage from "@/pages/TimeTickers";
-import CronTickersPage from "@/pages/CronTickers";
-import CronTickerDetailPage from "@/pages/CronTickerDetail";
-import ChainBuilderPage from "@/pages/ChainBuilder";
-import ChainFlowchartPage from "@/pages/ChainFlowchart";
-import CronOccurrenceChainPage from "@/pages/CronOccurrenceChain";
-import AssistantChatPage from "@/pages/AssistantChat";
-import IntegrationsPage from "@/pages/Integrations";
-import LicensePage from "@/pages/License";
-import AboutPage from "@/pages/About";
-import DiagnosticsPage from "@/pages/Diagnostics";
-import LoginPage from "@/pages/Login";
 import { startTickerHub } from "@/services/ticker-hub";
 import { RequireAuth } from "@/lib/auth/RequireAuth";
 import { useAuth } from "@/lib/auth/auth-context";
+
+import { RouteLoading } from "@/components/layout/RouteLoading";
+
+const OverviewPage = lazy(() => import("@/pages/Overview"));
+const ExecutionsPage = lazy(() => import("@/pages/Executions"));
+const TimeTickersPage = lazy(() => import("@/pages/TimeTickers"));
+const CronTickersPage = lazy(() => import("@/pages/CronTickers"));
+const CronTickerDetailPage = lazy(() => import("@/pages/CronTickerDetail"));
+const ChainBuilderPage = lazy(() => import("@/pages/ChainBuilder"));
+const ChainFlowchartPage = lazy(() => import("@/pages/ChainFlowchart"));
+const CronOccurrenceChainPage = lazy(() => import("@/pages/CronOccurrenceChain"));
+const AssistantChatPage = lazy(() => import("@/pages/AssistantChat"));
+const IntegrationsPage = lazy(() => import("@/pages/Integrations"));
+const LicensePage = lazy(() => import("@/pages/License"));
+const AboutPage = lazy(() => import("@/pages/About"));
+const DiagnosticsPage = lazy(() => import("@/pages/Diagnostics"));
+const LoginPage = lazy(() => import("@/pages/Login"));
 
 export default function App() {
   // Boot the SignalR hub once the user is authenticated (or auth is off).
@@ -34,7 +37,7 @@ export default function App() {
 
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login" element={<Suspense fallback={<RouteLoading />}><LoginPage /></Suspense>} />
       <Route element={<RequireAuth />}>
         <Route element={<Shell />}>
           <Route index element={<OverviewPage />} />

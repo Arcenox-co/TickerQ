@@ -15,7 +15,7 @@ namespace TickerQ.Dashboard.Assistant;
 
 internal static partial class TickerAssistantTools
 {
-    // Caller must apply the same integration-management permission as /dashboard/integrations.
+    // Reads are available to dashboard viewers; proposals require integration-management permission.
     // Never serialize the service snapshot into model context: templates, URLs and headers may contain secrets.
     private static void AddIntegrationTools<TTimeTicker, TCronTicker>(IList<AITool> tools,
         ITickerDashboardDataService<TTimeTicker, TCronTicker> data, ITickerIntegrationAdminService service,

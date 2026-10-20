@@ -9,6 +9,7 @@ using NSubstitute;
 using NSubstitute.ReceivedExtensions;
 using Microsoft.Extensions.Logging;
 using TickerQ.BackgroundServices;
+using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
@@ -52,6 +53,58 @@ public class TickerQFallbackBackgroundServiceTests
             _taskHandler,
             _taskScheduler,
             LicenseTestState.Active(), logger: logger);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SaturatedAdmission_WaitsWithoutReacquiringReleasedRows_AndWakesOnCapacityOrShutdown(bool stopWhileFull)
+    {
+        await using var scheduler = new TickerQTaskScheduler(1, 1, 1);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Assert.True(((ITickerQExecutionScheduler)scheduler).TryQueueOrchestration(_ => finish.Task));
+        var context = new InternalFunctionContext
+        {
+            TickerId = Guid.NewGuid(), FunctionName = "SaturationTest", Type = TickerType.TimeTicker,
+            AcquisitionToken = Guid.NewGuid()
+        };
+        var scans = 0;
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _internalManager.RunTimedOutTickers(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            if (Interlocked.Increment(ref scans) == 1) return Task.FromResult(new[] { context });
+            resumed.TrySetResult();
+            return Task.FromResult(Array.Empty<InternalFunctionContext>());
+        });
+        _internalManager.ReleaseAcquiredResources(Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { released.TrySetResult(); return Task.CompletedTask; });
+        using var service = new TickerQFallbackBackgroundService(_internalManager,
+            new SchedulerOptionsBuilder { FallbackIntervalChecker = TimeSpan.FromMilliseconds(20) },
+            _taskHandler, scheduler, LicenseTestState.Active());
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await released.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await Task.Delay(150);
+            Assert.Equal(1, Volatile.Read(ref scans));
+            if (stopWhileFull)
+                await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(3));
+            else
+            {
+                finish.TrySetResult();
+                await resumed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            }
+            await _internalManager.Received(1).ReleaseAcquiredResources(
+                Arg.Is<InternalFunctionContext[]>(items => items.Length == 1 && items[0] == context), CancellationToken.None);
+            await _taskHandler.DidNotReceive().ExecuteRegisteredTaskAsync(context, true,
+                Arg.Any<CancellationTokenSource>(), Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            finish.TrySetResult();
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(3));
+        }
     }
 
     [Fact]

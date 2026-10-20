@@ -4077,21 +4077,19 @@ namespace TickerQ.MongoDB.Infrastructure
             var suppliedById = supplied.ToDictionary(x => x.Id);
             var current = ticker;
             var visited = new HashSet<Guid>();
-            while (current.ParentId.HasValue && visited.Add(current.Id))
+            while (current.ParentId.HasValue)
             {
+                if (!visited.Add(current.Id)) throw new InvalidOperationException("A time ticker parent chain contains a cycle.");
                 if (suppliedById.TryGetValue(current.ParentId.Value, out var suppliedParent))
                 {
                     current = suppliedParent;
                     continue;
                 }
-
                 var filter = InPartition(Builders<TTimeTicker>.Filter.Eq(x => x.Id, current.ParentId.Value));
-                var parent = session == null
+                current = session == null
                     ? await _context.TimeTickers.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false)
                     : await _context.TimeTickers.Find(session, filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-                return parent == null
-                    ? (ticker.Id, ticker.ChainGeneration)
-                    : (parent.ChainRootId ?? parent.Id, parent.ChainGeneration);
+                if (current == null) throw new InvalidOperationException("The destination time ticker parent no longer exists in this application partition.");
             }
 
             return (current.Id, current.ChainGeneration);
@@ -4101,92 +4099,113 @@ namespace TickerQ.MongoDB.Infrastructure
             IClientSessionHandle session, TTimeTicker ticker, Guid? parentId, Guid chainRootId,
             Guid? chainGeneration, CancellationToken ct)
         {
-            Stamp(ticker);
-            if (parentId.HasValue) ticker.ParentId = parentId.Value;
-            ticker.ChainRootId = chainRootId;
-            ticker.ChainGeneration = chainGeneration;
-            if (session == null)
-                await _context.TimeTickers.InsertOneAsync(ticker, cancellationToken: ct).ConfigureAwait(false);
-            else
-                await _context.TimeTickers.InsertOneAsync(session, ticker, cancellationToken: ct).ConfigureAwait(false);
-            var count = 1;
-            if (ticker.Children != null)
+            var pending = new Stack<(TTimeTicker Row, Guid? ParentId)>();
+            var visited = new HashSet<Guid>();
+            pending.Push((ticker, parentId));
+            var count = 0;
+            while (pending.Count > 0)
             {
-                foreach (var child in ticker.Children)
-                    if (child is TTimeTicker c)
-                        count += await InsertWithChildren(
-                            session, c, ticker.Id, chainRootId, chainGeneration, ct).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                var (row, imposedParent) = pending.Pop();
+                if (!visited.Add(row.Id)) throw new InvalidOperationException("A time ticker graph contains a duplicate or cyclic identity.");
+                Stamp(row);
+                if (imposedParent.HasValue) row.ParentId = imposedParent;
+                row.ChainRootId = chainRootId;
+                row.ChainGeneration = chainGeneration;
+                if (session == null)
+                    await _context.TimeTickers.InsertOneAsync(row, cancellationToken: ct).ConfigureAwait(false);
+                else
+                    await _context.TimeTickers.InsertOneAsync(session, row, cancellationToken: ct).ConfigureAwait(false);
+                count++;
+                if (row.Children != null)
+                    foreach (var child in row.Children.Reverse()) pending.Push((child, row.Id));
             }
             return count;
         }
 
         public async Task<int> UpdateTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
         {
-            if (tickers == null || tickers.Length == 0) return 0;
-            // Preserve historical upsert behavior for genuinely-new top-level rows, while remembering
-            // which rows existed when this mutation began. If retention wins and deletes one of those
-            // rows before this transaction wins the fence, do not resurrect it from a stale replacement.
-            var topLevelIds = tickers.Select(x => x.Id).Distinct().ToArray();
-            var requiredExistingIds = (await _context.TimeTickers
-                    .Find(InPartition(Builders<TTimeTicker>.Filter.In(x => x.Id, topLevelIds)))
-                    .Project(x => x.Id)
-                    .ToListAsync(cancellationToken).ConfigureAwait(false))
-                .ToHashSet();
-            return await ExecuteAdmittedGraphMutationAsync(
-                async (session, ct) =>
-                {
-                    if (!await ReferencedParentsExistAsync(session, tickers, ct).ConfigureAwait(false))
-                        return 0;
-                    if (requiredExistingIds.Count > 0)
-                    {
-                        var stillExisting = await _context.TimeTickers.CountDocumentsAsync(
-                            session,
-                            InPartition(Builders<TTimeTicker>.Filter.In(x => x.Id, requiredExistingIds)),
-                            cancellationToken: ct).ConfigureAwait(false);
-                        if (stillExisting != requiredExistingIds.Count)
-                            return 0;
-                    }
-                    var count = 0;
-                    foreach (var ticker in tickers)
-                        count += await ReplaceWithChildren(
-                            session, ticker, null, ticker.Id, ticker.ChainGeneration, ct).ConfigureAwait(false);
-                    return count;
-                },
-                async ct =>
-                {
-                    var count = 0;
-                    foreach (var ticker in tickers)
-                        count += await ReplaceWithChildren(
-                            null, ticker, null, ticker.Id, ticker.ChainGeneration, ct).ConfigureAwait(false);
-                    return count;
-                },
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        private async Task<int> ReplaceWithChildren(
-            IClientSessionHandle session, TTimeTicker ticker, Guid? parentId, Guid chainRootId,
-            Guid? chainGeneration, CancellationToken ct)
-        {
-            Stamp(ticker);
-            if (parentId.HasValue) ticker.ParentId = parentId.Value;
-            ticker.ChainRootId = chainRootId;
-            ticker.ChainGeneration = chainGeneration;
-            var filter = InPartition(Builders<TTimeTicker>.Filter.Eq(x => x.Id, ticker.Id));
-            var options = new ReplaceOptions { IsUpsert = true };
-            ReplaceOneResult result;
-            if (session == null)
-                result = await _context.TimeTickers.ReplaceOneAsync(filter, ticker, options, ct).ConfigureAwait(false);
-            else
-                result = await _context.TimeTickers.ReplaceOneAsync(session, filter, ticker, options, ct).ConfigureAwait(false);
-            var count = (int)result.ModifiedCount + (result.UpsertedId is null ? 0 : 1);
-            if (ticker.Children != null)
+            if (!TimeTickerConfigurationSnapshot.TryFlatten(tickers, out var incoming) || incoming.Count == 0)
+                return 0;
+            foreach (var row in incoming.Values) Stamp(row);
+            return await ExecuteAdmittedGraphMutationAsync(async (session, ct) =>
             {
-                foreach (var child in ticker.Children)
-                    if (child is TTimeTicker c)
-                        count += await ReplaceWithChildren(
-                            session, c, ticker.Id, chainRootId, chainGeneration, ct).ConfigureAwait(false);
-            }
-            return count;
+                if (!await ReferencedParentsExistAsync(session, tickers, ct).ConfigureAwait(false)) return 0;
+                var ids = incoming.Keys.ToArray();
+                var current = await _context.TimeTickers.Find(session,
+                        InPartition(Builders<TTimeTicker>.Filter.In(x => x.Id, ids)))
+                    .ToListAsync(ct).ConfigureAwait(false);
+                // Update never upserts: a missing snapshot may have been removed by retention.
+                if (current.Count != ids.Length || current.Any(row =>
+                        !TimeTickerConfigurationSnapshot.Matches(row, incoming[row.Id], compareParent: false))) return 0;
+                var currentById = current.ToDictionary(row => row.Id);
+                foreach (var moved in incoming.Values.Where(row => currentById[row.Id].ParentId != row.ParentId))
+                {
+                    // Preserve the existing reparent operation only for a complete, finished subtree
+                    // between inactive roots. The graph transaction fences both source and destination.
+                    var previous = currentById[moved.Id];
+                    if (!previous.ParentId.HasValue || !moved.ParentId.HasValue || incoming.ContainsKey(moved.ParentId.Value) ||
+                        !TimeTickerConfigurationSnapshot.TryFlatten(new[] { moved }, out var subtree)) return 0;
+                    var descendants = await CollectDescendantIds(session, moved.Id, ct).ConfigureAwait(false);
+                    if (!descendants.SetEquals(subtree.Keys.Where(id => id != moved.Id)) ||
+                        descendants.Contains(moved.ParentId.Value) || moved.ParentId == moved.Id) return 0;
+                    var now = _clock.UtcNow;
+                    bool Safe(TTimeTicker row) => ChainDeletionPolicy.IsTerminal(row.Status) &&
+                        !row.AcquisitionToken.HasValue && !(row.LeaseUntil > now);
+                    if (subtree.Values.Any(row => !Safe(row))) return 0;
+                    var source = await ResolveInsertedChainIdentityAsync(session, previous, Array.Empty<TTimeTicker>(), ct).ConfigureAwait(false);
+                    var destination = await ResolveInsertedChainIdentityAsync(session, moved, Array.Empty<TTimeTicker>(), ct).ConfigureAwait(false);
+                    var rootIds = new[] { source.RootId, destination.RootId }.Distinct().ToArray();
+                    var roots = await _context.TimeTickers.Find(session,
+                            InPartition(Builders<TTimeTicker>.Filter.In(row => row.Id, rootIds)))
+                        .ToListAsync(ct).ConfigureAwait(false);
+                    if (roots.Count != rootIds.Length || roots.Any(row => row.ParentId.HasValue || !Safe(row))) return 0;
+                    foreach (var row in subtree.Values)
+                    {
+                        row.ChainRootId = destination.RootId;
+                        row.ChainGeneration = destination.Generation;
+                    }
+                }
+                // Detached child edits retain the actual parent's root identity. Validate each
+                // supplied subtree entry, then read each authoritative root once for the graph.
+                var supplied = incoming.Values.ToArray();
+                foreach (var row in tickers.Where(x => x.ParentId.HasValue))
+                {
+                    var identity = await ResolveInsertedChainIdentityAsync(session, row, supplied, ct).ConfigureAwait(false);
+                    if (row.ChainRootId != identity.RootId || row.ChainGeneration != identity.Generation) return 0;
+                }
+                foreach (var group in incoming.Values.Where(x => x.ParentId.HasValue).GroupBy(x => x.ChainRootId))
+                {
+                    if (!group.Key.HasValue) return 0;
+                    var root = await _context.TimeTickers.Find(session, InPartition(
+                            Builders<TTimeTicker>.Filter.Eq(x => x.Id, group.Key.Value)))
+                        .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                    if (root == null || root.ParentId.HasValue || group.Any(row => root.ChainGeneration != row.ChainGeneration)) return 0;
+                }
+                foreach (var row in incoming.Values)
+                    await _context.TimeTickers.ReplaceOneAsync(session,
+                        InPartition(Builders<TTimeTicker>.Filter.Eq(x => x.Id, row.Id)), row,
+                        new ReplaceOptions { IsUpsert = false }, ct).ConfigureAwait(false);
+                return incoming.Count;
+            }, async ct =>
+            {
+                // Without a transaction, only an independent root can be edited atomically.
+                if (incoming.Count != 1 || incoming.Values.Single().ParentId.HasValue)
+                    throw new NotSupportedException("Atomic Mongo chain configuration updates require replica set transactions.");
+                var row = incoming.Values.Single();
+                var fb = Builders<TTimeTicker>.Filter;
+                var filter = InPartition(fb.Eq(x => x.Id, row.Id) & fb.Eq(x => x.ParentId, row.ParentId) &
+                    fb.Eq(x => x.Status, row.Status) & fb.Eq(x => x.LockHolder, row.LockHolder) &
+                    fb.Eq(x => x.LockedAt, row.LockedAt) & fb.Eq(x => x.LeaseUntil, row.LeaseUntil) &
+                    fb.Eq(x => x.AcquisitionToken, row.AcquisitionToken) & fb.Eq(x => x.ExecutedAt, row.ExecutedAt) &
+                    fb.Eq(x => x.ExceptionMessage, row.ExceptionMessage) & fb.Eq(x => x.SkippedReason, row.SkippedReason) &
+                    fb.Eq(x => x.ElapsedTime, row.ElapsedTime) & fb.Eq(x => x.RetryCount, row.RetryCount) &
+                    fb.Eq(x => x.ChainRootId, row.ChainRootId) & fb.Eq(x => x.ChainGeneration, row.ChainGeneration) &
+                    fb.Eq(x => x.StaleRestartCount, row.StaleRestartCount));
+                var result = await _context.TimeTickers.ReplaceOneAsync(filter, row,
+                    new ReplaceOptions { IsUpsert = false }, ct).ConfigureAwait(false);
+                return (int)result.MatchedCount;
+            }, cancellationToken).ConfigureAwait(false);
         }
 
         // A mutation that attaches to an existing aggregate must prove its external parent still exists
@@ -4197,16 +4216,17 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             var suppliedIds = new HashSet<Guid>();
             var referencedParents = new HashSet<Guid>();
-            void Visit(TTimeTicker node, Guid? imposedParent)
+            var pending = new Stack<(TTimeTicker Row, Guid? Parent)>(roots.Select(row => (row, (Guid?)null)));
+            while (pending.Count > 0)
             {
-                suppliedIds.Add(node.Id);
+                cancellationToken.ThrowIfCancellationRequested();
+                var (node, imposedParent) = pending.Pop();
+                if (!suppliedIds.Add(node.Id)) return false;
                 var parent = imposedParent ?? node.ParentId;
                 if (parent.HasValue) referencedParents.Add(parent.Value);
-                if (node.Children == null) return;
-                foreach (var child in node.Children)
-                    if (child is TTimeTicker typed) Visit(typed, node.Id);
+                if (node.Children != null)
+                    foreach (var child in node.Children) pending.Push((child, node.Id));
             }
-            foreach (var root in roots) Visit(root, null);
             referencedParents.ExceptWith(suppliedIds);
             if (referencedParents.Count == 0) return true;
 
@@ -4275,26 +4295,31 @@ namespace TickerQ.MongoDB.Infrastructure
         private static void NormalizeReplacementChain(
             TTimeTicker node, Guid? parentId, Guid rootId, ISet<Guid> visited)
         {
-            if (!visited.Add(node.Id))
-                throw new InvalidOperationException(
-                    $"Cannot replace chain: duplicate or cyclic ticker id '{node.Id}'.");
-            node.ParentId = parentId;
-            node.ChainRootId = rootId;
-            node.Status = TickerStatus.Idle;
-            node.LockHolder = null;
-            node.LockedAt = null;
-            node.LeaseUntil = null;
-            node.AcquisitionToken = null;
-            node.ChainGeneration = null;
-            node.ExecutedAt = null;
-            node.ExceptionMessage = null;
-            node.SkippedReason = null;
-            node.ElapsedTime = 0;
-            node.RetryCount = 0;
-            node.StaleRestartCount = 0;
-            if (node.Children == null) return;
-            foreach (var child in node.Children)
-                NormalizeReplacementChain(child, node.Id, rootId, visited);
+            var pending = new Stack<(TTimeTicker Row, Guid? Parent)>();
+            pending.Push((node, parentId));
+            while (pending.Count > 0)
+            {
+                var (current, imposedParent) = pending.Pop();
+                if (!visited.Add(current.Id))
+                    throw new InvalidOperationException(
+                        $"Cannot replace chain: duplicate or cyclic ticker id '{current.Id}'.");
+                current.ParentId = imposedParent;
+                current.ChainRootId = rootId;
+                current.Status = TickerStatus.Idle;
+                current.LockHolder = null;
+                current.LockedAt = null;
+                current.LeaseUntil = null;
+                current.AcquisitionToken = null;
+                current.ChainGeneration = null;
+                current.ExecutedAt = null;
+                current.ExceptionMessage = null;
+                current.SkippedReason = null;
+                current.ElapsedTime = 0;
+                current.RetryCount = 0;
+                current.StaleRestartCount = 0;
+                if (current.Children != null)
+                    foreach (var child in current.Children.Reverse()) pending.Push((child, current.Id));
+            }
         }
 
         public Task<int> SetTimeTickerDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
@@ -4842,23 +4867,35 @@ namespace TickerQ.MongoDB.Infrastructure
 
         private static void StampQueueGeneration(TimeTickerEntity node, Guid rootId, Guid generation)
         {
-            node.ChainRootId = rootId;
-            node.ChainGeneration = generation;
-            foreach (var child in node.Children ?? [])
-                StampQueueGeneration(child, rootId, generation);
+            var pending = new Stack<TimeTickerEntity>();
+            var visited = new HashSet<Guid>();
+            pending.Push(node);
+            while (pending.Count > 0)
+            {
+                var current = pending.Pop();
+                if (!visited.Add(current.Id)) continue;
+                current.ChainRootId = rootId;
+                current.ChainGeneration = generation;
+                foreach (var child in current.Children ?? []) pending.Push(child);
+            }
         }
 
         /// <summary>Attaches up to <paramref name="depth"/> raw child levels onto <paramref name="node"/>.</summary>
         private static void AttachRawChildren(TTimeTicker node, Dictionary<Guid, List<TTimeTicker>> byParent, int depth, HashSet<Guid> visited)
         {
-            if (depth <= 0 || !visited.Add(node.Id) || !byParent.TryGetValue(node.Id, out var children))
+            var pending = new Stack<(TTimeTicker Row, int Depth)>();
+            pending.Push((node, depth));
+            while (pending.Count > 0)
             {
-                node.Children = new List<TTimeTicker>();
-                return;
+                var (current, remaining) = pending.Pop();
+                if (remaining <= 0 || !visited.Add(current.Id) || !byParent.TryGetValue(current.Id, out var children))
+                {
+                    current.Children = new List<TTimeTicker>();
+                    continue;
+                }
+                current.Children = children;
+                foreach (var child in children.AsEnumerable().Reverse()) pending.Push((child, remaining - 1));
             }
-            node.Children = children;
-            foreach (var child in children)
-                AttachRawChildren(child, byParent, depth - 1, visited);
         }
 
         /// <summary>
@@ -4976,17 +5013,25 @@ namespace TickerQ.MongoDB.Infrastructure
 
         private async Task<List<T>> LoadChildrenRecursive<T>(Guid parentId, CancellationToken ct) where T : TTimeTicker
         {
-            var rows = await _context.TimeTickers
-                .Find(InPartition(Builders<TTimeTicker>.Filter.Eq(x => x.ParentId, (Guid?)parentId)))
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
-            var result = new List<T>(rows.Count);
-            foreach (var row in rows)
+            var fb = Builders<TTimeTicker>.Filter;
+            var roots = await _context.TimeTickers.Find(InPartition(fb.Eq(x => x.ParentId, (Guid?)parentId)))
+                .ToListAsync(ct).ConfigureAwait(false);
+            var visited = new HashSet<Guid> { parentId };
+            roots = roots.Where(row => visited.Add(row.Id)).ToList();
+            var frontier = roots;
+            while (frontier.Count > 0)
             {
-                row.Children = (await LoadChildrenRecursive<TTimeTicker>(row.Id, ct).ConfigureAwait(false)).Cast<TTimeTicker>().ToList();
-                result.Add((T)row);
+                ct.ThrowIfCancellationRequested();
+                var ids = frontier.Select(row => (Guid?)row.Id).ToArray();
+                var descendants = await _context.TimeTickers.Find(InPartition(fb.In(x => x.ParentId, ids)))
+                    .ToListAsync(ct).ConfigureAwait(false);
+                descendants = descendants.Where(row => visited.Add(row.Id)).ToList();
+                var children = BuildChildLookup(descendants);
+                foreach (var row in frontier)
+                    row.Children = children.TryGetValue(row.Id, out var rows) ? rows : new List<TTimeTicker>();
+                frontier = descendants;
             }
-            return result;
+            return roots.Cast<T>().ToList();
         }
 
         private async Task<HashSet<Guid>> CollectDescendantIds(

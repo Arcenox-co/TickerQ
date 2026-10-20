@@ -224,6 +224,7 @@ public sealed class TickerQExecutionAdmissionTests
         await using var rig = new ExecutionRig(concurrency);
         var release = Signal();
         var allOrchestrated = Signal();
+        var rootExecuted = Signal();
         var capacityOccupied = Signal();
         var tracked = new ExecutionCounter();
         var enteredOrchestration = 0;
@@ -232,7 +233,11 @@ public sealed class TickerQExecutionAdmissionTests
         Task Body(CancellationToken ct, IServiceProvider _, TickerFunctionContext __)
             => tracked.RunAsync(release.Task, ct, concurrency, capacityOccupied);
 
-        var root = Job("Root", condition == RunCondition.InProgress ? Body : NoOp);
+        var root = Job("Root", condition == RunCondition.InProgress ? Body : (_, _, _) =>
+        {
+            rootExecuted.TrySetResult();
+            return Task.CompletedTask;
+        });
         for (var i = 0; i < childCount; i++)
             AddChild(root, Job($"Child{i}", Body), condition);
         var independent = Job("Independent", Body);
@@ -246,7 +251,11 @@ public sealed class TickerQExecutionAdmissionTests
 
         try
         {
-            await rig.Dispatcher.DispatchAsync([root, independent]);
+            await rig.Dispatcher.DispatchAsync([root]);
+            // At concurrency one, letting the blocking standalone body beat the root
+            // would prevent OnSuccess children from ever becoming eligible before release.
+            if (condition == RunCondition.OnSuccess) await rootExecuted.Task.WaitAsync(TestTimeout);
+            await rig.Dispatcher.DispatchAsync([independent]);
             await allOrchestrated.Task.WaitAsync(TestTimeout);
             await capacityOccupied.Task.WaitAsync(TestTimeout);
             Assert.False(await rig.Scheduler.WaitForRunningTasksAsync(TimeSpan.Zero));

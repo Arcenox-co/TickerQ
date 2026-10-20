@@ -26,12 +26,17 @@ public class AuthResult
 {
     public bool IsAuthenticated { get; set; }
     public string? Username { get; set; }
+    /// <summary>Stable, scoped identity for private history; null disables persistence.</summary>
+    public string? UserId { get; set; }
     public string? ErrorMessage { get; set; }
     
-    public static AuthResult Success(string? username = null) => new()
+    public static AuthResult Success(string? username = null) => Success(username, null);
+
+    public static AuthResult Success(string? username, string? userId) => new()
     {
         IsAuthenticated = true,
-        Username = username ?? "user"
+        Username = username ?? "user",
+        UserId = userId
     };
     
     public static AuthResult Failure(string? errorMessage = null) => new()

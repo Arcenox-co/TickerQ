@@ -34,6 +34,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
     private int _waitingForFunction;
     private int _retrying;
     private TaskCompletionSource<bool> _capacityChanged;
+    private TaskCompletionSource<bool> _orchestrationCapacityChanged;
     private TaskCompletionSource<bool> _drained = NewSignal();
     private Task _disposeTask;
     private int _priorityCursor;
@@ -296,6 +297,13 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         previous?.TrySetResult(true);
     }
 
+    private void SignalOrchestrationCapacityChanged()
+    {
+        var previous = _orchestrationCapacityChanged;
+        _orchestrationCapacityChanged = null;
+        previous?.TrySetResult(true);
+    }
+
     private void SignalDrainedIfIdle()
     {
         if (_totalQueuedTasks == 0 && _activeExecutions == 0 && _activeOrchestrations == 0)
@@ -499,6 +507,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
             if (!_isFrozen) _admissionGeneration++;
             _isFrozen = true;
             SignalCapacityChanged();
+            SignalOrchestrationCapacityChanged();
         }
     }
 
@@ -570,6 +579,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
             _isFrozen = true;
             _admissionGeneration++;
             SignalCapacityChanged();
+            SignalOrchestrationCapacityChanged();
             completion = NewSignal();
             _disposeTask = completion.Task;
         }
@@ -613,6 +623,21 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
         {
             CompleteStopIfIdle();
             completion.TrySetException(ex);
+        }
+    }
+
+    async Task ITickerQExecutionScheduler.WaitForOrchestrationCapacityAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Task changed;
+            lock (_stateLock)
+            {
+                if (_disposed || _isFrozen || _activeOrchestrations < _orchestrationCapacity) return;
+                changed = (_orchestrationCapacityChanged ??= NewSignal()).Task;
+            }
+            await changed.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -662,6 +687,7 @@ public sealed class TickerQTaskScheduler : IAsyncDisposable, ITickerQTaskSchedul
             lock (_stateLock)
             {
                 _activeOrchestrations--;
+                SignalOrchestrationCapacityChanged();
                 SignalDrainedIfIdle();
             }
             CompleteStopIfIdle();

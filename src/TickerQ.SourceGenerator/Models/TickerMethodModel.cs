@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using System.Collections.Generic;
 
 namespace TickerQ.SourceGenerator.Models
 {
@@ -23,6 +24,7 @@ namespace TickerQ.SourceGenerator.Models
         public string GenericRequestTypeFullName { get; set; }
         public bool HasContext { get; set; }
         public bool HasCancellationToken { get; set; }
+        public List<string> InvocationArguments { get; } = new List<string>();
 
         // True for ITickerFunction implementations
         public bool IsInterfaceBased { get; set; }

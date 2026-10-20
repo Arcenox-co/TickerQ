@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(SmokeFramework)</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="TickerQ" Version="[$(SmokeVersion)]" />
+    <PackageReference Include="TickerQ.Utilities" Version="[$(SmokeVersion)]" />
+    <PackageReference Include="TickerQ.Dashboard" Version="[$(SmokeVersion)]" />
+    <PackageReference Include="TickerQ.EntityFrameworkCore" Version="[$(SmokeVersion)]" />
+    <PackageReference Include="TickerQ.MongoDB" Version="[$(SmokeVersion)]" />
+    <PackageReference Include="TickerQ.Caching.StackExchangeRedis" Version="[$(SmokeVersion)]" />
+    <PackageReference Include="TickerQ.Integrations" Version="[$(SmokeVersion)]" />
+    <PackageReference Include="TickerQ.Instrumentation.OpenTelemetry" Version="[$(SmokeVersion)]" />
+  </ItemGroup>
+</Project>

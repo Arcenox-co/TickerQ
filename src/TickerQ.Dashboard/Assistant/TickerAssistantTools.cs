@@ -32,7 +32,8 @@ internal static partial class TickerAssistantTools
         Func<Guid, CancellationToken, Task<TickerQ.Utilities.Infrastructure.ExecutionLogReadResult>>? readLogs = null,
         TickerQ.Utilities.Integrations.ITickerIntegrationAdminService? integrations = null,
         string schedulerTimeZone = "UTC",
-        TickerQ.Utilities.Infrastructure.TickerQRuntimeDiagnostics? diagnostics = null)
+        TickerQ.Utilities.Infrastructure.TickerQRuntimeDiagnostics? diagnostics = null,
+        bool allowIntegrationProposals = true)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
@@ -297,7 +298,7 @@ internal static partial class TickerAssistantTools
                 $"Node-local diagnostics. Fallback last success={diagnostics.LastSuccessfulFallbackScanUtc:O}; last failure={diagnostics.LastFallbackFailureUtc:O}; failures={diagnostics.FallbackScanFailures}. " +
                 $"Log writes available={diagnostics.LogWritesAvailable?.ToString() ?? "unknown"}; last flush={diagnostics.LastSuccessfulLogFlushUtc:O}; write failures={diagnostics.LogWriteFailures}. Missing timestamps mean no observation, not proof of failure.",
                 "get_runtime_diagnostics", "Read this node's overdue recovery and execution-log persistence health. This is not a cluster-wide health check."));
-        if (integrations != null) AddIntegrationTools(tools, data, integrations, allowProposals, emitProposal, ct);
+        if (integrations != null) AddIntegrationTools(tools, data, integrations, allowProposals && allowIntegrationProposals, emitProposal, ct);
         return tools;
     }
 

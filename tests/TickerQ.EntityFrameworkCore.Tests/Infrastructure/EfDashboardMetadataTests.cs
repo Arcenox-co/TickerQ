@@ -67,6 +67,17 @@ public sealed class EfDashboardMetadataTests
         Assert.Equal(3, schedule.Retries);
         Assert.NotEmpty(capture.Commands);
         Assert.All(capture.Commands, sql => Assert.DoesNotContain("\"Request\"", sql));
+        capture.Commands.Clear();
+        var totals = await dashboard.GetOverallStatusesAsync();
+        Assert.Equal(4, totals.Single(row => row.Status == TickerStatus.Idle).Count);
+        Assert.Equal(1, totals.Single(row => row.Status == TickerStatus.Done).Count);
+        Assert.Equal(2, capture.Commands.Count);
+        Assert.All(capture.Commands, sql =>
+        {
+            Assert.Contains("GROUP BY", sql);
+            Assert.DoesNotContain("\"Request\"", sql);
+            Assert.DoesNotContain("\"Function\"", sql);
+        });
         // Projection is a read optimization, never a mutation of stored payloads.
         Assert.Equal(payload.Length, (await provider.GetTimeTickerById(root.Id, default)).Request.Length);
     }

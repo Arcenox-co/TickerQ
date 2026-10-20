@@ -1,5 +1,5 @@
 import type { IntegrationConfiguration, IntegrationSnapshot, IntegrationDeliveryStatus } from "./integration-types";
-import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
+import { resolveDashboardUrl } from "@/lib/runtime-config";
 import { formatApiErrorMessage } from "@/lib/api-error-message";
 import { tokenStore } from "@/lib/auth/token-store";
 import { refresh as refreshToken } from "@/lib/auth/auth-api";
@@ -46,9 +46,7 @@ import type {
 const API_BASE = "/api/dashboard";
 
 function withBase(path: string): string {
-  const root = normalizeBasePath(getRuntimeConfig().basePath);
-  const prefix = root === "/" ? "" : root;
-  return `${prefix}${API_BASE}${path}`;
+  return resolveDashboardUrl(`${API_BASE}${path}`);
 }
 
 class ApiError extends Error {
@@ -155,12 +153,10 @@ async function del<T>(path: string, signal?: AbortSignal): Promise<T> {
 
 // Some routes live directly under `/api/` (not `/api/dashboard/`) — e.g. /api/options.
 async function rootRequest<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const root = normalizeBasePath(getRuntimeConfig().basePath);
-  const prefix = root === "/" ? "" : root;
   const token = tokenStore.get();
   const headers: Record<string, string> = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${prefix}${path}`, { credentials: "include", signal, headers });
+  const res = await fetch(resolveDashboardUrl(path), { credentials: "include", signal, headers });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new ApiError(res.status, res.statusText, body);

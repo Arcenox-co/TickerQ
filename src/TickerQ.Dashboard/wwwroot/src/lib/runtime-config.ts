@@ -82,6 +82,24 @@ export function isReadOnly(): boolean {
 
 export function normalizeBasePath(raw: string): string {
   if (!raw || raw === "/") return "/";
-  const trimmed = raw.endsWith("/") ? raw.slice(0, -1) : raw;
-  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return `/${raw.replace(/^\/+|\/+$/g, "")}`;
+}
+
+/** One destination policy for REST, auth, assistant streams and SignalR. */
+export function resolveDashboardUrl(
+  path: string,
+  config: Pick<TickerQRuntimeConfig, "basePath" | "backendDomain"> = getRuntimeConfig(),
+): string {
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\"))
+    throw new Error("Dashboard endpoint must be a relative route.");
+  const root = normalizeBasePath(config.basePath);
+  const route = `${root === "/" ? "" : root}${path}`;
+  if (!config.backendDomain?.trim()) return route;
+  const origin = new URL(config.backendDomain.trim());
+  if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password ||
+      origin.pathname !== "/" || origin.search || origin.hash)
+    throw new Error("Dashboard backendDomain must be an HTTP(S) origin.");
+  if (typeof window !== "undefined" && window.location.protocol === "https:" && origin.protocol !== "https:")
+    throw new Error("An HTTPS dashboard requires an HTTPS backend.");
+  return `${origin.origin}${route}`;
 }

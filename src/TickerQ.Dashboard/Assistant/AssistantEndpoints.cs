@@ -50,32 +50,27 @@ internal static class AssistantEndpoints
         api.MapDelete("/assistant/conversations/{id:guid}", DeleteConversationAsync).WithTags("TickerQ Dashboard");
     }
 
-    /// <summary>
-    /// The stable identity chats are scoped to. Prefers the dashboard's own
-    /// auth (AuthMiddleware sets Items["auth.username"]); host-mode setups
-    /// fall back to the host identity's subject claim, then name.
-    /// </summary>
-    private static string ResolveUserId(HttpContext ctx)
-        => ctx.Items["auth.username"] as string
-           ?? ctx.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
-           ?? ctx.User.Identity?.Name
-           ?? "anonymous";
+    // Middleware supplies an identity from the scheme that actually authenticated this request.
+    // Never fall back to display names, unauthenticated claims, or shared anonymous identifiers.
+    internal static string? ResolveUserId(HttpContext ctx) => ctx.Items["auth.userId"] as string;
 
     private static async Task<IResult> ListConversationsAsync(HttpContext ctx)
     {
         var store = ctx.RequestServices.GetService<IAssistantHistoryStore>();
-        if (store == null) return Results.NotFound();
+        var userId = ResolveUserId(ctx);
+        if (store == null || string.IsNullOrWhiteSpace(userId)) return Results.NotFound();
 
-        var items = await store.ListConversationsAsync(ResolveUserId(ctx), ctx.RequestAborted);
+        var items = await store.ListConversationsAsync(userId, ctx.RequestAborted);
         return Results.Json(items.ToList(), AssistantJsonContext.Default.ListAssistantConversationSummary);
     }
 
     private static async Task<IResult> GetConversationAsync(HttpContext ctx, Guid id)
     {
         var store = ctx.RequestServices.GetService<IAssistantHistoryStore>();
-        if (store == null) return Results.NotFound();
+        var userId = ResolveUserId(ctx);
+        if (store == null || string.IsNullOrWhiteSpace(userId)) return Results.NotFound();
 
-        var messages = await store.GetMessagesAsync(ResolveUserId(ctx), id, ctx.RequestAborted);
+        var messages = await store.GetMessagesAsync(userId, id, ctx.RequestAborted);
         if (messages == null) return Results.NotFound();
         return Results.Json(messages.ToList(), AssistantJsonContext.Default.ListAssistantHistoryMessage);
     }
@@ -83,9 +78,10 @@ internal static class AssistantEndpoints
     private static async Task<IResult> DeleteConversationAsync(HttpContext ctx, Guid id)
     {
         var store = ctx.RequestServices.GetService<IAssistantHistoryStore>();
-        if (store == null) return Results.NotFound();
+        var userId = ResolveUserId(ctx);
+        if (store == null || string.IsNullOrWhiteSpace(userId)) return Results.NotFound();
 
-        await store.DeleteConversationAsync(ResolveUserId(ctx), id, ctx.RequestAborted);
+        await store.DeleteConversationAsync(userId, id, ctx.RequestAborted);
         return Results.NoContent();
     }
 
@@ -141,8 +137,8 @@ internal static class AssistantEndpoints
         {
             Tools = TickerAssistantTools.Build(data, allowProposals, emitProposal, ctx.RequestAborted,
                 readLogs: ctx.RequestServices.GetService<ExecutionLogReader>() is { } reader ? reader.ReadAsync : null,
-                integrations: dashboardConfig.CanManageIntegrations(ctx)
-                    ? ctx.RequestServices.GetService<ITickerIntegrationAdminService>() : null,
+                integrations: ctx.RequestServices.GetService<ITickerIntegrationAdminService>(),
+                allowIntegrationProposals: dashboardConfig.CanManageIntegrations(ctx),
                 schedulerTimeZone: ctx.RequestServices.GetService<SchedulerOptionsBuilder>()?.SchedulerTimeZone.Id ?? "UTC",
                 diagnostics: ctx.RequestServices.GetService<TickerQRuntimeDiagnostics>()),
             MaxOutputTokens = 1500,
@@ -166,10 +162,11 @@ internal static class AssistantEndpoints
             var store = ctx.RequestServices.GetService<IAssistantHistoryStore>();
             var lastUserMessage = request.Messages.LastOrDefault(m =>
                 string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))?.Content;
-            if (store != null && !string.IsNullOrEmpty(lastUserMessage) && assistantText.Length > 0)
+            var userId = ResolveUserId(ctx);
+            if (store != null && !string.IsNullOrWhiteSpace(userId) && !string.IsNullOrEmpty(lastUserMessage) && assistantText.Length > 0)
             {
                 var id = await store.AppendExchangeAsync(
-                    ResolveUserId(ctx), request.ConversationId, lastUserMessage,
+                    userId, request.ConversationId, lastUserMessage,
                     assistantText.ToString(), opts.ModelName, CancellationToken.None);
                 conversationId = id.ToString();
             }

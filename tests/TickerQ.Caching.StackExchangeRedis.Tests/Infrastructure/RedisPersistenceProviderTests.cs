@@ -99,19 +99,19 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
-    public async Task RetentionIndex_TracksOnlyTerminalStandaloneTimeTickers()
+    public async Task RetentionIndex_TracksTerminalRootsIncludingChains()
     {
         var standalone = CreateTimeTicker(status: TickerStatus.Done);
         standalone.ExecutedAt = _fixedNow.AddDays(-10);
         var chained = CreateTimeTicker(status: TickerStatus.Done);
-        chained.ExecutedAt = _fixedNow.AddDays(-10);
+        chained.ExecutedAt = _fixedNow.AddDays(-10).AddSeconds(1);
         chained.Children.Add(CreateTimeTicker(status: TickerStatus.Done));
 
         await _provider.AddTimeTickers([standalone, chained], CancellationToken.None);
 
         Assert.True(_sortedSets.TryGetValue($"{Prefix}:tt:retention:succeeded", out var indexed));
         Assert.Contains(standalone.Id.ToString(), indexed!.Values);
-        Assert.DoesNotContain(chained.Id.ToString(), indexed.Values);
+        Assert.Contains(chained.Id.ToString(), indexed.Values);
     }
 
     [Fact]
@@ -214,7 +214,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ReconcileRetentionIndexes_HonorsCancellationAndExcludesChainedRoots()
+    public async Task ReconcileRetentionIndexes_HonorsCancellationAndIncludesChainedRoots()
     {
         var chained = CreateTimeTicker(status: TickerStatus.Done);
         chained.ExecutedAt = _fixedNow.AddDays(-10);
@@ -227,8 +227,8 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
             () => _provider.ReconcileRetentionIndexesAsync(10, cancellation.Token));
         await ReconcileToCompletionAsync(batchSize: 10);
 
-        Assert.False(_sortedSets.TryGetValue($"{Prefix}:tt:retention:succeeded", out var indexed) &&
-                     indexed.Values.Contains(chained.Id.ToString()));
+        Assert.True(_sortedSets.TryGetValue($"{Prefix}:tt:retention:succeeded", out var indexed) &&
+                    indexed.Values.Contains(chained.Id.ToString()));
     }
 
     [Fact]
@@ -470,6 +470,25 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                 var script = callInfo.ArgAt<string>(0);
                 var keys = callInfo.ArgAt<RedisKey[]>(1);
                 var argv = callInfo.ArgAt<RedisValue[]>(2);
+
+                if (script.Contains("Configuration aggregate CAS", StringComparison.Ordinal))
+                {
+                    var key = keys[0].ToString();
+                    if (_store.GetValueOrDefault(key) != argv[0].ToString()) return RedisResult.Create((RedisValue)0);
+                    _store[key] = argv[1].ToString();
+                    if (!_sets.TryGetValue(keys[3].ToString(), out var members))
+                        _sets[keys[3].ToString()] = members = [];
+                    members.Add(argv[4].ToString());
+                    if (argv[5].ToString() == "") RemoveSortedSetMember(keys[2].ToString(), argv[4].ToString());
+                    else AddSortedSetEntry(keys[2].ToString(), Guid.Parse(argv[4].ToString()),
+                        new DateTime((long)double.Parse(argv[5].ToString(), System.Globalization.CultureInfo.InvariantCulture), DateTimeKind.Utc));
+                    for (var index = 4; index < 8; index++)
+                        RemoveSortedSetMember(keys[index].ToString(), argv[4].ToString());
+                    if (Rvi(argv[6]) > 0)
+                        AddSortedSetEntry(keys[3 + Rvi(argv[6])].ToString(), Guid.Parse(argv[4].ToString()),
+                            new DateTime((long)double.Parse(argv[7].ToString(), System.Globalization.CultureInfo.InvariantCulture), DateTimeKind.Utc));
+                    return RedisResult.Create((RedisValue)1);
+                }
 
                 if (script.Contains("Atomically mutate derived indexes", StringComparison.Ordinal))
                 {
@@ -1072,7 +1091,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
             var obj = doc.RootElement;
             if (!obj.TryGetProperty("ExecutedAt", out var executed) || executed.ValueKind == JsonValueKind.Null ||
                 HasValue(obj, "AcquisitionToken") || HasValue(obj, "LeaseUntil") ||
-                phase == "time" && HasChildren(obj))
+                phase == "time" && HasValue(obj, "ParentId"))
                 continue;
 
             var status = obj.GetProperty("Status").GetInt32();

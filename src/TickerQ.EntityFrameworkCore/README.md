@@ -115,6 +115,12 @@ with SQL Server) for its full transient-error handling. TickerQ also performs bo
 EF write conflicts and database exceptions marked `IsTransient`; it does not suppress permanent
 failures or override an exhausted provider retry policy.
 
+On SQL Server, startup reconciliation takes a table write lock on the mapped cron table before
+reading seed rows. This prevents lock-upgrade and key-range ordering deadlocks between starting
+replicas. The lock lasts for the reconciliation transaction, serializes seeding across application
+partitions, and briefly blocks normal writes to that cron table. Other database providers retain
+their existing serializable reconciliation query.
+
 ## Integration settings
 
 The optional [TickerQ.Integrations](../TickerQ.Integrations/README.md) package stores

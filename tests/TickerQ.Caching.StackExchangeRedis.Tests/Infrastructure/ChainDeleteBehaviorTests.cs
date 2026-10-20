@@ -7,6 +7,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Caching.StackExchangeRedis.Helpers;
 using System.Text.Json.Nodes;
+using StackExchange.Redis;
 using TickerQ.Utilities.Enums;
 using static TickerQ.Caching.StackExchangeRedis.DependencyInjection.ServiceExtension;
 
@@ -26,6 +27,33 @@ public sealed class ChainDeleteBehaviorTests : ChainDeleteBehaviorContract<TimeT
         Provider = new TickerRedisPersistenceProvider<TimeTickerEntity, CronTickerEntity>(fixture.Db, clock,
             new SchedulerOptionsBuilder(), new TickerQRedisOptionBuilder { JsonSerializerContext = TestJsonSerializerContext.Default },
             NullLogger<TickerRedisPersistenceProvider<TimeTickerEntity, CronTickerEntity>>.Instance);
+    }
+
+    protected override async Task SetDescendantStatusAsync(Guid rootId, Guid id, TickerStatus status)
+    {
+        // This deletion-policy fixture includes deliberately invalid lifecycle states (99).
+        // Simulate their repair directly; configuration updates must never change execution state.
+        var key = RedisKeyBuilder.TimeTickerKey(rootId);
+        var original = await _fixture.Db.StringGetAsync(key);
+        var root = JsonNode.Parse((string)original!)!;
+        var pending = new Stack<JsonNode>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var node = pending.Pop();
+            if (node["Id"]!.GetValue<Guid>() == id)
+            {
+                node["Status"] = (int)status;
+                var changed = await _fixture.Db.ScriptEvaluateAsync(
+                    "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end redis.call('SET', KEYS[1], ARGV[2]) return 1",
+                    new RedisKey[] { key }, new RedisValue[] { original, root.ToJsonString() });
+                Assert.Equal(1, (long)changed);
+                return;
+            }
+            if (node["Children"] is JsonArray children)
+                foreach (var child in children) if (child != null) pending.Push(child);
+        }
+        Assert.Fail("Test descendant not found.");
     }
 
     [Fact]

@@ -5,6 +5,9 @@ namespace TickerQ.Dashboard.Infrastructure;
 
 internal class AuthInfoResponse
 {
+    public bool Authenticated { get; set; }
+    public string? Username { get; set; }
+    public string? UserId { get; set; }
     public string Mode { get; set; }
     public bool Enabled { get; set; }
     public int SessionTimeout { get; set; }

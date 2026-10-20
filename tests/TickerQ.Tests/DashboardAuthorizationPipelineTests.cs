@@ -63,6 +63,15 @@ public class DashboardAuthorizationPipelineTests
         Assert.Contains("AllowOrigins", exception.Message);
     }
 
+    [Theory]
+    [InlineData("https://user:password@api.example.test")]
+    [InlineData("https://api.example.test/private")]
+    [InlineData("https://api.example.test?token=secret")]
+    [InlineData("//api.example.test")]
+    [InlineData("javascript:alert(1)")]
+    public void DashboardOptions_BackendDomainRequiresExplicitHttpOrigin(string backend)
+        => Assert.Throws<ArgumentException>(() => new DashboardOptionsBuilder().SetBackendDomain(backend));
+
     [Fact]
     public void DefaultCorsPolicy_AllowsOnlyExplicitOriginWithCredentials()
     {

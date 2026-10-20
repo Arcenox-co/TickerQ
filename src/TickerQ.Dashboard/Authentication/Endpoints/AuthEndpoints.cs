@@ -99,6 +99,7 @@ internal static class AuthEndpoints
             TokenType = "Bearer",
             ExpiresIn = lifetimeSeconds,
             Username = body.Username,
+            UserId = DashboardUserIdentity.Create("credentials", issuer.Issuer, body.Username),
         };
 
         return WriteJson(ctx, response, StatusCodes.Status200OK);
@@ -130,6 +131,7 @@ internal static class AuthEndpoints
             TokenType = "Bearer",
             ExpiresIn = lifetimeSeconds,
             Username = username,
+            UserId = DashboardUserIdentity.Create("credentials", issuer.Issuer, username),
         };
 
         return WriteJson(ctx, response, StatusCodes.Status200OK);

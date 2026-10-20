@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -2245,7 +2246,23 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         // NEVER deleted here — retention owns history. Narrowing to seeded rows (non-empty
         // InitIdentifier) protects dashboard/user rows (including SDK/remote `name@node` functions the
         // initializer never seeds); they carry a null/empty seed identity and are never candidates.
-        var allSeeded = await cronSet
+        IQueryable<TCronTicker> seededRows = cronSet;
+        if (string.Equals(dbContext.Database.ProviderName, "Microsoft.EntityFrameworkCore.SqlServer", StringComparison.Ordinal))
+        {
+            // Serialize SQL Server's startup-only reconciliation before acquiring cron-row locks.
+            // UPDLOCK still permits a key/end-of-range lock-order cycle when concurrent scans
+            // straddle the first insert. TABLOCKX avoids both that cycle and shared-lock upgrades.
+            // This also serializes seeding across partitions and briefly blocks normal cron writes;
+            // the lock is released with this short transaction. Other providers keep their query.
+            // Use EF's mapping and identifier quoting; the partition predicate remains below.
+            var entityType = dbContext.Model.FindEntityType(typeof(TCronTicker));
+            var table = dbContext.GetService<ISqlGenerationHelper>().DelimitIdentifier(
+                entityType.GetTableName(), entityType.GetSchema());
+#pragma warning disable EF1002 // Only the EF-mapped, provider-quoted identifier is interpolated; values are composed below.
+            seededRows = cronSet.FromSqlRaw($"SELECT * FROM {table} WITH (TABLOCKX)");
+#pragma warning restore EF1002
+        }
+        var allSeeded = await seededRows
             .Where(c => c.ApplicationNamespaceKey == _runtimePartitionKey &&
                         !string.IsNullOrEmpty(c.InitIdentifier))
             .ToListAsync(cancellationToken)

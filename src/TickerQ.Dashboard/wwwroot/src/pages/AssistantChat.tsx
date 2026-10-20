@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
 import { ChatMarkdown } from "@/components/assistant/ChatMarkdown";
 import { ProposalCard, type ProposalStatus } from "@/components/assistant/ProposalCard";
-import { getRuntimeConfig, isAssistantEnabled } from "@/lib/runtime-config";
+import { getRuntimeConfig, isAssistantEnabled, resolveDashboardUrl } from "@/lib/runtime-config";
 import {
   deleteConversation,
   getConversationMessages,
@@ -14,6 +14,9 @@ import {
   type ConversationSummary,
 } from "@/services/assistant-api";
 
+import { useAuth } from "@/lib/auth/auth-context";
+import { assistantStorageKey, loadAssistantTranscript, storeAssistantTranscript, clearAssistantTranscript } from "@/lib/assistant-storage";
+import { LatestRequest } from "@/lib/latest-request";
 import { boundTranscript, chatMessage, MAX_CHAT_MESSAGES, MAX_CHAT_MESSAGE_CHARS, updateProposalStatus, type ChatItem } from "@/lib/assistant-transcript";
 
 const SUGGESTIONS = [
@@ -24,45 +27,22 @@ const SUGGESTIONS = [
   "Show my integrations and monitor status",
 ];
 
-// Fallback persistence when the server has NO history store: the chat
-// survives refreshes via localStorage (per browser). With a store registered
-// (assistant.history), the server is the source of truth instead. Proposals
-// are ephemeral UI state and are not persisted in either mode.
-const STORAGE_KEY = "tickerq-assistant-chat";
-const MAX_STORED_MESSAGES = MAX_CHAT_MESSAGES;
-
-function loadStoredItems(): ChatItem[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as { role: "user" | "assistant"; content: string }[];
-    return Array.isArray(parsed)
-      ? parsed
-          .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-          .slice(-MAX_STORED_MESSAGES)
-          .map((m) => chatMessage(m.role, m.content))
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function storeItems(items: ChatItem[]) {
-  try {
-    const messages = items
-      .filter((i): i is Extract<ChatItem, { type: "message" }> => i.type === "message" && i.content !== "")
-      .map((m) => ({ role: m.role, content: m.content }));
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-MAX_STORED_MESSAGES)));
-  } catch {
-    /* storage unavailable — chat still works in-memory */
-  }
-}
-
 export default function AssistantChatPage() {
-  const { model, history: serverHistory } = getRuntimeConfig().assistant;
+  const auth = useAuth();
+  const dashboardUrl = new URL(resolveDashboardUrl("/"), window.location.origin).href;
+  const storageKey = assistantStorageKey(auth.userId, dashboardUrl);
+  // A changed account remounts all transcript and in-flight state before rendering.
+  return <AssistantChat key={`${auth.status}:${storageKey ?? "memory"}`} storageKey={storageKey} />;
+}
+
+function AssistantChat({ storageKey }: { storageKey: string | null }) {
+  const { model, history } = getRuntimeConfig().assistant;
+  const serverHistory = history && storageKey !== null;
 
   const [input, setInput] = useState("");
-  const [items, setItems] = useState<ChatItem[]>(() => (serverHistory ? [] : loadStoredItems()));
+  const [items, setItems] = useState<ChatItem[]>(() => {
+    try { return serverHistory ? [] : loadAssistantTranscript(window.localStorage, storageKey); } catch { return []; }
+  });
   const [transcriptTrimmed, setTranscriptTrimmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -73,12 +53,16 @@ export default function AssistantChatPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const threadRequest = useRef(new LatestRequest());
+  const listRequest = useRef(new LatestRequest());
+  const [threadError, setThreadError] = useState<string | null>(null);
 
   const refreshConversations = useCallback(() => {
     if (!serverHistory) return;
-    listConversations()
-      .then(setConversations)
-      .catch(() => setConversations([]));
+    const request = listRequest.current.begin();
+    listConversations(request.signal)
+      .then((rows) => { if (request.isCurrent()) setConversations(rows); })
+      .catch(() => { if (request.isCurrent()) setConversations([]); });
   }, [serverHistory]);
 
   useEffect(() => refreshConversations(), [refreshConversations]);
@@ -89,10 +73,14 @@ export default function AssistantChatPage() {
 
   // localStorage persistence only applies in fallback mode.
   useEffect(() => {
-    if (!serverHistory && !busy) storeItems(items);
-  }, [items, busy, serverHistory]);
+    try { if (!serverHistory && !busy) storeAssistantTranscript(window.localStorage, storageKey, items); } catch { /* Storage is optional. */ }
+  }, [items, busy, serverHistory, storageKey]);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => {
+    const threads = threadRequest.current;
+    const list = listRequest.current;
+    return () => { abortRef.current?.abort(); threads.cancel(); list.cancel(); };
+  }, []);
 
   if (!isAssistantEnabled()) {
     return (
@@ -110,12 +98,15 @@ export default function AssistantChatPage() {
 
   function startNewChat() {
     abortRef.current?.abort();
+    threadRequest.current.cancel();
+    setLoadingThread(false);
+    setThreadError(null);
     setItems([]);
     setTranscriptTrimmed(false);
     setActiveId(null);
     if (!serverHistory) {
       try {
-        window.localStorage.removeItem(STORAGE_KEY);
+        clearAssistantTranscript(window.localStorage, storageKey);
       } catch {
         /* ignore */
       }
@@ -124,17 +115,24 @@ export default function AssistantChatPage() {
 
   async function openConversation(id: string) {
     if (busy || id === activeId) return;
+    const request = threadRequest.current.begin();
     setLoadingThread(true);
+    setThreadError(null);
+    setItems([]);
     setActiveId(id);
     try {
-      const history = await getConversationMessages(id);
+      const history = await getConversationMessages(id, request.signal);
+      if (!request.isCurrent()) return;
       setItems(boundTranscript(history.slice(-MAX_CHAT_MESSAGES).map((m) => chatMessage(m.role, m.content))));
       setTranscriptTrimmed(history.length > MAX_CHAT_MESSAGES);
     } catch {
+      if (!request.isCurrent()) return;
       setItems([]);
+      setActiveId(null);
       setTranscriptTrimmed(false);
+      setThreadError("Could not load this conversation. Please select it again to retry.");
     } finally {
-      setLoadingThread(false);
+      if (request.isCurrent()) setLoadingThread(false);
     }
   }
 
@@ -161,7 +159,7 @@ export default function AssistantChatPage() {
 
   async function send(text: string) {
     const question = text.trim().slice(0, MAX_CHAT_MESSAGE_CHARS);
-    if (!question || busy) return;
+    if (!question || busy || loadingThread) return;
     if (items.filter((item) => item.type === "message").length + 2 > MAX_CHAT_MESSAGES)
       setTranscriptTrimmed(true);
 
@@ -347,6 +345,8 @@ export default function AssistantChatPage() {
             </div>
           )}
 
+          {threadError && <p role="alert" className="text-sm text-status-error">{threadError}</p>}
+
           {!loadingThread && transcriptTrimmed && (
             <p className="text-center text-[11px] text-muted-foreground">
               Showing the latest {MAX_CHAT_MESSAGES} messages.
@@ -425,6 +425,7 @@ export default function AssistantChatPage() {
           }}
         >
           <textarea
+            disabled={loadingThread}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -440,7 +441,7 @@ export default function AssistantChatPage() {
           <button
             type="submit"
             aria-label="Send message"
-            disabled={busy || !input.trim()}
+            disabled={busy || loadingThread || !input.trim()}
             className="grid h-[44px] w-[44px] shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground disabled:opacity-40"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizonal className="h-4 w-4" />}

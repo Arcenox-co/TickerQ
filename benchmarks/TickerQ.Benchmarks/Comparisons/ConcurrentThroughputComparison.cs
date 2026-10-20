@@ -12,32 +12,10 @@ using TickerQ.Utilities;
 namespace TickerQ.Benchmarks.Comparisons;
 
 /// <summary>
-/// Simulates concurrent job dispatch throughput across all three frameworks.
-/// Measures how many jobs each framework can enqueue/dispatch per second under parallel load.
-/// - TickerQ: FrozenDictionary lookup + delegate invoke (the actual hot path)
-/// - Hangfire: expression-tree parse + serialize + InMemory storage write
-/// - Quartz: JobBuilder + TriggerBuilder + RAM scheduler write
-///
-/// Results Overview (Apple M4 Pro, .NET 10.0):
-/// ┌───────────────────────────────┬──────┬──────────────┬───────────┬──────────────┐
-/// │ Operation                     │ Jobs │ Time         │ Alloc     │ vs TickerQ   │
-/// ├───────────────────────────────┼──────┼──────────────┼───────────┼──────────────┤
-/// │ TickerQ: Parallel dispatch    │ 100  │ 2,876 ns     │ 2.6 KB    │ 1x (baseline)│
-/// │ Hangfire: Parallel enqueue    │ 100  │ 323,348 ns   │ 727 KB    │ 112x slower  │
-/// │ Quartz: Parallel schedule     │ 100  │ 498,816 ns   │ 278 KB    │ 173x slower  │
-/// │ TickerQ: Sequential dispatch  │ 100  │ 299 ns       │ 0 B       │ 0.1x         │
-/// │ Hangfire: Sequential enqueue  │ 100  │ 319,903 ns   │ 722 KB    │ 111x slower  │
-/// │ Quartz: Sequential schedule   │ 100  │ 347,123 ns   │ 295 KB    │ 121x slower  │
-/// ├───────────────────────────────┼──────┼──────────────┼───────────┼──────────────┤
-/// │ TickerQ: Parallel dispatch    │ 1000 │ 14,046 ns    │ 3.7 KB    │ 1x (baseline)│
-/// │ Hangfire: Parallel enqueue    │ 1000 │ 2,805,155 ns │ 7.1 MB    │ 200x slower  │
-/// │ Quartz: Parallel schedule     │ 1000 │ 3,672,841 ns │ 2.2 MB    │ 262x slower  │
-/// │ TickerQ: Sequential dispatch  │ 1000 │ 2,986 ns     │ 0 B       │ 0.2x         │
-/// │ Hangfire: Sequential enqueue  │ 1000 │ 4,051,634 ns │ 7.1 MB    │ 289x slower  │
-/// │ Quartz: Sequential schedule   │ 1000 │ 3,547,540 ns │ 2.5 MB    │ 253x slower  │
-/// └───────────────────────────────┴──────┴──────────────┴───────────┴──────────────┘
-/// Winner: TickerQ — 100-289x faster throughput, 1,985x less memory at 1000 jobs.
-/// Sequential TickerQ dispatches 1000 jobs in 2.99 us with zero allocations.
+/// Microbenchmarks of different operations, not comparable end-to-end job throughput.
+/// TickerQ measures only dictionary lookup and delegate invocation; Hangfire and Quartz
+/// also write scheduler storage. None of these methods waits for persisted job completion.
+/// Use the `runtime` harness for TickerQ scheduler/persistence throughput and memory.
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(RuntimeMoniker.HostProcess)]
@@ -81,7 +59,7 @@ public class ConcurrentThroughputComparison
 
     // ── TickerQ: parallel lookup + invoke ──
 
-    [Benchmark(Baseline = true, Description = "TickerQ: Parallel dispatch")]
+    [Benchmark(Baseline = true, Description = "TickerQ: Parallel lookup + invoke only")]
     public void TickerQ_ParallelDispatch()
     {
         Parallel.For(0, JobCount, i =>
@@ -128,7 +106,7 @@ public class ConcurrentThroughputComparison
 
     // ── Sequential variants for comparison ──
 
-    [Benchmark(Description = "TickerQ: Sequential dispatch")]
+    [Benchmark(Description = "TickerQ: Sequential lookup + invoke only")]
     public void TickerQ_SequentialDispatch()
     {
         for (int i = 0; i < JobCount; i++)

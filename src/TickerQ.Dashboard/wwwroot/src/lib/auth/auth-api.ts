@@ -1,7 +1,10 @@
-import { getRuntimeConfig, normalizeBasePath } from "@/lib/runtime-config";
+import { resolveDashboardUrl } from "@/lib/runtime-config";
 import { tokenStore } from "./token-store";
 
 export interface AuthInfo {
+  authenticated: boolean;
+  username: string | null;
+  userId: string | null;
   mode: string;
   enabled: boolean;
   sessionTimeout: number;
@@ -16,12 +19,7 @@ export interface LoginResponse {
   tokenType: string;
   expiresIn: number;
   username: string;
-}
-
-function authUrl(path: string): string {
-  const root = normalizeBasePath(getRuntimeConfig().basePath);
-  const prefix = root === "/" ? "" : root;
-  return `${prefix}${path}`;
+  userId: string | null;
 }
 
 export class AuthApiError extends Error {
@@ -34,13 +32,16 @@ export class AuthApiError extends Error {
 }
 
 export async function fetchAuthInfo(signal?: AbortSignal): Promise<AuthInfo> {
-  const res = await fetch(authUrl("/api/auth/info"), { credentials: "include", signal });
+  const token = tokenStore.get();
+  const res = await fetch(resolveDashboardUrl("/api/auth/info"), {
+    credentials: "include", signal, headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
   if (!res.ok) throw new AuthApiError(res.status, `auth/info ${res.status}`);
   return (await res.json()) as AuthInfo;
 }
 
 export async function login(username: string, password: string): Promise<LoginResponse> {
-  const res = await fetch(authUrl("/api/auth/login"), {
+  const res = await fetch(resolveDashboardUrl("/api/auth/login"), {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     credentials: "include",
@@ -66,7 +67,7 @@ export async function refresh(): Promise<LoginResponse | null> {
   const headers: Record<string, string> = {};
   if (current) headers.Authorization = `Bearer ${current}`;
 
-  const res = await fetch(authUrl("/api/auth/refresh"), {
+  const res = await fetch(resolveDashboardUrl("/api/auth/refresh"), {
     method: "POST",
     headers,
     credentials: "include",
@@ -82,7 +83,7 @@ export async function refresh(): Promise<LoginResponse | null> {
 export async function logout(): Promise<void> {
   const token = tokenStore.get();
   try {
-    await fetch(authUrl("/api/auth/logout"), {
+    await fetch(resolveDashboardUrl("/api/auth/logout"), {
       method: "POST",
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       credentials: "include",

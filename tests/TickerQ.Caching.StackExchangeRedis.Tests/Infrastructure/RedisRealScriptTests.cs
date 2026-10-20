@@ -284,8 +284,14 @@ public sealed partial class RedisRealScriptTests
         Assert.True(_db.SortedSetScore(RedisKeyBuilder.TimeTickerPendingKey, id.ToString()).HasValue);
     }
 
-    [Fact]
-    public async Task UpdateTimeTicker_WrongTypeIndexFailsBeforeDocumentResultOrEvidenceMutation()
+    [Theory]
+    [InlineData("ids")]
+    [InlineData("pending")]
+    [InlineData("succeeded")]
+    [InlineData("failed")]
+    [InlineData("cancelled")]
+    [InlineData("skipped")]
+    public async Task UpdateTimeTicker_WrongTypeIndexFailsBeforeDocumentResultOrEvidenceMutation(string index)
     {
         var ticker = NewIdleTicker();
         Assert.Equal(1, await _provider.AddTimeTickers([ticker], CancellationToken.None));
@@ -295,8 +301,17 @@ public sealed partial class RedisRealScriptTests
         var originalDocument = await _db.StringGetAsync(documentKey);
         await _db.StringSetAsync(resultKey, "result-before");
         await _db.HashSetAsync(RedisKeyBuilder.TerminalMutationEvidenceKey, evidenceField, "evidence-before");
-        await _db.KeyDeleteAsync(RedisKeyBuilder.TimeTickerIdsKey);
-        await _db.StringSetAsync(RedisKeyBuilder.TimeTickerIdsKey, "wrong-type");
+        var indexKey = index switch
+        {
+            "ids" => RedisKeyBuilder.TimeTickerIdsKey,
+            "pending" => RedisKeyBuilder.TimeTickerPendingKey,
+            "succeeded" => RedisKeyBuilder.TimeTickerRetentionSucceededKey,
+            "failed" => RedisKeyBuilder.TimeTickerRetentionFailedKey,
+            "cancelled" => RedisKeyBuilder.TimeTickerRetentionCancelledKey,
+            _ => RedisKeyBuilder.TimeTickerRetentionSkippedKey
+        };
+        await _db.KeyDeleteAsync(indexKey);
+        await _db.StringSetAsync(indexKey, "wrong-type");
         ticker.Description = "must-not-persist";
 
         await Assert.ThrowsAsync<RedisServerException>(() =>
@@ -306,7 +321,7 @@ public sealed partial class RedisRealScriptTests
         Assert.Equal("result-before", (string?)await _db.StringGetAsync(resultKey));
         Assert.Equal("evidence-before", (string?)await _db.HashGetAsync(
             RedisKeyBuilder.TerminalMutationEvidenceKey, evidenceField));
-        Assert.Equal("wrong-type", (string?)await _db.StringGetAsync(RedisKeyBuilder.TimeTickerIdsKey));
+        Assert.Equal("wrong-type", (string?)await _db.StringGetAsync(indexKey));
     }
 
     [Fact]
@@ -1134,7 +1149,7 @@ public sealed partial class RedisRealScriptTests
     }
 
     [Fact]
-    public async Task Retention_DeletesStandaloneButRetainsChainedRoot_RealLua()
+    public async Task Retention_DeletesStandaloneAndCompleteChainedRoot_RealLua()
     {
         var standalone = NewIdleTicker();
         standalone.Status = TickerStatus.Done;
@@ -1155,9 +1170,9 @@ public sealed partial class RedisRealScriptTests
             RetentionCursor.Start,
             CancellationToken.None);
 
-        Assert.Equal(1, result.Deleted);
+        Assert.Equal(3, result.Deleted);
         Assert.Null(await _provider.GetTimeTickerById(standalone.Id, CancellationToken.None));
-        Assert.NotNull(await _provider.GetTimeTickerById(chained.Id, CancellationToken.None));
+        Assert.Null(await _provider.GetTimeTickerById(chained.Id, CancellationToken.None));
     }
 
     [Fact]
@@ -1801,7 +1816,7 @@ public sealed partial class RedisRealScriptTests
     }
 
     [Fact]
-    public async Task Public_idle_republication_clears_terminal_evidence_and_stale_generation_cannot_replay()
+    public async Task Configuration_cannot_reset_lifecycle_and_RunNow_clears_stale_terminal_evidence()
     {
         var ticker = NewIdleTicker();
         await _provider.AddTimeTickers([ticker]);
@@ -1822,13 +1837,14 @@ public sealed partial class RedisRealScriptTests
         persisted.LockedAt = null;
         persisted.AcquisitionToken = null;
         persisted.ExecutionTime = BaseNow.AddMinutes(-1);
-        Assert.Equal(1, await _provider.UpdateTimeTickers([persisted]));
+        Assert.Equal(0, await _provider.UpdateTimeTickers([persisted]));
 
-        Assert.False(await _db.HashExistsAsync(
+        Assert.True(await _db.HashExistsAsync(
             RedisKeyBuilder.TerminalMutationEvidenceKey, evidenceField));
         await _db.HashSetAsync(RedisKeyBuilder.TerminalMutationEvidenceKey,
             evidenceField, $"{runA.AcquisitionToken:D}:stale-evidence");
-        var runB = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([ticker.Id]));
+        var runB = await _provider.AcquireTimeTickerOnDemandAsync(ticker.Id, BaseNow);
+        Assert.NotNull(runB);
         Assert.NotEqual(runA.AcquisitionToken, runB.AcquisitionToken);
         Assert.False(await _db.HashExistsAsync(
             RedisKeyBuilder.TerminalMutationEvidenceKey, evidenceField));

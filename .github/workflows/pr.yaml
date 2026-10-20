@@ -15,6 +15,19 @@ jobs:
   pr:
     name: PR Build and Test
     runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: TickerQ_CI_Only!2026
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd="/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'TickerQ_CI_Only!2026' -Q 'SELECT 1' -b -o /dev/null"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -40,13 +53,17 @@ jobs:
         with:
           dotnet-version: ${{ steps.detect.outputs.dotnet_version }}
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 24
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install frontend dependencies
         run: npm ci --include=dev
+        working-directory: src/TickerQ.Dashboard/wwwroot
+
+      - name: Test frontend
+        run: npm test
         working-directory: src/TickerQ.Dashboard/wwwroot
 
       - name: Build frontend
@@ -109,6 +126,11 @@ jobs:
           dotnet test tests/TickerQ.Caching.StackExchangeRedis.Tests/ --configuration Release --no-build
           dotnet test tests/TickerQ.SourceGenerator.Tests/ --configuration Release --no-build
 
+      - name: Verify SQL Server seeding, edits and transactions
+        env:
+          TICKERQ_SQLSERVER_CONNECTION: 'Server=localhost,1433;User Id=sa;Password=TickerQ_CI_Only!2026;Encrypt=True;TrustServerCertificate=True'
+        run: dotnet test tests/TickerQ.EntityFrameworkCore.Tests/ --configuration Release --no-build --filter 'FullyQualifiedName~SqlServerRuntimeTests|FullyQualifiedName~EfTransactionalSchedulingTests.SqlServer'
+
       - name: Verify EF concurrent seeding and transactional scheduling
         env:
           TICKERQ_POSTGRES_RACE_TESTS: "1"
@@ -117,6 +139,23 @@ jobs:
       - name: Run MongoDB tests
         run: |
           dotnet test tests/TickerQ.MongoDB.Tests/ --configuration Release --no-build --logger "trx;LogFileName=mongo.trx" --results-directory TestResults/Mongo
+
+      - name: Pack installed-consumer fixtures
+        run: |
+          dotnet pack src/TickerQ.SourceGenerator/TickerQ.SourceGenerator.csproj --configuration Release --output ./nupkgs
+          dotnet pack src/TickerQ/TickerQ.csproj --configuration Release --output ./nupkgs
+          dotnet pack src/TickerQ.EntityFrameworkCore/TickerQ.EntityFrameworkCore.csproj --configuration Release --output ./nupkgs
+          dotnet pack src/TickerQ.Dashboard/TickerQ.Dashboard.csproj --configuration Release --output ./nupkgs
+          dotnet pack src/TickerQ.Instrumentation.OpenTelemetry/TickerQ.Instrumentation.OpenTelemetry.csproj --configuration Release --output ./nupkgs
+          dotnet pack src/TickerQ.Caching.StackExchangeRedis/TickerQ.Caching.StackExchangeRedis.csproj --configuration Release --output ./nupkgs
+          dotnet pack src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release --output ./nupkgs
+          dotnet pack src/TickerQ.Integrations/TickerQ.Integrations.csproj --configuration Release --output ./nupkgs
+
+      - name: Verify installed packages and NativeAOT core consumer
+        run: |
+          VERSION=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:Version)
+          FRAMEWORK=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:TargetFramework)
+          python3 scripts/verify-package-consumers.py --packages ./nupkgs --version "$VERSION" --framework "$FRAMEWORK" --rid linux-x64 --aot
 
       - name: Capture Docker diagnostics on failure
         # '|| true' keeps this diagnostics step green so it never masks the test

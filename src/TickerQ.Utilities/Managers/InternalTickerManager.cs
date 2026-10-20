@@ -222,26 +222,23 @@ namespace TickerQ.Utilities.Managers
         {
             chainRootId ??= ticker.ChainRootId ?? ticker.Id;
             chainGeneration ??= ticker.ChainGeneration;
-            return new InternalFunctionContext
+            return TimeTickerContextBuilder.Build(ticker, node => new InternalFunctionContext
             {
-                FunctionName = ticker.Function,
+                FunctionName = node.Function,
                 RuntimePartitionKey = _runtimePartitionKey,
-                RequestContractVersion = ticker.RequestContractVersion,
-                RequestContractFingerprint = ticker.RequestContractFingerprint,
-                TickerId = ticker.Id,
+                RequestContractVersion = node.RequestContractVersion,
+                RequestContractFingerprint = node.RequestContractFingerprint,
+                TickerId = node.Id,
                 Type = TickerType.TimeTicker,
-                Retries = ticker.Retries,
-                RetryIntervals = ticker.RetryIntervals,
-                TimeoutSeconds = ticker.TimeoutSeconds,
-                ParentId = ticker.ParentId,
-                AcquisitionToken = ticker.AcquisitionToken,
+                Retries = node.Retries,
+                RetryIntervals = node.RetryIntervals,
+                TimeoutSeconds = node.TimeoutSeconds,
+                ParentId = node.ParentId,
+                AcquisitionToken = node.AcquisitionToken,
                 ChainRootId = chainRootId,
                 ChainGeneration = chainGeneration,
-                RunCondition = ticker.RunCondition ?? RunCondition.OnAnyCompletedStatus,
-                TimeTickerChildren = ticker.Children?
-                    .Select(child => BuildTimeTickerContext(child, chainRootId, chainGeneration))
-                    .ToList() ?? []
-            };
+                RunCondition = node.RunCondition ?? RunCondition.OnAnyCompletedStatus
+            });
         }
 
         private async Task<InternalFunctionContext[]> QueueNextTimeTickersAsync(TimeTickerEntity[] minTimeTickers, CancellationToken cancellationToken = default)

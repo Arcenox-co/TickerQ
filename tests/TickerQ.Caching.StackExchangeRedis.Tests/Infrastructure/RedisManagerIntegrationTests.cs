@@ -260,6 +260,32 @@ public class RedisManagerIntegrationTests : IAsyncLifetime, IDisposable
                 var keys = ci.ArgAt<RedisKey[]>(1);
                 var argv = ci.ArgAt<RedisValue[]>(2);
 
+                if (script.Contains("Configuration aggregate CAS", StringComparison.Ordinal))
+                {
+                    var key = (string)keys[0];
+                    var id = (string)argv[4];
+                    if (_store.GetValueOrDefault(key) != (string)argv[0]) return RedisResult.Create((RedisValue)0);
+                    _store[key] = (string)argv[1];
+                    if (!_sets.TryGetValue((string)keys[3], out var ids)) _sets[(string)keys[3]] = ids = [];
+                    ids.Add(id);
+                    for (var index = 2; index < keys.Length; index++)
+                    {
+                        if (index == 3 || !_sortedSets.TryGetValue((string)keys[index], out var entries)) continue;
+                        foreach (var score in entries.Where(entry => entry.Value == id).Select(entry => entry.Key).ToArray())
+                            entries.Remove(score);
+                    }
+                    void AddScore(int keyIndex, RedisValue score)
+                    {
+                        if (!_sortedSets.TryGetValue((string)keys[keyIndex], out var entries))
+                            _sortedSets[(string)keys[keyIndex]] = entries = new SortedList<double, string>();
+                        entries[double.Parse((string)score, System.Globalization.CultureInfo.InvariantCulture)] = id;
+                    }
+                    if (!string.IsNullOrEmpty((string)argv[5])) AddScore(2, argv[5]);
+                    var retentionIndex = int.Parse((string)argv[6]);
+                    if (retentionIndex > 0) AddScore(3 + retentionIndex, argv[7]);
+                    return RedisResult.Create((RedisValue)1);
+                }
+
                 if (script.Contains("Atomically publish/remove one Cron definition", StringComparison.Ordinal))
                 {
                     var cronKey = (string)keys[0];

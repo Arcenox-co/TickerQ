@@ -209,85 +209,38 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         ticker.ApplicationNamespaceKey = _runtimePartitionKey;
                     }
 
-                    foreach (var ticker in timeTickers.Where(x => x.ParentId == null))
-                        NormalizeChainRoot(ticker, ticker.Id);
+                    var ids = graph.Select(x => x.Id).ToArray();
+                    var currentRows = await dbContext.Set<TTimeTicker>().AsNoTracking()
+                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && ids.Contains(x.Id))
+                        .ToDictionaryAsync(x => x.Id, ct).ConfigureAwait(false);
+                    if (currentRows.Count != ids.Length ||
+                        graph.Any(incoming => !TimeTickerConfigurationSnapshot.Matches(currentRows[incoming.Id], incoming)))
+                        return 0;
 
-                    var nonIdle = graph.Where(x => x.Status != TickerStatus.Idle).ToArray();
-                    if (nonIdle.Length > 0)
+                    foreach (var ticker in graph)
                     {
-                        var ids = nonIdle.Select(x => x.Id).Distinct().ToArray();
-                        if (ids.Length != nonIdle.Length)
-                            return 0;
-                        var currentRows = await dbContext.Set<TTimeTicker>()
-                            .AsNoTracking()
-                            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && ids.Contains(x.Id))
-                            .ToDictionaryAsync(x => x.Id, ct)
-                            .ConfigureAwait(false);
-                        if (currentRows.Count != ids.Length)
-                            return 0;
-
-                        foreach (var incoming in nonIdle)
+                        if (ticker.ParentId.HasValue)
                         {
-                            var current = currentRows[incoming.Id];
-                            if (current.Status != incoming.Status ||
-                                !string.Equals(current.LockHolder, incoming.LockHolder, StringComparison.Ordinal) ||
-                                current.LockedAt != incoming.LockedAt ||
-                                current.LeaseUntil != incoming.LeaseUntil ||
-                                current.AcquisitionToken != incoming.AcquisitionToken ||
-                                current.ExecutedAt != incoming.ExecutedAt ||
-                                !string.Equals(current.ExceptionMessage, incoming.ExceptionMessage, StringComparison.Ordinal) ||
-                                !string.Equals(current.SkippedReason, incoming.SkippedReason, StringComparison.Ordinal) ||
-                                current.ElapsedTime != incoming.ElapsedTime ||
-                                current.RetryCount != incoming.RetryCount ||
-                                current.ChainRootId != incoming.ChainRootId ||
-                                current.ChainGeneration != incoming.ChainGeneration ||
-                                current.StaleRestartCount != incoming.StaleRestartCount)
-                                return 0;
-                        }
-                    }
-
-                    foreach (var ticker in graph.Where(x => x.Status == TickerStatus.Idle))
-                    {
-                        if (ticker.ParentId == null)
-                        {
-                            if (!ticker.AcquisitionToken.HasValue)
-                                return 0;
-                            var lockedRoot = await dbContext.Set<TTimeTicker>()
+                            if (!ticker.ChainRootId.HasValue) return 0;
+                            var rootId = ticker.ChainRootId.Value;
+                            var generation = ticker.ChainGeneration;
+                            var rootLocked = await dbContext.Set<TTimeTicker>()
                                 .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                            x.Id == ticker.Id && x.ParentId == null &&
-                                            x.LockHolder == _lockHolder &&
-                                            x.AcquisitionToken == ticker.AcquisitionToken)
+                                    x.Id == rootId && x.ParentId == null && x.ChainGeneration == generation)
                                 .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Id, x => x.Id), ct)
                                 .ConfigureAwait(false);
-                            if (lockedRoot != 1)
-                                return 0;
-                            continue;
+                            if (rootLocked != 1) return 0;
                         }
-
-                        if (!ticker.ChainRootId.HasValue || !ticker.ChainGeneration.HasValue)
-                            return 0;
-                        var rootId = ticker.ChainRootId.Value;
-                        var generation = ticker.ChainGeneration.Value;
-                        var lockedGeneration = await dbContext.Set<TTimeTicker>()
-                            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                        x.Id == rootId && x.ParentId == null &&
-                                        x.ChainRootId == x.Id && x.ChainGeneration == generation)
-                            .ExecuteUpdateAsync(setters => setters
-                                .SetProperty(x => x.ChainGeneration, generation), ct)
-                            .ConfigureAwait(false);
-                        if (lockedGeneration != 1)
-                            return 0;
-                        var fencedChild = await dbContext.Set<TTimeTicker>()
-                            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                        x.Id == ticker.Id && x.ParentId != null &&
-                                        x.ChainRootId == rootId && x.ChainGeneration == generation)
+                        // Unowned Idle roots are editable. The snapshot predicate and the serializable
+                        // transaction fence acquisition, deletion, and every lifecycle mutation.
+                        var locked = await dbContext.Set<TTimeTicker>()
+                            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == ticker.Id &&
+                                x.Status == ticker.Status && x.AcquisitionToken == ticker.AcquisitionToken &&
+                                x.ChainGeneration == ticker.ChainGeneration && x.LeaseUntil == ticker.LeaseUntil)
                             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Id, x => x.Id), ct)
                             .ConfigureAwait(false);
-                        if (fencedChild != 1)
-                            return 0;
+                        if (locked != 1) return 0;
                     }
-                    // The serializable graph transaction and authoritative root-generation write lock
-                    // above fence every Idle lifecycle write before tracked full-row persistence.
                     dbContext.Set<TTimeTicker>().UpdateRange(timeTickers);
                     return await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
                 }, cancellationToken).ConfigureAwait(false);
@@ -297,43 +250,32 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             IEnumerable<TTimeTicker> roots, out TTimeTicker[] graph)
         {
             var byId = new Dictionary<Guid, TTimeTicker>();
-            var visiting = new HashSet<Guid>();
+            var active = new HashSet<Guid>();
             var visited = new HashSet<Guid>();
-
-            bool Visit(TTimeTicker ticker)
+            var pending = new Stack<(TTimeTicker Row, bool Leaving)>(roots.Reverse().Select(row => (row, false)));
+            graph = Array.Empty<TTimeTicker>();
+            while (pending.Count > 0)
             {
-                if (ticker == null || ticker.Id == Guid.Empty)
-                    return false;
-                if (byId.TryGetValue(ticker.Id, out var existing) && !ReferenceEquals(existing, ticker))
-                    return false;
+                var (ticker, leaving) = pending.Pop();
+                if (leaving) { active.Remove(ticker.Id); visited.Add(ticker.Id); continue; }
+                if (ticker == null || ticker.Id == Guid.Empty ||
+                    (byId.TryGetValue(ticker.Id, out var existing) && !ReferenceEquals(existing, ticker))) return false;
                 byId[ticker.Id] = ticker;
-                // UpdateRange traverses Parent as well as Children. Only accept a populated Parent
-                // when it is the exact ancestor already reached through the validated downward graph;
-                // a detached upward reference could otherwise attach an unfenced stale/foreign row.
-                if (ticker.Parent != null &&
-                    (!ticker.ParentId.HasValue || ticker.Parent.Id != ticker.ParentId.Value ||
-                     !byId.TryGetValue(ticker.ParentId.Value, out var parent) ||
-                     !ReferenceEquals(parent, ticker.Parent)))
-                    return false;
-                if (visited.Contains(ticker.Id))
-                    return true;
-                if (!visiting.Add(ticker.Id))
-                    return false;
+                // EF also follows Parent: reject an upward reference outside this validated graph.
+                if (ticker.Parent != null && (!ticker.ParentId.HasValue || ticker.Parent.Id != ticker.ParentId ||
+                    !byId.TryGetValue(ticker.ParentId.Value, out var parent) || !ReferenceEquals(parent, ticker.Parent))) return false;
+                if (visited.Contains(ticker.Id)) continue;
+                if (!active.Add(ticker.Id)) return false;
+                pending.Push((ticker, true));
                 if (ticker.Children != null)
-                    foreach (var child in ticker.Children)
-                        if (!Visit(child))
-                            return false;
-                visiting.Remove(ticker.Id);
-                visited.Add(ticker.Id);
-                return true;
+                    foreach (var child in ticker.Children.Reverse())
+                    {
+                        // EF relationship fix-up follows the collection even when ParentId
+                        // still names another node. Reject it before attaching the graph.
+                        if (child == null || child.ParentId != ticker.Id) return false;
+                        pending.Push((child, false));
+                    }
             }
-
-            foreach (var root in roots)
-                if (!Visit(root))
-                {
-                    graph = Array.Empty<TTimeTicker>();
-                    return false;
-                }
             graph = byId.Values.ToArray();
             return true;
         }
@@ -517,35 +459,47 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         private static void NormalizeChainRoot(TTimeTicker node, Guid rootId)
         {
-            node.ChainRootId = rootId;
-            if (node.Children == null) return;
-            foreach (var child in node.Children)
-                NormalizeChainRoot(child, rootId);
+            var pending = new Stack<TTimeTicker>();
+            var visited = new HashSet<Guid>();
+            pending.Push(node);
+            while (pending.Count > 0)
+            {
+                var current = pending.Pop();
+                if (!visited.Add(current.Id)) throw new InvalidOperationException("A time ticker graph contains a duplicate or cyclic identity.");
+                current.ChainRootId = rootId;
+                if (current.Children != null)
+                    foreach (var child in current.Children) pending.Push(child);
+            }
         }
 
         private static void NormalizeReplacementChain(
             TTimeTicker node, Guid? parentId, Guid rootId, ISet<Guid> visited)
         {
-            if (!visited.Add(node.Id))
-                throw new InvalidOperationException(
-                    $"Cannot replace chain: duplicate or cyclic ticker id '{node.Id}'.");
-            node.ParentId = parentId;
-            node.ChainRootId = rootId;
-            node.Status = TickerStatus.Idle;
-            node.LockHolder = null;
-            node.LockedAt = null;
-            node.LeaseUntil = null;
-            node.AcquisitionToken = null;
-            node.ChainGeneration = null;
-            node.ExecutedAt = null;
-            node.ExceptionMessage = null;
-            node.SkippedReason = null;
-            node.ElapsedTime = 0;
-            node.RetryCount = 0;
-            node.StaleRestartCount = 0;
-            if (node.Children == null) return;
-            foreach (var child in node.Children)
-                NormalizeReplacementChain(child, node.Id, rootId, visited);
+            var pending = new Stack<(TTimeTicker Row, Guid? Parent)>();
+            pending.Push((node, parentId));
+            while (pending.Count > 0)
+            {
+                var (current, imposedParent) = pending.Pop();
+                if (!visited.Add(current.Id))
+                    throw new InvalidOperationException(
+                        $"Cannot replace chain: duplicate or cyclic ticker id '{current.Id}'.");
+                current.ParentId = imposedParent;
+                current.ChainRootId = rootId;
+                current.Status = TickerStatus.Idle;
+                current.LockHolder = null;
+                current.LockedAt = null;
+                current.LeaseUntil = null;
+                current.AcquisitionToken = null;
+                current.ChainGeneration = null;
+                current.ExecutedAt = null;
+                current.ExceptionMessage = null;
+                current.SkippedReason = null;
+                current.ElapsedTime = 0;
+                current.RetryCount = 0;
+                current.StaleRestartCount = 0;
+                if (current.Children != null)
+                    foreach (var child in current.Children.Reverse()) pending.Push((child, current.Id));
+            }
         }
 
         private async Task<Guid> ResolveChainRootForInsertAsync(
@@ -731,8 +685,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
         // Deletes the arbitrary-depth chain rooted at <paramref name="rootId"/> only if EVERY node is
         // eligible; otherwise the whole chain is retained. Subtree discovery, topology/eligibility
         // verification, and the whole-chain delete are performed as ONE serializable transaction so a
-        // concurrent supported graph mutation (reparent via UpdateTimeTickers, or a phantom insert via
-        // AddTimeTickers/UpdateTimeTickers) races cleanly: either the mutation commits first and the
+        // concurrent supported graph mutation (chain replacement or a child insert via
+        // AddTimeTickers) races cleanly: either the mutation commits first and the
         // re-read inside the transaction observes the new topology (retaining the chain), or retention
         // commits first and the mutation fails/retries against the deleted rows — never an orphaned or
         // lost adopted child.

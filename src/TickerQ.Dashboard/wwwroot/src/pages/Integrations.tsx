@@ -31,6 +31,7 @@ import { DataCard, PageHeader } from "@/components/cron/PageHeader";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
 import { DestinationEditor } from "@/components/integrations/DestinationEditor";
 import { MonitoringPanel } from "@/components/integrations/MonitoringPanel";
+import { IntegrationStatus } from "@/components/integrations/IntegrationStatus";
 import { RuleEditor } from "@/components/integrations/RuleEditor";
 import { ProviderIcon } from "@/components/integrations/Fields";
 import {
@@ -124,16 +125,7 @@ export default function IntegrationsPage() {
       </div>
     );
   if (!query.data.canManage)
-    return (
-      <div className="space-y-5">
-        {header}
-        <Empty
-          icon={<Plug />}
-          title="Management access required"
-          description="Ask your administrator for permission to manage integrations. The dashboard must also allow changes."
-        />
-      </div>
-    );
+    return <IntegrationStatus snapshot={query.data} refreshing={query.isFetching} refresh={() => { void query.refetch(); }} />;
   return (
     <IntegrationManager
       snapshot={query.data}

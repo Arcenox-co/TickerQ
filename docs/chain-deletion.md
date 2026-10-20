@@ -44,7 +44,7 @@ The manager returns a validation failure for known protected chains. Bulk deleti
 
 ## Storage and upgrades
 
-EF Core, MongoDB, Redis, and in-memory storage enforce the policy. MongoDB and Redis documents without the field continue to mean Cascade. Redis retention currently keeps all nontrivial chains; this change does not expand Redis's existing retention support. Explicit cascade deletion remains available there.
+EF Core, MongoDB, Redis, and in-memory storage enforce the policy. MongoDB and Redis documents without the field continue to mean Cascade. Redis retention examines the complete embedded chain, up to `MaxNodesPerChain`. Every node must have a terminal status, an execution timestamp strictly older than its own status cutoff, and no active acquisition or live lease. An ineligible or oversized chain remains intact. Eligible roots, all descendant results, and their terminal evidence are deleted together using an atomic comparison against the validated document. The retention cursor advances past blocked chains, including roots with identical execution timestamps.
 
 **EF Core deployments require a migration before running the updated application.** Add a non-null integer `DeleteBehavior` column to the mapped time-ticker table with default `0` (Cascade). Generate it using your application's context and review the table/schema names:
 

@@ -115,6 +115,9 @@ namespace TickerQ.SourceGenerator.Generation
 
         private static string BuildMethodArgs(TickerMethodModel method)
         {
+            if (method.InvocationArguments.Count > 0)
+                return string.Join(", ", method.InvocationArguments);
+
             var args = new List<string>();
 
             if (method.UsesGenericContext)

@@ -167,6 +167,16 @@ services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 - `SetBackendDomain(domain)` - Set backend API domain (does **not** by itself grant cross-origin trust — pair with `AllowOrigins`)
 - `SetCorsPolicy(policy)` - Configure a fully custom CORS policy
 
+`SetBackendDomain("https://api.example.com")` accepts an HTTP(S) origin, including
+an optional port, without a path, credentials, query or fragment. REST, authentication,
+AI streaming/history and SignalR use that origin plus the dashboard's complete base
+path (including the reverse proxy path prefix). Browser routes and assets stay under
+the frontend mount. An HTTPS frontend requires an HTTPS backend. Requests include
+cookies and the dashboard bearer token when present; cross-origin requests still
+require the backend's explicit `AllowOrigins` configuration, and browser cookie
+SameSite restrictions still apply. Bearer session storage is scoped to the backend
+and mount; upgrading from an unscoped token requires a fresh login.
+
 **Other**
 
 - `SetBasePath(path)` - Set dashboard URL path
@@ -230,8 +240,11 @@ options.AddDashboard(dashboard =>
 
 The assistant can inspect registered functions and their request contracts, executions,
 cron definitions, chain steps, retained execution logs, and node-local runtime health.
-With integration-management permission and `TickerQ.Integrations` configured, it can
-also inspect destinations, rules, monitoring state and recent delivery outcomes.
+With `TickerQ.Integrations` configured, dashboard viewers can also inspect destinations,
+rules, monitoring state and recent delivery outcomes. The Integrations page provides
+health and delivery status to read-only users and users without management permission.
+Editing settings, drafting integration changes and sending tests still require
+integration-management permission and a writable dashboard.
 Webhook URLs, headers, message templates and delivery response bodies are excluded
 from integration tool results.
 
@@ -274,6 +287,22 @@ are capped at 12,000 characters. Chat requests use the last 20 turns, with a 128
 limit and limits of 16,384 characters per message and 65,536 in total. AI proposals cap
 chains at 100 steps, ten levels, and five children per step.
 
+Assistant history uses a stable authenticated identity, separate from the display
+name. Host authentication requires `sub` or `ClaimTypes.NameIdentifier` on the
+authenticated identity; keys include its issuer and authentication scheme. Basic
+authentication uses the validated username and realm. Dashboard-issued cookie and
+bearer tokens share an issuer-scoped subject. A custom validator can populate an
+authenticated `ClaimsIdentity` with a stable subject; a boolean validator alone
+does not establish an individual history owner. Anonymous sessions and identities
+without a stable subject can chat, but persist no history in the server or browser.
+Custom `IAuthService` implementations should return a stable, scoped `AuthResult.UserId`.
+
+Browser fallback transcripts are isolated by user, backend and dashboard mount,
+and are cleared on logout/session expiry. Unscoped legacy browser transcripts are
+discarded; server history saved under legacy display-name keys is not automatically
+migrated because ownership cannot be inferred safely. Conversation switches cancel
+prior loads, ignore late responses, and disable sending until the selected thread loads.
+
 ### Dashboard memory usage
 
 Built-in providers use dashboard metadata projections for lists, history, graphs and
@@ -301,3 +330,6 @@ so an asynchronous confirmation still updates the correct card after older items
 Server-side conversation history remains stored on the server; reopening a conversation
 loads its recent message window. Browser fallback history retains the same 40-message
 limit and never persists proposal cards.
+
+Dashboard pages load on demand. Navigation keeps the shell visible and shows a loading
+indicator while the requested page's JavaScript is downloaded.

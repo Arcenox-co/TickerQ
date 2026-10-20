@@ -21,4 +21,5 @@ public sealed class LoginResponse
 
     /// <summary>Authenticated username (echoed back so the SPA can render it).</summary>
     public string Username { get; set; } = string.Empty;
+    public string? UserId { get; set; }
 }

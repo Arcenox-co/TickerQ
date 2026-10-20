@@ -6,6 +6,8 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using TickerQ.Exceptions;
 using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
@@ -39,6 +41,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
     private readonly Dictionary<(string Partition, Guid CronId), int> _activeCronExecutions = new();
 
     private readonly IServiceProvider _serviceProvider;
+    private readonly ILogger<TickerExecutionTaskHandler> _logger;
     private readonly TickerLifecycleLogger _lifecycle;
     private readonly ITickerClock _clock;
     private readonly ITickerQInstrumentation _tickerQInstrumentation;
@@ -71,6 +74,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         Func<string, TickerFunctionDescriptor> descriptorResolver)
     {
         _serviceProvider = serviceProvider;
+        _logger = serviceProvider.GetService<ILogger<TickerExecutionTaskHandler>>()
+            ?? NullLogger<TickerExecutionTaskHandler>.Instance;
         _lifecycle = serviceProvider.GetService<TickerLifecycleLogger>();
         _clock = clock;
         _tickerQInstrumentation = tickerQInstrumentation;
@@ -105,8 +110,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         }
         catch (Exception ex)
         {
-            _tickerQInstrumentation.LogJobFailed(
-                context.TickerId, context.FunctionName, ex, context.RetryCount);
+            _logger.LogWarning(ex, "TickerQ failure notifier failed for {TickerType} {TickerId}",
+                context.Type, context.TickerId);
         }
     }
 
@@ -537,7 +542,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     try { await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type); }
                     catch (Exception hookError)
                     {
-                        _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, hookError, context.RetryCount);
+                        _logger.LogWarning(hookError, "TickerQ cancellation exception handler failed for {TickerType} {TickerId}",
+                            context.Type, context.TickerId);
                     }
                 }
                 
@@ -612,8 +618,18 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
                 context.SetProperty(x => x.ExceptionDetails, SerializeException(ex));
 
-                if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
-                    await handler.HandleExceptionAsync(ex, context.TickerId, context.Type);
+                // Reporting failures must not replace the original user exception or skip
+                // the remaining retries and terminal persistence.
+                try
+                {
+                    if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
+                        await handler.HandleExceptionAsync(ex, context.TickerId, context.Type).ConfigureAwait(false);
+                }
+                catch (Exception hookError)
+                {
+                    _logger.LogWarning(hookError, "TickerQ exception handler failed for {TickerType} {TickerId}",
+                        context.Type, context.TickerId);
+                }
 
                 // Per-attempt failure log so retries are visible in trace/logs.
                 // The terminal failure (last attempt that exhausts retries) is logged
@@ -738,7 +754,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 }
                 catch (Exception ex)
                 {
-                    _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, context.RetryCount);
+                    _logger.LogWarning(ex, "TickerQ cancellation exception handler failed for {TickerType} {TickerId}",
+                        context.Type, context.TickerId);
                 }
             }
         }
@@ -748,7 +765,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         }
         catch (Exception ex)
         {
-            _tickerQInstrumentation.LogJobFailed(context.TickerId, context.FunctionName, ex, context.RetryCount);
+            _logger.LogWarning(ex, "TickerQ timeout reporting failed after persisting {TickerType} {TickerId}",
+                context.Type, context.TickerId);
         }
     }
 

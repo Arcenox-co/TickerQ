@@ -261,6 +261,8 @@ public static class DashboardEndpoints
         var authService = context.RequestServices.GetRequiredService<IAuthService>();
         var config = context.RequestServices.GetRequiredService<AuthConfig>();
         var info = authService.GetAuthInfo();
+        var current = await authService.AuthenticateAsync(context);
+        context.Response.Headers.CacheControl = "no-store";
 
         var schemeNames = config.Schemes
             .Select(s => s.LegacyMode.ToString().ToLowerInvariant())
@@ -270,6 +272,9 @@ public static class DashboardEndpoints
 
         await WriteJson(context, new AuthInfoResponse
         {
+            Authenticated = current.IsAuthenticated,
+            Username = current.IsAuthenticated ? current.Username : null,
+            UserId = current.IsAuthenticated ? current.UserId : null,
             Mode = info.Mode.ToString().ToLower(),
             Enabled = info.IsEnabled,
             SessionTimeout = info.SessionTimeoutMinutes,

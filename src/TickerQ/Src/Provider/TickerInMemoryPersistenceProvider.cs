@@ -376,11 +376,14 @@ namespace TickerQ.Provider
 
         private static IEnumerable<TTimeTicker> FlattenTimeTickerGraph(TTimeTicker root)
         {
-            yield return root;
-            if (root.Children == null) yield break;
-            foreach (var child in root.Children)
-            foreach (var descendant in FlattenTimeTickerGraph(child))
-                yield return descendant;
+            var pending = new Stack<TTimeTicker>();
+            pending.Push(root);
+            while (pending.TryPop(out var node))
+            {
+                yield return node;
+                if (node.Children == null) continue;
+                foreach (var child in node.Children.Reverse()) pending.Push(child);
+            }
         }
 
         private static void CopyIndex<TKey, TValue>(
@@ -404,9 +407,7 @@ namespace TickerQ.Provider
 
         private static void StampTimeTickerPartition(TTimeTicker ticker, string targetKey)
         {
-            ticker.ApplicationNamespaceKey = targetKey;
-            if (ticker.Children == null) return;
-            foreach (var child in ticker.Children) StampTimeTickerPartition(child, targetKey);
+            foreach (var node in FlattenTimeTickerGraph(ticker)) node.ApplicationNamespaceKey = targetKey;
         }
 
         #region Reconciliation_Activation_Epoch
@@ -1185,37 +1186,20 @@ namespace TickerQ.Provider
         {
             var count = 0;
             chainRootId ??= ticker.Id;
-            ticker.ChainRootId = chainRootId;
-            ticker.ChainGeneration = chainGeneration;
-            
-            // Set the parent ID if this is a child
-            if (parentId.HasValue)
+            var pending = new Stack<(TTimeTicker Ticker, Guid? ParentId)>();
+            pending.Push((ticker, parentId));
+            while (pending.TryPop(out var item))
             {
-                ticker.ParentId = parentId.Value;
-            }
-            
-            // Add the ticker itself
-            if (TimeTickers.TryAdd(ticker.Id, ticker))
-            {
-                // Maintain children index
-                if (ticker.ParentId.HasValue)
-                    AddChildIndex(ticker.ParentId.Value, ticker.Id);
-
+                var current = item.Ticker;
+                current.ChainRootId = chainRootId;
+                current.ChainGeneration = chainGeneration;
+                if (item.ParentId.HasValue) current.ParentId = item.ParentId.Value;
+                if (!TimeTickers.TryAdd(current.Id, current)) continue;
+                if (current.ParentId.HasValue) AddChildIndex(current.ParentId.Value, current.Id);
                 count++;
-                
-                // Recursively add all children
-                if (ticker.Children != null && ticker.Children.Count > 0)
-                {
-                    foreach (var child in ticker.Children)
-                    {
-                        // Cast to TTimeTicker since Children is ICollection<TTimeTicker>
-                        if (child is TTimeTicker childTicker)
-                        {
-                            count += AddTickerWithChildren(
-                                childTicker, ticker.Id, chainRootId, chainGeneration);
-                        }
-                    }
-                }
+                if (current.Children == null) continue;
+                foreach (var child in current.Children.Reverse())
+                    if (child != null) pending.Push((child, current.Id));
             }
             
             return count;
@@ -1245,47 +1229,29 @@ namespace TickerQ.Provider
         private int UpdateTickerWithChildren(TTimeTicker ticker, Guid? parentId = null)
         {
             var count = 0;
-            
-            // Set the parent ID if this is a child
-            if (parentId.HasValue)
+            var pending = new Stack<(TTimeTicker Ticker, Guid? ParentId)>();
+            pending.Push((ticker, parentId));
+            while (pending.TryPop(out var item))
             {
-                ticker.ParentId = parentId.Value;
-            }
-            
-            // Update the ticker itself
-            if (TimeTickers.TryGetValue(ticker.Id, out var existing))
-            {
-                if (TryUpdateTimeTicker(ticker.Id, ticker, existing))
+                var current = item.Ticker;
+                if (item.ParentId.HasValue) current.ParentId = item.ParentId.Value;
+                if (TimeTickers.TryGetValue(current.Id, out var existing))
                 {
+                    if (!TryUpdateTimeTicker(current.Id, current, existing)) continue;
                     // Maintain children index for parent changes
-                    if (existing.ParentId != ticker.ParentId)
+                    if (existing.ParentId != current.ParentId)
                     {
                         if (existing.ParentId.HasValue)
-                            RemoveChildIndex(existing.ParentId.Value, ticker.Id);
-                        if (ticker.ParentId.HasValue)
-                            AddChildIndex(ticker.ParentId.Value, ticker.Id);
+                            RemoveChildIndex(existing.ParentId.Value, current.Id);
+                        if (current.ParentId.HasValue)
+                            AddChildIndex(current.ParentId.Value, current.Id);
                     }
-
                     count++;
-                    
-                    // Recursively update all children
-                    if (ticker.Children != null && ticker.Children.Count > 0)
-                    {
-                        foreach (var child in ticker.Children)
-                        {
-                            // Cast to TTimeTicker since Children is ICollection<TTimeTicker>
-                            if (child is TTimeTicker childTicker)
-                            {
-                                count += UpdateTickerWithChildren(childTicker, ticker.Id);
-                            }
-                        }
-                    }
+                    if (current.Children == null) continue;
+                    foreach (var child in current.Children.Reverse())
+                        if (child != null) pending.Push((child, current.Id));
                 }
-            }
-            else
-            {
-                // If it doesn't exist, add it (this can happen for new children)
-                count += AddTickerWithChildren(ticker, parentId);
+                else count += AddTickerWithChildren(current, item.ParentId);
             }
             
             return count;
@@ -1567,36 +1533,37 @@ namespace TickerQ.Provider
 
         private static void CollectChainIds(TTimeTicker node, HashSet<Guid> ids)
         {
-            if (!ids.Add(node.Id))
-                throw new InvalidOperationException(
-                    $"Cannot replace chain: replacement contains duplicate ticker id {node.Id}.");
-            if (node.Children == null)
-                return;
-            foreach (var child in node.Children)
-                if (child is TTimeTicker typedChild)
-                    CollectChainIds(typedChild, ids);
+            foreach (var current in FlattenTimeTickerGraph(node))
+                if (!ids.Add(current.Id))
+                    throw new InvalidOperationException(
+                        $"Cannot replace chain: replacement contains duplicate ticker id {current.Id}.");
         }
 
         private static void NormalizeReplacementChain(TTimeTicker node, Guid? parentId, Guid rootId)
         {
-            node.ParentId = parentId;
-            node.ChainRootId = rootId;
-            node.Status = TickerStatus.Idle;
-            node.LockHolder = null;
-            node.LockedAt = null;
-            node.LeaseUntil = null;
-            node.AcquisitionToken = null;
-            node.ChainGeneration = null;
-            node.ExecutedAt = null;
-            node.ExceptionMessage = null;
-            node.SkippedReason = null;
-            node.ElapsedTime = 0;
-            node.RetryCount = 0;
-            node.StaleRestartCount = 0;
-            if (node.Children == null) return;
-            foreach (var child in node.Children)
-                if (child is TTimeTicker typedChild)
-                    NormalizeReplacementChain(typedChild, node.Id, rootId);
+            var pending = new Stack<(TTimeTicker Ticker, Guid? ParentId)>();
+            pending.Push((node, parentId));
+            while (pending.TryPop(out var item))
+            {
+                var current = item.Ticker;
+                current.ParentId = item.ParentId;
+                current.ChainRootId = rootId;
+                current.Status = TickerStatus.Idle;
+                current.LockHolder = null;
+                current.LockedAt = null;
+                current.LeaseUntil = null;
+                current.AcquisitionToken = null;
+                current.ChainGeneration = null;
+                current.ExecutedAt = null;
+                current.ExceptionMessage = null;
+                current.SkippedReason = null;
+                current.ElapsedTime = 0;
+                current.RetryCount = 0;
+                current.StaleRestartCount = 0;
+                if (current.Children == null) continue;
+                foreach (var child in current.Children)
+                    if (child != null) pending.Push((child, current.Id));
+            }
         }
 
         private void AddReplacementWithChildren(
@@ -1604,48 +1571,55 @@ namespace TickerQ.Provider
             Guid? parentId,
             List<Guid> insertedIds)
         {
-            if (parentId.HasValue)
-                ticker.ParentId = parentId.Value;
-
-            if (!TimeTickers.TryAdd(ticker.Id, ticker))
-                throw new InvalidOperationException(
-                    $"Cannot replace chain: a ticker with id {ticker.Id} was added concurrently.");
-
-            insertedIds.Add(ticker.Id);
-            if (ticker.ParentId.HasValue)
-                AddChildIndex(ticker.ParentId.Value, ticker.Id);
-
-            if (ticker.Children == null)
-                return;
-
-            foreach (var child in ticker.Children)
-                if (child is TTimeTicker typedChild)
-                    AddReplacementWithChildren(typedChild, ticker.Id, insertedIds);
+            var pending = new Stack<(TTimeTicker Ticker, Guid? ParentId)>();
+            pending.Push((ticker, parentId));
+            while (pending.TryPop(out var item))
+            {
+                var current = item.Ticker;
+                if (item.ParentId.HasValue) current.ParentId = item.ParentId.Value;
+                if (!TimeTickers.TryAdd(current.Id, current))
+                    throw new InvalidOperationException(
+                        $"Cannot replace chain: a ticker with id {current.Id} was added concurrently.");
+                insertedIds.Add(current.Id);
+                if (current.ParentId.HasValue) AddChildIndex(current.ParentId.Value, current.Id);
+                if (current.Children == null) continue;
+                foreach (var child in current.Children.Reverse())
+                    if (child != null) pending.Push((child, current.Id));
+            }
         }
 
         private void RemoveAggregateCascade(Guid rootId)
         {
-            // Depth-first so descendants at every level are removed, not just direct children.
-            foreach (var childId in GetChildrenIds(rootId))
-                RemoveAggregateCascade(childId);
-
-            if (TimeTickers.TryRemove(rootId, out var removed))
+            var pending = new Stack<(Guid Id, bool Exit)>();
+            pending.Push((rootId, false));
+            while (pending.TryPop(out var item))
             {
-                TimeTickerResults.TryRemove(rootId, out _);
-                ChildrenIndex.TryRemove(rootId, out _);
-                if (removed.ParentId.HasValue)
-                    RemoveChildIndex(removed.ParentId.Value, removed.Id);
+                if (!item.Exit)
+                {
+                    pending.Push((item.Id, true));
+                    foreach (var childId in GetChildrenIds(item.Id)) pending.Push((childId, false));
+                }
+                else if (TimeTickers.TryRemove(item.Id, out var removed))
+                {
+                    TimeTickerResults.TryRemove(item.Id, out _);
+                    ChildrenIndex.TryRemove(item.Id, out _);
+                    if (removed.ParentId.HasValue)
+                        RemoveChildIndex(removed.ParentId.Value, removed.Id);
+                }
             }
         }
 
         private void CollectTimeTickerSubtree(
             Guid id, ICollection<TTimeTicker> aggregate, ISet<Guid> visited)
         {
-            if (!visited.Add(id) || !TimeTickers.TryGetValue(id, out var ticker))
-                return;
-            aggregate.Add(ticker);
-            foreach (var childId in GetChildrenIds(id))
-                CollectTimeTickerSubtree(childId, aggregate, visited);
+            var pending = new Stack<Guid>();
+            pending.Push(id);
+            while (pending.TryPop(out var current))
+            {
+                if (!visited.Add(current) || !TimeTickers.TryGetValue(current, out var ticker)) continue;
+                aggregate.Add(ticker);
+                foreach (var childId in GetChildrenIds(current).Reverse()) pending.Push(childId);
+            }
         }
 
         public Task ReleaseDeadNodeTimeTickerResources(string instanceIdentifier, CancellationToken cancellationToken = default)
@@ -2856,26 +2830,27 @@ namespace TickerQ.Provider
 
         private List<TTimeTicker> BuildChildrenHierarchy(Guid parentId)
         {
-            if (!ChildrenIndex.TryGetValue(parentId, out var children) || children.IsEmpty)
-                return new List<TTimeTicker>();
-
-            var results = new List<TTimeTicker>(children.Count);
-
-            foreach (var childId in children.Keys)
+            var results = new List<TTimeTicker>();
+            var pending = new Stack<(Guid ParentId, ICollection<TTimeTicker> Children)>();
+            pending.Push((parentId, results));
+            while (pending.TryPop(out var item))
             {
-                if (!TimeTickers.TryGetValue(childId, out var child))
-                    continue;
-
-                var clonedChild = CloneTicker(child);
-                clonedChild.Children = BuildChildrenHierarchy(child.Id);
-                results.Add(clonedChild);
+                if (!ChildrenIndex.TryGetValue(item.ParentId, out var children)) continue;
+                foreach (var childId in children.Keys)
+                {
+                    if (!TimeTickers.TryGetValue(childId, out var child)) continue;
+                    var clonedChild = CloneTicker(child);
+                    clonedChild.Children = new List<TTimeTicker>();
+                    item.Children.Add(clonedChild);
+                    pending.Push((child.Id, clonedChild.Children));
+                }
             }
 
             return results;
         }
 
         // Matches EF Core's MappingExtensions.ForQueueTimeTickers but uses an in-memory
-        // children index. Walks the chain recursively to unbounded depth (matching the
+        // children index. Walks the chain iteratively to unbounded depth (matching the
         // probe-and-extend behavior in the EF provider) so deep chains aren't truncated.
         private TimeTickerEntity ForQueueTimeTickers(TTimeTicker ticker)
         {
@@ -2902,40 +2877,39 @@ namespace TickerQ.Provider
             return root;
         }
 
-        // Recursive descendants walker for the queue projection. Mirrors the EF
+        // Iterative descendants walker for the queue projection. Mirrors the EF
         // provider's probe-and-extend semantics: unbounded depth, only includes
         // chain children (ExecutionTime == null) at every depth.
         private List<TimeTickerEntity> BuildQueueDescendants(
             Guid parentId, Guid chainRootId, Guid? chainGeneration)
         {
-            if (!ChildrenIndex.TryGetValue(parentId, out var directChildren) || directChildren.IsEmpty)
-                return new List<TimeTickerEntity>();
-
-            var children = new List<TimeTickerEntity>(directChildren.Count);
-            foreach (var childId in directChildren.Keys)
+            var children = new List<TimeTickerEntity>();
+            var pending = new Stack<(Guid ParentId, ICollection<TimeTickerEntity> Children)>();
+            pending.Push((parentId, children));
+            while (pending.TryPop(out var item))
             {
-                if (!TimeTickers.TryGetValue(childId, out var ch))
-                    continue;
-
-                // Scheduled nodes and their subtrees are acquired separately.
-                if (ch.ExecutionTime != null)
-                    continue;
-
-                children.Add(new TimeTickerEntity
+                if (!ChildrenIndex.TryGetValue(item.ParentId, out var directChildren)) continue;
+                foreach (var childId in directChildren.Keys)
                 {
-                    Id = ch.Id,
-                    Function = ch.Function,
-                    RequestContractVersion = ch.RequestContractVersion,
-                    RequestContractFingerprint = ch.RequestContractFingerprint,
-                    Retries = ch.Retries,
-                    RetryIntervals = ch.RetryIntervals,
-                    TimeoutSeconds = ch.TimeoutSeconds,
-                    RunCondition = ch.RunCondition,
-                    ParentId = ch.ParentId,
-                    ChainRootId = chainRootId,
-                    ChainGeneration = chainGeneration,
-                    Children = BuildQueueDescendants(ch.Id, chainRootId, chainGeneration),
-                });
+                    if (!TimeTickers.TryGetValue(childId, out var ch) || ch.ExecutionTime != null) continue;
+                    var child = new TimeTickerEntity
+                    {
+                        Id = ch.Id,
+                        Function = ch.Function,
+                        RequestContractVersion = ch.RequestContractVersion,
+                        RequestContractFingerprint = ch.RequestContractFingerprint,
+                        Retries = ch.Retries,
+                        RetryIntervals = ch.RetryIntervals,
+                        TimeoutSeconds = ch.TimeoutSeconds,
+                        RunCondition = ch.RunCondition,
+                        ParentId = ch.ParentId,
+                        ChainRootId = chainRootId,
+                        ChainGeneration = chainGeneration,
+                        Children = new List<TimeTickerEntity>()
+                    };
+                    item.Children.Add(child);
+                    pending.Push((ch.Id, child.Children));
+                }
             }
 
             return children;

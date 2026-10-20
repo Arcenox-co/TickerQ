@@ -16,6 +16,8 @@ import {
   type AuthInfo,
 } from "./auth-api";
 import { onUnauthenticated } from "./auth-events";
+import { assistantStorageKey, clearAssistantTranscript } from "../assistant-storage";
+import { resolveDashboardUrl } from "../runtime-config";
 import { stopTickerHub } from "@/services/ticker-hub";
 
 type AuthStatus = "loading" | "anonymous-allowed" | "authenticated" | "anonymous";
@@ -23,6 +25,7 @@ type AuthStatus = "loading" | "anonymous-allowed" | "authenticated" | "anonymous
 interface AuthState {
   status: AuthStatus;
   username: string | null;
+  userId: string | null;
   info: AuthInfo | null;
 }
 
@@ -35,7 +38,7 @@ interface AuthContextValue extends AuthState {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const INITIAL: AuthState = { status: "loading", username: null, info: null };
+const INITIAL: AuthState = { status: "loading", username: null, userId: null, info: null };
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(INITIAL);
@@ -50,20 +53,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch {
         // /api/auth/info should always be reachable; if it isn't, fail closed
         // so the user sees an explicit "needs login" rather than a blank page.
-        if (!cancelled) setState({ status: "anonymous", username: null, info: null });
+        if (!cancelled) setState({ status: "anonymous", username: null, userId: null, info: null });
         return;
       }
 
       if (cancelled) return;
 
       if (!info.enabled) {
-        setState({ status: "anonymous-allowed", username: null, info });
+        setState({ status: "anonymous-allowed", username: null, userId: null, info });
         return;
       }
 
       // Host mode: the user is already authenticated by the host pipeline.
       if (!info.loginAvailable) {
-        setState({ status: "authenticated", username: null, info });
+        setState({ status: info.authenticated ? "authenticated" : "anonymous", username: info.username, userId: info.userId, info });
         return;
       }
 
@@ -78,7 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (cancelled) return;
           if (refreshed) {
             if (refreshed.accessToken) tokenStore.set(refreshed.accessToken);
-            setState({ status: "authenticated", username: refreshed.username, info });
+            setState({ status: "authenticated", username: refreshed.username, userId: refreshed.userId, info });
             return;
           }
         } catch {
@@ -86,7 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      setState({ status: "anonymous", username: null, info });
+      setState({ status: "anonymous", username: null, userId: null, info });
     })();
     return () => {
       cancelled = true;
@@ -102,21 +105,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({
       status: "authenticated",
       username: res.username,
+      userId: res.userId,
       info: prev.info,
     }));
   }, []);
 
+  const clearHistory = useCallback(() => {
+    try {
+      const dashboardUrl = new URL(resolveDashboardUrl("/"), window.location.origin).href;
+      clearAssistantTranscript(window.localStorage, assistantStorageKey(state.userId, dashboardUrl));
+    } catch { /* Browser storage may be unavailable. */ }
+  }, [state.userId]);
+
   const logout = useCallback(async () => {
+    clearHistory();
     await apiLogout();
     await stopTickerHub();
-    setState((prev) => ({ status: "anonymous", username: null, info: prev.info }));
-  }, []);
+    clearHistory();
+    setState((prev) => ({ status: "anonymous", username: null, userId: null, info: prev.info }));
+  }, [clearHistory]);
 
   const markAnonymous = useCallback(() => {
+    clearHistory();
     tokenStore.set(null);
     void stopTickerHub();
-    setState((prev) => ({ status: "anonymous", username: null, info: prev.info }));
-  }, []);
+    setState((prev) => ({ status: "anonymous", username: null, userId: null, info: prev.info }));
+  }, [clearHistory]);
 
   // The fetch wrapper fires `onUnauthenticated` on a final 401 (refresh
   // failed or no token to refresh). Listening here lets cookie-mode sessions

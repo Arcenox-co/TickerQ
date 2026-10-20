@@ -596,6 +596,70 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     // =========================================================================
 
     [Fact]
+    public async Task UpdateTimeTickers_AllowsUnownedIdleConfigurationAndRejectsAcquiredSnapshot()
+    {
+        var ticker = CreateTimeTicker();
+        await _provider.AddTimeTickers([ticker], CancellationToken.None);
+        ticker.Function = "edited";
+        ticker.ExecutionTime = _fixedNow.AddMinutes(5);
+        Assert.Equal(1, await _provider.UpdateTimeTickers([ticker]));
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([ticker.Id]));
+        ticker.Function = "stale";
+        Assert.Equal(0, await _provider.UpdateTimeTickers([ticker]));
+        var persisted = await _provider.GetTimeTickerById(ticker.Id);
+        Assert.Equal("edited", persisted.Function);
+        Assert.Equal(acquired.AcquisitionToken, persisted.AcquisitionToken);
+        Assert.Equal(TickerStatus.InProgress, persisted.Status);
+    }
+
+    [Fact]
+    public async Task UpdateTimeTickers_RejectsCollectionReparentingBeforeRelationshipFixup()
+    {
+        var source = CreateTimeTicker(function: "source");
+        var child = CreateChainChild();
+        source.Children = [child];
+        var destination = CreateTimeTicker(function: "destination");
+        await _provider.AddTimeTickers([source, destination], CancellationToken.None);
+
+        // Keep the original FK/lifecycle snapshot while attaching the child through
+        // a different collection. EF must not infer and persist a new parent for it.
+        source.Children.Clear();
+        child.Parent = null;
+        destination.Children = [child];
+        destination.Function = "must-not-persist";
+        Assert.Equal(source.Id, child.ParentId);
+        Assert.Equal(0, await _provider.UpdateTimeTickers([destination]));
+
+        await using var verify = CreateVerifyContext();
+        var storedChild = await verify.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id);
+        var storedDestination = await verify.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == destination.Id);
+        Assert.Equal(source.Id, storedChild.ParentId);
+        Assert.Equal(source.Id, storedChild.ChainRootId);
+        Assert.Equal("destination", storedDestination.Function);
+    }
+
+    [Fact]
+    public async Task OverallStatistics_CountsFlatChildrenAndOccurrencesWithoutForeignPartition()
+    {
+        var root = CreateTimeTicker(status: TickerStatus.Done);
+        var child = CreateChainChild();
+        child.ParentId = root.Id;
+        root.Children = [child];
+        await _provider.AddTimeTickers([root], CancellationToken.None);
+        var cron = CreateCronTicker();
+        await SeedCronTickers(cron);
+        await SeedCronOccurrences(CreateCronOccurrence(cron.Id, status: TickerStatus.Failed));
+        var foreign = CreateTimeTicker(status: TickerStatus.Failed);
+        foreign.ApplicationNamespaceKey = "other";
+        await SeedTimeTickers(foreign);
+        var counts = await _provider.GetOverallJobStatusCountsAsync();
+        Assert.Equal(1, counts[TickerStatus.Done]);
+        Assert.Equal(1, counts[TickerStatus.Idle]);
+        Assert.Equal(1, counts[TickerStatus.Failed]);
+        Assert.Equal(3, counts.Values.Sum());
+    }
+
+    [Fact]
     public async Task UpdateTimeTickers_UpdatesPropertiesAndPersists()
     {
         var ticker = CreateTimeTicker();

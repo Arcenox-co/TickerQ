@@ -35,7 +35,9 @@ public sealed class EfCorePostgreSqlGenerationRaceTests : IAsyncLifetime
         .WithDatabase("tickerq")
         .WithUsername("postgres")
         .WithPassword("postgres")
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted("pg_isready -U postgres -d tickerq"))
+        // The image briefly starts a socket-only server during initialization. Wait for
+        // TCP readiness so it cannot stop between the readiness check and schema creation.
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted("pg_isready -h 127.0.0.1 -U postgres -d tickerq"))
         .Build();
 
     private DbContextOptions<TestTickerQDbContext> _options = null!;

@@ -20,41 +20,14 @@ namespace TickerQ.SourceGenerator.Validation
             SemanticModel semanticModel,
             SourceProductionContext context)
         {
-            var constructors = classDeclaration.Members.OfType<ConstructorDeclarationSyntax>().ToList();
-            var hasPrimaryConstructor = classDeclaration.ParameterList?.Parameters.Count > 0;
-            
-            // Count total constructors (regular + primary)
-            var totalConstructors = constructors.Count + (hasPrimaryConstructor ? 1 : 0);
-            
-            // Check for TickerQConstructor attributes
-            var constructorsWithTickerQAttribute = new List<ConstructorDeclarationSyntax>();
-            
-            foreach (var constructor in constructors)
-            {
-                var constructorSymbol = semanticModel.GetDeclaredSymbol(constructor);
-                if (constructorSymbol != null)
-                {
-                    var hasTickerQAttribute = constructorSymbol.GetAttributes().Any(attr =>
-                    {
-                        var attributeClass = attr.AttributeClass;
-                        if (attributeClass == null) return false;
-                        
-                        var attributeName = attributeClass.Name;
-                        var fullName = attributeClass.ToDisplayString();
-                        
-                        return attributeName == "TickerQConstructorAttribute" || 
-                               attributeName == "TickerQConstructor" ||
-                               fullName == "TickerQ.Utilities.TickerQConstructorAttribute" ||
-                               fullName == "TickerQ.Utilities.TickerQConstructor";
-                    });
-                    
-                    if (hasTickerQAttribute)
-                    {
-                        constructorsWithTickerQAttribute.Add(constructor);
-                    }
-                }
-            }
-            
+            var symbol = semanticModel.GetDeclaredSymbol(classDeclaration) as INamedTypeSymbol;
+            var constructors = symbol?.InstanceConstructors.Where(c => !c.IsImplicitlyDeclared).ToList()
+                ?? new List<IMethodSymbol>();
+            var totalConstructors = constructors.Count;
+            var constructorsWithTickerQAttribute = constructors.Where(c => c.GetAttributes().Any(attr =>
+                attr.AttributeClass?.Name == "TickerQConstructorAttribute"
+                || attr.AttributeClass?.Name == "TickerQConstructor")).ToList();
+
             // Error if multiple constructors have TickerQConstructor attribute
             if (constructorsWithTickerQAttribute.Count > 1)
             {

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
@@ -20,10 +21,25 @@ internal static class IntegrationEndpoints
         reads.MapGet("/integrations", (HttpContext c) => Execute(c, async () =>
         {
             var service = c.RequestServices.GetService<ITickerIntegrationAdminService>();
-            var snapshot = service != null && config.CanManageIntegrations(c)
+            var snapshot = service != null
                 ? await service.GetAsync(c.RequestAborted)
                 : new IntegrationSnapshot { Available = service != null };
             snapshot.CanManage = service != null && config.CanManageIntegrations(c) && !config.IsReadOnlyFor(c);
+            if (!snapshot.CanManage)
+            {
+                // Viewers can inspect health and delivery outcomes, without receiving
+                // editable templates, endpoint metadata or credentials.
+                snapshot.Configuration = new IntegrationConfiguration
+                {
+                    Destinations = snapshot.Configuration.Destinations.Select(d => new IntegrationDestination
+                    { Id = d.Id, Name = d.Name, Provider = d.Provider, Enabled = d.Enabled }).ToList(),
+                    Rules = snapshot.Configuration.Rules,
+                    Monitors = snapshot.Configuration.Monitors,
+                };
+                snapshot.TemplateTokens = [];
+                snapshot.RecentDeliveries = snapshot.RecentDeliveries.Select(d => new IntegrationDeliveryStatus
+                { DestinationId = d.DestinationId, AtUtc = d.AtUtc, Outcome = d.Outcome }).ToList();
+            }
             await c.Response.WriteAsJsonAsync(snapshot, IntegrationApiJsonContext.Default.IntegrationSnapshot, cancellationToken: c.RequestAborted);
         }));
         writes.MapPut("/integrations", (HttpContext c) => Execute(c, async () =>

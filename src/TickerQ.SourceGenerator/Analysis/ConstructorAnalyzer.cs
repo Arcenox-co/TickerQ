@@ -29,46 +29,20 @@ namespace TickerQ.SourceGenerator.Analysis
                 FactoryMethodName = factoryMethodName
             };
 
-            // Check for primary constructor (C# 12+)
-            var isPrimaryConstructor = classDecl.ParameterList?.Parameters.Count > 0;
+            // Symbols span every partial declaration, including constructor-only files.
+            var classSymbol = semanticModel.GetDeclaredSymbol(classDecl) as INamedTypeSymbol;
+            var constructors = classSymbol?.InstanceConstructors ?? default;
+            var selected = constructors.FirstOrDefault(c => c.GetAttributes().Any(IsTickerQConstructorAttribute))
+                ?? constructors.FirstOrDefault(c => c.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is ClassDeclarationSyntax))
+                ?? constructors.Where(c => c.DeclaredAccessibility == Accessibility.Public)
+                    .OrderBy(c => c.Locations.FirstOrDefault()?.SourceTree?.FilePath, System.StringComparer.Ordinal)
+                    .ThenBy(c => c.Locations.FirstOrDefault()?.SourceSpan.Start ?? 0).FirstOrDefault();
 
-            SeparatedSyntaxList<ParameterSyntax> parameters;
-
-            if (isPrimaryConstructor)
+            if (selected == null) return model;
+            foreach (var paramSymbol in selected.Parameters)
             {
-                parameters = classDecl.ParameterList.Parameters;
-            }
-            else
-            {
-                var constructors = classDecl.Members.OfType<ConstructorDeclarationSyntax>().ToList();
-
-                // Prefer [TickerQConstructor]-annotated constructor
-                var tickerQCtor = constructors.FirstOrDefault(c =>
-                {
-                    var symbol = semanticModel.GetDeclaredSymbol(c);
-                    return symbol?.GetAttributes().Any(a => IsTickerQConstructorAttribute(a)) == true;
-                });
-
-                var publicCtor = tickerQCtor ?? constructors
-                    .FirstOrDefault(c => c.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword)));
-
-                parameters = publicCtor?.ParameterList.Parameters ?? default;
-            }
-
-            foreach (var param in parameters)
-            {
-                if (param.Type == null)
-                    continue;
-
-                var paramName = SourceGeneratorUtilities.FirstLetterToLower(param.Identifier.Text);
-
-                var typeSymbol = ModelExtensions.GetSymbolInfo(semanticModel, param.Type).Symbol;
-                var typeName = typeSymbol?.ToDisplayString() ?? param.Type.ToString();
-
-                // Check for keyed services
-                var paramSymbol = isPrimaryConstructor
-                    ? GetPrimaryConstructorParamSymbol(classDecl, param, semanticModel)
-                    : semanticModel.GetDeclaredSymbol(param);
+                var paramName = SourceGeneratorUtilities.FirstLetterToLower(paramSymbol.Name);
+                var typeName = paramSymbol.Type.ToDisplayString();
 
                 var keyedAttr = paramSymbol?.GetAttributes()
                     .FirstOrDefault(a =>
@@ -111,14 +85,6 @@ namespace TickerQ.SourceGenerator.Analysis
                 || name == "TickerQConstructor"
                 || full == "TickerQ.Utilities.TickerQConstructorAttribute"
                 || full == "TickerQ.Utilities.TickerQConstructor";
-        }
-
-        private static IParameterSymbol GetPrimaryConstructorParamSymbol(
-            ClassDeclarationSyntax classDecl, ParameterSyntax param, SemanticModel semanticModel)
-        {
-            var classSymbol = semanticModel.GetDeclaredSymbol(classDecl) as INamedTypeSymbol;
-            var primaryCtor = classSymbol?.Constructors.FirstOrDefault(c => c.Parameters.Length > 0);
-            return primaryCtor?.Parameters.FirstOrDefault(p => p.Name == param.Identifier.Text);
         }
 
         private static string Global(string fullName) => MethodAnalyzer.Global(fullName);

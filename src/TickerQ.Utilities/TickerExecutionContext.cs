@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities.Enums;
@@ -54,9 +53,12 @@ internal class TickerExecutionContext
 
    internal static void CacheFunctionReferences(Span<InternalFunctionContext> functions)
    {
+      var pending = new Stack<InternalFunctionContext>();
       for (var i = 0; i < functions.Length; i++)
+         pending.Push(functions[i]);
+
+      while (pending.TryPop(out var context))
       {
-         ref var context = ref functions[i];
          if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
          {
             context.CachedDelegate = tickerItem.Delegate;
@@ -66,8 +68,7 @@ internal class TickerExecutionContext
 
          if (context.TimeTickerChildren is { Count: > 0 })
          {
-            var childrenSpan = CollectionsMarshal.AsSpan(context.TimeTickerChildren);
-            CacheFunctionReferences(childrenSpan);
+            foreach (var child in context.TimeTickerChildren) pending.Push(child);
          }
       }
    }

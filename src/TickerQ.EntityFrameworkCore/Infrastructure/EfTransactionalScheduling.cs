@@ -183,18 +183,24 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
 
     private void NormalizeGraph(TTimeTicker node, TTimeTicker parent, Guid rootId, DateTime now)
     {
-        if (parent == null) node.Id = rootId;
-        else if (node.Id == Guid.Empty) node.Id = Guid.NewGuid();
-        node.Parent = parent;
-        node.ParentId = parent?.Id;
-        node.ChainRootId = rootId;
-        node.ApplicationNamespaceKey = options.RuntimePartition.StorageKey;
-        node.CreatedAt = now;
-        node.UpdatedAt = now;
-        if (parent == null && node.ExecutionTime == null) node.ExecutionTime = now;
-        if (node.ExecutionTime is { } time)
-            node.ExecutionTime = time.Kind == DateTimeKind.Local ? time.ToUniversalTime() : DateTime.SpecifyKind(time, DateTimeKind.Utc);
-        foreach (var child in node.Children) NormalizeGraph(child, node, rootId, now);
+        var pending = new Stack<(TTimeTicker Row, TTimeTicker Parent)>();
+        pending.Push((node, parent));
+        while (pending.Count > 0)
+        {
+            var (current, currentParent) = pending.Pop();
+            if (currentParent == null) current.Id = rootId;
+            else if (current.Id == Guid.Empty) current.Id = Guid.NewGuid();
+            current.Parent = currentParent;
+            current.ParentId = currentParent?.Id;
+            current.ChainRootId = rootId;
+            current.ApplicationNamespaceKey = options.RuntimePartition.StorageKey;
+            current.CreatedAt = now;
+            current.UpdatedAt = now;
+            if (currentParent == null && current.ExecutionTime == null) current.ExecutionTime = now;
+            if (current.ExecutionTime is { } time)
+                current.ExecutionTime = time.Kind == DateTimeKind.Local ? time.ToUniversalTime() : DateTime.SpecifyKind(time, DateTimeKind.Utc);
+            foreach (var child in current.Children.Reverse()) pending.Push((child, current));
+        }
     }
 
     private void BeginSave(DbContext context)

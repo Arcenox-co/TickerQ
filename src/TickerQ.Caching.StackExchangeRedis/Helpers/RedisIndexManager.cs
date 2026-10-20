@@ -154,9 +154,8 @@ internal sealed class RedisIndexManager<TTimeTicker, TCronTicker>
     private void AddTimeRetentionIndex(
         ICollection<IndexOperation> operations, TTimeTicker ticker, DateTime now)
     {
-        // A Redis time-ticker chain is one root JSON document. Child state is not yet
-        // independently persisted, so chained roots fail closed and are never indexed.
-        if (ticker.ParentId.HasValue || ticker.Children is { Count: > 0 } ||
+        // Candidate roots include chains; retention checks every embedded node before atomic deletion.
+        if (ticker.ParentId.HasValue ||
             ticker.ExecutedAt is not { } executedAt || ticker.AcquisitionToken.HasValue ||
             ticker.LeaseUntil is { } leaseUntil && leaseUntil > now)
             return;

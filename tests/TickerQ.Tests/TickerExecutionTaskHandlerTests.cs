@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 
 using TickerQ.Exceptions;
@@ -16,6 +17,16 @@ namespace TickerQ.Tests;
 [Collection("TickerCancellationTokenState")]
 public class TickerExecutionTaskHandlerTests : IDisposable
 {
+    private sealed class HookLogger : ILogger<TickerExecutionTaskHandler>
+    {
+        internal List<(LogLevel Level, Exception? Exception)> Entries { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, exception));
+    }
+
     private sealed class ScopedProbe : IDisposable
     {
         public bool IsDisposed { get; private set; }
@@ -531,6 +542,60 @@ public class TickerExecutionTaskHandlerTests : IDisposable
             Arg.Is(context.Type));
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task ThrowingExceptionHook_PreservesRetriesAndOriginalTerminalOutcome(bool eventuallySucceeds, bool synchronousHook)
+    {
+        var original = new InvalidOperationException("original user failure");
+        var hookFailure = new InvalidOperationException("exception reporter failed");
+        var exceptionHandler = Substitute.For<ITickerExceptionHandler>();
+        exceptionHandler.HandleExceptionAsync(Arg.Any<Exception>(), Arg.Any<Guid>(), Arg.Any<TickerType>())
+            .Returns(_ => synchronousHook ? throw hookFailure : Task.FromException(hookFailure));
+        var logger = new HookLogger();
+        using var provider = new ServiceCollection().AddSingleton(exceptionHandler)
+            .AddSingleton<ILogger<TickerExecutionTaskHandler>>(logger).BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(provider, _clock, _instrumentation, _internalManager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(),
+            LicenseTestState.Active(_clock), new TickerFunctionConcurrencyGate());
+        var attempts = 0;
+        var context = CreateContext((_, _, _) =>
+        {
+            if (++attempts == 3 && eventuallySucceeds) return Task.CompletedTask;
+            throw original;
+        });
+        context.Retries = 2;
+        context.RetryIntervals = [0, 0];
+        var persisted = new List<(TickerStatus Status, string? Exception)>();
+        _internalManager.UpdateTickerAsync(context, Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            persisted.Add((context.Status, context.ExceptionDetails));
+            return Task.CompletedTask;
+        });
+
+        await handler.ExecuteTaskAsync(context, false);
+
+        Assert.Equal(3, attempts);
+        Assert.Equal(eventuallySucceeds ? TickerStatus.Done : TickerStatus.Failed, persisted[^1].Status);
+        await exceptionHandler.Received(eventuallySucceeds ? 2 : 3)
+            .HandleExceptionAsync(original, context.TickerId, context.Type);
+        Assert.DoesNotContain(persisted, item => item.Exception?.Contains(hookFailure.Message) == true);
+        if (!eventuallySucceeds) Assert.Contains(original.Message, persisted[^1].Exception);
+        _instrumentation.Received(eventuallySucceeds ? 0 : 1).LogJobFailed(
+            context.TickerId, context.FunctionName, Arg.Any<Exception>(), Arg.Any<int>());
+        if (!eventuallySucceeds)
+            _instrumentation.Received(1).LogJobFailed(context.TickerId, context.FunctionName, original, 2);
+        Assert.Equal(eventuallySucceeds ? 2 : 3, logger.Entries.Count);
+        Assert.All(logger.Entries, entry =>
+        {
+            Assert.Equal(LogLevel.Warning, entry.Level);
+            Assert.Same(hookFailure, entry.Exception);
+        });
+        Assert.Equal(0, TickerCancellationTokenManager.ActiveCount);
+    }
+
     [Fact]
     public async Task ExecuteTaskAsync_QualifiedRemoteDelegate_DoesNotApplyCoreRetries()
     {
@@ -663,6 +728,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     public async Task RunningCancellation_PersistsBeforeCallingFailingUserHook()
     {
         var exceptionHandler = Substitute.For<ITickerExceptionHandler>();
+        var logger = new HookLogger();
         var persisted = false;
         var hookObservedPersistence = false;
         _internalManager.UpdateTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
@@ -673,6 +739,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(_internalManager);
         services.AddSingleton(_instrumentation);
         services.AddSingleton(exceptionHandler);
+        services.AddSingleton<ILogger<TickerExecutionTaskHandler>>(logger);
         using var sp = services.BuildServiceProvider();
         var handler = new TickerExecutionTaskHandler(sp, _clock, _instrumentation, _internalManager,
             new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock),
@@ -685,6 +752,8 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         Assert.True(hookObservedPersistence);
         Assert.Equal(TickerStatus.Cancelled, context.Status);
         await exceptionHandler.Received(1).HandleCanceledExceptionAsync(Arg.Any<Exception>(), context.TickerId, context.Type);
+        _instrumentation.DidNotReceive().LogJobFailed(Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<Exception>(), Arg.Any<int>());
+        Assert.Equal(LogLevel.Warning, Assert.Single(logger.Entries).Level);
     }
 
     #endregion
@@ -1158,6 +1227,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
     {
         var manager = Substitute.For<IInternalTickerManager>();
         var instrumentation = Substitute.For<ITickerQInstrumentation>();
+        var logger = new HookLogger();
         var exceptionHandler = Substitute.For<ITickerExceptionHandler>();
         exceptionHandler.HandleCanceledExceptionAsync(
                 Arg.Any<Exception>(), Arg.Any<Guid>(), Arg.Any<TickerType>())
@@ -1169,6 +1239,7 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         services.AddSingleton(manager);
         services.AddSingleton(instrumentation);
         services.AddSingleton(exceptionHandler);
+        services.AddSingleton<ILogger<TickerExecutionTaskHandler>>(logger);
         await using var serviceProvider = services.BuildServiceProvider();
         var handler = new TickerExecutionTaskHandler(
             serviceProvider, _clock, instrumentation, manager,
@@ -1186,6 +1257,9 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         await manager.Received(1).UpdateTickerAsync(
             Arg.Is<InternalFunctionContext>(x => x.Status == TickerStatus.Cancelled),
             Arg.Any<CancellationToken>());
+        instrumentation.DidNotReceive().LogJobFailed(Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<Exception>(), Arg.Any<int>());
+        Assert.Equal(2, logger.Entries.Count);
+        Assert.All(logger.Entries, entry => Assert.Equal(LogLevel.Warning, entry.Level));
     }
 
     [Fact]

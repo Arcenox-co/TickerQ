@@ -95,7 +95,14 @@ public class DashboardOptionsBuilder
         => BasePath = basePath;
 
     public void SetBackendDomain(string backendDomain)
-        => BackendDomain = backendDomain;
+    {
+        if (string.IsNullOrWhiteSpace(backendDomain)) { BackendDomain = string.Empty; return; }
+        if (!Uri.TryCreate(backendDomain.Trim(), UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(uri.UserInfo) ||
+            uri.AbsolutePath != "/" || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+            throw new ArgumentException("Backend domain must be an HTTP(S) origin without credentials, a path, query or fragment.", nameof(backendDomain));
+        BackendDomain = uri.GetLeftPart(UriPartial.Authority);
+    }
 
     /// <summary>Set OpenAPI group name for dashboard endpoints</summary>
     public void SetGroupName(string groupName)

@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
@@ -73,10 +74,19 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
                 {
                     TickerExecutionContext.CacheFunctionReferences(functions.AsSpan());
                     if (await _acquiredQueue.PublishAsync(functions, true, stoppingToken).ConfigureAwait(false))
+                    {
                         _diagnostics?.FallbackSucceeded();
+                        await Task.Delay(TimeSpan.FromMilliseconds(10), stoppingToken);
+                    }
                     else
+                    {
                         _diagnostics?.FallbackFailed();
-                    await Task.Delay(TimeSpan.FromMilliseconds(10), stoppingToken);
+                        // Failed publication already released the exact unstarted generations.
+                        // Do not repeatedly reacquire those rows while root admission is full.
+                        if (_tickerQTaskScheduler is ITickerQExecutionScheduler executionScheduler)
+                            await executionScheduler.WaitForOrchestrationCapacityAsync(stoppingToken).ConfigureAwait(false);
+                        await Task.Delay(_fallbackJobPeriod, stoppingToken).ConfigureAwait(false);
+                    }
                 }
                 else
                 {

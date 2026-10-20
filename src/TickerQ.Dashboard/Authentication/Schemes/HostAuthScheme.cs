@@ -43,6 +43,7 @@ internal sealed class HostAuthScheme : AuthSchemeBase
         // Derive the username from the authenticated identity, never from an
         // unauthenticated one, falling back to a generic host user when the
         // authenticated identity carries no name.
-        return AuthResult.Success(authenticatedIdentity.Name ?? "host-user");
+        return AuthResult.Success(authenticatedIdentity.Name ?? "host-user",
+            DashboardUserIdentity.FromIdentity(authenticatedIdentity));
     }
 }

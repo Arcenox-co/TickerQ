@@ -1,4 +1,7 @@
 using BenchmarkDotNet.Running;
 using TickerQ.Benchmarks;
 
-BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
+if (args.Length > 0 && args[0] == "runtime")
+    Environment.ExitCode = await RuntimeExecutionBenchmark.RunAsync(args[1..]);
+else
+    BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);

@@ -9,6 +9,7 @@ namespace TickerQ.TickerQThreadPool;
 internal interface ITickerQExecutionScheduler
 {
     bool TryQueueOrchestration(Func<CancellationToken, Task> work, CancellationToken admissionToken = default);
+    Task WaitForOrchestrationCapacityAsync(CancellationToken cancellationToken = default);
     Task ExecuteAsync(Func<CancellationToken, Task> work, TickerTaskPriority priority, CancellationToken token = default);
     int ActiveOrchestrationCount { get; }
     IDisposable BeginFunctionWait();

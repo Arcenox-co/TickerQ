@@ -29,7 +29,7 @@ internal sealed class CustomAuthScheme : AuthSchemeBase
             if (AsyncContextValidator != null)
             {
                 return await AsyncContextValidator(context)
-                    ? AuthResult.Success("custom-user")
+                    ? AuthResult.Success("custom-user", DashboardUserIdentity.FromPrincipal(context.User))
                     : AuthResult.Failure("Custom authentication failed");
             }
 
@@ -37,7 +37,7 @@ internal sealed class CustomAuthScheme : AuthSchemeBase
             if (string.IsNullOrEmpty(raw)) return AuthResult.Failure("No authorization provided");
 
             if (Validator?.Invoke(raw) == true)
-                return AuthResult.Success("custom-user");
+                return AuthResult.Success("custom-user", DashboardUserIdentity.FromPrincipal(context.User));
             return AuthResult.Failure("Custom authentication failed");
         }
         catch

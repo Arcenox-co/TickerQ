@@ -35,15 +35,27 @@ public class DashboardIntegrationTests
         Assert.Equal(0, service.Mutations);
     }
 
-    [Fact]
-    public async Task UnprivilegedRead_DoesNotExposeSettings()
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task Viewers_ReadHealthAndDeliveries_WithoutConfigurationSecrets(bool permission, bool readOnly)
     {
-        var service = new FakeAdmin(); using var host = await Host(service, false);
+        var service = new FakeAdmin(); using var host = await Host(service, permission, readOnly);
         var response = await host.GetTestClient().GetFromJsonAsync<JsonElement>("/api/dashboard/integrations");
         Assert.True(response.GetProperty("available").GetBoolean());
         Assert.False(response.GetProperty("canManage").GetBoolean());
-        Assert.Equal(0, response.GetProperty("configuration").GetProperty("destinations").GetArrayLength());
-        Assert.Equal(0, service.Reads);
+        var destination = response.GetProperty("configuration").GetProperty("destinations")[0];
+        Assert.Equal("Team alerts", destination.GetProperty("name").GetString());
+        Assert.Equal(JsonValueKind.Null, destination.GetProperty("url").ValueKind);
+        Assert.Equal(JsonValueKind.Null, destination.GetProperty("headers").ValueKind);
+        Assert.Equal(JsonValueKind.Null, destination.GetProperty("payloadTemplate").ValueKind);
+        Assert.Equal(JsonValueKind.Null, destination.GetProperty("messageTemplates").ValueKind);
+        Assert.Equal(JsonValueKind.Null, destination.GetProperty("endpointHost").ValueKind);
+        Assert.Equal("incident", response.GetProperty("monitors")[0].GetProperty("status").GetString());
+        Assert.Equal("Failed", response.GetProperty("recentDeliveries")[0].GetProperty("outcome").GetString());
+        Assert.Equal("", response.GetProperty("recentDeliveries")[0].GetProperty("message").GetString());
+        Assert.Equal(1, service.Reads);
+        Assert.Equal(0, service.Mutations);
     }
 
     [Fact]
@@ -89,7 +101,21 @@ public class DashboardIntegrationTests
     private sealed class FakeAdmin : ITickerIntegrationAdminService
     {
         public int Mutations, Reads; public bool Conflict;
-        public Task<IntegrationSnapshot> GetAsync(CancellationToken cancellationToken = default) { Reads++; return Task.FromResult(new IntegrationSnapshot { Available = true }); }
+        public Task<IntegrationSnapshot> GetAsync(CancellationToken cancellationToken = default)
+        {
+            Reads++;
+            return Task.FromResult(new IntegrationSnapshot
+            {
+                Available = true, MonitoringAvailable = true,
+                Configuration = new IntegrationConfiguration { Destinations = [new IntegrationDestination
+                {
+                    Name = "Team alerts", Url = "https://private.example/secret", Headers = new() { ["Authorization"] = "secret" },
+                    PayloadTemplate = "secret-template", MessageTemplates = new() { Recovery = "secret" }, EndpointHost = "private.example"
+                }] },
+                Monitors = [new IntegrationMonitorStatus { Status = "incident" }],
+                RecentDeliveries = [new IntegrationDeliveryStatus { Outcome = "Failed", Message = "private-details" }]
+            });
+        }
         public Task SaveAsync(IntegrationConfiguration configuration, CancellationToken cancellationToken = default) { Mutations++; if (Conflict) throw new IntegrationConfigurationConflictException(); return Task.CompletedTask; }
         public Task<IntegrationDeliveryStatus> TestAsync(Guid id, CancellationToken cancellationToken = default) { Mutations++; return Task.FromResult(new IntegrationDeliveryStatus { DestinationId = id, Outcome = "Sent" }); }
         public IntegrationPreviewResponse Preview(IntegrationPreviewRequest request) { Mutations++; return new() { Payload = "{}" }; }

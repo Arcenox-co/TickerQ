@@ -73,6 +73,7 @@ public class AuthMiddleware
         }
 
         context.Items["auth.username"] = authResult.Username;
+        context.Items["auth.userId"] = authResult.UserId;
         context.Items["auth.authenticated"] = true;
 
         await _next(context);

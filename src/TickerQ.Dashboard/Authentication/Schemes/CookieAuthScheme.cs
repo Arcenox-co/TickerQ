@@ -29,7 +29,7 @@ internal sealed class CookieAuthScheme : AuthSchemeBase
             return Task.FromResult(AuthResult.Failure("No auth cookie present"));
 
         return Issuer.TryValidate(token, out var username)
-            ? Task.FromResult(AuthResult.Success(username))
+            ? Task.FromResult(AuthResult.Success(username, DashboardUserIdentity.Create("credentials", Issuer.Issuer, username)))
             : Task.FromResult(AuthResult.Failure("Invalid or expired auth cookie"));
     }
 

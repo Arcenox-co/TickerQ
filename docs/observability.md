@@ -128,3 +128,14 @@ options.NotifyFailuresViaWebhook(
 ```
 
 If you pass no sanitizer, `FailureWebhookOptions.DefaultReasonSanitizer` is used.
+
+
+## Dashboard overall status totals
+
+Built-in persistence providers implement the optional `ITickerDashboardStatisticsProvider`
+contract. EF Core and MongoDB aggregate status counts in the database. Redis scans IDs
+in bounded batches and returns status counts from Lua without transferring job payloads;
+in-memory storage counts stored status values directly. Totals retain each provider's
+existing dashboard query semantics: flat time rows for EF Core, MongoDB, and in-memory,
+and aggregate time roots for Redis, plus cron occurrences. Custom providers that do not
+implement the contract retain the existing metadata query fallback.

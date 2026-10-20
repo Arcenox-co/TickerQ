@@ -45,13 +45,55 @@ internal static class MonitorEvaluation
         if (state.ProcessedThroughUtc > through) return;
         state.ReplayFromUtc ??= state.View.LastCheckedUtc ?? state.InitializedUtc;
         var previous = state.ProcessedThroughUtc;
+        var replayFloor = (previous ?? through) - MonitoringReplayPolicy.Window;
+        // Upgrade older persisted monitors without replaying notifications they already
+        // sent. Fresh monitors start recording identities on their very first scan.
+        if (!state.ReplayTrackingInitialized && previous.HasValue)
+        {
+            state.SeenCompletions.AddRange(observation.Replayed);
+            state.LastStreakBreakUtc = observation.Replayed.Where(x => x.Status != TickerStatus.Failed)
+                .Select(x => x.CompletedUtc).Append(state.LastSuccessUtc).Max();
+        }
+        state.ReplayTrackingInitialized = true;
+        var seen = state.SeenCompletions.Select(CompletionKey).ToHashSet();
         var events = observation.Recent.AsEnumerable();
         // Allows sources to supply a known success independently of their terminal rows.
         if (observation.LastSuccessUtc is { } success && !events.Any(x => IsSuccess(x.Status) && x.CompletedUtc == success))
             events = events.Append(new(Guid.Empty, TickerStatus.Done, success));
         var ordered = events.Where(x => x.CompletedUtc.HasValue && x.CompletedUtc <= through
-                && (!previous.HasValue || x.CompletedUtc > previous))
+                && (!previous.HasValue || x.CompletedUtc > replayFloor))
+            .Concat(observation.Replayed.Where(x => x.CompletedUtc > replayFloor && x.CompletedUtc <= through))
+            .Where(x => seen.Add(CompletionKey(x)))
             .OrderBy(x => x.CompletedUtc).ThenBy(x => x.Id).ToArray();
+        state.SeenCompletions.RemoveAll(x => x.CompletedUtc <= replayFloor);
+        // A full replay window plus one bounded forward page. Refuse progress rather
+        // than silently evict identities that are still needed to suppress duplicates.
+        if (state.SeenCompletions.Count + ordered.Count(x => x.CompletedUtc > replayFloor) > MonitoringReplayPolicy.MaxIdentities)
+        {
+            emit(new(null, "Completion replay identity capacity reached; monitoring cannot safely advance."), observation.AtUtc);
+            return;
+        }
+        state.SeenCompletions.AddRange(ordered.Where(x => x.CompletedUtc > replayFloor));
+
+        if (rule.Kind == "consecutive_failures" && previous.HasValue && ordered.Any(x => x.CompletedUtc <= previous))
+        {
+            // Late rows must be merged with the history already observed at the checkpoint.
+            // Adding them to the tail of the existing streak invents an ordering (and can
+            // alert on three failures separated by a success discovered in this same batch).
+            var oldFailures = state.ConsecutiveFailures.Where(at => at <= replayFloor).ToArray();
+            var throughPrevious = state.SeenCompletions.Where(x => x.CompletedUtc <= previous).ToArray();
+            state.LastStreakBreakUtc = throughPrevious.Where(x => x.Status != TickerStatus.Failed)
+                .Select(x => x.CompletedUtc).Append(state.LastStreakBreakUtc).Max();
+            var failures = oldFailures.Concat(throughPrevious.Where(x => x.Status == TickerStatus.Failed)
+                    .Select(x => x.CompletedUtc!.Value))
+                .Where(at => at >= previous.Value.AddHours(-rule.LookbackHours) &&
+                    (state.LastStreakBreakUtc == null || at > state.LastStreakBreakUtc))
+                .OrderBy(at => at).TakeLast(rule.FailureThreshold).ToArray();
+            state.ConsecutiveFailures.Clear();
+            state.ConsecutiveFailures.AddRange(failures);
+            if (failures.Length >= rule.FailureThreshold && failures[^1] > state.ReplayFromUtc)
+                emit(FailureDecision(rule, state, ordered.Last(x => x.CompletedUtc <= previous).Id), failures[^1]);
+        }
 
         foreach (var group in ordered.GroupBy(x => x.CompletedUtc!.Value))
         {
@@ -61,34 +103,46 @@ internal static class MonitorEvaluation
             // No portable ordering exists within one completion timestamp. A non-failure
             // conservatively breaks the streak, rather than inventing a failure ordering.
             var breaksStreak = group.Any(x => x.Status != TickerStatus.Failed);
+            if (breaksStreak)
+            {
+                if (state.LastStreakBreakUtc == null || at > state.LastStreakBreakUtc) state.LastStreakBreakUtc = at;
+                state.ConsecutiveFailures.RemoveAll(x => x <= at);
+            }
             foreach (var execution in group)
             {
+                var observedCompletion = state.RunningSince.TryGetValue(execution.Id, out var observed)
+                    && (execution.Generation == null || observed.Generation == execution.Generation);
                 if (rule.Kind == "long_running" && replay)
                 {
                     var duration = Math.Max(0, execution.ElapsedMilliseconds);
-                    if (duration == 0 && state.RunningSince.TryGetValue(execution.Id, out var observed)
-                        && (execution.Generation == null || observed.Generation == execution.Generation))
-                        duration = Math.Max(0, (long)(at - observed.SinceUtc).TotalMilliseconds);
+                    if (duration == 0 && observedCompletion)
+                        duration = Math.Max(0, (long)(at - observed!.SinceUtc).TotalMilliseconds);
                     if (duration >= rule.DurationSeconds * 1000L)
                         emit(new(true, $"An execution finished after {duration / 1000} seconds, exceeding the {rule.DurationSeconds}-second threshold.", execution.Id)
                         { ObservedDurationSeconds = duration / 1000 }, at);
                 }
-                state.RunningSince.Remove(execution.Id);
+                if (observedCompletion) state.RunningSince.Remove(execution.Id);
                 if (IsSuccess(execution.Status))
                 {
                     if (state.LastSuccessUtc == null || at > state.LastSuccessUtc) state.LastSuccessUtc = at;
-                    if (replay && state.IncidentId != null && (rule.Kind != "long_running" || !HasOverdueRun(rule, state, at)))
+                    if (replay && state.IncidentId != null
+                        && (rule.Kind != "deadline" || IsRelevantDeadlineSuccess(rule, state, at))
+                        && (rule.Kind != "long_running" || observedCompletion || at >= state.View.OpenedAtUtc)
+                        && (rule.Kind != "consecutive_failures" || state.ConsecutiveFailures.Count(x => x > at) < rule.FailureThreshold)
+                        && (rule.Kind != "long_running" || !HasOverdueRun(rule, state,
+                            previous.HasValue && at <= previous ? observation.AtUtc : at)))
                         emit(new(false, "A successful execution was recorded and the monitored condition is clear.", execution.Id)
-                        { FailureCount = rule.Kind == "consecutive_failures" ? 0 : null, DeadlineUtc = state.LastDeadlineUtc }, at);
+                        { FailureCount = rule.Kind == "consecutive_failures" ? state.ConsecutiveFailures.Count : null, DeadlineUtc = state.LastDeadlineUtc },
+                            previous.HasValue && at <= previous ? observation.AtUtc : at);
                 }
             }
-            if (rule.Kind == "consecutive_failures")
+            if (rule.Kind == "consecutive_failures" && (!previous.HasValue || at > previous))
             {
                 state.ConsecutiveFailures.RemoveAll(x => x < at.AddHours(-rule.LookbackHours));
-                if (breaksStreak) state.ConsecutiveFailures.Clear();
-                else
+                if (!breaksStreak && (state.LastStreakBreakUtc == null || at > state.LastStreakBreakUtc))
                 {
                     state.ConsecutiveFailures.AddRange(group.Select(_ => at));
+                    state.ConsecutiveFailures.Sort();
                     if (state.ConsecutiveFailures.Count > rule.FailureThreshold)
                         state.ConsecutiveFailures.RemoveRange(0, state.ConsecutiveFailures.Count - rule.FailureThreshold);
                     if (replay && state.ConsecutiveFailures.Count >= rule.FailureThreshold)
@@ -139,6 +193,17 @@ internal static class MonitorEvaluation
     }
 
     private static bool IsSuccess(TickerStatus status) => status is TickerStatus.Done or TickerStatus.DueDone;
+
+    private static bool IsRelevantDeadlineSuccess(IntegrationMonitor rule, MonitorState state, DateTime at)
+    {
+        if (state.LastDeadlineUtc is not { } deadline) return true;
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(rule.TimeZoneId);
+        var dayStart = ToUtc(TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(deadline, DateTimeKind.Utc), zone).Date, zone);
+        return at >= dayStart;
+    }
+
+    private static (Guid, bool, Guid?, DateTime?, TickerStatus) CompletionKey(MonitorExecution execution)
+        => (execution.Id, execution.IsCron, execution.Generation, execution.CompletedUtc, execution.Status);
 
     private static bool HasOverdueRun(IntegrationMonitor rule, MonitorState state, DateTime at)
         => state.RunningSince.Values.Any(x => at - x.SinceUtc >= TimeSpan.FromSeconds(rule.DurationSeconds));

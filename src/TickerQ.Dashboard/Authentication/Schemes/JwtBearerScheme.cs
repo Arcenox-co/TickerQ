@@ -34,7 +34,7 @@ internal sealed class JwtBearerScheme : AuthSchemeBase
         var token = raw.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? raw[7..] : raw;
 
         return Issuer.TryValidate(token, out var username)
-            ? Task.FromResult(AuthResult.Success(username))
+            ? Task.FromResult(AuthResult.Success(username, DashboardUserIdentity.Create("credentials", Issuer.Issuer, username)))
             : Task.FromResult(AuthResult.Failure("Invalid or expired token"));
     }
 

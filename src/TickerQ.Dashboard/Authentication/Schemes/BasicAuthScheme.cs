@@ -55,7 +55,7 @@ internal sealed class BasicAuthScheme : AuthSchemeBase
                     return AuthResult.Failure("Invalid basic auth format");
 
                 return await AsyncValidator(parts[0], parts[1])
-                    ? AuthResult.Success(parts[0])
+                    ? AuthResult.Success(parts[0], DashboardUserIdentity.Create("basic", Realm, parts[0]))
                     : AuthResult.Failure("Invalid credentials");
             }
 
@@ -67,7 +67,7 @@ internal sealed class BasicAuthScheme : AuthSchemeBase
 
             var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(b64));
             var username = decoded.Split(':', 2)[0];
-            return AuthResult.Success(username);
+            return AuthResult.Success(username, DashboardUserIdentity.Create("basic", Realm, username));
         }
         catch
         {

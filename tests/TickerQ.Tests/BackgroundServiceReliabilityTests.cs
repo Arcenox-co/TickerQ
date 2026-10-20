@@ -180,6 +180,58 @@ public class BackgroundServiceReliabilityTests
     }
 
     [Fact]
+    public async Task AcquiredRunningJob_BlockingCancellationCallback_DoesNotBlockStopOrDispose()
+    {
+        var context = Context();
+        var manager = Substitute.For<IInternalTickerManager>();
+        var scheduler = Substitute.For<ITickerQTaskScheduler>();
+        var handler = Substitute.For<ITickerExecutionTaskHandler>();
+        Func<CancellationToken, Task>? work = null;
+        scheduler.QueueAsync(Arg.Any<Func<CancellationToken, Task>>(), Arg.Any<TickerTaskPriority>(), Arg.Any<CancellationToken>())
+            .Returns(call => { work = call.ArgAt<Func<CancellationToken, Task>>(0); return ValueTask.CompletedTask; });
+        using var releaseCallback = new ManualResetEventSlim();
+        var callbackEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        handler.ExecuteRegisteredTaskAsync(context, false, Arg.Any<CancellationTokenSource>(), Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                using var registration = call.ArgAt<CancellationToken>(3).Register(() =>
+                {
+                    callbackEntered.TrySetResult();
+                    releaseCallback.Wait();
+                    callbackExited.TrySetResult();
+                });
+                await finish.Task;
+            });
+        var queue = new AcquiredExecutionQueue(manager, handler, scheduler, NullLogger.Instance);
+        await queue.PublishAsync([context], false, CancellationToken.None);
+        var running = work!(CancellationToken.None);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        // Task.Run keeps the test's own deadline usable even against the former synchronous Cancel.
+        var stop = Task.Run(() => queue.StopAsync(deadline.Token));
+        try
+        {
+            await callbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await stop.WaitAsync(TimeSpan.FromSeconds(3));
+            await Task.Run(queue.Dispose).WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.False(callbackExited.Task.IsCompleted);
+            Assert.Contains(Leases(), lease => lease.TickerId == context.TickerId);
+        }
+        finally
+        {
+            releaseCallback.Set();
+            await callbackExited.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            finish.TrySetResult();
+            await running.WaitAsync(TimeSpan.FromSeconds(3));
+            await stop.WaitAsync(TimeSpan.FromSeconds(3));
+            queue.Dispose();
+        }
+        Assert.DoesNotContain(Leases(), lease => lease.TickerId == context.TickerId);
+        await manager.DidNotReceive().ReleaseAcquiredResources(Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task SlowStaleSweep_DoesNotBlockRenewals_AndReceivesDeadlineCancellation()
     {
         var context = Context();

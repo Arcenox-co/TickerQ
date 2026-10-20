@@ -138,6 +138,10 @@ internal sealed class IntegrationMonitoringService(IntegrationConfigurationServi
         }
         var opening = decision.Breached.Value && current.IncidentId == null;
         var closing = !decision.Breached.Value && current.IncidentId != null;
+        // A replayed success can correct an incident at observation time before this
+        // batch reaches newer failures. Preserve transition order across that correction.
+        var lastTransition = current.View.RecoveredAtUtc ?? current.View.OpenedAtUtc;
+        if (lastTransition.HasValue && at < lastTransition.Value) at = lastTransition.Value;
         var destinations = config.Destinations.Where(x => x.Enabled && rule.DestinationIds.Contains(x.Id)).ToArray();
         var incident = current.IncidentId ?? Guid.NewGuid();
         if (opening || closing && rule.NotifyRecovery)

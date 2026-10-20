@@ -22,7 +22,7 @@ namespace TickerQ.SourceGenerator.Validation
             Compilation compilation,
             SourceProductionContext context)
         {
-            ValidateClassAccessibility(classDeclaration, context);
+            ValidateClassAccessibility(classDeclaration, compilation, context);
             ValidateMethodAccessibility(methodDeclaration, context);
 
             var semanticModel = compilation.GetSemanticModel(methodDeclaration.SyntaxTree);
@@ -41,10 +41,11 @@ namespace TickerQ.SourceGenerator.Validation
         /// <summary>
         /// Validates that a class has appropriate accessibility for TickerFunction usage.
         /// </summary>
-        private static void ValidateClassAccessibility(ClassDeclarationSyntax classDeclaration, SourceProductionContext context)
+        private static void ValidateClassAccessibility(ClassDeclarationSyntax classDeclaration, Compilation compilation, SourceProductionContext context)
         {
-            var hasPublicOrInternal = classDeclaration.Modifiers.Any(m =>
-                m.IsKind(SyntaxKind.PublicKeyword) || m.IsKind(SyntaxKind.InternalKeyword));
+            var accessibility = compilation.GetSemanticModel(classDeclaration.SyntaxTree)
+                .GetDeclaredSymbol(classDeclaration)?.DeclaredAccessibility;
+            var hasPublicOrInternal = accessibility == Accessibility.Public || accessibility == Accessibility.Internal;
 
             if (!hasPublicOrInternal)
             {
