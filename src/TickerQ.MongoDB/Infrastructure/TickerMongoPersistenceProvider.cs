@@ -2041,15 +2041,13 @@ namespace TickerQ.MongoDB.Infrastructure
         {
             if (!await IsRunnableAdmissionAllowedAsync(cancellationToken).ConfigureAwait(false))
                 return Array.Empty<TimeTickerEntity>();
-            var now = _clock.UtcNow;
-            var oneSecondAgo = now.AddSeconds(-1);
             var coll = _context.TimeTickers;
             var fb = Builders<TTimeTicker>.Filter;
 
+            // Bounded batches must leave overdue work eligible for ordinary acquisition.
             var baseFilter = fb.And(
                 fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
                 fb.Ne(x => x.ExecutionTime, null),
-                fb.Gte(x => x.ExecutionTime, oneSecondAgo),
                 MongoUpdateBuilders.CanAcquireTimeTicker<TTimeTicker>(_lockHolder));
 
             var earliest = await coll
@@ -4040,6 +4038,9 @@ namespace TickerQ.MongoDB.Infrastructure
         public async Task<int> AddTimeTickers(TTimeTicker[] tickers, CancellationToken cancellationToken = default)
         {
             if (tickers == null || tickers.Length == 0) return 0;
+            // Reuse batch ancestry for every root rather than rebuilding an N-entry
+            // lookup N times. Persisted parents still resolve inside the graph mutation.
+            var suppliedById = tickers.ToDictionary(x => x.Id);
             return await ExecuteAdmittedGraphMutationAsync(
                 async (session, ct) =>
                 {
@@ -4049,7 +4050,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     foreach (var ticker in tickers)
                     {
                         var identity = await ResolveInsertedChainIdentityAsync(
-                            session, ticker, tickers, ct).ConfigureAwait(false);
+                            session, ticker, suppliedById, ct).ConfigureAwait(false);
                         count += await InsertWithChildren(
                             session, ticker, null, identity.RootId, identity.Generation, ct).ConfigureAwait(false);
                     }
@@ -4061,7 +4062,7 @@ namespace TickerQ.MongoDB.Infrastructure
                     foreach (var ticker in tickers)
                     {
                         var identity = await ResolveInsertedChainIdentityAsync(
-                            null, ticker, tickers, ct).ConfigureAwait(false);
+                            null, ticker, suppliedById, ct).ConfigureAwait(false);
                         count += await InsertWithChildren(
                             null, ticker, null, identity.RootId, identity.Generation, ct).ConfigureAwait(false);
                     }
@@ -4071,10 +4072,9 @@ namespace TickerQ.MongoDB.Infrastructure
         }
 
         private async Task<(Guid RootId, Guid? Generation)> ResolveInsertedChainIdentityAsync(
-            IClientSessionHandle session, TTimeTicker ticker, IReadOnlyCollection<TTimeTicker> supplied,
+            IClientSessionHandle session, TTimeTicker ticker, IReadOnlyDictionary<Guid, TTimeTicker> suppliedById,
             CancellationToken cancellationToken)
         {
-            var suppliedById = supplied.ToDictionary(x => x.Id);
             var current = ticker;
             var visited = new HashSet<Guid>();
             while (current.ParentId.HasValue)
@@ -4139,6 +4139,7 @@ namespace TickerQ.MongoDB.Infrastructure
                 if (current.Count != ids.Length || current.Any(row =>
                         !TimeTickerConfigurationSnapshot.Matches(row, incoming[row.Id], compareParent: false))) return 0;
                 var currentById = current.ToDictionary(row => row.Id);
+                var persistedOnly = new Dictionary<Guid, TTimeTicker>();
                 foreach (var moved in incoming.Values.Where(row => currentById[row.Id].ParentId != row.ParentId))
                 {
                     // Preserve the existing reparent operation only for a complete, finished subtree
@@ -4153,8 +4154,8 @@ namespace TickerQ.MongoDB.Infrastructure
                     bool Safe(TTimeTicker row) => ChainDeletionPolicy.IsTerminal(row.Status) &&
                         !row.AcquisitionToken.HasValue && !(row.LeaseUntil > now);
                     if (subtree.Values.Any(row => !Safe(row))) return 0;
-                    var source = await ResolveInsertedChainIdentityAsync(session, previous, Array.Empty<TTimeTicker>(), ct).ConfigureAwait(false);
-                    var destination = await ResolveInsertedChainIdentityAsync(session, moved, Array.Empty<TTimeTicker>(), ct).ConfigureAwait(false);
+                    var source = await ResolveInsertedChainIdentityAsync(session, previous, persistedOnly, ct).ConfigureAwait(false);
+                    var destination = await ResolveInsertedChainIdentityAsync(session, moved, persistedOnly, ct).ConfigureAwait(false);
                     var rootIds = new[] { source.RootId, destination.RootId }.Distinct().ToArray();
                     var roots = await _context.TimeTickers.Find(session,
                             InPartition(Builders<TTimeTicker>.Filter.In(row => row.Id, rootIds)))
@@ -4168,10 +4169,9 @@ namespace TickerQ.MongoDB.Infrastructure
                 }
                 // Detached child edits retain the actual parent's root identity. Validate each
                 // supplied subtree entry, then read each authoritative root once for the graph.
-                var supplied = incoming.Values.ToArray();
                 foreach (var row in tickers.Where(x => x.ParentId.HasValue))
                 {
-                    var identity = await ResolveInsertedChainIdentityAsync(session, row, supplied, ct).ConfigureAwait(false);
+                    var identity = await ResolveInsertedChainIdentityAsync(session, row, incoming, ct).ConfigureAwait(false);
                     if (row.ChainRootId != identity.RootId || row.ChainGeneration != identity.Generation) return 0;
                 }
                 foreach (var group in incoming.Values.Where(x => x.ParentId.HasValue).GroupBy(x => x.ChainRootId))

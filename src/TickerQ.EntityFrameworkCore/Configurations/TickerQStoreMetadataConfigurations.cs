@@ -13,7 +13,9 @@ public sealed class TickerQStoreMetadataConfigurations : IEntityTypeConfiguratio
     {
         builder.HasKey(x => new { x.ApplicationNamespaceKey, x.Id });
         builder.Property(x => x.ApplicationNamespaceKey).IsRequired().HasMaxLength(80);
-        builder.Property(x => x.Id).HasMaxLength(64);
+        // Activation rows use the complete runtime partition key (prefix plus SHA-256),
+        // rather than only the 64-character hash.
+        builder.Property(x => x.Id).HasMaxLength(80);
         builder.Property(x => x.LastMigrationId).HasMaxLength(200).IsRequired(false);
         builder.Property(x => x.ActivationCheckpoint).HasMaxLength(200).IsRequired(false);
         builder.Property(x => x.Version).IsConcurrencyToken();

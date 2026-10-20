@@ -285,73 +285,121 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         Func<TDbContext, CancellationToken, Task<TResult>> operation,
         CancellationToken cancellationToken)
     {
-        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
-        return await strategy.ExecuteAsync(async () =>
+        return await ExecuteMutationTransactionWithRetriesAsync(async (beginCommit, ct) =>
         {
-            using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+            using var session = await CreateDbContextAsync(ct).ConfigureAwait(false);
             var dbContext = session.Context;
             RunnableAdmissionContextCreatedForTest?.Invoke(dbContext.ContextId.InstanceId);
             await using var transaction = await dbContext.Database
-                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
-            if (!await LockLegacyWriteAdmissionAsync(dbContext, cancellationToken).ConfigureAwait(false))
+                .BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
+            if (!await LockLegacyWriteAdmissionAsync(dbContext, ct).ConfigureAwait(false))
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
                 return deniedResult;
             }
-            await LockTimeTickerGraphMutationAsync(dbContext, cancellationToken).ConfigureAwait(false);
+            await LockTimeTickerGraphMutationAsync(dbContext, ct).ConfigureAwait(false);
 
             if (requireRunnableAdmission &&
-                !await LockRunnableAdmissionAsync(dbContext, cancellationToken, _runtimeActivationScopeKey)
+                !await LockRunnableAdmissionAsync(dbContext, ct, _runtimeActivationScopeKey)
                     .ConfigureAwait(false))
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
                 return deniedResult;
             }
 
-            var result = await operation(dbContext, cancellationToken).ConfigureAwait(false);
+            var result = await operation(dbContext, ct).ConfigureAwait(false);
             if (AfterRunnableAdmissionOperationForTestAsync != null)
-                await AfterRunnableAdmissionOperationForTestAsync(cancellationToken).ConfigureAwait(false);
+                await AfterRunnableAdmissionOperationForTestAsync(ct).ConfigureAwait(false);
+            beginCommit();
             await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
             return result;
-        }).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    // A provider-owned mutation may safely replay after its transaction rolled back. Keep
+    // application-owned StageAsync transactions outside this helper: callers must replay their
+    // complete business unit of work through their configured execution strategy themselves.
+    private async Task<TResult> ExecuteMutationTransactionWithRetriesAsync<TResult>(
+        Func<Action, CancellationToken, Task<TResult>> operation, CancellationToken cancellationToken)
+    {
+        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
+        const int maxAttempts = 16;
+        for (var attempt = 0; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var commitStarted = false;
+            try
+            {
+                return await strategy.ExecuteAsync(ct =>
+                {
+                    // Configured provider retries also get an independent transaction attempt.
+                    commitStarted = false;
+                    return operation(() => commitStarted = true, ct);
+                }, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
+                attempt + 1 < maxAttempts && ShouldRetryMutationTransaction(exception, commitStarted))
+            {
+                var maximumDelayMs = Math.Min(1000, 25 * (1 << Math.Min(attempt, 6)));
+                await Task.Delay(Random.Shared.Next(25, maximumDelayMs + 1), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static bool ShouldRetryMutationTransaction(Exception exception, bool commitStarted)
+    {
+        var transient = false;
+        var rolledBack = false;
+        for (var current = exception; current != null; current = current.InnerException)
+        {
+            if (current is OperationCanceledException or RetryLimitExceededException)
+                return false;
+            if (current is DbUpdateConcurrencyException or DbException { IsTransient: true })
+                transient = true;
+            // Known serialization/deadlock states guarantee rollback. Do not accept all
+            // class-40 states: 40003 means statement completion is unknown. Drivers expose
+            // these through DbException, without a concrete driver or SQL dependency.
+            if (current is DbException { SqlState: "40001" or "40P01" })
+                rolledBack = true;
+        }
+        // Never replay our fallback after an ambiguous commit: the business mutation may
+        // already exist. An explicitly configured EF strategy retains its own retry policy.
+        return rolledBack || (!commitStarted && transient);
     }
 
     protected async Task LockTimeTickerGraphMutationAsync(
-        TDbContext dbContext, CancellationToken cancellationToken, bool preservePendingChanges = false)
+        TDbContext dbContext, CancellationToken cancellationToken)
     {
         var metadata = dbContext.Set<TickerQStoreMetadata>();
-            if (!await metadata.AsNoTracking().AnyAsync(
-                    x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                         x.Id == TickerQStoreMetadata.TimeTickerGraphMutationSentinelId,
-                    cancellationToken).ConfigureAwait(false))
+        if (!await metadata.AsNoTracking().AnyAsync(
+                x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                     x.Id == TickerQStoreMetadata.TimeTickerGraphMutationSentinelId,
+                cancellationToken).ConfigureAwait(false))
+        {
+            var sentinel = new TickerQStoreMetadata
             {
-                var sentinel = new TickerQStoreMetadata
-                {
-                    ApplicationNamespaceKey = _runtimePartitionKey,
-                    Id = TickerQStoreMetadata.TimeTickerGraphMutationSentinelId,
-                    UpdatedAtUtc = _clock.UtcNow
-                };
-                if (preservePendingChanges)
-                    await metadata.Upsert(sentinel)
-                        .On(x => new { x.ApplicationNamespaceKey, x.Id }).NoUpdate()
-                        .RunAsync(cancellationToken).ConfigureAwait(false);
-                else
-                {
-                    metadata.Add(sentinel);
-                    await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                }
-            }
+                ApplicationNamespaceKey = _runtimePartitionKey,
+                Id = TickerQStoreMetadata.TimeTickerGraphMutationSentinelId,
+                UpdatedAtUtc = _clock.UtcNow
+            };
+            // Concurrent first writers may both observe an absent sentinel. Insert-if-missing
+            // preserves existing metadata and never flushes a staged caller's pending entities.
+            await metadata.Upsert(sentinel)
+                .On(x => new { x.ApplicationNamespaceKey, x.Id }).NoUpdate()
+                .RunAsync(cancellationToken).ConfigureAwait(false);
+        }
 
-            var locked = await metadata
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                            x.Id == TickerQStoreMetadata.TimeTickerGraphMutationSentinelId)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Version, x => x.Version),
-                    cancellationToken).ConfigureAwait(false);
-            if (locked != 1)
-                throw new DbUpdateConcurrencyException("TickerQ could not acquire the TimeTicker graph mutation sentinel.");
-            if (AfterTimeTickerGraphMutationFenceForTestAsync != null)
-                await AfterTimeTickerGraphMutationFenceForTestAsync(cancellationToken).ConfigureAwait(false);
+        var locked = await metadata
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                        x.Id == TickerQStoreMetadata.TimeTickerGraphMutationSentinelId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Version, x => x.Version),
+                cancellationToken).ConfigureAwait(false);
+        if (locked != 1)
+            throw new DbUpdateConcurrencyException("TickerQ could not acquire the TimeTicker graph mutation sentinel.");
+        if (AfterTimeTickerGraphMutationFenceForTestAsync != null)
+            await AfterTimeTickerGraphMutationFenceForTestAsync(cancellationToken).ConfigureAwait(false);
     }
 
     // Called from the application's SaveChanges command interceptor, after EF has opened
@@ -368,7 +416,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         if (!await LockLegacyWriteAdmissionAsync(context, ct).ConfigureAwait(false))
             throw new InvalidOperationException("The legacy TickerQ partition has been adopted; staging is not allowed.");
         if (hasTimeTickerGraphs)
-            await LockTimeTickerGraphMutationAsync(context, ct, preservePendingChanges: true).ConfigureAwait(false);
+            await LockTimeTickerGraphMutationAsync(context, ct).ConfigureAwait(false);
         if (!await LockRunnableAdmissionAsync(context, ct, _runtimeActivationScopeKey).ConfigureAwait(false))
             throw new InvalidOperationException("The TickerQ runtime activation epoch no longer permits scheduling.");
     }
@@ -470,9 +518,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         TResult deniedResult,
         Func<TDbContext, CancellationToken, Task<TResult>> operation, CancellationToken cancellationToken)
     {
-        using var strategySession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var strategy = strategySession.Context.Database.CreateExecutionStrategy();
-        return await strategy.ExecuteAsync(async ct =>
+        return await ExecuteMutationTransactionWithRetriesAsync(async (beginCommit, ct) =>
         {
             using var operationSession = await CreateDbContextAsync(ct).ConfigureAwait(false);
             var dbContext = operationSession.Context;
@@ -493,6 +539,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             var result = await operation(dbContext, ct).ConfigureAwait(false);
             if (AfterRunnableAdmissionOperationForTestAsync != null)
                 await AfterRunnableAdmissionOperationForTestAsync(ct).ConfigureAwait(false);
+            beginCommit();
             await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
             return result;
         }, cancellationToken).ConfigureAwait(false);
@@ -1679,18 +1726,14 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var dbContext = session.Context;
         if (!await IsRunnableAdmissionAllowedAsync(dbContext, cancellationToken).ConfigureAwait(false)) return [];
-        var now = _clock.UtcNow;
-    
-        // Define the window: ignore anything older than 1 second ago
-        var oneSecondAgo = now.AddSeconds(-1);
-    
+        // Overdue idle/queued work remains ordinary scheduling work. A bounded batch
+        // must not make the remaining rows age out and wait for fallback recovery.
         var baseQuery = dbContext.Set<TTimeTicker>()
             .AsNoTracking()
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ExecutionTime != null)
-            .Where(x => x.ExecutionTime >= oneSecondAgo)  // Ignore old tickers (fallback handles them)
             .WhereCanAcquire(_lockHolder);
     
-        // Find the earliest ticker within our window
+        // Find the oldest acquirable ticker, including an overdue backlog.
         var minExecutionTime = await baseQuery
             .OrderBy(x => x.ExecutionTime)
             .Select(x => x.ExecutionTime)
@@ -2062,23 +2105,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     public async Task<TimeTickerEntity> AcquireTimeTickerOnDemandAsync(
         Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
     {
-        const int maxSerializationAttempts = 5;
-
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                return await ExecuteTimeTickerGraphMutationAsync(true, (TimeTickerEntity)null,
-                    AcquireOnceAsync, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (
-                attempt < maxSerializationAttempts && IsSerializationFailure(exception))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await Task.Delay(TimeSpan.FromMilliseconds(10 * attempt), cancellationToken)
-                    .ConfigureAwait(false);
-            }
-        }
+        return await ExecuteTimeTickerGraphMutationAsync(true, (TimeTickerEntity)null,
+            AcquireOnceAsync, cancellationToken).ConfigureAwait(false);
 
         async Task<TimeTickerEntity> AcquireOnceAsync(TDbContext dbContext, CancellationToken ct)
         {
@@ -2138,14 +2166,6 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         }
     }
 
-    private static bool IsSerializationFailure(Exception exception)
-    {
-        for (var current = exception; current != null; current = current.InnerException)
-            if (current is DbException { SqlState: "40001" })
-                return true;
-        return false;
-    }
-        
     #region Core_Cron_Ticker_Methods
     public Task MigrateDefinedCronTickers((string Function, string Expression)[] cronTickers, CancellationToken cancellationToken = default)
         => MigrateDefinedCronTickers(

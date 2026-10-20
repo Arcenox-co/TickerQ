@@ -93,7 +93,8 @@ internal sealed class AcquiredExecutionQueue : IDisposable
         }
     }
 
-    internal async Task<bool> PublishAsync(InternalFunctionContext[] functions, bool isDue, CancellationToken admissionToken)
+    internal async Task<bool> PublishAsync(InternalFunctionContext[] functions, bool isDue, CancellationToken admissionToken,
+        bool waitForCapacity = false)
     {
         CancellationToken executionStop;
         lock (_stopLock)
@@ -101,6 +102,12 @@ internal sealed class AcquiredExecutionQueue : IDisposable
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
             executionStop = _executionStop.Token;
         }
+        // Capacity waiters must also wake when this queue stops independently of the
+        // scanner. This token belongs only to admission; never pass it to accepted work.
+        using var capacityStop = waitForCapacity
+            ? CancellationTokenSource.CreateLinkedTokenSource(admissionToken, executionStop)
+            : null;
+        Task capacityWait = null;
         // Register the whole acquired batch before any queue-capacity wait. Executing work uses
         // the scheduler's drain lifetime, not the fallback scanner's earlier shutdown token.
         var pending = new List<(InternalFunctionContext Function, CancellationTokenSource Source, AcquiredExecutionLifecycle Life)>();
@@ -135,7 +142,9 @@ internal sealed class AcquiredExecutionQueue : IDisposable
                     {
                         // Accepted orchestrations are invoked even when disposal races with
                         // dispatch. Return their exact generation to persistence if not started.
-                        if (schedulerToken.IsCancellationRequested)
+                        if (schedulerToken.IsCancellationRequested ||
+                            (_licenseState != null && !_licenseState.ExecutionAllowed &&
+                             !item.Source.IsCancellationRequested))
                         {
                             if (item.Life.AbandonIfQueued()) await ReleaseAsync(item.Function).ConfigureAwait(false);
                             return;
@@ -162,8 +171,52 @@ internal sealed class AcquiredExecutionQueue : IDisposable
 
                     if (_scheduler is ITickerQExecutionScheduler executionScheduler)
                     {
-                        if (!executionScheduler.TryQueueOrchestration(ExecuteAsync, admissionToken))
-                            throw new InvalidOperationException("The scheduler cannot admit more work right now.");
+                        while (true)
+                        {
+                            // Only background scheduling may wait here. A request made
+                            // inside a running job must retain nonblocking admission, or
+                            // it could wait for its own orchestration slot indefinitely.
+                            if (waitForCapacity)
+                            {
+                                capacityWait ??= executionScheduler.WaitForOrchestrationCapacityAsync(capacityStop.Token);
+                                while (!capacityWait.IsCompleted)
+                                {
+                                    if (item.Life.IsQueued && item.Source.IsCancellationRequested)
+                                    {
+                                        // No user code runs on this path: the handler finalizes
+                                        // the cancelled tree before attempting execution. Await
+                                        // one cleanup inline, without consuming a workflow slot.
+                                        await ExecuteAsync(CancellationToken.None).ConfigureAwait(false);
+                                        break;
+                                    }
+                                    // License state changes do not publish a capacity signal.
+                                    // Keep one waiter and recheck its ownership/licensing so an
+                                    // occupied scheduler cannot retain an unusable batch forever.
+                                    if (!item.Life.IsQueued ||
+                                        (_licenseState != null && !_licenseState.ExecutionAllowed))
+                                        return false;
+                                    try
+                                    {
+                                        await capacityWait.WaitAsync(TimeSpan.FromSeconds(1), capacityStop.Token)
+                                            .ConfigureAwait(false);
+                                    }
+                                    catch (TimeoutException) { }
+                                }
+                                if (capacityWait.IsCompleted)
+                                {
+                                    await capacityWait.ConfigureAwait(false);
+                                    capacityWait = null;
+                                }
+                            }
+                            admissionToken.ThrowIfCancellationRequested();
+                            if (_licenseState != null && !_licenseState.ExecutionAllowed) return false;
+                            if (!item.Life.IsQueued) break;
+                            if (executionScheduler.TryQueueOrchestration(ExecuteAsync, admissionToken)) break;
+                            if (!waitForCapacity || _scheduler.IsFrozen || _scheduler.IsDisposed)
+                                throw new InvalidOperationException("The scheduler cannot admit more work right now.");
+                            // Another producer won the available slot. Wait for the next
+                            // capacity signal without reacquiring or widening the lease.
+                        }
                     }
                     else
                     {
@@ -193,6 +246,18 @@ internal sealed class AcquiredExecutionQueue : IDisposable
         }
         finally
         {
+            if (capacityStop != null)
+            {
+                await capacityStop.CancelAsync().ConfigureAwait(false);
+                if (capacityWait != null)
+                {
+                    // Observe and finish the single capacity waiter on invalidation/stop too;
+                    // a timed WaitAsync alone would leave the underlying wait alive.
+                    try { await capacityWait.ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (capacityStop.IsCancellationRequested) { }
+                    catch (Exception ex) { _logger.LogDebug(ex, "TickerQ capacity waiter ended during admission cleanup"); }
+                }
+            }
             foreach (var item in pending)
                 if (item.Life.AbandonIfQueued()) await ReleaseAsync(item.Function).ConfigureAwait(false);
         }

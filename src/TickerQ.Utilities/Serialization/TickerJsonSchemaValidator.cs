@@ -23,7 +23,27 @@ namespace TickerQ.Utilities.Serialization
             JsonElement schemaElement,
             JsonElement instance)
         {
-            var schema = JsonSchema.FromText(schemaElement.GetRawText());
+            // Building registers the root and its embedded resources. The default registry is
+            // process-global, so rebuilding a schema without $id would retain a new random-URI
+            // graph for every submitted request. Keep those registrations local to this validation.
+            var defaults = BuildOptions.Default;
+            var defaultRegistry = defaults.SchemaRegistry;
+            var registry = new SchemaRegistry();
+            if (!ReferenceEquals(defaultRegistry, SchemaRegistry.Global))
+            {
+                // Preserve explicitly configured external schemas/fetchers without publishing the
+                // request schema into the caller's registry. JsonSchema.Net checks Global before
+                // Fetch, so a custom registry shadowing a global URI does not override that order.
+                registry.Fetch = (uri, _) => defaultRegistry.Get(uri);
+            }
+
+            var schema = JsonSchema.Build(schemaElement, new BuildOptions
+            {
+                SchemaRegistry = registry,
+                VocabularyRegistry = defaults.VocabularyRegistry,
+                DialectRegistry = defaults.DialectRegistry,
+                Dialect = defaults.Dialect
+            });
             var evaluation = schema.Evaluate(instance, Options);
             if (evaluation.IsValid)
                 return Array.Empty<TickerRequestValidationError>();

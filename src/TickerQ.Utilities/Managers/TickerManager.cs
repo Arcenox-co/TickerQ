@@ -397,7 +397,7 @@ namespace TickerQ.Utilities.Managers
                     if (_executionContext.Functions.FirstOrDefault(x => x.ParentId == cronTicker.Id) is { } internalFunction)
                     {
                         internalFunction.ResetUpdateProps()
-                            .SetProperty(x => x.ExecutionTime, nextOccurrence);
+                            .SetExecutionTime(nextOccurrence);
 
                         await _persistenceProvider.UpdateCronTickerOccurrence(internalFunction, cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
@@ -618,7 +618,8 @@ namespace TickerQ.Utilities.Managers
                 }
                 if (current is null)
                     return new TickerValidatorException("Ticker and chain children must not be null.");
-                if (current.Children is null)
+                var children = current.GetChildrenForRead();
+                if (children is null)
                     return new TickerValidatorException("Ticker Children must not be null. Use an empty collection for standalone jobs.");
                 if (!Enum.IsDefined(typeof(ChainDeleteBehavior), current.DeleteBehavior))
                     return new TickerValidatorException("Unknown chain deletion behavior.");
@@ -637,7 +638,7 @@ namespace TickerQ.Utilities.Managers
                 // Exit markers preserve active-path cycle detection and shared DAG references
                 // without consuming the CLR stack for valid, deeply nested time chains.
                 pending.Push((current, true));
-                foreach (var child in current.Children.Reverse()) pending.Push((child, false));
+                foreach (var child in children.Reverse()) pending.Push((child, false));
             }
             return null;
         }
@@ -970,7 +971,7 @@ namespace TickerQ.Utilities.Managers
                     // Update internal functions for those that need it
                     foreach (var update in internalFunctionsToUpdate)
                     {
-                        update.Context.ResetUpdateProps().SetProperty(x => x.ExecutionTime, update.NextOccurrence);
+                        update.Context.ResetUpdateProps().SetExecutionTime(update.NextOccurrence);
                         await _persistenceProvider.UpdateCronTickerOccurrence(update.Context, cancellationToken: CancellationToken.None).ConfigureAwait(false);
                     }
 

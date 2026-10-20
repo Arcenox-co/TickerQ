@@ -1340,24 +1340,18 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!await IsActivationPublicationVisibleAsync(cancellationToken).ConfigureAwait(false)) return [];
-        var now = Clock.UtcNow;
-        var oneSecondAgoScore = ToScore(now.AddSeconds(-1));
-
-        var first = await Db.SortedSetRangeByScoreWithScoresAsync(TimeTickerPendingKey, oneSecondAgoScore, double.PositiveInfinity, Exclude.None, Order.Ascending, 0, 1).ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
-        if (first.Length == 0) return [];
-
-        var earliestScore = first[0].Score;
-        var minSecond = new DateTime((long)earliestScore, DateTimeKind.Utc);
-        var maxScore = ToScore(minSecond.AddSeconds(1));
         var batchSize = _schedulerOptions.AcquisitionBatchSize;
         var readSize = Math.Min(batchSize, RedisSerializer.ReadBatchSize);
         var result = new List<TimeTickerEntity>(batchSize);
+        var maxScore = double.PositiveInfinity;
         long offset = 0;
+        // Find the oldest acquirable bucket, not merely the first index entry.
+        // Missing rows and rows owned by another node must not hide later due work.
+        // Reads stay paged and overdue work stays eligible without waiting for fallback.
         while (result.Count < batchSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var entries = await Db.SortedSetRangeByScoreAsync(TimeTickerPendingKey, earliestScore, maxScore,
+            var entries = await Db.SortedSetRangeByScoreAsync(TimeTickerPendingKey, double.NegativeInfinity, maxScore,
                 Exclude.Stop, Order.Ascending, offset, readSize).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             if (entries.Length == 0) break;
@@ -1367,7 +1361,17 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             foreach (var ticker in tickers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (!CanAcquire(ticker.Status, ticker.LockHolder, LockHolder)) continue;
+                if (!ticker.ExecutionTime.HasValue ||
+                    !CanAcquire(ticker.Status, ticker.LockHolder, LockHolder)) continue;
+                if (result.Count == 0)
+                {
+                    var executionTime = ticker.ExecutionTime.Value;
+                    var minSecond = new DateTime(executionTime.Year, executionTime.Month, executionTime.Day,
+                        executionTime.Hour, executionTime.Minute, executionTime.Second, DateTimeKind.Utc);
+                    maxScore = ToScore(minSecond.AddSeconds(1));
+                }
+                // The first page may span multiple seconds before the bucket is known.
+                if (ToScore(ticker.ExecutionTime.Value) >= maxScore) continue;
                 result.Add(MapForQueue(ticker));
                 if (result.Count == batchSize) break;
             }

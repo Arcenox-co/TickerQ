@@ -85,14 +85,16 @@ public sealed partial class RedisRealScriptTests
         Assert.Null(await other.CronTickersQuery().Where(row => row.Id == first.Id).FirstOrDefaultAsync());
         Assert.Equal(0, await other.CronTickerOccurrencesQuery().Where(row => row.CronTickerId == first.Id).CountAsync());
     }
-    [Fact]
-    public async Task AcquisitionBatch_LimitsRoots_PreservesChildren_AndLeavesOthersEligible()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcquisitionBatch_LimitsRoots_PreservesChildren_AndLeavesOthersEligible(bool overdue)
     {
         _options.AcquisitionBatchSize = 2;
         var roots = Enumerable.Range(0, 5).Select(i =>
         {
             var root = NewIdleTicker();
-            root.ExecutionTime = BaseNow.AddMilliseconds(100 + i * 10);
+            root.ExecutionTime = BaseNow.AddSeconds(overdue ? -5 : 0).AddMilliseconds(100 + i * 10);
             var child = NewIdleTicker();
             child.ExecutionTime = null;
             child.Children.Add(NewIdleTicker());
@@ -125,6 +127,59 @@ public sealed partial class RedisRealScriptTests
         Assert.Equal(roots.Skip(2).Take(2).Select(row => row.Id), second.Select(row => row.Id));
         var last = Assert.Single(await _provider.GetEarliestTimeTickers());
         Assert.Equal(roots[4].Id, last.Id);
+    }
+
+    [Fact]
+    public async Task EarliestBatch_DrainsOverdueWork_PastOlderUnacquirableBuckets_WithoutChangingOwnership()
+    {
+        _options.AcquisitionBatchSize = 2;
+        var oldest = NewIdleTicker();
+        oldest.ExecutionTime = BaseNow.AddMinutes(-5).AddMilliseconds(100);
+        var nextSecond = NewIdleTicker();
+        nextSecond.ExecutionTime = BaseNow.AddMinutes(-5).AddSeconds(1);
+        var overdue = NewIdleTicker();
+        overdue.ExecutionTime = BaseNow.AddSeconds(-5);
+        var future = NewIdleTicker();
+        future.ExecutionTime = BaseNow.AddMinutes(5);
+        var excluded = new[]
+        {
+            TickerStatus.InProgress, TickerStatus.Done, TickerStatus.DueDone,
+            TickerStatus.Failed, TickerStatus.Cancelled, TickerStatus.Skipped
+        }.Select((status, i) =>
+        {
+            var row = NewIdleTicker();
+            row.ExecutionTime = BaseNow.AddHours(-1).AddSeconds(i);
+            row.Status = status;
+            return row;
+        }).ToArray();
+        var foreignLease = NewIdleTicker();
+        foreignLease.ExecutionTime = BaseNow.AddMinutes(-30);
+        foreignLease.Status = TickerStatus.Queued;
+        foreignLease.LockHolder = "other-node";
+        foreignLease.LockedAt = BaseNow;
+        foreignLease.LeaseUntil = BaseNow.AddMinutes(1);
+        foreignLease.AcquisitionToken = Guid.NewGuid();
+        await _provider.AddTimeTickers([oldest, nextSecond, overdue, future, foreignLease, .. excluded]);
+
+        // Simulate stale secondary-index entries in earlier seconds. They must not
+        // prevent discovery of the oldest eligible root, or steal a live lease.
+        foreach (var row in excluded.Append(foreignLease))
+            await _db.SortedSetAddAsync(RedisKeyBuilder.TimeTickerPendingKey, row.Id.ToString(),
+                RedisKeyBuilder.ToScore(row.ExecutionTime.Value));
+        await _db.SortedSetAddAsync(RedisKeyBuilder.TimeTickerPendingKey, Guid.NewGuid().ToString(),
+            RedisKeyBuilder.ToScore(BaseNow.AddHours(-2)));
+
+        foreach (var expected in new[] { oldest, nextSecond, overdue, future })
+        {
+            var next = Assert.Single(await _provider.GetEarliestTimeTickers());
+            Assert.Equal(expected.Id, next.Id);
+            Assert.Equal(expected.ExecutionTime, next.ExecutionTime);
+            Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([next.Id]));
+        }
+        Assert.Empty(await _provider.GetEarliestTimeTickers());
+        var retainedLease = await _provider.GetTimeTickerById(foreignLease.Id);
+        Assert.Equal(foreignLease.AcquisitionToken, retainedLease.AcquisitionToken);
+        Assert.Equal("other-node", retainedLease.LockHolder);
     }
 
     [Fact]

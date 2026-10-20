@@ -94,9 +94,11 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Acquisition_batches_bound_roots_keep_complete_children_and_leave_remaining_work_eligible(bool overdue)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Acquisition_batches_bound_roots_keep_complete_children_and_leave_remaining_work_eligible(
+        bool overdue, bool fallback)
     {
         _f.Options.AcquisitionBatchSize = 2;
         _f.Options.FallbackBatchSize = 2;
@@ -111,7 +113,7 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
         for (var batch = 0; batch < 3; batch++)
         {
             var rows = new List<TimeTickerEntity>();
-            if (overdue)
+            if (fallback)
                 await foreach (var row in _f.Provider.QueueTimedOutTimeTickers()) rows.Add(row);
             else rows.AddRange(await _f.Provider.GetEarliestTimeTickers());
             Assert.Equal(batch < 2 ? 2 : 1, rows.Count);
@@ -120,7 +122,7 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
                 Assert.True(seen.Add(row.Id));
                 Assert.Single(Assert.Single(row.Children).Children);
             });
-            if (!overdue)
+            if (!fallback)
             {
                 var requested = new[] { Guid.NewGuid(), rows[0].Id, rows[0].Id }
                     .Concat(rows.Skip(1).Select(x => x.Id)).Concat(roots.Select(x => x.Id)).ToArray();
@@ -130,6 +132,32 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
                 x => x.ParentId == null && x.Status == TickerStatus.Idle));
         }
         Assert.Equal(5, seen.Count);
+    }
+
+    [Fact]
+    public async Task AddTimeTickers_BatchLookupResolvesOutOfOrderSuppliedAndPersistedParents()
+    {
+        var persisted = NewTimeTicker();
+        persisted.ChainGeneration = Guid.NewGuid();
+        await _f.Provider.AddTimeTickers([persisted], CancellationToken.None);
+        var parent = NewTimeTicker();
+        parent.ParentId = persisted.Id;
+        var child = NewTimeTicker();
+        child.ParentId = parent.Id;
+        var independent = NewTimeTicker();
+
+        Assert.Equal(3, await _f.Provider.AddTimeTickers([child, independent, parent], CancellationToken.None));
+
+        var rows = await _f.TimeTickers.Find(Builders<TimeTickerEntity>.Filter.In(
+            row => row.Id, new[] { parent.Id, child.Id, independent.Id })).ToListAsync();
+        foreach (var descendant in rows.Where(row => row.Id != independent.Id))
+        {
+            Assert.Equal(persisted.Id, descendant.ChainRootId);
+            Assert.Equal(persisted.ChainGeneration, descendant.ChainGeneration);
+        }
+        var ownRoot = Assert.Single(rows, row => row.Id == independent.Id);
+        Assert.Equal(independent.Id, ownRoot.ChainRootId);
+        Assert.Null(ownRoot.ParentId);
     }
 
     [Fact]
@@ -242,7 +270,7 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetEarliestTimeTickers_ReturnsIdleWithinOneSecond()
+    public async Task GetEarliestTimeTickers_ReturnsUpcomingIdle()
     {
         var ticker = NewTimeTicker(executionTime: _f.FixedNow.AddMilliseconds(500));
         await _f.Provider.AddTimeTickers([ticker], CancellationToken.None);
@@ -253,13 +281,37 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetEarliestTimeTickers_SkipsStaleRows()
+    public async Task GetEarliestTimeTickers_PrioritizesOverdueWorkAndKeepsOwnershipAndStatusFilters()
     {
-        var stale = NewTimeTicker(executionTime: _f.FixedNow.AddSeconds(-5));
-        await _f.Provider.AddTimeTickers([stale], CancellationToken.None);
+        var oldest = NewTimeTicker(executionTime: _f.FixedNow.AddMinutes(-5));
+        var overdue = NewTimeTicker(executionTime: _f.FixedNow.AddSeconds(-5));
+        var future = NewTimeTicker(executionTime: _f.FixedNow.AddMinutes(5));
+        var excluded = new[]
+        {
+            TickerStatus.InProgress, TickerStatus.Done, TickerStatus.DueDone, TickerStatus.Failed,
+            TickerStatus.Cancelled, TickerStatus.Skipped
+        }.Select(status => NewTimeTicker(executionTime: _f.FixedNow.AddHours(-1), status: status)).ToArray();
+        var foreignLease = NewTimeTicker(executionTime: _f.FixedNow.AddHours(-1), status: TickerStatus.Queued);
+        foreignLease.LockHolder = "other-node";
+        foreignLease.LockedAt = _f.FixedNow;
+        foreignLease.LeaseUntil = _f.FixedNow.AddMinutes(1);
+        foreignLease.AcquisitionToken = Guid.NewGuid();
+        await _f.Provider.AddTimeTickers([oldest, overdue, future, foreignLease, .. excluded], CancellationToken.None);
+        var foreignPartition = NewTimeTicker(executionTime: _f.FixedNow.AddHours(-1));
+        foreignPartition.ApplicationNamespaceKey = "other-application";
+        await _f.TimeTickers.InsertOneAsync(foreignPartition);
 
-        var earliest = await _f.Provider.GetEarliestTimeTickers(CancellationToken.None);
-        Assert.Empty(earliest);
+        foreach (var expected in new[] { oldest, overdue, future })
+        {
+            var next = Assert.Single(await _f.Provider.GetEarliestTimeTickers(CancellationToken.None));
+            Assert.Equal(expected.Id, next.Id);
+            Assert.Equal(expected.ExecutionTime, next.ExecutionTime);
+            Assert.Single(await _f.Provider.AcquireImmediateTimeTickersAsync([next.Id]));
+        }
+        Assert.Empty(await _f.Provider.GetEarliestTimeTickers(CancellationToken.None));
+        var retainedLease = await _f.TimeTickers.Find(x => x.Id == foreignLease.Id).SingleAsync();
+        Assert.Equal(foreignLease.AcquisitionToken, retainedLease.AcquisitionToken);
+        Assert.Equal("other-node", retainedLease.LockHolder);
     }
 
     [Fact]

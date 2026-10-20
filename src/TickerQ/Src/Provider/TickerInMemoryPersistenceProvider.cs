@@ -76,6 +76,12 @@ namespace TickerQ.Provider
 
         private static readonly ConcurrentDictionary<string, PartitionState> Partitions =
             new(StringComparer.Ordinal);
+        private static readonly IComparer<(DateTime ExecutionTime, Guid Id)> LatestTimeTickerFirst =
+            Comparer<(DateTime ExecutionTime, Guid Id)>.Create(static (left, right) =>
+            {
+                var byTime = right.ExecutionTime.CompareTo(left.ExecutionTime);
+                return byTime != 0 ? byTime : right.Id.CompareTo(left.Id);
+            });
         private static readonly object LegacyAdoptionGate = new();
         private static string _legacyAdoptionOwner;
         private static long _legacyAdoptionEpoch;
@@ -381,8 +387,9 @@ namespace TickerQ.Provider
             while (pending.TryPop(out var node))
             {
                 yield return node;
-                if (node.Children == null) continue;
-                foreach (var child in node.Children.Reverse()) pending.Push(child);
+                var children = node.GetChildrenForRead();
+                if (children == null) continue;
+                foreach (var child in children.Reverse()) pending.Push(child);
             }
         }
 
@@ -829,25 +836,53 @@ namespace TickerQ.Provider
         {
             return Task.FromResult(ReadGraph(() =>
             {
-                if (!IsRunnableActivationState()) return Array.Empty<TimeTickerEntity>();
-                var oneSecondAgo = _clock.UtcNow.AddSeconds(-1);
-                var baseQuery = TimeTickers.Values
-                    .Where(x => x.ExecutionTime != null)
-                    .Where(CanAcquire)
-                    .Where(x => x.ExecutionTime >= oneSecondAgo);
-                var minExecutionTime = baseQuery.Min(x => x.ExecutionTime);
-                if (minExecutionTime == null) return Array.Empty<TimeTickerEntity>();
-                var minSecond = new DateTime(
-                    minExecutionTime.Value.Year, minExecutionTime.Value.Month, minExecutionTime.Value.Day,
-                    minExecutionTime.Value.Hour, minExecutionTime.Value.Minute, minExecutionTime.Value.Second,
-                    DateTimeKind.Utc);
-                var maxExecutionTime = minSecond.AddSeconds(1);
-                return baseQuery
-                    .Where(x => x.ExecutionTime >= minSecond && x.ExecutionTime < maxExecutionTime)
-                    .OrderBy(x => x.ExecutionTime).ThenBy(x => x.Id)
-                    .Take(_acquisitionBatchSize)
-                    .Select(ForQueueTimeTickers)
-                    .ToArray();
+                if (!IsRunnableActivationState() || _acquisitionBatchSize <= 0)
+                    return Array.Empty<TimeTickerEntity>();
+
+                // Values snapshots every retained row. Keep only the earliest bounded
+                // batch while enumerating directly; graph structure remains read-locked
+                // and acquisition still revalidates each selected row before publication.
+                PriorityQueue<TTimeTicker, (DateTime ExecutionTime, Guid Id)> candidates = null;
+                var earliestSecond = long.MaxValue;
+                foreach (var pair in TimeTickers)
+                {
+                    var ticker = pair.Value;
+                    if (ticker.ExecutionTime is not { } executionTime || !CanAcquire(ticker))
+                        continue;
+
+                    var second = executionTime.Ticks / TimeSpan.TicksPerSecond;
+                    if (second > earliestSecond)
+                        continue;
+                    if (second < earliestSecond)
+                    {
+                        earliestSecond = second;
+                        candidates?.Clear();
+                    }
+
+                    candidates ??= new PriorityQueue<TTimeTicker, (DateTime ExecutionTime, Guid Id)>(
+                        _acquisitionBatchSize, LatestTimeTickerFirst);
+                    // Capture both ordering keys once instead of comparing mutable
+                    // entity properties again when maintaining the bounded heap.
+                    var priority = (executionTime, ticker.Id);
+                    if (candidates.Count < _acquisitionBatchSize)
+                        candidates.Enqueue(ticker, priority);
+                    else
+                        candidates.EnqueueDequeue(ticker, priority);
+                }
+
+                if (candidates == null)
+                    return Array.Empty<TimeTickerEntity>();
+
+                var result = new TimeTickerEntity[candidates.Count];
+                // The max-heap returns the latest item first; fill backward to preserve
+                // ascending exact ExecutionTime, then Id, within the earliest whole second.
+                for (var i = result.Length - 1; i >= 0; i--)
+                {
+                    candidates.TryDequeue(out var ticker, out var priority);
+                    result[i] = ForQueueTimeTickers(ticker);
+                    result[i].ExecutionTime = priority.ExecutionTime;
+                }
+                return result;
             }));
         }
 
@@ -1143,10 +1178,13 @@ namespace TickerQ.Provider
             {
                 if (!IsStructuralMutationActivationState())
                     return 0;
+                // Share the batch lookup across roots. Rebuilding it while resolving each
+                // root makes an otherwise linear independent-job insert quadratic.
+                var suppliedById = tickers.ToDictionary(x => x.Id);
                 var added = 0;
                 foreach (var ticker in tickers)
                 {
-                    var (rootId, generation) = ResolveInsertedChainIdentity(ticker, tickers);
+                    var (rootId, generation) = ResolveInsertedChainIdentity(ticker, suppliedById);
                     added += AddTickerWithChildren(ticker, chainRootId: rootId,
                         chainGeneration: generation);
                 }
@@ -1158,9 +1196,11 @@ namespace TickerQ.Provider
         }
         
         private (Guid RootId, Guid? Generation) ResolveInsertedChainIdentity(
-            TTimeTicker ticker, IReadOnlyCollection<TTimeTicker> supplied)
+            TTimeTicker ticker, IReadOnlyDictionary<Guid, TTimeTicker> suppliedById)
         {
-            var suppliedById = supplied.ToDictionary(x => x.Id);
+            if (!ticker.ParentId.HasValue)
+                return (ticker.Id, ticker.ChainGeneration);
+
             var current = ticker;
             var visited = new HashSet<Guid>();
             while (current.ParentId.HasValue && visited.Add(current.Id))
@@ -1197,8 +1237,9 @@ namespace TickerQ.Provider
                 if (!TimeTickers.TryAdd(current.Id, current)) continue;
                 if (current.ParentId.HasValue) AddChildIndex(current.ParentId.Value, current.Id);
                 count++;
-                if (current.Children == null) continue;
-                foreach (var child in current.Children.Reverse())
+                var children = current.GetChildrenForRead();
+                if (children == null) continue;
+                foreach (var child in children.Reverse())
                     if (child != null) pending.Push((child, current.Id));
             }
             
@@ -1247,8 +1288,9 @@ namespace TickerQ.Provider
                             AddChildIndex(current.ParentId.Value, current.Id);
                     }
                     count++;
-                    if (current.Children == null) continue;
-                    foreach (var child in current.Children.Reverse())
+                    var children = current.GetChildrenForRead();
+                    if (children == null) continue;
+                    foreach (var child in children.Reverse())
                         if (child != null) pending.Push((child, current.Id));
                 }
                 else count += AddTickerWithChildren(current, item.ParentId);
@@ -1560,8 +1602,9 @@ namespace TickerQ.Provider
                 current.ElapsedTime = 0;
                 current.RetryCount = 0;
                 current.StaleRestartCount = 0;
-                if (current.Children == null) continue;
-                foreach (var child in current.Children)
+                var children = current.GetChildrenForRead();
+                if (children == null) continue;
+                foreach (var child in children)
                     if (child != null) pending.Push((child, current.Id));
             }
         }
@@ -1582,8 +1625,9 @@ namespace TickerQ.Provider
                         $"Cannot replace chain: a ticker with id {current.Id} was added concurrently.");
                 insertedIds.Add(current.Id);
                 if (current.ParentId.HasValue) AddChildIndex(current.ParentId.Value, current.Id);
-                if (current.Children == null) continue;
-                foreach (var child in current.Children.Reverse())
+                var children = current.GetChildrenForRead();
+                if (children == null) continue;
+                foreach (var child in children.Reverse())
                     if (child != null) pending.Push((child, current.Id));
             }
         }
@@ -2824,29 +2868,37 @@ namespace TickerQ.Provider
         private TTimeTicker BuildTickerHierarchy(TTimeTicker ticker)
         {
             var root = CloneTicker(ticker);
-            root.Children = BuildChildrenHierarchy(ticker.Id);
+            if (root.GetType() != typeof(TimeTickerEntity))
+            {
+                // Custom navigation getters may expose wrappers or copies. Preserve the
+                // original contract of assigning the completed hierarchy through the setter.
+                var children = new List<TTimeTicker>();
+                BuildChildrenHierarchy(ticker.Id, children);
+                root.Children = children;
+            }
+            else if (ChildrenIndex.ContainsKey(ticker.Id))
+                BuildChildrenHierarchy(ticker.Id, root.Children);
             return root;
         }
 
-        private List<TTimeTicker> BuildChildrenHierarchy(Guid parentId)
+        private void BuildChildrenHierarchy(Guid parentId, ICollection<TTimeTicker> results)
         {
-            var results = new List<TTimeTicker>();
-            var pending = new Stack<(Guid ParentId, ICollection<TTimeTicker> Children)>();
-            pending.Push((parentId, results));
+            if (!ChildrenIndex.TryGetValue(parentId, out var rootChildren))
+                return;
+
+            var pending = new Stack<(ConcurrentDictionary<Guid, byte> Index, ICollection<TTimeTicker> Children)>();
+            pending.Push((rootChildren, results));
             while (pending.TryPop(out var item))
             {
-                if (!ChildrenIndex.TryGetValue(item.ParentId, out var children)) continue;
-                foreach (var childId in children.Keys)
+                foreach (var entry in item.Index)
                 {
-                    if (!TimeTickers.TryGetValue(childId, out var child)) continue;
+                    if (!TimeTickers.TryGetValue(entry.Key, out var child)) continue;
                     var clonedChild = CloneTicker(child);
-                    clonedChild.Children = new List<TTimeTicker>();
                     item.Children.Add(clonedChild);
-                    pending.Push((child.Id, clonedChild.Children));
+                    if (ChildrenIndex.TryGetValue(child.Id, out var descendants))
+                        pending.Push((descendants, clonedChild.Children));
                 }
             }
-
-            return results;
         }
 
         // Matches EF Core's MappingExtensions.ForQueueTimeTickers but uses an in-memory
@@ -2871,27 +2923,29 @@ namespace TickerQ.Provider
                 ChainRootId = ticker.Id,
                 ChainGeneration = ticker.ChainGeneration,
                 OriginCronTickerId = ticker.OriginCronTickerId,
-                Children = BuildQueueDescendants(ticker.Id, ticker.Id, ticker.ChainGeneration),
             };
 
+            if (ChildrenIndex.ContainsKey(ticker.Id))
+                BuildQueueDescendants(ticker.Id, ticker.Id, ticker.ChainGeneration, root.Children);
             return root;
         }
 
         // Iterative descendants walker for the queue projection. Mirrors the EF
         // provider's probe-and-extend semantics: unbounded depth, only includes
         // chain children (ExecutionTime == null) at every depth.
-        private List<TimeTickerEntity> BuildQueueDescendants(
-            Guid parentId, Guid chainRootId, Guid? chainGeneration)
+        private void BuildQueueDescendants(
+            Guid parentId, Guid chainRootId, Guid? chainGeneration, ICollection<TimeTickerEntity> children)
         {
-            var children = new List<TimeTickerEntity>();
-            var pending = new Stack<(Guid ParentId, ICollection<TimeTickerEntity> Children)>();
-            pending.Push((parentId, children));
+            if (!ChildrenIndex.TryGetValue(parentId, out var rootChildren))
+                return;
+
+            var pending = new Stack<(ConcurrentDictionary<Guid, byte> Index, ICollection<TimeTickerEntity> Children)>();
+            pending.Push((rootChildren, children));
             while (pending.TryPop(out var item))
             {
-                if (!ChildrenIndex.TryGetValue(item.ParentId, out var directChildren)) continue;
-                foreach (var childId in directChildren.Keys)
+                foreach (var entry in item.Index)
                 {
-                    if (!TimeTickers.TryGetValue(childId, out var ch) || ch.ExecutionTime != null) continue;
+                    if (!TimeTickers.TryGetValue(entry.Key, out var ch) || ch.ExecutionTime != null) continue;
                     var child = new TimeTickerEntity
                     {
                         Id = ch.Id,
@@ -2905,14 +2959,12 @@ namespace TickerQ.Provider
                         ParentId = ch.ParentId,
                         ChainRootId = chainRootId,
                         ChainGeneration = chainGeneration,
-                        Children = new List<TimeTickerEntity>()
                     };
                     item.Children.Add(child);
-                    pending.Push((ch.Id, child.Children));
+                    if (ChildrenIndex.TryGetValue(ch.Id, out var descendants))
+                        pending.Push((descendants, child.Children));
                 }
             }
-
-            return children;
         }
 
         private void AddChildIndex(Guid parentId, Guid childId)
@@ -3009,10 +3061,10 @@ namespace TickerQ.Provider
                 OriginCronTickerId = ticker.OriginCronTickerId,
                 OnStale = ticker.OnStale,
                 StaleRestartCount = ticker.StaleRestartCount,
-                TimeoutSeconds = ticker.TimeoutSeconds,
-                Children = new List<TTimeTicker>()
+                TimeoutSeconds = ticker.TimeoutSeconds
             };
-            
+            cloned.ResetChildrenForSnapshot();
+
             return cloned;
         }
         

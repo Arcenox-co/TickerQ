@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <Compile Include="../../samples/TickerQ.Sample.Console/Migrations/20261018190000_RenameIntegrationSettings.cs" Link="Shared/RenameIntegrationSettings.cs" />
+    <Compile Include="../../samples/TickerQ.Sample.Console/Migrations/20261020120000_WidenStoreMetadataKey.cs" Link="Shared/WidenStoreMetadataKey.cs" />
     <Compile Include="../Shared/ExecutionLogPersistenceContract.cs" Link="Shared/ExecutionLogPersistenceContract.cs" />
     <Using Include="Xunit" />
   </ItemGroup>

@@ -123,8 +123,6 @@ namespace TickerQ.Utilities.Managers
         
         public async Task<(TimeSpan TimeRemaining, InternalFunctionContext[] Functions)> GetNextTickers(CancellationToken cancellationToken = default)
         {
-            var now = _clock.UtcNow;
-
             var minCronGroupTask = GetEarliestCronTickerGroupAsync(cancellationToken);
             var minTimeTickersTask = _persistenceProvider.GetEarliestTimeTickers(cancellationToken);
 
@@ -141,50 +139,18 @@ namespace TickerQ.Utilities.Managers
             if (cronTime is null && timeTickerTime is null)
                 return (Timeout.InfiniteTimeSpan, []);
 
-            TimeSpan timeRemaining;
-            bool includeCron = false;
-            bool includeTimeTickers = false;
+            var scheduledFor = cronTime is null ? timeTickerTime!.Value
+                : timeTickerTime is null ? cronTime.Value
+                : cronTime.Value < timeTickerTime.Value ? cronTime.Value : timeTickerTime.Value;
+            var now = _clock.UtcNow;
+            var dispatchBoundary = scheduledFor > now ? scheduledFor : now;
 
-            if (cronTime is null)
-            {
-                includeTimeTickers = true;
-                timeRemaining = SafeRemaining(timeTickerTime!.Value, now);
-            }
-            else if (timeTickerTime is null)
-            {
-                includeCron = true;
-                timeRemaining = SafeRemaining(cronTime.Value, now);
-            }
-            else
-            {
-                var cronSecond = new DateTime(cronTime.Value.Year, cronTime.Value.Month, cronTime.Value.Day,
-                    cronTime.Value.Hour, cronTime.Value.Minute, cronTime.Value.Second);
-                var timeSecond = new DateTime(timeTickerTime.Value.Year, timeTickerTime.Value.Month, timeTickerTime.Value.Day,
-                    timeTickerTime.Value.Hour, timeTickerTime.Value.Minute, timeTickerTime.Value.Second);
-
-                // Both kinds can be overdue at different timestamps. Dispatch both so a backlog
-                // of cron occurrences cannot push ready time tickers into fallback recovery.
-                if (cronSecond == timeSecond || (cronTime <= now && timeTickerTime <= now))
-                {
-                    includeCron = true;
-                    includeTimeTickers = true;
-                    var earliest = cronTime < timeTickerTime ? cronTime.Value : timeTickerTime.Value;
-                    timeRemaining = SafeRemaining(earliest, now);
-                }
-                else if (cronTime < timeTickerTime)
-                {
-                    includeCron = true;
-                    timeRemaining = SafeRemaining(cronTime.Value, now);
-                }
-                else
-                {
-                    includeTimeTickers = true;
-                    timeRemaining = SafeRemaining(timeTickerTime.Value, now);
-                }
-            }
-
-            if (!includeCron && !includeTimeTickers)
-                return (Timeout.InfiniteTimeSpan, []);
+            // Providers return bounded whole-second buckets, which can also contain
+            // future rows. Queue only already-due work or the exact next timestamp;
+            // sharing a second does not make a later ticker ready to execute.
+            // Both kinds still drain together when overdue, even at different times.
+            var includeCron = cronTime.HasValue && cronTime.Value <= dispatchBoundary;
+            var includeTimeTickers = timeTickerTime.HasValue && timeTickerTime.Value <= dispatchBoundary;
 
             InternalFunctionContext[] cronFunctions = [];
             InternalFunctionContext[] timeFunctions = [];
@@ -193,7 +159,15 @@ namespace TickerQ.Utilities.Managers
                 cronFunctions = await QueueNextCronTickersAsync(minCronGroup.Value, cancellationToken).ConfigureAwait(false);
 
             if (includeTimeTickers && minTimeTickers.Length > 0)
-                timeFunctions = await QueueNextTimeTickersAsync(minTimeTickers, cancellationToken).ConfigureAwait(false);
+            {
+                var readyTimeTickers = minTimeTickers
+                    .Where(ticker => ticker.ExecutionTime <= dispatchBoundary).ToArray();
+                timeFunctions = await QueueNextTimeTickersAsync(readyTimeTickers, cancellationToken).ConfigureAwait(false);
+            }
+
+            // Database acquisition/notifications can consume the remaining lead time.
+            // Return the delay from now, rather than sleeping that work a second time.
+            var timeRemaining = SafeRemaining(scheduledFor, _clock.UtcNow);
 
             if (cronFunctions.Length == 0 && timeFunctions.Length == 0)
                 return (timeRemaining, []);
@@ -452,8 +426,8 @@ namespace TickerQ.Utilities.Managers
             {
                 EnsureExactRuntimePartition(resource);
                 resource.ResetUpdateProps()
-                    .SetProperty(x => x.Status, TickerStatus.Idle)
-                    .SetProperty(x => x.ReleaseLock, true);
+                    .SetStatus(TickerStatus.Idle)
+                    .SetReleaseLock(true);
 
                 if (resource.Type == TickerType.CronTickerOccurrence)
                     await _persistenceProvider.UpdateCronTickerOccurrence(resource, cancellationToken)
@@ -526,6 +500,30 @@ namespace TickerQ.Utilities.Managers
                         (await _persistenceProvider.GetTimeTickerById(functionContext.TickerId, cancellationToken)
                             .ConfigureAwait(false))?.Status == TickerStatus.Cancelled)
                         return;
+                    // A pending child can be cancelled after acquisition took its snapshot.
+                    // Pre-start tree cleanup is idempotent only while that exact root
+                    // acquisition still owns the graph; do not hide a stale-generation write.
+                    if (functionContext.Status == TickerStatus.Cancelled &&
+                        functionContext.ChainRootId.HasValue &&
+                        functionContext.ChainGeneration.HasValue &&
+                        functionContext.AcquisitionToken.HasValue)
+                    {
+                        var cancelledChild = await _persistenceProvider.GetTimeTickerById(
+                            functionContext.TickerId, cancellationToken).ConfigureAwait(false);
+                        if (cancelledChild?.Status == TickerStatus.Cancelled &&
+                            cancelledChild.ParentId == functionContext.ParentId &&
+                            cancelledChild.ChainRootId == functionContext.ChainRootId)
+                        {
+                            var owner = await _persistenceProvider.GetTimeTickerById(
+                                functionContext.ChainRootId.Value, cancellationToken).ConfigureAwait(false);
+                            if (owner != null && owner.ParentId == null &&
+                                owner.ChainRootId == owner.Id &&
+                                owner.ChainGeneration == functionContext.ChainGeneration &&
+                                owner.Status == TickerStatus.InProgress &&
+                                owner.AcquisitionToken == functionContext.AcquisitionToken)
+                                return;
+                        }
+                    }
                     throw new TickerResultNotAcknowledgedException(
                         $"Mutation for TickerFunction '{functionContext.FunctionName}' " +
                         $"(ticker {functionContext.TickerId}) was not acknowledged: ownership or chain generation is stale. " +
@@ -655,9 +653,9 @@ namespace TickerQ.Utilities.Managers
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 resource
-                    .SetProperty(x => x.Status, TickerStatus.Skipped)
-                    .SetProperty(x => x.ExecutedAt, executedAt)
-                    .SetProperty(x => x.ExceptionDetails, "Rule RunCondition did not match!");
+                    .SetStatus(TickerStatus.Skipped)
+                    .SetExecutedAt(executedAt)
+                    .SetExceptionDetails("Rule RunCondition did not match!");
                 await UpdateTickerAsync(resource, cancellationToken).ConfigureAwait(false);
             }
         }

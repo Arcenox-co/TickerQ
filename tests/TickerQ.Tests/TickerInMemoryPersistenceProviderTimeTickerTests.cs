@@ -1193,7 +1193,7 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetEarliestTimeTickers_SkipsTickersOlderThanOneSecond()
+    public async Task GetEarliestTimeTickers_IncludesTickersOlderThanOneSecond()
     {
         // Arrange: ticker with execution time more than 1 second in the past
         var old = CreateTicker(
@@ -1204,8 +1204,8 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
         // Act
         var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
 
-        // Assert: should not include tickers with ExecutionTime < now - 1 second
-        Assert.DoesNotContain(results, r => r.Id == old.Id);
+        // A backlog stays eligible without waiting for fallback recovery.
+        Assert.Equal(old.Id, Assert.Single(results).Id);
     }
 
     [Fact]

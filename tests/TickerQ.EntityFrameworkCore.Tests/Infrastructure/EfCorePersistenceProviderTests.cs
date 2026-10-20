@@ -129,9 +129,11 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Acquisition_batches_bound_roots_keep_complete_children_and_leave_remaining_work_eligible(bool overdue)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Acquisition_batches_bound_roots_keep_complete_children_and_leave_remaining_work_eligible(
+        bool overdue, bool fallback)
     {
         using var services = new ServiceCollection()
             .AddSingleton<IDbContextFactory<TestTickerQDbContext>>(new PooledDbContextFactory<TestTickerQDbContext>(_options))
@@ -148,7 +150,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         var seen = new HashSet<Guid>();
         for (var batch = 0; batch < 3; batch++)
         {
-            var rows = overdue
+            var rows = fallback
                 ? (await ToListAsync(bounded.QueueTimedOutTimeTickers(CancellationToken.None))).ToArray()
                 : await bounded.GetEarliestTimeTickers(CancellationToken.None);
             Assert.Equal(batch < 2 ? 2 : 1, rows.Length);
@@ -157,7 +159,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
                 Assert.True(seen.Add(row.Id));
                 Assert.Single(Assert.Single(row.Children).Children);
             });
-            if (!overdue)
+            if (!fallback)
             {
                 var requested = new[] { Guid.NewGuid(), rows[0].Id, rows[0].Id }
                     .Concat(rows.Skip(1).Select(x => x.Id)).Concat(roots.Select(x => x.Id)).ToArray();
@@ -1543,7 +1545,6 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     [Fact]
     public async Task GetEarliestTimeTickers_ReturnsEarliestAcquirableTickers()
     {
-        // Within the 1-second window: >= now.AddSeconds(-1)
         var execTime = _fixedNow.AddMilliseconds(500);
         var ticker = CreateTimeTicker(
             executionTime: execTime,
@@ -1563,17 +1564,36 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetEarliestTimeTickers_IgnoresOldTickers()
+    public async Task GetEarliestTimeTickers_PrioritizesOverdueWorkAndKeepsOwnershipAndStatusFilters()
     {
-        // Older than 1 second — should be handled by fallback, not main scheduler
-        var oldTime = _fixedNow.AddSeconds(-5);
-        var ticker = CreateTimeTicker(
-            executionTime: oldTime,
-            status: TickerStatus.Idle);
-        await SeedTimeTickers(ticker);
+        var oldest = CreateTimeTicker(executionTime: _fixedNow.AddMinutes(-5));
+        var overdue = CreateTimeTicker(executionTime: _fixedNow.AddSeconds(-5));
+        var future = CreateTimeTicker(executionTime: _fixedNow.AddMinutes(5));
+        var excluded = new[]
+        {
+            TickerStatus.InProgress, TickerStatus.Done, TickerStatus.DueDone, TickerStatus.Failed,
+            TickerStatus.Cancelled, TickerStatus.Skipped
+        }.Select(status => CreateTimeTicker(executionTime: _fixedNow.AddHours(-1), status: status)).ToArray();
+        var foreignLease = CreateTimeTicker(executionTime: _fixedNow.AddHours(-1),
+            status: TickerStatus.Queued, lockHolder: "other-node", lockedAt: _fixedNow);
+        foreignLease.LeaseUntil = _fixedNow.AddMinutes(1);
+        foreignLease.AcquisitionToken = Guid.NewGuid();
+        var foreignPartition = CreateTimeTicker(executionTime: _fixedNow.AddHours(-1));
+        foreignPartition.ApplicationNamespaceKey = "other-application";
+        await SeedTimeTickers([oldest, overdue, future, foreignLease, foreignPartition, .. excluded]);
 
-        var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
-        Assert.Empty(results);
+        foreach (var expected in new[] { oldest, overdue, future })
+        {
+            var next = Assert.Single(await _provider.GetEarliestTimeTickers(CancellationToken.None));
+            Assert.Equal(expected.Id, next.Id);
+            Assert.Equal(expected.ExecutionTime, next.ExecutionTime);
+            Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([next.Id]));
+        }
+        Assert.Empty(await _provider.GetEarliestTimeTickers(CancellationToken.None));
+        using var verify = CreateVerifyContext();
+        var retainedLease = await verify.Set<TimeTickerEntity>().SingleAsync(x => x.Id == foreignLease.Id);
+        Assert.Equal(foreignLease.AcquisitionToken, retainedLease.AcquisitionToken);
+        Assert.Equal("other-node", retainedLease.LockHolder);
     }
 
     [Fact]

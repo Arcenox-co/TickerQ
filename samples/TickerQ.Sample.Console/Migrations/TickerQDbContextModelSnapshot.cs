@@ -167,7 +167,7 @@ namespace TickerQ.Sample.Console.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Id")
-                        .HasMaxLength(64)
+                        .HasMaxLength(80)
                         .HasColumnType("TEXT");
 
                     b.Property<string>("ActivationCheckpoint")

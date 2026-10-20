@@ -349,6 +349,62 @@ public class TickerRequestPayloadValidatorTests : IDisposable
     }
 
     [Fact]
+    public void InvalidSchemaKeyword_RemainsStructuredContractSchemaInvalid()
+    {
+        var id = $"https://tickerq.test/invalid-schema/{Guid.NewGuid():N}";
+        RegisterTyped("Order", required: true,
+            """{"$id":"$ID","type":"object","properties":{"OrderId":{"type":"invalid-type"}}}"""
+                .Replace("$ID", id, StringComparison.Ordinal));
+
+        for (var iteration = 0; iteration < 2; iteration++)
+        {
+            var result = TickerRequestPayloadValidator.Validate("Order", Utf8("""{"OrderId":"abc"}"""));
+
+            Assert.False(result.IsValid);
+            Assert.Equal(TickerRequestSchemaValidationState.NotEnforced, result.SchemaValidation);
+            Assert.Contains(result.Errors, error => error.Code == TickerRequestValidationErrorCode.ContractSchemaInvalid);
+        }
+
+        Assert.Null(Json.Schema.SchemaRegistry.Global.Get(new Uri(id)));
+    }
+
+    [Fact]
+    public void UnresolvedReference_RemainsStructuredError_AndCanResolveOnLaterValidation()
+    {
+        var externalId = new Uri($"https://tickerq.test/external-schema/{Guid.NewGuid():N}");
+        var rootId = new Uri($"https://tickerq.test/request-schema/{Guid.NewGuid():N}");
+        RegisterTyped("Order", required: true,
+            """{"$id":"$ROOT_ID","type":"object","properties":{"OrderId":{"$ref":"$EXTERNAL_ID"}}}"""
+                .Replace("$ROOT_ID", rootId.AbsoluteUri, StringComparison.Ordinal)
+                .Replace("$EXTERNAL_ID", externalId.AbsoluteUri, StringComparison.Ordinal));
+        var payload = Utf8("""{"OrderId":"abc"}""");
+
+        var unresolved = TickerRequestPayloadValidator.Validate("Order", payload);
+
+        Assert.False(unresolved.IsValid);
+        Assert.Equal(TickerRequestSchemaValidationState.NotEnforced, unresolved.SchemaValidation);
+        Assert.Contains(unresolved.Errors, error => error.Code == TickerRequestValidationErrorCode.ContractSchemaInvalid);
+        Assert.Null(Json.Schema.SchemaRegistry.Global.Get(rootId));
+
+        var external = Json.Schema.JsonSchema.FromText(
+            """{"$id":"$ID","type":"string","minLength":3}"""
+                .Replace("$ID", externalId.AbsoluteUri, StringComparison.Ordinal),
+            new Json.Schema.BuildOptions { SchemaRegistry = new Json.Schema.SchemaRegistry() });
+        Json.Schema.SchemaRegistry.Global.Register(external);
+
+        var resolved = TickerRequestPayloadValidator.Validate("Order", payload);
+        Assert.True(resolved.IsValid);
+        Assert.Equal(TickerRequestSchemaValidationState.Enforced, resolved.SchemaValidation);
+        Assert.Equal("abc", Assert.IsType<OrderRequest>(resolved.Value).OrderId);
+        Assert.Null(Json.Schema.SchemaRegistry.Global.Get(rootId));
+
+        var invalid = TickerRequestPayloadValidator.Validate("Order", Utf8("""{"OrderId":"x"}"""));
+        Assert.False(invalid.IsValid);
+        Assert.Equal(TickerRequestSchemaValidationState.Enforced, invalid.SchemaValidation);
+        Assert.Contains(invalid.Errors, error => error.Code == TickerRequestValidationErrorCode.SchemaViolation);
+    }
+
+    [Fact]
     public void NullFunctionName_Throws()
     {
         Assert.Throws<ArgumentNullException>(() => TickerRequestPayloadValidator.Validate(null!, Array.Empty<byte>()));

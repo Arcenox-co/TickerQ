@@ -24,15 +24,16 @@ namespace TickerQ.Utilities.Infrastructure
             where TTimeTicker : TimeTickerEntity<TTimeTicker>
         {
             if (root.DeleteBehavior == ChainDeleteBehavior.Cascade) return false;
-            var pending = new Stack<TTimeTicker>(root.Children ?? new List<TTimeTicker>());
+            var pending = new Stack<TTimeTicker>(root.GetChildrenForRead() ?? System.Array.Empty<TTimeTicker>());
             var seen = new HashSet<System.Guid> { root.Id };
             while (pending.Count > 0)
             {
                 var child = pending.Pop();
                 if (!seen.Add(child.Id) || root.DeleteBehavior != ChainDeleteBehavior.Restrict || !IsTerminal(child.Status))
                     return true;
-                if (child.Children != null)
-                    foreach (var descendant in child.Children) pending.Push(descendant);
+                var descendants = child.GetChildrenForRead();
+                if (descendants != null)
+                    foreach (var descendant in descendants) pending.Push(descendant);
             }
             return false;
         }

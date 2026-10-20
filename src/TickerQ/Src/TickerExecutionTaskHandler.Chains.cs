@@ -176,7 +176,7 @@ internal partial class TickerExecutionTaskHandler
             if (!context.ChainGeneration.HasValue)
                 return;
             // Fence admission before releasing descendants: the snapshot may contain cancelled jobs.
-            context.SetProperty(x => x.Status, TickerStatus.InProgress);
+            context.SetStatus(TickerStatus.InProgress);
             try
             {
                 await _internalTickerManager.UpdateTickerAsync(context, CancellationToken.None).ConfigureAwait(false);

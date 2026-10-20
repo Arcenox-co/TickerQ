@@ -470,6 +470,99 @@ public class InternalTickerManagerTests
         Assert.Equal(executionTime, functions[0].ExecutionTime);
     }
 
+    [Theory]
+    [InlineData(500, 0, 200, 800, 2, 0)]
+    [InlineData(0, 100, 200, 800, 1, 100)]
+    [InlineData(0, 100, 100, 800, 2, 100)]
+    public async Task GetNextTickers_TimeBucket_LeavesLaterSameSecondRowsUnacquired(
+        int nowMilliseconds, int firstMilliseconds, int secondMilliseconds, int lastMilliseconds,
+        int expectedCount, int expectedDelayMilliseconds)
+    {
+        var rows = new[] { firstMilliseconds, secondMilliseconds, lastMilliseconds }
+            .Select(milliseconds => new TimeTickerEntity
+            {
+                Id = Guid.NewGuid(), Function = "SameSecond",
+                ExecutionTime = _now.AddMilliseconds(milliseconds), Children = []
+            }).ToArray();
+        var available = rows.ToList();
+        _clock.UtcNow.Returns(_now.AddMilliseconds(nowMilliseconds));
+        _persistence.GetEarliestTimeTickers(Arg.Any<CancellationToken>())
+            .Returns(_ => available.ToArray());
+        _persistence.QueueTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var queued = call.Arg<TimeTickerEntity[]>();
+                foreach (var row in queued) available.Remove(row);
+                return ToAsyncEnumerable(queued);
+            });
+
+        var (remaining, functions) = await _manager.GetNextTickers();
+
+        Assert.Equal(TimeSpan.FromMilliseconds(expectedDelayMilliseconds), remaining);
+        Assert.Equal(rows.Take(expectedCount).Select(row => row.Id), functions.Select(row => row.TickerId));
+        Assert.Equal(rows.Skip(expectedCount), available);
+        _persistence.Received(1).QueueTimeTickers(
+            Arg.Is<TimeTickerEntity[]>(queued => queued.Select(row => row.Id)
+                .SequenceEqual(rows.Take(expectedCount).Select(row => row.Id))),
+            Arg.Any<CancellationToken>());
+
+        // The untouched schedules become eligible on a later ordinary scan.
+        _clock.UtcNow.Returns(_now.AddMilliseconds(900));
+        var (laterRemaining, laterFunctions) = await _manager.GetNextTickers();
+        Assert.Equal(TimeSpan.Zero, laterRemaining);
+        Assert.Equal(rows.Skip(expectedCount).Select(row => row.Id),
+            laterFunctions.Select(row => row.TickerId));
+        Assert.Empty(available);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task GetNextTickers_SameSecondDifferentExactTimes_DoesNotQueueLaterKind(
+        bool cronFirst, bool earliestAlreadyDue)
+    {
+        var clockNow = _now.AddMilliseconds(earliestAlreadyDue ? 500 : -1000);
+        _clock.UtcNow.Returns(clockNow);
+        var time = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "TimeLaterBoundary",
+            ExecutionTime = _now.AddMilliseconds(cronFirst ? 800 : 100), Children = []
+        };
+        var cron = new FakeCronTicker
+        {
+            Id = Guid.NewGuid(), Function = "CronLaterBoundary", Expression = "0 30 12 * * *"
+        };
+        var occurrence = new CronTickerOccurrenceEntity<FakeCronTicker>
+        {
+            Id = Guid.NewGuid(), CronTickerId = cron.Id, CronTicker = cron,
+            ExecutionTime = _now.AddMilliseconds(cronFirst ? 100 : 800),
+            CreatedAt = _now, UpdatedAt = _now
+        };
+        _persistence.GetEarliestTimeTickers(Arg.Any<CancellationToken>()).Returns(new[] { time });
+        _persistence.GetAllCronTickerExpressions(Arg.Any<CancellationToken>())
+            .Returns(new CronTickerEntity[] { cron });
+        _persistence.GetEarliestAvailableCronOccurrence(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
+            .Returns(occurrence);
+        _persistence.QueueTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>())
+            .Returns(ToAsyncEnumerable(new[] { time }));
+        _persistence.QueueCronTickerOccurrences(
+                Arg.Any<(DateTime Key, InternalManagerContext[] Items)>(), Arg.Any<CancellationToken>())
+            .Returns(ToAsyncEnumerable(new[] { occurrence }));
+
+        var (remaining, functions) = await _manager.GetNextTickers();
+
+        Assert.Equal(earliestAlreadyDue ? TimeSpan.Zero : TimeSpan.FromMilliseconds(1100), remaining);
+        Assert.Equal(cronFirst ? occurrence.Id : time.Id, Assert.Single(functions).TickerId);
+        if (cronFirst)
+            _persistence.DidNotReceive().QueueTimeTickers(
+                Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>());
+        else
+            _persistence.DidNotReceive().QueueCronTickerOccurrences(
+                Arg.Any<(DateTime Key, InternalManagerContext[] Items)>(), Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task GetNextTickers_DeepTimeTickerChain_PreservesEveryExecutionContext()
     {
@@ -590,7 +683,7 @@ public class InternalTickerManagerTests
     }
 
     [Fact]
-    public async Task GetNextTickers_BothTimeAndCron_SameSecond_ReturnsBothMerged()
+    public async Task GetNextTickers_BothTimeAndCron_SameTimestamp_ReturnsBothMerged()
     {
         var origTz = CronScheduleCache.TimeZoneInfo;
         CronScheduleCache.TimeZoneInfo = TimeZoneInfo.Utc;
@@ -729,6 +822,69 @@ public class InternalTickerManagerTests
 
         Assert.Equal(TimeSpan.Zero, timeRemaining);
         Assert.Single(functions);
+    }
+
+    [Theory]
+    [InlineData(-300, -5)]
+    [InlineData(-5, -300)]
+    [InlineData(0, -5)]
+    [InlineData(-5, 0)]
+    public async Task GetNextTickers_OverdueBacklogsAtDifferentTimes_IncludeBothKinds(
+        int timeSeconds, int cronSeconds)
+    {
+        var time = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "TimeBacklog",
+            ExecutionTime = _now.AddSeconds(timeSeconds), Children = []
+        };
+        var cron = new FakeCronTicker
+        {
+            Id = Guid.NewGuid(), Function = "CronBacklog", Expression = "0 */5 * * * *"
+        };
+        var occurrence = new CronTickerOccurrenceEntity<FakeCronTicker>
+        {
+            Id = Guid.NewGuid(), CronTickerId = cron.Id, CronTicker = cron,
+            ExecutionTime = _now.AddSeconds(cronSeconds), CreatedAt = _now, UpdatedAt = _now
+        };
+        _persistence.GetEarliestTimeTickers(Arg.Any<CancellationToken>()).Returns(new[] { time });
+        _persistence.GetAllCronTickerExpressions(Arg.Any<CancellationToken>())
+            .Returns(new CronTickerEntity[] { cron });
+        _persistence.GetEarliestAvailableCronOccurrence(Arg.Any<Guid[]>(), Arg.Any<CancellationToken>())
+            .Returns(occurrence);
+        _persistence.QueueTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>())
+            .Returns(ToAsyncEnumerable(new[] { time }));
+        _persistence.QueueCronTickerOccurrences(
+                Arg.Any<(DateTime Key, InternalManagerContext[] Items)>(), Arg.Any<CancellationToken>())
+            .Returns(ToAsyncEnumerable(new[] { occurrence }));
+
+        var (remaining, functions) = await _manager.GetNextTickers();
+
+        Assert.Equal(TimeSpan.Zero, remaining);
+        Assert.Equal(2, functions.Length);
+        Assert.Contains(functions, f => f.TickerId == time.Id && f.ExecutionTime == time.ExecutionTime);
+        Assert.Contains(functions, f => f.TickerId == occurrence.Id && f.ExecutionTime == occurrence.ExecutionTime);
+    }
+
+    [Fact]
+    public async Task GetNextTickers_AcquisitionConsumesLeadTime_DoesNotAddAnotherWait()
+    {
+        var time = new TimeTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "SlowAcquisition",
+            ExecutionTime = _now.AddMilliseconds(200), Children = []
+        };
+        _persistence.GetEarliestTimeTickers(Arg.Any<CancellationToken>()).Returns(new[] { time });
+        _persistence.QueueTimeTickers(Arg.Any<TimeTickerEntity[]>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                _clock.UtcNow.Returns(_now.AddSeconds(2));
+                return ToAsyncEnumerable(new[] { time });
+            });
+
+        var (remaining, functions) = await _manager.GetNextTickers();
+
+        Assert.Equal(TimeSpan.Zero, remaining);
+        Assert.Equal(time.Id, Assert.Single(functions).TickerId);
     }
 
     // ====================================================================

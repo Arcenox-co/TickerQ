@@ -45,6 +45,28 @@ internal sealed class SqlServerTestDatabase : IAsyncDisposable
 
 public class SqlServerRuntimeTests
 {
+    [SqlServerFact]
+    public async Task GraphMutations_ConcurrentFirstWritersAndAcquirersConverge_WithProviderRetries()
+    {
+        await using var database = new SqlServerTestDatabase();
+        var options = new DbContextOptionsBuilder<TestTickerQDbContext>()
+            // SqlClient does not expose deadlocks through DbException.IsTransient.
+            // Keep its error-number detection in EF's recommended provider strategy.
+            .UseSqlServer(database.ConnectionString, provider => provider.EnableRetryOnFailure()).Options;
+        await EfGraphMutationContentionContract.ConcurrentFirstWritersAndAcquirersAsync(options);
+    }
+
+    [SqlServerTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ActivationMetadata_PersistsCompleteRuntimeKey(bool upgradeLegacySchema)
+    {
+        await using var database = new SqlServerTestDatabase();
+        var options = new DbContextOptionsBuilder<TestTickerQDbContext>()
+            .UseSqlServer(database.ConnectionString).Options;
+        await StoreMetadataActivationContract.VerifyAsync(options, upgradeLegacySchema);
+    }
+
     public sealed class CustomSeedTableModelCustomizer(ModelCustomizerDependencies dependencies)
         : ModelCustomizer(dependencies)
     {

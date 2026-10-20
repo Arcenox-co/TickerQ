@@ -84,6 +84,63 @@ namespace TickerQ.Utilities.Models
         public TickerResultEnvelope ParentResultEnvelope { get; set; }
         public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 
+        // Runtime updates avoid constructing expression trees and boxing scalar values.
+        // Tracking is intentional even when the value is unchanged: a null result, for
+        // example, must still clear a previously committed result on a successful rerun.
+        internal InternalFunctionContext SetStatus(TickerStatus value)
+        {
+            Status = value;
+            return TrackProperty(nameof(Status));
+        }
+
+        internal InternalFunctionContext SetExecutedAt(DateTime value)
+        {
+            ExecutedAt = value;
+            return TrackProperty(nameof(ExecutedAt));
+        }
+
+        internal InternalFunctionContext SetElapsedTime(long value)
+        {
+            ElapsedTime = value;
+            return TrackProperty(nameof(ElapsedTime));
+        }
+
+        internal InternalFunctionContext SetExceptionDetails(string value)
+        {
+            ExceptionDetails = value;
+            return TrackProperty(nameof(ExceptionDetails));
+        }
+
+        internal InternalFunctionContext SetResultEnvelope(TickerResultEnvelope value)
+        {
+            ResultEnvelope = value;
+            return TrackProperty(nameof(ResultEnvelope));
+        }
+
+        internal InternalFunctionContext SetRetryCount(int value)
+        {
+            RetryCount = value;
+            return TrackProperty(nameof(RetryCount));
+        }
+
+        internal InternalFunctionContext SetReleaseLock(bool value)
+        {
+            ReleaseLock = value;
+            return TrackProperty(nameof(ReleaseLock));
+        }
+
+        internal InternalFunctionContext SetExecutionTime(DateTime value)
+        {
+            ExecutionTime = value;
+            return TrackProperty(nameof(ExecutionTime));
+        }
+
+        private InternalFunctionContext TrackProperty(string name)
+        {
+            (ParametersToUpdate ??= []).Add(name);
+            return this;
+        }
+
         [DynamicDependency(DynamicallyAccessedMemberTypes.PublicProperties, typeof(InternalFunctionContext))]
         public InternalFunctionContext SetProperty<T>(Expression<Func<InternalFunctionContext, T>> property, T value)
         {

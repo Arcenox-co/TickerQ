@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
+using System.Threading;
 using TickerQ.Utilities.Entities.BaseEntity;
 using TickerQ.Utilities.Enums;
 
@@ -11,6 +12,12 @@ namespace TickerQ.Utilities.Entities
 
     public class TimeTickerEntity<TTicker> : BaseTickerEntity where TTicker : TimeTickerEntity<TTicker>
     {
+        // Conventional backing field keeps EF field-access materialization/fixup working.
+        // 0 = untouched, 1 = initializing/assigning, 2 = explicitly initialized.
+        // This also preserves Children = null without allocating a lock for every job.
+        private ICollection<TTicker> _children;
+        private int _childrenState;
+
         [JsonInclude]
         public virtual TickerStatus Status { get; internal set; }
         [JsonInclude]
@@ -35,13 +42,91 @@ namespace TickerQ.Utilities.Entities
         public virtual Guid? ParentId { get; internal set; }
         [JsonIgnore]
         public virtual TTicker Parent { get; internal set; }
-        public virtual ICollection<TTicker> Children { get; set; } = new List<TTicker>();
+        public virtual ICollection<TTicker> Children
+        {
+            get
+            {
+                var children = Volatile.Read(ref _children);
+                return children ?? InitializeChildren();
+            }
+            set
+            {
+                var spinner = new SpinWait();
+                while (true)
+                {
+                    var state = Volatile.Read(ref _childrenState);
+                    if (state != 1 && Interlocked.CompareExchange(ref _childrenState, 1, state) == state)
+                        break;
+                    spinner.SpinOnce();
+                }
+                Volatile.Write(ref _children, value);
+                Volatile.Write(ref _childrenState, 2);
+            }
+        }
+
+        private ICollection<TTicker> InitializeChildren()
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var state = Interlocked.CompareExchange(ref _childrenState, 1, 0);
+                if (state == 2)
+                    return Volatile.Read(ref _children);
+                if (state == 0)
+                {
+                    try
+                    {
+                        // EF can populate the backing field directly.
+                        var children = _children ?? new List<TTicker>();
+                        Volatile.Write(ref _children, children);
+                        Volatile.Write(ref _childrenState, 2);
+                        return children;
+                    }
+                    catch
+                    {
+                        Volatile.Write(ref _childrenState, 0);
+                        throw;
+                    }
+                }
+                spinner.SpinOnce();
+            }
+        }
+
+        // Internal read-only traversal must not initialize an empty collection for every
+        // standalone job. Respect overridden navigation accessors on custom/proxy entities.
+        internal ICollection<TTicker> GetChildrenForRead()
+        {
+            if (GetType() != typeof(TimeTickerEntity))
+                return Children;
+            var children = Volatile.Read(ref _children);
+            if (children != null)
+                return children;
+            var state = Volatile.Read(ref _childrenState);
+            return state == 0 ? Array.Empty<TTicker>()
+                : state == 2 ? Volatile.Read(ref _children) : Children;
+        }
+
+        internal void ResetChildrenForSnapshot()
+        {
+            // A snapshot may have copied an initialization in progress on the source.
+            _childrenState = 0;
+            if (GetType() == typeof(TimeTickerEntity))
+            {
+                _children = null;
+            }
+            else
+            {
+                // Keep the virtual setter contract for custom entity navigations.
+                Children = new List<TTicker>();
+            }
+        }
+
         // Preserve derived entity fields while rebuilding query relationships without
         // exposing or changing the provider's live navigation collections.
         internal TTicker CreateQuerySnapshot()
         {
             var snapshot = (TTicker)MemberwiseClone();
-            snapshot.Children = new List<TTicker>();
+            snapshot.ResetChildrenForSnapshot();
             snapshot.Parent = null;
             return snapshot;
         }

@@ -90,6 +90,72 @@ public class TickerQSchedulerBackgroundServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RunScheduler_DueBatches_DrainWithoutPollingDelay_AndWaitForQueueCapacity()
+    {
+        var executionContext = new TickerExecutionContext();
+        var manager = Substitute.For<IInternalTickerManager>();
+        var handler = Substitute.For<ITickerExecutionTaskHandler>();
+        var scheduler = Substitute.For<ITickerQTaskScheduler>();
+        var first = new InternalFunctionContext { TickerId = Guid.NewGuid(), FunctionName = "First", TimeTickerChildren = [] };
+        var second = new InternalFunctionContext { TickerId = Guid.NewGuid(), FunctionName = "Second", TimeTickerChildren = [] };
+        var blockedAdmission = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enteredAdmission = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        manager.GetNextTickers(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            switch (Interlocked.Increment(ref reads))
+            {
+                case 1: return (TimeSpan.Zero, new[] { first });
+                case 2: return (TimeSpan.Zero, new[] { second });
+                default:
+                    drained.TrySetResult();
+                    return (Timeout.InfiniteTimeSpan, Array.Empty<InternalFunctionContext>());
+            }
+        });
+        manager.SetTickersInProgress(Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<InternalFunctionContext[]>(0));
+        var admissions = 0;
+        scheduler.QueueAsync(Arg.Any<Func<CancellationToken, Task>>(),
+                Arg.Any<TickerTaskPriority>(), Arg.Any<CancellationToken>())
+            .Returns(call => new ValueTask(AdmitAsync(call.ArgAt<Func<CancellationToken, Task>>(0))));
+
+        async Task AdmitAsync(Func<CancellationToken, Task> work)
+        {
+            if (Interlocked.Increment(ref admissions) == 1)
+            {
+                enteredAdmission.TrySetResult();
+                await blockedAdmission.Task;
+            }
+            await work(CancellationToken.None);
+        }
+
+        using var service = new TickerQSchedulerBackgroundService(executionContext, handler, scheduler,
+            manager, new SchedulerOptionsBuilder { MinPollingInterval = TimeSpan.FromMinutes(1) },
+            LicenseTestState.Active());
+        using var cts = new CancellationTokenSource();
+        var run = InvokeRunSchedulerAsync(service, CancellationToken.None, cts.Token);
+        try
+        {
+            await enteredAdmission.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(1, Volatile.Read(ref reads)); // No more acquisition while admission is blocked.
+            blockedAdmission.TrySetResult();
+            await drained.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(2, admissions);
+            await handler.Received(1).ExecuteRegisteredTaskAsync(first, false,
+                Arg.Any<CancellationTokenSource>(), Arg.Any<CancellationToken>());
+            await handler.Received(1).ExecuteRegisteredTaskAsync(second, false,
+                Arg.Any<CancellationTokenSource>(), Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            blockedAdmission.TrySetResult();
+            cts.Cancel();
+            try { await run; } catch (OperationCanceledException) { }
+        }
+    }
+
+    [Fact]
     public async Task RunScheduler_PassesConcurrencyMetadataToRegisteredHandler()
     {
         var executionContext = new TickerExecutionContext();

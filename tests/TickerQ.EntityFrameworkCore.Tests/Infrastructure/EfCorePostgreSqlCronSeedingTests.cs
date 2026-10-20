@@ -15,6 +15,46 @@ namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure;
 public sealed class EfCorePostgreSqlCronSeedingTests(ITestOutputHelper output)
 {
     [PostgreSqlRaceFact]
+    public async Task GraphMutations_RecoverFromConcurrentSentinelWrites_WithAndWithoutProviderRetries()
+    {
+        await using var postgres = new PostgreSqlBuilder("postgres:16-alpine")
+            .WithDatabase("tickerq_graph_contention")
+            .WithUsername("postgres").WithPassword("postgres").Build();
+        await postgres.StartAsync();
+        foreach (var providerRetries in new[] { false, true })
+        {
+            var options = new DbContextOptionsBuilder<TestTickerQDbContext>()
+                .UseNpgsql(postgres.GetConnectionString(), provider =>
+                {
+                    if (providerRetries) provider.EnableRetryOnFailure();
+                }).Options;
+            await using (var reset = new TestTickerQDbContext(options))
+                await reset.Database.EnsureDeletedAsync();
+            await EfGraphMutationContentionContract.ConcurrentFirstWritersAndAcquirersAsync(options);
+            await using (var reset = new TestTickerQDbContext(options))
+                await reset.Database.EnsureDeletedAsync();
+            await EfGraphMutationContentionContract.SnapshotConflict_ReplaysInsertAndAcquisitionAsync(options);
+        }
+    }
+
+    [PostgreSqlRaceFact]
+    public async Task ActivationMetadata_PersistsCompleteRuntimeKey_InFreshAndUpgradedSchemas()
+    {
+        await using var postgres = new PostgreSqlBuilder("postgres:16-alpine")
+            .WithDatabase("tickerq_metadata")
+            .WithUsername("postgres").WithPassword("postgres").Build();
+        await postgres.StartAsync();
+        var options = new DbContextOptionsBuilder<TestTickerQDbContext>()
+            .UseNpgsql(postgres.GetConnectionString()).Options;
+        foreach (var upgradeLegacySchema in new[] { false, true })
+        {
+            await using var cleanup = new TestTickerQDbContext(options);
+            await cleanup.Database.EnsureDeletedAsync();
+            await StoreMetadataActivationContract.VerifyAsync(options, upgradeLegacySchema);
+        }
+    }
+
+    [PostgreSqlRaceFact]
     public async Task EightyConcurrentReconcilers_AllSucceedWithOneSeed_WithAndWithoutProviderRetries()
     {
         await using var postgres = new PostgreSqlBuilder("postgres:16-alpine")

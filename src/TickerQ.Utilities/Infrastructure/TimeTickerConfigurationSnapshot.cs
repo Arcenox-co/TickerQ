@@ -28,8 +28,9 @@ internal static class TimeTickerConfigurationSnapshot
         {
             var row = pending.Pop();
             if (row == null || row.Id == Guid.Empty || !rows.TryAdd(row.Id, row)) return false;
-            if (row.Children == null) continue;
-            foreach (var child in row.Children)
+            var children = row.GetChildrenForRead();
+            if (children == null) continue;
+            foreach (var child in children)
             {
                 if (child == null || child.ParentId != row.Id) return false;
                 pending.Push(child);

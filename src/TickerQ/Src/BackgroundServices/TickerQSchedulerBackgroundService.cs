@@ -27,6 +27,7 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
     private readonly bool _ownsAcquiredQueue;
     private readonly ITickerQActivationGate _activationGate;
     private readonly TickerQLicenseStateProvider _licenseState;
+    private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _acquisitionPublicationGate = new(1, 1);
     private int _started;
     private int _stopping;
@@ -44,11 +45,30 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         TickerQLicenseStateProvider licenseState,
         ILogger<TickerQSchedulerBackgroundService> logger = null,
         ITickerQActivationGate activationGate = null, AcquiredExecutionQueue acquiredQueue = null)
+        : this(TimeProvider.System, executionContext, taskHandler, taskScheduler, internalTickerManager,
+            schedulerOptions, licenseState, logger, activationGate, acquiredQueue)
+    {
+    }
+
+    // The operational store uses UTC through ITickerClock. An unrelated TimeProvider
+    // registration in the application must not replace the scheduler's production clock.
+    // Only deterministic tests select a different timer/clock through this overload.
+    internal TickerQSchedulerBackgroundService(
+        TimeProvider timeProvider,
+        TickerExecutionContext executionContext,
+        ITickerExecutionTaskHandler taskHandler,
+        ITickerQTaskScheduler taskScheduler,
+        IInternalTickerManager internalTickerManager,
+        SchedulerOptionsBuilder schedulerOptions,
+        TickerQLicenseStateProvider licenseState,
+        ILogger<TickerQSchedulerBackgroundService> logger = null,
+        ITickerQActivationGate activationGate = null, AcquiredExecutionQueue acquiredQueue = null)
     {
         _executionContext = executionContext;
         _taskScheduler = taskScheduler;
         _internalTickerManager = internalTickerManager ?? throw new ArgumentNullException(nameof(internalTickerManager));
         _licenseState = licenseState;
+        _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _activationGate = activationGate;
         _schedulerOptions = schedulerOptions;
         _logger = logger ?? NullLogger<TickerQSchedulerBackgroundService>.Instance;
@@ -143,6 +163,15 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         {
             if (_executionContext.Functions.Length != 0)
             {
+                // Timer delays are relative and round to milliseconds. Waking from the
+                // acquisition delay does not prove that this batch's absolute due time
+                // has arrived. Keep its leases queued until every acquired job is due.
+                var dueAt = DateTime.MinValue;
+                foreach (var function in _executionContext.Functions)
+                    if (function.ExecutionTime > dueAt)
+                        dueAt = function.ExecutionTime;
+                await WaitUntilDueAsync(dueAt, _timeProvider, cancellationToken).ConfigureAwait(false);
+
                 await _acquisitionPublicationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
@@ -176,9 +205,16 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                     // Transfer ownership of the entire batch to the common dispatcher. It releases
                     // only unpublished generations if admission fails; active jobs retain their leases.
                     _executionContext.SetFunctions(null);
-                    await _acquiredQueue.PublishAsync(pendingPublication, false, stoppingToken)
-                        .ConfigureAwait(false);
+                    var published = await _acquiredQueue.PublishAsync(pendingPublication, false, stoppingToken,
+                        waitForCapacity: true).ConfigureAwait(false);
                     if (!_licenseState.ExecutionAllowed) return;
+                    if (!published)
+                    {
+                        // Failure/freeze is not backlog progress. Released generations
+                        // must not create a tight reacquisition loop.
+                        await Task.Delay(_minPollingInterval > TimeSpan.Zero
+                            ? _minPollingInterval : TimeSpan.FromMilliseconds(10), cancellationToken);
+                    }
                 }
                 finally
                 {
@@ -204,15 +240,47 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                     ? TimeSpan.Zero
                     : _minPollingInterval;
 
-                sleepDuration = timeRemaining <= minInterval
-                    ? minInterval
-                    : timeRemaining;
+                // A successfully acquired due batch is work, not an idle poll. Keep
+                // draining bounded batches through the dispatcher's capacity wait.
+                // Empty acquisition results still back off (e.g. another node won).
+                sleepDuration = functions.Length > 0 && timeRemaining <= TimeSpan.Zero
+                    ? TimeSpan.Zero
+                    : timeRemaining <= minInterval ? minInterval : timeRemaining;
                 _executionContext.SetNextPlannedOccurrence(DateTime.UtcNow.Add(sleepDuration));
             }
 
             NotifySafely(_executionContext.GetNextPlannedOccurrence(), CoreNotifyActionType.NotifyNextOccurence);
 
-            await Task.Delay(sleepDuration, cancellationToken);
+            if (sleepDuration == TimeSpan.Zero)
+            {
+                // In-memory acquisition and admission can both finish synchronously.
+                // Yield between batches so workers and cancellation can make progress.
+                await Task.Yield();
+            }
+            else
+            {
+                await Task.Delay(sleepDuration, cancellationToken);
+            }
+        }
+    }
+
+    internal static async ValueTask WaitUntilDueAsync(
+        DateTime dueAt, TimeProvider timeProvider, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var remaining = dueAt - timeProvider.GetUtcNow().UtcDateTime;
+            if (remaining <= TimeSpan.Zero)
+                return;
+
+            // Round UP: Task.Delay(TimeSpan) truncates fractional milliseconds.
+            // Recheck after each wake, including early timers and backward clock changes.
+            // A bounded async wait avoids spinning or overflowing the timer's duration.
+            var ticks = Math.Min(remaining.Ticks, TimeSpan.TicksPerDay);
+            var milliseconds = (ticks + TimeSpan.TicksPerMillisecond - 1) / TimeSpan.TicksPerMillisecond;
+            await Task.Delay(TimeSpan.FromMilliseconds(milliseconds), timeProvider, cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 

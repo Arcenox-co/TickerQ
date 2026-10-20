@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using TickerQ.Utilities.Enums;
@@ -10,6 +11,114 @@ namespace TickerQ.Tests;
 
 public class InternalFunctionContextTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TypedSetters_PreserveExpressionUpdates_WithNullTrackingSet(bool useDefaults)
+    {
+        var expected = new InternalFunctionContext { ParametersToUpdate = null! };
+        var actual = new InternalFunctionContext { ParametersToUpdate = null! };
+        var status = useDefaults ? default : TickerStatus.Done;
+        var executedAt = useDefaults ? default : new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
+        var executionTime = useDefaults ? default : executedAt.AddMinutes(-1);
+        var elapsedTime = useDefaults ? 0L : 125L;
+        var retryCount = useDefaults ? 0 : 2;
+        var exceptionDetails = useDefaults ? null : "attempt failed";
+        var result = useDefaults ? null : new TickerResultEnvelope(
+            [0x31], TickerResultEnvelope.CurrentVersion, "application/json");
+
+        expected.SetProperty(c => c.Status, status)
+            .SetProperty(c => c.ExecutedAt, executedAt)
+            .SetProperty(c => c.ElapsedTime, elapsedTime)
+            .SetProperty(c => c.ExceptionDetails, exceptionDetails)
+            .SetProperty(c => c.ResultEnvelope, result)
+            .SetProperty(c => c.RetryCount, retryCount)
+            .SetProperty(c => c.ReleaseLock, !useDefaults)
+            .SetProperty(c => c.ExecutionTime, executionTime);
+        var returned = actual.SetStatus(status)
+            .SetExecutedAt(executedAt)
+            .SetElapsedTime(elapsedTime)
+            .SetExceptionDetails(exceptionDetails)
+            .SetResultEnvelope(result)
+            .SetRetryCount(retryCount)
+            .SetReleaseLock(!useDefaults)
+            .SetExecutionTime(executionTime);
+
+        Assert.Same(actual, returned);
+        Assert.Equal(expected.Status, actual.Status);
+        Assert.Equal(expected.ExecutedAt, actual.ExecutedAt);
+        Assert.Equal(expected.ElapsedTime, actual.ElapsedTime);
+        Assert.Equal(expected.ExceptionDetails, actual.ExceptionDetails);
+        Assert.Same(expected.ResultEnvelope, actual.ResultEnvelope);
+        Assert.Equal(expected.RetryCount, actual.RetryCount);
+        Assert.Equal(expected.ReleaseLock, actual.ReleaseLock);
+        Assert.Equal(expected.ExecutionTime, actual.ExecutionTime);
+        Assert.True(expected.GetPropsToUpdate().SetEquals(actual.GetPropsToUpdate()));
+        Assert.Equal(8, actual.GetPropsToUpdate().Count);
+    }
+
+    [Fact]
+    public void TypedSetters_TrackUnchangedStatusAndExplicitResultAbsenceAfterReset()
+    {
+        var result = new TickerResultEnvelope([0x31], TickerResultEnvelope.CurrentVersion, "application/json");
+        var context = new InternalFunctionContext()
+            .SetStatus(TickerStatus.Done)
+            .SetElapsedTime(125L)
+            .SetResultEnvelope(result);
+        var tracking = context.GetPropsToUpdate();
+
+        context.ResetUpdateProps();
+
+        Assert.Same(tracking, context.GetPropsToUpdate());
+        Assert.Empty(tracking);
+        Assert.Equal(TickerStatus.Done, context.Status);
+        Assert.Equal(125L, context.ElapsedTime);
+        Assert.Same(result, context.ResultEnvelope);
+
+        context.SetStatus(TickerStatus.Done)
+            .SetResultEnvelope(null)
+            .SetResultEnvelope(null)
+            .SetExceptionDetails(null);
+
+        Assert.Null(context.ResultEnvelope);
+        Assert.Null(context.ExceptionDetails);
+        Assert.True(tracking.SetEquals([
+            nameof(InternalFunctionContext.Status),
+            nameof(InternalFunctionContext.ResultEnvelope),
+            nameof(InternalFunctionContext.ExceptionDetails)
+        ]));
+        Assert.DoesNotContain(nameof(InternalFunctionContext.ElapsedTime), tracking);
+    }
+
+    [Fact]
+    public void TypedSetters_RespectReplacementTrackingSet_AndMixWithPublicUpdates()
+    {
+        var context = new InternalFunctionContext().SetStatus(TickerStatus.Done);
+        var original = context.GetPropsToUpdate();
+        var replacement = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "status" };
+        context.ParametersToUpdate = replacement;
+
+        context.SetStatus(TickerStatus.Done)
+            .SetRetryCount(2)
+            .SetProperty(c => c.ReleaseLock, true);
+
+        Assert.Same(replacement, context.GetPropsToUpdate());
+        Assert.Equal(3, replacement.Count);
+        Assert.Contains(nameof(InternalFunctionContext.RetryCount), replacement);
+        Assert.Contains(nameof(InternalFunctionContext.ReleaseLock), replacement);
+        Assert.Single(original);
+        Assert.Contains(nameof(InternalFunctionContext.Status), original);
+
+        context.ResetUpdateProps();
+
+        Assert.Same(replacement, context.GetPropsToUpdate());
+        Assert.Empty(replacement);
+        Assert.Single(original);
+        Assert.Equal(TickerStatus.Done, context.Status);
+        Assert.Equal(2, context.RetryCount);
+        Assert.True(context.ReleaseLock);
+    }
+
     [Fact]
     public void SetProperty_Tracks_Updated_Properties()
     {

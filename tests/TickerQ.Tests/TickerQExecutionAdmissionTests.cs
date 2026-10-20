@@ -23,6 +23,68 @@ public sealed class TickerQExecutionAdmissionTests
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ScheduledBatch_WaitsForCapacity_AndReleasesOnlyUnstartedWorkOnCancellation(bool cancelWaiting)
+    {
+        await using var rig = new ExecutionRig(1, orchestrationCapacity: 1);
+        using var queue = new AcquiredExecutionQueue(rig.Manager, rig.Handler, rig.Scheduler,
+            NullLogger.Instance);
+        using var admission = new CancellationTokenSource();
+        var entered = Signal();
+        var release = Signal();
+        var first = Job("Occupied", async (ct, _, _) =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(ct);
+        });
+        var nextCalls = 0;
+        var next = Job("Next", (_, _, _) =>
+        {
+            Interlocked.Increment(ref nextCalls);
+            return Task.CompletedTask;
+        });
+        Task<bool>? publish = null;
+        try
+        {
+            Assert.True(await queue.PublishAsync([first], false, CancellationToken.None));
+            await entered.Task.WaitAsync(TestTimeout);
+            publish = queue.PublishAsync([next], false, admission.Token, waitForCapacity: true);
+            Assert.False(publish.IsCompleted);
+            Assert.Equal(1, rig.Scheduler.ActiveOrchestrationCount);
+            if (cancelWaiting)
+            {
+                admission.Cancel();
+                Assert.False(await publish.WaitAsync(TestTimeout));
+                Assert.Equal(0, nextCalls);
+                Assert.Equal(1, rig.Scheduler.ActiveOrchestrationCount);
+                Assert.Equal(TickerStatus.InProgress, first.Status);
+                await rig.Manager.Received(1).ReleaseAcquiredResources(
+                    Arg.Is<InternalFunctionContext[]>(rows => rows.Length == 1 &&
+                        rows[0].TickerId == next.TickerId &&
+                        rows[0].AcquisitionToken == next.AcquisitionToken), CancellationToken.None);
+            }
+            else
+            {
+                release.TrySetResult();
+                Assert.True(await publish.WaitAsync(TestTimeout));
+                await rig.AssertDrainedAsync();
+                Assert.Equal(1, nextCalls);
+                Assert.Equal(TickerStatus.Done, next.Status);
+            }
+        }
+        finally
+        {
+            release.TrySetResult();
+            admission.Cancel();
+            if (publish != null) await publish.WaitAsync(TestTimeout);
+            await rig.AssertDrainedAsync();
+            await queue.StopAsync(CancellationToken.None);
+        }
+        Assert.Equal(TickerStatus.Done, first.Status);
+    }
+
+    [Theory]
     [InlineData(RunCondition.InProgress)]
     [InlineData(RunCondition.OnSuccess)]
     public async Task WideChain_BoundsLiveStepTasks_AndEventuallyRunsEveryStep(RunCondition condition)
