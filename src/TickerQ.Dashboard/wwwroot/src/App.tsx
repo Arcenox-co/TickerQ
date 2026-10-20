@@ -21,6 +21,7 @@ const IntegrationsPage = lazy(() => import("@/pages/Integrations"));
 const LicensePage = lazy(() => import("@/pages/License"));
 const AboutPage = lazy(() => import("@/pages/About"));
 const DiagnosticsPage = lazy(() => import("@/pages/Diagnostics"));
+const NodesPage = lazy(() => import("@/pages/Nodes"));
 const LoginPage = lazy(() => import("@/pages/Login"));
 
 export default function App() {
@@ -54,6 +55,7 @@ export default function App() {
           <Route path="integrations" element={<IntegrationsPage />} />
           <Route path="about" element={<AboutPage />} />
           <Route path="diagnostics" element={<DiagnosticsPage />} />
+          <Route path="nodes" element={<NodesPage />} />
         </Route>
       </Route>
     </Routes>

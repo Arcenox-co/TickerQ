@@ -269,11 +269,22 @@ export interface NextTickerDto {
 }
 
 export interface NodeDto {
+  nodeKey: string;
   nodeName: string;
+  nodeIdentifier: string;
+  dashboardUrl: string | null;
+  version: string;
+  startedAt: string | null;
   lastHeartbeat: string | null;
   healthStatus: NodeHealthStatus;
+  isRunning: boolean;
   functionCount: number;
   activeJobs: number;
+  maxConcurrency: number;
+  queuedJobs: number;
+  activeWorkflows: number;
+  waitingForFunction: number;
+  retryingJobs: number;
 }
 
 export interface FunctionRequestExampleDto {

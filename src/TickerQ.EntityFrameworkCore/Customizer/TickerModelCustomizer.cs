@@ -40,6 +40,8 @@ namespace TickerQ.EntityFrameworkCore.Customizer
             builder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<TCronTicker>(schema));
             builder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations(schema));
             builder.ApplyConfiguration(new TickerQStoreMetadataConfigurations(schema));
+            builder.ApplyConfiguration(new TickerQNodeConfigurations(schema));
+            builder.ApplyConfiguration(new TickerQControlCommandConfigurations(schema));
             builder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
             if (executionLogs) builder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
 

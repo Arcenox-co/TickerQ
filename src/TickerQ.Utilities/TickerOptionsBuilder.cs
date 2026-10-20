@@ -479,6 +479,12 @@ namespace TickerQ.Utilities
         internal bool RuntimeSchedulerEnabled { get; private set; }
         internal bool HasRuntimeActivationScopeBinding => _runtimeActivationScopeBound;
 
+        /// <summary>
+        /// The configured application namespace that isolates this scheduler's jobs and cluster state.
+        /// Returns <see langword="null"/> only for the namespace-less legacy queue-only mode.
+        /// </summary>
+        public string ApplicationNamespace => RuntimePartition?.ApplicationNamespace;
+
         internal void BindRuntimeActivationScope(string applicationNamespace, long epoch, bool schedulerEnabled)
         {
             var partition = TickerQRuntimePartition.Bind(applicationNamespace, schedulerEnabled);
@@ -503,6 +509,16 @@ namespace TickerQ.Utilities
 
         /// <summary>Human-readable logical node label used by dashboards, metrics, and heartbeat providers.</summary>
         public string NodeIdentifier { get; set; } = Environment.MachineName;
+
+        /// <summary>Optional friendly node name shown in the dashboard. Defaults to NodeIdentifier.</summary>
+        public string NodeDisplayName { get; set; }
+
+        /// <summary>
+        /// Optional absolute HTTP(S) dashboard URL advertised for human navigation from the Nodes page.
+        /// It is never used as a control-plane endpoint; cross-node commands travel through the
+        /// operational store.
+        /// </summary>
+        public string AdvertisedDashboardUrl { get; set; }
 
         /// <summary>
         /// Process-instance-unique persistence owner used for LockHolder fencing. Two scheduler
@@ -648,6 +664,10 @@ namespace TickerQ.Utilities
 
         internal void Validate()
         {
+            if (!string.IsNullOrWhiteSpace(AdvertisedDashboardUrl)
+                && (!Uri.TryCreate(AdvertisedDashboardUrl, UriKind.Absolute, out var advertised)
+                    || advertised.Scheme is not ("http" or "https") || advertised.UserInfo.Length > 0))
+                throw new ArgumentException("AdvertisedDashboardUrl must be an absolute HTTP or HTTPS URL without credentials.", nameof(AdvertisedDashboardUrl));
             if (MaxConcurrency < 1) throw new ArgumentOutOfRangeException(nameof(MaxConcurrency), "At least one worker is required.");
             ValidateCapacity(AcquisitionBatchSize, nameof(AcquisitionBatchSize), 10000);
             ValidateCapacity(MaxQueuedExecutions, nameof(MaxQueuedExecutions), 100000);

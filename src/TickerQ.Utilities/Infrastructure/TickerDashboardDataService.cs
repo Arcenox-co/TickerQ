@@ -9,6 +9,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Cluster;
 
 namespace TickerQ.Utilities.Infrastructure
 {
@@ -737,20 +738,46 @@ namespace TickerQ.Utilities.Infrastructure
 
         // ============ Nodes ============
 
-        public Task<IList<NodeDto>> GetNodesAsync(CancellationToken cancellationToken = default)
+        public async Task<IList<NodeDto>> GetNodesAsync(CancellationToken cancellationToken = default)
         {
-            // Per-node execution tracking was removed from the scheduler; the Hub derives
-            // node presence from its NodeApplication registry.
-            return Task.FromResult<IList<NodeDto>>(Array.Empty<NodeDto>());
+            if (!_persistence.SupportsClusterControl) return Array.Empty<NodeDto>();
+            var nodes = await _persistence.GetNodesAsync(cancellationToken).ConfigureAwait(false);
+            var now = DateTime.UtcNow;
+            return nodes.Select(x => new NodeDto
+            {
+                NodeKey = x.NodeKey,
+                NodeName = x.DisplayName,
+                NodeIdentifier = x.NodeIdentifier,
+                DashboardUrl = x.DashboardUrl,
+                Version = FriendlyVersion(x.Version),
+                StartedAt = x.StartedAtUtc,
+                LastHeartbeat = x.LastSeenAtUtc,
+                HealthStatus = ComputeHealth(x.LastSeenAtUtc, now),
+                IsRunning = x.IsRunning,
+                FunctionCount = x.FunctionCount,
+                ActiveJobs = x.ActiveExecutions,
+                MaxConcurrency = x.MaxConcurrency,
+                QueuedJobs = x.QueuedExecutions,
+                ActiveWorkflows = x.ActiveWorkflows,
+                WaitingForFunction = x.WaitingForFunction,
+                RetryingJobs = x.RetryingExecutions
+            }).ToArray();
         }
 
         private static NodeHealthStatus ComputeHealth(DateTime? lastHeartbeat, DateTime now)
         {
             if (!lastHeartbeat.HasValue) return NodeHealthStatus.Down;
             var age = now - lastHeartbeat.Value;
-            if (age <= TimeSpan.FromMinutes(5)) return NodeHealthStatus.Healthy;
-            if (age <= TimeSpan.FromMinutes(30)) return NodeHealthStatus.Degraded;
+            if (age <= TimeSpan.FromSeconds(15)) return NodeHealthStatus.Healthy;
+            if (age <= TimeSpan.FromMinutes(1)) return NodeHealthStatus.Degraded;
             return NodeHealthStatus.Down;
+        }
+
+        private static string FriendlyVersion(string version)
+        {
+            if (string.IsNullOrWhiteSpace(version)) return version;
+            var metadataIndex = version.IndexOf('+');
+            return metadataIndex > 0 ? version[..metadataIndex] : version;
         }
 
         public Task<IList<FunctionInfoDto>> GetNodeFunctionsAsync(string nodeName, CancellationToken cancellationToken = default)
@@ -983,8 +1010,28 @@ namespace TickerQ.Utilities.Infrastructure
             }
             else return false;
 
-            return token.HasValue && TickerCancellationTokenManager.RequestTickerCancellation(
-                RuntimePartitionKey, new TickerExecutionLease(type, tickerId, token));
+            if (!token.HasValue) return false;
+            if (TickerCancellationTokenManager.RequestTickerCancellation(
+                    RuntimePartitionKey, new TickerExecutionLease(type, tickerId, token))) return true;
+            if (!_persistence.SupportsClusterControl) return false;
+
+            var owner = await _persistence.GetExecutionOwnershipAsync(type, tickerId, cancellationToken)
+                .ConfigureAwait(false);
+            if (owner == null || owner.Status is not (TickerStatus.Queued or TickerStatus.InProgress)
+                || string.IsNullOrWhiteSpace(owner.ExecutionOwnerId)) return false;
+            var now = DateTime.UtcNow;
+            return await _persistence.RequestCancellationAsync(new TickerQControlCommand
+            {
+                Id = TickerQClusterIdentity.CancellationCommandId(type, tickerId, owner.AcquisitionToken),
+                TargetNodeKey = TickerQClusterIdentity.NodeKey(owner.ExecutionOwnerId),
+                TargetExecutionOwnerId = owner.ExecutionOwnerId,
+                TickerType = type,
+                TickerId = tickerId,
+                AcquisitionToken = owner.AcquisitionToken,
+                RequestedAtUtc = now,
+                ExpiresAtUtc = now.AddSeconds(30),
+                Status = TickerQControlCommandStatus.Pending
+            }, cancellationToken).ConfigureAwait(false);
         }
 
         public async Task StartHostAsync(CancellationToken cancellationToken = default)

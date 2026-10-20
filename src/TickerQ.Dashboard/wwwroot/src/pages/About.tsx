@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Detail } from "@/components/cron/Detail";
-import { getRuntimeConfig } from "@/lib/runtime-config";
+import { formatApplicationNamespace, formatFriendlyVersion, getRuntimeConfig } from "@/lib/runtime-config";
 import { formatMinimumSchedulerWait, formatTimeSpan } from "@/lib/time-span";
 import { cn } from "@/lib/utils";
 import { useAllFunctions, useDashboardOptions } from "@/services/hooks";
@@ -113,7 +113,8 @@ export default function AboutPage() {
               <DataCard>
                 <DataCardHeader title="Host" />
                 <dl>
-                  <Detail label="Dashboard version">{config.version || "Unavailable"}</Detail>
+                  <Detail label="Dashboard version">{formatFriendlyVersion(config.version) || "Unavailable"}</Detail>
+                  <Detail label="Application namespace" hint="Jobs and cluster state are isolated to this namespace."><span className="font-mono">{formatApplicationNamespace(config.applicationNamespace)}</span></Detail>
                   <Detail label="Node">{options?.currentMachine || unavailable(optionsQuery.isPending)}</Detail>
                   <Detail label="Registered functions">
                     <Link to={{ search: `?${sectionParams("functions")}` }} className="inline-flex min-h-6 items-center gap-1.5 text-primary hover:underline">

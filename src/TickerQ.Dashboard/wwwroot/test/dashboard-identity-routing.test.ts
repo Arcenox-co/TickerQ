@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveDashboardUrl } from "../src/lib/runtime-config.ts";
+import { formatApplicationNamespace, formatFriendlyVersion, resolveDashboardUrl } from "../src/lib/runtime-config.ts";
 import { assistantStorageKey, loadAssistantTranscript, storeAssistantTranscript, clearAssistantTranscript } from "../src/lib/assistant-storage.ts";
 import { chatMessage } from "../src/lib/assistant-transcript.ts";
 import { LatestRequest } from "../src/lib/latest-request.ts";
@@ -11,6 +11,13 @@ function storage() {
   return { values, getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
 }
+
+test("dashboard identity keeps friendly versions and readable namespaces", () => {
+  assert.equal(formatFriendlyVersion("10.5.0-rc.1+d9f321"), "10.5.0-rc.1");
+  assert.equal(formatFriendlyVersion("10.5.0"), "10.5.0");
+  assert.equal(formatApplicationNamespace("orders-production"), "orders-production");
+  assert.equal(formatApplicationNamespace(null), "Legacy global");
+});
 
 test("assistant browser history is isolated by authenticated owner, mount and backend", () => {
   const saved = storage();

@@ -61,6 +61,8 @@ namespace TickerQ.Provider
             internal readonly object IntegrationLock = new();
             internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationSettings;
             internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationMonitoring;
+            internal readonly ConcurrentDictionary<string, TickerQ.Utilities.Cluster.TickerQNodeRecord> Nodes = new(StringComparer.Ordinal);
+            internal readonly ConcurrentDictionary<Guid, TickerQ.Utilities.Cluster.TickerQControlCommand> ControlCommands = new();
             internal readonly ConcurrentDictionary<Guid, TTimeTicker> TimeTickers = new();
             internal readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, byte>> ChildrenIndex = new();
             internal readonly ConcurrentDictionary<Guid, TCronTicker> CronTickers = new();

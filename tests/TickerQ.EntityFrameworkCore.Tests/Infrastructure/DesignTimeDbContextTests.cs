@@ -56,6 +56,8 @@ public class DesignTimeDbContextTests : IDisposable
         Assert.Equal("ticker", timeResultEntity!.GetSchema());
         Assert.Equal("ticker", cronResultEntity!.GetSchema());
         Assert.Equal("ticker", model.FindEntityType(typeof(NodeFinalizationOutboxEntity))!.GetSchema());
+        Assert.Equal("ticker", model.FindEntityType(typeof(TickerQNodeEntity))!.GetSchema());
+        Assert.Equal("ticker", model.FindEntityType(typeof(TickerQControlCommandEntity))!.GetSchema());
     }
 
     [Fact]

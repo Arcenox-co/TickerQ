@@ -470,4 +470,23 @@ public class TickerOptionsBuilderTests
         typeof(SchedulerOptionsBuilder).GetProperty(property)!.SetValue(options, value);
         Assert.Throws<ArgumentOutOfRangeException>(() => options.Validate());
     }
+
+    [Theory]
+    [InlineData("worker-b.internal/tickerq/dashboard")]
+    [InlineData("ftp://worker-b.internal/tickerq/dashboard")]
+    [InlineData("https://user:secret@worker-b.internal/tickerq/dashboard")]
+    public void AdvertisedDashboardUrl_RejectsUnsafeOrNonAbsoluteValues(string value)
+    {
+        var options = new SchedulerOptionsBuilder { AdvertisedDashboardUrl = value };
+        Assert.Throws<ArgumentException>(() => options.Validate());
+    }
+
+    [Theory]
+    [InlineData("https://worker-b.internal/tickerq/dashboard")]
+    [InlineData("http://10.0.0.42:8080/tickerq/dashboard")]
+    public void AdvertisedDashboardUrl_AcceptsAbsoluteHttpValues(string value)
+    {
+        var options = new SchedulerOptionsBuilder { AdvertisedDashboardUrl = value };
+        options.Validate();
+    }
 }

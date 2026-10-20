@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { DataCard, DataCardHeader, PageHeader } from "@/components/cron/PageHeader";
 import { cn } from "@/lib/utils";
-import { getRuntimeConfig } from "@/lib/runtime-config";
+import { formatFriendlyVersion, getRuntimeConfig } from "@/lib/runtime-config";
 import { useLicense } from "@/services/hooks";
 import type { LicenseResponse, LicenseStatus } from "@/services/api-types";
 
@@ -148,7 +148,7 @@ export default function LicensePage() {
           </DataCardHeader>
           <dl>
             <DetailRow label="Product" value="TickerQ" />
-            <DetailRow label="Dashboard version" value={config.version || "Development build"} mono />
+            <DetailRow label="Dashboard version" value={formatFriendlyVersion(config.version) || "Development build"} mono />
             <DetailRow label="Verification" value="Offline Ed25519 certificate" />
             <DetailRow label="Runtime policy" value={license?.executionAllowed ? "Execution enabled; contractual entitlement applies separately" : "Fail-closed; dashboard diagnostics only"} />
           </dl>

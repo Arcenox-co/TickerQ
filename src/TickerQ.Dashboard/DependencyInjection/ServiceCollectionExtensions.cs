@@ -319,12 +319,14 @@ namespace TickerQ.Dashboard.DependencyInjection
                 : string.Empty;
 
             var frontendBasePath = CombinePathBase(pathBase, basePath);
+            var schedulerOptions = httpContext.RequestServices.GetService<TickerQ.Utilities.SchedulerOptionsBuilder>();
 
             var envConfig = new FrontendConfigResponse
             {
                 BasePath = frontendBasePath,
                 IntegrationsEnabled = httpContext.RequestServices.GetService<TickerQ.Utilities.Integrations.ITickerIntegrationAdminService>() != null,
                 BackendDomain = config.BackendDomain,
+                ApplicationNamespace = schedulerOptions?.ApplicationNamespace,
                 Version = PackageVersion.Value,
                 Title = config.Title,
                 LogoUrl = config.LogoUrl,

@@ -68,23 +68,41 @@ more than once:
 idempotency key, guard external side effects, and treat a second delivery as possible,
 not exceptional.
 
-## Overdue cron occurrences
+## Overdue schedules
 
 On each scheduling pass, the normal scheduler considers persisted, acquirable cron
-occurrences even when their scheduled time is more than one second in the past.
+occurrences and time tickers even when their scheduled time is more than one second in the past.
 Continuous TimeTicker traffic does not exclude them: when both kinds of work are due,
 they can be dispatched in the same batch. Recovery preserves the occurrence's original
 `ExecutionTime` and the job's `ScheduledFor` value.
 
 The fallback service remains a recovery path for missed work. Its default idle scan
 interval is 30 seconds (`FallbackIntervalChecker`); normal scheduling can discover
-overdue cron work independently of that interval. Acquisition checks prevent the two
+overdue work independently of that interval. Acquisition checks prevent the two
 paths from restarting an already-running occurrence or taking work owned by another
 live node. Store failures in fallback recovery are logged before retrying.
 
 This recovers existing occurrences; it does not create an occurrence for every cron slot
 missed while the application was offline. Actual start time still depends on available
 workers and concurrency limits.
+
+The normal scheduler drains due time tickers in bounded batches without applying
+`MinPollingInterval` between successful due acquisitions. It yields between batches and
+waits asynchronously for workflow capacity; empty acquisitions still back off. Scheduled
+timestamps remain unchanged, and each pass considers due cron work alongside time tickers.
+Jobs sharing a second are still checked against their exact scheduled timestamps; a later
+job is left unacquired until its turn.
+Acquired jobs remain registered for generation-fenced lease renewal during that wait.
+
+Before transitioning an acquired batch to `InProgress`, the scheduler rechecks its
+absolute UTC due time. If a timer wakes early, it waits again using a delay rounded
+up to whole milliseconds. This applies to time tickers and cron occurrences; it does
+not add a delay to already-overdue work. Worker capacity and operating-system scheduling
+can still make the actual start later than the scheduled time.
+Stopping the queue or invalidating execution permission releases unstarted acquisitions.
+Cancelling a job before execution marks it and its unfinished descendants `Cancelled`;
+it does not invoke a handler or materialize a new cron chain. Running jobs retain their
+normal cooperative cancellation behavior.
 
 ## Lease fencing
 
@@ -364,6 +382,12 @@ data still need memory, and application handlers allocate their own data. Keep r
 and reference large business records by ID. The in-memory provider also retains the stored
 jobs themselves: configure job retention when you want completed history removed. Using EF,
 MongoDB or Redis moves durable history outside the process, but active execution still uses RAM.
+See [job retention](#job-retention) for the opt-in policy and its separate log-retention settings.
+
+In-memory time-ticker discovery scans the partition directly and keeps at most
+`AcquisitionBatchSize` candidates from the earliest eligible second. It does not copy all
+retained rows into an acquisition buffer. Scan time still grows with stored history, and
+selected chains are loaded separately; this does not make retained history free.
 
 Per-function concurrency permits are reclaimed when their last holder or waiter exits.
 The legacy raw-semaphore API retains its semaphore because callers can keep that reference;
@@ -382,6 +406,126 @@ job handlers. TickerQ's execution limit does not limit threads created by user c
 The dashboard shows running attempts and queued attempts in Scheduler Host. Diagnostics
 also shows function-capacity waits, retry delays, and active workflows. A workflow may
 contain several running or waiting steps, so these counts are not additive.
+
+## Nodes and cross-node cancellation
+
+Built-in operational providers publish a lightweight heartbeat for every scheduler process.
+The dashboard **Nodes** page shows its friendly name, logical node identifier, version,
+registered function count, scheduler state, execution capacity, queue pressure, function
+waits, retry delays, start time, and last heartbeat. Heartbeats are scoped by
+`ApplicationNamespace`, so applications sharing one physical database do not discover or
+control each other's workers.
+
+Configure the identity and optional navigation address with the scheduler options:
+
+```csharp
+options.ConfigureScheduler(scheduler =>
+{
+    scheduler.NodeIdentifier = "orders-worker";       // same logical role across replicas is valid
+    scheduler.NodeDisplayName = "Orders worker · EU 1";
+    scheduler.AdvertisedDashboardUrl =
+        "https://orders.internal/tickerq/dashboard";  // optional absolute HTTP(S) URL
+});
+```
+
+`AdvertisedDashboardUrl` is only an operator link. TickerQ never sends control requests to
+that URL, so it may be a private hostname, ingress address, or omitted entirely. Do not put
+credentials in it. The process-unique execution owner remains internal and is separate from
+`NodeIdentifier`.
+
+When a cancellation is requested from a different node, TickerQ resolves the persisted owner
+and writes a short-lived command to the shared operational store. The owning process polls
+these commands, verifies the exact acquisition or chain generation, and cancels the local
+`CancellationTokenSource`. A delayed command therefore cannot cancel a later retry or rerun
+of the same ticker. Delivery normally takes up to one second and cancellation remains
+cooperative: the handler must observe its `CancellationToken`. Commands expire after 30
+seconds and operational command history is pruned after one day.
+
+This mechanism works with the built-in in-memory, EF Core, MongoDB, and Redis providers.
+In-memory discovery only spans hosts inside the same process; use a shared durable provider
+for separate replicas. EF Core applications must add the `TickerQNodes` and
+`TickerQControlCommands` tables to their application-owned migration before deploying this
+version. Custom providers can opt in through `ITickerQClusterControlStore`; providers that do
+not implement it continue scheduling normally but do not expose nodes or route cancellation.
+
+## Job retention
+
+Completed jobs are retained by default. Automatic deletion is **opt-in**: all four
+`JobRetentionOptions` status windows default to `null`, which means retain that status
+indefinitely. Setting at least one window through `ConfigureJobRetention` enables the
+maintenance service on hosts with background services enabled. Configuring a queue-only
+host does not start retention.
+
+For example, a database-backed service might keep successful, cancelled, and skipped
+executions for one day, and failures for a week:
+
+```csharp
+builder.Services.AddTickerQ(options =>
+{
+    // Keep your existing namespace, scheduler, and persistence configuration.
+    options.ConfigureJobRetention(retention =>
+    {
+        retention.DeleteSucceededAfter = TimeSpan.FromDays(1);
+        retention.DeleteFailedAfter = TimeSpan.FromDays(7);
+        retention.DeleteCancelledAfter = TimeSpan.FromDays(1);
+        retention.DeleteSkippedAfter = TimeSpan.FromDays(1);
+        retention.SweepInterval = TimeSpan.FromMinutes(5);
+    });
+});
+```
+
+`DeleteSucceededAfter` covers both `Done` and `DueDone`. Each other window covers its
+named terminal status. Windows must be positive when set; leaving a window `null`
+continues to retain that status. Eligibility uses `ExecutedAt`, strictly older than
+the configured window, rather than creation time or the scheduled execution time.
+Rows without `ExecutedAt`, pending or running work, and rows with an acquisition token
+or an unexpired lease are retained. Cron definitions are never removed by retention.
+
+Time chains are deleted as a whole only after **every node** meets its own status window
+and ownership checks. A successful root with a failed child stays while that child is
+too recent, or indefinitely if `DeleteFailedAfter` is unset. Chains larger than
+`MaxNodesPerChain` stay intact. `ChainDeleteBehavior.Cascade` does not bypass these
+retention checks.
+
+| Option | Default | Scope |
+|--------|---------|-------|
+| `SweepInterval` | `1 hour` | Delay before the first sweep after activation and between subsequent sweeps. |
+| `BatchSize` | `500` | Maximum time-chain roots examined or cron occurrences deleted per provider call. A chain can contain multiple rows. |
+| `MaxBatchesPerSweep` | `10` | Shared provider-call budget across time chains and cron occurrences. |
+| `MaxNodesPerChain` | `1,000` | Maximum nodes examined for one time chain; larger chains are retained whole. |
+
+Expiry makes a job eligible for a later sweep; it is not an immediate deletion deadline.
+The two streams alternate within their shared budget, and time-chain traversal continues
+across sweeps so retained chains do not repeatedly block later candidates. Account for
+the sweep interval and batch budget when sizing cleanup for a steady workload. Provider
+failures are logged and retried on a later sweep.
+
+The built-in in-memory, EF Core, MongoDB, and Redis providers support retention. A custom
+provider without `SupportsRetention` causes startup to fail when retention is enabled.
+MongoDB retention requires transaction support for its atomic deletion operations.
+
+With the in-memory provider, stored history, requests, and results remain in application
+RAM until deleted. For independent jobs at a steady rate, retained job count is roughly
+the completion rate multiplied by the retention window, plus cleanup lag; mixed statuses
+and chains can retain more. Choose windows that fit the workload, or use a database
+provider for longer history. For example, 50 completions per second with a five-minute
+window means roughly 15,000 retained jobs before cleanup lag, plus their requests and results.
+The one-day example above is not a memory budget for a high-volume in-memory host.
+A database provider stores that history outside the scheduler
+process, but still needs retention to control storage growth. Deleting rows makes their
+objects eligible for collection; it does not guarantee an immediate fall in process
+working set or release of collection capacity.
+
+Execution logs have an **independent** lifetime, configured through
+`options.ConfigureExecutionLogs(...)`. Deleting a job does not clear its in-memory log
+tail. By default, tails retain up to 500 executions, 200 lines and 32 KiB of encoded data
+per execution, and 16 MiB of encoded data in total. `MemoryRetention` defaults to
+30 minutes since the last appended line; the hosted log service requests pruning on its
+`CleanupInterval`, normally one minute when database log persistence is off. These
+expiration scans are throttled to the lesser of `MemoryRetention` and one minute.
+The encoded-data limits exclude managed-object overhead. If `PersistToDatabase` is enabled,
+archive `Retention` defaults to seven days and `MaxStoredExecutions` to 5,000; neither
+setting changes job-row retention.
 
 ## Run-now & bulk retry
 

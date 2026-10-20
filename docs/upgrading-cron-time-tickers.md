@@ -127,13 +127,68 @@ The generated model must include:
   - indexes used by parent traversal, chain traversal, retention, and acquisition.
 - The singleton `TickerQStoreMetadata` row, including schema/data versions, optimistic-concurrency
   `Version`, durable `ActivationEpoch`, `ActivationPhase`, and nullable `ActivationCheckpoint`.
+  The metadata `Id` column must allow 80 characters, including the full runtime activation key.
 - The complete `NodeFinalizationOutbox` table and its current identity/due indexes whenever the current TickerQ EF model maps it.
+- The `TickerQNodes` heartbeat table and `TickerQControlCommands` durable control table. Both
+  use `ApplicationNamespaceKey` as the leading key/index column; the control command lookup
+  index also includes target node, status, and request time.
 
 The repository's ApplicationDbContext, Console, and WebApi samples contain reviewed host-owned
 `ApplicationRuntimePartitioning` migrations and matching snapshots. Consumers must generate and
 review their own equivalent migration; the provider does not own application migration history.
 
 On SQL Server, the unique nullable `SeedKey` index must exclude null rows. SQLite and PostgreSQL allow multiple null values in a unique index. Use the generated provider-specific model rather than hard-coding one provider's quoting or filter syntax.
+
+### Widen the activation metadata key
+
+Earlier 5.x models limited `TickerQStoreMetadata.Id` to 64 characters. A runtime activation key
+contains the `tq:runtime:v1:` prefix and a 64-character SHA-256 hash, for a total of **78 characters**.
+PostgreSQL and SQL Server enforce the old limit and reject activation inserts. The corrected model
+allows **80 characters**. Shortening your application namespace will not shorten its hash.
+
+For an existing database, generate a migration using your application's configured provider:
+
+```sh
+dotnet ef migrations add WidenTickerQStoreMetadataKey \
+  --project src/MyApp.Data \
+  --startup-project src/MyApp \
+  --context AppDbContext
+
+dotnet ef migrations script <LAST_DEPLOYED_MIGRATION> WidenTickerQStoreMetadataKey \
+  --project src/MyApp.Data \
+  --startup-project src/MyApp \
+  --context AppDbContext
+
+dotnet ef database update WidenTickerQStoreMetadataKey \
+  --project src/MyApp.Data \
+  --startup-project src/MyApp \
+  --context AppDbContext
+```
+
+Review that the migration widens the existing `Id` column to 80 and preserves its composite
+primary key and all checkpoint rows. Apply it before starting upgraded scheduler replicas.
+Use your actual table/schema mapping and provider-generated SQL (`character varying(80)` on
+PostgreSQL, normally `nvarchar(80)` on SQL Server). The sample `WidenStoreMetadataKey` migrations
+and snapshots target the samples' SQLite provider; SQLite does not enforce string lengths.
+Do not copy their `TEXT` column type into another provider's migration.
+
+Fresh databases created from the corrected model already have the new limit. `EnsureCreated()`
+does not widen an existing database. Do not truncate or rewrite stored keys, delete metadata, or
+recreate the database to apply this change. If application binaries are rolled back, retain the
+widened column; shrinking it to 64 would reject or damage activation keys already written.
+
+### Add node discovery and control tables
+
+The Nodes dashboard and cross-node cooperative cancellation add two operational tables:
+`TickerQNodes` and `TickerQControlCommands`. Generate them from the current TickerQ model in
+the same application-owned migration as the rest of this upgrade. Apply the migration before
+starting any upgraded replica; the first heartbeat intentionally detects a missing table at
+startup rather than advertising cross-node control that cannot be delivered.
+
+These tables contain instance identity and scheduler counters, optional dashboard URLs, and
+short-lived cancellation commands. They do not contain job payloads or handler results.
+Keep both tables partitioned by `ApplicationNamespaceKey`. Do not make `NodeIdentifier` unique:
+replicas may share a logical node label, while `NodeKey` identifies the individual process.
 
 ### Startup and data repair
 

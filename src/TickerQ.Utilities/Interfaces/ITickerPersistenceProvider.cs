@@ -9,7 +9,9 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Interfaces
 {
-    public interface ITickerPersistenceProvider<TTimeTicker, TCronTicker> : Integrations.ITickerIntegrationSettingsStore
+    public interface ITickerPersistenceProvider<TTimeTicker, TCronTicker> :
+        Integrations.ITickerIntegrationSettingsStore,
+        Cluster.ITickerQClusterControlStore
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
     {

@@ -145,6 +145,10 @@ namespace TickerQ.DependencyInjection
 
             if (optionInstance.RegisterBackgroundServices)
             {
+                // Starts before the scheduler and therefore stops after it. The final heartbeat
+                // observes the drained scheduler, while durable cancellation commands remain
+                // available throughout shutdown.
+                services.AddHostedService<TickerQClusterControlBackgroundService<TTimeTicker, TCronTicker>>();
                 // Registered BEFORE the scheduler service on purpose: hosted services
                 // stop in reverse registration order, so the lease renewal loop stays
                 // alive while the scheduler's StopAsync drains in-flight executions —

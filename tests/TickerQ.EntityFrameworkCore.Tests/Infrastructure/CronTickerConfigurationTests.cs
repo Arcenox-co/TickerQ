@@ -40,7 +40,8 @@ public class CronTickerConfigurationTests : IAsyncLifetime
             typeof(CronTickerOccurrenceEntity<CronTickerEntity>),
             typeof(TimeTickerResultEntity<TimeTickerEntity>),
             typeof(CronTickerOccurrenceResultEntity<CronTickerEntity>),
-            typeof(NodeFinalizationOutboxEntity), typeof(TickerQStoreMetadata)
+            typeof(NodeFinalizationOutboxEntity), typeof(TickerQStoreMetadata),
+            typeof(TickerQNodeEntity), typeof(TickerQControlCommandEntity)
         };
 
         foreach (var clrType in runtimeTypes)

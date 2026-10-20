@@ -4,6 +4,32 @@ Entity Framework Core integration for [TickerQ](https://github.com/arcenox/Ticke
 
 This package enables persistence of time-based and cron-based jobs using EF Core, allowing for robust tracking, retry logic, and job state management.
 
+## Retaining job history
+
+EF Core keeps completed time tickers and cron occurrences until they are explicitly
+deleted or an opt-in retention policy removes them. Use
+`options.ConfigureJobRetention(...)` in your existing `AddTickerQ` registration to set
+per-status windows. All windows default to `null` (retain indefinitely); cron definitions
+are never deleted by retention.
+
+History lives in the database, while active execution and bounded log tails still use
+application memory. Time-chain retention deletes a complete eligible chain atomically
+and preserves chains with active, recent, or otherwise ineligible descendants. Execution
+log retention is configured separately and is not changed by deleting job rows.
+
+See [job retention configuration and limits](../../docs/reliability.md#job-retention)
+for an example, cleanup cadence, chain limits, and the separate log policy.
+
+## Node discovery and control
+
+The EF operational store persists scheduler heartbeats and cross-node cancellation commands
+in `TickerQNodes` and `TickerQControlCommands`. Existing databases need an
+application-owned migration containing both tables before upgraded scheduler replicas start.
+The advertised dashboard URL is optional and used only for navigation; cancellation is routed
+through the database and fenced to the exact execution generation. See
+[nodes and cross-node cancellation](../../docs/reliability.md#nodes-and-cross-node-cancellation)
+for configuration and behavior.
+
 ---
 
 ## 📦 Installation
@@ -115,6 +141,12 @@ with SQL Server) for its full transient-error handling. TickerQ also performs bo
 EF write conflicts and database exceptions marked `IsTransient`; it does not suppress permanent
 failures or override an exhausted provider retry policy.
 
+Provider-owned scheduling and chain mutations also retry transient transaction conflicts with
+bounded backoff and a fresh context and transaction per attempt. Their serializable isolation
+and graph locks remain in place. An ambiguous commit failure is propagated rather than replayed
+by TickerQ's fallback retry. This does not retry an application's `StageAsync` transaction:
+the application owns retrying its complete business transaction.
+
 On SQL Server, startup reconciliation takes a table write lock on the mapped cron table before
 reading seed rows. This prevents lock-upgrade and key-range ordering deadlocks between starting
 replicas. The lock lasts for the reconciliation transaction, serializes seeding across application
@@ -160,6 +192,12 @@ legacy rows transactionally before activation; the same owner/epoch is idempoten
 
 `TickerQStoreMetadata` also carries the durable reconciliation activation epoch/checkpoint and an
 optimistic-concurrency version. Deploy those additive columns before starting upgraded schedulers.
+Its `Id` column must allow **80 characters**: activation rows use the complete 78-character
+runtime partition key. If your existing model snapshot has a 64-character limit, generate and
+apply a widening migration before starting a scheduler. Updating the package or calling
+`EnsureCreated()` alone does not update an existing column. See
+[widening the activation metadata key](../../docs/upgrading-cron-time-tickers.md#widen-the-activation-metadata-key)
+for rollout instructions.
 For the **first** protocol adoption, all binaries predating the epoch protocol must be drained: they
 cannot honor a fence they do not know exists. EF scheduler pollers remain behind a process-local gate
 until bootstrap/reconciliation checkpoints are durable and the epoch commit succeeds.

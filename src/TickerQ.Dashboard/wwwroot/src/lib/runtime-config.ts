@@ -25,6 +25,8 @@ export interface TickerQRuntimeConfig {
   integrationsEnabled: boolean;
   basePath: string;
   backendDomain: string;
+  /** Application namespace that isolates jobs and cluster state. Null is legacy queue-only mode. */
+  applicationNamespace: string | null;
   /** Dashboard package version (assembly informational version). */
   version: string;
   /** Customer-branded title shown in the shell + browser tab. */
@@ -50,6 +52,7 @@ const DEFAULTS: TickerQRuntimeConfig = {
   integrationsEnabled: false,
   basePath: "/",
   backendDomain: "",
+  applicationNamespace: null,
   version: "",
   title: "TickerQ Dashboard",
   logoUrl: null,
@@ -68,6 +71,18 @@ export function getRuntimeConfig(): TickerQRuntimeConfig {
     realtime: { ...DEFAULTS.realtime, ...(cfg.realtime ?? {}) },
     assistant: { ...DEFAULTS.assistant, ...(cfg.assistant ?? {}) },
   };
+}
+
+/** Removes source-control build metadata while preserving the package/pre-release version. */
+export function formatFriendlyVersion(version: string | null | undefined): string {
+  const value = version?.trim() ?? "";
+  const metadataIndex = value.indexOf("+");
+  return metadataIndex > 0 ? value.slice(0, metadataIndex) : value;
+}
+
+/** Human-readable namespace label used consistently across the dashboard. */
+export function formatApplicationNamespace(value: string | null | undefined): string {
+  return value?.trim() || "Legacy global";
 }
 
 /** True when the operator enabled the AI assistant (a chat client is configured). */

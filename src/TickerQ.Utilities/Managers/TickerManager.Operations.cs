@@ -9,6 +9,7 @@ using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Cluster;
 
 namespace TickerQ.Utilities.Managers;
 
@@ -62,6 +63,28 @@ internal partial class TickerManager<TTimeTicker, TCronTicker>
             // failing user callback must not report that the request was never sent.
             signalled = true;
             _logger.LogWarning(exception, "Execution {TickerId} was signalled for cancellation, but a cancellation callback failed.", id);
+        }
+        if (!signalled && _persistenceProvider.SupportsClusterControl)
+        {
+            var owner = await _persistenceProvider.GetExecutionOwnershipAsync(type, id, cancellationToken)
+                .ConfigureAwait(false);
+            if (owner != null && owner.Status is TickerStatus.Queued or TickerStatus.InProgress
+                && !string.IsNullOrWhiteSpace(owner.ExecutionOwnerId))
+            {
+                var now = _clock.UtcNow;
+                signalled = await _persistenceProvider.RequestCancellationAsync(new TickerQControlCommand
+                {
+                    Id = TickerQClusterIdentity.CancellationCommandId(type, id, owner.AcquisitionToken),
+                    TargetNodeKey = TickerQClusterIdentity.NodeKey(owner.ExecutionOwnerId),
+                    TargetExecutionOwnerId = owner.ExecutionOwnerId,
+                    TickerType = type,
+                    TickerId = id,
+                    AcquisitionToken = owner.AcquisitionToken,
+                    RequestedAtUtc = now,
+                    ExpiresAtUtc = now.AddSeconds(30),
+                    Status = TickerQControlCommandStatus.Pending
+                }, cancellationToken).ConfigureAwait(false);
+            }
         }
         if (signalled) await NotifyAsync(() => _notificationHubSender.CanceledTickerNotifyAsync(id)).ConfigureAwait(false);
         return new TickerResult<TEntity>(signalled ? 1 : 0);

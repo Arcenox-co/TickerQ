@@ -2,12 +2,14 @@ import { Eye, LogOut, UserCircle2 } from "lucide-react";
 import tickerqLogo from "@/assets/tickerq-logo.svg";
 import { TimezoneSelector } from "@/components/layout/TimezoneSelector";
 import { useAuth } from "@/lib/auth/auth-context";
-import { getRuntimeConfig } from "@/lib/runtime-config";
+import { formatApplicationNamespace, formatFriendlyVersion, getRuntimeConfig } from "@/lib/runtime-config";
 import { WorkspaceLicense } from "./WorkspaceLicense";
 
 export function TopBar({ sidebarCollapsed = false }: { sidebarCollapsed?: boolean }) {
   const auth = useAuth();
   const cfg = getRuntimeConfig();
+  const friendlyVersion = formatFriendlyVersion(cfg.version);
+  const applicationNamespace = formatApplicationNamespace(cfg.applicationNamespace);
   const showUser =
     auth.status === "authenticated" && auth.info?.loginAvailable === true;
 
@@ -21,10 +23,17 @@ export function TopBar({ sidebarCollapsed = false }: { sidebarCollapsed?: boolea
             <img src={tickerqLogo} alt="" className="size-8 shrink-0" width={32} height={32} />
           )}
           <span className="truncate font-semibold text-foreground" title={cfg.title}>{cfg.title}</span>
-          {cfg.version && (
-            <span className="hidden sm:inline shrink-0 text-muted-foreground/60 text-[10px]">v{cfg.version}</span>
+          {friendlyVersion && (
+            <span className="hidden sm:inline shrink-0 text-muted-foreground/60 text-[10px]">v{friendlyVersion}</span>
           )}
         </div>
+        <span
+          title={`Application namespace: ${applicationNamespace}`}
+          className="hidden min-w-0 max-w-52 items-center gap-1 rounded-md border border-border/70 bg-surface-1 px-2 py-1 text-[10px] text-muted-foreground md:inline-flex"
+        >
+          <span className="shrink-0 text-muted-foreground/60">Namespace</span>
+          <span className="truncate font-mono text-foreground/80">{applicationNamespace}</span>
+        </span>
         <WorkspaceLicense compact className={sidebarCollapsed ? undefined : "md:hidden"} />
         {cfg.readOnly && (
           <span

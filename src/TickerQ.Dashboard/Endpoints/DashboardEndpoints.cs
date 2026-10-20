@@ -798,7 +798,7 @@ public static class DashboardEndpoints
         else
             await WriteJson(c, new ErrorResponseBody
             {
-                Error = "No matching running execution was found on this node. Refresh its status; if it is running on another node, open that node's dashboard to request cancellation."
+                Error = "No matching running execution could be signalled. It may have completed, changed owner, or the operational provider may not support cluster control."
             }, Json(c));
     }
 

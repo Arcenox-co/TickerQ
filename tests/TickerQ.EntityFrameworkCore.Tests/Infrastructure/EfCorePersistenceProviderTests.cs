@@ -8,6 +8,7 @@ using NSubstitute;
 using TickerQ.EntityFrameworkCore.Configurations;
 using TickerQ.EntityFrameworkCore.Infrastructure;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Cluster;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
@@ -36,6 +37,8 @@ public class TestTickerQDbContext : DbContext
         modelBuilder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<CronTickerEntity>("ticker"));
         modelBuilder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations("ticker"));
         modelBuilder.ApplyConfiguration(new TickerQStoreMetadataConfigurations("ticker"));
+        modelBuilder.ApplyConfiguration(new TickerQNodeConfigurations("ticker"));
+        modelBuilder.ApplyConfiguration(new TickerQControlCommandConfigurations("ticker"));
         modelBuilder.ApplyConfiguration(new IntegrationSettingsConfigurations("ticker"));
         base.OnModelCreating(modelBuilder);
     }
@@ -2859,5 +2862,36 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         var persisted = await ctx.Set<TimeTickerEntity>().AsNoTracking().SingleAsync(x => x.Id == child.Id);
         Assert.Equal(TickerStatus.InProgress, persisted.Status);
         Assert.Equal("dead-node", persisted.LockHolder);
+    }
+
+    [Fact]
+    public async Task Cluster_control_persists_node_heartbeats_and_targeted_commands()
+    {
+        var owner = "worker-b:42:instance";
+        var nodeKey = TickerQClusterIdentity.NodeKey(owner);
+        await _provider.UpsertNodeAsync(new TickerQNodeRecord
+        {
+            NodeKey = nodeKey, ExecutionOwnerId = owner, NodeIdentifier = "worker-b",
+            DisplayName = "Worker B", DashboardUrl = "https://worker-b.internal/tickerq/dashboard",
+            Version = "10.5.0-rc.1", StartedAtUtc = _fixedNow, LastSeenAtUtc = _fixedNow,
+            IsRunning = true, MaxConcurrency = 8, FunctionCount = 12, ActiveExecutions = 3
+        });
+
+        var node = Assert.Single(await _provider.GetNodesAsync());
+        Assert.Equal(12, node.FunctionCount);
+        Assert.Equal(3, node.ActiveExecutions);
+
+        var command = new TickerQControlCommand
+        {
+            Id = Guid.NewGuid(), TargetNodeKey = nodeKey, TargetExecutionOwnerId = owner,
+            TickerType = TickerType.TimeTicker, TickerId = Guid.NewGuid(),
+            AcquisitionToken = Guid.NewGuid(), RequestedAtUtc = _fixedNow,
+            ExpiresAtUtc = _fixedNow.AddSeconds(30), Status = TickerQControlCommandStatus.Pending
+        };
+        Assert.True(await _provider.RequestCancellationAsync(command));
+        Assert.Equal(command.Id, Assert.Single(await _provider.GetPendingCommandsAsync(owner, 10)).Id);
+        Assert.True(await _provider.CompleteCommandAsync(command.Id, TickerQControlCommandStatus.Completed,
+            "signalled", _fixedNow.AddSeconds(1)));
+        Assert.Empty(await _provider.GetPendingCommandsAsync(owner, 10));
     }
 }

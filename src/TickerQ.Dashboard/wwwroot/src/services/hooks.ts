@@ -269,6 +269,7 @@ export function useNodes() {
   return useQuery({
     queryKey: qk.nodes,
     queryFn: ({ signal }) => dashboardApi.getNodes(signal),
+    refetchInterval: 5_000,
   });
 }
 

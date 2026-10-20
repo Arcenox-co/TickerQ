@@ -12,6 +12,47 @@ namespace TickerQ.Tests;
 [Collection("TickerCancellationTokenState")]
 public sealed class ManagerCancellationTests
 {
+    [Fact]
+    public async Task Cancellation_is_routed_to_the_exact_remote_execution_generation()
+    {
+        var id = Guid.NewGuid();
+        var generation = Guid.NewGuid();
+        var ownerId = "worker-b:4242:instance";
+        var now = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
+        var partition = new TickerQRuntimePartition("remote-cancellation");
+        var persistence = Substitute.For<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
+        persistence.SupportsClusterControl.Returns(true);
+        persistence.GetExecutionOwnershipAsync(TickerType.TimeTicker, id, Arg.Any<CancellationToken>())
+            .Returns(new TickerQ.Utilities.Cluster.TickerQExecutionOwnership
+            {
+                Type = TickerType.TimeTicker, TickerId = id, ExecutionOwnerId = ownerId,
+                AcquisitionToken = generation, Status = TickerStatus.InProgress
+            });
+        TickerQ.Utilities.Cluster.TickerQControlCommand captured = null;
+        persistence.RequestCancellationAsync(
+                Arg.Do<TickerQ.Utilities.Cluster.TickerQControlCommand>(x => captured = x),
+                Arg.Any<CancellationToken>()).Returns(true);
+        var clock = Substitute.For<ITickerClock>();
+        clock.UtcNow.Returns(now);
+        var options = new SchedulerOptionsBuilder();
+        options.BindRuntimeActivationScope(partition.ApplicationNamespace, 1, true);
+        var manager = new TickerManager<TimeTickerEntity, CronTickerEntity>(
+            persistence, Substitute.For<ITickerQHostScheduler>(), clock,
+            Substitute.For<ITickerQNotificationHubSender>(),
+            new TickerExecutionContext { RuntimePartition = partition },
+            Substitute.For<ITickerQDispatcher>(), options, new TickerQActivationGate());
+
+        var result = await ((ITimeTickerManager<TimeTickerEntity>)manager).RequestCancellationAsync(id);
+
+        Assert.Equal(1, result.AffectedRows);
+        Assert.NotNull(captured);
+        Assert.Equal(TickerQ.Utilities.Cluster.TickerQClusterIdentity.NodeKey(ownerId), captured.TargetNodeKey);
+        Assert.Equal(ownerId, captured.TargetExecutionOwnerId);
+        Assert.Equal(generation, captured.AcquisitionToken);
+        Assert.Equal(now, captured.RequestedAtUtc);
+        Assert.Equal(now.AddSeconds(30), captured.ExpiresAtUtc);
+    }
+
     [Theory]
     [InlineData(TickerType.TimeTicker, false)] [InlineData(TickerType.CronTickerOccurrence, false)]
     [InlineData(TickerType.TimeTicker, true)] [InlineData(TickerType.CronTickerOccurrence, true)]

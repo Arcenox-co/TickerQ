@@ -9,6 +9,7 @@ import {
   Plug,
   Info,
   Activity,
+  Server,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -47,6 +48,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   {
     label: "System",
     items: [
+      { path: "/nodes", label: "Nodes", icon: Server },
       { path: "/diagnostics", label: "Diagnostics", icon: Activity },
       { path: "/integrations", label: "Integrations", icon: Plug },
     ],

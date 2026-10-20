@@ -180,6 +180,9 @@ internal class FrontendConfigResponse
     public string BasePath { get; set; }
     public string BackendDomain { get; set; }
 
+    /// <summary>The configured application namespace, or null for legacy queue-only mode.</summary>
+    public string ApplicationNamespace { get; set; }
+
     /// <summary>Dashboard package version (assembly informational version, without commit hash).</summary>
     public string Version { get; set; }
 

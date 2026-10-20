@@ -43,6 +43,7 @@ namespace TickerQ.MongoDB.Indexes
             await CreateCronOccurrenceIndexes(cancellationToken).ConfigureAwait(false);
             await CreateResultIndexes(cancellationToken).ConfigureAwait(false);
             await CreateNodeFinalizationIndexes(cancellationToken).ConfigureAwait(false);
+            await CreateClusterControlIndexes(cancellationToken).ConfigureAwait(false);
             await ProbeTransactionsAndMarkReadyAsync(fence, cancellationToken).ConfigureAwait(false);
         }
 
@@ -205,6 +206,26 @@ namespace TickerQ.MongoDB.Indexes
                 new CreateIndexModel<BsonDocument>(
                     keys.Ascending("ApplicationNamespaceKey").Ascending("AvailableAtUtc").Ascending("_id"),
                     new CreateIndexOptions { Name = "IX_NodeFinalization_Due" })
+            }, ct);
+        }
+
+        private Task CreateClusterControlIndexes(CancellationToken ct)
+        {
+            var collection = _context.Database.GetCollection<BsonDocument>(
+                _context.TimeTickers.CollectionNamespace.CollectionName + "_ClusterControl");
+            var keys = Builders<BsonDocument>.IndexKeys;
+            return collection.Indexes.CreateManyAsync(new[]
+            {
+                new CreateIndexModel<BsonDocument>(
+                    keys.Ascending("Partition").Ascending("Kind").Descending("LastSeenAtUtc"),
+                    new CreateIndexOptions { Name = "IX_ClusterControl_Nodes" }),
+                new CreateIndexModel<BsonDocument>(
+                    keys.Ascending("Partition").Ascending("Kind").Ascending("TargetNodeKey")
+                        .Ascending("Status").Ascending("RequestedAtUtc"),
+                    new CreateIndexOptions { Name = "IX_ClusterControl_Commands" }),
+                new CreateIndexModel<BsonDocument>(
+                    keys.Ascending("Partition").Ascending("Kind").Ascending("ExpiresAtUtc"),
+                    new CreateIndexOptions { Name = "IX_ClusterControl_Expiry" })
             }, ct);
         }
     }

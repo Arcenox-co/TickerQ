@@ -47,6 +47,8 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
         modelBuilder.ApplyConfiguration(new CronTickerOccurrenceResultConfigurations<TCronTicker>(schema));
         modelBuilder.ApplyConfiguration(new NodeFinalizationOutboxConfigurations(schema));
         modelBuilder.ApplyConfiguration(new TickerQStoreMetadataConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new TickerQNodeConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new TickerQControlCommandConfigurations(schema));
         modelBuilder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
         if (executionLogs) modelBuilder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
 

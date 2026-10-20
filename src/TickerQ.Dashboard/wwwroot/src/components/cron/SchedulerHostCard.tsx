@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
-import { Loader2, Play, RotateCcw, Server, Square } from "lucide-react";
+import { ArrowUpRight, Loader2, Play, RotateCcw, Server, Square } from "lucide-react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
 import { DataCard } from "@/components/cron/PageHeader";
@@ -8,7 +9,7 @@ import { RuntimeHealthLink } from "@/components/cron/RuntimeHealthLink";
 import { Button } from "@/components/ui/button";
 import { isReadOnly } from "@/lib/runtime-config";
 import { cn } from "@/lib/utils";
-import { useHostStatus, useRestartHost, useStartHost, useStopHost } from "@/services/hooks";
+import { useHostStatus, useNodes, useRestartHost, useStartHost, useStopHost } from "@/services/hooks";
 
 const actions = {
   start: {
@@ -34,7 +35,18 @@ type HostAction = keyof typeof actions;
 
 export function SchedulerHostCard() {
   const hostQuery = useHostStatus();
+  const nodesQuery = useNodes();
   const host = hostQuery.data;
+  const nodes = nodesQuery.data ?? [];
+  const activeNodes = nodes.filter(node => node.healthStatus === "Healthy" && node.isRunning).length;
+  const stoppedNodes = nodes.filter(node => node.healthStatus === "Healthy" && !node.isRunning).length;
+  const delayedNodes = nodes.filter(node => node.healthStatus === "Degraded").length;
+  const offlineNodes = nodes.filter(node => node.healthStatus === "Down").length;
+  const clusterSummary = [
+    stoppedNodes > 0 ? `${stoppedNodes.toLocaleString()} stopped` : null,
+    delayedNodes > 0 ? `${delayedNodes.toLocaleString()} delayed` : null,
+    offlineNodes > 0 ? `${offlineNodes.toLocaleString()} offline` : null,
+  ].filter(Boolean).join(" · ") || "All registered nodes healthy";
   const startMutation = useStartHost();
   const stopMutation = useStopHost();
   const restartMutation = useRestartHost();
@@ -125,7 +137,7 @@ export function SchedulerHostCard() {
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-4 border-t border-border px-4 py-3 sm:px-5">
-          <dl className="grid grid-cols-2 gap-5 sm:gap-8">
+          <dl className={cn("grid grid-cols-2 gap-5 sm:gap-8", nodes.length > 0 && "lg:grid-cols-3")}>
             <div>
               <dt className="min-h-8 text-xs text-muted-foreground">Running attempts</dt>
               <dd className="mt-1">
@@ -140,6 +152,20 @@ export function SchedulerHostCard() {
                 <span className="mt-0.5 block text-[11px] text-muted-foreground">Waiting for execution capacity</span>
               </dd>
             </div>
+            {nodes.length > 0 && <div className="col-span-2 border-t border-border pt-3 lg:col-span-1 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0">
+              <dt className="min-h-8 text-xs text-muted-foreground">Cluster nodes</dt>
+              <dd className="mt-1">
+                <Link
+                  to="/nodes"
+                  title="Active means the scheduler is running and its heartbeat arrived within the last 15 seconds."
+                  className="inline-flex items-center gap-1.5 text-base font-semibold tabular-nums text-foreground hover:text-primary"
+                >
+                  {activeNodes.toLocaleString()} active / {nodes.length.toLocaleString()} registered
+                  <ArrowUpRight className="size-3.5" aria-hidden="true" />
+                </Link>
+                <span className="mt-0.5 block text-[11px] text-muted-foreground">{clusterSummary}</span>
+              </dd>
+            </div>}
           </dl>
           <RuntimeHealthLink host={host} hostUnavailable={hostQuery.isError} />
         </div>
