@@ -1315,7 +1315,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
         var rows = await _provider.GetCronTickers(c => c.Function == "redis-seedkey", CancellationToken.None);
         var row = Assert.Single(rows);
-        var expectedKey = CronSeedIdentity.SeedKeyForFunction("redis-seedkey");
+        var expectedKey = CronSeedIdentity.LegacySeedKeyForFunction("redis-seedkey");
         Assert.Equal(expectedKey, row.SeedKey);
         Assert.Equal(CronSeedIdentity.DeterministicId(expectedKey), row.Id);
     }
@@ -1333,7 +1333,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         var rows = await _provider.GetCronTickers(c => c.Function == "redis-legacy", CancellationToken.None);
         var row = Assert.Single(rows);
         Assert.Equal(legacy.Id, row.Id); // adopted in place
-        Assert.Equal(CronSeedIdentity.SeedKeyForFunction("redis-legacy"), row.SeedKey);
+        Assert.Equal(CronSeedIdentity.LegacySeedKeyForFunction("redis-legacy"), row.SeedKey);
         Assert.Equal(CronExpression.Parse("*/9 * * * *").Value, row.Expression);
     }
 
@@ -1364,7 +1364,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
         var rows = await _provider.GetCronTickers(c => c.Function == "redis-dup", CancellationToken.None);
         Assert.Equal(2, rows.Length); // no destructive delete in Slice 2
-        var seedKey = CronSeedIdentity.SeedKeyForFunction("redis-dup");
+        var seedKey = CronSeedIdentity.LegacySeedKeyForFunction("redis-dup");
         Assert.Single(rows, r => r.SeedKey == seedKey);
         Assert.Single(rows, r => r.SeedKey == null);
     }
@@ -1440,7 +1440,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     public async Task Migrate_ReappearanceBeforeGrace_CancelsRetirement()
     {
         var cron = SeededCron("redis-reappear-early");
-        cron.SeedKey = CronSeedIdentity.SeedKeyForFunction("redis-reappear-early");
+        cron.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("redis-reappear-early");
         cron.RetirementRequestedAt = _fixedNow.AddHours(-2);
         SeedCronTicker(cron);
 
@@ -1458,7 +1458,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     public async Task Migrate_ReappearanceAfterRetirement_RestoresFrameworkDisabled_PreservesUserDisabled()
     {
         var restore = SeededCron("redis-restore");
-        restore.SeedKey = CronSeedIdentity.SeedKeyForFunction("redis-restore");
+        restore.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("redis-restore");
         restore.RetirementRequestedAt = _fixedNow.AddHours(-25);
         restore.RetiredAt = _fixedNow.AddHours(-25);
         restore.IsEnabled = false;
@@ -1466,7 +1466,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         SeedCronTicker(restore);
 
         var keep = SeededCron("redis-keep-disabled");
-        keep.SeedKey = CronSeedIdentity.SeedKeyForFunction("redis-keep-disabled");
+        keep.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("redis-keep-disabled");
         keep.RetirementRequestedAt = _fixedNow.AddHours(-25);
         keep.RetiredAt = _fixedNow.AddHours(-25);
         keep.IsEnabled = false;
@@ -1519,7 +1519,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
         var rows = await _provider.GetCronTickers(c => c.Function == "redis-dup-retire", CancellationToken.None);
         Assert.Equal(2, rows.Length);
-        var seedKey = CronSeedIdentity.SeedKeyForFunction("redis-dup-retire");
+        var seedKey = CronSeedIdentity.LegacySeedKeyForFunction("redis-dup-retire");
         var canonical = Assert.Single(rows, r => r.SeedKey == seedKey);
         Assert.True(canonical.IsEnabled);
         var redundant = Assert.Single(rows, r => r.SeedKey == null);
@@ -1533,7 +1533,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     [Fact]
     public async Task Migrate_KeyedCanonicalWithLowerIdLegacyDuplicate_KeepsKeyedRowCanonical()
     {
-        var seedKey = CronSeedIdentity.SeedKeyForFunction("redis-keyed-canon");
+        var seedKey = CronSeedIdentity.LegacySeedKeyForFunction("redis-keyed-canon");
 
         var legacy = CreateCronTicker(
             id: new Guid("11111111-1111-1111-1111-111111111111"), function: "redis-keyed-canon");
@@ -1608,7 +1608,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     public async Task Migrate_ExpressionChange_PreservesResultBackedPendingHistory_AndDeindexesIt()
     {
         var cron = SeededCron("redis-expr-change");
-        cron.SeedKey = CronSeedIdentity.SeedKeyForFunction("redis-expr-change");
+        cron.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("redis-expr-change");
         SeedCronTicker(cron);
         var pending = CreateCronOccurrence(cron.Id);
         SeedCronOccurrence(pending);
@@ -1630,7 +1630,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     public async Task Migrate_ContractOnlyChange_QuarantinesUnleasedPending()
     {
         var cron = SeededCron("redis-contract-change");
-        cron.SeedKey = CronSeedIdentity.SeedKeyForFunction("redis-contract-change");
+        cron.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("redis-contract-change");
         cron.RequestContractVersion = 1;
         cron.RequestContractFingerprint = "sha256:old";
         SeedCronTicker(cron);
@@ -1664,7 +1664,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
     public async Task Migrate_ExpressionChange_PreservesLeasedAndTerminalOccurrences()
     {
         var cron = SeededCron("redis-preserve");
-        cron.SeedKey = CronSeedIdentity.SeedKeyForFunction("redis-preserve");
+        cron.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("redis-preserve");
         SeedCronTicker(cron);
 
         var pending = CreateCronOccurrence(cron.Id);

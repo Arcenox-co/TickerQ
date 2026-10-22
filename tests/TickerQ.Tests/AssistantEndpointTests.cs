@@ -115,7 +115,7 @@ public class AssistantEndpointTests
         var http = host.GetTestClient();
 
         Assert.Equal(HttpStatusCode.OK, (await http.GetAsync("/assistant/overview")).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await http.GetAsync("/assistant/investigations?reviewState=New&page=1")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await http.GetAsync("/assistant/investigations?reviewState=New&groupByFunction=true&page=1")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await http.GetAsync($"/assistant/investigations/{id}")).StatusCode);
         var reviewResponse = await http.PatchAsJsonAsync(
             $"/assistant/investigations/{id}/review", new { reviewState = "Reviewed" });
@@ -177,6 +177,10 @@ public class AssistantEndpointTests
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
 
         await store.Received(1).GetOverviewAsync("orders-production", Arg.Any<CancellationToken>());
+        await store.Received(1).ListAsync("orders-production",
+            Arg.Is<AssistantInvestigationQuery>(query =>
+                query.ReviewState == AssistantInvestigationValues.New && query.GroupByFunction),
+            Arg.Any<CancellationToken>());
         await store.Received(1).ListAsync("orders-production",
             Arg.Is<AssistantInvestigationQuery>(query =>
                 query.State == AssistantInvestigationValues.Completed && query.PageSize == 3),

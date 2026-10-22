@@ -47,6 +47,12 @@ namespace TickerQ.Utilities.Models
         public string State { get; set; }
         public string ReviewState { get; set; }
         public string Classification { get; set; }
+        /// <summary>
+        /// Pages distinct function groups while returning the investigations that belong to
+        /// those groups. This keeps one function's history on one dashboard card instead of
+        /// splitting it across pages.
+        /// </summary>
+        public bool GroupByFunction { get; set; }
         public int PageNumber { get; set; } = 1;
         public int PageSize { get; set; } = 20;
     }

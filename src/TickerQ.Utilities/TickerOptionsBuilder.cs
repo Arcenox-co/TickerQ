@@ -438,34 +438,6 @@ namespace TickerQ.Utilities
             return this;
         }
 
-        internal Models.FailureWebhookOptions FailureWebhook { get; set; }
-
-        /// <summary>
-        /// POST a JSON event to <paramref name="url"/> whenever a job fails
-        /// terminally (retries exhausted), exceeds its execution timeout, or the
-        /// stale watchdog recovers jobs from a dead node. Delivery is async and
-        /// buffered — it never blocks execution — with a couple of send retries.
-        /// For Slack/email/custom sinks, register your own
-        /// <see cref="Interfaces.ITickerQFailureNotifier"/> instead.
-        /// </summary>
-        public TickerOptionsBuilder<TTimeTicker, TCronTicker> NotifyFailuresViaWebhook(
-            string url, System.Collections.Generic.IDictionary<string, string> headers = null,
-            Func<string, string> reasonSanitizer = null)
-        {
-            if (string.IsNullOrWhiteSpace(url))
-                throw new ArgumentException("Webhook URL must be provided.", nameof(url));
-
-            var options = new Models.FailureWebhookOptions
-            {
-                Url = url,
-                Headers = headers
-            };
-            if (reasonSanitizer != null)
-                options.ReasonSanitizer = reasonSanitizer;
-            FailureWebhook = options;
-            return this;
-        }
-        
         internal void UseExternalProviderApplication(Action<IServiceProvider> action)
             => _tickerExecutionContext.ExternalProviderApplicationAction = action;
         
@@ -550,7 +522,7 @@ namespace TickerQ.Utilities
         public long ReconciliationEpoch
         {
             get => _reconciliationEpoch;
-            set
+            internal set
             {
                 if (_runtimeActivationScopeBound && value != RuntimeActivationEpoch)
                     throw new InvalidOperationException(

@@ -1,4 +1,3 @@
-using System.Net;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -332,62 +331,13 @@ public class BackgroundServiceReliabilityTests
         { s.MinPollingInterval = TimeSpan.FromSeconds(-1); s.ShutdownDrainTimeout = TimeSpan.Zero; s.MaxStaleRestarts = 0; }));
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Webhook_RetriesTimeoutAndServerError_ThenDrains(bool timeout)
-    {
-        var transport = new TestTransport(call => call == 1
-            ? timeout ? throw new TaskCanceledException("HTTP timeout", new TimeoutException()) : new(HttpStatusCode.ServiceUnavailable)
-            : new(HttpStatusCode.OK));
-        var notifier = new WebhookFailureNotifier(new FailureWebhookOptions { Url = "https://example.test/hook" }, NullLogger<WebhookFailureNotifier>.Instance);
-        using var service = new TickerQWebhookNotifierBackgroundService(notifier, NullLogger<TickerQWebhookNotifierBackgroundService>.Instance, new HttpClient(transport));
-        await service.StartAsync(CancellationToken.None);
-        notifier.Notify(new TickerFailureEvent { Kind = "test" });
-        await service.StopAsync(CancellationToken.None);
-        Assert.Equal(2, transport.Calls);
-        Assert.False(notifier.Reader.TryPeek(out _));
-        Assert.True(service.ExecuteTask!.IsCompletedSuccessfully);
-    }
-
     [Fact]
-    public async Task Webhook_DoesNotRetryPermanentClientError()
-    {
-        var transport = new TestTransport(_ => new(HttpStatusCode.Unauthorized));
-        var notifier = new WebhookFailureNotifier(new FailureWebhookOptions { Url = "https://example.test/hook" }, NullLogger<WebhookFailureNotifier>.Instance);
-        using var service = new TickerQWebhookNotifierBackgroundService(notifier, NullLogger<TickerQWebhookNotifierBackgroundService>.Instance, new HttpClient(transport));
-        await service.StartAsync(CancellationToken.None);
-        notifier.Notify(new TickerFailureEvent { Kind = "test" });
-        await service.StopAsync(CancellationToken.None);
-        Assert.Equal(1, transport.Calls);
-    }
-
-    [Fact]
-    public async Task Webhook_ShutdownDeadline_CancelsSlowDeliveryWithoutRetry()
-    {
-        var transport = new SlowTransport();
-        var notifier = new WebhookFailureNotifier(new FailureWebhookOptions
-        { Url = "https://example.test/hook", ShutdownDrainTimeout = TimeSpan.FromMilliseconds(50) }, NullLogger<WebhookFailureNotifier>.Instance);
-        using var service = new TickerQWebhookNotifierBackgroundService(notifier, NullLogger<TickerQWebhookNotifierBackgroundService>.Instance, new HttpClient(transport));
-        await service.StartAsync(CancellationToken.None);
-        notifier.Notify(new TickerFailureEvent { Kind = "test" });
-        await transport.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
-        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(3));
-        await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(3));
-        Assert.Equal(1, transport.Calls);
-        Assert.True(transport.Cancelled);
-    }
-
-    [Fact]
-    public void HostRegistration_SharesOwnershipQueue_AndStopsWebhookAfterProducers()
+    public void HostRegistration_SharesOwnershipQueueAcrossSchedulerServices()
     {
         var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddTickerQ(o => o.UseApplicationNamespace("background-tests").NotifyFailuresViaWebhook("https://example.test/hook"));
+        builder.Services.AddTickerQ(o => o.UseApplicationNamespace("background-tests"));
         using var host = builder.Build();
         var hosted = host.Services.GetServices<IHostedService>().ToList();
-        var webhook = hosted.FindIndex(x => x is TickerQWebhookNotifierBackgroundService);
-        Assert.True(webhook < hosted.FindIndex(x => x is TickerQSchedulerBackgroundService));
-        Assert.True(webhook < hosted.FindIndex(x => x is TickerQStaleJobRecoveryBackgroundService));
         var queue = host.Services.GetRequiredService<AcquiredExecutionQueue>();
         foreach (var service in hosted.Where(x => x is TickerQSchedulerBackgroundService or TickerQFallbackBackgroundService))
             Assert.Same(queue, service.GetType().GetField("_acquiredQueue", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(service));
@@ -395,25 +345,4 @@ public class BackgroundServiceReliabilityTests
         Assert.Same(queue, dispatcher.GetType().GetField("_acquiredQueue", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dispatcher));
     }
 
-    private sealed class SlowTransport : HttpMessageHandler
-    {
-        public readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public int Calls;
-        public bool Cancelled;
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            Interlocked.Increment(ref Calls);
-            Started.TrySetResult();
-            try { await Task.Delay(Timeout.Infinite, cancellationToken); }
-            catch (OperationCanceledException) { Cancelled = true; throw; }
-            return new(HttpStatusCode.OK);
-        }
-    }
-
-    private sealed class TestTransport(Func<int, HttpResponseMessage> response) : HttpMessageHandler
-    {
-        public int Calls;
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => Task.FromResult(response(Interlocked.Increment(ref Calls)));
-    }
 }

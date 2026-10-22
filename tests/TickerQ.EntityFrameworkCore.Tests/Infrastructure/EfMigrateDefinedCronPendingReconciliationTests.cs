@@ -87,7 +87,7 @@ public sealed class EfMigrateDefinedCronPendingReconciliationTests : IAsyncLifet
             Id = Guid.NewGuid(),
             Function = function,
             Expression = expression,
-            SeedKey = CronSeedIdentity.SeedKeyForFunction(function),
+            SeedKey = CronSeedIdentity.LegacySeedKeyForFunction(function),
             InitIdentifier = $"MemoryTicker_Seeded_{function}",
             Request = Array.Empty<byte>(),
             CreatedAt = _now.AddDays(-1),

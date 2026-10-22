@@ -1439,7 +1439,7 @@ public sealed partial class RedisRealScriptTests
     public async Task MigrateDefinedCronTickers_PreCancelled_DoesNotPublishDocumentOrMembership_RealLua()
     {
         var seed = new DefinedCronTickerSeed("CancelledSeed", "*/5 * * * *", 1, null);
-        var seedKey = CronSeedIdentity.SeedKeyForFunction(seed.Function);
+        var seedKey = CronSeedIdentity.LegacySeedKeyForFunction(seed.Function);
         var id = CronSeedIdentity.DeterministicId(seedKey);
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -1495,7 +1495,7 @@ public sealed partial class RedisRealScriptTests
         await Task.WhenAll(Enumerable.Range(0, 16).Select(_ =>
             _provider.MigrateDefinedCronTickers([seed], CancellationToken.None)));
 
-        var expectedId = CronSeedIdentity.DeterministicId(CronSeedIdentity.SeedKeyForFunction(seed.Function));
+        var expectedId = CronSeedIdentity.DeterministicId(CronSeedIdentity.LegacySeedKeyForFunction(seed.Function));
         var members = await _db.SetMembersAsync(RedisKeyBuilder.CronIdsKey);
         Assert.Single(members, value => value.ToString() == expectedId.ToString());
         var persisted = await _provider.GetCronTickerById(expectedId, CancellationToken.None);
@@ -1510,7 +1510,7 @@ public sealed partial class RedisRealScriptTests
     {
         var original = new DefinedCronTickerSeed("HistoryBearingSeed", "*/7 * * * *", 1, "sha256:v1");
         await _provider.MigrateDefinedCronTickers([original], CancellationToken.None);
-        var cronId = CronSeedIdentity.DeterministicId(CronSeedIdentity.SeedKeyForFunction(original.Function));
+        var cronId = CronSeedIdentity.DeterministicId(CronSeedIdentity.LegacySeedKeyForFunction(original.Function));
         var occurrence = new CronTickerOccurrenceEntity<CronTickerEntity>
         {
             Id = Guid.NewGuid(),
@@ -1557,7 +1557,7 @@ public sealed partial class RedisRealScriptTests
         var adopted = Assert.Single(await _provider.GetCronTickers(
             x => x.Function == legacyOwned.Function, CancellationToken.None));
         Assert.Equal(legacyOwned.Id, adopted.Id);
-        Assert.Equal(CronSeedIdentity.SeedKeyForFunction(legacyOwned.Function), adopted.SeedKey);
+        Assert.Equal(CronSeedIdentity.LegacySeedKeyForFunction(legacyOwned.Function), adopted.SeedKey);
         Assert.Equal(CronExpression.Parse("*/9 * * * *").Value, adopted.Expression);
     }
 
@@ -1566,7 +1566,7 @@ public sealed partial class RedisRealScriptTests
     {
         var seed = new DefinedCronTickerSeed("corrupt-occurrence", "*/5 * * * *", 1, null);
         await _provider.MigrateDefinedCronTickers([seed], CancellationToken.None);
-        var cronId = CronSeedIdentity.DeterministicId(CronSeedIdentity.SeedKeyForFunction(seed.Function));
+        var cronId = CronSeedIdentity.DeterministicId(CronSeedIdentity.LegacySeedKeyForFunction(seed.Function));
         var occurrenceId = Guid.NewGuid();
         const string corrupt = "{not-json";
         await _db.StringSetAsync(RedisKeyBuilder.CronOccurrenceKey(occurrenceId), corrupt);
@@ -2129,7 +2129,7 @@ public sealed partial class RedisRealScriptTests
     {
         var original = new DefinedCronTickerSeed("quarantine-results", "*/5 * * * *", 1, "sha256:v1");
         await _provider.MigrateDefinedCronTickers([original], CancellationToken.None);
-        var cronId = CronSeedIdentity.DeterministicId(CronSeedIdentity.SeedKeyForFunction(original.Function));
+        var cronId = CronSeedIdentity.DeterministicId(CronSeedIdentity.LegacySeedKeyForFunction(original.Function));
         var pendingTime = BaseNow.AddMinutes(31);
         var pending = NewOccurrence(cronId, pendingTime, TickerStatus.Idle);
         await _provider.InsertCronTickerOccurrences([pending], CancellationToken.None);

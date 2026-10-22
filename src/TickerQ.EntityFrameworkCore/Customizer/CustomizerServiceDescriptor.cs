@@ -146,10 +146,9 @@ public static class ServiceBuilder
             EfCoreNodeFinalizationOutboxReadinessProbe<TContext>>());
     }
 
-    // Assistant chat history is strictly opt-in: nothing is registered (and
-    // no tables are mapped) unless AddAssistantHistory() was called on the
-    // builder. Runs inside ConfigureServices so it works regardless of the
-    // order builder methods were called in.
+    // Assistant history services remain opt-in even though the complete TickerQ
+    // schema is always mapped. Runs inside ConfigureServices so it works regardless
+    // of the order builder methods were called in.
     private static void RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(
         TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> builder, IServiceCollection services)
         where TContext : DbContext

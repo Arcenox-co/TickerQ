@@ -306,7 +306,7 @@ a ten-second cleanup budget, bounded by the remaining host deadline. The cancell
 stays alive until its callbacks finish, including after shutdown stops waiting.
 
 The host shutdown deadline covers **all** services. Reserve time after scheduler drain for
-webhook delivery and execution-log persistence, for example:
+integration delivery and execution-log persistence, for example:
 
 ```csharp
 builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(options =>
@@ -315,12 +315,6 @@ builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(options =>
     options.ServicesStopConcurrently = false;
 });
 ```
-
-The built-in webhook pump stops after scheduler/recovery producers. It completes its queue
-and drains for up to 10 seconds, bounded by the remaining host deadline. HTTP timeouts,
-network failures, 408, 429 and 5xx responses receive bounded retries; other 4xx responses
-are logged without retry. Alerts remain best-effort: process crashes, queue overflow, or
-an exhausted shutdown deadline can lose notifications.
 
 Scheduler timing options are validated during `AddTickerQ`: finite positive maintenance
 intervals, a lease at least three times the renewal interval, positive worker/batch counts,

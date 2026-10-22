@@ -17,6 +17,259 @@ namespace TickerQ.Sample.Console.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.0");
 
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.AssistantConversationEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Model")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "UpdatedAt")
+                        .HasDatabaseName("IX_AssistantConversation_UserId_UpdatedAt");
+
+                    b.ToTable("AssistantConversations", "ticker");
+                });
+
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.AssistantInvestigationBudgetEntity", b =>
+                {
+                    b.Property<string>("ApplicationNamespace")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("StartedAtTicks")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("ApplicationNamespace");
+
+                    b.ToTable("AssistantInvestigationBudgets", "ticker");
+                });
+
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.AssistantInvestigationEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ApplicationNamespace")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("ChainRootId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Classification")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("ConversationId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("EvidenceFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ExecutionStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ExecutionType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FailureMessage")
+                        .HasMaxLength(2000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FunctionName")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Model")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("RecoveredAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("RecoveredByExecutionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ReviewState")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("ReviewedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ReviewedByUserId")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("SourceLine")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("SourcePath")
+                        .HasMaxLength(1024)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SourceRepository")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SourceRevision")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("StartedByUserId")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Summary")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Trigger")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApplicationNamespace", "ExecutionId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_AssistantInvestigation_Namespace_Execution");
+
+                    b.HasIndex("ApplicationNamespace", "UpdatedAt")
+                        .HasDatabaseName("IX_AssistantInvestigation_Namespace_UpdatedAt");
+
+                    b.HasIndex("ApplicationNamespace", "EvidenceFingerprint", "CompletedAt")
+                        .HasDatabaseName("IX_AssistantInvestigation_Namespace_Evidence_CompletedAt");
+
+                    b.HasIndex("ApplicationNamespace", "FunctionName", "OccurredAt")
+                        .HasDatabaseName("IX_AssistantInvestigation_Namespace_Function_OccurredAt");
+
+                    b.ToTable("AssistantInvestigations", "ticker");
+                });
+
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.AssistantInvestigationLeaseEntity", b =>
+                {
+                    b.Property<string>("ApplicationNamespace")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("EvidenceFingerprint")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("LeaseUntil")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("OwnerToken")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ApplicationNamespace", "EvidenceFingerprint");
+
+                    b.HasIndex("LeaseUntil")
+                        .HasDatabaseName("IX_AssistantInvestigationLease_LeaseUntil");
+
+                    b.ToTable("AssistantInvestigationLeases", "ticker");
+                });
+
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.AssistantMessageEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("ConversationId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("TokensIn")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("TokensOut")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConversationId", "Ordinal")
+                        .HasDatabaseName("IX_AssistantMessage_ConversationId_Ordinal");
+
+                    b.ToTable("AssistantMessages", "ticker");
+                });
+
             modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.CronTickerOccurrenceResultEntity<TickerQ.Utilities.Entities.CronTickerEntity>", b =>
                 {
                     b.Property<string>("ApplicationNamespaceKey")
@@ -278,12 +531,12 @@ namespace TickerQ.Sample.Console.Migrations
 
                     b.HasKey("ApplicationNamespaceKey", "Id");
 
-                    b.HasIndex("ApplicationNamespaceKey", "Kind", "Target", "CreatedAtUtc")
-                        .HasDatabaseName("IX_TickerQDefinitions_List");
-
                     b.HasIndex("ApplicationNamespaceKey", "NameKey")
                         .IsUnique()
                         .HasDatabaseName("UX_TickerQDefinitions_Name");
+
+                    b.HasIndex("ApplicationNamespaceKey", "Kind", "Target", "CreatedAtUtc")
+                        .HasDatabaseName("IX_TickerQDefinitions_List");
 
                     b.ToTable("TickerQDefinitions", "ticker");
                 });
@@ -782,6 +1035,51 @@ namespace TickerQ.Sample.Console.Migrations
                     b.ToTable("TimeTickers", "ticker");
                 });
 
+            modelBuilder.Entity("TickerQ.Utilities.Models.ExecutionLogArchive", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("ExpiresAtUtcTicks")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PartitionKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte[]>("Payload")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<Guid>("TickerId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Truncated")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("UpdatedAtUtcTicks")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PartitionKey", "ExpiresAtUtcTicks");
+
+                    b.HasIndex("PartitionKey", "UpdatedAtUtcTicks", "Id");
+
+                    b.ToTable("ExecutionLogs", "ticker");
+                });
+
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.AssistantMessageEntity", b =>
+                {
+                    b.HasOne("TickerQ.EntityFrameworkCore.Entities.AssistantConversationEntity", null)
+                        .WithMany("Messages")
+                        .HasForeignKey("ConversationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.CronTickerOccurrenceResultEntity<TickerQ.Utilities.Entities.CronTickerEntity>", b =>
                 {
                     b.HasOne("TickerQ.Utilities.Entities.CronTickerOccurrenceEntity<TickerQ.Utilities.Entities.CronTickerEntity>", "Occurrence")
@@ -823,6 +1121,11 @@ namespace TickerQ.Sample.Console.Migrations
                         .OnDelete(DeleteBehavior.NoAction);
 
                     b.Navigation("Parent");
+                });
+
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.AssistantConversationEntity", b =>
+                {
+                    b.Navigation("Messages");
                 });
 
             modelBuilder.Entity("TickerQ.Utilities.Entities.TimeTickerEntity", b =>

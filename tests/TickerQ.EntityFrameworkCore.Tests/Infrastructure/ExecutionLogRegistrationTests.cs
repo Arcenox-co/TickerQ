@@ -5,6 +5,7 @@ using TickerQ.DependencyInjection;
 using TickerQ.EntityFrameworkCore.DbContextFactory;
 using TickerQ.EntityFrameworkCore.DependencyInjection;
 using TickerQ.EntityFrameworkCore.Customizer;
+using TickerQ.EntityFrameworkCore.Entities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 
@@ -34,7 +35,7 @@ public sealed class ExecutionLogRegistrationTests
                 db.Tenant = tenant;
                 Assert.IsType<TenantCacheKeyFactory>(db.GetService<IModelCacheKeyFactory>());
                 Assert.Equal("Records_" + tenant, db.Model.FindEntityType(typeof(TenantRecord))!.GetTableName());
-                Assert.Equal(enabled, db.Model.FindEntityType(typeof(ExecutionLogArchive)) != null);
+                Assert.NotNull(db.Model.FindEntityType(typeof(ExecutionLogArchive)));
             }
         }
     }
@@ -53,7 +54,7 @@ public sealed class ExecutionLogRegistrationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Application_context_maps_logs_only_when_enabled(bool enabled)
+    public void Application_context_always_maps_logs_but_registers_storage_only_when_enabled(bool enabled)
     {
         var services = new ServiceCollection(); services.AddLogging();
         services.AddDbContext<ApplicationContext>(db => db.UseSqlite("Data Source=:memory:"));
@@ -66,7 +67,7 @@ public sealed class ExecutionLogRegistrationTests
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
-        Assert.Equal(enabled, db.Model.FindEntityType(typeof(ExecutionLogArchive)) != null);
+        Assert.NotNull(db.Model.FindEntityType(typeof(ExecutionLogArchive)));
         Assert.Equal(enabled, provider.GetService<ITickerExecutionLogPersistence>() != null);
     }
 
@@ -75,7 +76,7 @@ public sealed class ExecutionLogRegistrationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Storage_and_schema_are_opt_in_and_configuration_order_does_not_matter(bool enabled)
+    public void Storage_is_opt_in_while_schema_is_stable_and_configuration_order_does_not_matter(bool enabled)
     {
         foreach (var persist in new[] { enabled, !enabled, enabled })
         {
@@ -88,8 +89,37 @@ public sealed class ExecutionLogRegistrationTests
             });
             using var provider = services.BuildServiceProvider();
             using var db = provider.GetRequiredService<IDbContextFactory<TickerQDbContext>>().CreateDbContext();
-            Assert.Equal(persist, db.Model.FindEntityType(typeof(ExecutionLogArchive)) != null);
+            Assert.NotNull(db.Model.FindEntityType(typeof(ExecutionLogArchive)));
             Assert.Equal(persist, provider.GetService<ITickerExecutionLogPersistence>() != null);
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Assistant_schema_is_stable_while_history_services_are_opt_in(bool enabled)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddTickerQ(options =>
+        {
+            options.UseApplicationNamespace("assistant-schema-test");
+            options.UseReconciliationEpoch(1);
+            options.AddOperationalStore(ef =>
+            {
+                ef.UseTickerQDbContext<TickerQDbContext>(db => db.UseSqlite("Data Source=:memory:"));
+                if (enabled) ef.AddAssistantHistory();
+            });
+        });
+
+        using var provider = services.BuildServiceProvider();
+        using var db = provider.GetRequiredService<IDbContextFactory<TickerQDbContext>>().CreateDbContext();
+        Assert.NotNull(db.Model.FindEntityType(typeof(AssistantConversationEntity)));
+        Assert.NotNull(db.Model.FindEntityType(typeof(AssistantMessageEntity)));
+        Assert.NotNull(db.Model.FindEntityType(typeof(AssistantInvestigationEntity)));
+        Assert.NotNull(db.Model.FindEntityType(typeof(AssistantInvestigationLeaseEntity)));
+        Assert.NotNull(db.Model.FindEntityType(typeof(AssistantInvestigationBudgetEntity)));
+        Assert.Equal(enabled, provider.GetService<IAssistantHistoryStore>() != null);
+        Assert.Equal(enabled, provider.GetService<IAssistantInvestigationStore>() != null);
     }
 }

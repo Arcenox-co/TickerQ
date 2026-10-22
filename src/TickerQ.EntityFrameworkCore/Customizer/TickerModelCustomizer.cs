@@ -18,19 +18,14 @@ namespace TickerQ.EntityFrameworkCore.Customizer
         public override void Customize(ModelBuilder builder, DbContext context)
         {
             string schema;
-            AssistantHistoryOptions assistantHistory;
-            var executionLogs = false;
             try
             {
                 var optionBuilder = context.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>();
                 schema = optionBuilder?.Schema ?? Constants.DefaultSchema;
-                assistantHistory = optionBuilder?.AssistantHistory ?? AssistantHistoryOptions.Current;
-                executionLogs = optionBuilder?.ExecutionLogs?.PersistToDatabase == true;
             }
             catch (InvalidOperationException)
             {
                 schema = Constants.DefaultSchema;
-                assistantHistory = AssistantHistoryOptions.Current;
             }
 
             builder.ApplyConfiguration(new TimeTickerConfigurations<TTimeTicker>(schema));
@@ -44,17 +39,12 @@ namespace TickerQ.EntityFrameworkCore.Customizer
             builder.ApplyConfiguration(new TickerQControlCommandConfigurations(schema));
             builder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
             builder.ApplyConfiguration(new TickerQDefinitionConfigurations(schema));
-            if (executionLogs) builder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
-
-            // Opt-in assistant conversation and investigation tables (AddAssistantHistory()).
-            if (assistantHistory != null)
-            {
-                builder.ApplyConfiguration(new AssistantConversationConfigurations(schema));
-                builder.ApplyConfiguration(new AssistantMessageConfigurations(schema));
-                builder.ApplyConfiguration(new AssistantInvestigationConfigurations(schema));
-                builder.ApplyConfiguration(new AssistantInvestigationLeaseConfigurations(schema));
-                builder.ApplyConfiguration(new AssistantInvestigationBudgetConfigurations(schema));
-            }
+            builder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
+            builder.ApplyConfiguration(new AssistantConversationConfigurations(schema));
+            builder.ApplyConfiguration(new AssistantMessageConfigurations(schema));
+            builder.ApplyConfiguration(new AssistantInvestigationConfigurations(schema));
+            builder.ApplyConfiguration(new AssistantInvestigationLeaseConfigurations(schema));
+            builder.ApplyConfiguration(new AssistantInvestigationBudgetConfigurations(schema));
 
             base.Customize(builder, context);
         }

@@ -28,7 +28,7 @@ builder.Services.AddTickerQ(options =>
     {
         dash.SetTitle("Acme Jobs — Read-only Viewer");
         dash.SetReadOnly();
-        dash.WithNoAuth();
+        dash.AllowAnonymousDashboard();
     });
 });
 

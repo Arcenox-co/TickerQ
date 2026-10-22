@@ -83,51 +83,8 @@ Slack, Teams Workflows, and custom JSON webhooks, with destinations and per-func
 edited in the dashboard. Settings are encrypted in the operational store; EF users must
 apply the new settings-table migration. Delivery uses a bounded, best-effort process-local
 queue. See the package guide for permissions, shared encryption keys, templates, retries,
-and delivery limitations. Use this package or the simple webhook option below, not both.
-
-## Failure webhook (bounded, non-blocking)
-
-TickerQ ships a built-in failure notifier that POSTs a JSON payload to a webhook on terminal
-failure and on timeout-cancellation. It is designed to **never block or slow job execution**.
-
-```csharp
-builder.Services.AddTickerQ(options =>
-{
-    options.NotifyFailuresViaWebhook(
-        url: "https://hooks.example.com/tickerq",
-        headers: new Dictionary<string, string> { ["Authorization"] = "Bearer …" });
-});
-```
-
-### Overload behavior & drop metric
-
-Deliveries are queued through a **bounded channel** (capacity **1000**) in
-`BoundedChannelFullMode.DropOldest` mode. When the queue is full, the oldest pending
-notification is dropped so a slow or unreachable webhook endpoint can never apply
-backpressure to the scheduler.
-
-Drops are counted (`DroppedCount`, read atomically) and logged — on the first drop and then
-at power-of-two thresholds — as a warning:
-
-> `TickerQ failure webhook queue dropped {DroppedCount} events due to capacity {Capacity}`
-
-The delivery pump retries transient send failures (delays ≈ 1s then 5s) with a 10s HTTP
-timeout, all off the execution path.
-
-### Reason sanitization
-
-The failure reason string is sanitized before it leaves the process. By default the sanitizer
-collapses `\r`/`\n` to spaces and truncates to **2048** characters. Override it to redact or
-reshape the reason:
-
-```csharp
-options.NotifyFailuresViaWebhook(
-    url: "https://hooks.example.com/tickerq",
-    headers: null,
-    reasonSanitizer: reason => Redact(reason)); // FailureWebhookOptions.ReasonSanitizer
-```
-
-If you pass no sanitizer, `FailureWebhookOptions.DefaultReasonSanitizer` is used.
+and delivery limitations. Applications that need a different transport can register their own
+non-blocking `ITickerQFailureNotifier` implementation.
 
 
 ## Dashboard overall status totals

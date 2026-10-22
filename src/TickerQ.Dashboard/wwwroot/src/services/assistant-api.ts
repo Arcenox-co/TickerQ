@@ -197,7 +197,7 @@ export async function getInvestigationOverview(signal?: AbortSignal): Promise<As
 }
 
 export async function listInvestigations(
-  query: { search?: string; state?: string; reviewState?: string; classification?: string; page?: number; pageSize?: number } = {},
+  query: { search?: string; state?: string; reviewState?: string; classification?: string; groupByFunction?: boolean; page?: number; pageSize?: number } = {},
   signal?: AbortSignal,
 ): Promise<AssistantInvestigationPage> {
   const params = new URLSearchParams();
@@ -205,6 +205,7 @@ export async function listInvestigations(
   if (query.state) params.set("state", query.state);
   if (query.reviewState) params.set("reviewState", query.reviewState);
   if (query.classification) params.set("classification", query.classification);
+  if (query.groupByFunction) params.set("groupByFunction", "true");
   params.set("page", String(query.page ?? 1));
   params.set("pageSize", String(query.pageSize ?? 20));
   const res = await fetch(apiUrl(`/investigations?${params.toString()}`), {

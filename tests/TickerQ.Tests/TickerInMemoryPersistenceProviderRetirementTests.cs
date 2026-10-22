@@ -132,7 +132,7 @@ public sealed class TickerInMemoryPersistenceProviderRetirementTests : IAsyncLif
     {
         var fn = Fn("reappear-early");
         var row = Seeded(fn);
-        row.SeedKey = CronSeedIdentity.SeedKeyForFunction(fn);
+        row.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction(fn);
         row.RetirementRequestedAt = _now.AddHours(-2);
         await _provider.InsertCronTickers([row], CancellationToken.None);
 
@@ -151,7 +151,7 @@ public sealed class TickerInMemoryPersistenceProviderRetirementTests : IAsyncLif
     {
         var restoreFn = Fn("restore");
         var restore = Seeded(restoreFn);
-        restore.SeedKey = CronSeedIdentity.SeedKeyForFunction(restoreFn);
+        restore.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction(restoreFn);
         restore.RetirementRequestedAt = _now.AddHours(-25);
         restore.RetiredAt = _now.AddHours(-25);
         restore.IsEnabled = false;
@@ -159,7 +159,7 @@ public sealed class TickerInMemoryPersistenceProviderRetirementTests : IAsyncLif
 
         var keepFn = Fn("keep-disabled");
         var keep = Seeded(keepFn);
-        keep.SeedKey = CronSeedIdentity.SeedKeyForFunction(keepFn);
+        keep.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction(keepFn);
         keep.RetirementRequestedAt = _now.AddHours(-25);
         keep.RetiredAt = _now.AddHours(-25);
         keep.IsEnabled = false;
@@ -233,7 +233,7 @@ public sealed class TickerInMemoryPersistenceProviderRetirementTests : IAsyncLif
 
         var rows = await _provider.GetCronTickers(c => c.Function == fn, CancellationToken.None);
         Assert.Equal(2, rows.Length);
-        var seedKey = CronSeedIdentity.SeedKeyForFunction(fn);
+        var seedKey = CronSeedIdentity.LegacySeedKeyForFunction(fn);
         var canonical = Assert.Single(rows, r => r.SeedKey == seedKey);
         Assert.True(canonical.IsEnabled);
         var redundant = Assert.Single(rows, r => r.SeedKey == null);

@@ -4,10 +4,9 @@ using System.Collections.Generic;
 namespace TickerQ.EntityFrameworkCore.Entities
 {
     /// <summary>
-    /// One AI-assistant chat thread, scoped by <see cref="UserId"/>. Mapped
-    /// only when the operator opts in via
-    /// <c>TickerQEfCoreOptionBuilder.AddAssistantHistory()</c> — headless
-    /// setups get no new tables.
+    /// One AI-assistant chat thread, scoped by <see cref="UserId"/>. The table is
+    /// part of the complete TickerQ EF schema, while storage services are enabled
+    /// only through <c>TickerQEfCoreOptionBuilder.AddAssistantHistory()</c>.
     /// </summary>
     public class AssistantConversationEntity
     {

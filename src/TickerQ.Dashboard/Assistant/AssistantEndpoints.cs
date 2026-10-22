@@ -152,6 +152,8 @@ internal static class AssistantEndpoints
             State = ctx.Request.Query["state"].ToString(),
             ReviewState = ctx.Request.Query["reviewState"].ToString(),
             Classification = ctx.Request.Query["classification"].ToString(),
+            GroupByFunction = bool.TryParse(ctx.Request.Query["groupByFunction"], out var groupByFunction) &&
+                groupByFunction,
             PageNumber = int.TryParse(ctx.Request.Query["page"], out var page) ? page : 1,
             PageSize = int.TryParse(ctx.Request.Query["pageSize"], out var size) ? size : 20,
         };

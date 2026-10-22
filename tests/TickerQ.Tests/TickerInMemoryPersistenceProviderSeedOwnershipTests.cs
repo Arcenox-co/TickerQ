@@ -229,7 +229,7 @@ public sealed class TickerInMemoryPersistenceProviderSeedOwnershipTests : IAsync
 
         var rows = await _provider.GetCronTickers(c => c.Function == fn, CancellationToken.None);
         var row = Assert.Single(rows);
-        var expectedKey = CronSeedIdentity.SeedKeyForFunction(fn);
+        var expectedKey = CronSeedIdentity.LegacySeedKeyForFunction(fn);
         Assert.Equal(expectedKey, row.SeedKey);
         Assert.Equal(CronSeedIdentity.DeterministicId(expectedKey), row.Id);
     }
@@ -257,7 +257,7 @@ public sealed class TickerInMemoryPersistenceProviderSeedOwnershipTests : IAsync
         var rows = await _provider.GetCronTickers(c => c.Function == fn, CancellationToken.None);
         var row = Assert.Single(rows);
         Assert.Equal(legacyId, row.Id); // adopted in place — occurrences still resolve
-        Assert.Equal(CronSeedIdentity.SeedKeyForFunction(fn), row.SeedKey);
+        Assert.Equal(CronSeedIdentity.LegacySeedKeyForFunction(fn), row.SeedKey);
         Assert.Equal("0 */9 * * * *", row.Expression);
     }
 
@@ -283,7 +283,7 @@ public sealed class TickerInMemoryPersistenceProviderSeedOwnershipTests : IAsync
     public async Task KeyedCanonicalWithLowerIdLegacyDuplicate_KeepsKeyedRowCanonical()
     {
         var fn = Fn("keyed-canon");
-        var seedKey = CronSeedIdentity.SeedKeyForFunction(fn);
+        var seedKey = CronSeedIdentity.LegacySeedKeyForFunction(fn);
 
         var legacy = new FakeCronTicker
         {
@@ -362,7 +362,7 @@ public sealed class TickerInMemoryPersistenceProviderSeedOwnershipTests : IAsync
 
         var rows = await _provider.GetCronTickers(c => c.Function == fn, CancellationToken.None);
         Assert.Equal(2, rows.Length); // history preserved (retirement is Slice 3)
-        var seedKey = CronSeedIdentity.SeedKeyForFunction(fn);
+        var seedKey = CronSeedIdentity.LegacySeedKeyForFunction(fn);
         Assert.Single(rows, r => r.SeedKey == seedKey);
         Assert.Single(rows, r => r.SeedKey == null);
     }

@@ -32,10 +32,10 @@
 
 <p align="center">
   <a href="https://tickerq.net/docs/5.x/dashboard/tour">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard-overview.png" alt="TickerQ dashboard showing scheduler health, execution statistics, history, and navigation to jobs, diagnostics, and integrations" width="1200" />
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/overview.jpg" alt="TickerQ dashboard showing scheduler health, active nodes, execution statistics, recent jobs, and upcoming work" width="1200" />
   </a>
   <br />
-  <sub>A local monitoring demo with simulated failures and recovery. Workspace labels are anonymized.</sub>
+  <sub>The current 5.x dashboard running on a two-node documentation demo. Workspace and certificate identifiers are anonymized.</sub>
 </p>
 
 ## Why TickerQ
@@ -58,6 +58,87 @@ Understand what is scheduled, what is running, and what needs attention from the
 - **Diagnose runtime issues:** review scheduler health, execution ownership, registered functions, and retention settings.
 
 The optional **AI assistant** helps you explore jobs and logs in natural language and prepare jobs, schedules, or monitoring rules. It uses your configured model provider; you review and confirm changes before they are applied.
+
+### Explore the interface
+
+Select a view to expand its current dashboard screenshot.
+
+<details>
+<summary><strong>Workflow execution</strong> — follow parallel branches, conditions, outcomes, progress, and status</summary>
+
+<p align="center">
+  <a href="https://tickerq.net/docs/5.x/guides/job-chaining">
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/workflow.jpg" alt="TickerQ workflow flowchart with a parallel group and conditional outcome jobs" width="1200" />
+  </a>
+</p>
+
+</details>
+
+<details>
+<summary><strong>Visual workflow builder</strong> — create grouped branches and outcome steps without losing the job graph</summary>
+
+<p align="center">
+  <a href="https://tickerq.net/docs/5.x/dashboard/saved-work">
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/workflow-builder.jpg" alt="TickerQ visual workflow builder with grouped parallel jobs and final outcome steps" width="1200" />
+  </a>
+</p>
+
+</details>
+
+<details>
+<summary><strong>Execution details and logs</strong> — inspect lifecycle messages, retries, progress, errors, and application source frames</summary>
+
+<p align="center">
+  <a href="https://tickerq.net/docs/5.x/guides/execution-logs">
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/execution-logs.jpg" alt="TickerQ execution details with database-backed lifecycle logs and application failure evidence" width="1200" />
+  </a>
+</p>
+
+</details>
+
+<details>
+<summary><strong>Drafts and templates</strong> — keep unfinished work non-executable and reuse complete chain designs</summary>
+
+<p align="center">
+  <a href="https://tickerq.net/docs/5.x/dashboard/saved-work">
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/saved-work.jpg" alt="TickerQ Saved Work page with a one-time draft and reusable chain templates" width="1200" />
+  </a>
+</p>
+
+</details>
+
+<details>
+<summary><strong>Cluster nodes</strong> — compare replica health, capacity, queues, versions, and registered functions</summary>
+
+<p align="center">
+  <a href="https://tickerq.net/docs/5.x/dashboard/clustering">
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/nodes.jpg" alt="TickerQ Nodes page showing active replicas, execution capacity, and an offline node" width="1200" />
+  </a>
+</p>
+
+</details>
+
+<details>
+<summary><strong>AI Operations</strong> — review diagnoses, repeated failure patterns, recoveries, and proposed actions</summary>
+
+<p align="center">
+  <a href="https://tickerq.net/docs/5.x/dashboard/ai-assistant">
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/ai-operations.jpg" alt="TickerQ AI Operations overview with investigations, recovery signals, and recent failures" width="1200" />
+  </a>
+</p>
+
+</details>
+
+<details>
+<summary><strong>Integrations and monitoring</strong> — configure Slack, Teams, webhooks, alert rules, and monitors</summary>
+
+<p align="center">
+  <a href="https://tickerq.net/docs/5.x/integrations">
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/integrations.jpg" alt="TickerQ Integrations page with Slack and custom webhook connections" width="1200" />
+  </a>
+</p>
+
+</details>
 
 ## Alerts, deadlines, and recovery
 

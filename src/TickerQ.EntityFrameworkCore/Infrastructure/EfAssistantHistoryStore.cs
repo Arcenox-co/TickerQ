@@ -15,8 +15,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
     /// EF-backed <see cref="IAssistantHistoryStore"/> over the customer's
     /// TickerQ DbContext. Works with any <typeparamref name="TContext"/> the
     /// operational store registered — the assistant tables are part of the
-    /// same model (opt-in via <c>AddAssistantHistory()</c>), so they ride the
-    /// customer's normal migrations flow.
+    /// stable model, so they ride the customer's normal migrations flow.
+    /// <c>AddAssistantHistory()</c> enables the services that write to them.
     /// </summary>
     internal sealed class EfAssistantHistoryStore<TContext> : IAssistantHistoryStore, IAssistantProposalHistoryStore
         where TContext : DbContext

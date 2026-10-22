@@ -145,9 +145,12 @@ The generated model must include:
   index with `ApplicationNamespaceKey`; it prevents equivalent template names from being saved
   concurrently while allowing draft names to repeat. The JSON column stores configuration only.
   Drafts never enter the TimeTicker table until activation succeeds.
-- When `AddAssistantHistory()` is enabled, the `AssistantConversations`, `AssistantMessages`,
+- The `ExecutionLogs`, `AssistantConversations`, `AssistantMessages`,
   `AssistantInvestigations`, `AssistantInvestigationLeases`, and
-  `AssistantInvestigationBudgets` tables. Investigations are scoped by application namespace and
+  `AssistantInvestigationBudgets` tables. The complete EF schema includes these tables even when
+  persisted execution logs or assistant history are disabled, so activating either feature later
+  does not require another migration. Disabled features leave their tables empty. Investigations
+  are scoped by application namespace and
   use a unique namespace/execution index. Renewable fingerprint leases suppress overlapping model
   calls for the same failure pattern, and the budget row enforces one rolling hourly allowance
   across all nodes in the namespace.
@@ -228,8 +231,9 @@ selected functions ephemerally without inserting a cron definition or occurrence
 
 ### Add AI assistant investigation history
 
-Applications that opt into `AddAssistantHistory()` must generate the five assistant tables from
-the current EF model. `AssistantConversations` and `AssistantMessages` hold per-user chat history.
+Applications must generate the five assistant tables from the current complete EF model even when
+`AddAssistantHistory()` is not enabled. `AssistantConversations` and `AssistantMessages` hold
+per-user chat history when the service is enabled.
 `AssistantInvestigations` holds shared, structured diagnoses for the configured application
 namespace, including review state and detected recovery metadata.
 
@@ -241,7 +245,7 @@ each replica. Neither table stores prompts, source excerpts, logs, or model resp
 
 The unique `UX_AssistantInvestigation_Namespace_Execution` index is required. It is the atomic
 claim that stops multiple scheduler replicas from investigating the same execution. Apply all five
-tables before enabling automatic investigations; startup rejects automatic mode when either the
+tables as part of the normal TickerQ migration; startup rejects automatic mode when either the
 investigation store or cluster coordinator is unavailable. Deploying the tables does not enable AI
 or background model calls by itself.
 

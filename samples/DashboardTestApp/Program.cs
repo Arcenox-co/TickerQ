@@ -81,11 +81,6 @@ builder.Services.AddTickerQ(options =>
         });
     });
 
-    // Failure notifications: POSTs a JSON event for terminal failures, execution
-    // timeouts, and stale recoveries. Point at any HTTP sink (here: a local test
-    // listener; in production a Slack webhook proxy, PagerDuty, etc.).
-    options.NotifyFailuresViaWebhook("http://localhost:9911/tickerq-hook");
-
     // Default mount point: /tickerq/dashboard with three coexisting schemes.
     // Browser users get an HTTP-only cookie via /login; script clients can
     // use the JWT bearer token; legacy tooling can use Basic auth. On a 401

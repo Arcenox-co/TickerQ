@@ -48,7 +48,7 @@ Configure the host's authentication and `SchedulerOperators` authorization polic
 
 Protect the key-ring directory with service-account permissions, persist it across restarts, and share it across replicas. Use your deployment's supported Data Protection key-encryption mechanism for keys at rest. Losing the key ring makes existing destinations unreadable; back it up with the operational database. Do not use an ephemeral key provider in production.
 
-Use **either** this package **or** `NotifyFailuresViaWebhook(...)`. Registering both fails with a configuration error. To migrate, remove the old option, then add its URL, headers, and an appropriate rule in Integrations. Opting into this package replaces the `ITickerQFailureNotifier` registration.
+The package replaces the default no-op `ITickerQFailureNotifier` registration with its bounded delivery engine. Applications can alternatively register their own non-blocking notifier when they need a transport that Integrations does not provide.
 
 ## Storage and schema
 

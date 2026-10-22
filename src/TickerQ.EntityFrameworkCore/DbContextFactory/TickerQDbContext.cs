@@ -24,20 +24,14 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         string schema;
-        AssistantHistoryOptions assistantHistory;
-        var executionLogs = false;
         try
         {
             var optionBuilder = this.GetService<TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker>>();
             schema = optionBuilder?.Schema ?? Constants.DefaultSchema;
-            assistantHistory = optionBuilder?.AssistantHistory ?? AssistantHistoryOptions.Current;
-            executionLogs = optionBuilder?.ExecutionLogs?.PersistToDatabase == true;
         }
         catch (InvalidOperationException)
         {
             schema = Constants.DefaultSchema;
-            // Design-time (dotnet ef migrations) fallback — set by AddAssistantHistory().
-            assistantHistory = AssistantHistoryOptions.Current;
         }
 
         modelBuilder.ApplyConfiguration(new TimeTickerConfigurations<TTimeTicker>(schema));
@@ -51,18 +45,12 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
         modelBuilder.ApplyConfiguration(new TickerQControlCommandConfigurations(schema));
         modelBuilder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
         modelBuilder.ApplyConfiguration(new TickerQDefinitionConfigurations(schema));
-        if (executionLogs) modelBuilder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
-
-        // Assistant chat history tables — mapped only when opted in via
-        // AddAssistantHistory(), so headless setups get no schema changes.
-        if (assistantHistory != null)
-        {
-            modelBuilder.ApplyConfiguration(new AssistantConversationConfigurations(schema));
-            modelBuilder.ApplyConfiguration(new AssistantMessageConfigurations(schema));
-            modelBuilder.ApplyConfiguration(new AssistantInvestigationConfigurations(schema));
-            modelBuilder.ApplyConfiguration(new AssistantInvestigationLeaseConfigurations(schema));
-            modelBuilder.ApplyConfiguration(new AssistantInvestigationBudgetConfigurations(schema));
-        }
+        modelBuilder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
+        modelBuilder.ApplyConfiguration(new AssistantConversationConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new AssistantMessageConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new AssistantInvestigationConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new AssistantInvestigationLeaseConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new AssistantInvestigationBudgetConfigurations(schema));
 
         base.OnModelCreating(modelBuilder);
     }

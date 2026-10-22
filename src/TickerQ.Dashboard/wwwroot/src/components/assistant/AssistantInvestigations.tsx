@@ -91,7 +91,7 @@ export function AssistantInvestigations({
   useEffect(() => {
     if (!available) return;
     const controller = new AbortController();
-    listInvestigations({ search: delayedSearch, reviewState, page, pageSize: 20 }, controller.signal)
+    listInvestigations({ search: delayedSearch, reviewState, groupByFunction: true, page, pageSize: 20 }, controller.signal)
       .then((value) => {
         setResult(value);
         setSelected((current) => current

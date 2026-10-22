@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -123,24 +122,8 @@ namespace TickerQ.DependencyInjection
             services.AddSingleton<TickerQInitializerHostedService>();
             services.AddHostedService(sp => sp.GetRequiredService<TickerQInitializerHostedService>());
 
-            // Only register background services if enabled (default is true)
-            // Stop the webhook pump after every job/failure producer has drained.
-            // Failure notifications: built-in webhook when configured, else no-op.
-            // TryAdd lets users register their own ITickerQFailureNotifier beforehand.
-            if (optionInstance.FailureWebhook != null)
-            {
-                if (services.Any(s => s.ServiceType == typeof(Utilities.Integrations.ITickerIntegrationAdminService)))
-                    throw new InvalidOperationException("Use either AddIntegrations or NotifyFailuresViaWebhook. Move the existing webhook into an integration destination before enabling the optional package.");
-                services.AddSingleton(optionInstance.FailureWebhook);
-                if (optionInstance.FailureWebhook.ShutdownDrainTimeout < TimeSpan.Zero ||
-                    optionInstance.FailureWebhook.ShutdownDrainTimeout.TotalMilliseconds > uint.MaxValue - 1)
-                    throw new ArgumentOutOfRangeException(nameof(FailureWebhookOptions.ShutdownDrainTimeout));
-                services.AddSingleton(sp => new WebhookFailureNotifier(
-                    optionInstance.FailureWebhook,
-                    sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<WebhookFailureNotifier>>()));
-                services.TryAddSingleton<ITickerQFailureNotifier>(sp => sp.GetRequiredService<WebhookFailureNotifier>());
-                services.AddHostedService<TickerQWebhookNotifierBackgroundService>();
-            }
+            // Failure delivery remains optional. The Integrations package or an
+            // application-owned notifier can replace this no-op registration.
             services.TryAddSingleton<ITickerQFailureNotifier, NoOpTickerQFailureNotifier>();
 
             if (optionInstance.RegisterBackgroundServices)

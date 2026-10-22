@@ -444,10 +444,10 @@ public class DashboardEndpointTests
     #region DashboardOptionsBuilder — Auth Configuration
 
     [Fact]
-    public void WithNoAuth_SetsNoneMode()
+    public void AllowAnonymousDashboard_SetsNoneMode()
     {
         var builder = new DashboardOptionsBuilder();
-        builder.WithNoAuth();
+        builder.AllowAnonymousDashboard();
 
         Assert.Equal(AuthMode.None, builder.Auth.Mode);
     }
@@ -574,7 +574,7 @@ public class DashboardEndpointTests
     {
         var builder = new DashboardOptionsBuilder();
 
-        var result = builder.WithNoAuth().WithSessionTimeout(45);
+        var result = builder.AllowAnonymousDashboard().WithSessionTimeout(45);
 
         Assert.Same(builder, result);
     }

@@ -275,6 +275,8 @@ credentials to the browser. See the [AI run investigator guide](../../docs/ai-ru
 The AI page is an operations workspace with **Overview**, **Chat**, and **Investigations**.
 When `AddAssistantHistory()` is enabled on the EF operational store, the overview shows saved
 diagnoses, unread findings, repeated failure patterns, and later successful recoveries.
+The complete TickerQ EF model already contains the assistant tables; enabling the service later
+does not change the model or require another migration.
 Investigations can be marked as read, resolved, or reopened; those review changes persist in the
 operational store.
 Investigations are shared within the application namespace; conversations remain private to the

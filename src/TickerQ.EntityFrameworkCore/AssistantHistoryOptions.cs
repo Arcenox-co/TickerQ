@@ -18,15 +18,23 @@ namespace TickerQ.EntityFrameworkCore
         /// <summary>Max structured run investigations kept per application namespace (default 500).</summary>
         public int MaxInvestigationsPerNamespace { get; set; } = 500;
 
-        /// <summary>How long completed structured investigations are retained (default 30 days).</summary>
+        /// <summary>
+        /// How long non-processing structured investigations are retained from creation
+        /// (default 30 days). A configured state-specific window replaces this window while
+        /// the investigation is in that state.
+        /// </summary>
         public TimeSpan InvestigationRetention { get; set; } = TimeSpan.FromDays(30);
 
         /// <summary>
-        /// Fallback for design-time model building (dotnet ef migrations),
-        /// where the option builder may not be resolvable from DI. Set when
-        /// AddAssistantHistory() is called — same lifecycle as the schema
-        /// fallback in TickerQDbContext.
+        /// Optional retention window for an investigation marked read, measured from
+        /// the time it entered the Reviewed state. Null or a non-positive value disables it.
         /// </summary>
-        internal static AssistantHistoryOptions Current { get; set; }
+        public TimeSpan? ReadInvestigationRetention { get; set; }
+
+        /// <summary>
+        /// Optional retention window for an investigation marked resolved, measured
+        /// from the time it entered the Resolved state. Null or a non-positive value disables it.
+        /// </summary>
+        public TimeSpan? ResolvedInvestigationRetention { get; set; }
     }
 }

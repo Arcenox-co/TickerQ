@@ -68,17 +68,28 @@ options.AddOperationalStore(efOptions =>
         history.MaxMessagesPerConversation = 80;
         history.MaxInvestigationsPerNamespace = 500;
         history.InvestigationRetention = TimeSpan.FromDays(30);
+        history.ReadInvestigationRetention = TimeSpan.FromDays(14);
+        history.ResolvedInvestigationRetention = TimeSpan.FromDays(7);
     });
 });
 ```
 
-`AddAssistantHistory(...)` adds `AssistantConversations`, `AssistantMessages`,
+The complete TickerQ EF model always includes `AssistantConversations`, `AssistantMessages`,
 `AssistantInvestigations`, `AssistantInvestigationLeases`, and
-`AssistantInvestigationBudgets` to the application-owned EF model. Generate and apply an EF
-migration before enabling it on an existing database. The final two tables coordinate automatic
-investigations across nodes; they contain fingerprints, lease ownership, and model-call timestamps,
-not prompts or model responses. Without a durable history store, Chat falls back to browser-local
-history and the shared Overview/Investigations views remain unavailable.
+`AssistantInvestigationBudgets`. Generate and apply the current EF migration when upgrading;
+enabling `AddAssistantHistory(...)` later does not change the model or require another migration.
+The final two tables coordinate automatic investigations across nodes; they contain fingerprints,
+lease ownership, and model-call timestamps, not prompts or model responses. Without
+`AddAssistantHistory(...)`, TickerQ does not write new assistant-history rows, Chat falls back to
+browser-local history, and the shared Overview/Investigations views remain unavailable.
+
+Non-processing investigations are retained for 30 days by default and the store keeps at most 500
+visible investigations per application namespace. Configure `InvestigationRetention` and
+`MaxInvestigationsPerNamespace` to change those limits. Optional
+`ReadInvestigationRetention` and `ResolvedInvestigationRetention` windows begin when an
+investigation enters the corresponding state and replace the general creation-based window while
+it remains in that state. A `null` or non-positive value leaves that state-specific window
+disabled. The store enforces these limits when it records a new investigation.
 
 ## Automatic investigations
 

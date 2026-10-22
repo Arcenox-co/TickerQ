@@ -68,7 +68,7 @@ public sealed class TickerInMemoryPersistenceProviderExpressionReconciliationTes
             Function = fn,
             Expression = expression,
             InitIdentifier = $"MemoryTicker_Seeded_{fn}",
-            SeedKey = CronSeedIdentity.SeedKeyForFunction(fn),
+            SeedKey = CronSeedIdentity.LegacySeedKeyForFunction(fn),
             CreatedAt = _now.AddDays(-1),
             UpdatedAt = _now.AddDays(-1),
             Request = Array.Empty<byte>(),

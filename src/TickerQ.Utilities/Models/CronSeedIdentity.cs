@@ -156,9 +156,8 @@ namespace TickerQ.Utilities.Models
                string.Equals(left.Normalize(NormalizationForm.FormC),
                    right.Normalize(NormalizationForm.FormC), StringComparison.Ordinal);
 
-        /// <summary>The legacy, pre-namespace ownership key retained only for adoption compatibility.</summary>
-        [Obsolete("Use SeedKey(applicationNamespace, stableDefinitionId) for shared-store-safe identity.")]
-        public static string SeedKeyForFunction(string function)
+        /// <summary>The legacy, pre-namespace ownership key retained only for internal adoption compatibility.</summary>
+        internal static string LegacySeedKeyForFunction(string function)
             => function ?? throw new ArgumentNullException(nameof(function));
 
         /// <summary>The deterministic primary key for a newly created seed row.</summary>

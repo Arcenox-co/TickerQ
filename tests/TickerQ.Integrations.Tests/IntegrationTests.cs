@@ -244,22 +244,6 @@ public class IntegrationTests
         Assert.Contains("already registered", exception.Message);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void Registration_RejectsMixingLegacyAndDynamicIntegrations(bool first)
-    {
-        var services = new ServiceCollection();
-        var exception = Assert.Throws<InvalidOperationException>(() => services.AddTickerQ(options =>
-        {
-            options.UseApplicationNamespace("integration-tests");
-            if (first) options.AddIntegrations();
-            options.NotifyFailuresViaWebhook("https://example.com/legacy");
-            if (!first) options.AddIntegrations();
-        }));
-        Assert.Contains("Use either AddIntegrations or NotifyFailuresViaWebhook", exception.Message);
-    }
-
     public sealed class CustomTimeTicker : TimeTickerEntity<CustomTimeTicker>;
     public sealed class CustomCronTicker : CronTickerEntity;
 

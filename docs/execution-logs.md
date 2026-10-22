@@ -68,11 +68,12 @@ implement that contract. Set `logs.Enabled = false` to turn capture off complete
 
 ### EF Core
 
-When enabled, TickerQ's DbContext/model customizer maps an `ExecutionLogs` table in the
-configured TickerQ schema. **Generate, review and apply an EF migration before enabling
-the feature in production.** Use the same log configuration at design time so the
-migration includes the new table and indexes. An existing database is not upgraded by
-`EnsureCreated`. TickerQ does not silently create this table in a production database.
+TickerQ's complete DbContext/model customizer always maps an `ExecutionLogs` table in the
+configured TickerQ schema. **Generate, review and apply the current EF migration when
+upgrading.** Enabling `PersistToDatabase` later registers the writer and reader services but
+does not change the EF model or require another migration. When persistence is disabled, TickerQ
+does not write new rows to this table. An existing database is not upgraded by `EnsureCreated`,
+and TickerQ does not silently create this table in a production database.
 
 If you configure your application model manually, include this mapping in both the
 runtime and design-time model:

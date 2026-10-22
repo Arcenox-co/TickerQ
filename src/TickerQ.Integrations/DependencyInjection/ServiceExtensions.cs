@@ -6,7 +6,6 @@ using TickerQ.Integrations.Monitoring;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
-using TickerQ.Utilities.Models;
 using TickerQ.Utilities.Integrations;
 
 namespace TickerQ.Integrations.DependencyInjection;
@@ -48,8 +47,6 @@ public static class ServiceExtensions
     {
         if (services.Any(s => s.ServiceType == typeof(IntegrationOptions)))
             throw new InvalidOperationException("TickerQ integrations are already registered.");
-        if (services.Any(s => s.ServiceType == typeof(FailureWebhookOptions)))
-            throw new InvalidOperationException("Use either AddIntegrations or NotifyFailuresViaWebhook. Move the existing webhook into an integration destination before enabling the optional package.");
         services.AddSingleton(options);
         services.AddDataProtection();
         services.AddLogging();

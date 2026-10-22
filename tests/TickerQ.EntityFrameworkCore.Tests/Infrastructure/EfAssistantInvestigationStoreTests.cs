@@ -78,6 +78,45 @@ public sealed class EfAssistantInvestigationStoreTests
     }
 
     [Fact]
+    public async Task Grouped_list_pages_function_cards_without_splitting_their_history()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<InvestigationContext>().UseSqlite(connection).Options;
+        await using var db = new InvestigationContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var store = new EfAssistantInvestigationStore<InvestigationContext>(db,
+            new AssistantHistoryOptions { MaxInvestigationsPerNamespace = 50 });
+        var now = DateTime.UtcNow;
+
+        Assert.NotNull(await store.TryStartAsync(Seed("orders", Guid.NewGuid(),
+            now.AddMinutes(-1), "Demo.AnotherFailure")));
+        for (var index = 0; index < 20; index++)
+            Assert.NotNull(await store.TryStartAsync(Seed("orders", Guid.NewGuid(),
+                now.AddSeconds(index), "Demo.Failure")));
+
+        var firstPage = await store.ListAsync("orders", new AssistantInvestigationQuery
+        {
+            GroupByFunction = true,
+            PageNumber = 1,
+            PageSize = 1,
+        });
+        var secondPage = await store.ListAsync("orders", new AssistantInvestigationQuery
+        {
+            GroupByFunction = true,
+            PageNumber = 2,
+            PageSize = 1,
+        });
+
+        Assert.Equal(2, firstPage.TotalCount);
+        Assert.Equal(2, firstPage.TotalPages);
+        Assert.Equal(20, firstPage.Items.Count);
+        Assert.All(firstPage.Items, item => Assert.Equal("Demo.Failure", item.FunctionName));
+        Assert.Single(secondPage.Items);
+        Assert.Equal("Demo.AnotherFailure", secondPage.Items[0].FunctionName);
+    }
+
+    [Fact]
     public async Task Reusable_diagnosis_requires_matching_namespace_fingerprint_and_completed_state()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -135,6 +174,119 @@ public sealed class EfAssistantInvestigationStoreTests
         Assert.Equal(olderId.Value, page.Items[1].Id);
         Assert.Equal(newerId.Value, overview.Recent[0].Id);
         Assert.Equal(olderId.Value, overview.Recent[1].Id);
+    }
+
+    [Fact]
+    public async Task Reading_an_investigation_does_not_extend_its_time_based_retention()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<InvestigationContext>().UseSqlite(connection).Options;
+        await using var db = new InvestigationContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var store = new EfAssistantInvestigationStore<InvestigationContext>(db,
+            new AssistantHistoryOptions { InvestigationRetention = TimeSpan.FromDays(1) });
+
+        var oldId = await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow.AddDays(-2)));
+        await store.CompleteAsync("orders", oldId!.Value, "old diagnosis", "ops-model");
+        await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == oldId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.CreatedAt,
+                DateTime.UtcNow.AddDays(-2)));
+        Assert.True(await store.SetReviewStateAsync("orders", oldId.Value,
+            AssistantInvestigationValues.Reviewed, "operator-1"));
+
+        Assert.NotNull(await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow)));
+
+        Assert.Null(await store.GetAsync("orders", oldId.Value));
+    }
+
+    [Theory]
+    [InlineData(AssistantInvestigationValues.Reviewed)]
+    [InlineData(AssistantInvestigationValues.Resolved)]
+    public async Task Optional_review_state_retention_starts_at_the_state_transition(string reviewState)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<InvestigationContext>().UseSqlite(connection).Options;
+        await using var db = new InvestigationContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var store = new EfAssistantInvestigationStore<InvestigationContext>(db,
+            new AssistantHistoryOptions
+            {
+                InvestigationRetention = TimeSpan.FromDays(30),
+                ReadInvestigationRetention = TimeSpan.FromDays(1),
+                ResolvedInvestigationRetention = TimeSpan.FromDays(1),
+            });
+
+        var expiringId = await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow));
+        await store.CompleteAsync("orders", expiringId!.Value, "diagnosis", "ops-model");
+        Assert.True(await store.SetReviewStateAsync("orders", expiringId.Value,
+            reviewState, "operator-1"));
+        await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == expiringId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ReviewedAt,
+                DateTime.UtcNow.AddDays(-2)));
+
+        Assert.NotNull(await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow)));
+
+        Assert.Null(await store.GetAsync("orders", expiringId.Value));
+    }
+
+    [Theory]
+    [InlineData(AssistantInvestigationValues.Reviewed)]
+    [InlineData(AssistantInvestigationValues.Resolved)]
+    public async Task Null_review_state_retention_keeps_the_general_window(string reviewState)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<InvestigationContext>().UseSqlite(connection).Options;
+        await using var db = new InvestigationContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var store = new EfAssistantInvestigationStore<InvestigationContext>(db,
+            new AssistantHistoryOptions { InvestigationRetention = TimeSpan.FromDays(30) });
+
+        var retainedId = await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow));
+        await store.CompleteAsync("orders", retainedId!.Value, "diagnosis", "ops-model");
+        Assert.True(await store.SetReviewStateAsync("orders", retainedId.Value,
+            reviewState, "operator-1"));
+        await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == retainedId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ReviewedAt,
+                DateTime.UtcNow.AddDays(-2)));
+
+        Assert.NotNull(await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow)));
+
+        Assert.NotNull(await store.GetAsync("orders", retainedId.Value));
+    }
+
+    [Theory]
+    [InlineData(AssistantInvestigationValues.Reviewed)]
+    [InlineData(AssistantInvestigationValues.Resolved)]
+    public async Task Configured_review_state_retention_replaces_the_general_window(string reviewState)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<InvestigationContext>().UseSqlite(connection).Options;
+        await using var db = new InvestigationContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var store = new EfAssistantInvestigationStore<InvestigationContext>(db,
+            new AssistantHistoryOptions
+            {
+                InvestigationRetention = TimeSpan.FromDays(1),
+                ReadInvestigationRetention = TimeSpan.FromDays(7),
+                ResolvedInvestigationRetention = TimeSpan.FromDays(7),
+            });
+
+        var retainedId = await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow));
+        await store.CompleteAsync("orders", retainedId!.Value, "diagnosis", "ops-model");
+        Assert.True(await store.SetReviewStateAsync("orders", retainedId.Value,
+            reviewState, "operator-1"));
+        await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == retainedId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(x => x.CreatedAt, DateTime.UtcNow.AddDays(-2))
+                .SetProperty(x => x.ReviewedAt, DateTime.UtcNow));
+
+        Assert.NotNull(await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow)));
+
+        Assert.NotNull(await store.GetAsync("orders", retainedId.Value));
     }
 
     [Fact]

@@ -339,6 +339,45 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 rows = rows.Where(x => x.FunctionName.Contains(search) || x.ExecutionId.ToString().Contains(search));
             }
 
+            if (query.GroupByFunction)
+            {
+                var groupedRows = rows.GroupBy(x => x.FunctionName)
+                    .Select(group => new
+                    {
+                        FunctionName = group.Key,
+                        LatestCreatedAt = group.Max(x => x.CreatedAt),
+                    });
+                var groupCount = await groupedRows.CountAsync(cancellationToken);
+                var functionNames = await groupedRows
+                    .OrderByDescending(group => group.LatestCreatedAt)
+                    .ThenBy(group => group.FunctionName)
+                    .Skip((page - 1) * size)
+                    .Take(size)
+                    .Select(group => group.FunctionName)
+                    .ToListAsync(cancellationToken);
+                var groupOrder = functionNames
+                    .Select((functionName, index) => new { functionName, index })
+                    .ToDictionary(item => item.functionName, item => item.index, StringComparer.Ordinal);
+                var groupedEntities = functionNames.Count == 0
+                    ? []
+                    : await rows.Where(x => functionNames.Contains(x.FunctionName))
+                        .ToListAsync(cancellationToken);
+                var orderedEntities = groupedEntities
+                    .OrderBy(x => groupOrder[x.FunctionName])
+                    .ThenByDescending(x => x.CreatedAt)
+                    .ThenByDescending(x => x.Id)
+                    .Select(Map)
+                    .ToArray();
+
+                return new AssistantInvestigationPage
+                {
+                    Items = orderedEntities,
+                    TotalCount = groupCount,
+                    PageNumber = page,
+                    PageSize = size,
+                };
+            }
+
             var count = await rows.CountAsync(cancellationToken);
             var entities = await rows.OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Id)
                 .Skip((page - 1) * size).Take(size).ToListAsync(cancellationToken);
@@ -457,12 +496,45 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
         private async Task PruneAsync(string applicationNamespace, CancellationToken cancellationToken)
         {
-            var cutoff = DateTime.UtcNow - (_options.InvestigationRetention <= TimeSpan.Zero
+            var now = DateTime.UtcNow;
+            var cutoff = now - (_options.InvestigationRetention <= TimeSpan.Zero
                 ? TimeSpan.FromDays(30) : _options.InvestigationRetention);
-            await Investigations.Where(x => x.ApplicationNamespace == applicationNamespace &&
-                x.CreatedAt < cutoff &&
+            var expirable = Investigations.Where(x => x.ApplicationNamespace == applicationNamespace &&
                 x.State != AssistantInvestigationValues.Processing &&
-                x.State != AssistantInvestigationValues.Dismissed)
+                x.State != AssistantInvestigationValues.Dismissed);
+            var readRetention = _options.ReadInvestigationRetention;
+            var resolvedRetention = _options.ResolvedInvestigationRetention;
+            var readRetentionEnabled = readRetention.HasValue && readRetention.Value > TimeSpan.Zero;
+            var resolvedRetentionEnabled = resolvedRetention.HasValue &&
+                resolvedRetention.Value > TimeSpan.Zero;
+
+            if (readRetentionEnabled)
+            {
+                var readCutoff = now - readRetention.GetValueOrDefault();
+                await expirable.Where(x =>
+                        x.ReviewState == AssistantInvestigationValues.Reviewed &&
+                        x.ReviewedAt != null && x.ReviewedAt < readCutoff)
+                    .ExecuteDeleteAsync(cancellationToken);
+            }
+
+            if (resolvedRetentionEnabled)
+            {
+                var resolvedCutoff = now - resolvedRetention.GetValueOrDefault();
+                await expirable.Where(x =>
+                        x.ReviewState == AssistantInvestigationValues.Resolved &&
+                        x.ReviewedAt != null && x.ReviewedAt < resolvedCutoff)
+                    .ExecuteDeleteAsync(cancellationToken);
+            }
+
+            var generallyExpirable = expirable;
+            if (readRetentionEnabled)
+                generallyExpirable = generallyExpirable.Where(x =>
+                    x.ReviewState != AssistantInvestigationValues.Reviewed || x.ReviewedAt == null);
+            if (resolvedRetentionEnabled)
+                generallyExpirable = generallyExpirable.Where(x =>
+                    x.ReviewState != AssistantInvestigationValues.Resolved || x.ReviewedAt == null);
+
+            await generallyExpirable.Where(x => x.CreatedAt < cutoff)
                 .ExecuteDeleteAsync(cancellationToken);
 
             // Automatic investigation lookback is capped at one day. Keep deletion tombstones
@@ -472,7 +544,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var tombstoneRetention = _options.InvestigationRetention > TimeSpan.FromDays(2)
                 ? _options.InvestigationRetention
                 : TimeSpan.FromDays(2);
-            var tombstoneCutoff = DateTime.UtcNow - tombstoneRetention;
+            var tombstoneCutoff = now - tombstoneRetention;
             await Investigations.Where(x => x.ApplicationNamespace == applicationNamespace &&
                 x.CreatedAt < tombstoneCutoff && x.State == AssistantInvestigationValues.Dismissed)
                 .ExecuteDeleteAsync(cancellationToken);
@@ -481,7 +553,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var excess = await Investigations.Where(x => x.ApplicationNamespace == applicationNamespace &&
                     x.State != AssistantInvestigationValues.Processing &&
                     x.State != AssistantInvestigationValues.Dismissed)
-                .OrderByDescending(x => x.UpdatedAt).Skip(keep).Select(x => x.Id)
+                .OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Id)
+                .Skip(keep).Select(x => x.Id)
                 .ToListAsync(cancellationToken);
             if (excess.Count > 0)
                 await Investigations.Where(x => excess.Contains(x.Id)).ExecuteDeleteAsync(cancellationToken);

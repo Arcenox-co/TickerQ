@@ -551,7 +551,7 @@ public abstract class DefinedCronMigrationContractTests
 
         var rows = await Provider.GetCronTickers(r => r.Function == "seedkey-fn", CancellationToken.None);
         var row = Assert.Single(rows);
-        var expectedKey = CronSeedIdentity.SeedKeyForFunction("seedkey-fn");
+        var expectedKey = CronSeedIdentity.LegacySeedKeyForFunction("seedkey-fn");
         Assert.Equal(expectedKey, row.SeedKey);
         Assert.Equal(CronSeedIdentity.DeterministicId(expectedKey), row.Id);
     }
@@ -572,7 +572,7 @@ public abstract class DefinedCronMigrationContractTests
         var rows = await Provider.GetCronTickers(r => r.Function == "legacy-fn", CancellationToken.None);
         var row = Assert.Single(rows);
         Assert.Equal(legacy.Id, row.Id); // adopted in place — occurrences still resolve
-        Assert.Equal(CronSeedIdentity.SeedKeyForFunction("legacy-fn"), row.SeedKey);
+        Assert.Equal(CronSeedIdentity.LegacySeedKeyForFunction("legacy-fn"), row.SeedKey);
         Assert.Equal(CronExpression.Parse("*/7 * * * *").Value, row.Expression); // reconciled in place
     }
 
@@ -623,7 +623,7 @@ public abstract class DefinedCronMigrationContractTests
 
         var rows = await Provider.GetCronTickers(r => r.Function == "dup-fn", CancellationToken.None);
         Assert.Equal(2, rows.Length); // history preserved; no destructive delete in Slice 2
-        var seedKey = CronSeedIdentity.SeedKeyForFunction("dup-fn");
+        var seedKey = CronSeedIdentity.LegacySeedKeyForFunction("dup-fn");
         Assert.Single(rows, r => r.SeedKey == seedKey); // exactly one canonical owner
         Assert.Single(rows, r => r.SeedKey == null);    // extra stays null-keyed until Slice 3
     }
@@ -706,7 +706,7 @@ public abstract class DefinedCronMigrationContractTests
     public async Task ReappearanceBeforeGrace_CancelsRetirement()
     {
         var row = SeededRow("reappear-early-fn");
-        row.SeedKey = CronSeedIdentity.SeedKeyForFunction("reappear-early-fn");
+        row.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("reappear-early-fn");
         row.RetirementRequestedAt = Now.AddHours(-2); // in grace, not yet retired
         row.RetiredAt = null;
         row.IsEnabled = true;
@@ -730,7 +730,7 @@ public abstract class DefinedCronMigrationContractTests
     public async Task ReappearanceAfterRetirement_RestoresFrameworkDisabledState()
     {
         var row = SeededRow("restore-fn");
-        row.SeedKey = CronSeedIdentity.SeedKeyForFunction("restore-fn");
+        row.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("restore-fn");
         row.RetirementRequestedAt = Now.AddHours(-25);
         row.RetiredAt = Now.AddHours(-25);
         row.IsEnabled = false;                       // framework disabled it
@@ -754,7 +754,7 @@ public abstract class DefinedCronMigrationContractTests
     public async Task ReappearanceAfterRetirement_PreservesUserDisabledState()
     {
         var row = SeededRow("keep-disabled-fn");
-        row.SeedKey = CronSeedIdentity.SeedKeyForFunction("keep-disabled-fn");
+        row.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("keep-disabled-fn");
         row.RetirementRequestedAt = Now.AddHours(-25);
         row.RetiredAt = Now.AddHours(-25);
         row.IsEnabled = false;
@@ -778,7 +778,7 @@ public abstract class DefinedCronMigrationContractTests
     public async Task UserDisabledDesiredSeed_RemainsDisabled()
     {
         var row = SeededRow("user-disabled-fn");
-        row.SeedKey = CronSeedIdentity.SeedKeyForFunction("user-disabled-fn");
+        row.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("user-disabled-fn");
         row.IsEnabled = false;   // user disabled an actively-desired seed
         await Provider.InsertCronTickers([row], CancellationToken.None);
 
@@ -808,7 +808,7 @@ public abstract class DefinedCronMigrationContractTests
         var rows = await Provider.GetCronTickers(r => r.Function == "dup-retire-fn", CancellationToken.None);
         Assert.Equal(2, rows.Length); // both preserved
 
-        var seedKey = CronSeedIdentity.SeedKeyForFunction("dup-retire-fn");
+        var seedKey = CronSeedIdentity.LegacySeedKeyForFunction("dup-retire-fn");
         var canonical = Assert.Single(rows, r => r.SeedKey == seedKey);
         Assert.True(canonical.IsEnabled);
         Assert.Null(canonical.RetiredAt);
@@ -830,7 +830,7 @@ public abstract class DefinedCronMigrationContractTests
     [Fact]
     public async Task KeyedCanonicalWithLowerIdLegacyDuplicate_KeepsKeyedRowCanonical_NoKeyMovement()
     {
-        var seedKey = CronSeedIdentity.SeedKeyForFunction("keyed-canon-fn");
+        var seedKey = CronSeedIdentity.LegacySeedKeyForFunction("keyed-canon-fn");
 
         // Ids differ only in the final byte, so .NET Guid ordering puts the legacy row first.
         var legacy = SeededRow("keyed-canon-fn");
@@ -883,7 +883,7 @@ public abstract class DefinedCronMigrationContractTests
     {
         var row = SeededRow("expr-change-fn", "*/5 * * * *");
         row.Request = [11, 22, 33];
-        row.SeedKey = CronSeedIdentity.SeedKeyForFunction("expr-change-fn");
+        row.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("expr-change-fn");
         await Provider.InsertCronTickers([row], CancellationToken.None);
         var pending = NewOccurrence(row.Id);
         await Provider.InsertCronTickerOccurrences([pending], CancellationToken.None);
@@ -904,7 +904,7 @@ public abstract class DefinedCronMigrationContractTests
     public async Task ContractOnlyChange_QuarantinesUnleasedPendingOccurrence()
     {
         var row = SeededRow("contract-change-fn", "*/5 * * * *");
-        row.SeedKey = CronSeedIdentity.SeedKeyForFunction("contract-change-fn");
+        row.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("contract-change-fn");
         row.RequestContractVersion = 1;
         row.RequestContractFingerprint = "sha256:old";
         await Provider.InsertCronTickers([row], CancellationToken.None);
@@ -927,7 +927,7 @@ public abstract class DefinedCronMigrationContractTests
     public async Task UnchangedReconcile_KeepsPendingOccurrence()
     {
         var row = SeededRow("noop-fn", "*/5 * * * *");
-        row.SeedKey = CronSeedIdentity.SeedKeyForFunction("noop-fn");
+        row.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("noop-fn");
         row.RequestContractVersion = 1;
         row.RequestContractFingerprint = "sha256:same";
         await Provider.InsertCronTickers([row], CancellationToken.None);
@@ -1001,7 +1001,7 @@ public abstract class DefinedCronMigrationContractTests
     public async Task ExpressionChange_QuarantinesUnleasedPending_PreservesLiveLeasesAndTerminalEvidence()
     {
         var row = SeededRow("preserve-fn", "*/5 * * * *");
-        row.SeedKey = CronSeedIdentity.SeedKeyForFunction("preserve-fn");
+        row.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("preserve-fn");
         await Provider.InsertCronTickers([row], CancellationToken.None);
 
         var pending = NewOccurrence(row.Id);
@@ -1039,7 +1039,7 @@ public abstract class DefinedCronMigrationContractTests
     public async Task RepeatedExpressionReconcile_IsIdempotent_AfterPendingQuarantine()
     {
         var row = SeededRow("idem-clean-fn", "*/5 * * * *");
-        row.SeedKey = CronSeedIdentity.SeedKeyForFunction("idem-clean-fn");
+        row.SeedKey = CronSeedIdentity.LegacySeedKeyForFunction("idem-clean-fn");
         await Provider.InsertCronTickers([row], CancellationToken.None);
         var pending = NewOccurrence(row.Id);
         await Provider.InsertCronTickerOccurrences([pending], CancellationToken.None);

@@ -16,6 +16,7 @@
     <Project Path="benchmarks/TickerQ.Benchmarks/TickerQ.Benchmarks.csproj" />
   </Folder>
   <Folder Name="/samples/">
+    <Project Path="samples/TickerQ.Docs.Demo/TickerQ.Docs.Demo.csproj" />
     <Project Path="samples/TickerQ.Sample.LicenseSmoke/TickerQ.Sample.LicenseSmoke.csproj" />
     <Project Path="samples/TickerQ.Sample.ApplicationDbContext/TickerQ.Sample.ApplicationDbContext.csproj" />
     <Project Path="samples/TickerQ.Sample.Console/TickerQ.Sample.Console.csproj" />

@@ -153,7 +153,7 @@ namespace TickerQ.Utilities.Models
         public bool IsOrphanedSeedFunction(string function) => !_desiredSeedFunctions.Contains(function);
 
         public string SeedKeyFor(DefinedCronTickerSeed seed) => IsLegacyGlobal
-            ? CronSeedIdentity.SeedKeyForFunction(seed.Function)
+            ? CronSeedIdentity.LegacySeedKeyForFunction(seed.Function)
             : CronSeedIdentity.SeedKey(ApplicationNamespace, seed.StableDefinitionId);
 
         public bool IsOrphanedSeedKey(string seedKey) => !_desiredSeedKeys.Contains(seedKey);

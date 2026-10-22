@@ -217,16 +217,13 @@ public class DashboardOptionsBuilder
         return this;
     }
     
-    /// <summary>Configure no authentication (public dashboard)</summary>
-    public DashboardOptionsBuilder WithNoAuth()
+    /// <summary>Explicitly acknowledge that all dashboard data and mutations are public.</summary>
+    public DashboardOptionsBuilder AllowAnonymousDashboard()
     {
         Auth.Mode = AuthMode.None;
         AnonymousDashboardAcknowledged = true;
         return this;
     }
-
-    /// <summary>Explicitly acknowledge that all dashboard data and mutations are public.</summary>
-    public DashboardOptionsBuilder AllowAnonymousDashboard() => WithNoAuth();
 
     /// <summary>Enable Basic Authentication with username/password</summary>
     public DashboardOptionsBuilder WithBasicAuth(string username, string password)

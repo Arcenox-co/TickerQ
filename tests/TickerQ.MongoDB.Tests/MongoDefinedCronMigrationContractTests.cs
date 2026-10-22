@@ -36,7 +36,7 @@ public sealed class MongoDefinedCronMigrationContractTests : DefinedCronMigratio
             Id = Guid.NewGuid(),
             Function = function,
             Expression = "*/5 * * * *",
-            SeedKey = CronSeedIdentity.SeedKeyForFunction(function),
+            SeedKey = CronSeedIdentity.LegacySeedKeyForFunction(function),
             InitIdentifier = $"MemoryTicker_Seeded_{function}",
             Request = Array.Empty<byte>(),
             IsEnabled = true,
