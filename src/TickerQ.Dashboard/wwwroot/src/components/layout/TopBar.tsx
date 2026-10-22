@@ -9,6 +9,7 @@ export function TopBar({ sidebarCollapsed = false }: { sidebarCollapsed?: boolea
   const auth = useAuth();
   const cfg = getRuntimeConfig();
   const friendlyVersion = formatFriendlyVersion(cfg.version);
+  const environmentName = cfg.environmentName.trim();
   const applicationNamespace = formatApplicationNamespace(cfg.applicationNamespace);
   const showUser =
     auth.status === "authenticated" && auth.info?.loginAvailable === true;
@@ -27,9 +28,18 @@ export function TopBar({ sidebarCollapsed = false }: { sidebarCollapsed?: boolea
             <span className="hidden sm:inline shrink-0 text-muted-foreground/60 text-[10px]">v{friendlyVersion}</span>
           )}
         </div>
+        {environmentName && (
+          <span
+            title={`Environment: ${environmentName}`}
+            className="hidden min-w-0 max-w-40 items-center gap-1 rounded-md border border-primary/20 bg-primary/5 px-2 py-1 text-[10px] sm:inline-flex"
+          >
+            <span className="shrink-0 text-muted-foreground/60">Environment</span>
+            <span className="truncate font-medium text-foreground/80">{environmentName}</span>
+          </span>
+        )}
         <span
           title={`Application namespace: ${applicationNamespace}`}
-          className="hidden min-w-0 max-w-52 items-center gap-1 rounded-md border border-border/70 bg-surface-1 px-2 py-1 text-[10px] text-muted-foreground md:inline-flex"
+          className="hidden min-w-0 max-w-52 items-center gap-1 rounded-md border border-border/70 bg-surface-1 px-2 py-1 text-[10px] text-muted-foreground lg:inline-flex"
         >
           <span className="shrink-0 text-muted-foreground/60">Namespace</span>
           <span className="truncate font-mono text-foreground/80">{applicationNamespace}</span>

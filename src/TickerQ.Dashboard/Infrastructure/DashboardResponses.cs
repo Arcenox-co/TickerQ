@@ -192,6 +192,9 @@ internal class FrontendConfigResponse
     /// <summary>Customer-branded title shown in the shell + browser tab.</summary>
     public string Title { get; set; }
 
+    /// <summary>Human-facing deployment environment label shown in the dashboard UI.</summary>
+    public string EnvironmentName { get; set; } = string.Empty;
+
     /// <summary>Optional customer logo URL.</summary>
     public string LogoUrl { get; set; }
 
@@ -230,4 +233,13 @@ internal class AssistantConfigResponse
     /// of the browser's localStorage.
     /// </summary>
     public bool History { get; set; }
+
+    /// <summary>True when a durable structured investigation store is available.</summary>
+    public bool Investigations { get; set; }
+
+    /// <summary>True when terminal failures are investigated by the opt-in background service.</summary>
+    public bool AutomaticInvestigations { get; set; }
+
+    /// <summary>True when the host configured bounded source-context resolution.</summary>
+    public bool SourceContext { get; set; }
 }

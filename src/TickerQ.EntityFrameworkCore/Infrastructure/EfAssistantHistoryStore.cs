@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -17,7 +18,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
     /// same model (opt-in via <c>AddAssistantHistory()</c>), so they ride the
     /// customer's normal migrations flow.
     /// </summary>
-    internal sealed class EfAssistantHistoryStore<TContext> : IAssistantHistoryStore
+    internal sealed class EfAssistantHistoryStore<TContext> : IAssistantHistoryStore, IAssistantProposalHistoryStore
         where TContext : DbContext
     {
         private readonly TContext _db;
@@ -54,21 +55,42 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .AnyAsync(c => c.Id == conversationId && c.UserId == userId, cancellationToken);
             if (!owns) return null;
 
-            return await Messages.AsNoTracking()
+            var rows = await Messages.AsNoTracking()
                 .Where(m => m.ConversationId == conversationId)
                 .OrderBy(m => m.Ordinal)
-                .Select(m => new AssistantHistoryMessage
+                .ToListAsync(cancellationToken);
+
+            return rows.Select(m =>
+            {
+                var result = new AssistantHistoryMessage
                 {
+                    Id = m.Id,
                     Role = m.Role,
                     Content = m.Content,
                     CreatedAt = m.CreatedAt,
-                })
-                .ToListAsync(cancellationToken);
+                };
+                if (string.Equals(m.Role, ProposalRole, StringComparison.Ordinal))
+                {
+                    var envelope = DeserializeEnvelope(m.Content);
+                    result.Content = string.Empty;
+                    result.ProposalJson = envelope?.ProposalJson ?? string.Empty;
+                    result.ProposalStatus = envelope?.Status ?? PendingStatus;
+                    result.ProposalResultJson = envelope?.ResultJson ?? string.Empty;
+                }
+                return result;
+            }).ToList();
         }
 
         public async Task<Guid> AppendExchangeAsync(
             string userId, Guid? conversationId, string userMessage, string assistantMessage,
             string model, CancellationToken cancellationToken = default)
+            => await AppendExchangeWithProposalsAsync(userId, conversationId, userMessage,
+                assistantMessage, model, Array.Empty<AssistantHistoryProposal>(), cancellationToken);
+
+        public async Task<Guid> AppendExchangeWithProposalsAsync(
+            string userId, Guid? conversationId, string userMessage, string assistantMessage,
+            string model, IReadOnlyList<AssistantHistoryProposal> proposals,
+            CancellationToken cancellationToken = default)
         {
             var now = DateTime.UtcNow;
 
@@ -107,19 +129,72 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Ordinal = nextOrdinal + 1,
                 CreatedAt = now,
             });
+
+            var ordinal = nextOrdinal + 2;
+            foreach (var proposal in proposals)
+            {
+                if (proposal == null || proposal.Id == Guid.Empty ||
+                    string.IsNullOrWhiteSpace(proposal.ProposalJson))
+                    continue;
+
+                Messages.Add(new AssistantMessageEntity
+                {
+                    Id = proposal.Id,
+                    ConversationId = conversation.Id,
+                    Role = ProposalRole,
+                    Content = JsonSerializer.Serialize(new ProposalEnvelope
+                    {
+                        ProposalJson = proposal.ProposalJson,
+                        Status = PendingStatus,
+                    }),
+                    Ordinal = ordinal++,
+                    CreatedAt = now,
+                });
+            }
+
             Messages.Add(new AssistantMessageEntity
             {
                 Id = Guid.NewGuid(),
                 ConversationId = conversation.Id,
                 Role = "assistant",
                 Content = assistantMessage,
-                Ordinal = nextOrdinal + 2,
+                Ordinal = ordinal,
                 CreatedAt = now,
             });
 
             await _db.SaveChangesAsync(cancellationToken);
             await PruneMessagesAsync(conversation.Id, cancellationToken);
             return conversation.Id;
+        }
+
+        public async Task<bool> SetProposalStateAsync(
+            string userId, Guid proposalId, string status, string resultJson,
+            CancellationToken cancellationToken = default)
+        {
+            if (status is not (AppliedStatus or DismissedStatus)) return false;
+
+            var conversationId = await Messages.AsNoTracking()
+                .Where(m => m.Id == proposalId && m.Role == ProposalRole)
+                .Select(m => (Guid?)m.ConversationId)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (!conversationId.HasValue) return false;
+
+            var conversation = await Conversations.FirstOrDefaultAsync(c =>
+                c.Id == conversationId.Value && c.UserId == userId, cancellationToken);
+            if (conversation == null) return false;
+
+            var message = await Messages.FirstAsync(m => m.Id == proposalId, cancellationToken);
+
+            var envelope = DeserializeEnvelope(message.Content);
+            if (envelope == null || string.IsNullOrWhiteSpace(envelope.ProposalJson)) return false;
+            if (envelope.Status != PendingStatus && envelope.Status != status) return false;
+
+            envelope.Status = status;
+            envelope.ResultJson = resultJson ?? string.Empty;
+            message.Content = JsonSerializer.Serialize(envelope);
+            conversation.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
         }
 
         public async Task DeleteConversationAsync(
@@ -152,6 +227,24 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .ToListAsync(cancellationToken);
             if (excess.Count > 0)
                 await Messages.Where(m => excess.Contains(m.Id)).ExecuteDeleteAsync(cancellationToken);
+        }
+
+        private static ProposalEnvelope DeserializeEnvelope(string json)
+        {
+            try { return JsonSerializer.Deserialize<ProposalEnvelope>(json); }
+            catch (JsonException) { return null; }
+        }
+
+        private const string ProposalRole = "proposal";
+        private const string PendingStatus = "pending";
+        private const string AppliedStatus = "applied";
+        private const string DismissedStatus = "dismissed";
+
+        private sealed class ProposalEnvelope
+        {
+            public string ProposalJson { get; set; } = string.Empty;
+            public string Status { get; set; } = PendingStatus;
+            public string ResultJson { get; set; } = string.Empty;
         }
     }
 }

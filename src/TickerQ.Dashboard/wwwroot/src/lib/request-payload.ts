@@ -11,7 +11,7 @@
  * payloads so the server records "no payload" rather than an empty blob.
  */
 export function encodeRequestPayload(json: string | null | undefined): string | null {
-  if (!json) return null;
+  if (!json?.trim()) return null;
   const bytes = new TextEncoder().encode(json);
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);

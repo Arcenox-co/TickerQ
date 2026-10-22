@@ -145,6 +145,12 @@ The generated model must include:
   index with `ApplicationNamespaceKey`; it prevents equivalent template names from being saved
   concurrently while allowing draft names to repeat. The JSON column stores configuration only.
   Drafts never enter the TimeTicker table until activation succeeds.
+- When `AddAssistantHistory()` is enabled, the `AssistantConversations`, `AssistantMessages`,
+  `AssistantInvestigations`, `AssistantInvestigationLeases`, and
+  `AssistantInvestigationBudgets` tables. Investigations are scoped by application namespace and
+  use a unique namespace/execution index. Renewable fingerprint leases suppress overlapping model
+  calls for the same failure pattern, and the budget row enforces one rolling hourly allowance
+  across all nodes in the namespace.
 
 The repository's ApplicationDbContext, Console, and WebApi samples contain reviewed host-owned
 `ApplicationRuntimePartitioning` migrations and matching snapshots. Consumers must generate and
@@ -219,6 +225,25 @@ Do not model `Draft` as a new `TickerStatus`. A draft is not runnable scheduler 
 must remain outside `TimeTickers` until the user activates it. Cron definitions can be saved as
 templates, but do not use drafts: the dashboard's **Test once** and **Test chain** actions run the
 selected functions ephemerally without inserting a cron definition or occurrence.
+
+### Add AI assistant investigation history
+
+Applications that opt into `AddAssistantHistory()` must generate the five assistant tables from
+the current EF model. `AssistantConversations` and `AssistantMessages` hold per-user chat history.
+`AssistantInvestigations` holds shared, structured diagnoses for the configured application
+namespace, including review state and detected recovery metadata.
+
+`AssistantInvestigationLeases` coordinates one active model call per evidence fingerprint. Its
+owner token is renewed during the request; an abandoned lease becomes recoverable after the
+configured duration. `AssistantInvestigationBudgets` stores the bounded rolling window of model
+call starts so `WithHourlyLimit(...)` applies to the whole namespace rather than independently to
+each replica. Neither table stores prompts, source excerpts, logs, or model responses.
+
+The unique `UX_AssistantInvestigation_Namespace_Execution` index is required. It is the atomic
+claim that stops multiple scheduler replicas from investigating the same execution. Apply all five
+tables before enabling automatic investigations; startup rejects automatic mode when either the
+investigation store or cluster coordinator is unavailable. Deploying the tables does not enable AI
+or background model calls by itself.
 
 ### Startup and data repair
 

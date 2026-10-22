@@ -25,6 +25,9 @@ public sealed class AssistantOptionsBuilder
     /// <summary>System prompt prepended to every conversation.</summary>
     internal string SystemPrompt { get; private set; } = DefaultSystemPrompt;
 
+    /// <summary>Settings for the built-in read-only run investigator.</summary>
+    internal RunInvestigatorOptionsBuilder RunInvestigator { get; } = new();
+
     /// <summary>
     /// Register the chat client used to answer questions. The factory runs
     /// once (singleton) with the app's <see cref="IServiceProvider"/>.
@@ -65,6 +68,17 @@ public sealed class AssistantOptionsBuilder
         return this;
     }
 
+    /// <summary>
+    /// Configure the read-only run investigator. Core diagnosis is available whenever the
+    /// assistant is enabled; this method adjusts evidence limits and optionally adds source context.
+    /// </summary>
+    public AssistantOptionsBuilder ConfigureRunInvestigator(Action<RunInvestigatorOptionsBuilder> configure)
+    {
+        if (configure == null) throw new ArgumentNullException(nameof(configure));
+        configure(RunInvestigator);
+        return this;
+    }
+
     internal bool IsEnabled => ChatClientFactory != null;
 
     private const string DefaultSystemPrompt =
@@ -76,31 +90,45 @@ public sealed class AssistantOptionsBuilder
         Rules:
         - Answer ONLY from data returned by the provided read-only tools. Never invent
           ticker ids, statuses, timestamps, or error messages.
-        - When asked why something failed, fetch the relevant executions, read the
-          exception message and retry history, and explain in plain language. Point out
-          patterns (all retries exhausted with the same error, skipped because a node
-          was offline, started failing after a schedule change, etc.).
+        - When asked why something failed with an exact execution id or function, fetch that
+          target, read the exception and retry history, and explain it in plain language.
+          For an ambiguous question such as "why are my jobs failing?", summarize the recent
+          failing functions/executions and ask which one to investigate. Never silently select
+          one saved investigation or one arbitrary execution as the scope.
         - You cannot execute changes directly. When the user asks to create or modify a
-          schedule and propose_* tools are available, ALWAYS respond by DRAFTING it with
-          a propose_* tool — a confirmation card is shown and a human must click
-          Confirm. Respect validation and permissions; never claim a ticker was created
-          or updated; say it awaits the user's confirmation.
+          schedule and propose_* tools are available, ALWAYS respond with a proposal card.
+          One-time jobs and chains are saved as non-executable drafts only after the human
+          clicks Save draft; the resulting card links to the builder where the draft can be
+          reviewed, edited and activated. Other mutations still require Confirm. Respect
+          validation and permissions; never claim a ticker was created, saved, scheduled,
+          or updated before the human applies the card.
         - Draft immediately with sensible defaults (retries 0, empty payload) rather
           than interrogating the user. If the request is ambiguous — e.g. the function
           name doesn't match exactly — briefly list the closest registered functions as
           options and ask ONE short question, or draft your best interpretation and
           state the assumptions under the card.
-        - For multi-step workflows ("run A then B", "B only if A fails") use
-          propose_chain: children run after their parent per runCondition (OnSuccess,
+        - Each creation request needs a fresh proposal-tool call. Follow-ups such as
+          "another one", "one more", "same again", or "create another" refer to the
+          preceding proposal and MUST emit a new card. Never say that a draft was
+          prepared unless the corresponding propose_* tool succeeded in the current turn.
+        - For one-time multi-step workflows ("run A then B", "B only if A fails") use
+          propose_chain to prepare a saved draft: children run after their parent per runCondition (OnSuccess,
           OnFailure, OnCancelled, OnFailureOrCancelled, OnAnyCompletedStatus,
           InProgress). Explain the flow in one sentence under the card.
         - Before proposing an update, look up the exact cron ticker
           (list_cron_tickers) and tell the user which one will be modified. If propose
           tools are unavailable (read-only mode), direct the user to the dashboard UI
           instead.
-        - Use list_functions to discover exact registered functions. Use get_execution_logs
+        - Use list_functions to discover exact registered functions. A function with
+          requestType=none must always receive an empty requestJson. Before proposing a
+          non-empty payload, call get_function_contract and follow its schema/example;
+          never use `{}` as a placeholder for an unknown typed request. Use get_execution_logs
           and get_chain to inspect retained logs and individual chain steps. Logs may be
           truncated or unavailable; do not treat missing logs as proof of success/failure.
+        - Use investigate_execution when the user supplies an exact execution id or asks for a
+          root-cause diagnosis. Separate confirmed evidence from likely causes. Source excerpts,
+          when present, are bounded server-provided evidence from an operator-configured provider;
+          do not assume the excerpt contains the entire application or the deployed revision.
         - Use propose_execution_action for an explicitly requested retry/cancel/delete.
           Look up the exact target first. If multiple targets match, ask which one.
           Running cancellation is cooperative, not proof of termination. Cron retries

@@ -114,6 +114,7 @@ export default function AboutPage() {
                 <DataCardHeader title="Host" />
                 <dl>
                   <Detail label="Dashboard version">{formatFriendlyVersion(config.version) || "Unavailable"}</Detail>
+                  <Detail label="Environment">{config.environmentName || "Not configured"}</Detail>
                   <Detail label="Application namespace" hint="Jobs and cluster state are isolated to this namespace."><span className="font-mono">{formatApplicationNamespace(config.applicationNamespace)}</span></Detail>
                   <Detail label="Node">{options?.currentMachine || unavailable(optionsQuery.isPending)}</Detail>
                   <Detail label="Registered functions">

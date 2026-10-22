@@ -234,6 +234,7 @@ export default function TimeTickersPage() {
           isChain={row.original.childCount > 0}
           progressPercent={row.original.progressPercent}
           progressMessage={row.original.progressMessage}
+          displayIdleAsWaiting
         />,
       },
       {
@@ -501,6 +502,7 @@ export default function TimeTickersPage() {
       />
 
       <TimeTickerDetailPanel
+        key={activeRow?.id ?? "closed"}
         ticker={activeRow}
         onClose={() => setActiveRow(null)}
         onChanged={() => listQuery.refetch()}

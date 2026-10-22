@@ -13,7 +13,6 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
-import { getRuntimeConfig } from "@/lib/runtime-config";
 import { cn } from "@/lib/utils";
 import { WorkspaceLicense } from "./WorkspaceLicense";
 
@@ -53,6 +52,8 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     label: "System",
     items: [
       { path: "/diagnostics", label: "Diagnostics", icon: Activity },
+      // Keep optional integrations discoverable. The page explains how to
+      // install and configure TickerQ.Integrations when it is unavailable.
       { path: "/integrations", label: "Integrations", icon: Plug },
     ],
   },
@@ -94,7 +95,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
               </p>
             )}
             <div className="space-y-0.5">
-              {group.items.filter(item => item.path !== "/integrations" || getRuntimeConfig().integrationsEnabled).map((item) => {
+              {group.items.map((item) => {
                 const isActive = item.end
                   ? pathname === item.path
                   : pathname.startsWith(item.path);

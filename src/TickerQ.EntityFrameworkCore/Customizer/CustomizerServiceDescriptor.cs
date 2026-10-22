@@ -159,7 +159,16 @@ public static class ServiceBuilder
         if (builder.AssistantHistory == null) return;
 
         services.AddSingleton(builder.AssistantHistory);
-        services.AddScoped<IAssistantHistoryStore, EfAssistantHistoryStore<TContext>>();
+        services.AddScoped<EfAssistantHistoryStore<TContext>>();
+        services.AddScoped<IAssistantHistoryStore>(provider =>
+            provider.GetRequiredService<EfAssistantHistoryStore<TContext>>());
+        services.AddScoped<IAssistantProposalHistoryStore>(provider =>
+            provider.GetRequiredService<EfAssistantHistoryStore<TContext>>());
+        services.AddScoped<EfAssistantInvestigationStore<TContext>>();
+        services.AddScoped<IAssistantInvestigationStore>(provider =>
+            provider.GetRequiredService<EfAssistantInvestigationStore<TContext>>());
+        services.AddScoped<IAssistantInvestigationCoordinator>(provider =>
+            provider.GetRequiredService<EfAssistantInvestigationStore<TContext>>());
     }
 
     public class TickerQOptionsConfiguration<TContext, TTimeTicker, TCronTicker>

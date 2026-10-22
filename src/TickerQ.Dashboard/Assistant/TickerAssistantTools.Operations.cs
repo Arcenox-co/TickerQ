@@ -114,7 +114,7 @@ internal static partial class TickerAssistantTools
 
         tools.Add(AIFunctionFactory.Create(async (
             [Description("Valid 5- or 6-field cron expression, interpreted in the scheduler time zone.")] string expression,
-            [Description("Single root JSON object: function, retries, description, requestJson, children. Children also require runCondition: OnSuccess, OnFailure, OnCancelled, OnFailureOrCancelled, OnAnyCompletedStatus or InProgress. Root must omit runCondition. Max 100 steps, depth 10, 5 children per step.")] string chainJson,
+            [Description("Single root JSON object: function, retries, description, requestJson, children. requestJson must be empty when list_functions reports requestType=none; inspect typed functions with get_function_contract. Children also require runCondition: OnSuccess, OnFailure, OnCancelled, OnFailureOrCancelled, OnAnyCompletedStatus or InProgress. Root must omit runCondition. Max 100 steps, depth 10, 5 children per step.")] string chainJson,
             [Description("Skip a new occurrence while any step of the previous chain is unfinished.")] bool skipIfAlreadyRunning) =>
         {
             var invalid = ValidateCronExpression(expression);
@@ -123,7 +123,9 @@ internal static partial class TickerAssistantTools
             AssistantChainNode? root;
             try { root = JsonSerializer.Deserialize(chainJson, AssistantJsonContext.Default.AssistantChainNode); }
             catch (JsonException) { return "Invalid chain JSON."; }
-            var functions = (await data.GetAllFunctionsAsync(ct)).Select(f => f.FunctionName).ToHashSet(StringComparer.Ordinal);
+            var functions = (await data.GetAllFunctionsAsync(ct))
+                .GroupBy(f => f.FunctionName, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
             var count = 0;
             invalid = ValidateChainNode(root!, functions, true, 1, ref count);
             if (invalid != null) return invalid;

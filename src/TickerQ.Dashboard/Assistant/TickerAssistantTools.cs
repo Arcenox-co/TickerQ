@@ -33,7 +33,9 @@ internal static partial class TickerAssistantTools
         TickerQ.Utilities.Integrations.ITickerIntegrationAdminService? integrations = null,
         string schedulerTimeZone = "UTC",
         TickerQ.Utilities.Infrastructure.TickerQRuntimeDiagnostics? diagnostics = null,
-        bool allowIntegrationProposals = true)
+        bool allowIntegrationProposals = true,
+        RunInvestigatorOptionsBuilder? runInvestigator = null,
+        IExecutionSourceContextProvider? sourceContextProvider = null)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
@@ -130,21 +132,22 @@ internal static partial class TickerAssistantTools
 
         // ── Proposal tools (never in read-only mode) ──
         // These do NOT write anything. They validate, then emit a confirmation
-        // card to the user; the actual create/update happens only when the
-        // user clicks confirm — through the dashboard's normal REST endpoints.
+        // card to the user; the actual save/create/update happens only when the
+        // user applies the card through the dashboard's normal REST endpoints.
         if (allowProposals && emitProposal != null)
         {
             tools.Add(AIFunctionFactory.Create(
                 async (
                     [System.ComponentModel.Description("Registered function name to run (must match exactly — use list_functions to check).")] string functionName,
+                    [System.ComponentModel.Description("Short name for the saved draft (1-200 characters), e.g. 'Send weekly invoice'.")] string draftName,
                     [System.ComponentModel.Description("When to run, ISO-8601 UTC (e.g. 2026-07-12T06:00:00Z). Must be in the future.")] string executionTimeUtc,
                     [System.ComponentModel.Description("Retry attempts on failure (0 for none).")] int retries,
                     [System.ComponentModel.Description("Optional short description. Empty allowed.")] string description,
-                    [System.ComponentModel.Description("Optional JSON payload the job receives. Empty allowed.")] string requestJson) =>
+                    [System.ComponentModel.Description("JSON payload the job receives. Use an empty string when list_functions reports requestType=none; inspect typed functions with get_function_contract.")] string requestJson) =>
                 {
-                    var payloadError = ValidatePayload(retries, requestJson);
-                    if (payloadError != null) return payloadError;
-                    var invalid = await ValidateFunctionAsync(data, functionName, ct);
+                    var draftNameError = ValidateDraftName(draftName);
+                    if (draftNameError != null) return draftNameError;
+                    var invalid = await ValidateFunctionPayloadAsync(data, functionName, retries, requestJson, ct);
                     if (invalid != null) return invalid;
 
                     if (!DateTime.TryParse(executionTimeUtc, CultureInfo.InvariantCulture,
@@ -156,17 +159,18 @@ internal static partial class TickerAssistantTools
 
                     await emitProposal(new AssistantProposal
                     {
-                        Kind = "createTimeTicker",
+                        Kind = "createTimeTickerDraft",
+                        DraftName = draftName.Trim(),
                         Function = functionName,
                         ExecutionTime = executionTime.ToString("O"),
                         Retries = retries,
                         Description = description ?? "",
                         RequestJson = requestJson ?? "",
                     });
-                    return ProposalShown;
+                    return DraftProposalShown;
                 },
                 "propose_time_ticker",
-                "Draft a ONE-TIME job (time ticker) for the user to confirm. Nothing is created until the user clicks Confirm on the card."));
+                "Prepare a ONE-TIME job as a saved, non-executable draft. Nothing is saved until the user clicks Save draft, and it cannot run until the user reviews and activates it."));
 
             tools.Add(AIFunctionFactory.Create(
                 async (
@@ -174,11 +178,9 @@ internal static partial class TickerAssistantTools
                     [System.ComponentModel.Description("Standard 5-field cron expression, e.g. '0 6 * * 1-5'.")] string expression,
                     [System.ComponentModel.Description("Retry attempts on failure (0 for none).")] int retries,
                     [System.ComponentModel.Description("Optional short description. Empty allowed.")] string description,
-                    [System.ComponentModel.Description("Optional JSON payload the job receives. Empty allowed.")] string requestJson) =>
+                    [System.ComponentModel.Description("JSON payload the job receives. Use an empty string when list_functions reports requestType=none; inspect typed functions with get_function_contract.")] string requestJson) =>
                 {
-                    var payloadError = ValidatePayload(retries, requestJson);
-                    if (payloadError != null) return payloadError;
-                    var invalid = await ValidateFunctionAsync(data, functionName, ct);
+                    var invalid = await ValidateFunctionPayloadAsync(data, functionName, retries, requestJson, ct);
                     if (invalid != null) return invalid;
 
                     var exprError = ValidateCronExpression(expression);
@@ -245,15 +247,19 @@ internal static partial class TickerAssistantTools
 
             tools.Add(AIFunctionFactory.Create(
                 async (
+                    [System.ComponentModel.Description("Short name for the saved chain draft (1-200 characters), e.g. 'Invoice fulfilment'.")] string draftName,
                     [System.ComponentModel.Description("When the ROOT step runs, ISO-8601 UTC (e.g. 2026-07-12T06:00:00Z). Must be in the future.")] string executionTimeUtc,
                     [System.ComponentModel.Description(
                         "The chain as a JSON object (single root step). Each step: " +
                         "{\"function\":\"Name\",\"retries\":0,\"description\":\"\",\"requestJson\":\"\"," +
                         "\"runCondition\":\"OnSuccess\",\"children\":[…]}. " +
+                        "requestJson MUST be empty for functions with requestType=none; use get_function_contract before filling typed payloads. " +
                         "runCondition is REQUIRED on children (OnSuccess | OnFailure | OnCancelled | " +
                         "OnFailureOrCancelled | OnAnyCompletedStatus | InProgress) and must be omitted/null on the root. " +
                         "Max depth 10, max 5 children per step.")] string chainJson) =>
                 {
+                    var draftNameError = ValidateDraftName(draftName);
+                    if (draftNameError != null) return draftNameError;
                     if (!DateTime.TryParse(executionTimeUtc, CultureInfo.InvariantCulture,
                             System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal,
                             out var executionTime))
@@ -274,25 +280,35 @@ internal static partial class TickerAssistantTools
                     if (root == null) return "chainJson must be a single root step object.";
 
                     var functions = await data.GetAllFunctionsAsync(ct);
-                    var registered = functions.Select(f => f.FunctionName).ToHashSet(StringComparer.Ordinal);
+                    var registered = functions
+                        .GroupBy(f => f.FunctionName, StringComparer.Ordinal)
+                        .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
                     var nodeCount = 0;
                     var error = ValidateChainNode(root, registered, isRoot: true, depth: 1, ref nodeCount);
                     if (error != null) return error;
 
                     await emitProposal(new AssistantProposal
                     {
-                        Kind = "createChain",
+                        Kind = "createChainDraft",
+                        DraftName = draftName.Trim(),
                         Function = root.Function,
                         ExecutionTime = executionTime.ToString("O"),
                         ChainJson = JsonSerializer.Serialize(root, AssistantJsonContext.Default.AssistantChainNode),
                     });
-                    return ProposalShown;
+                    return DraftProposalShown;
                 },
                 "propose_chain",
-                "Draft a CHAIN of time tickers (a workflow: steps that run after their parent completes, per runCondition) for the user to confirm. Nothing is created until the user clicks Confirm on the card."));
+                "Prepare a CHAIN of time tickers as a saved, non-executable draft. Nothing is saved until the user clicks Save draft, and no step can run until the user reviews and activates it."));
         }
 
         AddOperationalTools(tools, data, allowProposals, emitProposal, ct, readLogs);
+        AddRunInvestigatorTool(
+            tools,
+            data,
+            ct,
+            readLogs,
+            runInvestigator ?? new RunInvestigatorOptionsBuilder(),
+            sourceContextProvider);
         if (diagnostics != null)
             tools.Add(AIFunctionFactory.Create(() =>
                 $"Node-local diagnostics. Fallback last success={diagnostics.LastSuccessfulFallbackScanUtc:O}; last failure={diagnostics.LastFallbackFailureUtc:O}; failures={diagnostics.FallbackScanFailures}. " +
@@ -307,16 +323,19 @@ internal static partial class TickerAssistantTools
         "OnSuccess", "OnFailure", "OnCancelled", "OnFailureOrCancelled", "OnAnyCompletedStatus", "InProgress",
     };
 
-    private static string ValidateChainNode(AssistantChainNode node, HashSet<string> registered, bool isRoot, int depth, ref int nodeCount)
+    private static string ValidateChainNode(AssistantChainNode node,
+        IReadOnlyDictionary<string, FunctionInfoDto> registered, bool isRoot, int depth, ref int nodeCount)
     {
         if (node == null) return "Chain steps cannot be null.";
         if (++nodeCount > 100) return "Chain has too many steps — max 100.";
-        var payloadError = ValidatePayload(node.Retries ?? 0, node.RequestJson);
-        if (payloadError != null) return payloadError;
         if (depth > 10) return "Chain too deep — max depth is 10.";
         if (string.IsNullOrWhiteSpace(node.Function)) return "Every chain step needs a function.";
-        if (!registered.Contains(node.Function))
+        if (!registered.TryGetValue(node.Function, out var function))
             return $"Unknown function '{node.Function}'. Use list_functions to find registered names.";
+        var payloadError = ValidatePayload(node.Retries ?? 0, node.RequestJson);
+        if (payloadError != null) return $"Step '{node.Function}': {payloadError}";
+        payloadError = ValidatePayloadForFunction(function, node.RequestJson);
+        if (payloadError != null) return payloadError;
 
         if (isRoot)
         {
@@ -341,6 +360,15 @@ internal static partial class TickerAssistantTools
         "Proposal card shown to the user. It has NOT been applied — the user must click Confirm. " +
         "Tell the user to review the card; do not claim the ticker was created or updated.";
 
+    private const string DraftProposalShown =
+        "Draft proposal card shown to the user. It has NOT been saved or scheduled — the user must click Save draft. " +
+        "After saving, the card provides a link to review, edit, and activate the draft. Do not claim the job was created or scheduled.";
+
+    private static string? ValidateDraftName(string? draftName)
+        => string.IsNullOrWhiteSpace(draftName) || draftName.Trim().Length > 200
+            ? "Draft name must contain between 1 and 200 characters."
+            : null;
+
     private static async Task<string> ValidateFunctionAsync<TTimeTicker, TCronTicker>(
         ITickerDashboardDataService<TTimeTicker, TCronTicker> data, string functionName, CancellationToken ct)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
@@ -352,6 +380,71 @@ internal static partial class TickerAssistantTools
             return null;
         var available = string.Join(", ", functions.Take(50).Select(f => f.FunctionName));
         return $"Unknown function '{functionName}'. Registered functions: {available}";
+    }
+
+    private static async Task<string> ValidateFunctionPayloadAsync<TTimeTicker, TCronTicker>(
+        ITickerDashboardDataService<TTimeTicker, TCronTicker> data, string functionName,
+        int retries, string requestJson, CancellationToken ct)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var payloadError = ValidatePayload(retries, requestJson);
+        if (payloadError != null) return payloadError;
+        if (string.IsNullOrWhiteSpace(functionName)) return "functionName is required.";
+
+        var functions = await data.GetAllFunctionsAsync(ct);
+        var function = functions.FirstOrDefault(candidate =>
+            string.Equals(candidate.FunctionName, functionName, StringComparison.Ordinal));
+        if (function == null)
+        {
+            var available = string.Join(", ", functions.Take(50).Select(candidate => candidate.FunctionName));
+            return $"Unknown function '{functionName}'. Registered functions: {available}";
+        }
+
+        return ValidatePayloadForFunction(function, requestJson);
+    }
+
+    private static string ValidatePayloadForFunction(FunctionInfoDto function, string requestJson)
+    {
+        var hasPayload = !string.IsNullOrWhiteSpace(requestJson);
+        var contract = function.RequestContract;
+        if (contract == null)
+            return hasPayload
+                ? $"Function '{function.FunctionName}' does not accept a request payload. Use an empty requestJson."
+                : null;
+
+        if (!hasPayload)
+            return contract.Required
+                ? $"Function '{function.FunctionName}' requires a request payload. Use get_function_contract before proposing it."
+                : null;
+
+        if (string.IsNullOrWhiteSpace(contract.SchemaJson)) return null;
+        try
+        {
+            using var payload = JsonDocument.Parse(requestJson);
+            using var schema = JsonDocument.Parse(contract.SchemaJson);
+            if (!schema.RootElement.TryGetProperty("required", out var required) ||
+                required.ValueKind != JsonValueKind.Array)
+                return null;
+            if (payload.RootElement.ValueKind != JsonValueKind.Object)
+                return $"Payload for function '{function.FunctionName}' must be a JSON object. Use get_function_contract for its schema.";
+
+            var missing = required.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString())
+                .Where(name => !string.IsNullOrEmpty(name) && !payload.RootElement.TryGetProperty(name!, out _))
+                .ToArray();
+            return missing.Length == 0
+                ? null
+                : $"Payload for function '{function.FunctionName}' is missing required field(s): {string.Join(", ", missing)}. " +
+                  "Use get_function_contract before proposing it.";
+        }
+        catch (JsonException)
+        {
+            // ValidatePayload already reports malformed request JSON. A malformed registered
+            // schema is runtime metadata and should not make the assistant invent a payload.
+            return null;
+        }
     }
 
     private static string ValidateCronExpression(string expression)

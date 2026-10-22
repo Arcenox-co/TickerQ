@@ -12,6 +12,7 @@ namespace TickerQ.Dashboard.Assistant;
 internal sealed class TickerAssistantService : IDisposable
 {
     private readonly IChatClient _client;
+    private readonly IExecutionSourceContextProvider? _sourceContextProvider;
 
     public AssistantOptionsBuilder Options { get; }
 
@@ -19,6 +20,7 @@ internal sealed class TickerAssistantService : IDisposable
     {
         Options = options;
         var inner = options.ChatClientFactory!(sp);
+        _sourceContextProvider = options.RunInvestigator.SourceProviderFactory?.Invoke(sp);
         _client = new ChatClientBuilder(inner)
             .UseFunctionInvocation(configure: invoking =>
                 invoking.MaximumIterationsPerRequest = options.MaxToolIterations)
@@ -28,5 +30,10 @@ internal sealed class TickerAssistantService : IDisposable
     /// <summary>The tool-invoking client used by the chat endpoint.</summary>
     public IChatClient Client => _client;
 
-    public void Dispose() => _client.Dispose();
+    public IExecutionSourceContextProvider? SourceContextProvider => _sourceContextProvider;
+
+    public void Dispose()
+    {
+        _client.Dispose();
+    }
 }

@@ -91,13 +91,15 @@ namespace TickerQ.EntityFrameworkCore
         }
 
         /// <summary>
-        /// Opt in to EF-backed per-user chat history for the dashboard AI
-        /// assistant. Adds two tables (AssistantConversations,
-        /// AssistantMessages) to the TickerQ model — they ride your normal
-        /// migrations flow — and registers the
-        /// <see cref="TickerQ.Utilities.Interfaces.IAssistantHistoryStore"/>
-        /// the dashboard persists through. Without this call, no tables are
-        /// mapped and no history is stored.
+        /// Opt in to EF-backed dashboard AI history. Adds AssistantConversations,
+        /// AssistantMessages, AssistantInvestigations, and the automatic-investigation
+        /// lease/budget coordination tables to the TickerQ model;
+        /// they ride the application's normal migrations flow. Conversation
+        /// history is private to the authenticated user. Structured run
+        /// investigations are shared within the configured application namespace
+        /// so operators and scheduler nodes see one diagnosis per execution and share
+        /// one model-call budget per namespace.
+        /// Without this call, none of these tables are mapped or stored.
         /// </summary>
         public TickerQEfCoreOptionBuilder<TTimeTicker, TCronTicker> AddAssistantHistory(
             Action<AssistantHistoryOptions> configure = null)

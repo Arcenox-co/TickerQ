@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { ChainDeleteBehaviorControl } from "@/components/cron/ChainDeleteBehaviorControl";
 import { isChainDeletionRestricted } from "@/lib/cron/chain-deletion";
@@ -15,6 +15,7 @@ import {
   Maximize2,
   Pencil,
   RotateCcw,
+  Sparkles,
   Timer,
 } from "lucide-react";
 
@@ -59,6 +60,8 @@ import {
 } from "@/lib/cron/chain-flow-layout";
 import { formatAbsolute, formatDuration, relativeTime } from "@/lib/cron/format";
 import { computeRetryImpact } from "@/lib/cron/retry-impact";
+import { investigationExecutionId } from "@/lib/assistant-investigation";
+import { isAssistantEnabled } from "@/lib/runtime-config";
 import { useTimezone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import type { TimeTickerFlatDto } from "@/services/api-types";
@@ -347,6 +350,8 @@ export function ChainFlowchartView({
   const deletionRestricted = !!rootNode && isChainDeletionRestricted(rootNode.ticker, list);
   const canEditChain =
     !isReadOnly && !!rootNode && !rootNode.ticker.originCronTickerId && (rootNode.ticker.status === "Idle" || rootNode.ticker.status === "Queued");
+  const investigationId = investigationExecutionId(list);
+  const canInvestigate = !isPreview && !ephemeralTest && investigationId !== null && isAssistantEnabled();
 
   return (
     <div className="flex flex-col h-full">
@@ -410,6 +415,14 @@ export function ChainFlowchartView({
               title={deletionRestricted ? "Restrict waits until every descendant reaches a final status before replacing this chain." : undefined}
             >
               <Pencil className="h-3 w-3 mr-1.5" /> Edit chain
+            </Button>
+          )}
+          {canInvestigate && (
+            <Button asChild variant="outline" size="sm" className="h-7 gap-1 text-xs text-primary">
+              <Link to={`/assistant?investigate=${encodeURIComponent(investigationId!)}`}>
+                <Sparkles className="h-3 w-3" />
+                Investigate with AI
+              </Link>
             </Button>
           )}
           <div className="flex items-center gap-1">

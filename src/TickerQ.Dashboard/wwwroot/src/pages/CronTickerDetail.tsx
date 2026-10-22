@@ -1,8 +1,8 @@
 import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ArrowLeft, GitBranch, LayoutTemplate, Loader2, Pencil, Play, RotateCcw, Trash2, X } from "lucide-react";
+import { ArrowLeft, GitBranch, LayoutTemplate, Loader2, Pencil, Play, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/cron/DataTable";
@@ -46,7 +46,8 @@ import { joinCronGroup, leaveCronGroup } from "@/services/ticker-hub";
 import { formatDuration, relativeTime } from "@/lib/cron/format";
 import { TimeCell } from "@/components/cron/TimeCell";
 import { QueryErrorNotice } from "@/components/cron/QueryErrorNotice";
-import { isReadOnly } from "@/lib/runtime-config";
+import { investigationExecutionId } from "@/lib/assistant-investigation";
+import { isAssistantEnabled, isReadOnly } from "@/lib/runtime-config";
 import type { CronOccurrenceFlatDto, CronTickerFlatDto } from "@/services/api-types";
 
 const PAGE_SIZE = 25;
@@ -91,6 +92,13 @@ function CronTickerDetail({ id }: { id: string }) {
   const activeChainQuery = useChainTickers(activeOcc?.chainRootId ?? null);
   const activeRoot = activeChainQuery.data?.find(job => job.id === activeOcc?.chainRootId);
   const activeChainLockHolder = activeChainQuery.data ? activeRoot?.lockHolder : activeOcc?.chainLockHolder;
+  const activeInvestigationId = activeOcc
+    ? activeOcc.chainRootId
+      ? investigationExecutionId(activeChainQuery.data ?? [])
+        ?? investigationExecutionId([activeOcc])
+      : investigationExecutionId([activeOcc])
+    : null;
+  const canInvestigateActiveOccurrence = activeInvestigationId !== null && isAssistantEnabled();
   const { data: graph } = useCronTickerGraphById(id, 7, 0);
 
   const runMutation = useRunCronTicker();
@@ -272,7 +280,8 @@ function CronTickerDetail({ id }: { id: string }) {
           <ExecutionStatus status={row.original.status} summary={row.original.chainSummary}
             isChain={!!row.original.chainRootId}
             progressPercent={row.original.progressPercent}
-            progressMessage={row.original.progressMessage} />
+            progressMessage={row.original.progressMessage}
+            displayIdleAsWaiting />
         ),
       },
       {
@@ -598,9 +607,9 @@ function CronTickerDetail({ id }: { id: string }) {
               </div>
             </div>
 
-            {!readOnly && (
+            {(!readOnly || canInvestigateActiveOccurrence) && (
               <div className="px-5 py-3 border-b border-border flex items-center gap-2">
-                {!activeOccurrenceIsRunning && (
+                {!readOnly && !activeOccurrenceIsRunning && (
                   <Button
                     variant="gradient"
                     size="sm"
@@ -612,16 +621,24 @@ function CronTickerDetail({ id }: { id: string }) {
                     {activeOcc.chainRootId ? "Re-run chain" : "Re-run"}
                   </Button>
                 )}
-                <CancelTickerButton id={activeOcc.id} type="CronOccurrence" status={activeOcc.status} />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 text-xs text-muted-foreground hover:text-status-error"
-                  disabled={deleteOccMutation.isPending || deletingIds.has(activeOcc.id)}
-                  onClick={() => setPendingDelete(activeOcc)}
-                >
-                  <Trash2 className="h-3 w-3 mr-1" /> Delete
-                </Button>
+                {!readOnly && <CancelTickerButton id={activeOcc.id} type="CronOccurrence" status={activeOcc.status} />}
+                {!readOnly && <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs text-muted-foreground hover:text-status-error"
+                    disabled={deleteOccMutation.isPending || deletingIds.has(activeOcc.id)}
+                    onClick={() => setPendingDelete(activeOcc)}
+                  >
+                    <Trash2 className="h-3 w-3 mr-1" /> Delete
+                  </Button>}
+                {canInvestigateActiveOccurrence && (
+                  <Button asChild variant="outline" size="sm" className="ml-auto h-7 gap-1 text-xs text-primary">
+                    <Link to={`/assistant?investigate=${encodeURIComponent(activeInvestigationId!)}`}>
+                      <Sparkles className="h-3 w-3" />
+                      Investigate with AI
+                    </Link>
+                  </Button>
+                )}
               </div>
             )}
 

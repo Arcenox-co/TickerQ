@@ -64,6 +64,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   chainNodeToRequest,
+  normalizeRequestlessPayloads,
   requestToChainNode,
   toDatetimeLocal,
   tickersToChainNode,
@@ -96,6 +97,7 @@ import { dashboardApi } from "@/services/dashboard-api";
 import { isReadOnly } from "@/lib/runtime-config";
 import type { ChainDeleteBehavior, FunctionInfoDto, SavedDefinitionPayload, SavedTickerDefinitionKind, StaleAction, TestRunChainResponse, TestRunResponse } from "@/services/api-types";
 import { SaveDefinitionDialog, type SaveDefinitionValues } from "@/components/cron/SaveDefinitionDialog";
+import { ActivateDraftDialog } from "@/components/cron/ActivateDraftDialog";
 import {
   initialPayloadForFunction,
   RequestPayloadEditor,
@@ -935,19 +937,25 @@ function ChainBuilderPageInner() {
     setSkipIfAlreadyRunning(cronQuery.data.skipIfAlreadyRunning ?? false);
     setPrefilled(true);
   }
-  if (draftId && !prefilled && draftQuery.data) {
+  if (draftId && !prefilled && draftQuery.data && fns !== undefined) {
     const saved = draftQuery.data;
     const scheduledAt = saved.payload.executionTime
       ? toDatetimeLocal(saved.payload.executionTime)
       : nowAsDatetimeLocal();
-    setRoot(requestToChainNode(saved.payload.root, scheduledAt));
+    setRoot(normalizeRequestlessPayloads(
+      requestToChainNode(saved.payload.root, scheduledAt),
+      fns,
+    ));
     setPrefilled(true);
   }
-  if (templateId && !prefilled && selectedTemplateQuery.data && selectedTemplateIsValid) {
+  if (templateId && !prefilled && selectedTemplateQuery.data && selectedTemplateIsValid && fns !== undefined) {
     const saved = selectedTemplateQuery.data;
-    setRoot(requestToChainNode(
-      saved.payload.root,
-      recurring ? "" : (saved.payload.executionTime ? toDatetimeLocal(saved.payload.executionTime) : nowAsDatetimeLocal())
+    setRoot(normalizeRequestlessPayloads(
+      requestToChainNode(
+        saved.payload.root,
+        recurring ? "" : (saved.payload.executionTime ? toDatetimeLocal(saved.payload.executionTime) : nowAsDatetimeLocal())
+      ),
+      fns,
     ));
     if (recurring) {
       setExpression(saved.payload.expression ?? expression);
@@ -962,6 +970,7 @@ function ChainBuilderPageInner() {
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const [showTemplates, setShowTemplates] = useState(false);
   const [saveKind, setSaveKind] = useState<SavedTickerDefinitionKind | null>(null);
+  const [activateDraftOpen, setActivateDraftOpen] = useState(false);
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
   const [leaveAfterSave, setLeaveAfterSave] = useState(false);
   const [previousRoot, setPreviousRoot] = useState<ChainNode | null>(null);
@@ -1299,11 +1308,18 @@ function ChainBuilderPageInner() {
     }
   }
 
-  async function handleActivateDraft() {
+  function requestDraftActivation() {
+    if (!draftQuery.data || draftQuery.data.activatedRootTickerId) return;
+    if (!validateDefinitionCanvas()) return;
+    setActivateDraftOpen(true);
+  }
+
+  async function handleActivateDraft(executionTime: string | null) {
     if (!draftQuery.data || draftQuery.data.activatedRootTickerId) return;
     if (!validateDefinitionCanvas()) return;
     setSubmitting(true);
     try {
+      const localExecutionTime = executionTime ?? "";
       const updated = await updateDefinitionMutation.mutateAsync({
         id: draftQuery.data.id,
         body: {
@@ -1312,18 +1328,18 @@ function ChainBuilderPageInner() {
           name: draftQuery.data.name,
           description: draftQuery.data.description,
           includeRequestData: draftQuery.data.includesRequestData,
-          payload: definitionPayload(),
+          payload: definitionPayload(localExecutionTime),
           version: draftQuery.data.version,
         },
       });
-      const executionTime = root.scheduledAt
-        ? new Date(root.scheduledAt).toISOString()
-        : new Date().toISOString();
       const result = await activateDraftMutation.mutateAsync({
         id: updated.id,
         version: updated.version,
-        executionTime,
+        executionTime: localExecutionTime
+          ? new Date(localExecutionTime).toISOString()
+          : new Date().toISOString(),
       });
+      setActivateDraftOpen(false);
       toast.success("Draft activated and scheduled");
       navigate(`/time-tickers?ticker=${result.rootId}`);
     } catch (error) {
@@ -1602,25 +1618,26 @@ function ChainBuilderPageInner() {
             {testingChain ? "View test run" : "Test chain"}
           </Button>
           <Button
+            type="button"
             variant="gradient"
             size="sm"
             className="h-7 text-xs"
             onClick={() => isEditingTemplate
               ? setSaveKind("Template")
               : draftId
-                ? void handleActivateDraft()
+                ? requestDraftActivation()
                 : void handleSubmit()}
             disabled={!root.functionName || submitting || testingChain || updateDefinitionMutation.isPending || (isEditingTemplate && totalActive <= 1) || ((isEditing || !!existingCronId || !!draftId || !!templateId) && !prefilled) || hydrationFailed || !!draftQuery.data?.activatedRootTickerId}
           >
             {submitting || (isEditingTemplate && updateDefinitionMutation.isPending) ? (
               <>
                 <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-                {isEditingTemplate ? "Saving…" : isEditing ? "Replacing…" : "Creating…"}
+                {isEditingTemplate ? "Saving…" : draftId ? "Activating…" : isEditing ? "Replacing…" : "Creating…"}
               </>
             ) : isEditingTemplate ? (
               totalActive > 1 ? "Save template changes" : "Add a child to save"
             ) : draftId ? (
-              draftQuery.data?.activatedRootTickerId ? "Already activated" : "Activate draft"
+              draftQuery.data?.activatedRootTickerId ? "Already activated" : "Review activation"
             ) : isEditing ? (
               "Replace Chain"
             ) : (
@@ -1634,6 +1651,15 @@ function ChainBuilderPageInner() {
         open={chainTestOpen}
         result={chainTestResult}
         onClose={() => setChainTestOpen(false)}
+      />
+
+      <ActivateDraftDialog
+        open={activateDraftOpen}
+        draftName={draftQuery.data?.name}
+        initialExecutionTime={root.scheduledAt}
+        pending={submitting || activateDraftMutation.isPending || updateDefinitionMutation.isPending}
+        onOpenChange={setActivateDraftOpen}
+        onActivate={handleActivateDraft}
       />
 
       <SaveDefinitionDialog

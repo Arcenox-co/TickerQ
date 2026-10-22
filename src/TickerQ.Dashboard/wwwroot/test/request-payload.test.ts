@@ -26,6 +26,7 @@ test("round-trips Unicode (multi-byte) without corruption", () => {
 
 test("empty / requestless payloads map to null", () => {
   assert.equal(encodeRequestPayload(""), null);
+  assert.equal(encodeRequestPayload("  \n\t  "), null);
   assert.equal(encodeRequestPayload(null), null);
   assert.equal(encodeRequestPayload(undefined), null);
 });

@@ -2,7 +2,7 @@ import type { RunCondition } from "./run-condition";
 import { parseIntervalsList } from "./status-config.ts";
 import { parseUtc } from "./format.ts";
 import { decodeRequestPayload, encodeRequestPayload } from "../request-payload.ts";
-import type { ChainDeleteBehavior, StaleAction, TimeTickerFlatDto, TimeTickerNode } from "../../services/api-types";
+import type { ChainDeleteBehavior, FunctionInfoDto, StaleAction, TimeTickerFlatDto, TimeTickerNode } from "../../services/api-types";
 
 // ── Editor state for a single chain node ──
 // Everything here is user-editable and must round-trip through the flat DTO
@@ -126,4 +126,25 @@ export function requestToChainNode(
     children: (item.children ?? []).map(child => build(child, false)),
   });
   return build(node, true);
+}
+
+/**
+ * Removes payload bytes that an older or externally produced draft attached to
+ * requestless functions. Such bytes can never be consumed by the function and
+ * would otherwise make activation fail after the editor has hidden the payload
+ * control. Typed-function payloads are preserved for normal schema validation.
+ */
+export function normalizeRequestlessPayloads(
+  node: ChainNode,
+  functions: FunctionInfoDto[],
+): ChainNode {
+  const contracts = new Map(functions.map((item) => [item.functionName, item.requestContract]));
+  const visit = (current: ChainNode): ChainNode => ({
+    ...current,
+    requestJson: contracts.has(current.functionName) && contracts.get(current.functionName) === null
+      ? ""
+      : current.requestJson,
+    children: current.children.map(visit),
+  });
+  return visit(node);
 }

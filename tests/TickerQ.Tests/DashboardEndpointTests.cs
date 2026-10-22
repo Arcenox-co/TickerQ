@@ -540,6 +540,36 @@ public class DashboardEndpointTests
     #region DashboardOptionsBuilder — Fluent Chaining
 
     [Fact]
+    public void SetEnvironmentName_TrimsValue_AndReturnsBuilderInstance()
+    {
+        var builder = new DashboardOptionsBuilder();
+
+        var result = builder.SetEnvironmentName("  Production  ");
+
+        Assert.Same(builder, result);
+        Assert.Equal("Production", builder.EnvironmentName);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void SetEnvironmentName_RejectsMissingValue(string? environmentName)
+    {
+        var builder = new DashboardOptionsBuilder();
+
+        Assert.Throws<ArgumentException>(() => builder.SetEnvironmentName(environmentName!));
+    }
+
+    [Fact]
+    public void SetEnvironmentName_RejectsValueLongerThanOneHundredCharacters()
+    {
+        var builder = new DashboardOptionsBuilder();
+
+        Assert.Throws<ArgumentException>(() => builder.SetEnvironmentName(new string('x', 101)));
+    }
+
+    [Fact]
     public void FluentChaining_ReturnsBuilderInstance()
     {
         var builder = new DashboardOptionsBuilder();

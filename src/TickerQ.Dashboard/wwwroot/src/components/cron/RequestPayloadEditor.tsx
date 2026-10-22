@@ -1027,6 +1027,9 @@ export function initialPayloadForFunction(functionInfo?: FunctionInfoDto): strin
 // eslint-disable-next-line react-refresh/only-export-components
 export function validateRequestPayload(functionInfo: FunctionInfoDto | undefined, value: string): string | null {
   const contract = functionInfo?.requestContract;
+  if (functionInfo && !contract && !functionInfo.requestType) {
+    return value.trim() ? "This function does not accept a request payload." : null;
+  }
   if (!contract) return null;
   if (!value.trim()) return contract.required ? "Request payload is required." : null;
 

@@ -19,19 +19,27 @@ export function ExecutionStatus({
   isChain = false,
   progressPercent,
   progressMessage,
+  displayIdleAsWaiting = false,
 }: {
   status: TickerStatus;
   summary?: ChainExecutionSummaryDto | null;
   isChain?: boolean;
   progressPercent?: number | null;
   progressMessage?: string | null;
+  /** Uses clearer table wording without changing the persisted Idle status. */
+  displayIdleAsWaiting?: boolean;
 }) {
   if (!summary && !isChain) {
     if (status === "InProgress" && progressPercent != null) {
       return <RunningProgressBadge percent={progressPercent} message={progressMessage} />;
     }
 
-    return <StatusBadge status={status} />;
+    return (
+      <StatusBadge
+        status={status}
+        label={displayIdleAsWaiting && status === "Idle" ? "Waiting" : undefined}
+      />
+    );
   }
   const state = states[summary?.status ?? "Unavailable"];
   const known = summary && summary.status !== "Unavailable";

@@ -1,13 +1,14 @@
 import { useRef, useState } from "react";
-import { CalendarClock, Check, CornerDownRight, Loader2, Pencil, Timer, Workflow, X, RotateCcw, Ban, Trash2, Bell, Activity } from "lucide-react";
+import { Activity, ArrowUpRight, Ban, Bell, CalendarClock, Check, CornerDownRight, Loader2, Pencil, RotateCcw, Timer, Trash2, Workflow, X } from "lucide-react";
 import cronstrue from "cronstrue";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDashboardOptions } from "@/services/hooks";
 import { dashboardApi } from "@/services/dashboard-api";
-import { applyAssistantProposal } from "@/lib/apply-assistant-proposal";
+import { applyAssistantProposal, type AssistantProposalApplyResult } from "@/lib/apply-assistant-proposal";
 import type { AssistantProposal, ProposalChainNode } from "@/services/assistant-api";
+import { Link } from "react-router-dom";
 
 export type ProposalStatus = "pending" | "applied" | "dismissed";
 
@@ -31,9 +32,11 @@ function parseChain(json: string): ProposalChainNode | null {
 
 const KIND_META: Record<AssistantProposal["kind"], { title: string; icon: typeof Timer }> = {
   createTimeTicker: { title: "Create time ticker", icon: CalendarClock },
+  createTimeTickerDraft: { title: "Save job draft", icon: CalendarClock },
   createCronTicker: { title: "Create cron ticker", icon: Timer },
   updateCronTicker: { title: "Update cron ticker", icon: Pencil },
   createChain: { title: "Create chain", icon: Workflow },
+  createChainDraft: { title: "Save chain draft", icon: Workflow },
   createCronChain: { title: "Create recurring chain", icon: Workflow },
   retryExecution: { title: "Retry execution", icon: RotateCcw },
   cancelExecution: { title: "Cancel execution", icon: Ban },
@@ -44,17 +47,21 @@ const KIND_META: Record<AssistantProposal["kind"], { title: string; icon: typeof
 
 /**
  * Confirmation card for a model-drafted mutation. The model only PROPOSES —
- * clicking Confirm executes through the dashboard's normal REST endpoints
+ * applying the card uses the dashboard's normal REST endpoints
  * (same auth, validation, read-only guards and live updates as manual edits).
  */
 export function ProposalCard({
   proposal,
   status,
+  result,
+  streamBusy = false,
   onStatusChange,
 }: {
   proposal: AssistantProposal;
   status: ProposalStatus;
-  onStatusChange: (status: ProposalStatus) => void;
+  result?: AssistantProposalApplyResult;
+  streamBusy?: boolean;
+  onStatusChange: (status: ProposalStatus, result?: AssistantProposalApplyResult) => void | Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const confirming = useRef(false);
@@ -62,17 +69,18 @@ export function ProposalCard({
   const queryClient = useQueryClient();
   const meta = KIND_META[proposal.kind];
   const Icon = meta?.icon ?? Timer;
-  const chainRoot = ["createChain", "createCronChain"].includes(proposal.kind) ? parseChain(proposal.chainJson) : null;
+  const chainRoot = ["createChain", "createChainDraft", "createCronChain"].includes(proposal.kind) ? parseChain(proposal.chainJson) : null;
   const destructive = proposal.kind === "deleteExecution";
+  const savesDraft = proposal.kind === "createTimeTickerDraft" || proposal.kind === "createChainDraft";
 
   async function confirm() {
     if (confirming.current || status !== "pending") return;
     confirming.current = true;
     setBusy(true);
     try {
-      const message = await applyAssistantProposal(proposal, dashboardApi);
-      onStatusChange("applied");
-      toast.success(message);
+      const applied = await applyAssistantProposal(proposal, dashboardApi);
+      await onStatusChange("applied", applied);
+      toast.success(applied.message);
       void queryClient.invalidateQueries();
     } catch (err) {
       toast.error("Failed to apply", { description: err instanceof Error ? err.message : "An error occurred" });
@@ -104,7 +112,7 @@ export function ProposalCard({
         <span className="font-semibold">{meta?.title ?? "Unsupported proposal"}</span>
         {status === "applied" && (
           <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-status-healthy">
-            <Check className="h-3 w-3" /> {proposal.kind === "cancelExecution" && proposal.expectedStatus === "InProgress" ? "Requested" : "Applied"}
+            <Check className="h-3 w-3" /> {savesDraft ? "Draft saved" : proposal.kind === "cancelExecution" && proposal.expectedStatus === "InProgress" ? "Requested" : "Applied"}
           </span>
         )}
         {status === "dismissed" && (
@@ -113,6 +121,7 @@ export function ProposalCard({
       </div>
 
       <dl className="space-y-1.5">
+        {savesDraft && <Row label="Draft">{proposal.draftName || `${proposal.function} draft`}</Row>}
         {chainRoot ? (
           <Row label="Steps">
             <ChainTree node={chainRoot} isRoot />
@@ -189,21 +198,33 @@ export function ProposalCard({
       </dl>
 
       {proposal.warning && <p className={cn("mt-3 border-t border-border/60 pt-3 text-xs leading-relaxed", destructive ? "text-destructive" : "text-muted-foreground")}>{proposal.warning}</p>}
+      {status === "applied" && result?.href && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-status-healthy/20 pt-3">
+          <p className="text-[11px] text-muted-foreground">Saved without scheduling. Review it before activation.</p>
+          <Link
+            to={result.href}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          >
+            {result.linkLabel ?? "Open draft"}
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+      )}
       {status === "pending" && (
         <div className="mt-3 flex items-center gap-2">
           <button
             type="button"
             onClick={() => void confirm()}
-            disabled={busy || !meta}
+            disabled={busy || streamBusy || !meta}
             className={cn("inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium disabled:opacity-50", destructive ? "bg-destructive text-destructive-foreground" : "bg-primary text-primary-foreground")}
           >
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-            {destructive ? "Confirm deletion" : proposal.kind === "cancelExecution" && proposal.expectedStatus === "InProgress" ? "Request cancellation" : "Confirm"}
+            {destructive ? "Confirm deletion" : savesDraft ? "Save draft" : proposal.kind === "cancelExecution" && proposal.expectedStatus === "InProgress" ? "Request cancellation" : "Confirm"}
           </button>
           <button
             type="button"
-            onClick={() => onStatusChange("dismissed")}
-            disabled={busy}
+            onClick={() => void onStatusChange("dismissed")}
+            disabled={busy || streamBusy}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground disabled:opacity-50"
           >
             <X className="h-3.5 w-3.5" />

@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 
 import {
   chainNodeToRequest,
+  normalizeRequestlessPayloads,
+  requestToChainNode,
   scheduledLocalToIso,
   tickersToChainNode,
   toDatetimeLocal,
@@ -11,7 +13,7 @@ import {
   decodeRequestPayload,
   encodeRequestPayload,
 } from "../src/lib/request-payload.ts";
-import type { TimeTickerFlatDto } from "../src/services/api-types.ts";
+import type { FunctionInfoDto, TimeTickerFlatDto } from "../src/services/api-types.ts";
 
 // Full-metadata preservation for the ChainBuilder. Every replaceable field on a
 // chain node must survive the flat-DTO -> editor-tree -> request-node round trip:
@@ -247,4 +249,36 @@ test("older chain responses default to cascade", () => {
   const tree = tickersToChainNode([flat({ id: "old-root", functionName: "Root" })], "old-root", new Map());
   assert.ok(tree);
   assert.equal(chainNodeToRequest(tree).deleteBehavior, "Cascade");
+});
+
+test("saved drafts discard impossible payloads only from requestless functions", () => {
+  const tree = requestToChainNode({
+    function: "Typed",
+    request: encodeRequestPayload('{"value":1}'),
+    children: [{
+      function: "Requestless",
+      request: encodeRequestPayload("{}"),
+      children: [],
+    }],
+  });
+  const functions = [
+    {
+      functionName: "Typed",
+      requestContract: {
+        typeName: "TypedRequest",
+        mediaType: "application/json",
+        required: true,
+        schemaDialect: "https://json-schema.org/draft/2020-12/schema",
+        schemaJson: '{"type":"object"}',
+        fingerprint: "typed",
+        examples: [],
+      },
+    },
+    { functionName: "Requestless", requestContract: null },
+  ] as FunctionInfoDto[];
+
+  const normalized = normalizeRequestlessPayloads(tree, functions);
+  assert.equal(normalized.requestJson, '{"value":1}');
+  assert.equal(normalized.children[0].requestJson, "");
+  assert.equal(chainNodeToRequest(normalized).children?.[0].request, null);
 });

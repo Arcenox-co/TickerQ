@@ -1,7 +1,8 @@
 import { ExecutionStatus } from "./ExecutionStatus";
 import { isChainActive } from "@/lib/cron/chain-summary";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Copy, LayoutTemplate, Pencil, Play, RotateCcw, X } from "lucide-react";
+import { ArrowLeft, Copy, LayoutTemplate, Pencil, Play, RotateCcw, Sparkles, X } from "lucide-react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
 import { ResizableSidePanel } from "@/components/cron/ResizableSidePanel";
@@ -20,13 +21,15 @@ import { nowAsDatetimeLocal } from "@/components/form-fields/datetime-field";
 import { findDuplicateTemplateName } from "@/lib/cron/saved-definitions";
 import {
   useDuplicateTimeTicker,
+  useChainTickers,
   useRunTimeTicker,
   useTimeTicker,
   useSaveExistingTickerAsTemplate,
   useDefinitions,
 } from "@/services/hooks";
 import { formatDuration, relativeTime } from "@/lib/cron/format";
-import { isReadOnly } from "@/lib/runtime-config";
+import { investigationExecutionId } from "@/lib/assistant-investigation";
+import { isAssistantEnabled, isReadOnly } from "@/lib/runtime-config";
 import type { TimeTickerFlatDto } from "@/services/api-types";
 
 const PENDING = ["Idle", "Queued"];
@@ -67,6 +70,7 @@ export function TimeTickerDetailPanel({
       return (s && ACTIVE.includes(s)) || isChainActive(query.state.data?.chainSummary ?? ticker?.chainSummary) ? 2_000 : false;
     },
   });
+  const chainQ = useChainTickers(ticker?.childCount ? ticker.id : null);
 
   // When the live status flips (Idle → InProgress → Done/Failed), refresh the
   // backing list so the table row behind the panel stays in sync.
@@ -78,17 +82,16 @@ export function TimeTickerDetailPanel({
     prevStatus.current = s;
   }, [liveQ.data?.status, onChanged]);
 
-  useEffect(() => {
-    setTab("logs");
-    prevStatus.current = null;
-  }, [ticker?.id]);
-
   if (!ticker) return null;
 
   const t = liveQ.data ?? ticker;
   const isPending = PENDING.includes(t.status);
   const isRunning = t.status === "InProgress";
   const isChain = t.childCount > 0;
+  const investigationId = investigationExecutionId(
+    isChain ? (chainQ.data ?? [t]) : [t]
+  );
+  const canInvestigate = investigationId !== null && isAssistantEnabled();
   const bare = t.functionName;
   const lockHolder = t.lockHolder;
 
@@ -170,9 +173,9 @@ export function TimeTickerDetailPanel({
         </div>
 
         {/* Actions */}
-        {!readOnly && (
+        {(!readOnly || canInvestigate) && (
         <div className="px-5 py-3 border-b border-border flex items-center gap-2">
-          {isChain && (
+          {!readOnly && isChain && (
             <Button
               variant="outline"
               size="sm"
@@ -183,7 +186,7 @@ export function TimeTickerDetailPanel({
               Save template
             </Button>
           )}
-          {!isRunning &&
+          {!readOnly && !isRunning &&
             (isPending ? (
               <Button
                 variant="gradient"
@@ -223,7 +226,22 @@ export function TimeTickerDetailPanel({
               </Button>
               </>
             ))}
-          <CancelTickerButton id={t.id} status={t.status} hasChildren={isChain} onChanged={onChanged} />
+          {canInvestigate && (
+            <Button
+              asChild
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 text-xs text-primary"
+            >
+              <Link to={`/assistant?investigate=${encodeURIComponent(investigationId!)}`}>
+                <Sparkles className="h-3 w-3" />
+                Investigate with AI
+              </Link>
+            </Button>
+          )}
+          {!readOnly && (
+            <CancelTickerButton id={t.id} status={t.status} hasChildren={isChain} onChanged={onChanged} />
+          )}
         </div>
         )}
 

@@ -51,8 +51,8 @@ builder.Services.AddTickerQ(options =>
         // EnsureCreated below builds the schema — but proves the wiring fires).
         efOptions.AutoMigrateDatabase();
 
-        // Packaged assistant history (db mode): maps AssistantConversations +
-        // AssistantMessages into the TickerQ model and registers the EF store.
+        // Packaged assistant history (db mode): maps conversations, messages,
+        // and shared structured investigations and registers their EF stores.
         if (!useOpenAIHistory)
             efOptions.AddAssistantHistory(h => h.MaxConversationsPerUser = 50);
     });

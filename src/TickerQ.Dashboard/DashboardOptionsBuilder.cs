@@ -21,6 +21,7 @@ public class DashboardOptionsBuilder
     internal string BackendDomain { get; set; }
     internal string GroupName { get; set; }
     internal string Title { get; set; } = "TickerQ Dashboard";
+    internal string EnvironmentName { get; set; } = string.Empty;
     internal string LogoUrl { get; set; }
     internal bool ReadOnly { get; set; }
     internal Func<HttpContext, bool>? ReadOnlyPredicate { get; set; }
@@ -112,6 +113,21 @@ public class DashboardOptionsBuilder
     public DashboardOptionsBuilder SetTitle(string title)
     {
         Title = title;
+        return this;
+    }
+
+    /// <summary>
+    /// Set the human-facing deployment environment shown on the sign-in page and dashboard shell,
+    /// for example <c>Development</c>, <c>Staging</c>, or <c>Production</c>.
+    /// This label does not affect job or storage isolation; use the application namespace for that.
+    /// </summary>
+    public DashboardOptionsBuilder SetEnvironmentName(string environmentName)
+    {
+        var value = environmentName?.Trim();
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 100)
+            throw new ArgumentException("Environment name must contain between 1 and 100 characters.", nameof(environmentName));
+
+        EnvironmentName = value;
         return this;
     }
 

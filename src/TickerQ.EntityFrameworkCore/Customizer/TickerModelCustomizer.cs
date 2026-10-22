@@ -46,11 +46,14 @@ namespace TickerQ.EntityFrameworkCore.Customizer
             builder.ApplyConfiguration(new TickerQDefinitionConfigurations(schema));
             if (executionLogs) builder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
 
-            // Opt-in assistant chat history tables (AddAssistantHistory()).
+            // Opt-in assistant conversation and investigation tables (AddAssistantHistory()).
             if (assistantHistory != null)
             {
                 builder.ApplyConfiguration(new AssistantConversationConfigurations(schema));
                 builder.ApplyConfiguration(new AssistantMessageConfigurations(schema));
+                builder.ApplyConfiguration(new AssistantInvestigationConfigurations(schema));
+                builder.ApplyConfiguration(new AssistantInvestigationLeaseConfigurations(schema));
+                builder.ApplyConfiguration(new AssistantInvestigationBudgetConfigurations(schema));
             }
 
             base.Customize(builder, context);

@@ -330,6 +330,7 @@ namespace TickerQ.Dashboard.DependencyInjection
                 ApplicationNamespace = schedulerOptions?.ApplicationNamespace,
                 Version = PackageVersion.Value,
                 Title = config.Title,
+                EnvironmentName = config.EnvironmentName,
                 LogoUrl = config.LogoUrl,
                 // Per-request: with the predicate overload this differs per
                 // user (viewers get true), driving the SPA's read-only UI.
@@ -346,6 +347,10 @@ namespace TickerQ.Dashboard.DependencyInjection
                     Model = config.Assistant?.ModelName ?? "",
                     History = config.Assistant?.IsEnabled == true
                               && httpContext.RequestServices.GetService<TickerQ.Utilities.Interfaces.IAssistantHistoryStore>() != null,
+                    Investigations = config.Assistant?.IsEnabled == true
+                                     && httpContext.RequestServices.GetService<TickerQ.Utilities.Interfaces.IAssistantInvestigationStore>() != null,
+                    AutomaticInvestigations = config.Assistant?.RunInvestigator.Automatic.Enabled == true,
+                    SourceContext = config.Assistant?.RunInvestigator.SourceProviderFactory != null,
                 },
                 Auth = new AuthInfoResponse
                 {

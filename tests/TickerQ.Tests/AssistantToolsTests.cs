@@ -23,7 +23,31 @@ public class AssistantToolsTests
     public AssistantToolsTests()
     {
         _data.GetAllFunctionsAsync(Arg.Any<CancellationToken>()).Returns(new List<FunctionInfoDto>
-            { new() { FunctionName = "Root" }, new() { FunctionName = "Child" } });
+        {
+            new()
+            {
+                FunctionName = "Root",
+                ContractVersion = 1,
+                RequestContract = new FunctionRequestContractDto
+                {
+                    TypeName = "RootRequest",
+                    Required = false,
+                    SchemaJson = """{"type":"object"}""",
+                },
+            },
+            new() { FunctionName = "Child", ContractVersion = 1 },
+            new()
+            {
+                FunctionName = "Required",
+                ContractVersion = 1,
+                RequestContract = new FunctionRequestContractDto
+                {
+                    TypeName = "RequiredRequest",
+                    Required = true,
+                    SchemaJson = """{"type":"object","required":["value"]}""",
+                },
+            },
+        });
         _integrations.GetAsync(Arg.Any<CancellationToken>()).Returns(new IntegrationSnapshot
         {
             Available = true, MonitoringAvailable = true,
@@ -36,9 +60,12 @@ public class AssistantToolsTests
     }
 
     private IList<AITool> Tools(bool writes = true, bool integrations = true,
-        Func<Guid, CancellationToken, Task<ExecutionLogReadResult>>? logs = null) =>
+        Func<Guid, CancellationToken, Task<ExecutionLogReadResult>>? logs = null,
+        RunInvestigatorOptionsBuilder? investigator = null,
+        IExecutionSourceContextProvider? sourceProvider = null) =>
         TickerAssistantTools.Build(_data, writes, p => { _proposals.Add(p); return Task.CompletedTask; },
-            CancellationToken.None, logs, integrations ? _integrations : null);
+            CancellationToken.None, logs, integrations ? _integrations : null,
+            runInvestigator: investigator, sourceContextProvider: sourceProvider);
 
     private async Task<string> Invoke(string name, Dictionary<string, object?> arguments,
         IList<AITool>? tools = null)
@@ -128,6 +155,105 @@ public class AssistantToolsTests
         Assert.True(result.Length < 24100);
     }
 
+    [Fact]
+    public async Task RunInvestigator_BoundsAndRedactsEvidence_WithoutSendingPayloadValuesOrLocalPaths()
+    {
+        const string payloadMarker = "PAYLOAD_VALUE_MUST_NOT_BE_SENT";
+        var exception = """
+            {"Type":"System.InvalidOperationException","Message":"secret failure","Method":"PrivateApp.InvoiceJob.Run()","SourceFile":"/Users/operator/repo/InvoiceJob.cs","SourceLine":42,"StackTrace":"   at PrivateApp.InvoiceJob.Run() in /private/repo/InvoiceJob.cs:line 42\n   at TickerQ.TickerExecutionTaskHandler.Run() in /repo/TickerExecutionTaskHandler.cs:line 500"}
+            """;
+        _data.GetTimeTickerByIdAsync(_id, Arg.Any<CancellationToken>()).Returns(new TimeTickerFlatDto
+        {
+            Id = _id,
+            FunctionName = "PrivateApp.InvoiceJob",
+            Status = TickerStatus.Failed,
+            Description = payloadMarker,
+            ExceptionMessage = exception,
+            RetryCount = 1,
+            Retries = 2,
+        });
+
+        ExecutionSourceContextRequest? sourceRequest = null;
+        var sourceProvider = Substitute.For<IExecutionSourceContextProvider>();
+        sourceProvider.GetSourceContextAsync(Arg.Any<ExecutionSourceContextRequest>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                sourceRequest = call.ArgAt<ExecutionSourceContextRequest>(0);
+                return Task.FromResult<ExecutionSourceContext?>(new ExecutionSourceContext
+                {
+                    Repository = "https://repository-token@example.test/private/repository",
+                    Revision = "abc123",
+                    Path = "/Users/provider/private-checkout/src/InvoiceJob.cs",
+                    StartLine = 38,
+                    Code = "throw new InvalidOperationException(\"secret source\");",
+                });
+            });
+        var investigator = new RunInvestigatorOptionsBuilder()
+            .WithMaxLogLines(1)
+            .RedactEvidenceWith(value => value.Replace("secret", "[redacted]", StringComparison.OrdinalIgnoreCase));
+        var logs = new Func<Guid, CancellationToken, Task<ExecutionLogReadResult>>((_, _) =>
+            Task.FromResult(new ExecutionLogReadResult(
+            [
+                new TickerExecutionLogLine { UnixMs = 1, Message = "old line" },
+                new TickerExecutionLogLine { UnixMs = 2, Message = "secret newest line" },
+            ], false, true)));
+
+        var result = await Invoke("investigate_execution", new() { ["executionId"] = _id.ToString() },
+            Tools(logs: logs, investigator: investigator, sourceProvider: sourceProvider));
+
+        Assert.Equal("InvoiceJob.cs", sourceRequest?.SourceFile);
+        Assert.Equal(42, sourceRequest?.SourceLine);
+        Assert.Contains("Classification: application exception", result);
+        Assert.Contains("Source reference: InvoiceJob.cs:42", result);
+        Assert.Contains("[redacted] failure", result);
+        Assert.Contains("[redacted] newest line", result);
+        Assert.Contains("[redacted] source", result);
+        Assert.Contains("Source context: repository=", result);
+        Assert.Contains("revision=abc123", result);
+        Assert.Contains("path=InvoiceJob.cs", result);
+        Assert.DoesNotContain("old line", result);
+        Assert.DoesNotContain(payloadMarker, result);
+        Assert.DoesNotContain("/Users/operator", result);
+        Assert.DoesNotContain("/private/repo/InvoiceJob.cs", result);
+        Assert.DoesNotContain("repository-token", result);
+        Assert.DoesNotContain("TickerExecutionTaskHandler.Run", result);
+    }
+
+    [Fact]
+    public async Task RunInvestigator_ContinuesWhenOptionalSourceProviderFails()
+    {
+        _data.GetTimeTickerByIdAsync(_id, Arg.Any<CancellationToken>()).Returns(new TimeTickerFlatDto
+        {
+            Id = _id,
+            FunctionName = "Root",
+            Status = TickerStatus.Cancelled,
+            ExceptionMessage = "A task was canceled.",
+        });
+        var sourceProvider = Substitute.For<IExecutionSourceContextProvider>();
+        sourceProvider.GetSourceContextAsync(Arg.Any<ExecutionSourceContextRequest>(), Arg.Any<CancellationToken>())
+            .Returns<Task<ExecutionSourceContext?>>(_ => throw new InvalidOperationException("private provider secret"));
+
+        var result = await Invoke("investigate_execution", new() { ["executionId"] = _id.ToString() },
+            Tools(sourceProvider: sourceProvider));
+
+        Assert.Contains("Classification: cancellation", result);
+        Assert.Contains("provider failed; diagnosis continues without source", result);
+        Assert.DoesNotContain("private provider secret", result);
+    }
+
+    [Fact]
+    public void RunInvestigatorOptions_RejectUnsafeBoundsAndNullCallbacks()
+    {
+        var options = new RunInvestigatorOptionsBuilder();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.WithMaxLogLines(0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.WithMaxChainSteps(101));
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.WithSourceContextLimits(201, 1_000));
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.WithSourceContextLimits(10, 33_000));
+        Assert.Throws<ArgumentNullException>(() => options.RedactEvidenceWith(null!));
+        Assert.Throws<ArgumentNullException>(() => options.UseSourceContextProvider((IExecutionSourceContextProvider)null!));
+    }
+
     [Theory]
     [InlineData("99 99 * * *")]
     [InlineData("%Configuration:Schedule%")]
@@ -163,6 +289,103 @@ public class AssistantToolsTests
     {
         await Invoke("propose_cron_ticker", new() { ["functionName"] = "Root", ["expression"] = "* * * * *",
             ["retries"] = retries, ["description"] = "", ["requestJson"] = payload });
+        Assert.Empty(_proposals);
+    }
+
+    [Fact]
+    public async Task RequestlessFunction_RejectsAssistantPayloadBeforeProposal()
+    {
+        var result = await Invoke("propose_time_ticker", new()
+        {
+            ["functionName"] = "Child",
+            ["draftName"] = "Requestless job",
+            ["executionTimeUtc"] = DateTime.UtcNow.AddHours(1).ToString("O"),
+            ["retries"] = 0,
+            ["description"] = "",
+            ["requestJson"] = "{}",
+        });
+
+        Assert.Contains("does not accept a request payload", result);
+        Assert.Empty(_proposals);
+    }
+
+    [Fact]
+    public async Task Chain_RejectsPayloadsThatDoNotMatchFunctionContracts()
+    {
+        var requestless = await Invoke("propose_chain", new()
+        {
+            ["draftName"] = "Invalid requestless child",
+            ["executionTimeUtc"] = DateTime.UtcNow.AddHours(1).ToString("O"),
+            ["chainJson"] = """{"function":"Root","children":[{"function":"Child","requestJson":"{}","runCondition":"OnSuccess"}]}""",
+        });
+
+        Assert.Contains("does not accept a request payload", requestless);
+        Assert.Empty(_proposals);
+
+        var missingRequiredField = await Invoke("propose_chain", new()
+        {
+            ["draftName"] = "Invalid typed child",
+            ["executionTimeUtc"] = DateTime.UtcNow.AddHours(1).ToString("O"),
+            ["chainJson"] = """{"function":"Root","children":[{"function":"Required","requestJson":"{}","runCondition":"OnSuccess"}]}""",
+        });
+
+        Assert.Contains("missing required field(s): value", missingRequiredField);
+        Assert.Empty(_proposals);
+    }
+
+    [Fact]
+    public async Task OneTimeJob_ProposesSavedDraftWithoutWritingOrScheduling()
+    {
+        var result = await Invoke("propose_time_ticker", new()
+        {
+            ["functionName"] = "Root",
+            ["draftName"] = "Invoice reminder",
+            ["executionTimeUtc"] = DateTime.UtcNow.AddHours(1).ToString("O"),
+            ["retries"] = 1,
+            ["description"] = "Send reminder",
+            ["requestJson"] = "{\"invoiceId\":42}",
+        });
+
+        var proposal = Assert.Single(_proposals);
+        Assert.Equal("createTimeTickerDraft", proposal.Kind);
+        Assert.Equal("Invoice reminder", proposal.DraftName);
+        Assert.Contains("NOT been saved or scheduled", result);
+        Assert.All(_data.ReceivedCalls(), call => Assert.StartsWith("Get", call.GetMethodInfo().Name));
+    }
+
+    [Fact]
+    public async Task OneTimeChain_ProposesSavedDraftWithoutWritingOrScheduling()
+    {
+        var result = await Invoke("propose_chain", new()
+        {
+            ["draftName"] = "Invoice workflow",
+            ["executionTimeUtc"] = DateTime.UtcNow.AddHours(1).ToString("O"),
+            ["chainJson"] = """{"function":"Root","children":[{"function":"Child","runCondition":"OnSuccess"}]}""",
+        });
+
+        var proposal = Assert.Single(_proposals);
+        Assert.Equal("createChainDraft", proposal.Kind);
+        Assert.Equal("Invoice workflow", proposal.DraftName);
+        Assert.Contains("NOT been saved or scheduled", result);
+        Assert.All(_data.ReceivedCalls(), call => Assert.StartsWith("Get", call.GetMethodInfo().Name));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task OneTimeDrafts_RequireAName(string name)
+    {
+        var result = await Invoke("propose_time_ticker", new()
+        {
+            ["functionName"] = "Root",
+            ["draftName"] = name,
+            ["executionTimeUtc"] = DateTime.UtcNow.AddHours(1).ToString("O"),
+            ["retries"] = 0,
+            ["description"] = "",
+            ["requestJson"] = "",
+        });
+
+        Assert.Contains("Draft name", result);
         Assert.Empty(_proposals);
     }
 

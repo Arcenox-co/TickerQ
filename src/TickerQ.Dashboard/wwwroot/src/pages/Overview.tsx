@@ -312,7 +312,7 @@ export default function OverviewPage() {
                         />
                       </TableCell>
                       <TableCell className="px-4 py-2">
-                        <ExecutionStatus status={r.status} summary={r.chainSummary} isChain={!!r.chainRootId || r.childCount > 0} />
+                        <ExecutionStatus status={r.status} summary={r.chainSummary} isChain={!!r.chainRootId || r.childCount > 0} displayIdleAsWaiting />
                       </TableCell>
                       <TableCell className="px-4 py-2 text-[11px] tabular-nums">
                         {r.executedAt ? formatDuration(r.elapsedTime) : "—"}

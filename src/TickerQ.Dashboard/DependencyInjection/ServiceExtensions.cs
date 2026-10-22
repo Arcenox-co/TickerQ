@@ -71,7 +71,10 @@ namespace TickerQ.Dashboard.DependencyInjection
                 if (dashboardConfig.Assistant?.IsEnabled == true)
                 {
                     var assistantOptions = dashboardConfig.Assistant;
+                    services.AddSingleton(assistantOptions);
                     services.AddSingleton(sp => new Assistant.TickerAssistantService(assistantOptions, sp));
+                    if (assistantOptions.RunInvestigator.Automatic.Enabled)
+                        services.AddHostedService<Assistant.AssistantAutoInvestigationService<TTimeTicker, TCronTicker>>();
                 }
 
                 // JWT / cookie support: build a single JwtTokenIssuer that both

@@ -99,8 +99,8 @@ builder.Services.AddTickerQ(options =>
     {
         efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>
             dbOptions.UseSqlite("Data Source=dashboard-hostjwt.db"));
-        // Assistant chat history in the TickerQ store — conversations are keyed
-        // per user, so admin and viewer each see only their own threads.
+        // Assistant history in the TickerQ store — conversations are keyed per
+        // user, while structured investigations are shared in this namespace.
         efOptions.AddAssistantHistory();
     });
 

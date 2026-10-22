@@ -3,16 +3,14 @@ import { useNavigate } from "react-router-dom";
 import { Clock3, FilePenLine, LayoutTemplate, Loader2, Pencil, Play, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { nowAsDatetimeLocal } from "@/components/form-fields/datetime-field";
 import { toDatetimeLocal } from "@/lib/cron/chain-node";
 import { filterAndSortSavedDefinitions, type DefinitionCreatedOrder } from "@/lib/cron/saved-definitions";
 import { useActivateDraft, useDefinitions, useDeleteDefinition } from "@/services/hooks";
 import type { SavedTickerDefinition, SavedTickerDefinitionTarget } from "@/services/api-types";
+import { ActivateDraftDialog } from "@/components/cron/ActivateDraftDialog";
 
 function DefinitionCard({
   definition,
@@ -73,9 +71,9 @@ function DefinitionCard({
           </Button>
         )}
         {isDraft && !activated && onActivate && (
-          <Button size="sm" variant="gradient" className="h-7 text-[11px]" onClick={onActivate} disabled={activating}>
+          <Button type="button" size="sm" variant="gradient" className="h-7 text-[11px]" onClick={onActivate} disabled={activating}>
             {activating ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Play className="mr-1 h-3 w-3" />}
-            {activationPending ? "Resume" : "Activate"}
+            {activationPending ? "Resume" : "Review activation"}
           </Button>
         )}
         <Button
@@ -108,7 +106,6 @@ export function SavedDefinitionsPanel({
   const remove = useDeleteDefinition();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [activationDefinition, setActivationDefinition] = useState<SavedTickerDefinition | null>(null);
-  const [activationExecutionTime, setActivationExecutionTime] = useState("");
   const [search, setSearch] = useState("");
   const [createdOrder, setCreatedOrder] = useState<DefinitionCreatedOrder>("newest");
   const drafts = useMemo(() => definitions.data?.filter(item => item.kind === "Draft") ?? [], [definitions.data]);
@@ -124,14 +121,9 @@ export function SavedDefinitionsPanel({
 
   function requestDraftActivation(definition: SavedTickerDefinition) {
     setActivationDefinition(definition);
-    setActivationExecutionTime(
-      definition.payload.executionTime
-        ? toDatetimeLocal(definition.payload.executionTime)
-        : nowAsDatetimeLocal(),
-    );
   }
 
-  async function activateDraft() {
+  async function activateDraft(executionTime: string | null) {
     const definition = activationDefinition;
     if (!definition) return;
     setBusyId(definition.id);
@@ -139,8 +131,8 @@ export function SavedDefinitionsPanel({
       const result = await activate.mutateAsync({
         id: definition.id,
         version: definition.version,
-        executionTime: activationExecutionTime
-          ? new Date(activationExecutionTime).toISOString()
+        executionTime: executionTime
+          ? new Date(executionTime).toISOString()
           : new Date().toISOString(),
       });
       toast.success("Draft activated and scheduled");
@@ -240,38 +232,18 @@ export function SavedDefinitionsPanel({
         )}
       </SheetContent>
     </Sheet>
-    <Dialog open={activationDefinition !== null} onOpenChange={nextOpen => {
-      if (!nextOpen && !activate.isPending) setActivationDefinition(null);
-    }}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Activate draft</DialogTitle>
-          <DialogDescription>
-            Confirm when this job or chain should enter the scheduler. The draft remains separate from execution history.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-1.5 py-1">
-          <Label htmlFor="draft-activation-time" className="text-xs">Scheduled for</Label>
-          <Input
-            id="draft-activation-time"
-            type="datetime-local"
-            step={1}
-            value={activationExecutionTime}
-            onChange={event => setActivationExecutionTime(event.target.value)}
-          />
-          <p className="text-[11px] leading-4 text-muted-foreground">
-            The time saved with the draft is prefilled. Change it here if the original time is no longer correct; past times start as soon as capacity is available.
-          </p>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setActivationDefinition(null)} disabled={activate.isPending}>Cancel</Button>
-          <Button variant="gradient" onClick={() => void activateDraft()} disabled={activate.isPending}>
-            {activate.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-            Activate and schedule
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ActivateDraftDialog
+      open={activationDefinition !== null}
+      draftName={activationDefinition?.name}
+      initialExecutionTime={activationDefinition?.payload.executionTime
+        ? toDatetimeLocal(activationDefinition.payload.executionTime)
+        : ""}
+      pending={activate.isPending}
+      onOpenChange={nextOpen => {
+        if (!nextOpen && !activate.isPending) setActivationDefinition(null);
+      }}
+      onActivate={activateDraft}
+    />
     </>
   );
 }

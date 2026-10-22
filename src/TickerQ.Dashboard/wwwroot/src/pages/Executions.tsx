@@ -237,7 +237,8 @@ export default function ExecutionsPage() {
           <ExecutionStatus status={row.original.status} summary={row.original.chainSummary}
             isChain={!!row.original.chainRootId || row.original.childCount > 0}
             progressPercent={row.original.progressPercent}
-            progressMessage={row.original.progressMessage} />
+            progressMessage={row.original.progressMessage}
+            displayIdleAsWaiting />
         ),
       },
       {

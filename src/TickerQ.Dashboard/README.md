@@ -266,6 +266,35 @@ options.AddDashboard(dashboard =>
 
 The assistant can inspect registered functions and their request contracts, executions,
 cron definitions, chain steps, retained execution logs, and node-local runtime health.
+Failed and cancelled executions also expose **Investigate with AI**. The built-in run
+investigator assembles bounded exception, log, retry and workflow evidence; request
+payload values are excluded. Applications can optionally resolve a small source excerpt
+from a local checkout, SourceLink artifact or private repository without exposing repository
+credentials to the browser. See the [AI run investigator guide](../../docs/ai-run-investigator.md).
+
+The AI page is an operations workspace with **Overview**, **Chat**, and **Investigations**.
+When `AddAssistantHistory()` is enabled on the EF operational store, the overview shows saved
+diagnoses, unread findings, repeated failure patterns, and later successful recoveries.
+Investigations can be marked as read, resolved, or reopened; those review changes persist in the
+operational store.
+Investigations are shared within the application namespace; conversations remain private to the
+authenticated user. The investigator can also be explicitly configured to diagnose exhausted
+failures in the background. Automatic mode is disabled by default, bounded by batch/hourly limits,
+and uses a renewable database lease per failure fingerprint. Scheduler nodes sharing the same
+namespace and operational store also share one rolling hourly model-call budget. Repeated failures
+reuse the completed diagnosis without another model call.
+
+For an explicitly allow-listed local checkout:
+
+```csharp
+assistant.ConfigureRunInvestigator(investigator => investigator
+    .UseLocalSourceContext(builder.Environment.ContentRootPath, source => source
+        .WithRevision(Environment.GetEnvironmentVariable("GIT_COMMIT_SHA") ?? "local-working-tree")
+        .MapFunction("Payments.Charge", "Jobs/PaymentJob.cs")));
+```
+
+Local source lookup never scans the checkout. Unmapped files remain unavailable, and production
+repository adapters should resolve an immutable deployed revision with server-side credentials.
 With `TickerQ.Integrations` configured, dashboard viewers can also inspect destinations,
 rules, monitoring state and recent delivery outcomes. The Integrations page provides
 health and delivery status to read-only users and users without management permission.
@@ -274,9 +303,10 @@ integration-management permission and a writable dashboard.
 Webhook URLs, headers, message templates and delivery response bodies are excluded
 from integration tool results.
 
-The assistant drafts confirmation cards for:
+The assistant prepares review cards for:
 
-- One-time jobs, cron schedules, and one-time or recurring chains.
+- One-time jobs and one-time chains, saved as non-executable drafts.
+- Cron schedules and recurring chains.
 - Cron schedule updates, including enabling/disabling a schedule.
 - Execution retries, cancellation, and deletion.
 - New alert rules and deadline, long-running or consecutive-failure monitors, using
@@ -287,9 +317,12 @@ Publish every weekday at 08:00”; “Alert Operations if GenerateInvoices fails
 times”; “Monitor GenerateInvoices: finish by 08:00 Europe/Belgrade, with ten minutes
 of grace and a recovery message.”
 
-**Changes require a Confirm click.** Tools never write data or send test messages.
-Confirmation uses the normal authenticated dashboard APIs, including their read-only,
-license and integration-management checks. Execution cards recheck observed status
+**Changes require an explicit card action.** One-time jobs and chains use **Save draft**;
+the saved card returns an **Open draft** link to the chain builder, where the operator can
+edit and activate it. Saving the draft does not enqueue or execute any job. Other changes
+use **Confirm**. Tools never write data or send test messages by themselves. Card actions
+use the normal authenticated dashboard APIs, including their read-only, license and
+integration-management checks. Execution cards recheck observed status
 and execution timestamps before submitting; the underlying APIs still enforce current
 state. Integration proposals retain the configuration version and fail on concurrent
 edits. Read-only users receive no proposal tools.
@@ -353,9 +386,11 @@ those IDs after the 30-second freshness window, and cleans its single animation 
 on navigation. Assistant transcripts retain the latest 40 messages and 20 proposal cards,
 with a 65,536-character display limit per message. Proposal cards use stable identities
 so an asynchronous confirmation still updates the correct card after older items expire.
-Server-side conversation history remains stored on the server; reopening a conversation
-loads its recent message window. Browser fallback history retains the same 40-message
-limit and never persists proposal cards.
+Server-side conversation history stores messages, proposal cards, confirmation state and
+the saved-draft link. Reopening a conversation therefore restores pending cards as well as
+confirmed cards and their **Open draft** action. Custom text-only history stores that do not
+implement `IAssistantProposalHistoryStore` remain compatible, but do not persist cards.
+Browser fallback history retains the same 40-message limit and proposal cards in that browser.
 
 Dashboard pages load on demand. Navigation keeps the shell visible and shows a loading
 indicator while the requested page's JavaScript is downloaded.

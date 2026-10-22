@@ -271,7 +271,7 @@ export default function CronTickersPage() {
         header: "Last Status",
         cell: ({ row }) =>
           row.original.lastRunStatus ? (
-            <ExecutionStatus status={row.original.lastRunStatus} summary={row.original.lastRunChainSummary} isChain={!!row.original.lastRunChainRootId} />
+            <ExecutionStatus status={row.original.lastRunStatus} summary={row.original.lastRunChainSummary} isChain={!!row.original.lastRunChainRootId} displayIdleAsWaiting />
           ) : (
             <span className="text-[11px] text-muted-foreground/40">—</span>
           ),

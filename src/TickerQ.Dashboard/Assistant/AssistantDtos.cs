@@ -12,6 +12,13 @@ public sealed class ChatRequest
     public List<ChatTurn> Messages { get; set; } = new();
 
     /// <summary>
+    /// Saved investigation explicitly selected by the operator. The server resolves this id
+    /// inside the active application namespace and supplies its diagnosis as bounded context.
+    /// Null means this is an ordinary, unscoped chat.
+    /// </summary>
+    public Guid? InvestigationId { get; set; }
+
+    /// <summary>
     /// Existing conversation to append to (history mode). Null starts a new
     /// conversation; the server returns the id on the "done" stream event.
     /// </summary>
@@ -25,11 +32,22 @@ public sealed class ChatTurn
     public string Content { get; set; } = "";
 }
 
-/// <summary>One SSE frame: {type: "delta"|"proposal"|"done"|"error", data}.</summary>
+/// <summary>One SSE frame: {type: "delta"|"proposal"|"investigations"|"done"|"error", data}.</summary>
 public sealed class ChatStreamEvent
 {
     public string Type { get; set; } = "";
     public string Data { get; set; } = "";
+}
+
+public sealed class AssistantInvestigationReviewRequest
+{
+    public string ReviewState { get; set; } = "";
+}
+
+public sealed class AssistantProposalStateRequest
+{
+    public string Status { get; set; } = "";
+    public string ResultJson { get; set; } = "";
 }
 
 /// <summary>
@@ -40,8 +58,17 @@ public sealed class ChatStreamEvent
 /// </summary>
 public sealed class AssistantProposal
 {
-    /// <summary>"createTimeTicker" | "createCronTicker" | "updateCronTicker".</summary>
+    /// <summary>Stable history id assigned by the server before the card is streamed.</summary>
+    public Guid? ProposalId { get; set; }
+
+    /// <summary>
+    /// Proposal kind. One-time jobs and chains use createTimeTickerDraft and
+    /// createChainDraft so confirmation saves a non-executable draft.
+    /// </summary>
     public string Kind { get; set; } = "";
+
+    /// <summary>Name shown in the saved drafts list.</summary>
+    public string DraftName { get; set; } = "";
 
     public string Function { get; set; } = "";
 
@@ -66,7 +93,7 @@ public sealed class AssistantProposal
     public bool? IsEnabled { get; set; }
 
     /// <summary>
-    /// Normalized chain tree as JSON (createChain only) — a single root
+    /// Normalized chain tree as JSON (createChain/createChainDraft only) — a single root
     /// <see cref="AssistantChainNode"/>. The card renders it as a tree and
     /// confirm maps it onto the existing POST /time-tickers/chain contract.
     /// </summary>
@@ -113,6 +140,11 @@ public sealed class AssistantChainNode
 [JsonSerializable(typeof(List<AssistantConversationSummary>))]
 [JsonSerializable(typeof(AssistantHistoryMessage))]
 [JsonSerializable(typeof(List<AssistantHistoryMessage>))]
+[JsonSerializable(typeof(AssistantInvestigationRecord))]
+[JsonSerializable(typeof(AssistantInvestigationPage))]
+[JsonSerializable(typeof(AssistantInvestigationOverview))]
+[JsonSerializable(typeof(AssistantInvestigationReviewRequest))]
+[JsonSerializable(typeof(AssistantProposalStateRequest))]
 internal partial class AssistantJsonContext : JsonSerializerContext
 {
 }

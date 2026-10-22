@@ -24,7 +24,7 @@ function fakeApi(values: Record<string, unknown> = {}) {
 
 test("retry rechecks the exact time ticker before requesting a run", async () => {
   const { api, calls } = fakeApi({ getTimeTicker: current });
-  assert.equal(await applyAssistantProposal(proposal(), api), "Run requested");
+  assert.equal((await applyAssistantProposal(proposal(), api)).message, "Run requested");
   assert.deepEqual(calls.map(x => x.method), ["getTimeTicker", "runTimeTicker"]);
   assert.deepEqual(calls[1].args, ["execution-1"]);
 });
@@ -48,7 +48,7 @@ for (const state of ["Idle", "Queued", "InProgress"]) {
   test(`cancellation selects correct endpoint semantics for ${state}`, async () => {
     const { api, calls } = fakeApi({ getTimeTicker: { ...current, status: state },
       cancelTicker: { outcome: state === "InProgress" ? "Requested" : "Cancelled", affected: 1 } });
-    const message = await applyAssistantProposal(proposal({ kind: "cancelExecution", expectedStatus: state }), api);
+    const message = (await applyAssistantProposal(proposal({ kind: "cancelExecution", expectedStatus: state }), api)).message;
     assert.deepEqual(calls[1].args, [{ id: "execution-1", type: "TimeTicker", running: state === "InProgress" }]);
     assert.match(message, state === "InProgress" ? /requested.*handler/ : /cancelled/);
   });
@@ -81,6 +81,55 @@ test("cron updates patch requested fields without resetting retry intervals or c
   await applyAssistantProposal(proposal({ kind: "updateCronTicker", expression: "0 9 * * *", currentExpression: "0 8 * * *" }), api);
   const body = calls[1].args[1];
   assert.deepEqual(JSON.parse(JSON.stringify(body)), { expression: "0 9 * * *" });
+});
+
+test("one-time job proposals save a non-executable draft and return its builder URL", async () => {
+  const { api, calls } = fakeApi({ createDefinition: { id: "draft-job-1" } });
+  const result = await applyAssistantProposal(proposal({
+    kind: "createTimeTickerDraft",
+    draftName: "Invoice reminder",
+    function: "Root",
+    executionTime: "2026-12-01T09:30:00Z",
+    retries: 2,
+    description: "Send the reminder",
+    requestJson: '{"invoiceId":42}',
+  }), api);
+
+  assert.deepEqual(calls.map(x => x.method), ["createDefinition"]);
+  const body = calls[0].args[0] as any;
+  assert.equal(body.kind, "Draft");
+  assert.equal(body.target, "TimeTicker");
+  assert.equal(body.name, "Invoice reminder");
+  assert.equal(body.payload.executionTime, "2026-12-01T09:30:00Z");
+  assert.equal(body.payload.root.function, "Root");
+  assert.equal(body.payload.root.retries, 2);
+  assert.equal(Buffer.from(body.payload.root.request, "base64").toString(), '{"invoiceId":42}');
+  assert.deepEqual(body.payload.root.children, []);
+  assert.deepEqual(result, {
+    message: "Job draft saved",
+    href: "/time-tickers/new-chain?draft=draft-job-1",
+    linkLabel: "Open draft",
+  });
+});
+
+test("one-time chain proposals preserve the tree in a saved draft without creating executions", async () => {
+  const { api, calls } = fakeApi({ createDefinition: { id: "draft-chain-1" } });
+  const result = await applyAssistantProposal(proposal({
+    kind: "createChainDraft",
+    draftName: "Invoice workflow",
+    executionTime: "2026-12-01T09:30:00Z",
+    chainJson: JSON.stringify({ function: "Root", retries: 0, requestJson: '{"invoiceId":42}', children: [
+      { function: "Child", retries: 1, runCondition: "OnSuccess", requestJson: "", children: [] },
+    ] }),
+  }), api);
+
+  assert.deepEqual(calls.map(x => x.method), ["createDefinition"]);
+  const body = calls[0].args[0] as any;
+  assert.equal(body.name, "Invoice workflow");
+  assert.equal(body.payload.root.function, "Root");
+  assert.equal(body.payload.root.children[0].function, "Child");
+  assert.equal(body.payload.root.children[0].runCondition, "OnSuccess");
+  assert.equal(result.href, "/time-tickers/new-chain?draft=draft-chain-1");
 });
 
 test("recurring chain separates root payload from children and preserves run conditions", async () => {

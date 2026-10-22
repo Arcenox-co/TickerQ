@@ -11,6 +11,12 @@ export interface TickerQAssistantConfig {
   model: string;
   /** True when the server persists per-user chat history (IAssistantHistoryStore registered). */
   history: boolean;
+  /** True when structured investigations are persisted by the server. */
+  investigations: boolean;
+  /** True when the host opted in to background investigation of terminal failures. */
+  automaticInvestigations: boolean;
+  /** True when bounded source context is configured server-side. */
+  sourceContext: boolean;
 }
 
 export interface TickerQAuthConfig {
@@ -31,6 +37,8 @@ export interface TickerQRuntimeConfig {
   version: string;
   /** Customer-branded title shown in the shell + browser tab. */
   title: string;
+  /** Human-facing deployment environment, such as Development, Staging, or Production. */
+  environmentName: string;
   /** Optional customer logo URL rendered next to the title. */
   logoUrl: string | null;
   /** When true, all mutation UI is hidden (the server also rejects writes with 403). */
@@ -55,11 +63,12 @@ const DEFAULTS: TickerQRuntimeConfig = {
   applicationNamespace: null,
   version: "",
   title: "TickerQ Dashboard",
+  environmentName: "",
   logoUrl: null,
   readOnly: false,
   timezone: null,
   realtime: { enabled: true, hubPath: "tickerq-notification-hub" },
-  assistant: { enabled: false, model: "", history: false },
+  assistant: { enabled: false, model: "", history: false, investigations: false, automaticInvestigations: false, sourceContext: false },
   auth: null,
 };
 

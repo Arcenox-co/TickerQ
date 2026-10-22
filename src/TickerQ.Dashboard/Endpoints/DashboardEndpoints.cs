@@ -76,8 +76,8 @@ public static class DashboardEndpoints
         // every other read (it sits under /api). Exposes only safe, presentation-ready fields.
         apiGroup.MapGet("/license", GetLicense);
 
-        // AI assistant chat (read-only) — mapped only when configured. Sits
-        // under /api so AuthMiddleware gates it; not under the write group.
+        // AI assistant — mapped only when configured. Sits under /api so
+        // AuthMiddleware gates it; its mutation handlers enforce read-only access.
         apiGroup.MapAssistantEndpoints<TTimeTicker, TCronTicker>(config);
 
         // ===== Reads — mirror DashboardService proto RPCs =====
