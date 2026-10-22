@@ -14,11 +14,11 @@ import {
   FilterPopover,
   SearchInput,
 } from "@/components/cron/TableToolbar";
+import { ExecutionVolumeChart } from "@/components/cron/ExecutionVolumeChart";
 import {
-  ExecutionVolumeChart,
   bucketsToVolume,
   emptyVolumeData,
-} from "@/components/cron/ExecutionVolumeChart";
+} from "@/lib/cron/execution-volume";
 import { TimeTickerDetailPanel } from "@/components/cron/TimeTickerDetailPanel";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -42,6 +42,7 @@ import { CreateTimeTickerDialog } from "@/components/cron/CreateTimeTickerDialog
 import { SavedDefinitionsPanel } from "@/components/cron/SavedDefinitionsPanel";
 import { QueryErrorNotice } from "@/components/cron/QueryErrorNotice";
 import { isReadOnly } from "@/lib/runtime-config";
+import { formatStatusLabels } from "@/lib/cron/status-config";
 
 const PAGE_SIZE = 25;
 
@@ -369,7 +370,7 @@ export default function TimeTickersPage() {
       {(statusFilter.length > 0 || functionFilter) && (
         <div className="flex items-center gap-2 flex-wrap">
           {statusFilter.length > 0 && (
-            <FilterChip label="Root job status" value={statusFilter.join(", ")} onRemove={() => setStatusFilter([])} />
+            <FilterChip label="Root job status" value={formatStatusLabels(statusFilter, true)} onRemove={() => setStatusFilter([])} />
           )}
           {functionFilter && (
             <FilterChip label="Function" value={functionFilter} onRemove={() => setFunctionFilter("")} />

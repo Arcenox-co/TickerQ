@@ -36,7 +36,7 @@ export function ExecutionStatus({
 
     return (
       <StatusBadge
-        status={status}
+        status={displayIdleAsWaiting && status === "Idle" ? "Queued" : status}
         label={displayIdleAsWaiting && status === "Idle" ? "Waiting" : undefined}
       />
     );

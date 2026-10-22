@@ -14,11 +14,11 @@ import {
   FilterPopover,
   SearchInput,
 } from "@/components/cron/TableToolbar";
+import { ExecutionVolumeChart } from "@/components/cron/ExecutionVolumeChart";
 import {
-  ExecutionVolumeChart,
   bucketsToVolume,
   emptyVolumeData,
-} from "@/components/cron/ExecutionVolumeChart";
+} from "@/lib/cron/execution-volume";
 import { CreateCronTickerDialog } from "@/components/cron/CreateCronTickerDialog";
 import { SavedDefinitionsPanel } from "@/components/cron/SavedDefinitionsPanel";
 import { EditCronTickerDialog } from "@/components/cron/EditCronTickerDialog";
@@ -50,6 +50,7 @@ import { TimeCell } from "@/components/cron/TimeCell";
 import { QueryErrorNotice } from "@/components/cron/QueryErrorNotice";
 import { isReadOnly } from "@/lib/runtime-config";
 import { encodeRequestPayload } from "@/lib/request-payload";
+import { formatStatusLabels } from "@/lib/cron/status-config";
 
 const PAGE_SIZE = 25;
 
@@ -417,7 +418,7 @@ export default function CronTickersPage() {
           {statusFilter.length > 0 && (
             <FilterChip
               label="Last Status"
-              value={statusFilter.join(", ")}
+              value={formatStatusLabels(statusFilter, true)}
               onRemove={() => setStatusFilter([])}
             />
           )}

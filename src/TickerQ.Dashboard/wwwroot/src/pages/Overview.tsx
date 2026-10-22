@@ -17,11 +17,12 @@ import { SchedulerHostCard } from "@/components/cron/SchedulerHostCard";
 import { MetricTile } from "@/components/cron/MetricTile";
 import { LockHolder } from "@/components/cron/LockHolder";
 import { PriorityBadge, TypeBadge } from "@/components/cron/StatusBadges";
+import { ExecutionVolumeChart } from "@/components/cron/ExecutionVolumeChart";
 import {
-  ExecutionVolumeChart,
   bucketsToVolume,
   emptyVolumeData,
-} from "@/components/cron/ExecutionVolumeChart";
+  mergeVolumeData,
+} from "@/lib/cron/execution-volume";
 import {
   Table,
   TableBody,
@@ -32,6 +33,7 @@ import {
 } from "@/components/ui/table";
 import {
   useAllFunctions,
+  useCronTickersGraph,
   useOverallStatuses,
   useRecentActivity,
   useTimeTickersGraph,
@@ -40,7 +42,11 @@ import {
 import { formatDuration } from "@/lib/cron/format";
 import { TimeCell } from "@/components/cron/TimeCell";
 import { QueryErrorNotice } from "@/components/cron/QueryErrorNotice";
-import { CHART_COLORS, CHART_TOOLTIP_STYLE } from "@/lib/cron/status-config";
+import {
+  CHART_COLORS,
+  CHART_TOOLTIP_STYLE,
+  displayStatusLabel,
+} from "@/lib/cron/status-config";
 import type { ExecutionType, TickerStatus } from "@/services/api-types";
 
 const ACTIVE_STATUSES: TickerStatus[] = ["Idle", "Queued", "InProgress"];
@@ -73,11 +79,15 @@ export default function OverviewPage() {
   const { data: upcoming } = useUpcoming(10);
   const { data: recent } = useRecentActivity(10);
   const { data: fns } = useAllFunctions();
-  const { data: graph } = useTimeTickersGraph(7, 0);
+  const { data: timeGraph } = useTimeTickersGraph(7, 0);
+  const { data: cronGraph } = useCronTickersGraph(7, 0);
 
   const volumeData = useMemo(
-    () => (graph ? bucketsToVolume(graph) : emptyVolumeData()),
-    [graph]
+    () => mergeVolumeData(
+      timeGraph ? bucketsToVolume(timeGraph) : emptyVolumeData(),
+      cronGraph ? bucketsToVolume(cronGraph) : emptyVolumeData()
+    ),
+    [timeGraph, cronGraph]
   );
 
   const statusMap = useMemo(() => {
@@ -104,7 +114,11 @@ export default function OverviewPage() {
     () =>
       (overall ?? [])
         .filter((s) => s.count > 0)
-        .map((s) => ({ name: s.status, value: s.count })),
+        .map((s) => ({
+          status: s.status,
+          name: displayStatusLabel(s.status, true),
+          value: s.count,
+        })),
     [overall]
   );
   const totalCount = pieData.reduce((s, d) => s + d.value, 0);
@@ -186,7 +200,7 @@ export default function OverviewPage() {
                         strokeWidth={0}
                       >
                         {pieData.map((d) => (
-                          <Cell key={d.name} fill={CHART_COLORS[d.name] ?? "hsl(var(--muted))"} />
+                          <Cell key={d.status} fill={CHART_COLORS[d.status] ?? "hsl(var(--muted))"} />
                         ))}
                       </Pie>
                       <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
@@ -196,13 +210,13 @@ export default function OverviewPage() {
                 <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
                   {pieData.map((d) => (
                     <div
-                      key={d.name}
+                      key={d.status}
                       className="flex items-center justify-between text-[11px]"
                     >
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span
                           className="h-2 w-2 rounded-full shrink-0"
-                          style={{ background: CHART_COLORS[d.name] }}
+                          style={{ background: CHART_COLORS[d.status] }}
                         />
                         <span className="truncate text-muted-foreground">{d.name}</span>
                       </div>

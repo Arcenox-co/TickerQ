@@ -176,8 +176,23 @@ export const CHART_COLORS: Record<string, string> = {
   Running: statusHsl("InProgress"),
   InProgress: statusHsl("InProgress"),
   Queued: statusHsl("Queued"),
-  Idle: statusHsl("Idle"),
+  // Aggregate/table views present persisted Idle work as Waiting. Use the
+  // same purple as the chain-level Waiting state while job details retain the
+  // neutral Idle color from STATUS_CONFIG.
+  Waiting: statusHsl("Queued"),
+  Idle: statusHsl("Queued"),
 };
+
+export function displayStatusLabel(status: TickerStatus, idleAsWaiting = false): string {
+  return idleAsWaiting && status === "Idle" ? "Waiting" : STATUS_CONFIG[status].label;
+}
+
+export function formatStatusLabels(
+  statuses: readonly TickerStatus[],
+  idleAsWaiting = false
+): string {
+  return statuses.map((status) => displayStatusLabel(status, idleAsWaiting)).join(", ");
+}
 
 export function describeRetryPolicy(
   retries: number,

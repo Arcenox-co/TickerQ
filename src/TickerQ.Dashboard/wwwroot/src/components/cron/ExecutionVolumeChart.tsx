@@ -14,20 +14,23 @@ import {
   CHART_TOOLTIP_STYLE,
 } from "@/lib/cron/status-config";
 import { DataCard, DataCardHeader } from "@/components/cron/PageHeader";
-import { parseUtc } from "@/lib/cron/format";
-import type { GraphBucketDto } from "@/services/api-types";
+import type { VolumePoint, VolumeStatusKey } from "@/lib/cron/execution-volume";
 
-export interface VolumePoint {
-  hour: string;
-  Done: number;
-  Failed: number;
-  DueDone: number;
-  Cancelled: number;
-  Skipped: number;
-  Queued: number;
-  InProgress: number;
-  Idle: number;
-}
+const SERIES: ReadonlyArray<{
+  key: VolumeStatusKey;
+  label: string;
+  color: string;
+  dash?: string;
+}> = [
+  { key: "Idle", label: "Waiting", color: CHART_COLORS.Waiting, dash: "2 3" },
+  { key: "Queued", label: "Queued", color: CHART_COLORS.Queued },
+  { key: "InProgress", label: "Running", color: CHART_COLORS.InProgress },
+  { key: "Done", label: "Done", color: CHART_COLORS.Done },
+  { key: "DueDone", label: "DueDone", color: CHART_COLORS.DueDone, dash: "4 2" },
+  { key: "Failed", label: "Failed", color: CHART_COLORS.Failed },
+  { key: "Cancelled", label: "Cancelled", color: CHART_COLORS.Cancelled, dash: "4 2" },
+  { key: "Skipped", label: "Skipped", color: CHART_COLORS.Skipped, dash: "4 2" },
+];
 
 export function ExecutionVolumeChart({
   data,
@@ -45,6 +48,12 @@ export function ExecutionVolumeChart({
   const idDone = `${gradientPrefix}GradDone`;
   const idFailed = `${gradientPrefix}GradFailed`;
   const idCancelled = `${gradientPrefix}GradCancelled`;
+  const totals = new Map(
+    SERIES.map((series) => [
+      series.key,
+      data.reduce((sum, point) => sum + point[series.key], 0),
+    ])
+  );
 
   return (
     <DataCard className={className}>
@@ -72,59 +81,49 @@ export function ExecutionVolumeChart({
             <XAxis dataKey="hour" tick={CHART_AXIS_STYLE} axisLine={false} tickLine={false} />
             <YAxis tick={CHART_AXIS_STYLE} axisLine={false} tickLine={false} width={28} />
             <ChartTooltip contentStyle={CHART_TOOLTIP_STYLE} />
-            <Area type="monotone" dataKey="Done" stroke={CHART_COLORS.Done} fill={`url(#${idDone})`} strokeWidth={2} />
-            <Area type="monotone" dataKey="Failed" stroke={CHART_COLORS.Failed} fill={`url(#${idFailed})`} strokeWidth={2} />
-            <Area type="monotone" dataKey="Queued" stroke={CHART_COLORS.Queued} fill="none" strokeWidth={1.5} />
-            <Area type="monotone" dataKey="InProgress" stroke={CHART_COLORS.InProgress} fill="none" strokeWidth={1.5} />
-            <Area type="monotone" dataKey="Cancelled" stroke={CHART_COLORS.Cancelled} fill={`url(#${idCancelled})`} strokeWidth={1.5} strokeDasharray="4 2" />
-            <Area type="monotone" dataKey="DueDone" stroke={CHART_COLORS.DueDone} fill="none" strokeWidth={1.5} strokeDasharray="4 2" />
-            <Area type="monotone" dataKey="Skipped" stroke={CHART_COLORS.Skipped} fill="none" strokeWidth={1.5} strokeDasharray="4 2" />
+            {SERIES.map((series) => {
+              const fill = series.key === "Done"
+                ? `url(#${idDone})`
+                : series.key === "Failed"
+                  ? `url(#${idFailed})`
+                  : series.key === "Cancelled"
+                    ? `url(#${idCancelled})`
+                    : "none";
+              return (
+                <Area
+                  key={series.key}
+                  type="monotone"
+                  dataKey={series.key}
+                  name={series.label}
+                  stroke={series.color}
+                  fill={fill}
+                  strokeWidth={series.key === "Done" || series.key === "Failed" ? 2 : 1.5}
+                  strokeDasharray={series.dash}
+                />
+              );
+            })}
           </AreaChart>
         </ResponsiveContainer>
+        <div
+          className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 border-t border-border/50 pt-3"
+          aria-label="Execution status totals shown in the chart"
+        >
+          {SERIES.map((series) => (
+            <div key={series.key} className="inline-flex items-center gap-1.5 text-[10px]">
+              <span
+                aria-hidden="true"
+                className="w-3 border-t-2"
+                style={{
+                  borderTopColor: series.color,
+                  borderTopStyle: series.dash ? "dashed" : "solid",
+                }}
+              />
+              <span className="text-muted-foreground">{series.label}</span>
+              <span className="tabular-nums text-foreground">{totals.get(series.key) ?? 0}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </DataCard>
   );
-}
-
-export function bucketsToVolume(buckets: GraphBucketDto[] | undefined): VolumePoint[] {
-  if (!buckets) return [];
-  return buckets.map((b) => {
-    const counts: Record<string, number> = {};
-    for (const c of b.counts) counts[c.status] = (counts[c.status] ?? 0) + c.count;
-    return {
-      hour: parseUtc(b.date).toLocaleDateString(undefined, {
-        month: "short",
-        day: "numeric",
-      }),
-      Done: counts.Done ?? 0,
-      Failed: counts.Failed ?? 0,
-      DueDone: counts.DueDone ?? 0,
-      Cancelled: counts.Cancelled ?? 0,
-      Skipped: counts.Skipped ?? 0,
-      Queued: counts.Queued ?? 0,
-      InProgress: counts.InProgress ?? 0,
-      Idle: counts.Idle ?? 0,
-    };
-  });
-}
-
-export function emptyVolumeData(days = 7): VolumePoint[] {
-  const out: VolumePoint[] = [];
-  const now = new Date();
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(now.getDate() - i);
-    out.push({
-      hour: d.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-      Done: 0,
-      Failed: 0,
-      DueDone: 0,
-      Cancelled: 0,
-      Skipped: 0,
-      Queued: 0,
-      InProgress: 0,
-      Idle: 0,
-    });
-  }
-  return out;
 }

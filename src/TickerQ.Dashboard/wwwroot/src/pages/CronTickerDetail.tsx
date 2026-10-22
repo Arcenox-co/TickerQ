@@ -7,11 +7,11 @@ import { toast } from "sonner";
 
 import { DataTable } from "@/components/cron/DataTable";
 import { ChainTypeBadge, StatusBadge, PriorityBadge } from "@/components/cron/StatusBadges";
+import { ExecutionVolumeChart } from "@/components/cron/ExecutionVolumeChart";
 import {
-  ExecutionVolumeChart,
   bucketsToVolume,
   emptyVolumeData,
-} from "@/components/cron/ExecutionVolumeChart";
+} from "@/lib/cron/execution-volume";
 import { CronExpressionPreview } from "@/components/cron/CronExpressionPreview";
 import { EditCronTickerDialog } from "@/components/cron/EditCronTickerDialog";
 import { parseIntervalsList } from "@/lib/cron/status-config";

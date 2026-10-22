@@ -2,9 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   aggregateBranchSubtreeStatus,
+  CHART_COLORS,
+  displayStatusLabel,
+  formatStatusLabels,
   isBranchSubtreeSettled,
   summarizeBranchStatuses,
 } from "../src/lib/cron/status-config.ts";
+
+test("aggregate views present idle work with the chain waiting label and color", () => {
+  assert.equal(displayStatusLabel("Idle", true), "Waiting");
+  assert.equal(displayStatusLabel("Idle"), "Idle");
+  assert.equal(formatStatusLabels(["Idle", "InProgress", "Failed"], true), "Waiting, Running, Failed");
+  assert.equal(CHART_COLORS.Idle, CHART_COLORS.Waiting);
+});
 
 test("parallel branch aggregation ignores unused conditional paths", () => {
   assert.equal(

@@ -14,11 +14,12 @@ import {
   FilterPopover,
   SearchInput,
 } from "@/components/cron/TableToolbar";
+import { ExecutionVolumeChart } from "@/components/cron/ExecutionVolumeChart";
 import {
-  ExecutionVolumeChart,
   bucketsToVolume,
   emptyVolumeData,
-} from "@/components/cron/ExecutionVolumeChart";
+  mergeVolumeData,
+} from "@/lib/cron/execution-volume";
 import { LogsSidePanel } from "@/components/cron/LogsSidePanel";
 import { BulkActionBar } from "@/components/cron/BulkActionBar";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
@@ -26,6 +27,7 @@ import { QueryErrorNotice } from "@/components/cron/QueryErrorNotice";
 import {
   useAllFunctions,
   useBulkRetryExecutions,
+  useCronTickersGraph,
   useExecutions,
   useOverallStatuses,
   useRerunCronOccurrence,
@@ -40,6 +42,7 @@ import type {
 import { formatDuration } from "@/lib/cron/format";
 import { TimeCell } from "@/components/cron/TimeCell";
 import { isReadOnly } from "@/lib/runtime-config";
+import { formatStatusLabels } from "@/lib/cron/status-config";
 
 const PAGE_SIZE = 25;
 
@@ -87,12 +90,16 @@ export default function ExecutionsPage() {
   const readOnly = isReadOnly();
   const runTimeMutation = useRunTimeTicker();
   const rerunCronOccurrenceMutation = useRerunCronOccurrence();
-  const { data: graph } = useTimeTickersGraph(7, 0);
+  const { data: timeGraph } = useTimeTickersGraph(7, 0);
+  const { data: cronGraph } = useCronTickersGraph(7, 0);
   const { data: allFns } = useAllFunctions();
   const { data: overall } = useOverallStatuses();
   const volumeData = useMemo(
-    () => (graph ? bucketsToVolume(graph) : emptyVolumeData()),
-    [graph]
+    () => mergeVolumeData(
+      timeGraph ? bucketsToVolume(timeGraph) : emptyVolumeData(),
+      cronGraph ? bucketsToVolume(cronGraph) : emptyVolumeData()
+    ),
+    [timeGraph, cronGraph]
   );
 
   const items = data?.items ?? [];
@@ -337,7 +344,7 @@ export default function ExecutionsPage() {
           {statusFilter.length > 0 && (
             <FilterChip
               label="Root / trigger status"
-              value={statusFilter.join(", ")}
+              value={formatStatusLabels(statusFilter, true)}
               onRemove={() => setStatusFilter([])}
             />
           )}

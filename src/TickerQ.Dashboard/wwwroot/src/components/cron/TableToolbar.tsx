@@ -7,7 +7,7 @@ import {
 } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
-import type { TickerStatus } from "@/lib/cron/status-config";
+import { displayStatusLabel, type TickerStatus } from "@/lib/cron/status-config";
 
 export const ALL_STATUSES: TickerStatus[] = [
   "Idle",
@@ -133,7 +133,7 @@ export function FilterPopover({
                     className="h-3 w-3"
                   />
                   <span className={cn(active && "text-foreground font-medium")}>
-                    {s}
+                    {displayStatusLabel(s, true)}
                   </span>
                 </label>
               );
