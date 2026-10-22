@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
@@ -25,10 +26,13 @@ namespace TickerQ;
 
 internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 {
+    private const int MaxStoredStackTraceCharacters = 16 * 1024;
+
     private enum ExecutionMode
     {
         Scheduler,
-        Worker
+        Worker,
+        TestChain
     }
 
     // Cached lowercase TickerType names to avoid per-call ToString + ToLowerInvariant allocations
@@ -104,6 +108,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
     private void TryNotifyFailure(InternalFunctionContext context, string kind, string reason)
     {
+        if (context.IsTestRun) return;
         try
         {
             NotifyFailure(context, kind, reason);
@@ -160,6 +165,34 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             context.Status,
             context.Status is TickerStatus.Done or TickerStatus.DueDone ? null : context.ExceptionDetails,
             context.ResultEnvelope);
+    }
+
+    public async Task ExecuteTestChainAsync(
+        InternalFunctionContext context, CancellationToken cancellationToken = default)
+    {
+        EnsureLicensedForExecution();
+        ArgumentNullException.ThrowIfNull(context);
+        context.ChainRootId = context.TickerId;
+        context.ChainGeneration ??= Guid.NewGuid();
+
+        var pending = new Stack<InternalFunctionContext>();
+        pending.Push(context);
+        while (pending.TryPop(out var step))
+        {
+            step.IsTestRun = true;
+            step.ChainRootId = context.TickerId;
+            step.ChainGeneration = context.ChainGeneration;
+            _lifecycle?.Created(step.TickerId, step.FunctionName, step.Type,
+                _clock.UtcNow, step.RuntimePartitionKey, isEphemeral: true);
+            _lifecycle?.Queued(step);
+            if (step.TimeTickerChildren == null) continue;
+            foreach (var child in step.TimeTickerChildren)
+                pending.Push(child);
+        }
+
+        await ExecuteTreeAsync(context, isDue: false, registeredSource: null,
+            cancellationToken: cancellationToken, isChild: false,
+            mode: ExecutionMode.TestChain).ConfigureAwait(false);
     }
 
     public async Task ExecuteRegisteredTaskAsync(InternalFunctionContext context, bool isDue,
@@ -231,6 +264,17 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         CancellationTokenSource preRegisteredSource = null,
         ExecutionMode mode = ExecutionMode.Scheduler)
     {
+        if (context.IsTestRun)
+        {
+            // Dashboard tests have no durable row or acquisition lease. Registering them in the
+            // process-wide cancellation table makes the lease-renewal watchdog correctly see a
+            // missing row and cancel the test. Keep their cancellation local to the test session.
+            using var testSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            await RunCronGuardedFunctionAsync(
+                context, isDue, cancellationToken, testSource, isChild, mode).ConfigureAwait(false);
+            return;
+        }
+
         if (preRegisteredSource != null)
         {
             // Root registered at acquisition time by the scheduler: reuse its source and leave
@@ -369,11 +413,13 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         // Fetch the direct parent's committed result (if any) before invoking the function so the
         // body can read it. Roots (no ParentId) and parents that published none yield null. A cron
         // occurrence's parent is the cron definition, which never publishes a result.
-        var parentResult = context.ParentResultEnvelope ?? (context.ParentId.HasValue
-            ? await _internalTickerManager
-                .GetParentResultAsync(context.ParentId.Value, context.Type, CancellationToken.None)
-                .ConfigureAwait(false)
-            : null);
+        var parentResult = mode == ExecutionMode.TestChain
+            ? context.ParentResultEnvelope
+            : context.ParentResultEnvelope ?? (context.ParentId.HasValue
+                ? await _internalTickerManager
+                    .GetParentResultAsync(context.ParentId.Value, context.Type, CancellationToken.None)
+                    .ConfigureAwait(false)
+                : null);
 
         var tickerFunctionContext = new TickerFunctionContext
         {
@@ -385,6 +431,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             Type = context.Type,
             IsDue = isDue,
             ScheduledFor = context.ExecutionTime,
+            IsTestRun = context.IsTestRun,
+            RequestPayload = context.RequestPayload,
             // Runtime-owned result sink the success path reads; shared by reference with the typed
             // context wrapper the source generator builds.
             ResultSink = new TickerResultSink(),
@@ -394,7 +442,45 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             // can pass it along — without these the SDK would see Retries=0.
             Retries = context.Retries,
             RetryIntervals = context.RetryIntervals,
-            RequestCancelOperationAction = () => cancellationTokenSource.Cancel()
+            RequestCancelOperationAction = () => cancellationTokenSource.Cancel(),
+            ProgressReporter = mode == ExecutionMode.Scheduler
+                ? async (percent, message, token) =>
+                {
+                    var update = new TickerProgressUpdate
+                    {
+                        TickerId = context.TickerId,
+                        Type = context.Type,
+                        ParentId = context.ParentId,
+                        ChainRootId = context.ChainRootId,
+                        ChainGeneration = context.ChainGeneration,
+                        AcquisitionToken = context.AcquisitionToken,
+                        Percent = percent,
+                        Message = message,
+                        UpdatedAtUtc = _clock.UtcNow,
+                    };
+                    if (await _internalTickerManager.ReportProgressAsync(update, token).ConfigureAwait(false))
+                        _lifecycle?.Progress(context, update);
+                }
+                : mode == ExecutionMode.TestChain || context.IsTestRun
+                    ? (percent, message, _) =>
+                    {
+                        var updatedAt = _clock.UtcNow;
+                        context.SetProgress(percent, message, updatedAt);
+                        _lifecycle?.Progress(context, new TickerProgressUpdate
+                        {
+                            TickerId = context.TickerId,
+                            Type = context.Type,
+                            ParentId = context.ParentId,
+                            ChainRootId = context.ChainRootId,
+                            ChainGeneration = context.ChainGeneration,
+                            AcquisitionToken = context.AcquisitionToken,
+                            Percent = percent,
+                            Message = message,
+                            UpdatedAtUtc = updatedAt,
+                        });
+                        return Task.CompletedTask;
+                    }
+                : static (_, _, _) => Task.CompletedTask
         };
 
         Exception lastException = null;
@@ -428,7 +514,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 if (!usesRemoteRetryPolicy &&
                     await WaitForRetry(context, cancellationToken, attempt, cancellationTokenSource, mode)) break;
 
-                if (mode == ExecutionMode.Scheduler && context.CachedMaxConcurrency > 0)
+                if (mode != ExecutionMode.Worker && context.CachedMaxConcurrency > 0)
                 {
                     var acquisition = _concurrencyGate.AcquireAsync(context.FunctionName,
                         context.CachedMaxConcurrency, cancellationTokenSource.Token);
@@ -487,7 +573,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
 
                     // Ambient log scope: ILogger calls flowing on the function body's async
                     // stack land in the in-memory log store the dashboard's log tail reads.
-                    using (TickerExecutionLogScope.Push(context.TickerId, context.FunctionName))
+                    using (TickerExecutionLogScope.Push(context.TickerId, context.FunctionName, context.IsTestRun))
                     {
                         // Re-evaluate at the final invocation boundary. A run can wait behind retry delays,
                         // concurrency, or graph orchestration after the entry gate; no local or remote
@@ -593,7 +679,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                     await PersistExecutionUpdateAsync(context, tickerFunctionContext);
 
                 // A user notification hook must not leave a stopped job persisted as running.
-                if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
+                if (!context.IsTestRun &&
+                    _serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
                 {
                     try { await handler.HandleCanceledExceptionAsync(ex, context.TickerId, context.Type); }
                     catch (Exception hookError)
@@ -678,7 +765,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                 // the remaining retries and terminal persistence.
                 try
                 {
-                    if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
+                    if (!context.IsTestRun &&
+                        _serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
                         await handler.HandleExceptionAsync(ex, context.TickerId, context.Type).ConfigureAwait(false);
                 }
                 catch (Exception hookError)
@@ -801,7 +889,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             // Notifications and user hooks are best-effort side effects after persistence.
             TryNotifyFailure(context, "timeout_cancelled", reason);
 
-            if (_serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
+            if (!context.IsTestRun &&
+                _serviceProvider.GetService(typeof(ITickerExceptionHandler)) is ITickerExceptionHandler handler)
             {
                 try
                 {
@@ -946,17 +1035,100 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
         var rootException = GetRootException(ex);
         var stackTrace = new StackTrace(rootException, true);
         var frame = stackTrace.GetFrame(0);
+        var sourceLine = frame?.GetFileLineNumber() ?? 0;
+        var safeStackTrace = BuildSafeStackTrace(rootException, stackTrace);
 
         return JsonSerializer.Serialize(new ExceptionDetailClassForSerialization
         {
-            Message = ex.Message,
-            StackTrace = frame?.ToString() ?? rootException.StackTrace
+            Type = rootException.GetType().FullName ?? rootException.GetType().Name,
+            Message = rootException.Message,
+            Method = FirstStackMethod(safeStackTrace),
+            SourceFile = SafeFileName(frame?.GetFileName()),
+            SourceLine = sourceLine > 0 ? sourceLine : null,
+            StackTrace = safeStackTrace
         }, TickerQInternalJsonContext.Default.ExceptionDetailClassForSerialization);
     }
 
-    private static bool ShouldRunChild(InternalFunctionContext childContext, TickerStatus parentStatus)
+    private static string FirstStackMethod(string stackTrace)
     {
-        return childContext.RunCondition switch
+        if (string.IsNullOrWhiteSpace(stackTrace))
+            return null;
+
+        var end = stackTrace.IndexOfAny(['\r', '\n']);
+        var firstLine = (end < 0 ? stackTrace : stackTrace[..end]).Trim();
+        if (firstLine.StartsWith("at ", StringComparison.Ordinal))
+            firstLine = firstLine[3..];
+        var sourceStart = firstLine.LastIndexOf(" in ", StringComparison.Ordinal);
+        return sourceStart > 0 ? firstLine[..sourceStart] : firstLine;
+    }
+
+    private static string BuildSafeStackTrace(Exception exception, StackTrace parsedTrace)
+    {
+        var raw = exception.StackTrace ?? parsedTrace.ToString();
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        var builder = new StringBuilder(Math.Min(raw.Length, MaxStoredStackTraceCharacters));
+        using var reader = new System.IO.StringReader(raw);
+        while (reader.ReadLine() is { } line)
+        {
+            // The generated delegate is the boundary between application code and TickerQ's
+            // execution pipeline. Everything below it describes scheduler dispatch rather than
+            // the location that failed, so it adds noise without helping the application owner.
+            if (IsTickerQInfrastructureFrame(line))
+                break;
+
+            if (builder.Length != 0)
+                builder.AppendLine();
+
+            var sourceStart = line.LastIndexOf(" in ", StringComparison.Ordinal);
+            var lineMarker = line.LastIndexOf(":line ", StringComparison.Ordinal);
+            if (sourceStart >= 0 && lineMarker > sourceStart + 4)
+            {
+                builder.Append(line.AsSpan(0, sourceStart + 4));
+                builder.Append(SafeFileName(line[(sourceStart + 4)..lineMarker]));
+                builder.Append(line.AsSpan(lineMarker));
+            }
+            else
+            {
+                builder.Append(line);
+            }
+
+            if (builder.Length >= MaxStoredStackTraceCharacters)
+            {
+                builder.Length = MaxStoredStackTraceCharacters;
+                break;
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static bool IsTickerQInfrastructureFrame(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        return line.Contains("TickerQInstanceFactoryExtensions.", StringComparison.Ordinal) ||
+               line.Contains("TickerQ.TickerExecutionTaskHandler.", StringComparison.Ordinal) ||
+               line.Contains("TickerQ.TickerQThreadPool.", StringComparison.Ordinal);
+    }
+
+    private static string SafeFileName(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        var separator = Math.Max(path.LastIndexOf('/'), path.LastIndexOf('\\'));
+        return separator >= 0 && separator + 1 < path.Length ? path[(separator + 1)..] : path;
+    }
+
+    private static bool ShouldRunChild(InternalFunctionContext childContext, TickerStatus parentStatus)
+        => ShouldRunCondition(childContext.RunCondition, parentStatus);
+
+    private static bool ShouldRunCondition(RunCondition condition, TickerStatus parentStatus)
+    {
+        return condition switch
         {
             RunCondition.InProgress => parentStatus == TickerStatus.InProgress,
             RunCondition.OnSuccess => parentStatus is TickerStatus.Done or TickerStatus.DueDone,
@@ -965,6 +1137,8 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             RunCondition.OnFailureOrCancelled => parentStatus is TickerStatus.Failed or TickerStatus.Cancelled,
             RunCondition.OnAnyCompletedStatus => parentStatus is TickerStatus.Done or TickerStatus.DueDone
                 or TickerStatus.Failed or TickerStatus.Cancelled,
+            RunCondition.OnAnyTerminalStatus => parentStatus is TickerStatus.Done or TickerStatus.DueDone
+                or TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped,
             _ => false
         };
     }

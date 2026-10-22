@@ -13,6 +13,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.Caching.StackExchangeRedis;
 
@@ -273,4 +274,6 @@ internal sealed class NodeHeartbeatPayload
 [JsonSerializable(typeof(long))]
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(RedisNodeFinalizationRecord))]
+[JsonSerializable(typeof(SavedTickerDefinition))]
+[JsonSerializable(typeof(SavedTickerDefinition[]))]
 internal partial class RedisContextJsonSerializerContext : JsonSerializerContext;

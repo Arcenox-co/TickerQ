@@ -37,6 +37,34 @@ namespace TickerQ.Utilities.Enums
         /// <summary>
         /// Run in parallel with the parent (when parent status is InProgress).
         /// </summary>
-        InProgress
+        InProgress,
+
+        /// <summary>
+        /// Run after the parent reaches any terminal state, including Skipped.
+        /// This is the durable-chain equivalent of a finally continuation.
+        /// </summary>
+        OnAnyTerminalStatus,
+
+        /// <summary>
+        /// A job inside a durable group that runs when the job before the group
+        /// completed successfully. Group-prefixed values keep membership separate
+        /// from the condition used by post-group continuations.
+        /// </summary>
+        GroupOnSuccess = 100,
+
+        /// <summary>Run this grouped job when the job before the group failed.</summary>
+        GroupOnFailure,
+
+        /// <summary>Run this grouped job when the job before the group was cancelled.</summary>
+        GroupOnCancelled,
+
+        /// <summary>Run this grouped job when the job before the group failed or was cancelled.</summary>
+        GroupOnFailureOrCancelled,
+
+        /// <summary>Run this grouped job after any non-skipped terminal status.</summary>
+        GroupOnAnyCompletedStatus,
+
+        /// <summary>Run this grouped job after any terminal status, including Skipped.</summary>
+        GroupOnAnyTerminalStatus
     }
 }

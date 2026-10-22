@@ -34,6 +34,14 @@ namespace TickerQ.Utilities.Entities
         public virtual string SkippedReason { get; internal set; }
         [JsonInclude]
         public virtual long ElapsedTime { get; internal set; }
+        /// <summary>Last durable progress value reported by the active execution (0-100).</summary>
+        [JsonInclude]
+        public virtual double? ProgressPercent { get; internal set; }
+        /// <summary>Optional human-readable progress detail, limited to 500 characters.</summary>
+        [JsonInclude]
+        public virtual string ProgressMessage { get; internal set; }
+        [JsonInclude]
+        public virtual DateTime? ProgressUpdatedAt { get; internal set; }
         public virtual int Retries { get; set; }
         [JsonInclude]
         public virtual int RetryCount { get; internal set; }
@@ -163,6 +171,15 @@ namespace TickerQ.Utilities.Entities
         /// </summary>
         [JsonInclude]
         public virtual Guid? ChainGeneration { get; set; }
+        /// <summary>
+        /// Selected step for a durable in-place chain retry. Stored on the root so stale recovery
+        /// can rebuild the same pass-through execution graph after a process interruption.
+        /// </summary>
+        [JsonInclude]
+        public virtual Guid? ChainRetryFromId { get; set; }
+        /// <summary>The root outcome that existed before the current durable chain retry.</summary>
+        [JsonInclude]
+        public virtual TickerStatus? ChainRetryPreviousStatus { get; set; }
         /// <summary>What the stale-job watchdog does with this ticker if it goes stale.</summary>
         public virtual StaleAction OnStale { get; set; }
         [JsonInclude]

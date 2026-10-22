@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Plus, RotateCcw } from "lucide-react";
+import { FilePenLine, FlaskConical, Plus, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -26,13 +26,27 @@ import {
   describeRetryPolicy,
   parseIntervalsList,
 } from "@/lib/cron/status-config";
-import type { FunctionInfoDto } from "@/services/api-types";
+import type { FunctionInfoDto, TestRunResponse } from "@/services/api-types";
+import { dashboardApi } from "@/services/dashboard-api";
 import {
   initialPayloadForFunction,
   RequestPayloadEditor,
   validateRequestPayload,
 } from "@/components/cron/RequestPayloadEditor";
 import { createDraftState, selectFunction } from "@/lib/function-draft";
+import { encodeRequestPayload } from "@/lib/request-payload";
+import { SaveDefinitionDialog, type SaveDefinitionValues } from "@/components/cron/SaveDefinitionDialog";
+import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
+import { SingleJobTestDialog } from "@/components/cron/SingleJobTestDialog";
+import { useCreateDefinition } from "@/services/hooks";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const schema = z.object({
   function: z.string().trim().min(1, "Function is required"),
@@ -87,6 +101,16 @@ export function CreateTimeTickerDialog({
   const selectedFunction = functions.find((item) => item.functionName === selectedFunctionName);
   const draftBook = useRef(createDraftState());
   const requestEditorValid = useRef(true);
+  const createDefinition = useCreateDefinition();
+  const [saveDraftOpen, setSaveDraftOpen] = useState(false);
+  const [leavePromptOpen, setLeavePromptOpen] = useState(false);
+  const [leaveAfterSave, setLeaveAfterSave] = useState(false);
+  const [testConfirmOpen, setTestConfirmOpen] = useState(false);
+  const [testOpen, setTestOpen] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestRunResponse | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [pendingTestValues, setPendingTestValues] = useState<FormValues | null>(null);
 
   useEffect(() => {
     const selection = selectFunction(
@@ -108,12 +132,132 @@ export function CreateTimeTickerDialog({
     requestEditorValid.current = true;
   }
 
+  function closeAndReset() {
+    resetDraftSession();
+    form.reset();
+    setLeavePromptOpen(false);
+    setLeaveAfterSave(false);
+    setSaveDraftOpen(false);
+    setTestConfirmOpen(false);
+    setTestOpen(false);
+    setTesting(false);
+    setTestResult(null);
+    setTestError(null);
+    setPendingTestValues(null);
+    onOpenChange(false);
+  }
+
   function handleOpenChange(nextOpen: boolean) {
-    if (!nextOpen) {
-      resetDraftSession();
-      form.reset();
+    if (nextOpen) {
+      onOpenChange(true);
+      return;
     }
-    onOpenChange(nextOpen);
+    if (form.formState.isDirty) {
+      setLeavePromptOpen(true);
+      return;
+    }
+    closeAndReset();
+  }
+
+  async function validatedDefinitionValues() {
+    if (!await form.trigger()) return null;
+    if (!requestEditorValid.current) {
+      form.setError("requestJson", { type: "validate", message: "Complete or correct the structured JSON field." });
+      return null;
+    }
+    const values = form.getValues();
+    const selected = functions.find(item => item.functionName === values.function);
+    const requestError = validateRequestPayload(selected, values.requestJson ?? "");
+    if (requestError) {
+      form.setError("requestJson", { type: "validate", message: requestError });
+      return null;
+    }
+    return values;
+  }
+
+  async function saveDraft(metadata: SaveDefinitionValues) {
+    const values = await validatedDefinitionValues();
+    if (!values) return;
+    try {
+      await createDefinition.mutateAsync({
+        kind: "Draft",
+        target: "TimeTicker",
+        name: metadata.name,
+        description: metadata.description || null,
+        includeRequestData: metadata.includeRequestData,
+        payload: {
+          executionTime: metadata.executionTime
+            ? new Date(metadata.executionTime).toISOString()
+            : null,
+          expression: null,
+          skipIfAlreadyRunning: null,
+          root: {
+            function: values.function,
+            description: values.description || null,
+            retries: values.retries ?? 0,
+            retryIntervalsSeconds: parseIntervalsList(values.retryIntervalsSeconds ?? "") ?? [],
+            request: encodeRequestPayload(values.requestJson),
+            onStale: values.onStale,
+            timeoutSeconds: values.timeoutSeconds ?? 0,
+            children: [],
+          },
+        },
+      });
+      if (metadata.executionTime !== (values.executionTime ?? "")) {
+        form.setValue("executionTime", metadata.executionTime, { shouldDirty: true });
+      }
+      toast.success("Draft saved");
+      setSaveDraftOpen(false);
+      if (leaveAfterSave) closeAndReset();
+    } catch (error) {
+      toast.error("Could not save the draft", {
+        description: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
+  async function prepareTest() {
+    const valid = await form.trigger(["function", "requestJson", "timeoutSeconds"]);
+    const values = form.getValues();
+    if (!valid || !requestEditorValid.current) {
+      if (!requestEditorValid.current) {
+        form.setError("requestJson", {
+          type: "validate",
+          message: "Complete or correct the structured JSON field.",
+        });
+      }
+      return;
+    }
+    const selected = functions.find(item => item.functionName === values.function);
+    const requestError = validateRequestPayload(selected, values.requestJson ?? "");
+    if (requestError) {
+      form.setError("requestJson", { type: "validate", message: requestError });
+      return;
+    }
+    setPendingTestValues(values);
+    setTestConfirmOpen(true);
+  }
+
+  async function executeTest() {
+    if (!pendingTestValues || testing) return;
+    const values = pendingTestValues;
+    setTestConfirmOpen(false);
+    setTestOpen(true);
+    setTesting(true);
+    setTestResult(null);
+    setTestError(null);
+    try {
+      const result = await dashboardApi.testRunFunction({
+        function: values.function,
+        request: encodeRequestPayload(values.requestJson ?? ""),
+        timeoutSeconds: values.timeoutSeconds || undefined,
+      });
+      setTestResult(result);
+    } catch (error) {
+      setTestError(error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setTesting(false);
+    }
   }
 
   async function handleSubmit(values: FormValues) {
@@ -130,7 +274,7 @@ export function CreateTimeTickerDialog({
       await onSubmit?.(values);
       toast.success("Time ticker scheduled");
       form.reset();
-      handleOpenChange(false);
+      closeAndReset();
     } catch (err) {
       toast.error("Failed to create", {
         description: err instanceof Error ? err.message : "An error occurred",
@@ -139,6 +283,7 @@ export function CreateTimeTickerDialog({
   }
 
   return (
+    <>
     <Sheet open={open} onOpenChange={handleOpenChange}>
       <SheetContent
         side="right"
@@ -251,31 +396,127 @@ export function CreateTimeTickerDialog({
                 />
               </div>
 
-              <footer className="mt-6 flex items-center justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 text-xs rounded-lg"
-                  onClick={() => handleOpenChange(false)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  variant="gradient"
-                  size="sm"
-                  className="h-8 text-xs rounded-lg"
-                  disabled={form.formState.isSubmitting}
-                >
-                  <Plus className="h-3 w-3 mr-1.5" />
-                  {form.formState.isSubmitting ? "Creating…" : "Create"}
-                </Button>
+              <footer className="mt-6 space-y-3 border-t border-border/60 pt-4">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs rounded-lg"
+                    disabled={testing || form.formState.isSubmitting}
+                    onClick={() => void prepareTest()}
+                  >
+                    <FlaskConical className="mr-1.5 h-3 w-3" />
+                    Test once
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs rounded-lg"
+                    onClick={() => setSaveDraftOpen(true)}
+                  >
+                    <FilePenLine className="mr-1.5 h-3 w-3" />
+                    Save draft
+                  </Button>
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/60 pt-3">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-xs rounded-lg"
+                    onClick={() => handleOpenChange(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="gradient"
+                    size="sm"
+                    className="h-8 text-xs rounded-lg"
+                    disabled={form.formState.isSubmitting}
+                  >
+                    <Plus className="h-3 w-3 mr-1.5" />
+                    {form.formState.isSubmitting ? "Creating…" : "Create"}
+                  </Button>
+                </div>
               </footer>
             </form>
           </Form>
         </div>
       </SheetContent>
     </Sheet>
+
+    <SaveDefinitionDialog
+      open={saveDraftOpen}
+      kind="Draft"
+      initialExecutionTime={form.getValues("executionTime") ?? ""}
+      pending={createDefinition.isPending}
+      onOpenChange={nextOpen => {
+        if (!nextOpen) {
+          setSaveDraftOpen(false);
+          setLeaveAfterSave(false);
+        }
+      }}
+      onSave={saveDraft}
+    />
+
+    <ConfirmDialog
+      open={testConfirmOpen}
+      onOpenChange={setTestConfirmOpen}
+      title="Execute this function now?"
+      description={
+        <>
+          This immediately invokes the real function{" "}
+          <span className="font-mono font-semibold text-foreground">
+            {pendingTestValues?.function}
+          </span>
+          . It may change application data or call external services. No time ticker is saved.
+        </>
+      }
+      confirmLabel="Execute test"
+      isPending={testing}
+      onConfirm={executeTest}
+    />
+
+    <SingleJobTestDialog
+      open={testOpen}
+      pending={testing}
+      result={testResult}
+      error={testError}
+      functionName={pendingTestValues?.function ?? selectedFunctionName ?? ""}
+      onClose={() => setTestOpen(false)}
+    />
+
+    <Dialog open={leavePromptOpen} onOpenChange={setLeavePromptOpen}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Keep this job configuration?</DialogTitle>
+          <DialogDescription>
+            Save it for later, or discard it and close the panel. No ticker has been scheduled yet.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-2 py-1">
+          <Button
+            variant="outline"
+            className="h-auto justify-start px-3 py-2.5 text-left"
+            onClick={() => {
+              setLeavePromptOpen(false);
+              setLeaveAfterSave(true);
+              setSaveDraftOpen(true);
+            }}
+          >
+            <FilePenLine className="mr-2 h-4 w-4 text-primary" />
+            <span><span className="block text-xs font-medium">Save as draft</span><span className="block text-[11px] font-normal text-muted-foreground">Edit and activate it later.</span></span>
+          </Button>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setLeavePromptOpen(false)}>Keep editing</Button>
+          <Button variant="destructive" onClick={closeAndReset}>Discard</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

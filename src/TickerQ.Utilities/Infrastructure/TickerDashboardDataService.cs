@@ -177,7 +177,9 @@ namespace TickerQ.Utilities.Infrastructure
             }
             var counts = all.Where(x => x.ParentId.HasValue).GroupBy(x => x.ParentId.Value).ToDictionary(x => x.Key, x => x.Count());
             foreach (var item in all) item.ChildCount = counts.GetValueOrDefault(item.Id);
-            if (all.Count > 1) all[0].ChainSummary = ChainExecutionSummaryDto.FromStatuses(all.Select(x => x.Status));
+            if (all.Count > 1) all[0].ChainSummary = ChainExecutionSummaryDto.FromStatuses(all
+                .Where(x => !TickerChainInfrastructure.IsParallelGroup(x.FunctionName))
+                .Select(x => x.Status));
             return all;
         }
 
@@ -533,6 +535,9 @@ namespace TickerQ.Utilities.Infrastructure
                 Status = e.Status,
                 ScheduledFor = e.ExecutionTime,
                 ElapsedTime = e.ElapsedTime,
+                ProgressPercent = e.ProgressPercent,
+                ProgressMessage = e.ProgressMessage,
+                ProgressUpdatedAt = e.ProgressUpdatedAt,
                 Retries = e.Retries,
                 RetryCount = e.RetryCount,
                 Priority = priority,
@@ -601,6 +606,9 @@ namespace TickerQ.Utilities.Infrastructure
                 Status = e.Status,
                 ScheduledFor = e.ExecutionTime,
                 ElapsedTime = e.ElapsedTime,
+                ProgressPercent = e.ProgressPercent,
+                ProgressMessage = e.ProgressMessage,
+                ProgressUpdatedAt = e.ProgressUpdatedAt,
                 RetryCount = e.RetryCount,
                 ExceptionMessage = e.ExceptionMessage,
                 SkippedReason = e.SkippedReason,
@@ -620,6 +628,9 @@ namespace TickerQ.Utilities.Infrastructure
                 Status = e.Status,
                 ScheduledFor = e.ExecutionTime ?? default,
                 ElapsedTime = e.ElapsedTime,
+                ProgressPercent = e.ProgressPercent,
+                ProgressMessage = e.ProgressMessage,
+                ProgressUpdatedAt = e.ProgressUpdatedAt,
                 RetryCount = e.RetryCount,
                 Retries = e.Retries,
                 ExceptionMessage = e.ExceptionMessage,
@@ -646,6 +657,9 @@ namespace TickerQ.Utilities.Infrastructure
                 Status = e.Status,
                 ScheduledFor = e.ExecutionTime,
                 ElapsedTime = e.ElapsedTime,
+                ProgressPercent = e.ProgressPercent,
+                ProgressMessage = e.ProgressMessage,
+                ProgressUpdatedAt = e.ProgressUpdatedAt,
                 RetryCount = e.RetryCount,
                 Retries = parentRetries,
                 ExceptionMessage = e.ExceptionMessage,

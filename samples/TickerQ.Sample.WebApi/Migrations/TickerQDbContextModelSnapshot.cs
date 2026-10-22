@@ -213,6 +213,81 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.ToTable("TickerQControlCommands", "ticker");
                 });
 
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.TickerQDefinitionEntity", b =>
+                {
+                    b.Property<string>("ApplicationNamespaceKey")
+                        .HasMaxLength(80)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("ActivatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("ActivatedRootTickerId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("ActivationClaimedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("ActivationToken")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DefinitionJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IncludesRequestData")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NameKey")
+                        .IsRequired()
+                        .HasMaxLength(96)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("PendingRootTickerId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("SchemaVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Target")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("ApplicationNamespaceKey", "Id");
+
+                    b.HasIndex("ApplicationNamespaceKey", "Kind", "Target", "CreatedAtUtc")
+                        .HasDatabaseName("IX_TickerQDefinitions_List");
+
+                    b.HasIndex("ApplicationNamespaceKey", "NameKey")
+                        .IsUnique()
+                        .HasDatabaseName("UX_TickerQDefinitions_Name");
+
+                    b.ToTable("TickerQDefinitions", "ticker");
+                });
+
             modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.TickerQNodeEntity", b =>
                 {
                     b.Property<string>("ApplicationNamespaceKey")
@@ -519,6 +594,16 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.Property<DateTime?>("LockedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("ProgressMessage")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("ProgressPercent")
+                        .HasColumnType("REAL");
+
+                    b.Property<DateTime?>("ProgressUpdatedAt")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("RetryCount")
                         .HasColumnType("INTEGER");
 
@@ -573,6 +658,12 @@ namespace TickerQ.Sample.WebApi.Migrations
                     b.Property<Guid?>("ChainGeneration")
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid?>("ChainRetryFromId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ChainRetryPreviousStatus")
+                        .HasColumnType("INTEGER");
+
                     b.Property<Guid?>("ChainRootId")
                         .HasColumnType("TEXT");
 
@@ -621,6 +712,16 @@ namespace TickerQ.Sample.WebApi.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<Guid?>("ParentId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ProgressMessage")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("ProgressPercent")
+                        .HasColumnType("REAL");
+
+                    b.Property<DateTime?>("ProgressUpdatedAt")
                         .HasColumnType("TEXT");
 
                     b.Property<byte[]>("Request")

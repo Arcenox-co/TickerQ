@@ -527,7 +527,39 @@ The encoded-data limits exclude managed-object overhead. If `PersistToDatabase` 
 archive `Retention` defaults to seven days and `MaxStoredExecutions` to 5,000; neither
 setting changes job-row retention.
 
-## Run-now & bulk retry
+## Execution progress
+
+Long-running functions can publish a percentage and a short status message through their
+execution context:
+
+```csharp
+[TickerFunction("Invoices.Import")]
+public async Task ImportAsync(TickerFunctionContext context, CancellationToken cancellationToken)
+{
+    for (var page = 1; page <= 20; page++)
+    {
+        await ImportPageAsync(page, cancellationToken);
+        await context.ReportProgressAsync(
+            page * 5,
+            $"Imported page {page} of 20",
+            cancellationToken);
+    }
+}
+```
+
+`ReportProgressAsync` accepts values from 0 through 100 and messages up to 500 characters.
+Each write is fenced to the active acquisition generation. A late update from an execution
+that was cancelled, completed, or superseded is rejected and cannot overwrite the current
+attempt. Progress is cleared when a new attempt is acquired. The dashboard shows progress on
+time jobs, cron occurrences, and chain steps. Report at meaningful checkpoints rather than
+inside a tight record loop because progress is a durable provider write.
+
+Custom persistence providers can implement `UpdateExecutionProgressAsync`; the default
+interface implementation rejects progress writes. EF Core applications must add and apply an
+application-owned migration for the nullable `ProgressPercent`, `ProgressMessage`, and
+`ProgressUpdatedAt` columns on time tickers and cron occurrences.
+
+## Run-now, chain retry & bulk retry
 
 The dashboard can re-run terminal jobs. See the [Dashboard security](./security.md) page for
 authentication; the execution contract is:
@@ -540,6 +572,21 @@ authentication; the execution contract is:
   Returns **204** on success, **404** if not found, and **409** if the job is already
   `InProgress` (never duplicated).
 - **Run a cron ticker now** — `POST {basePath}/cron-tickers/{id}/run`.
+- **Retry a chain from a selected job** —
+  `POST {basePath}/time-tickers/{id}/retry-from-here`. TickerQ keeps the original chain and job
+  IDs, clears the selected job and its affected downstream path, and runs that path under a new
+  acquisition generation. Completed ancestors are traversal points and are not invoked again.
+  When the selected job is inside a group, completed sibling branches keep their recorded
+  outcomes while the group and its success/failure/final continuations are evaluated again.
+  Selecting the structural group itself reruns every grouped job and its descendants, then
+  evaluates the group's outcome continuations from the new aggregate result.
+  The whole chain must be settled before this operation can acquire it, and concurrent retry
+  requests cannot both win. If scheduler admission or host shutdown prevents the retry from
+  starting, the acquired root is failed and its pending retry path is skipped under the same
+  generation fence. The root durably records the selected retry point and its previous outcome
+  until terminal completion, so stale recovery reconstructs the same pass-through path after a
+  node failure instead of invoking completed ancestors as ordinary chain steps. EF Core stores
+  require nullable `ChainRetryFromId` and `ChainRetryPreviousStatus` columns from the current model.
 - **Bulk retry** — `POST {basePath}/executions/bulk-retry`. Runs each selected time ticker
   through the same single-acquisition command; cron selections are de-duplicated per parent
   cron id so one cron fires once regardless of how many occurrences are selected. The
@@ -548,7 +595,24 @@ authentication; the execution contract is:
 Time run-now performs an atomic acquisition rather than merely changing `ExecutionTime`.
 Only one caller wins while that job is acquired. Cron run-now creates a new occurrence for
 each accepted request; `SkipIfAlreadyRunning` controls overlap for that cron definition.
-Neither operation guarantees exactly-once application side effects across retries or crashes.
+These operations do not guarantee exactly-once application side effects across retries or crashes.
+
+The chain flowchart exposes this operation as **Retry from this job**. Selecting a group header
+instead exposes **Retry this group**, with an impact preview listing the jobs that will run again.
+
+## Dashboard test runs
+
+The chain editor can execute one locally registered function without creating a time ticker,
+cron definition, or occurrence row. It uses the editor's request payload, respects the
+function's local concurrency limit and a 1–300 second timeout, and returns the terminal status,
+duration, error, and optional function result directly to the editor. Integration failure
+notifications and application `ITickerExceptionHandler` callbacks are suppressed for this
+ephemeral execution.
+
+Test runs still invoke real application code and can write to databases or call external
+services. A function can detect this mode through `context.IsTestRun` when it needs a safe
+preview path. Remote SDK functions require a durable execution and cannot use this endpoint.
+Progress reports during an ephemeral test are not persisted.
 
 ## Manager operations and committed results
 

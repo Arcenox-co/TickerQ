@@ -25,6 +25,9 @@ namespace TickerQ.Utilities.Entities
         public virtual string ExceptionMessage { get; set; }
         public virtual string SkippedReason { get; set; }
         public virtual long ElapsedTime { get; set; }
+        public virtual double? ProgressPercent { get; set; }
+        public virtual string ProgressMessage { get; set; }
+        public virtual DateTime? ProgressUpdatedAt { get; set; }
         public virtual int RetryCount { get; set; }
         public virtual DateTime CreatedAt { get; set; }
         public virtual DateTime UpdatedAt { get; set; }

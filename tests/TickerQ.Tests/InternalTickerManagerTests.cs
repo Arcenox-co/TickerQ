@@ -1342,6 +1342,67 @@ public class InternalTickerManagerTests
     }
 
     [Fact]
+    public async Task RunTimedOutTickers_DurableChainRetry_ReconstructsSelectedPathWithoutRunningAncestor()
+    {
+        var rootId = Guid.NewGuid();
+        var selectedId = Guid.NewGuid();
+        var downstreamId = Guid.NewGuid();
+        var generation = Guid.NewGuid();
+        var downstream = new TimeTickerEntity
+        {
+            Id = downstreamId,
+            ParentId = selectedId,
+            Function = "Notify",
+            Status = TickerStatus.Idle,
+            RunCondition = RunCondition.OnSuccess,
+            ChainRootId = rootId,
+            ChainGeneration = generation,
+            Children = []
+        };
+        var selected = new TimeTickerEntity
+        {
+            Id = selectedId,
+            ParentId = rootId,
+            Function = "Charge",
+            Status = TickerStatus.Idle,
+            RunCondition = RunCondition.OnSuccess,
+            ChainRootId = rootId,
+            ChainGeneration = generation,
+            Children = [downstream]
+        };
+        var root = new TimeTickerEntity
+        {
+            Id = rootId,
+            Function = "Prepare",
+            Status = TickerStatus.InProgress,
+            ExecutionTime = _now.AddMinutes(-1),
+            AcquisitionToken = generation,
+            ChainRootId = rootId,
+            ChainGeneration = generation,
+            ChainRetryFromId = selectedId,
+            ChainRetryPreviousStatus = TickerStatus.Done,
+            Children = [selected]
+        };
+        _persistence.QueueTimedOutTimeTickers(Arg.Any<CancellationToken>())
+            .Returns(ToAsyncEnumerable(new[] { root }));
+        _persistence.QueueTimedOutCronTickerOccurrences(Arg.Any<CancellationToken>())
+            .Returns(EmptyAsyncEnumerable<CronTickerOccurrenceEntity<FakeCronTicker>>());
+
+        var contexts = await _manager.RunTimedOutTickers(CancellationToken.None);
+
+        var recovered = Assert.Single(contexts);
+        Assert.True(recovered.IsChainRetryRoot);
+        Assert.True(recovered.IsChainRetryCoordinator);
+        Assert.True(recovered.IsChainRetryPassThrough);
+        Assert.Equal(TickerStatus.Done, recovered.ChainRetryPreviousStatus);
+        var selectedContext = Assert.Single(recovered.TimeTickerChildren);
+        Assert.Equal(selectedId, selectedContext.TickerId);
+        Assert.Equal(RunCondition.InProgress, selectedContext.RunCondition);
+        Assert.False(selectedContext.IsChainRetryPassThrough);
+        Assert.Equal(downstreamId, Assert.Single(selectedContext.TimeTickerChildren).TickerId);
+    }
+
+    [Fact]
     public async Task RunTimedOutTickers_NotifiesHub_ForTimeTickers()
     {
         var timedOutTimeTicker = new TimeTickerEntity

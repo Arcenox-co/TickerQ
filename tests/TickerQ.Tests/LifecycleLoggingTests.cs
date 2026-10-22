@@ -69,6 +69,47 @@ public sealed class LifecycleLoggingTests
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Handler_logs_only_accepted_progress_with_percent_and_message(bool accepted)
+    {
+        var options = new ExecutionLogOptions();
+        var store = new InMemoryTickerExecutionLogStore(options);
+        var writer = new TickerLifecycleLogger(store, options, _clock);
+        var provider = Substitute.For<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
+        provider.SupportsResultPublication.Returns(true);
+        provider.SupportsAcknowledgedTerminalUpdates.Returns(true);
+        provider.UpdateExecutionProgressAsync(Arg.Any<TickerProgressUpdate>(), Arg.Any<CancellationToken>())
+            .Returns(accepted);
+        provider.CommitSuccessfulTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+        var manager = new InternalTickerManager<TimeTickerEntity, CronTickerEntity>(provider, _clock,
+            Substitute.For<ITickerQNotificationHubSender>(), new SchedulerOptionsBuilder(), writer);
+        using var services = new ServiceCollection().AddSingleton(writer).BuildServiceProvider();
+        var handler = new TickerExecutionTaskHandler(services, _clock, Substitute.For<ITickerQInstrumentation>(), manager,
+            new SchedulerOptionsBuilder(), Substitute.For<ITickerQFailureNotifier>(), LicenseTestState.Active(_clock),
+            new TickerFunctionConcurrencyGate());
+        var context = Context();
+        context.CachedDelegate = async (_, _, execution) =>
+            await execution.ReportProgressAsync(42.5, "Processing demo batch… 42.5%");
+
+        await handler.ExecuteTaskAsync(context, isDue: false);
+
+        var progress = store.GetTail(context.TickerId)
+            .Where(x => x.LifecycleEvent == TickerLifecycleEvent.Progress).ToArray();
+        if (!accepted)
+        {
+            Assert.Empty(progress);
+            return;
+        }
+
+        var line = Assert.Single(progress);
+        Assert.Equal(TickerStatus.InProgress, line.Status);
+        Assert.Equal("Progress 42.5% — Processing demo batch…", line.Message);
+        Assert.Equal(2, line.Level);
+    }
+
+    [Theory]
     [InlineData(TickerType.TimeTicker)]
     [InlineData(TickerType.CronTickerOccurrence)]
     public async Task Rejected_terminal_write_never_emits_completion(TickerType type)

@@ -40,6 +40,8 @@ if not rootId or rootId == cjson.null then return nil end
 redis.call('HDEL', KEYS[3], '1:' .. string.lower(tostring(rootId)))
 obj['ChainRootId'] = tostring(rootId); obj['chainRootId'] = nil
 obj['ChainGeneration'] = ARGV[4]; obj['chainGeneration'] = nil
+obj['ChainRetryFromId'] = cjson.null; obj['chainRetryFromId'] = nil
+obj['ChainRetryPreviousStatus'] = cjson.null; obj['chainRetryPreviousStatus'] = nil
 obj['Status'] = tonumber(ARGV[5]); obj['status'] = nil
 obj['ExecutionTime'] = ARGV[6]; obj['executionTime'] = nil
 obj['UpdatedAt'] = ARGV[2]; obj['updatedAt'] = nil
@@ -49,6 +51,9 @@ obj['SkippedReason'] = cjson.null; obj['skippedReason'] = nil
 obj['ElapsedTime'] = 0; obj['elapsedTime'] = nil
 obj['RetryCount'] = 0; obj['retryCount'] = nil
 obj['StaleRestartCount'] = 0; obj['staleRestartCount'] = nil
+obj['ProgressPercent'] = cjson.null; obj['progressPercent'] = nil
+obj['ProgressMessage'] = cjson.null; obj['progressMessage'] = nil
+obj['ProgressUpdatedAt'] = cjson.null; obj['progressUpdatedAt'] = nil
 local resultKey = tostring(KEYS[2])
 local resultPrefix = string.match(resultKey, '^(.*:tt:)[^:]+:result$')
 local function fenceChildren(children)
@@ -59,6 +64,9 @@ local function fenceChildren(children)
     child['AcquisitionToken'] = ARGV[4]; child['acquisitionToken'] = nil
     child['ChainRootId'] = tostring(rootId); child['chainRootId'] = nil
     child['ChainGeneration'] = ARGV[4]; child['chainGeneration'] = nil
+    child['ProgressPercent'] = cjson.null; child['progressPercent'] = nil
+    child['ProgressMessage'] = cjson.null; child['progressMessage'] = nil
+    child['ProgressUpdatedAt'] = cjson.null; child['progressUpdatedAt'] = nil
     local id = child['Id'] or child['id']
     if resultPrefix and id and id ~= cjson.null then
       redis.call('DEL', resultPrefix .. tostring(id) .. ':result')

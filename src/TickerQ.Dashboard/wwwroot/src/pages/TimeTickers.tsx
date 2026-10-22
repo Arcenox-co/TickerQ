@@ -2,7 +2,7 @@ import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
-import { GitBranch, Minus, Plus, Trash2 } from "lucide-react";
+import { FolderOpen, GitBranch, Minus, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/cron/PageHeader";
 import { DataTable } from "@/components/cron/DataTable";
@@ -39,6 +39,7 @@ import { formatDuration } from "@/lib/cron/format";
 import { encodeRequestPayload } from "@/lib/request-payload";
 import { TimeCell } from "@/components/cron/TimeCell";
 import { CreateTimeTickerDialog } from "@/components/cron/CreateTimeTickerDialog";
+import { SavedDefinitionsPanel } from "@/components/cron/SavedDefinitionsPanel";
 import { QueryErrorNotice } from "@/components/cron/QueryErrorNotice";
 import { isReadOnly } from "@/lib/runtime-config";
 
@@ -53,6 +54,7 @@ export default function TimeTickersPage() {
   const [statusFilter, setStatusFilter] = useState<TickerStatus[]>([]);
   const [functionFilter, setFunctionFilter] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [savedOpen, setSavedOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -226,7 +228,13 @@ export default function TimeTickersPage() {
       {
         accessorKey: "status",
         header: "Status",
-        cell: ({ row }) => <ExecutionStatus status={row.original.status} summary={row.original.chainSummary} isChain={row.original.childCount > 0} />,
+        cell: ({ row }) => <ExecutionStatus
+          status={row.original.status}
+          summary={row.original.chainSummary}
+          isChain={row.original.childCount > 0}
+          progressPercent={row.original.progressPercent}
+          progressMessage={row.original.progressMessage}
+        />,
       },
       {
         accessorKey: "scheduledFor",
@@ -391,6 +399,15 @@ export default function TimeTickersPage() {
               variant="outline"
               size="sm"
               className="h-8 text-xs rounded-lg border-border text-muted-foreground"
+              onClick={() => setSavedOpen(true)}
+            >
+              <FolderOpen className="h-3 w-3 mr-1.5" />
+              Drafts & templates
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs rounded-lg border-border text-muted-foreground"
               onClick={() => navigate("/time-tickers/new-chain")}
             >
               <GitBranch className="h-3 w-3 mr-1.5" />
@@ -475,6 +492,12 @@ export default function TimeTickersPage() {
           setPage(1);
           setRecentlyCreatedId(res.id);
         }}
+      />
+
+      <SavedDefinitionsPanel
+        open={savedOpen}
+        target="TimeTicker"
+        onOpenChange={setSavedOpen}
       />
 
       <TimeTickerDetailPanel

@@ -5,7 +5,7 @@ import { proposalChainToTimeTickerNode, proposalChainToCronTemplate } from "./as
 
 export type AssistantActionApi = Pick<typeof dashboardApi,
   "addTimeTicker" | "addCronTicker" | "addTimeTickerChain" | "updateCronTicker" |
-  "getTimeTicker" | "getCronOccurrence" | "getCronTicker" | "runTimeTicker" | "runCronTicker" |
+  "getTimeTicker" | "getCronOccurrence" | "getCronTicker" | "runTimeTicker" | "rerunCronOccurrence" |
   "cancelTicker" | "deleteTimeTicker" | "deleteCronTicker" | "deleteCronOccurrence" |
   "getIntegrations" | "saveIntegrations">;
 
@@ -70,7 +70,7 @@ export async function applyAssistantProposal(p: AssistantProposal, api: Assistan
         else {
           const cronId = "cronTickerId" in current ? current.cronTickerId : null;
           if (!cronId || cronId !== p.cronTickerId) throw new Error("The source cron definition changed.");
-          await api.runCronTicker(cronId);
+          await api.rerunCronOccurrence(p.targetId);
         }
         return "Run requested";
       }

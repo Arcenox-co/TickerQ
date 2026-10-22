@@ -25,6 +25,7 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
     private readonly ITickerQActivationGate _activationGate;
     private readonly ILogger<TickerQFallbackBackgroundService> _logger;
     private readonly TickerQRuntimeDiagnostics _diagnostics;
+    private readonly bool _detailedLoggingEnabled;
     private DateTime _nextWarning;
 
     public TickerQFallbackBackgroundService(IInternalTickerManager internalTickerManager, SchedulerOptionsBuilder schedulerOptions, ITickerExecutionTaskHandler tickerExecutionTaskHandler, ITickerQTaskScheduler tickerQTaskScheduler, TickerQLicenseStateProvider licenseState, ITickerQActivationGate activationGate = null,
@@ -37,6 +38,7 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
         _activationGate = activationGate;
         _logger = logger ?? NullLogger<TickerQFallbackBackgroundService>.Instance;
         _diagnostics = diagnostics;
+        _detailedLoggingEnabled = schedulerOptions.DetailedLoggingEnabled;
         _ownsAcquiredQueue = acquiredQueue == null;
         _acquiredQueue = acquiredQueue ?? new AcquiredExecutionQueue(internalTickerManager,
             tickerExecutionTaskHandler, tickerQTaskScheduler, _logger, licenseState);
@@ -56,6 +58,9 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
         if (_activationGate != null)
             await _activationGate.WaitForActivationAsync(stoppingToken).ConfigureAwait(false);
 
+        if (_detailedLoggingEnabled)
+            _logger.LogInformation("TickerQ overdue recovery started with scan interval {ScanInterval}", _fallbackJobPeriod);
+
         while (!stoppingToken.IsCancellationRequested && _licenseState.ExecutionAllowed)
         {
             try
@@ -72,14 +77,22 @@ internal class TickerQFallbackBackgroundService :  BackgroundService
 
                 if (functions.Length != 0)
                 {
+                    if (_detailedLoggingEnabled)
+                        _logger.LogInformation("TickerQ overdue recovery acquired {ExecutionCount} executions", functions.Length);
                     TickerExecutionContext.CacheFunctionReferences(functions.AsSpan());
                     if (await _acquiredQueue.PublishAsync(functions, true, stoppingToken).ConfigureAwait(false))
                     {
+                        if (_detailedLoggingEnabled)
+                            _logger.LogInformation("TickerQ overdue recovery published {ExecutionCount} executions", functions.Length);
                         _diagnostics?.FallbackSucceeded();
                         await Task.Delay(TimeSpan.FromMilliseconds(10), stoppingToken);
                     }
                     else
                     {
+                        if (_detailedLoggingEnabled)
+                            _logger.LogInformation(
+                                "TickerQ overdue recovery could not publish {ExecutionCount} executions and will wait for capacity",
+                                functions.Length);
                         _diagnostics?.FallbackFailed();
                         // Failed publication already released the exact unstarted generations.
                         // Do not repeatedly reacquire those rows while root admission is full.

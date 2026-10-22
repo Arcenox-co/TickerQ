@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Exceptions;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
@@ -18,7 +19,7 @@ namespace TickerQ.Provider
 {
     internal partial class
         TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker> : ITickerPersistenceProvider<TTimeTicker,
-        TCronTicker>
+        TCronTicker>, ITickerDefinitionStore
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
@@ -59,8 +60,10 @@ namespace TickerQ.Provider
         private sealed class PartitionState
         {
             internal readonly object IntegrationLock = new();
+            internal readonly object DefinitionsLock = new();
             internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationSettings;
             internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationMonitoring;
+            internal readonly Dictionary<Guid, SavedTickerDefinition> Definitions = new();
             internal readonly ConcurrentDictionary<string, TickerQ.Utilities.Cluster.TickerQNodeRecord> Nodes = new(StringComparer.Ordinal);
             internal readonly ConcurrentDictionary<Guid, TickerQ.Utilities.Cluster.TickerQControlCommand> ControlCommands = new();
             internal readonly ConcurrentDictionary<Guid, TTimeTicker> TimeTickers = new();
@@ -171,6 +174,7 @@ namespace TickerQ.Provider
                         state.CronOccurrenceIndex.Clear();
                         state.TimeTickerResults.Clear();
                         state.CronOccurrenceResults.Clear();
+                        lock (state.DefinitionsLock) state.Definitions.Clear();
                         state.ActivationEpoch = ActivationEpochState.PreEpoch;
                         state.ScopedActivationEpochs.Clear();
                     }
@@ -738,9 +742,11 @@ namespace TickerQ.Provider
                         updatedTicker.ChainGeneration = updatedTicker.AcquisitionToken;
                         updatedTicker.UpdatedAt = now;
                         updatedTicker.Status = TickerStatus.Queued;
+                        ClearProgress(updatedTicker);
                         
                         if (TryUpdateTimeTicker(timeTicker.Id, updatedTicker, existingTicker))
                         {
+                            ClearDescendantProgress(timeTicker.Id);
                             timeTicker.UpdatedAt = now;
                             timeTicker.LockHolder = _lockHolder;
                             timeTicker.LockedAt = now;
@@ -789,9 +795,11 @@ namespace TickerQ.Provider
                         updatedTicker.ChainGeneration = updatedTicker.AcquisitionToken;
                         updatedTicker.UpdatedAt = now;
                         updatedTicker.Status = TickerStatus.InProgress;
+                        ClearProgress(updatedTicker);
 
                         if (TryUpdateTimeTicker(ticker.Id, updatedTicker, existingTicker))
                         {
+                            ClearDescendantProgress(ticker.Id);
                             AfterAcquisitionMutationForTest?.Invoke(ticker.Id);
                             yield return ForQueueTimeTickers(updatedTicker);
                         }
@@ -950,6 +958,57 @@ namespace TickerQ.Provider
             }));
         }
 
+        public Task<bool> UpdateExecutionProgressAsync(
+            TickerProgressUpdate update, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(WriteGraph(() =>
+            {
+                if (update.Type == TickerType.CronTickerOccurrence)
+                {
+                    if (!CronOccurrences.TryGetValue(update.TickerId, out var occurrence) ||
+                        occurrence.Status != TickerStatus.InProgress ||
+                        !update.AcquisitionToken.HasValue ||
+                        occurrence.LockHolder != _lockHolder ||
+                        occurrence.AcquisitionToken != update.AcquisitionToken)
+                        return false;
+
+                    var changed = CloneCronOccurrence(occurrence);
+                    changed.ProgressPercent = update.Percent;
+                    changed.ProgressMessage = update.Message;
+                    changed.ProgressUpdatedAt = update.UpdatedAtUtc;
+                    changed.UpdatedAt = update.UpdatedAtUtc;
+                    return CronOccurrences.TryUpdate(update.TickerId, changed, occurrence);
+                }
+
+                if (!TimeTickers.TryGetValue(update.TickerId, out var ticker) ||
+                    ticker.Status != TickerStatus.InProgress)
+                    return false;
+
+                if (ticker.ParentId == null)
+                {
+                    if (!update.AcquisitionToken.HasValue || ticker.LockHolder != _lockHolder ||
+                        ticker.AcquisitionToken != update.AcquisitionToken)
+                        return false;
+                }
+                else
+                {
+                    if (!update.ChainRootId.HasValue || !update.ChainGeneration.HasValue ||
+                        ticker.ChainRootId != update.ChainRootId ||
+                        !TimeTickers.TryGetValue(update.ChainRootId.Value, out var root) ||
+                        root.ChainGeneration != update.ChainGeneration)
+                        return false;
+                }
+
+                var changedTicker = CloneTicker(ticker);
+                changedTicker.ProgressPercent = update.Percent;
+                changedTicker.ProgressMessage = update.Message;
+                changedTicker.ProgressUpdatedAt = update.UpdatedAtUtc;
+                changedTicker.UpdatedAt = update.UpdatedAtUtc;
+                return TimeTickers.TryUpdate(update.TickerId, changedTicker, ticker);
+            }));
+        }
+
         private bool HasCurrentChainGeneration(
             InternalFunctionContext context, TTimeTicker target)
         {
@@ -1043,9 +1102,13 @@ namespace TickerQ.Provider
                     updatedTicker.ChainGeneration = updatedTicker.AcquisitionToken;
                     updatedTicker.Status = TickerStatus.InProgress;
                     updatedTicker.UpdatedAt = now;
+                    ClearProgress(updatedTicker);
 
                     if (TryUpdateTimeTicker(id, updatedTicker, ticker))
+                    {
+                        ClearDescendantProgress(id);
                         acquired.Add(ForQueueTimeTickers(updatedTicker));
+                    }
                 }
                 return acquired.ToArray();
             }));
@@ -1076,6 +1139,8 @@ namespace TickerQ.Provider
                     updated.AcquisitionToken = Guid.NewGuid();
                     updated.ChainRootId = updated.Id;
                     updated.ChainGeneration = updated.AcquisitionToken;
+                    updated.ChainRetryFromId = null;
+                    updated.ChainRetryPreviousStatus = null;
                     updated.RetryCount = 0;
                     updated.ExceptionMessage = null;
                     updated.SkippedReason = null;
@@ -1083,15 +1148,74 @@ namespace TickerQ.Provider
                     updated.ElapsedTime = 0;
                     updated.StaleRestartCount = 0;
                     updated.UpdatedAt = now;
+                    ClearProgress(updated);
                     if (!TryUpdateTimeTicker(id, updated, ticker))
                         continue;
 
+                    ClearDescendantProgress(id);
                     AfterTimeTickerOnDemandMutationForTest?.Invoke(id);
                     TimeTickerResults.TryRemove(id, out _);
                     return ForQueueTimeTickers(updated);
                 }
 
                 return null;
+            }));
+        }
+
+        public Task<TimeTickerChainRetryAcquisition<TTimeTicker>> AcquireTimeTickerChainRetryAsync(
+            Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(WriteGraph<TimeTickerChainRetryAcquisition<TTimeTicker>>(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!IsRunnableActivationState() || !TimeTickers.TryGetValue(id, out var selected))
+                    return null;
+                var rootId = selected.ChainRootId ?? (selected.ParentId.HasValue ? Guid.Empty : selected.Id);
+                if (rootId == Guid.Empty || !TimeTickers.TryGetValue(rootId, out var storedRoot) ||
+                    storedRoot.ParentId.HasValue)
+                    return null;
+
+                var root = BuildTickerHierarchy(storedRoot);
+                TimeTickerChainRetryPlanner.Plan<TTimeTicker> plan;
+                try
+                {
+                    var now = _clock.UtcNow;
+                    plan = TimeTickerChainRetryPlanner.Prepare(
+                        root, id, _lockHolder, executionTime, now, now.Add(_leaseDuration));
+                }
+                catch (TickerValidatorException)
+                {
+                    return null;
+                }
+
+                foreach (var node in FlattenTimeTickerGraph(plan.Root))
+                    TimeTickers[node.Id] = CloneTicker(node);
+                foreach (var resetId in plan.ResetIds)
+                    TimeTickerResults.TryRemove(resetId, out _);
+                return new TimeTickerChainRetryAcquisition<TTimeTicker>
+                {
+                    Root = plan.Root,
+                    SelectedId = plan.SelectedId,
+                    PreviousRootStatus = plan.PreviousRootStatus
+                };
+            }));
+        }
+
+        public Task<bool> AbortTimeTickerChainRetryAsync(
+            Guid rootId, Guid generation, string reason, DateTime abortedAt,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(WriteGraph(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!TimeTickers.TryGetValue(rootId, out var storedRoot)) return false;
+                var root = BuildTickerHierarchy(storedRoot);
+                if (!TimeTickerChainRetryPlanner.Abort(
+                        root, generation, reason, abortedAt))
+                    return false;
+                foreach (var node in FlattenTimeTickerGraph(root))
+                    TimeTickers[node.Id] = CloneTicker(node);
+                return true;
             }));
         }
 
@@ -2175,6 +2299,7 @@ namespace TickerQ.Provider
                             updatedOccurrence.AcquisitionToken = Guid.NewGuid();
                             updatedOccurrence.UpdatedAt = now;
                             updatedOccurrence.Status = TickerStatus.Queued;
+                            ClearProgress(updatedOccurrence);
                             if (TryUpdateCronOccurrence(occurrenceId, updatedOccurrence, existingOccurrence))
                                 queued = updatedOccurrence;
                         }
@@ -2257,6 +2382,7 @@ namespace TickerQ.Provider
                         updatedOccurrence.AcquisitionToken = Guid.NewGuid();
                         updatedOccurrence.UpdatedAt = now;
                         updatedOccurrence.Status = TickerStatus.InProgress;
+                        ClearProgress(updatedOccurrence);
 
                         if (TryUpdateCronOccurrence(occurrence.Id, updatedOccurrence, existingOccurrence))
                         {
@@ -2792,11 +2918,59 @@ namespace TickerQ.Provider
                     updated.AcquisitionToken = Guid.NewGuid();
                     updated.Status = TickerStatus.InProgress;
                     updated.UpdatedAt = now;
+                    ClearProgress(updated);
 
                     if (TryUpdateCronOccurrence(id, updated, occurrence))
                         acquired.Add(updated);
                 }
                 return acquired.ToArray();
+            }));
+        }
+
+        public Task<CronTickerOccurrenceEntity<TCronTicker>> AcquireCronOccurrenceOnDemandAsync(
+            Guid occurrenceId, DateTime executionTime, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(WriteGraph<CronTickerOccurrenceEntity<TCronTicker>>(() =>
+            {
+                while (CronOccurrences.TryGetValue(occurrenceId, out var occurrence))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var eligible = occurrence.Status == TickerStatus.Idle ||
+                                   (occurrence.Status == TickerStatus.Queued &&
+                                    (occurrence.LockHolder == null || occurrence.LockHolder == _lockHolder)) ||
+                                   (occurrence.Status is TickerStatus.Done or TickerStatus.DueDone or
+                                        TickerStatus.Failed or TickerStatus.Cancelled or TickerStatus.Skipped &&
+                                    IsNotActivelyOwned(occurrence.AcquisitionToken, occurrence.LeaseUntil,
+                                        _clock.UtcNow));
+                    if (!eligible || occurrence.ChainRootId.HasValue || !IsCurrentCronOccurrence(occurrence))
+                        return null;
+
+                    var now = _clock.UtcNow;
+                    var updated = CloneCronOccurrence(occurrence);
+                    updated.ExecutionTime = executionTime;
+                    updated.Status = TickerStatus.InProgress;
+                    updated.LockHolder = _lockHolder;
+                    updated.LockedAt = now;
+                    updated.LeaseUntil = now.Add(_leaseDuration);
+                    updated.AcquisitionToken = Guid.NewGuid();
+                    updated.RetryCount = 0;
+                    updated.ExceptionMessage = null;
+                    updated.SkippedReason = null;
+                    updated.ExecutedAt = null;
+                    updated.ElapsedTime = 0;
+                    updated.StaleRestartCount = 0;
+                    updated.UpdatedAt = now;
+                    updated.CronTicker = CronTickers.TryGetValue(updated.CronTickerId, out var cron)
+                        ? cron
+                        : null;
+                    ClearProgress(updated);
+                    if (!TryUpdateCronOccurrence(occurrenceId, updated, occurrence))
+                        continue;
+
+                    CronOccurrenceResults.TryRemove(occurrenceId, out _);
+                    return updated;
+                }
+                return null;
             }));
         }
 
@@ -3019,6 +3193,36 @@ namespace TickerQ.Provider
                    ((occurrence.Status == TickerStatus.Idle || occurrence.Status == TickerStatus.Queued) && occurrence.LockedAt == null);
         }
 
+        private static void ClearProgress(TTimeTicker ticker)
+        {
+            ticker.ProgressPercent = null;
+            ticker.ProgressMessage = null;
+            ticker.ProgressUpdatedAt = null;
+        }
+
+        private static void ClearProgress(CronTickerOccurrenceEntity<TCronTicker> occurrence)
+        {
+            occurrence.ProgressPercent = null;
+            occurrence.ProgressMessage = null;
+            occurrence.ProgressUpdatedAt = null;
+        }
+
+        private void ClearDescendantProgress(Guid rootId)
+        {
+            var pending = new Stack<Guid>();
+            pending.Push(rootId);
+            while (pending.TryPop(out var parentId))
+            {
+                if (!ChildrenIndex.TryGetValue(parentId, out var children)) continue;
+                foreach (var childId in children.Keys)
+                {
+                    if (TimeTickers.TryGetValue(childId, out var child))
+                        ClearProgress(child);
+                    pending.Push(childId);
+                }
+            }
+        }
+
         private bool CanReleaseOwned(TTimeTicker ticker)
             => ticker.Status is TickerStatus.Idle or TickerStatus.Queued &&
                ticker.LockHolder == _lockHolder &&
@@ -3050,6 +3254,9 @@ namespace TickerQ.Provider
                 ExceptionMessage = ticker.ExceptionMessage,
                 SkippedReason = ticker.SkippedReason,
                 ElapsedTime = ticker.ElapsedTime,
+                ProgressPercent = ticker.ProgressPercent,
+                ProgressMessage = ticker.ProgressMessage,
+                ProgressUpdatedAt = ticker.ProgressUpdatedAt,
                 RetryIntervals = ticker.RetryIntervals,
                 RunCondition = ticker.RunCondition,
                 ExecutedAt = ticker.ExecutedAt,
@@ -3060,6 +3267,8 @@ namespace TickerQ.Provider
                 AcquisitionToken = ticker.AcquisitionToken,
                 ChainRootId = ticker.ChainRootId,
                 ChainGeneration = ticker.ChainGeneration,
+                ChainRetryFromId = ticker.ChainRetryFromId,
+                ChainRetryPreviousStatus = ticker.ChainRetryPreviousStatus,
                 OriginCronTickerId = ticker.OriginCronTickerId,
                 OnStale = ticker.OnStale,
                 StaleRestartCount = ticker.StaleRestartCount,
@@ -3088,6 +3297,9 @@ namespace TickerQ.Provider
                 ExceptionMessage = occurrence.ExceptionMessage,
                 SkippedReason = occurrence.SkippedReason,
                 ElapsedTime = occurrence.ElapsedTime,
+                ProgressPercent = occurrence.ProgressPercent,
+                ProgressMessage = occurrence.ProgressMessage,
+                ProgressUpdatedAt = occurrence.ProgressUpdatedAt,
                 ExecutedAt = occurrence.ExecutedAt,
                 CreatedAt = occurrence.CreatedAt,
                 UpdatedAt = occurrence.UpdatedAt,
@@ -3133,6 +3345,13 @@ namespace TickerQ.Provider
                 ticker.ElapsedTime = context.ElapsedTime;
             }
 
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ProgressPercent)))
+            {
+                ticker.ProgressPercent = context.ProgressPercent;
+                ticker.ProgressMessage = context.ProgressMessage;
+                ticker.ProgressUpdatedAt = context.ProgressUpdatedAt;
+            }
+
             // RETRY COUNT
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
             {
@@ -3154,6 +3373,11 @@ namespace TickerQ.Provider
             {
                 ticker.LeaseUntil = null;
                 ticker.AcquisitionToken = null;
+                if (context.IsChainRetryRoot && context.ParentId == null)
+                {
+                    ticker.ChainRetryFromId = null;
+                    ticker.ChainRetryPreviousStatus = null;
+                }
             }
 
             // UPDATED_AT ALWAYS
@@ -3193,6 +3417,13 @@ namespace TickerQ.Provider
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
             {
                 occurrence.ElapsedTime = context.ElapsedTime;
+            }
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ProgressPercent)))
+            {
+                occurrence.ProgressPercent = context.ProgressPercent;
+                occurrence.ProgressMessage = context.ProgressMessage;
+                occurrence.ProgressUpdatedAt = context.ProgressUpdatedAt;
             }
 
             // RETRY COUNT

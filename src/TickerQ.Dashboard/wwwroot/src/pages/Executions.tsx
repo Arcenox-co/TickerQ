@@ -28,7 +28,7 @@ import {
   useBulkRetryExecutions,
   useExecutions,
   useOverallStatuses,
-  useRunCronTicker,
+  useRerunCronOccurrence,
   useRunTimeTicker,
   useTimeTickersGraph,
 } from "@/services/hooks";
@@ -86,7 +86,7 @@ export default function ExecutionsPage() {
   const data = listQuery.data;
   const readOnly = isReadOnly();
   const runTimeMutation = useRunTimeTicker();
-  const runCronMutation = useRunCronTicker();
+  const rerunCronOccurrenceMutation = useRerunCronOccurrence();
   const { data: graph } = useTimeTickersGraph(7, 0);
   const { data: allFns } = useAllFunctions();
   const { data: overall } = useOverallStatuses();
@@ -122,10 +122,8 @@ export default function ExecutionsPage() {
     [allFns]
   );
 
-  // Retry = run again on demand. Time executions re-run the ticker itself;
-  // cron occurrences re-run the parent schedule (a fresh occurrence is
-  // created — the failed row stays in history, matching how Hangfire/Sidekiq
-  // requeue works). The button opens a confirm dialog; this fires on confirm.
+  // Retry revives the selected persisted execution. Both time tickers and cron
+  // occurrences keep their original IDs instead of adding duplicate records.
   function handleRetryConfirm() {
     const r = retryTarget;
     if (!r) return;
@@ -139,7 +137,7 @@ export default function ExecutionsPage() {
       onSettled: () => setRetryTarget(null),
     };
     if (r.type === "TimeTicker") runTimeMutation.mutate(r.id, opts);
-    else if (r.cronTickerId) runCronMutation.mutate(r.cronTickerId, opts);
+    else if (r.cronTickerId) rerunCronOccurrenceMutation.mutate(r.id, opts);
   }
 
   const bulkRetryMutation = useBulkRetryExecutions();
@@ -237,7 +235,9 @@ export default function ExecutionsPage() {
         header: "Status",
         cell: ({ row }) => (
           <ExecutionStatus status={row.original.status} summary={row.original.chainSummary}
-            isChain={!!row.original.chainRootId || row.original.childCount > 0} />
+            isChain={!!row.original.chainRootId || row.original.childCount > 0}
+            progressPercent={row.original.progressPercent}
+            progressMessage={row.original.progressMessage} />
         ),
       },
       {
@@ -290,7 +290,7 @@ export default function ExecutionsPage() {
                     title={
                       r.type === "TimeTicker"
                         ? "Retry: run this ticker again now"
-                        : "Retry: run the parent cron schedule now"
+                        : "Retry this occurrence using the same record"
                     }
                     className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-surface-2 transition-colors"
                     onClick={(e) => {
@@ -451,8 +451,8 @@ export default function ExecutionsPage() {
         description={
           <>
             Queues {selectedRetryable.length} retryable execution(s) to run again
-            now. Cron occurrences re-run their parent schedule (deduplicated);
-            the original rows stay in history.
+            now. Each existing ticker or occurrence record is reused, so this does
+            not create duplicate execution rows.
           </>
         }
         confirmLabel="Retry all"
@@ -478,17 +478,17 @@ export default function ExecutionsPage() {
             </>
           ) : (
             <>
-              Runs the parent cron schedule of{" "}
+              Runs cron occurrence{" "}
               <span className="font-mono font-semibold text-foreground">
                 {retryTarget.functionName}
               </span>{" "}
-              now. A fresh occurrence is created — this{" "}
-              {retryTarget.status.toLowerCase()} row stays in history.
+              again using its existing ID. Its previous status, result and progress
+              are replaced; no new occurrence is created.
             </>
           ))
         }
         confirmLabel="Retry"
-        isPending={runTimeMutation.isPending || runCronMutation.isPending}
+        isPending={runTimeMutation.isPending || rerunCronOccurrenceMutation.isPending}
         onConfirm={handleRetryConfirm}
       />
     </div>

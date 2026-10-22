@@ -55,6 +55,9 @@ internal class DashboardOptionsResponse
     /// <summary>True when the stale-job watchdog recovers jobs abandoned by a dead node.</summary>
     public bool StaleJobRecoveryEnabled { get; set; }
 
+    /// <summary>True when additional scheduler decision and recovery logs are enabled.</summary>
+    public bool DetailedLoggingEnabled { get; set; }
+
     /// <summary>Historical-record retention state exposed to the dashboard.</summary>
     public RetentionConfigResponse Retention { get; set; }
     public ExecutionLogConfigResponse ExecutionLogs { get; set; }

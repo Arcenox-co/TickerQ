@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reflection;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
 using Xunit;
 
@@ -11,6 +12,22 @@ namespace TickerQ.Tests;
 
 public class InternalFunctionContextTests
 {
+    [Fact]
+    public void CacheFunctionReferences_RecognizesParallelGroupWithoutUserRegistration()
+    {
+        var group = new InternalFunctionContext
+        {
+            FunctionName = TickerChainInfrastructure.ParallelGroupFunction,
+            TimeTickerChildren = []
+        };
+
+        TickerExecutionContext.CacheFunctionReferences([group]);
+
+        Assert.Same(TickerChainInfrastructure.ParallelGroupDelegate, group.CachedDelegate);
+        Assert.Equal(TickerTaskPriority.Normal, group.CachedPriority);
+        Assert.Equal(0, group.CachedMaxConcurrency);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

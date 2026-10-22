@@ -52,6 +52,9 @@ namespace TickerQ.Utilities.Models
         public int[] RetryIntervals { get; set; }
         public bool ReleaseLock { get; set; }
         public DateTime ExecutionTime { get; set; }
+        public double? ProgressPercent { get; set; }
+        public string ProgressMessage { get; set; }
+        public DateTime? ProgressUpdatedAt { get; set; }
         /// <summary>
         /// Per-attempt execution timeout carried from the ticker row (cron template
         /// for occurrences). Null inherits the global default; &lt;= 0 disables.
@@ -82,6 +85,39 @@ namespace TickerQ.Utilities.Models
         /// </summary>
         [JsonIgnore]
         public TickerResultEnvelope ParentResultEnvelope { get; set; }
+        /// <summary>Execution-only request override used by ephemeral dashboard test runs.</summary>
+        [JsonIgnore]
+        public byte[] RequestPayload { get; set; }
+        /// <summary>Execution-only marker exposed to the function body.</summary>
+        [JsonIgnore]
+        public bool IsTestRun { get; set; }
+        /// <summary>
+        /// Execution-only marker for an already-completed ancestor traversed while retrying a later
+        /// chain step. The runtime follows its single retry path without invoking the function again.
+        /// </summary>
+        [JsonIgnore]
+        public bool IsChainRetryPassThrough { get; set; }
+        /// <summary>
+        /// Execution-only marker for a completed grouped branch whose recorded outcome participates
+        /// in the group's recalculated result without invoking that branch again.
+        /// </summary>
+        [JsonIgnore]
+        public bool IsChainRetryReusedTerminal { get; set; }
+        /// <summary>
+        /// Execution-only marker identifying the persisted root that owns an in-place retry.
+        /// This is true whether the selected retry point is the root itself or a descendant.
+        /// </summary>
+        [JsonIgnore]
+        public bool IsChainRetryRoot { get; set; }
+        /// <summary>
+        /// Execution-only marker for a completed root function acting as the coordinator while a
+        /// descendant path is retried. The root function itself is not invoked again.
+        /// </summary>
+        [JsonIgnore]
+        public bool IsChainRetryCoordinator { get; set; }
+        /// <summary>The coordinator root's terminal outcome before it was acquired for retry.</summary>
+        [JsonIgnore]
+        public TickerStatus? ChainRetryPreviousStatus { get; set; }
         public List<InternalFunctionContext> TimeTickerChildren { get; set; } = [];
 
         // Runtime updates avoid constructing expression trees and boxing scalar values.
@@ -133,6 +169,16 @@ namespace TickerQ.Utilities.Models
         {
             ExecutionTime = value;
             return TrackProperty(nameof(ExecutionTime));
+        }
+
+        internal InternalFunctionContext SetProgress(double percent, string message, DateTime updatedAt)
+        {
+            ProgressPercent = percent;
+            ProgressMessage = message;
+            ProgressUpdatedAt = updatedAt;
+            TrackProperty(nameof(ProgressPercent));
+            TrackProperty(nameof(ProgressMessage));
+            return TrackProperty(nameof(ProgressUpdatedAt));
         }
 
         private InternalFunctionContext TrackProperty(string name)

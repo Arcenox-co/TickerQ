@@ -2,7 +2,7 @@ import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ArrowLeft, GitBranch, Loader2, Pencil, Play, Trash2, X } from "lucide-react";
+import { ArrowLeft, GitBranch, LayoutTemplate, Loader2, Pencil, Play, RotateCcw, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/cron/DataTable";
@@ -16,7 +16,10 @@ import { CronExpressionPreview } from "@/components/cron/CronExpressionPreview";
 import { EditCronTickerDialog } from "@/components/cron/EditCronTickerDialog";
 import { parseIntervalsList } from "@/lib/cron/status-config";
 import { canViewOccurrenceChain } from "@/lib/cron/cron-chain";
+import { isChainActive } from "@/lib/cron/chain-summary";
+import { findDuplicateTemplateName } from "@/lib/cron/saved-definitions";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
+import { SaveDefinitionDialog } from "@/components/cron/SaveDefinitionDialog";
 import { CancelTickerButton } from "@/components/cron/CancelTickerButton";
 import { ResizableSidePanel } from "@/components/cron/ResizableSidePanel";
 import { PayloadPreview } from "@/components/cron/PayloadPreview";
@@ -32,8 +35,11 @@ import {
   useCronTicker,
   useCronTickerGraphById,
   useDeleteCronOccurrence,
+  useRerunCronOccurrence,
   useRunCronTicker,
   useUpdateCronTicker,
+  useSaveExistingTickerAsTemplate,
+  useDefinitions,
 } from "@/services/hooks";
 import { useRowHighlight } from "@/lib/cron/useRowHighlight";
 import { joinCronGroup, leaveCronGroup } from "@/services/ticker-hub";
@@ -63,6 +69,8 @@ function CronTickerDetail({ id }: { id: string }) {
   const [removeChainConfirm, setRemoveChainConfirm] = useState(false);
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<CronOccurrenceFlatDto | null>(null);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [rerunOccurrence, setRerunOccurrence] = useState<CronOccurrenceFlatDto | null>(null);
 
   const readOnly = isReadOnly();
   const cronQuery = useCronTicker(id);
@@ -76,6 +84,9 @@ function CronTickerDetail({ id }: { id: string }) {
   const currentOcc = activeOccQuery.data ?? occQuery.data?.items.find(o => o.id === occurrenceId);
   const wrongCron = currentOcc != null && currentOcc.cronTickerId !== id;
   const activeOcc = occurrenceId && currentOcc?.id === occurrenceId && !wrongCron ? currentOcc : null;
+  const activeOccurrenceIsRunning = !!activeOcc &&
+    (["Idle", "Queued", "InProgress"].includes(activeOcc.status) ||
+      isChainActive(activeOcc.chainSummary));
   // Share the live snapshot already used by the occurrence's chain log panel.
   const activeChainQuery = useChainTickers(activeOcc?.chainRootId ?? null);
   const activeRoot = activeChainQuery.data?.find(job => job.id === activeOcc?.chainRootId);
@@ -85,6 +96,9 @@ function CronTickerDetail({ id }: { id: string }) {
   const runMutation = useRunCronTicker();
   const updateCronMutation = useUpdateCronTicker();
   const deleteOccMutation = useDeleteCronOccurrence();
+  const rerunOccMutation = useRerunCronOccurrence();
+  const saveTemplateMutation = useSaveExistingTickerAsTemplate();
+  const templateDefinitions = useDefinitions("Template", "CronTicker");
 
   const occItems = occQuery.data?.items ?? [];
   function setActiveOcc(occurrence: CronOccurrenceFlatDto | null) {
@@ -149,6 +163,21 @@ function CronTickerDetail({ id }: { id: string }) {
       toast.error("Failed to run", { description: errMsg(err) });
     }
   }
+
+  async function handleRerunOccurrence() {
+    if (!rerunOccurrence) return;
+    try {
+      await rerunOccMutation.mutateAsync(rerunOccurrence.id);
+      toast.success(
+        rerunOccurrence.chainRootId ? "Occurrence chain re-run started" : "Occurrence re-run started",
+        { description: "The existing occurrence ID is being reused." }
+      );
+      setRerunOccurrence(null);
+    } catch (err) {
+      toast.error("Failed to re-run occurrence", { description: errMsg(err) });
+    }
+  }
+
 
   async function handleDeleteOne() {
     if (!pendingDelete || readOnly || deleteOccMutation.isPending) return;
@@ -241,7 +270,9 @@ function CronTickerDetail({ id }: { id: string }) {
         header: "Status",
         cell: ({ row }) => (
           <ExecutionStatus status={row.original.status} summary={row.original.chainSummary}
-            isChain={!!row.original.chainRootId} />
+            isChain={!!row.original.chainRootId}
+            progressPercent={row.original.progressPercent}
+            progressMessage={row.original.progressMessage} />
         ),
       },
       {
@@ -301,6 +332,7 @@ function CronTickerDetail({ id }: { id: string }) {
   }
 
   const bare = cron.functionName;
+  const hasChain = (cron.chain?.children.length ?? 0) > 0;
   const stateLabel = !cron.isEnabled
     ? "Disabled"
     : cron.isSystemPaused
@@ -358,6 +390,11 @@ function CronTickerDetail({ id }: { id: string }) {
         {!readOnly && (
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => navigate(`/cron-tickers/new-chain?cron=${id}`)}>
             <GitBranch className="mr-1.5 h-3 w-3" />{cron.chain ? "Edit chain" : "Add chain"}
+          </Button>
+        )}
+        {!readOnly && hasChain && (
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setSaveTemplateOpen(true)}>
+            <LayoutTemplate className="mr-1.5 h-3 w-3" />Save template
           </Button>
         )}
         {!readOnly && cron.chain && <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setRemoveChainConfirm(true)}>Remove chain</Button>}
@@ -498,6 +535,46 @@ function CronTickerDetail({ id }: { id: string }) {
             onStale: values.onStale, timeoutSeconds: values.timeoutSeconds ?? 0,
           } });
         }} />
+      {hasChain && <SaveDefinitionDialog
+        open={saveTemplateOpen}
+        kind="Template"
+        initialName={`${bare} recurring workflow`}
+        pending={saveTemplateMutation.isPending}
+        validateName={name => findDuplicateTemplateName(templateDefinitions.data ?? [], name)
+          ? "A template with this name already exists."
+          : null}
+        onOpenChange={setSaveTemplateOpen}
+        onSave={async values => {
+          try {
+            await saveTemplateMutation.mutateAsync({
+              id,
+              target: "CronTicker",
+              body: {
+                name: values.name,
+                description: values.description || null,
+                includeRequestData: values.includeRequestData,
+              },
+            });
+            setSaveTemplateOpen(false);
+            toast.success("Template saved");
+          } catch (error) {
+            toast.error("Could not save the template", { description: errMsg(error) });
+          }
+        }}
+      />}
+
+      <ConfirmDialog
+        open={!!rerunOccurrence}
+        onOpenChange={open => { if (!open) setRerunOccurrence(null); }}
+        title={rerunOccurrence?.chainRootId ? "Re-run this occurrence chain?" : "Re-run this occurrence?"}
+        description={rerunOccurrence?.chainRootId
+          ? "Retries the existing durable chain graph from its root. The affected job statuses and results are reset on the same records; no new cron occurrence is created."
+          : "Runs this occurrence again using the same occurrence ID. Its previous status, result and progress are replaced; no new cron occurrence is created."}
+        confirmLabel={rerunOccurrence?.chainRootId ? "Re-run chain" : "Re-run"}
+        isPending={rerunOccMutation.isPending}
+        onConfirm={handleRerunOccurrence}
+      />
+
       <ResizableSidePanel open={!!activeOcc} onClose={() => { if (!pendingDelete) setActiveOcc(null); }}>
         {activeOcc && (
           <div className="flex flex-col">
@@ -523,6 +600,18 @@ function CronTickerDetail({ id }: { id: string }) {
 
             {!readOnly && (
               <div className="px-5 py-3 border-b border-border flex items-center gap-2">
+                {!activeOccurrenceIsRunning && (
+                  <Button
+                    variant="gradient"
+                    size="sm"
+                    className="h-7 text-xs"
+                    disabled={rerunOccMutation.isPending}
+                    onClick={() => setRerunOccurrence(activeOcc)}
+                  >
+                    <RotateCcw className="h-3 w-3 mr-1" />
+                    {activeOcc.chainRootId ? "Re-run chain" : "Re-run"}
+                  </Button>
+                )}
                 <CancelTickerButton id={activeOcc.id} type="CronOccurrence" status={activeOcc.status} />
                 <Button
                   variant="ghost"
@@ -557,6 +646,32 @@ function CronTickerDetail({ id }: { id: string }) {
                   inheritedFrom={!activeOcc.lockHolder && activeChainLockHolder ? "chain root" : undefined} />
               </div>
             </div>
+
+            {activeOcc.progressPercent != null && (
+              <div className="px-5 py-3 border-b border-border space-y-2 text-[11px]">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate text-muted-foreground">
+                    {activeOcc.progressMessage || "Execution progress"}
+                  </span>
+                  <span className="shrink-0 font-medium tabular-nums">
+                    {Math.round(activeOcc.progressPercent)}%
+                  </span>
+                </div>
+                <div
+                  className="h-1.5 overflow-hidden rounded-full bg-muted"
+                  role="progressbar"
+                  aria-label={activeOcc.progressMessage || "Execution progress"}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.max(0, Math.min(100, activeOcc.progressPercent))}
+                >
+                  <div
+                    className="h-full rounded-full bg-primary transition-[width] duration-300"
+                    style={{ width: `${Math.max(0, Math.min(100, activeOcc.progressPercent))}%` }}
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="p-4 space-y-3">
               <PayloadPreview kind={activeOcc.chainRootId ? "time" : "cron-occurrence"} id={activeOcc.chainRootId ?? activeOcc.id} />

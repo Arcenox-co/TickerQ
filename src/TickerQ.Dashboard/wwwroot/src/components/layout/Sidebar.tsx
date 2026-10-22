@@ -46,9 +46,12 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     items: [{ path: "/assistant", label: "Chat AI", icon: Sparkles }],
   },
   {
+    label: "Clustering",
+    items: [{ path: "/nodes", label: "Nodes", icon: Server }],
+  },
+  {
     label: "System",
     items: [
-      { path: "/nodes", label: "Nodes", icon: Server },
       { path: "/diagnostics", label: "Diagnostics", icon: Activity },
       { path: "/integrations", label: "Integrations", icon: Plug },
     ],

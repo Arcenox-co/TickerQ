@@ -36,7 +36,7 @@ function CronOccurrenceChain({ cronId, occurrenceId }: { cronId: string; occurre
   const hasChain = validOccurrence && (!!occurrence?.chainRootId || previewTickers.length > 0);
 
   return (
-    <div className="h-[calc(100vh-44px-24px-24px)] -m-6">
+    <div className="h-[calc(100dvh-44px)] -m-4 sm:-m-6">
       {!loading && !error && hasChain ? (
         <ChainFlowchartView
           rootId={occurrence!.chainRootId ?? occurrenceId}

@@ -26,6 +26,11 @@ import type {
   ToggleCronTickerBody,
   UpdateCronTickerRequest,
   UpdateTimeTickerRequest,
+  SavedTickerDefinitionKind,
+  SavedTickerDefinitionTarget,
+  SaveTickerDefinitionRequest,
+  UpdateTickerDefinitionRequest,
+  SaveExistingTickerDefinitionRequest,
 } from "./api-types";
 
 // ===== Query keys =====
@@ -59,9 +64,13 @@ export const qk = {
   logTail: (id: string) => ["log-tail", id] as const,
   cronOccurrence: (id: string) => ["cron-occurrences", "one", id] as const,
   timeTickerRequest: (id: string) => ["time-tickers", id, "request"] as const,
+  timeTickerResult: (id: string) => ["time-tickers", id, "result"] as const,
   cronOccurrenceRequest: (id: string) =>
     ["cron-occurrences", id, "request"] as const,
   chainTickers: (rootId: string) => ["chain-tickers", rootId] as const,
+  definitions: (kind?: SavedTickerDefinitionKind, target?: SavedTickerDefinitionTarget) =>
+    ["definitions", kind ?? "all", target ?? "all"] as const,
+  definition: (id: string) => ["definitions", id] as const,
 };
 
 type QO<T> = Omit<UseQueryOptions<T>, "queryKey" | "queryFn">;
@@ -121,6 +130,24 @@ export function useAllFunctions() {
   return useQuery({
     queryKey: qk.functions,
     queryFn: ({ signal }) => dashboardApi.getAllFunctions(signal),
+  });
+}
+
+export function useDefinitions(
+  kind?: SavedTickerDefinitionKind,
+  target?: SavedTickerDefinitionTarget
+) {
+  return useQuery({
+    queryKey: qk.definitions(kind, target),
+    queryFn: ({ signal }) => dashboardApi.getDefinitions(kind, target, signal),
+  });
+}
+
+export function useDefinition(id: string | null) {
+  return useQuery({
+    queryKey: qk.definition(id ?? ""),
+    queryFn: ({ signal }) => dashboardApi.getDefinition(id!, signal),
+    enabled: !!id,
   });
 }
 
@@ -257,6 +284,14 @@ export function useTimeTickerRequest(id: string | null, enabled = true) {
   });
 }
 
+export function useTimeTickerResult(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: qk.timeTickerResult(id ?? ""),
+    queryFn: ({ signal }) => dashboardApi.getTimeTickerResult(id!, signal),
+    enabled: !!id && enabled,
+  });
+}
+
 export function useCronOccurrenceRequest(id: string | null, enabled = true) {
   return useQuery({
     queryKey: qk.cronOccurrenceRequest(id ?? ""),
@@ -296,6 +331,55 @@ function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["overview"] });
   qc.invalidateQueries({ queryKey: ["stats"] });
   qc.invalidateQueries({ queryKey: ["graphs"] });
+}
+
+function invalidateDefinitions(qc: ReturnType<typeof useQueryClient>) {
+  return qc.invalidateQueries({ queryKey: ["definitions"] });
+}
+
+export function useCreateDefinition() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SaveTickerDefinitionRequest) => dashboardApi.createDefinition(body),
+    onSuccess: () => invalidateDefinitions(qc),
+  });
+}
+
+export function useUpdateDefinition() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: UpdateTickerDefinitionRequest }) =>
+      dashboardApi.updateDefinition(id, body),
+    onSuccess: () => invalidateDefinitions(qc),
+  });
+}
+
+export function useDeleteDefinition() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, version }: { id: string; version: number }) => dashboardApi.deleteDefinition(id, version),
+    onSuccess: () => invalidateDefinitions(qc),
+  });
+}
+
+export function useActivateDraft() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, version, executionTime }: { id: string; version: number; executionTime?: string | null }) =>
+      dashboardApi.activateDraft(id, version, executionTime),
+    onSuccess: () => { invalidateDefinitions(qc); invalidateAll(qc); },
+  });
+}
+
+export function useSaveExistingTickerAsTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, target, body }: { id: string; target: SavedTickerDefinitionTarget; body: SaveExistingTickerDefinitionRequest }) =>
+      target === "CronTicker"
+        ? dashboardApi.saveCronTickerAsTemplate(id, body)
+        : dashboardApi.saveTimeTickerAsTemplate(id, body),
+    onSuccess: () => invalidateDefinitions(qc),
+  });
 }
 
 export function useStartHost() {
@@ -388,6 +472,13 @@ export function useRunTimeTicker() {
     onSuccess: () => invalidateAll(qc),
   });
 }
+export function useRetryTimeTickerFromHere() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => dashboardApi.retryTimeTickerFromHere(id),
+    onSuccess: () => invalidateAll(qc),
+  });
+}
 export function useDuplicateTimeTicker() {
   const qc = useQueryClient();
   return useMutation({
@@ -448,6 +539,13 @@ export function useRunCronTicker() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => dashboardApi.runCronTicker(id),
+    onSuccess: () => invalidateAll(qc),
+  });
+}
+export function useRerunCronOccurrence() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => dashboardApi.rerunCronOccurrence(id),
     onSuccess: () => invalidateAll(qc),
   });
 }

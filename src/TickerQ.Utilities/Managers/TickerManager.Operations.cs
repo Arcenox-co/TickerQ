@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -29,6 +30,28 @@ internal partial class TickerManager<TTimeTicker, TCronTicker>
         catch (Exception exception) { return new TickerResult<TTimeTicker>(exception); }
     }
 
+    async Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.RetryFromAsync(
+        Guid id, CancellationToken cancellationToken)
+    {
+        await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var root = await OnDemandChainRetryExecution.RunAsync(
+                    _persistenceProvider, _dispatcher, _notificationHubSender,
+                    _executionContext.RuntimePartition.StorageKey, id, _clock.UtcNow,
+                    cancellationToken, _logger)
+                .ConfigureAwait(false);
+            return root != null
+                ? new TickerResult<TTimeTicker>(root, 1)
+                : new TickerResult<TTimeTicker>(new TickerValidatorException(
+                    "The chain was not found, is still active, has unfinished jobs, or another retry already acquired it."));
+        }
+        catch (Exception exception)
+        {
+            return new TickerResult<TTimeTicker>(exception);
+        }
+    }
+
     async Task<TickerResult<CronTickerOccurrenceEntity<TCronTicker>>> ICronTickerManager<TCronTicker>.RunNowAsync(Guid cronTickerId, CancellationToken cancellationToken)
     {
         await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
@@ -40,6 +63,50 @@ internal partial class TickerManager<TTimeTicker, TCronTicker>
             return new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(occurrence, 1);
         }
         catch (Exception exception) { return new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(exception); }
+    }
+
+    async Task<TickerResult<CronTickerOccurrenceEntity<TCronTicker>>> ICronTickerManager<TCronTicker>.RerunOccurrenceAsync(
+        Guid occurrenceId, CancellationToken cancellationToken)
+    {
+        await WaitForMutationAdmissionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var occurrence = (await _persistenceProvider.GetAllCronTickerOccurrences(
+                    row => row.Id == occurrenceId, cancellationToken).ConfigureAwait(false))
+                .SingleOrDefault();
+            if (occurrence == null)
+                return new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(
+                    new TickerValidatorException("The cron occurrence was not found."));
+
+            if (occurrence.ChainRootId.HasValue)
+            {
+                var root = await OnDemandChainRetryExecution.RunAsync(
+                        _persistenceProvider, _dispatcher, _notificationHubSender,
+                        _executionContext.RuntimePartition.StorageKey, occurrence.ChainRootId.Value,
+                        _clock.UtcNow, cancellationToken, _logger)
+                    .ConfigureAwait(false);
+                return root != null
+                    ? new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(occurrence, 1)
+                    : new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(
+                        new TickerValidatorException(
+                            "The occurrence chain is still active, incomplete, or another retry already acquired it."));
+            }
+
+            var accepted = await OnDemandCronOccurrenceExecution.RunAsync(
+                    _persistenceProvider, _dispatcher, _notificationHubSender,
+                    _executionContext.RuntimePartition.StorageKey, occurrenceId, _clock.UtcNow,
+                    cancellationToken, _logger)
+                .ConfigureAwait(false);
+            return accepted
+                ? new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(occurrence, 1)
+                : new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(
+                    new TickerValidatorException(
+                        "The cron occurrence is already active, belongs to a chain, or could not be acquired."));
+        }
+        catch (Exception exception)
+        {
+            return new TickerResult<CronTickerOccurrenceEntity<TCronTicker>>(exception);
+        }
     }
 
     Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.RequestCancellationAsync(Guid id, CancellationToken cancellationToken)

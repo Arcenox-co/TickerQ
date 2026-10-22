@@ -34,6 +34,11 @@ namespace TickerQ.MongoDB.Infrastructure
                 u = Combine(u, defs.Set(x => x.AcquisitionToken, ctx.AcquisitionToken));
             else if (ClearsAcquisitionToken(props, ctx))
                 u = Combine(u, defs.Set(x => x.AcquisitionToken, (Guid?)null));
+            if (ClearsAcquisitionToken(props, ctx) && ctx.IsChainRetryRoot && ctx.ParentId == null)
+            {
+                u = Combine(u, defs.Set(x => x.ChainRetryFromId, (Guid?)null));
+                u = Combine(u, defs.Set(x => x.ChainRetryPreviousStatus, (TickerStatus?)null));
+            }
             if (props.Contains(nameof(InternalFunctionContext.ReleaseLock)))
                 u = Combine(u, defs.Set(x => x.ChainGeneration, (Guid?)null));
 
@@ -55,6 +60,13 @@ namespace TickerQ.MongoDB.Infrastructure
 
             if (props.Contains(nameof(InternalFunctionContext.ElapsedTime)))
                 u = Combine(u, defs.Set(x => x.ElapsedTime, ctx.ElapsedTime));
+
+            if (props.Contains(nameof(InternalFunctionContext.ProgressPercent)))
+            {
+                u = Combine(u, defs.Set(x => x.ProgressPercent, ctx.ProgressPercent));
+                u = Combine(u, defs.Set(x => x.ProgressMessage, ctx.ProgressMessage));
+                u = Combine(u, defs.Set(x => x.ProgressUpdatedAt, ctx.ProgressUpdatedAt));
+            }
 
             if (props.Contains(nameof(InternalFunctionContext.RetryCount)))
                 u = Combine(u, defs.Set(x => x.RetryCount, ctx.RetryCount));
@@ -121,6 +133,13 @@ namespace TickerQ.MongoDB.Infrastructure
 
             if (props.Contains(nameof(InternalFunctionContext.ElapsedTime)))
                 u = Combine(u, defs.Set(x => x.ElapsedTime, ctx.ElapsedTime));
+
+            if (props.Contains(nameof(InternalFunctionContext.ProgressPercent)))
+            {
+                u = Combine(u, defs.Set(x => x.ProgressPercent, ctx.ProgressPercent));
+                u = Combine(u, defs.Set(x => x.ProgressMessage, ctx.ProgressMessage));
+                u = Combine(u, defs.Set(x => x.ProgressUpdatedAt, ctx.ProgressUpdatedAt));
+            }
 
             if (props.Contains(nameof(InternalFunctionContext.RetryCount)))
                 u = Combine(u, defs.Set(x => x.RetryCount, ctx.RetryCount));

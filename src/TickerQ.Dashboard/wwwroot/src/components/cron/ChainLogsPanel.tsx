@@ -11,17 +11,39 @@ import {
 import { useTimezone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import { fetchChainLogs, needsChainLogRefresh, type ChainLogState } from "@/lib/cron/chain-logs";
+import { PARALLEL_GROUP_FUNCTION } from "@/lib/cron/chain-flow-layout";
 import { LogTailNotice } from "./LogTailNotice";
+import type { TimeTickerFlatDto } from "@/services/api-types";
 
 /**
  * Merged log tail across every ticker in a chain, ordered by timestamp, each
  * line prefixed with its `[function]`. Tail-only (no SignalR).
  */
-export function ChainLogsPanel({ rootId }: { rootId: string }) {
+export function ChainLogsPanel({
+  rootId,
+  tickers: suppliedTickers,
+  className,
+  fillHeight = false,
+}: {
+  rootId: string;
+  /** Temporary/external graph rows, used by memory-only test executions. */
+  tickers?: TimeTickerFlatDto[];
+  className?: string;
+  fillHeight?: boolean;
+}) {
   const [collapsed, setCollapsed] = useState(false);
   const client = useQueryClient();
-  const { data: tickers, isLoading: treeLoading } = useChainTickers(rootId);
-  const list = useMemo(() => tickers ?? [], [tickers]);
+  const { data: queriedTickers, isLoading: treeLoading } = useChainTickers(
+    suppliedTickers ? null : rootId
+  );
+  const list = useMemo(
+    () => suppliedTickers ?? queriedTickers ?? [],
+    [queriedTickers, suppliedTickers]
+  );
+  const jobCount = useMemo(
+    () => list.filter(ticker => ticker.functionName !== PARALLEL_GROUP_FUNCTION).length,
+    [list]
+  );
 
   const forceRefresh = useRef(false);
   const queryKey = ["chain-log-batch", rootId];
@@ -58,10 +80,14 @@ export function ChainLogsPanel({ rootId }: { rootId: string }) {
     return rows.map((r) => r.entry);
   }, [list, result.data, timezone]);
 
-  const loading = treeLoading || result.isLoading;
+  const loading = (!suppliedTickers && treeLoading) || result.isLoading;
 
   return (
-    <div className="@container rounded-lg border border-border bg-card overflow-hidden">
+    <div className={cn(
+      "@container rounded-lg border border-border bg-card overflow-hidden",
+      fillHeight && "flex h-full min-h-0 w-full flex-col",
+      className
+    )}>
       <button
         type="button"
         onClick={() => setCollapsed((c) => !c)}
@@ -70,7 +96,7 @@ export function ChainLogsPanel({ rootId }: { rootId: string }) {
         <span className="flex items-center gap-1.5">
           <Terminal className="h-3 w-3 text-primary" />
           Chain logs
-          <span className="text-muted-foreground/50">{list.length} jobs</span>
+          <span className="text-muted-foreground/50">{jobCount} jobs</span>
         </span>
         <ChevronDown className={cn("h-3 w-3 transition-transform", collapsed && "-rotate-90")} />
       </button>
@@ -80,10 +106,16 @@ export function ChainLogsPanel({ rootId }: { rootId: string }) {
           persistenceAvailable: !tails.some(t => t.persistenceAvailable === false),
           writeHealth: result.data?.writeHealth } : undefined}
         isError={result.isError}
-        onRefresh={() => { forceRefresh.current = true; void result.refetch(); }}
+        onRefresh={() => {
+          forceRefresh.current = true;
+          return result.refetch();
+        }}
       />}
       {!collapsed && (
-        <div className="font-mono text-[11px] leading-[20px] p-2 max-h-[320px] overflow-y-auto scrollbar-thin">
+        <div className={cn(
+          "w-full font-mono text-[11px] leading-[20px] px-2 pt-2 pb-0 overflow-y-auto scrollbar-thin",
+          fillHeight ? "min-h-0 flex-1" : "max-h-[320px]"
+        )}>
           {loading ? (
             <div className="flex items-center gap-2 px-1.5 py-1 text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" /> Loading logs…
@@ -94,7 +126,7 @@ export function ChainLogsPanel({ rootId }: { rootId: string }) {
             logs.map((log, i) => (
               <div
                 key={i}
-                className="flex flex-col @md:flex-row items-start gap-0.5 @md:gap-2 px-1.5 py-[1px] rounded-sm hover:bg-surface-2/30"
+                className="flex w-full flex-col @md:flex-row items-start gap-0.5 @md:gap-2 px-1.5 py-[1px] rounded-sm hover:bg-surface-2/30"
               >
                 {log.timestamp && (
                   <span className="text-muted-foreground/50 shrink-0 tabular-nums">

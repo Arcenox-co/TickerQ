@@ -33,6 +33,116 @@ export function statusHsl(status: TickerStatus): string {
   return `hsl(${STATUS_CONFIG[status].cssVar})`;
 }
 
+/**
+ * Collapses every job status in one parallel branch into the status displayed
+ * for that branch at the synchronization footer. Conditional descendants that
+ * did not run are Skipped, so Skipped is deliberately the weakest signal: a
+ * completed branch with an unused failure/cancellation path still reads Done.
+ * A live descendant takes precedence over a recorded terminal result because
+ * that branch has not reached the synchronization point yet.
+ */
+export function aggregateBranchSubtreeStatus(
+  statuses: readonly TickerStatus[]
+): TickerStatus {
+  if (statuses.length === 0) return "Idle";
+
+  const present = new Set(statuses);
+  const precedence: readonly TickerStatus[] = [
+    "InProgress",
+    "Queued",
+    "Idle",
+    "Failed",
+    "Cancelled",
+    "Done",
+    "DueDone",
+    "Skipped",
+  ];
+
+  return precedence.find(status => present.has(status)) ?? "Idle";
+}
+
+const TERMINAL_TICKER_STATUSES = new Set<TickerStatus>([
+  "Done",
+  "DueDone",
+  "Failed",
+  "Cancelled",
+  "Skipped",
+]);
+
+/** True only after every persisted job in the branch has reached a final state. */
+export function isBranchSubtreeSettled(statuses: readonly TickerStatus[]): boolean {
+  return statuses.length > 0 &&
+    statuses.every(status => TERMINAL_TICKER_STATUSES.has(status));
+}
+
+export interface BranchStatusSummary {
+  key: "done" | "failed" | "running" | "cancelled" | "skipped" | "queued" | "idle";
+  label: string;
+  count: number;
+  color: string;
+}
+
+/**
+ * Produces the compact status breakdown shown at a parallel join. Done and
+ * DueDone intentionally share one user-facing bucket because both mean that
+ * the branch completed successfully.
+ */
+export function summarizeBranchStatuses(
+  statuses: readonly TickerStatus[]
+): BranchStatusSummary[] {
+  const counts = new Map<BranchStatusSummary["key"], number>();
+  const increment = (key: BranchStatusSummary["key"]) =>
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+
+  for (const status of statuses) {
+    switch (status) {
+      case "Done":
+      case "DueDone":
+        increment("done");
+        break;
+      case "Failed":
+        increment("failed");
+        break;
+      case "InProgress":
+        increment("running");
+        break;
+      case "Cancelled":
+        increment("cancelled");
+        break;
+      case "Skipped":
+        increment("skipped");
+        break;
+      case "Queued":
+        increment("queued");
+        break;
+      case "Idle":
+        increment("idle");
+        break;
+    }
+  }
+
+  const definitions: Array<{
+    key: BranchStatusSummary["key"];
+    label: string;
+    status: TickerStatus;
+  }> = [
+    { key: "done", label: "done", status: "Done" },
+    { key: "failed", label: "failed", status: "Failed" },
+    { key: "running", label: "running", status: "InProgress" },
+    { key: "cancelled", label: "cancelled", status: "Cancelled" },
+    { key: "skipped", label: "skipped", status: "Skipped" },
+    { key: "queued", label: "queued", status: "Queued" },
+    { key: "idle", label: "idle", status: "Idle" },
+  ];
+
+  return definitions.flatMap(({ key, label, status }) => {
+    const count = counts.get(key) ?? 0;
+    return count > 0
+      ? [{ key, label, count, color: statusHsl(status) }]
+      : [];
+  });
+}
+
 export type HealthColor = "green" | "yellow" | "red" | "pending";
 
 const HEALTH_MAP: Record<HealthColor, string> = {

@@ -37,10 +37,13 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task<(TimeSpan TimeRemaining, InternalFunctionContext[] Functions)> GetNextTickers(CancellationToken cancellationToken = default);
 
         Task ReleaseAcquiredResources(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
+        Task AbortTimeTickerChainRetryAsync(InternalFunctionContext context,
+            CancellationToken cancellationToken = default);
         Task<InternalFunctionContext[]> SetTickersInProgress(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
         Task<bool> TryDispatchCronChainAsync(InternalFunctionContext context, bool isDue, CancellationToken cancellationToken = default)
             => Task.FromResult(false);
         Task UpdateTickerAsync(InternalFunctionContext context, CancellationToken cancellationToken = default);
+        Task<bool> ReportProgressAsync(TickerProgressUpdate update, CancellationToken cancellationToken = default);
         Task UpdateTickerFromRemoteAsync(InternalFunctionContext context, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("The configured manager does not support acknowledged remote terminal updates.");
         Task UpdateTickerFromRemoteAsync(InternalFunctionContext context, NodeFinalizationIntent finalizationIntent,

@@ -804,6 +804,33 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         Assert.Contains("inner reason", context.ExceptionDetails);
     }
 
+    [Fact]
+    public async Task ExecuteTaskAsync_StoresStructuredSafeExceptionDiagnostics()
+    {
+        var context = CreateContext(ct: (_, _, _) =>
+            throw new InvalidOperationException("diagnostic failure"));
+
+        await _handler.ExecuteTaskAsync(context, isDue: false);
+
+        using var json = System.Text.Json.JsonDocument.Parse(context.ExceptionDetails);
+        var root = json.RootElement;
+        Assert.Equal(typeof(InvalidOperationException).FullName, root.GetProperty("Type").GetString());
+        Assert.Equal("diagnostic failure", root.GetProperty("Message").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("Method").GetString()));
+        var sourceFile = root.GetProperty("SourceFile").GetString();
+        if (sourceFile != null)
+        {
+            Assert.DoesNotContain('/', sourceFile);
+            Assert.DoesNotContain('\\', sourceFile);
+            Assert.True(root.GetProperty("SourceLine").GetInt32() > 0);
+        }
+        var stackTrace = root.GetProperty("StackTrace").GetString();
+        Assert.Contains(nameof(TickerExecutionTaskHandlerTests), stackTrace);
+        Assert.DoesNotContain("TickerQ.TickerExecutionTaskHandler", stackTrace);
+        Assert.DoesNotContain("TickerQ.TickerQThreadPool", stackTrace);
+        Assert.True(stackTrace!.Length <= 16 * 1024);
+    }
+
     #endregion
 
     #region Null CachedDelegate

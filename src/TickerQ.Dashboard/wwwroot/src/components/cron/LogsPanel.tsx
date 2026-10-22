@@ -6,6 +6,7 @@ import { useTimezone } from "@/lib/timezone";
 import type { TickerStatus } from "@/lib/cron/status-config";
 import { cn } from "@/lib/utils";
 import { LogTailNotice } from "./LogTailNotice";
+import { ExceptionDetails } from "./ExceptionDetails";
 
 /**
  * Embeddable log tail with bounded polling and a final refresh after completion.
@@ -17,6 +18,7 @@ export function LogsPanel({
   exceptionMessage,
   skippedReason,
   className,
+  fillHeight = false,
 }: {
   functionName: string;
   status: TickerStatus;
@@ -25,6 +27,7 @@ export function LogsPanel({
   skippedReason?: string | null;
   executedAt?: string | null;
   className?: string;
+  fillHeight?: boolean;
 }) {
   // Poll the tail while the ticker is pending/running so lines stream in live;
   // after completion, the hook fetches the final persisted tail.
@@ -38,7 +41,7 @@ export function LogsPanel({
     const lines = (data?.lines ?? []).map((l) => mapLogLine(l, undefined, timezone));
     if (hasCompletion(data?.lines ?? [], status)) return lines;
     if (status === "Failed" && exceptionMessage)
-      return [...lines, { timestamp: "", level: "error", lifecycleEvent: "Completed", status, message: `[scheduler] ${extractReason(exceptionMessage)}` }];
+      return [...lines, { timestamp: "", level: "error", lifecycleEvent: "Completed", status, message: `[scheduler] Failed: ${extractReason(exceptionMessage)}` }];
     if (status === "Cancelled" && exceptionMessage)
       return [...lines, { timestamp: "", level: "warn", lifecycleEvent: "Completed", status, message: `[scheduler] Cancelled: ${extractReason(exceptionMessage)}` }];
     if (status === "Skipped" && skippedReason)
@@ -53,7 +56,11 @@ export function LogsPanel({
   }, [logs, status]);
 
   return (
-    <div className={cn("@container rounded-lg border border-border bg-card overflow-hidden", className)}>
+    <div className={cn(
+      "@container rounded-lg border border-border bg-card overflow-hidden",
+      fillHeight && "flex h-full min-h-0 w-full flex-col",
+      className
+    )}>
       <button
         type="button"
         onClick={() => setCollapsed((c) => !c)}
@@ -69,11 +76,14 @@ export function LogsPanel({
         </span>
         <ChevronDown className={cn("h-3 w-3 transition-transform", collapsed && "-rotate-90")} />
       </button>
-      {!collapsed && <LogTailNotice data={data} isError={isError} onRefresh={() => { void refetch(); }} />}
+      {!collapsed && <LogTailNotice data={data} isError={isError} onRefresh={() => refetch()} />}
       {!collapsed && (
         <div
           ref={scrollRef}
-          className="font-mono text-[11px] leading-[20px] p-2 max-h-[320px] overflow-y-auto scrollbar-thin"
+          className={cn(
+            "w-full font-mono text-[11px] leading-[20px] px-2 pt-2 pb-0 overflow-y-auto scrollbar-thin",
+            fillHeight ? "min-h-0 flex-1" : "max-h-[320px]"
+          )}
         >
           {isLoading ? (
             <div className="flex items-center gap-2 px-1.5 py-1 text-muted-foreground">
@@ -91,7 +101,7 @@ export function LogsPanel({
               return (
                 <div
                   key={i}
-                  className="flex flex-col @md:flex-row items-start gap-0.5 @md:gap-2 px-1.5 py-[1px] rounded-sm hover:bg-surface-2/30"
+                  className="flex w-full flex-col @md:flex-row items-start gap-0.5 @md:gap-2 px-1.5 py-[1px] rounded-sm hover:bg-surface-2/30"
                 >
                   {log.timestamp && (
                     <span className="text-muted-foreground/50 shrink-0 tabular-nums">
@@ -106,6 +116,9 @@ export function LogsPanel({
             })
           )}
         </div>
+      )}
+      {!collapsed && (status === "Failed" || status === "Cancelled") && (
+        <ExceptionDetails raw={exceptionMessage} />
       )}
     </div>
   );

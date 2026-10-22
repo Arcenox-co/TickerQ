@@ -196,6 +196,62 @@ public class TickerInMemoryPersistenceProviderCronDeduplicationTests : IAsyncLif
     }
 
     [Fact]
+    public async Task AcquireCronOccurrenceOnDemand_RevivesExactlyOneExistingRecord()
+    {
+        var cronTickerId = Guid.NewGuid();
+        var occurrenceId = Guid.NewGuid();
+        await SetupCronTicker(cronTickerId);
+        var oldExecutionTime = DateTime.UtcNow.AddMinutes(-5);
+        await _provider.InsertCronTickerOccurrences([
+            new CronTickerOccurrenceEntity<FakeCronTicker>
+            {
+                Id = occurrenceId,
+                CronTickerId = cronTickerId,
+                DefinitionRevision = 0,
+                ExecutionTime = oldExecutionTime,
+                Status = TickerStatus.Failed,
+                RetryCount = 3,
+                ExceptionMessage = "old failure",
+                ProgressPercent = 64,
+                ProgressMessage = "old progress",
+                ExecutedAt = oldExecutionTime,
+                LeaseUntil = oldExecutionTime,
+                CreatedAt = oldExecutionTime,
+                UpdatedAt = oldExecutionTime
+            }
+        ], CancellationToken.None);
+
+        var rerunAt = DateTime.UtcNow;
+        var attempts = await Task.WhenAll(
+            _provider.AcquireCronOccurrenceOnDemandAsync(
+                occurrenceId, rerunAt, CancellationToken.None),
+            _provider.AcquireCronOccurrenceOnDemandAsync(
+                occurrenceId, rerunAt, CancellationToken.None));
+
+        var acquired = Assert.Single(attempts.Where(row => row != null));
+        Assert.Equal(occurrenceId, acquired.Id);
+        Assert.Equal(TickerStatus.InProgress, acquired.Status);
+        Assert.Equal(rerunAt, acquired.ExecutionTime);
+        Assert.NotNull(acquired.AcquisitionToken);
+        Assert.Equal(0, acquired.RetryCount);
+        Assert.Null(acquired.ExceptionMessage);
+        Assert.Null(acquired.ExecutedAt);
+        Assert.Null(acquired.ProgressPercent);
+        Assert.Null(acquired.ProgressMessage);
+        Assert.NotNull(acquired.CronTicker);
+
+        var stored = await _provider.GetAllCronTickerOccurrences(
+            row => row.Id == occurrenceId, CancellationToken.None);
+        Assert.Single(stored);
+
+        await _provider.ReleaseAcquiredCronTickerOccurrences(
+            [occurrenceId], CancellationToken.None);
+        await _provider.RemoveCronTickerOccurrences(
+            [occurrenceId], CancellationToken.None);
+        await _provider.RemoveCronTickers([cronTickerId], CancellationToken.None);
+    }
+
+    [Fact]
     public async Task MigrateDefinedCronTickers_UserRowSharingFunction_NotMatchedOrMutated()
     {
         // A user-created cron (no seed identity) sharing a function name with a code seed,

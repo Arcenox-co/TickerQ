@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
 using Xunit;
@@ -127,6 +129,61 @@ public class TickerFunctionContextTests
         // Verifying its behavior would require testing internal wiring rather than
         // the public surface area of TickerFunctionContext.
         Assert.True(true);
+    }
+
+    [Fact]
+    public async Task ReportProgressAsync_ForwardsValidatedProgressToRuntimeReporter()
+    {
+        (double Percent, string Message, CancellationToken Token)? reported = null;
+        using var source = new CancellationTokenSource();
+        var context = new TickerFunctionContext
+        {
+            ProgressReporter = (percent, message, token) =>
+            {
+                reported = (percent, message, token);
+                return Task.CompletedTask;
+            }
+        };
+
+        await context.ReportProgressAsync(42.5, "Imported 425 of 1,000", source.Token);
+
+        Assert.Equal(42.5, reported?.Percent);
+        Assert.Equal("Imported 425 of 1,000", reported?.Message);
+        Assert.Equal(source.Token, reported?.Token);
+    }
+
+    [Theory]
+    [InlineData(-0.1)]
+    [InlineData(100.1)]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    public async Task ReportProgressAsync_RejectsInvalidPercent(double percent)
+    {
+        var context = new TickerFunctionContext();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => context.ReportProgressAsync(percent));
+    }
+
+    [Fact]
+    public async Task GenericContext_PreservesTestRunAndProgressReporter()
+    {
+        var calls = 0;
+        var baseContext = new TickerFunctionContext
+        {
+            IsTestRun = true,
+            ProgressReporter = (_, _, _) =>
+            {
+                calls++;
+                return Task.CompletedTask;
+            }
+        };
+
+        var typed = new TickerFunctionContext<TestRequest>(baseContext, new TestRequest());
+        await typed.ReportProgressAsync(10);
+
+        Assert.True(typed.IsTestRun);
+        Assert.Equal(1, calls);
     }
 
     private sealed class TestRequest

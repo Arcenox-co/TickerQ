@@ -12,6 +12,7 @@ import { StatusBadge } from "@/components/cron/StatusBadges";
 import type { TickerStatus } from "@/lib/cron/status-config";
 import { formatDuration, relativeTime } from "@/lib/cron/format";
 import { useLogTail } from "@/services/hooks";
+import { ExceptionDetails } from "./ExceptionDetails";
 
 export type { LogEntry } from "@/lib/cron/log-format";
 
@@ -44,7 +45,7 @@ export function LogsSidePanel({
   // Older/evicted tails still show the saved failure reason without duplicating captured outcomes.
   if (target && !hasCompletion(data?.lines ?? [], target.status)) {
     if (target.status === "Failed" && target.exceptionMessage)
-      logs.push({ timestamp: "", level: "error", lifecycleEvent: "Completed", status: target.status, message: `[scheduler] ${extractReason(target.exceptionMessage)}` });
+      logs.push({ timestamp: "", level: "error", lifecycleEvent: "Completed", status: target.status, message: `[scheduler] Failed: ${extractReason(target.exceptionMessage)}` });
     else if (target.status === "Cancelled" && target.exceptionMessage)
       logs.push({ timestamp: "", level: "warn", lifecycleEvent: "Completed", status: target.status, message: `[scheduler] Cancelled: ${extractReason(target.exceptionMessage)}` });
     else if (target.status === "Skipped" && target.skippedReason)
@@ -105,7 +106,7 @@ export function LogsSidePanel({
                 Log tail
               </p>
               <div className="rounded-lg border border-border bg-card font-mono text-[11px] divide-y divide-border/30 max-h-[60vh] overflow-y-auto scrollbar-thin">
-                <LogTailNotice data={data} isError={isError} onRefresh={() => { void refetch(); }} />
+                <LogTailNotice data={data} isError={isError} onRefresh={() => refetch()} />
                 {isLoading ? <p className="p-4">Loading logs…</p> : logs.length === 0 ? (
                   <div className="p-4 text-center text-muted-foreground text-[11px]">
                     {isError ? "Log request failed." : "No captured lines are available. The tail may have expired or been evicted."}
@@ -127,6 +128,9 @@ export function LogsSidePanel({
                       </div>
                     );
                   })
+                )}
+                {(target.status === "Failed" || target.status === "Cancelled") && (
+                  <ExceptionDetails raw={target.exceptionMessage} />
                 )}
               </div>
             </div>

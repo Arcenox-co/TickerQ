@@ -290,7 +290,12 @@ internal sealed class AcquiredExecutionQueue : IDisposable
         {
             try
             {
-                await _manager.ReleaseAcquiredResources([function], CancellationToken.None).ConfigureAwait(false);
+                if (function.IsChainRetryRoot)
+                    await _manager.AbortTimeTickerChainRetryAsync(function, CancellationToken.None)
+                        .ConfigureAwait(false);
+                else
+                    await _manager.ReleaseAcquiredResources([function], CancellationToken.None)
+                        .ConfigureAwait(false);
                 return;
             }
             catch (Exception ex)

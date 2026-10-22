@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Plus, RotateCcw } from "lucide-react";
+import { FlaskConical, Plus, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -32,13 +32,25 @@ import {
   isValidCronExpression,
 } from "@/components/cron/CronExpressionPreview";
 import { ON_STALE_OPTIONS } from "@/lib/cron/ticker-form-options";
-import type { FunctionInfoDto } from "@/services/api-types";
+import type { FunctionInfoDto, TestRunResponse } from "@/services/api-types";
+import { dashboardApi } from "@/services/dashboard-api";
+import { encodeRequestPayload } from "@/lib/request-payload";
 import {
   initialPayloadForFunction,
   RequestPayloadEditor,
   validateRequestPayload,
 } from "@/components/cron/RequestPayloadEditor";
 import { createDraftState, selectFunction } from "@/lib/function-draft";
+import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
+import { SingleJobTestDialog } from "@/components/cron/SingleJobTestDialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const schema = z.object({
   skipIfAlreadyRunning: z.boolean(),
@@ -101,8 +113,15 @@ export function CreateCronTickerDialog({
   const requestJson = form.watch("requestJson") ?? "";
   const selectedFunction = functions.find((item) => item.functionName === selectedFunctionName);
   const [enabled, setEnabled] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestRunResponse | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [testConfirmOpen, setTestConfirmOpen] = useState(false);
+  const [testOpen, setTestOpen] = useState(false);
+  const [pendingTestValues, setPendingTestValues] = useState<FormValues | null>(null);
   const draftBook = useRef(createDraftState());
   const requestEditorValid = useRef(true);
+  const [leavePromptOpen, setLeavePromptOpen] = useState(false);
 
   useEffect(() => {
     const selection = selectFunction(
@@ -124,13 +143,30 @@ export function CreateCronTickerDialog({
     requestEditorValid.current = true;
   }
 
+  function closeAndReset() {
+    resetDraftSession();
+    form.reset();
+    setEnabled(true);
+    setTestResult(null);
+    setTestError(null);
+    setTestConfirmOpen(false);
+    setTestOpen(false);
+    setTesting(false);
+    setPendingTestValues(null);
+    setLeavePromptOpen(false);
+    onOpenChange(false);
+  }
+
   function handleOpenChange(nextOpen: boolean) {
-    if (!nextOpen) {
-      resetDraftSession();
-      form.reset();
-      setEnabled(true);
+    if (nextOpen) {
+      onOpenChange(true);
+      return;
     }
-    onOpenChange(nextOpen);
+    if (form.formState.isDirty || !enabled) {
+      setLeavePromptOpen(true);
+      return;
+    }
+    closeAndReset();
   }
 
   async function handleSubmit(values: FormValues) {
@@ -147,7 +183,7 @@ export function CreateCronTickerDialog({
       await onSubmit?.({ ...values, isEnabled: enabled });
       toast.success("Cron ticker created");
       form.reset();
-      handleOpenChange(false);
+      closeAndReset();
     } catch (err) {
       toast.error("Failed to create", {
         description: err instanceof Error ? err.message : "An error occurred",
@@ -155,7 +191,47 @@ export function CreateCronTickerDialog({
     }
   }
 
+  async function prepareTest() {
+    const valid = await form.trigger(["function", "requestJson", "timeoutSeconds"]);
+    const values = form.getValues();
+    if (!valid || !requestEditorValid.current) {
+      if (!requestEditorValid.current)
+        form.setError("requestJson", { type: "validate", message: "Complete or correct the structured JSON field." });
+      return;
+    }
+    const requestError = validateRequestPayload(selectedFunction, values.requestJson ?? "");
+    if (requestError) {
+      form.setError("requestJson", { type: "validate", message: requestError });
+      return;
+    }
+    setPendingTestValues(values);
+    setTestConfirmOpen(true);
+  }
+
+  async function executeTest() {
+    if (!pendingTestValues || testing) return;
+    const values = pendingTestValues;
+    setTestConfirmOpen(false);
+    setTestOpen(true);
+    setTesting(true);
+    setTestResult(null);
+    setTestError(null);
+    try {
+      const result = await dashboardApi.testRunFunction({
+        function: values.function,
+        request: encodeRequestPayload(values.requestJson ?? ""),
+        timeoutSeconds: values.timeoutSeconds || undefined,
+      });
+      setTestResult(result);
+    } catch (error) {
+      setTestError(error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setTesting(false);
+    }
+  }
+
   return (
+    <>
     <Sheet open={open} onOpenChange={handleOpenChange}>
       <SheetContent
         side="right"
@@ -291,31 +367,89 @@ export function CreateCronTickerDialog({
                 </label>
               </div>
 
-              <footer className="mt-6 flex items-center justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 text-xs rounded-lg"
-                  onClick={() => handleOpenChange(false)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  variant="gradient"
-                  size="sm"
-                  className="h-8 text-xs rounded-lg"
-                  disabled={form.formState.isSubmitting}
-                >
-                  <Plus className="h-3 w-3 mr-1.5" />
-                  {form.formState.isSubmitting ? "Creating…" : "Create"}
-                </Button>
+              <footer className="mt-6 space-y-3 border-t border-border/60 pt-4">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs rounded-lg"
+                    disabled={testing || form.formState.isSubmitting}
+                    onClick={() => void prepareTest()}
+                  >
+                    <FlaskConical className="h-3 w-3 mr-1.5" />
+                    Test once
+                  </Button>
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/60 pt-3">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-xs rounded-lg"
+                    onClick={() => handleOpenChange(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="gradient"
+                    size="sm"
+                    className="h-8 text-xs rounded-lg"
+                    disabled={form.formState.isSubmitting}
+                  >
+                    <Plus className="h-3 w-3 mr-1.5" />
+                    {form.formState.isSubmitting ? "Creating…" : "Create"}
+                  </Button>
+                </div>
               </footer>
             </form>
           </Form>
         </div>
       </SheetContent>
     </Sheet>
+
+    <ConfirmDialog
+      open={testConfirmOpen}
+      onOpenChange={setTestConfirmOpen}
+      title="Execute this function now?"
+      description={
+        <>
+          This immediately invokes the real function{" "}
+          <span className="font-mono font-semibold text-foreground">
+            {pendingTestValues?.function}
+          </span>
+          . It may change application data or call external services. No cron ticker or occurrence is saved.
+        </>
+      }
+      confirmLabel="Execute test"
+      isPending={testing}
+      onConfirm={executeTest}
+    />
+
+    <SingleJobTestDialog
+      open={testOpen}
+      pending={testing}
+      result={testResult}
+      error={testError}
+      functionName={pendingTestValues?.function ?? selectedFunctionName ?? ""}
+      onClose={() => setTestOpen(false)}
+    />
+
+    <Dialog open={leavePromptOpen} onOpenChange={setLeavePromptOpen}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Keep this cron configuration?</DialogTitle>
+          <DialogDescription>
+            Keep editing, or discard this unsaved cron configuration and close the panel. No cron ticker has been created yet.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setLeavePromptOpen(false)}>Keep editing</Button>
+          <Button variant="destructive" onClick={closeAndReset}>Discard</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

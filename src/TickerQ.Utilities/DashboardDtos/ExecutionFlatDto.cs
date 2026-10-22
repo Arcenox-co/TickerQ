@@ -27,6 +27,9 @@ namespace TickerQ.Utilities.DashboardDtos
         public TickerStatus Status { get; set; }
         public DateTime ScheduledFor { get; set; }
         public long ElapsedTime { get; set; }
+        public double? ProgressPercent { get; set; }
+        public string ProgressMessage { get; set; }
+        public DateTime? ProgressUpdatedAt { get; set; }
         public int RetryCount { get; set; }
         /// <summary>
         /// Max retries configured on the parent ticker / cron. The dashboard

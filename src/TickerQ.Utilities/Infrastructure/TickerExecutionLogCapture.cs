@@ -20,21 +20,23 @@ namespace TickerQ.Utilities.Infrastructure
 
         public Guid TickerId { get; }
         public string FunctionName { get; }
+        public bool IsEphemeral { get; }
 
-        private TickerExecutionLogScope(Guid tickerId, string functionName)
+        private TickerExecutionLogScope(Guid tickerId, string functionName, bool isEphemeral)
         {
             TickerId = tickerId;
             FunctionName = functionName;
+            IsEphemeral = isEphemeral;
         }
 
         /// <summary>
         /// Push a new scope onto the async flow. Returns a disposable that restores
         /// the previous scope on dispose — safe to nest (chained child tickers).
         /// </summary>
-        public static IDisposable Push(Guid tickerId, string functionName)
+        public static IDisposable Push(Guid tickerId, string functionName, bool isEphemeral = false)
         {
             var prev = Ambient.Value;
-            Ambient.Value = new TickerExecutionLogScope(tickerId, functionName);
+            Ambient.Value = new TickerExecutionLogScope(tickerId, functionName, isEphemeral);
             return new Pop(prev);
         }
 
@@ -56,6 +58,8 @@ namespace TickerQ.Utilities.Infrastructure
         public string Message { get; set; } = string.Empty;
         public string Category { get; set; } = string.Empty;
         public string FunctionName { get; set; } = string.Empty;
+        /// <summary>Memory-only test output; never offered to the database log writer.</summary>
+        public bool IsEphemeral { get; set; }
         public bool Truncated { get; set; }
         public TickerLifecycleEvent LifecycleEvent { get; set; }
         public TickerQ.Utilities.Enums.TickerStatus? Status { get; set; }
@@ -70,6 +74,7 @@ namespace TickerQ.Utilities.Infrastructure
     {
         void Add(TickerExecutionLogLine line);
         IReadOnlyList<TickerExecutionLogLine> GetTail(Guid tickerId);
+        bool IsEphemeral(Guid tickerId) => false;
     }
 
     /// <summary>
@@ -91,7 +96,7 @@ namespace TickerQ.Utilities.Infrastructure
             get
             {
                 lock (_gate) return (_options.PersistToDatabase
-                    ? _buffers.Count(x => x.Value.Version > x.Value.PersistedVersion) : 0, _droppedUnflushed);
+                    ? _buffers.Count(x => !x.Value.IsEphemeral && x.Value.Version > x.Value.PersistedVersion) : 0, _droppedUnflushed);
             }
         }
 
@@ -111,6 +116,7 @@ namespace TickerQ.Utilities.Infrastructure
                     while (_buffers.Count >= _options.MaxBufferedExecutions) EvictOldest();
                     _buffers[line.TickerId] = buffer = new Buffer();
                 }
+                buffer.IsEphemeral |= line.IsEphemeral;
                 if (line.LifecycleEvent != TickerLifecycleEvent.None && buffer.Lines.Any(x => x.Line.Id == line.Id)) return;
                 buffer.Lines.Enqueue((line, size));
                 buffer.Bytes += size; _bytes += size;
@@ -128,6 +134,11 @@ namespace TickerQ.Utilities.Infrastructure
 
         public IReadOnlyList<TickerExecutionLogLine> GetTail(Guid tickerId) => Snapshot(tickerId)?.Lines ?? Array.Empty<TickerExecutionLogLine>();
 
+        public bool IsEphemeral(Guid tickerId)
+        {
+            lock (_gate) return _buffers.TryGetValue(tickerId, out var buffer) && buffer.IsEphemeral;
+        }
+
         public ExecutionLogSnapshot Snapshot(Guid id)
         {
             lock (_gate)
@@ -144,7 +155,7 @@ namespace TickerQ.Utilities.Infrastructure
             lock (_gate)
             {
                 PruneLocked(DateTime.UtcNow.Ticks);
-                return _buffers.Where(x => x.Value.Version > x.Value.PersistedVersion)
+                return _buffers.Where(x => !x.Value.IsEphemeral && x.Value.Version > x.Value.PersistedVersion)
                     .OrderBy(x => x.Value.PersistedVersion).ThenBy(x => x.Value.Version)
                     .Take(count).Select(x => Copy(x.Key, x.Value)).ToArray();
             }
@@ -170,7 +181,8 @@ namespace TickerQ.Utilities.Infrastructure
         private void Remove(Guid id)
         {
             var buffer = _buffers[id];
-            if (_options.PersistToDatabase && buffer.Version > buffer.PersistedVersion) _droppedUnflushed++;
+            if (!buffer.IsEphemeral && _options.PersistToDatabase && buffer.Version > buffer.PersistedVersion)
+                _droppedUnflushed++;
             _bytes -= buffer.Bytes;
             _buffers.Remove(id);
         }
@@ -192,6 +204,7 @@ namespace TickerQ.Utilities.Infrastructure
             public long Version;
             public long PersistedVersion;
             public bool Truncated;
+            public bool IsEphemeral;
         }
     }
 
@@ -232,7 +245,21 @@ namespace TickerQ.Utilities.Infrastructure
             public IDisposable BeginScope<TState>(TState state) => NullScope.Instance;
 
             public bool IsEnabled(LogLevel logLevel)
-                => _options.Enabled && logLevel >= _options.MinimumLevel && logLevel != LogLevel.None && TickerExecutionLogScope.Current != null;
+                => _options.Enabled && logLevel >= _options.MinimumLevel && logLevel != LogLevel.None &&
+                   TickerExecutionLogScope.Current != null && !IsCategoryExcluded();
+
+            private bool IsCategoryExcluded()
+            {
+                var prefixes = _options.ExcludedCategoryPrefixes;
+                if (prefixes == null || prefixes.Length == 0) return false;
+                foreach (var prefix in prefixes)
+                {
+                    if (!string.IsNullOrEmpty(prefix) &&
+                        _category?.StartsWith(prefix, StringComparison.Ordinal) == true)
+                        return true;
+                }
+                return false;
+            }
 
             public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
                 Exception exception, Func<TState, Exception, string> formatter)
@@ -261,7 +288,8 @@ namespace TickerQ.Utilities.Infrastructure
                         Level = (int)logLevel,
                         Message = message ?? string.Empty,
                         Category = _category ?? string.Empty,
-                        FunctionName = scope.FunctionName ?? string.Empty
+                        FunctionName = scope.FunctionName ?? string.Empty,
+                        IsEphemeral = scope.IsEphemeral
                     });
                 }
                 catch { /* Diagnostic capture must never fail a job. */ }

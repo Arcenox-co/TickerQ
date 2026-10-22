@@ -4,10 +4,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using TickerQ.BackgroundServices;
 using TickerQ.Dispatcher;
+using TickerQ.Exceptions;
 using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Instrumentation;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
@@ -145,6 +147,457 @@ public sealed class TickerQExecutionAdmissionTests
         finally { release.TrySetResult(); }
         await rig.AssertDrainedAsync();
         Assert.True(deferredEntered);
+    }
+
+    [Fact]
+    public async Task ParallelGroup_SuccessJoinWaitsForEveryBranchSubtree()
+    {
+        await using var rig = new ExecutionRig(4, configure: options => options.MaxConcurrentChainSteps = 4);
+        var nestedEntered = Signal();
+        var releaseNested = Signal();
+        var joined = false;
+        var root = Job("Root", NoOp);
+        var group = Job(TickerChainInfrastructure.ParallelGroupFunction,
+            TickerChainInfrastructure.ParallelGroupDelegate);
+        var first = Job("First", NoOp);
+        var second = Job("Second", NoOp);
+        var nested = Job("Nested", async (ct, _, _) =>
+        {
+            nestedEntered.TrySetResult();
+            await releaseNested.Task.WaitAsync(ct);
+        });
+        var join = Job("Join", (_, _, _) =>
+        {
+            joined = true;
+            return Task.CompletedTask;
+        });
+
+        AddChild(root, group, RunCondition.OnSuccess);
+        AddChild(group, first, RunCondition.InProgress);
+        AddChild(group, second, RunCondition.InProgress);
+        AddChild(second, nested, RunCondition.OnSuccess);
+        AddChild(group, join, RunCondition.OnSuccess);
+
+        try
+        {
+            await rig.Dispatcher.DispatchAsync([root]);
+            await nestedEntered.Task.WaitAsync(TestTimeout);
+            Assert.False(joined);
+            Assert.Equal(TickerStatus.InProgress, group.Status);
+        }
+        finally { releaseNested.TrySetResult(); }
+
+        await rig.AssertDrainedAsync();
+        Assert.True(joined);
+        Assert.Equal(TickerStatus.Done, group.Status);
+        Assert.Equal(TickerStatus.Done, join.Status);
+    }
+
+    [Fact]
+    public async Task ParallelGroup_GroupedConditionDoesNotTurnJobIntoAJoin()
+    {
+        await using var rig = new ExecutionRig(4, configure: options => options.MaxConcurrentChainSteps = 4);
+        var groupedEntered = Signal();
+        var releaseGrouped = Signal();
+        var failureGroupedCalls = 0;
+        var finalCalls = 0;
+        var root = Job("Root", NoOp);
+        var group = Job(TickerChainInfrastructure.ParallelGroupFunction,
+            TickerChainInfrastructure.ParallelGroupDelegate);
+
+        AddChild(root, group, RunCondition.OnAnyTerminalStatus);
+        AddChild(group, Job("SuccessGrouped", async (ct, _, _) =>
+        {
+            groupedEntered.TrySetResult();
+            await releaseGrouped.Task.WaitAsync(ct);
+        }), RunCondition.GroupOnSuccess);
+        AddChild(group, Job("FailureGrouped", (_, _, _) =>
+        {
+            Interlocked.Increment(ref failureGroupedCalls);
+            return Task.CompletedTask;
+        }), RunCondition.GroupOnFailure);
+        AddChild(group, Job("Final", (_, _, _) =>
+        {
+            Interlocked.Increment(ref finalCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnSuccess);
+
+        try
+        {
+            await rig.Dispatcher.DispatchAsync([root]);
+            await groupedEntered.Task.WaitAsync(TestTimeout);
+            Assert.Equal(0, finalCalls);
+            Assert.Equal(0, failureGroupedCalls);
+            Assert.Equal(TickerStatus.InProgress, group.Status);
+        }
+        finally
+        {
+            releaseGrouped.TrySetResult();
+        }
+
+        await rig.AssertDrainedAsync();
+        Assert.Equal(0, failureGroupedCalls);
+        Assert.Equal(1, finalCalls);
+        Assert.Equal(TickerStatus.Done, group.Status);
+    }
+
+    [Fact]
+    public async Task ParallelGroup_PassesUpstreamResultToBranchesAndJoin()
+    {
+        await using var rig = new ExecutionRig(3, configure: options => options.MaxConcurrentChainSteps = 4);
+        var root = Job("Root", NoOp);
+        var group = Job(TickerChainInfrastructure.ParallelGroupFunction,
+            TickerChainInfrastructure.ParallelGroupDelegate);
+        var upstream = new TickerResultEnvelope(
+            [0x7b, 0x7d], TickerResultEnvelope.CurrentVersion, "application/json");
+        TickerResultEnvelope branchResult = null;
+        TickerResultEnvelope joinResult = null;
+
+        rig.Manager.GetParentResultAsync(root.TickerId, TickerType.TimeTicker, Arg.Any<CancellationToken>())
+            .Returns(upstream);
+        AddChild(root, group, RunCondition.OnSuccess);
+        AddChild(group, Job("Branch", (_, _, context) =>
+        {
+            branchResult = context.ParentResultEnvelope;
+            return Task.CompletedTask;
+        }), RunCondition.InProgress);
+        AddChild(group, Job("Join", (_, _, context) =>
+        {
+            joinResult = context.ParentResultEnvelope;
+            return Task.CompletedTask;
+        }), RunCondition.OnSuccess);
+
+        await rig.Dispatcher.DispatchAsync([root]);
+        await rig.AssertDrainedAsync();
+
+        Assert.Same(upstream, branchResult);
+        Assert.Same(upstream, joinResult);
+    }
+
+    [Fact]
+    public async Task ParallelGroup_FailureRunsFailureAndFinallyContinuations()
+    {
+        await using var rig = new ExecutionRig(4, configure: options => options.MaxConcurrentChainSteps = 6);
+        var successJoinCalls = 0;
+        var failureJoinCalls = 0;
+        var failedOrCancelledCalls = 0;
+        var finallyCalls = 0;
+        var siblingEntered = Signal();
+        var releaseSibling = Signal();
+        var root = Job("Root", NoOp);
+        var group = Job(TickerChainInfrastructure.ParallelGroupFunction,
+            TickerChainInfrastructure.ParallelGroupDelegate);
+
+        AddChild(root, group, RunCondition.OnSuccess);
+        AddChild(group, Job("SucceededBranch", async (ct, _, _) =>
+        {
+            siblingEntered.TrySetResult();
+            await releaseSibling.Task.WaitAsync(ct);
+        }), RunCondition.InProgress);
+        AddChild(group, Job("FailedBranch", (_, _, _) =>
+            throw new InvalidOperationException("branch failed")), RunCondition.InProgress);
+        AddChild(group, Job("SuccessJoin", (_, _, _) =>
+        {
+            Interlocked.Increment(ref successJoinCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnSuccess);
+        AddChild(group, Job("FailureJoin", (_, _, _) =>
+        {
+            Interlocked.Increment(ref failureJoinCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnFailure);
+        AddChild(group, Job("FailureOrCancelledJoin", (_, _, _) =>
+        {
+            Interlocked.Increment(ref failedOrCancelledCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnFailureOrCancelled);
+        AddChild(group, Job("FinallyJoin", (_, _, _) =>
+        {
+            Interlocked.Increment(ref finallyCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnAnyTerminalStatus);
+
+        try
+        {
+            await rig.Dispatcher.DispatchAsync([root]);
+            await siblingEntered.Task.WaitAsync(TestTimeout);
+            await WaitUntilAsync(() => group.TimeTickerChildren
+                .Any(child => child.FunctionName == "FailedBranch" && child.Status == TickerStatus.Failed));
+            Assert.Equal(0, failureJoinCalls);
+            Assert.Equal(0, failedOrCancelledCalls);
+            Assert.Equal(0, finallyCalls);
+        }
+        finally { releaseSibling.TrySetResult(); }
+        await rig.AssertDrainedAsync();
+
+        Assert.Equal(TickerStatus.Failed, group.Status);
+        Assert.Equal(0, successJoinCalls);
+        Assert.Equal(1, failureJoinCalls);
+        Assert.Equal(1, failedOrCancelledCalls);
+        Assert.Equal(1, finallyCalls);
+    }
+
+    [Fact]
+    public async Task ChainRetryFromGroupedBranch_ReusesSettledSiblingAndReevaluatesDownstreamJoins()
+    {
+        await using var rig = new ExecutionRig(4, configure: options => options.MaxConcurrentChainSteps = 6);
+        var rootCalls = 0;
+        var selectedCalls = 0;
+        var siblingCalls = 0;
+        var successJoinCalls = 0;
+        var failureJoinCalls = 0;
+
+        var root = Job("Root", (_, _, _) =>
+        {
+            Interlocked.Increment(ref rootCalls);
+            return Task.CompletedTask;
+        });
+        root.Status = TickerStatus.InProgress;
+        root.IsChainRetryPassThrough = true;
+        root.IsChainRetryCoordinator = true;
+        root.ChainRetryPreviousStatus = TickerStatus.Done;
+
+        var group = Job(TickerChainInfrastructure.ParallelGroupFunction,
+            TickerChainInfrastructure.ParallelGroupDelegate);
+        group.Status = TickerStatus.Idle;
+        AddChild(root, group, RunCondition.InProgress);
+
+        var selected = Job("SelectedBranch", (_, _, _) =>
+        {
+            Interlocked.Increment(ref selectedCalls);
+            return Task.CompletedTask;
+        });
+        AddChild(group, selected, RunCondition.InProgress);
+
+        var sibling = Job("SettledSibling", (_, _, _) =>
+        {
+            Interlocked.Increment(ref siblingCalls);
+            return Task.CompletedTask;
+        });
+        sibling.Status = TickerStatus.Done;
+        sibling.IsChainRetryReusedTerminal = true;
+        AddChild(group, sibling, RunCondition.GroupOnSuccess);
+
+        var successJoin = Job("SuccessJoin", (_, _, _) =>
+        {
+            Interlocked.Increment(ref successJoinCalls);
+            return Task.CompletedTask;
+        });
+        AddChild(group, successJoin, RunCondition.OnSuccess);
+        AddChild(group, Job("FailureJoin", (_, _, _) =>
+        {
+            Interlocked.Increment(ref failureJoinCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnFailure);
+
+        await rig.Dispatcher.DispatchAsync([root]);
+        await rig.AssertDrainedAsync();
+
+        Assert.Equal(0, rootCalls);
+        Assert.Equal(1, selectedCalls);
+        Assert.Equal(0, siblingCalls);
+        Assert.Equal(1, successJoinCalls);
+        Assert.Equal(0, failureJoinCalls);
+        Assert.Equal(TickerStatus.Done, group.Status);
+        Assert.Equal(TickerStatus.Done, root.Status);
+    }
+
+    [Fact]
+    public async Task ChainRetryFromGroupOutcome_LeavesSettledGroupAsPassThrough()
+    {
+        await using var rig = new ExecutionRig(3, configure: options => options.MaxConcurrentChainSteps = 4);
+        var selectedCalls = 0;
+        var root = Job("CompletedAncestor", NoOp);
+        root.Status = TickerStatus.InProgress;
+        root.IsChainRetryPassThrough = true;
+        root.IsChainRetryCoordinator = true;
+        root.ChainRetryPreviousStatus = TickerStatus.Failed;
+
+        var group = Job(TickerChainInfrastructure.ParallelGroupFunction,
+            TickerChainInfrastructure.ParallelGroupDelegate);
+        group.Status = TickerStatus.Failed;
+        group.IsChainRetryPassThrough = true;
+        AddChild(root, group, RunCondition.InProgress);
+
+        var selected = Job("SelectedOutcome", (_, _, _) =>
+        {
+            Interlocked.Increment(ref selectedCalls);
+            return Task.CompletedTask;
+        });
+        AddChild(group, selected, RunCondition.InProgress);
+
+        await rig.Dispatcher.DispatchAsync([root]);
+        await rig.AssertDrainedAsync();
+
+        Assert.Equal(1, selectedCalls);
+        Assert.Equal(TickerStatus.Done, selected.Status);
+        Assert.Equal(TickerStatus.Failed, group.Status);
+        Assert.Equal(TickerStatus.Done, root.Status);
+    }
+
+    [Fact]
+    public async Task ChainRetryFromMiddle_ReevaluatesEveryDownstreamConditionFromNewOutcome()
+    {
+        await using var rig = new ExecutionRig(3);
+        var rootCalls = 0;
+        var failurePathCalls = 0;
+        var successPathCalls = 0;
+        var root = Job("CompletedAncestor", (_, _, _) =>
+        {
+            Interlocked.Increment(ref rootCalls);
+            return Task.CompletedTask;
+        });
+        root.Status = TickerStatus.InProgress;
+        root.IsChainRetryPassThrough = true;
+        root.IsChainRetryCoordinator = true;
+        root.ChainRetryPreviousStatus = TickerStatus.Done;
+
+        var selected = Job("RetriedStep", (_, _, _) =>
+            throw new InvalidOperationException("retry failed"));
+        AddChild(root, selected, RunCondition.InProgress);
+        AddChild(selected, Job("FailurePath", (_, _, _) =>
+        {
+            Interlocked.Increment(ref failurePathCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnFailure);
+        AddChild(selected, Job("SuccessPath", (_, _, _) =>
+        {
+            Interlocked.Increment(ref successPathCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnSuccess);
+
+        await rig.Dispatcher.DispatchAsync([root]);
+        await rig.AssertDrainedAsync();
+
+        Assert.Equal(0, rootCalls);
+        Assert.Equal(1, failurePathCalls);
+        Assert.Equal(0, successPathCalls);
+        Assert.Equal(TickerStatus.Failed, selected.Status);
+        Assert.Equal(TickerStatus.Failed, root.Status);
+    }
+
+    [Fact]
+    public async Task ChainRetryGroup_WithNoMatchingBranch_PreservesPreviousUpstreamOutcome()
+    {
+        await using var rig = new ExecutionRig(3);
+        var branchCalls = 0;
+        var failureJoinCalls = 0;
+        var root = Job("CompletedAncestor", NoOp);
+        root.Status = TickerStatus.InProgress;
+        root.IsChainRetryPassThrough = true;
+        root.IsChainRetryCoordinator = true;
+        root.ChainRetryPreviousStatus = TickerStatus.Failed;
+
+        var group = Job(TickerChainInfrastructure.ParallelGroupFunction,
+            TickerChainInfrastructure.ParallelGroupDelegate);
+        AddChild(root, group, RunCondition.InProgress);
+        AddChild(group, Job("SuccessOnlyBranch", (_, _, _) =>
+        {
+            Interlocked.Increment(ref branchCalls);
+            return Task.CompletedTask;
+        }), RunCondition.GroupOnSuccess);
+        AddChild(group, Job("FailureJoin", (_, _, _) =>
+        {
+            Interlocked.Increment(ref failureJoinCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnFailure);
+
+        await rig.Dispatcher.DispatchAsync([root]);
+        await rig.AssertDrainedAsync();
+
+        Assert.Equal(0, branchCalls);
+        Assert.Equal(1, failureJoinCalls);
+        Assert.Equal(TickerStatus.Failed, group.Status);
+        Assert.Equal(TickerStatus.Failed, root.Status);
+    }
+
+    [Theory]
+    [InlineData(TickerStatus.Cancelled)]
+    [InlineData(TickerStatus.Skipped)]
+    public async Task ParallelGroup_FinallyRunsForCancelledAndSkippedBranches(TickerStatus branchStatus)
+    {
+        await using var rig = new ExecutionRig(3, configure: options => options.MaxConcurrentChainSteps = 4);
+        var finallyCalls = 0;
+        var failureCalls = 0;
+        var root = Job("Root", NoOp);
+        var group = Job(TickerChainInfrastructure.ParallelGroupFunction,
+            TickerChainInfrastructure.ParallelGroupDelegate);
+        var branch = Job("TerminalBranch", (_, _, _) =>
+        {
+            if (branchStatus == TickerStatus.Cancelled)
+                throw new TaskCanceledException("cancelled");
+            throw new TerminateExecutionException("skipped");
+        });
+
+        AddChild(root, group, RunCondition.OnSuccess);
+        AddChild(group, branch, RunCondition.InProgress);
+        AddChild(group, Job("FailureOrCancelled", (_, _, _) =>
+        {
+            Interlocked.Increment(ref failureCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnFailureOrCancelled);
+        AddChild(group, Job("Finally", (_, _, _) =>
+        {
+            Interlocked.Increment(ref finallyCalls);
+            return Task.CompletedTask;
+        }), RunCondition.OnAnyTerminalStatus);
+
+        await rig.Dispatcher.DispatchAsync([root]);
+        await rig.AssertDrainedAsync();
+
+        Assert.Equal(branchStatus, group.Status);
+        Assert.Equal(branchStatus == TickerStatus.Cancelled ? 1 : 0, failureCalls);
+        Assert.Equal(1, finallyCalls);
+    }
+
+    [Fact]
+    public async Task ParallelGroup_CancelledExecutionToken_StillPersistsUnmatchedFinalJobsAsSkipped()
+    {
+        await using var rig = new ExecutionRig(3, useAcquiredQueue: false,
+            configure: options => options.MaxConcurrentChainSteps = 4);
+        using var execution = new CancellationTokenSource();
+        var root = Job("Root", NoOp);
+        var group = Job(TickerChainInfrastructure.ParallelGroupFunction,
+            TickerChainInfrastructure.ParallelGroupDelegate);
+        var branch = Job("CancelledBranch", (_, _, _) =>
+        {
+            execution.Cancel();
+            throw new TaskCanceledException("cancelled");
+        });
+        var success = Job("SuccessOnly", NoOp);
+        var failure = Job("FailureOnly", NoOp);
+
+        AddChild(root, group, RunCondition.OnSuccess);
+        AddChild(group, branch, RunCondition.InProgress);
+        AddChild(group, success, RunCondition.OnSuccess);
+        AddChild(group, failure, RunCondition.OnFailure);
+
+        InternalFunctionContext[] persistedSkips = null!;
+        CancellationToken persistedToken = default;
+        rig.Manager.UpdateSkipTimeTickersWithUnifiedContextAsync(
+                Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                persistedSkips = call.ArgAt<InternalFunctionContext[]>(0);
+                persistedToken = call.ArgAt<CancellationToken>(1);
+                foreach (var skipped in persistedSkips)
+                    skipped.Status = TickerStatus.Skipped;
+                return Task.CompletedTask;
+            });
+
+        await rig.Handler.ExecuteTaskAsync(root, isDue: false, execution.Token)
+            .WaitAsync(TestTimeout);
+
+        Assert.Equal(TickerStatus.Cancelled, group.Status);
+        Assert.Equal(TickerStatus.Skipped, success.Status);
+        Assert.Equal(TickerStatus.Skipped, failure.Status);
+        Assert.NotNull(persistedSkips);
+        Assert.Equal(2, persistedSkips.Length);
+        Assert.Contains(persistedSkips, item => item.TickerId == success.TickerId);
+        Assert.Contains(persistedSkips, item => item.TickerId == failure.TickerId);
+        Assert.False(persistedToken.IsCancellationRequested);
+        await rig.Manager.Received(1).UpdateSkipTimeTickersWithUnifiedContextAsync(
+            Arg.Any<InternalFunctionContext[]>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

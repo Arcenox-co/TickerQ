@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.Dashboard.Infrastructure;
 
@@ -96,6 +97,60 @@ internal sealed class AddTimeTickerChainRequest
     public TimeTickerNodeRequest? Root { get; set; }
 }
 
+internal sealed class SavedDefinitionPayload
+{
+    public System.DateTime? ExecutionTime { get; set; }
+    public string? Expression { get; set; }
+    public bool? SkipIfAlreadyRunning { get; set; }
+    public TimeTickerNodeRequest? Root { get; set; }
+}
+
+internal class SaveTickerDefinitionRequest
+{
+    public SavedTickerDefinitionKind Kind { get; set; }
+    public SavedTickerDefinitionTarget Target { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public bool IncludeRequestData { get; set; }
+    public SavedDefinitionPayload? Payload { get; set; }
+}
+
+internal sealed class UpdateTickerDefinitionRequest : SaveTickerDefinitionRequest
+{
+    public long Version { get; set; }
+}
+
+internal sealed class SaveExistingTickerDefinitionRequest
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public bool IncludeRequestData { get; set; }
+}
+
+internal sealed class ActivateTickerDraftRequest
+{
+    public long Version { get; set; }
+    public System.DateTime? ExecutionTime { get; set; }
+}
+
+internal sealed class SavedTickerDefinitionResponse
+{
+    public System.Guid Id { get; set; }
+    public SavedTickerDefinitionKind Kind { get; set; }
+    public SavedTickerDefinitionTarget Target { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public bool IncludesRequestData { get; set; }
+    public int SchemaVersion { get; set; }
+    public System.DateTime CreatedAtUtc { get; set; }
+    public System.DateTime UpdatedAtUtc { get; set; }
+    public long Version { get; set; }
+    public System.Guid? ActivatedRootTickerId { get; set; }
+    public System.DateTime? ActivatedAtUtc { get; set; }
+    public bool ActivationInProgress { get; set; }
+    public SavedDefinitionPayload? Payload { get; set; }
+}
+
 internal sealed class BulkIdsRequest
 {
     public List<System.Guid> Ids { get; set; } = new();
@@ -112,6 +167,61 @@ internal sealed class BulkRetryItem
     /// <summary>"TimeTicker" | "CronOccurrence".</summary>
     public string Type { get; set; } = string.Empty;
     public System.Guid? CronTickerId { get; set; }
+}
+
+internal sealed class TestRunRequest
+{
+    public string Function { get; set; } = string.Empty;
+    public byte[]? Request { get; set; }
+    public int? TimeoutSeconds { get; set; }
+}
+
+internal sealed class TestRunResponse
+{
+    public System.Guid ExecutionId { get; set; }
+    public TickerStatus Status { get; set; }
+    public bool Success { get; set; }
+    public string? Error { get; set; }
+    public long ElapsedMilliseconds { get; set; }
+    public byte[]? Result { get; set; }
+    public string? ResultMediaType { get; set; }
+    public string? ResultContractId { get; set; }
+}
+
+internal sealed class TestRunChainResponse
+{
+    public System.Guid RootExecutionId { get; set; }
+    public bool Success { get; set; }
+    public bool Completed { get; set; }
+    public System.DateTime StartedAtUtc { get; set; }
+    public System.DateTime? FinishedAtUtc { get; set; }
+    public string? Error { get; set; }
+    public List<TestRunChainStepResponse> Steps { get; set; } = new();
+}
+
+internal sealed class TestRunChainStepResponse
+{
+    public System.Guid ExecutionId { get; set; }
+    public System.Guid? ParentExecutionId { get; set; }
+    public string Function { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public TickerStatus Status { get; set; }
+    public RunCondition? RunCondition { get; set; }
+    public TickerTaskPriority Priority { get; set; }
+    public int Retries { get; set; }
+    public int RetryCount { get; set; }
+    public System.DateTime CreatedAtUtc { get; set; }
+    public System.DateTime? ExecutedAtUtc { get; set; }
+    public System.DateTime? ProgressUpdatedAtUtc { get; set; }
+    public int ChildCount { get; set; }
+    public string? Error { get; set; }
+    public long ElapsedMilliseconds { get; set; }
+    public double? ProgressPercent { get; set; }
+    public string? ProgressMessage { get; set; }
+    public byte[]? Result { get; set; }
+    public string? ResultMediaType { get; set; }
+    public string? ResultContractId { get; set; }
+    public bool IsGroup { get; set; }
 }
 
 // ===== Response shapes =====
@@ -158,6 +268,15 @@ internal sealed class NodeJobCountResponseBody
 internal sealed class TickerRequestPayloadResponse
 {
     public byte[]? Payload { get; set; }
+}
+
+internal sealed class TickerResultPayloadResponse
+{
+    public byte[]? Payload { get; set; }
+    public int? Version { get; set; }
+    public string? MediaType { get; set; }
+    public string? ContractId { get; set; }
+    public string? ContractType { get; set; }
 }
 
 internal sealed class TickerLogLineResponse

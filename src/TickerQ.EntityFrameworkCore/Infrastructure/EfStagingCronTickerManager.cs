@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Managers;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure;
@@ -20,6 +21,8 @@ internal sealed class EfStagingCronTickerManager<TCronTicker>(
         => stage(entity, cancellationToken);
     public Task<TickerResult<TCronTicker>> AddAsync(TCronTicker entity, CancellationToken cancellationToken = default)
         => inner.AddAsync(entity, cancellationToken);
+    public Task<TickerResult<TCronTicker>> AddChainAsync(Action<CronTickerChainBuilder<TCronTicker>> configure, CancellationToken cancellationToken = default)
+        => inner.AddChainAsync(configure, cancellationToken);
     public Task<TickerResult<TCronTicker>> UpdateAsync(TCronTicker entity, CancellationToken cancellationToken = default)
         => inner.UpdateAsync(entity, cancellationToken);
     public Task<TickerResult<TCronTicker>> DeleteAsync(Guid id, CancellationToken cancellationToken = default)

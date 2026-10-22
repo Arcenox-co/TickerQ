@@ -1,6 +1,7 @@
 using MongoDB.Bson;
 using MongoDB.Driver;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.MongoDB.Infrastructure
 {
@@ -15,5 +16,6 @@ namespace TickerQ.MongoDB.Infrastructure
         IMongoCollection<BsonDocument> TickerResults { get; }
         IMongoCollection<BsonDocument> NodeFinalizations { get; }
         IMongoCollection<BsonDocument> StoreMetadata { get; }
+        IMongoCollection<SavedTickerDefinition> Definitions { get; }
     }
 }

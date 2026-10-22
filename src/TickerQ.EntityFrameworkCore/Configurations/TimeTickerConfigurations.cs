@@ -19,6 +19,9 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
             builder.Property(x => x.LockHolder)
                 .IsRequired(false);
+            builder.Property(x => x.ProgressMessage)
+                .HasMaxLength(500)
+                .IsRequired(false);
 
             builder.Property(x => x.AcquisitionToken)
                 .IsRequired(false);
@@ -26,6 +29,10 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             builder.Property(x => x.ChainRootId)
                 .IsRequired(false);
             builder.Property(x => x.ChainGeneration)
+                .IsRequired(false);
+            builder.Property(x => x.ChainRetryFromId)
+                .IsRequired(false);
+            builder.Property(x => x.ChainRetryPreviousStatus)
                 .IsRequired(false);
             builder.HasIndex(x => new { x.ApplicationNamespaceKey, x.ChainRootId })
                 .HasDatabaseName("IX_TimeTicker_ChainRootId");

@@ -33,6 +33,7 @@ public sealed class EfDashboardMetadataTests
         var provider = new TestableProvider(services, clock, new SchedulerOptionsBuilder(), Substitute.For<ITickerQRedisContext>());
         var payload = new byte[1024 * 1024];
         var root = new TimeTickerEntity { Function = "chain", Request = payload, ExecutionTime = DateTime.UtcNow,
+            ProgressPercent = 42.5, ProgressMessage = "Preparing invoices", ProgressUpdatedAt = DateTime.UtcNow,
             Children = [new TimeTickerEntity { Function = "child", Request = payload,
                 Children = [new TimeTickerEntity { Function = "leaf", Request = payload }] }] };
         await provider.AddTimeTickers([root, new TimeTickerEntity { Function = "single", Request = payload }], CancellationToken.None);
@@ -42,6 +43,7 @@ public sealed class EfDashboardMetadataTests
         {
             Id = Guid.NewGuid(), CronTickerId = cron.Id, Status = TickerStatus.Done,
             ExecutionTime = DateTime.UtcNow, ExecutedAt = DateTime.UtcNow,
+            ProgressPercent = 67.5, ProgressMessage = "Uploading report", ProgressUpdatedAt = DateTime.UtcNow,
         });
         db.Add(new TimeTickerEntity { Function = "foreign", ApplicationNamespaceKey = "other", Request = payload });
         await db.SaveChangesAsync();
@@ -54,6 +56,9 @@ public sealed class EfDashboardMetadataTests
         Assert.Equal(1, chains.TotalCount);
         Assert.Equal(1, item.ChildCount);
         Assert.Equal(3, item.ChainSummary.TotalCount);
+        Assert.Equal(42.5, item.ProgressPercent);
+        Assert.Equal("Preparing invoices", item.ProgressMessage);
+        Assert.NotNull(item.ProgressUpdatedAt);
         var singles = await dashboard.GetTimeTickersFlatAsync(new TimeTickerQueryFilter { HasChildren = false });
         Assert.Equal("single", Assert.Single(singles.Items).FunctionName);
         Assert.Equal(1, singles.TotalCount);
@@ -65,6 +70,11 @@ public sealed class EfDashboardMetadataTests
         Assert.Equal(1, schedule.OccurrenceCount);
         Assert.Equal(TickerStatus.Done, schedule.LastRunStatus);
         Assert.Equal(3, schedule.Retries);
+        var occurrence = Assert.Single((await dashboard.GetCronOccurrencesFlatAsync(
+            cron.Id, new CronOccurrenceQueryFilter())).Items);
+        Assert.Equal(67.5, occurrence.ProgressPercent);
+        Assert.Equal("Uploading report", occurrence.ProgressMessage);
+        Assert.NotNull(occurrence.ProgressUpdatedAt);
         Assert.NotEmpty(capture.Commands);
         Assert.All(capture.Commands, sql => Assert.DoesNotContain("\"Request\"", sql));
         capture.Commands.Clear();

@@ -6,6 +6,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Managers;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.EntityFrameworkCore.Infrastructure;
@@ -23,6 +24,8 @@ internal sealed class EfStagingTimeTickerManager<TTimeTicker>(
         => stage(entity, cancellationToken);
     public Task<TickerResult<TTimeTicker>> AddAsync(TTimeTicker entity, CancellationToken cancellationToken = default)
         => inner.AddAsync(entity, cancellationToken);
+    public Task<TickerResult<TTimeTicker>> AddChainAsync(Action<TimeTickerChainBuilder<TTimeTicker>> configure, CancellationToken cancellationToken = default)
+        => inner.AddChainAsync(configure, cancellationToken);
     public Task<TickerResult<TTimeTicker>> AddOnceAsync(string initIdentifier, TTimeTicker entity, CancellationToken cancellationToken = default)
         => inner.AddOnceAsync(initIdentifier, entity, cancellationToken);
     public Task<TickerResult<TTimeTicker>> UpdateAsync(TTimeTicker entity, CancellationToken cancellationToken = default)

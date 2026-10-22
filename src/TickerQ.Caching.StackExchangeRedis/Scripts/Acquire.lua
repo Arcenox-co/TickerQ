@@ -63,6 +63,12 @@ obj['Status'] = tonumber(ARGV[3])
 obj['status'] = nil
 obj['AcquisitionToken'] = ARGV[7]
 obj['acquisitionToken'] = nil
+obj['ProgressPercent'] = cjson.null
+obj['progressPercent'] = nil
+obj['ProgressMessage'] = cjson.null
+obj['progressMessage'] = nil
+obj['ProgressUpdatedAt'] = cjson.null
+obj['progressUpdatedAt'] = nil
 local rootId = obj['Id'] or obj['id']
 local evidenceKey = KEYS[#KEYS - 1]
 local evidencePrefix = ARGV[9] ~= '' and '1:' or '0:'
@@ -83,6 +89,9 @@ local function fenceChildren(children)
         child['LockHolder'] = ARGV[1]; child['lockHolder'] = nil
         child['LockedAt'] = ARGV[2]; child['lockedAt'] = nil
         child['AcquisitionToken'] = ARGV[7]; child['acquisitionToken'] = nil
+        child['ProgressPercent'] = cjson.null; child['progressPercent'] = nil
+        child['ProgressMessage'] = cjson.null; child['progressMessage'] = nil
+        child['ProgressUpdatedAt'] = cjson.null; child['progressUpdatedAt'] = nil
         if ARGV[9] ~= '' and rootId and rootId ~= cjson.null then
             child['ChainRootId'] = tostring(rootId); child['chainRootId'] = nil
             child['ChainGeneration'] = ARGV[7]; child['chainGeneration'] = nil

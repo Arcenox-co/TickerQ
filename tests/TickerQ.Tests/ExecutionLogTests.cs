@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using TickerQ.BackgroundServices;
 using TickerQ.Utilities;
+using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
@@ -14,6 +15,47 @@ namespace TickerQ.Tests;
 
 public sealed class ExecutionLogTests
 {
+    [Fact]
+    public void Ephemeral_test_tails_remain_readable_but_never_enter_database_flush_queue()
+    {
+        var options = new ExecutionLogOptions { PersistToDatabase = true };
+        var store = new InMemoryTickerExecutionLogStore(options);
+        var id = Guid.NewGuid();
+        var line = Line(id, "test output");
+        line.IsEphemeral = true;
+
+        store.Add(line);
+
+        Assert.True(store.IsEphemeral(id));
+        Assert.Equal("test output", Assert.Single(store.GetTail(id)).Message);
+        Assert.Empty(store.Pending(10));
+        Assert.Equal(0, store.Health.PendingWrites);
+        Assert.Equal(0, store.Health.DroppedUnflushedExecutions);
+    }
+
+    [Fact]
+    public void Ephemeral_created_lifecycle_event_never_enters_database_flush_queue()
+    {
+        var options = new ExecutionLogOptions
+        {
+            PersistToDatabase = true,
+            IncludeLifecycleEvents = true,
+        };
+        var store = new InMemoryTickerExecutionLogStore(options);
+        var clock = Substitute.For<ITickerClock>();
+        clock.UtcNow.Returns(DateTime.UtcNow);
+        var lifecycle = new TickerLifecycleLogger(store, options, clock);
+        var id = Guid.NewGuid();
+
+        lifecycle.Created(id, "Orders.Test", TickerType.TimeTicker, clock.UtcNow,
+            "orders", isEphemeral: true);
+
+        Assert.True(store.IsEphemeral(id));
+        Assert.Single(store.GetTail(id));
+        Assert.Empty(store.Pending(10));
+        Assert.Equal(0, store.Health.PendingWrites);
+    }
+
     [Fact]
     public void Health_counts_only_unsaved_tails_as_dropped()
     {
@@ -143,6 +185,54 @@ public sealed class ExecutionLogTests
             logger.LogError("must not break job");
         }
         Assert.Equal("[redacted]", Assert.Single(store.GetTail(id)).Message);
+    }
+
+    [Fact]
+    public void Ef_database_diagnostics_are_excluded_from_job_logs_by_default()
+    {
+        var options = new ExecutionLogOptions();
+        var store = new InMemoryTickerExecutionLogStore(options);
+        var provider = new TickerExecutionLoggerProvider(store, options);
+        var commandLogger = provider.CreateLogger("Microsoft.EntityFrameworkCore.Database.Command");
+        var transactionLogger = provider.CreateLogger("Microsoft.EntityFrameworkCore.Database.Transaction");
+        var applicationLogger = provider.CreateLogger("Orders.InvoiceJob");
+        var id = Guid.NewGuid();
+
+        using (TickerExecutionLogScope.Push(id, "Orders.InvoiceJob"))
+        {
+            commandLogger.LogInformation("Executed DbCommand SELECT 1");
+            transactionLogger.LogInformation("Began transaction");
+            applicationLogger.LogInformation("Invoice created");
+        }
+
+        var line = Assert.Single(store.GetTail(id));
+        Assert.Equal("Invoice created", line.Message);
+        Assert.Equal("Orders.InvoiceJob", line.Category);
+    }
+
+    [Fact]
+    public void Execution_log_category_filter_can_be_replaced_or_disabled()
+    {
+        var options = new ExecutionLogOptions { ExcludedCategoryPrefixes = ["Orders.Infrastructure"] };
+        var store = new InMemoryTickerExecutionLogStore(options);
+        var provider = new TickerExecutionLoggerProvider(store, options);
+        var infrastructureLogger = provider.CreateLogger("Orders.Infrastructure.Database");
+        var efLogger = provider.CreateLogger("Microsoft.EntityFrameworkCore.Database.Command");
+        var id = Guid.NewGuid();
+
+        using (TickerExecutionLogScope.Push(id, "Orders.InvoiceJob"))
+        {
+            infrastructureLogger.LogInformation("hidden");
+            efLogger.LogInformation("visible after replacing the defaults");
+        }
+
+        Assert.Equal("visible after replacing the defaults", Assert.Single(store.GetTail(id)).Message);
+
+        options.ExcludedCategoryPrefixes = [];
+        using (TickerExecutionLogScope.Push(id, "Orders.InvoiceJob"))
+            infrastructureLogger.LogInformation("visible after disabling the filter");
+
+        Assert.Equal(2, store.GetTail(id).Count);
     }
 
     [Fact]

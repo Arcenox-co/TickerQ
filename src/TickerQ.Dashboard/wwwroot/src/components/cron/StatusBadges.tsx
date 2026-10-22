@@ -1,4 +1,4 @@
-import { GitBranch } from "lucide-react";
+import { GitBranch, LoaderCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   STATUS_CONFIG,
@@ -10,9 +10,12 @@ import {
 export function StatusBadge({
   status,
   className,
+  label,
 }: {
   status: TickerStatus;
   className?: string;
+  /** Optional contextual label without changing the status color or icon. */
+  label?: string;
 }) {
   const c = STATUS_CONFIG[status];
   return (
@@ -24,8 +27,15 @@ export function StatusBadge({
         className
       )}
     >
-      <span className={cn("h-1.5 w-1.5 rounded-full", c.dot)} />
-      {c.label}
+      {status === "InProgress" ? (
+        <LoaderCircle
+          aria-hidden="true"
+          className="h-3 w-3 shrink-0 animate-spin motion-reduce:animate-none"
+        />
+      ) : (
+        <span className={cn("h-1.5 w-1.5 rounded-full", c.dot)} />
+      )}
+      {label ?? c.label}
     </span>
   );
 }

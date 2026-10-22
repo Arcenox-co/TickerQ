@@ -1064,6 +1064,12 @@ namespace TickerQ.Utilities
         {
             try
             {
+                if (context.IsTestRun)
+                    return context.RequestPayload is { Length: > 0 }
+                        ? TickerHelper.ReadTickerRequest<T>(context.RequestPayload)
+                        : default;
+                if (context.RequestPayload is { Length: > 0 })
+                    return TickerHelper.ReadTickerRequest<T>(context.RequestPayload);
                 var internalTickerManager = context.ServiceScope.ServiceProvider.GetService<IInternalTickerManager>();
                 return await internalTickerManager.GetRequestAsync<T>(context.Id, context.Type, cancellationToken);
             }
@@ -1091,6 +1097,12 @@ namespace TickerQ.Utilities
         {
             try
             {
+                if (context.IsTestRun)
+                    return context.RequestPayload is { Length: > 0 }
+                        ? TickerHelper.ReadTickerRequest(context.RequestPayload, typeInfo)
+                        : default;
+                if (context.RequestPayload is { Length: > 0 })
+                    return TickerHelper.ReadTickerRequest(context.RequestPayload, typeInfo);
                 var internalTickerManager = context.ServiceScope.ServiceProvider.GetService<IInternalTickerManager>();
                 return await internalTickerManager.GetRequestAsync(context.Id, context.Type, typeInfo, cancellationToken);
             }

@@ -142,7 +142,7 @@ public sealed class EfCoreDataMigrationPipeline
                 $"TickerQ EF store is missing the schema required by data migration '{requiredMigration}'. " +
                 "Generate and deploy the consumer-owned migration (for example: " +
                 "'dotnet ef migrations add TickerQProfessionalStoreUpgrade' then 'dotnet ef database update'). " +
-                "The migration must include TickerQStoreMetadata, TickerQNodes, TickerQControlCommands, ChainRootId, NodeFinalizationOutbox, " +
+                "The migration must include TickerQStoreMetadata, TickerQNodes, TickerQControlCommands, TickerQDefinitions, ChainRootId, NodeFinalizationOutbox, " +
                 "and the current additive CronTicker columns/indexes.", ex);
         }
     }
@@ -194,6 +194,8 @@ public sealed class EfCoreDataMigrationPipeline
                 typeof(TickerQNodeEntity).GetProperties().Select(x => x.Name).ToArray()),
             Requirement(model.FindEntityType(typeof(TickerQControlCommandEntity)),
                 typeof(TickerQControlCommandEntity).GetProperties().Select(x => x.Name).ToArray()),
+            Requirement(model.FindEntityType(typeof(TickerQDefinitionEntity)),
+                typeof(TickerQDefinitionEntity).GetProperties().Select(x => x.Name).ToArray()),
             Requirement(cron, "SeedKey", "SeedOwnerNamespace", "SeedManifestEpoch", "DefinitionRevision",
                 "SeedLastSeenAt", "RetirementRequestedAt", "RetiredAt", "SeedWasEnabledBeforeRetirement"),
             Requirement(occurrence, "DefinitionRevision"),

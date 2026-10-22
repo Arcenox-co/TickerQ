@@ -1365,6 +1365,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         .SetProperty(x => x.AcquisitionToken, acquisitionToken)
                         .SetProperty(x => x.ChainRootId, timeTicker.Id)
                         .SetProperty(x => x.ChainGeneration, acquisitionToken)
+                        .SetProperty(x => x.ProgressPercent, (double?)null)
+                        .SetProperty(x => x.ProgressMessage, (string)null)
+                        .SetProperty(x => x.ProgressUpdatedAt, (DateTime?)null)
                         .SetProperty(x => x.UpdatedAt, now)
                         .SetProperty(x => x.Status, TickerStatus.Queued), ct).ConfigureAwait(false);
                 if (updatedTicker <= 0) continue;
@@ -1425,6 +1428,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         .SetProperty(x => x.AcquisitionToken, acquisitionToken)
                         .SetProperty(x => x.ChainRootId, timeTicker.Id)
                         .SetProperty(x => x.ChainGeneration, acquisitionToken)
+                        .SetProperty(x => x.ProgressPercent, (double?)null)
+                        .SetProperty(x => x.ProgressMessage, (string)null)
+                        .SetProperty(x => x.ProgressUpdatedAt, (DateTime?)null)
                         .SetProperty(x => x.UpdatedAt, now)
                         .SetProperty(x => x.Status, TickerStatus.InProgress), ct).ConfigureAwait(false);
 
@@ -1532,6 +1538,61 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         if (!releasesToIdle)
             return UpdateTimeTickerInNewSessionAsync(functionContexts, cancellationToken);
         return UpdateTimeTickerWithAdmissionAsync(functionContexts, cancellationToken);
+    }
+
+    public async Task<bool> UpdateExecutionProgressAsync(
+        TickerProgressUpdate update, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var dbContext = session.Context;
+
+        if (update.Type == TickerType.CronTickerOccurrence)
+        {
+            if (!update.AcquisitionToken.HasValue) return false;
+            var changed = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                            x.Id == update.TickerId &&
+                            x.Status == TickerStatus.InProgress &&
+                            x.LockHolder == _lockHolder &&
+                            x.AcquisitionToken == update.AcquisitionToken)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.ProgressPercent, update.Percent)
+                    .SetProperty(x => x.ProgressMessage, update.Message)
+                    .SetProperty(x => x.ProgressUpdatedAt, update.UpdatedAtUtc)
+                    .SetProperty(x => x.UpdatedAt, update.UpdatedAtUtc), cancellationToken)
+                .ConfigureAwait(false);
+            return changed == 1;
+        }
+
+        var query = dbContext.Set<TTimeTicker>()
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                        x.Id == update.TickerId &&
+                        x.Status == TickerStatus.InProgress);
+        if (update.ParentId == null)
+        {
+            if (!update.AcquisitionToken.HasValue) return false;
+            query = query.Where(x => x.ParentId == null && x.LockHolder == _lockHolder &&
+                                     x.AcquisitionToken == update.AcquisitionToken);
+        }
+        else
+        {
+            if (!update.ChainRootId.HasValue || !update.ChainGeneration.HasValue) return false;
+            var rootId = update.ChainRootId.Value;
+            var generation = update.ChainGeneration.Value;
+            query = query.Where(x => x.ParentId != null && x.ChainRootId == rootId &&
+                dbContext.Set<TTimeTicker>().Any(root =>
+                    root.ApplicationNamespaceKey == _runtimePartitionKey &&
+                    root.Id == rootId && root.ParentId == null &&
+                    root.ChainGeneration == generation));
+        }
+
+        var affected = await query.ExecuteUpdateAsync(setters => setters
+                .SetProperty(x => x.ProgressPercent, update.Percent)
+                .SetProperty(x => x.ProgressMessage, update.Message)
+                .SetProperty(x => x.ProgressUpdatedAt, update.UpdatedAtUtc)
+                .SetProperty(x => x.UpdatedAt, update.UpdatedAtUtc), cancellationToken)
+            .ConfigureAwait(false);
+        return affected == 1;
     }
 
     private async Task<int> UpdateTimeTickerWithAdmissionAsync(
@@ -1840,6 +1901,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                     ParentId = e.ParentId,
                     ChainRootId = e.ChainRootId,
                     ChainGeneration = e.ChainGeneration,
+                    Status = e.Status,
                     RequestContractVersion = e.RequestContractVersion,
                     RequestContractFingerprint = e.RequestContractFingerprint,
                 })
@@ -1865,6 +1927,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     {
         node.ChainRootId = rootId;
         node.ChainGeneration = generation;
+        node.ProgressPercent = null;
+        node.ProgressMessage = null;
+        node.ProgressUpdatedAt = null;
         foreach (var child in node.Children ?? [])
             StampQueueGeneration(child, rootId, generation);
     }
@@ -1893,7 +1958,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                                   x.ChainGeneration == null || x.ChainGeneration != generation))
                 .ExecuteUpdateAsync(setter => setter
                     .SetProperty(x => x.ChainRootId, rootId)
-                    .SetProperty(x => x.ChainGeneration, generation), cancellationToken)
+                    .SetProperty(x => x.ChainGeneration, generation)
+                    .SetProperty(x => x.ProgressPercent, (double?)null)
+                    .SetProperty(x => x.ProgressMessage, (string)null)
+                    .SetProperty(x => x.ProgressUpdatedAt, (DateTime?)null), cancellationToken)
                 .ConfigureAwait(false);
         }
     }
@@ -2066,6 +2134,11 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                             .SetProperty(x => x.AcquisitionToken, acquisitionToken)
                             .SetProperty(x => x.ChainRootId, id)
                             .SetProperty(x => x.ChainGeneration, acquisitionToken)
+                            .SetProperty(x => x.ChainRetryFromId, (Guid?)null)
+                            .SetProperty(x => x.ChainRetryPreviousStatus, (TickerStatus?)null)
+                            .SetProperty(x => x.ProgressPercent, (double?)null)
+                            .SetProperty(x => x.ProgressMessage, (string)null)
+                            .SetProperty(x => x.ProgressUpdatedAt, (DateTime?)null)
                             .SetProperty(x => x.Status, TickerStatus.InProgress)
                             .SetProperty(x => x.UpdatedAt, now),
                             ct)
@@ -2137,6 +2210,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                             .SetProperty(x => x.ExecutedAt, (DateTime?)null)
                             .SetProperty(x => x.ElapsedTime, 0L)
                             .SetProperty(x => x.StaleRestartCount, 0)
+                            .SetProperty(x => x.ProgressPercent, (double?)null)
+                            .SetProperty(x => x.ProgressMessage, (string)null)
+                            .SetProperty(x => x.ProgressUpdatedAt, (DateTime?)null)
                             .SetProperty(x => x.UpdatedAt, now), ct)
                         .ConfigureAwait(false);
 
@@ -2164,6 +2240,94 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         result.ChainGeneration!.Value, ct).ConfigureAwait(false);
                     return result;
         }
+    }
+
+    public async Task<TimeTickerChainRetryAcquisition<TTimeTicker>> AcquireTimeTickerChainRetryAsync(
+        Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteTimeTickerGraphMutationAsync(true,
+            (TimeTickerChainRetryAcquisition<TTimeTicker>)null,
+            async (dbContext, ct) =>
+            {
+                var set = dbContext.Set<TTimeTicker>();
+                var selected = await set.SingleOrDefaultAsync(x =>
+                        x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == id, ct)
+                    .ConfigureAwait(false);
+                if (selected == null || !selected.ChainRootId.HasValue) return null;
+
+                var rootId = selected.ChainRootId.Value;
+                var rows = await set.Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                                                (x.Id == rootId || x.ChainRootId == rootId))
+                    .ToListAsync(ct).ConfigureAwait(false);
+                var byId = rows.ToDictionary(x => x.Id);
+                if (!byId.TryGetValue(rootId, out var root) || root.ParentId.HasValue) return null;
+
+                foreach (var row in rows)
+                {
+                    row.Children = new List<TTimeTicker>();
+                    row.Parent = null;
+                }
+                foreach (var row in rows.Where(x => x.ParentId.HasValue))
+                {
+                    if (!byId.TryGetValue(row.ParentId!.Value, out var parent)) return null;
+                    parent.Children.Add(row);
+                    row.Parent = parent;
+                }
+
+                var now = _clock.UtcNow;
+                var plan = TimeTickerChainRetryPlanner.Prepare(
+                    root, id, _lockHolder, executionTime, now, NextLeaseUntil(now));
+                var resetIds = plan.ResetIds.ToArray();
+                if (resetIds.Length > 0)
+                    await dbContext.Set<TimeTickerResultEntity<TTimeTicker>>()
+                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                                    resetIds.Contains(x.TickerId))
+                        .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+                return new TimeTickerChainRetryAcquisition<TTimeTicker>
+                {
+                    Root = plan.Root,
+                    SelectedId = plan.SelectedId,
+                    PreviousRootStatus = plan.PreviousRootStatus
+                };
+            }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> AbortTimeTickerChainRetryAsync(
+        Guid rootId, Guid generation, string reason, DateTime abortedAt,
+        CancellationToken cancellationToken = default)
+    {
+        return await ExecuteTimeTickerGraphMutationAsync(false, false,
+            async (dbContext, ct) =>
+            {
+                var set = dbContext.Set<TTimeTicker>();
+                var rows = await set.Where(x =>
+                        x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                        x.ChainGeneration == generation &&
+                        (x.Id == rootId || x.ChainRootId == rootId))
+                    .ToListAsync(ct).ConfigureAwait(false);
+                var byId = rows.ToDictionary(x => x.Id);
+                if (!byId.TryGetValue(rootId, out var root) || root.ParentId.HasValue)
+                    return false;
+
+                foreach (var row in rows)
+                {
+                    row.Children = new List<TTimeTicker>();
+                    row.Parent = null;
+                }
+                foreach (var row in rows.Where(x => x.ParentId.HasValue))
+                {
+                    if (!byId.TryGetValue(row.ParentId!.Value, out var parent)) return false;
+                    parent.Children.Add(row);
+                    row.Parent = parent;
+                }
+
+                if (!TimeTickerChainRetryPlanner.Abort(
+                        root, generation, reason, abortedAt))
+                    return false;
+                await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
     }
 
     #region Core_Cron_Ticker_Methods
@@ -2659,6 +2823,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         .SetProperty(x => x.LockedAt, now)
                         .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
                         .SetProperty(x => x.AcquisitionToken, acquisitionToken)
+                        .SetProperty(x => x.ProgressPercent, (double?)null)
+                        .SetProperty(x => x.ProgressMessage, (string)null)
+                        .SetProperty(x => x.ProgressUpdatedAt, (DateTime?)null)
                         .SetProperty(x => x.UpdatedAt, now)
                         .SetProperty(x => x.Status, TickerStatus.InProgress), ct)
                     .ConfigureAwait(false);
@@ -2798,6 +2965,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 .SetProperty(x => x.LockHolder, _lockHolder)
                 .SetProperty(x => x.LockedAt, now)
                 .SetProperty(x => x.AcquisitionToken, acquisitionToken)
+                .SetProperty(x => x.ProgressPercent, (double?)null)
+                .SetProperty(x => x.ProgressMessage, (string)null)
+                .SetProperty(x => x.ProgressUpdatedAt, (DateTime?)null)
                 .SetProperty(x => x.UpdatedAt, now)
                 .SetProperty(x => x.Status, TickerStatus.Queued), cancellationToken)
             .ConfigureAwait(false);

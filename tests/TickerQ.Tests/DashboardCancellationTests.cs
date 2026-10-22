@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -27,6 +28,8 @@ public class DashboardCancellationTests : IDisposable
     private readonly ITimeTickerManager<TimeTickerEntity> _manager = Substitute.For<ITimeTickerManager<TimeTickerEntity>>();
     private readonly ITickerDashboardDataService<TimeTickerEntity, CronTickerEntity> _data =
         Substitute.For<ITickerDashboardDataService<TimeTickerEntity, CronTickerEntity>>();
+    private readonly ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity> _persistence =
+        Substitute.For<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
 
     public void Dispose() => TickerCancellationTokenManager.CleanUpTickerCancellationTokens();
 
@@ -87,6 +90,27 @@ public class DashboardCancellationTests : IDisposable
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         await _manager.DidNotReceiveWithAnyArgs().CancelAsync(default, default);
         await _data.DidNotReceiveWithAnyArgs().RequestRunningTickerCancellationAsync(default, default, default);
+    }
+
+    [Fact]
+    public async Task TimeTickerResultEndpoint_ReturnsPersistedEnvelopeAndMetadata()
+    {
+        var id = Guid.NewGuid();
+        var payload = Encoding.UTF8.GetBytes("{\"invoiceId\":42}");
+        _persistence.GetTimeTickerResultAsync(id, Arg.Any<CancellationToken>()).Returns(
+            new TickerResultEnvelope(payload, 1, "application/json", "sha256:result", "InvoiceResult"));
+
+        using var host = await CreateHost();
+        var response = await host.GetTestClient().GetAsync($"/api/dashboard/time-tickers/{id}/result");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("no-store", response.Headers.CacheControl!.ToString());
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(payload, body.GetProperty("payload").GetBytesFromBase64());
+        Assert.Equal(1, body.GetProperty("version").GetInt32());
+        Assert.Equal("application/json", body.GetProperty("mediaType").GetString());
+        Assert.Equal("sha256:result", body.GetProperty("contractId").GetString());
+        Assert.Equal("InvoiceResult", body.GetProperty("contractType").GetString());
     }
 
     [Theory]
@@ -160,6 +184,7 @@ public class DashboardCancellationTests : IDisposable
                 services.AddSingleton(LicenseTestState.Active());
                 services.AddSingleton(_manager);
                 services.AddSingleton(_data);
+                services.AddSingleton(_persistence);
             })
             .Configure(app =>
             {

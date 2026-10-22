@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using TickerQ.Utilities.Instrumentation;
 using System;
 using System.Collections.Generic;
@@ -22,6 +23,27 @@ public class TickerQSchedulerBackgroundServiceTests : IDisposable
     public void Dispose()
     {
         TickerCancellationTokenManager.CleanUpTickerCancellationTokens();
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    public void RestartDecision_IsLoggedOnlyWhenDetailedLoggingIsEnabled(bool enabled, int expectedLogs)
+    {
+        var logger = new RecordingSchedulerLogger();
+        using var service = new TickerQSchedulerBackgroundService(
+            new TickerExecutionContext(),
+            Substitute.For<ITickerExecutionTaskHandler>(),
+            Substitute.For<ITickerQTaskScheduler>(),
+            Substitute.For<IInternalTickerManager>(),
+            new SchedulerOptionsBuilder { DetailedLoggingEnabled = enabled },
+            LicenseTestState.Active(), logger);
+
+        service.RestartIfNeeded(DateTime.UtcNow);
+
+        Assert.Equal(expectedLogs, logger.Entries.Count);
+        if (enabled)
+            Assert.Contains("restart requested", logger.Entries[0].Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -636,5 +658,15 @@ public class TickerQSchedulerBackgroundServiceTests : IDisposable
         }
 
         return null;
+    }
+
+    private sealed class RecordingSchedulerLogger : ILogger<TickerQSchedulerBackgroundService>
+    {
+        internal List<(LogLevel Level, string Message)> Entries { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, formatter(state, exception)));
     }
 }

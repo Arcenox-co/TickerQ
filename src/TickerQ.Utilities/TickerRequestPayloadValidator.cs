@@ -2,6 +2,7 @@ using System;
 using System.Text.Json;
 using TickerQ.Utilities.Models;
 using TickerQ.Utilities.Serialization;
+using TickerQ.Utilities.Infrastructure;
 
 namespace TickerQ.Utilities
 {
@@ -51,6 +52,20 @@ namespace TickerQ.Utilities
                 throw new ArgumentNullException(nameof(snapshot));
             if (functionName == null)
                 throw new ArgumentNullException(nameof(functionName));
+
+            if (TickerChainInfrastructure.IsParallelGroup(functionName))
+            {
+                if (payload != null && payload.Length > 0)
+                    return TickerRequestValidationResult.Invalid(
+                        functionName, TickerRequestSchemaValidationState.NotApplicable,
+                        new TickerRequestValidationError(
+                            TickerRequestValidationErrorCode.PayloadNotAllowed,
+                            "A parallel chain group cannot carry a request payload."));
+
+                return TickerRequestValidationResult.Valid(
+                    functionName, null, TickerRequestSchemaValidationState.NotApplicable,
+                    acceptedContractVersion: 1);
+            }
 
             if (!snapshot.Descriptors.TryGetValue(functionName, out var descriptor))
                 return TickerRequestValidationResult.Invalid(

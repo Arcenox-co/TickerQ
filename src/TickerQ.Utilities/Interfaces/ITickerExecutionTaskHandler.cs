@@ -26,6 +26,16 @@ namespace TickerQ.Utilities.Interfaces
                 "This execution handler does not support the worker-only execution primitive."));
 
         /// <summary>
+        /// Executes an in-memory test graph using normal chain conditions, retries, timeouts and
+        /// parent-result propagation. No ticker, progress, result or execution-log rows are written.
+        /// The supplied contexts are updated in place so the caller can present each step outcome.
+        /// </summary>
+        Task ExecuteTestChainAsync(
+            InternalFunctionContext context, CancellationToken cancellationToken = default)
+            => Task.FromException(new NotSupportedException(
+                "This execution handler does not support ephemeral chain tests."));
+
+        /// <summary>
         /// Overload for callers that registered the ticker with the cancellation manager at
         /// acquisition time (the caller owns removal/disposal of <paramref name="registeredSource"/>).
         /// The built-in handler reuses the supplied source for the root execution instead of

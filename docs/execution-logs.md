@@ -4,6 +4,8 @@ TickerQ captures `ILogger` messages emitted inside a ticker function's execution
 Capture is enabled by default; database persistence is **off by default**. Console output,
 host startup logs, and structured logger scopes are not captured. Normal host logging
 filters also apply. The default minimum captured level is `Information`.
+EF Core database categories are excluded by default, so SQL commands, connections, and
+transactions produced inside a job do not crowd out its application messages.
 
 ## Scheduler lifecycle entries
 
@@ -48,6 +50,12 @@ services.AddTickerQ(options =>
         logs.MaxStoredExecutions = 5000;
         logs.MaxLinesPerExecution = 200;
         logs.MaxBytesPerExecution = 32 * 1024;
+        // Add application infrastructure categories that should stay out of job logs.
+        logs.ExcludedCategoryPrefixes =
+        [
+            "Microsoft.EntityFrameworkCore.Database",
+            "Orders.Infrastructure"
+        ];
     });
 });
 ```
@@ -106,6 +114,7 @@ tail. Keep centralized application logging if you need complete history.
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `MinimumLevel` | Information | Excludes Debug and Trace unless explicitly enabled |
+| `ExcludedCategoryPrefixes` | `Microsoft.EntityFrameworkCore.Database` | Excludes matching logger categories from job capture |
 | `MaxLinesPerExecution` | 200 | Keeps the latest lines per ticker |
 | `MaxMessageBytes` | 2 KiB | Clips each message at a UTF-8 boundary |
 | `MaxBytesPerExecution` | 32 KiB | Caps the encoded tail before GZip compression |
@@ -143,6 +152,12 @@ The dashboard reads the shared store plus its local buffer. It shows storage mod
 truncation and storage-read failures, and provides a manual refresh. It polls visible
 active tails and briefly refreshes after completion to catch buffered writes; longer
 flush delays may require a manual refresh. A collapsed log panel stops tail polling.
+Failed and cancelled executions also show a collapsed **Exception details** section.
+When symbols are available, it includes the exception type, method, source filename,
+source line, and a bounded application stack trace. Generated dispatch and TickerQ scheduler
+frames are removed, as are server directory paths. Source lines
+require PDB files to be deployed with the application. Existing rows that only contain a
+message and stack trace remain readable.
 The About page shows the configured limits. Existing dashboard authentication and
 authorization protect the endpoint; responses use `Cache-Control: no-store`.
 
@@ -151,6 +166,25 @@ redaction, set `logs.Redact` to a thread-safe `Func<string, string>` before star
 runs on the formatted message before either memory or database storage. If it throws,
 that line is dropped so diagnostics cannot fail the job. Category and function names
 are retained (bounded to 256 UTF-8 bytes each); redaction is not automatic secret detection.
+
+## Detailed host logging
+
+For scheduler troubleshooting, enable additional operational logs through the main TickerQ
+registration:
+
+```csharp
+services.AddTickerQ(options =>
+{
+    options.EnableDetailedLogging();
+});
+```
+
+This emits scheduler acquisition decisions, queue publication, overdue recovery, and restart
+reasons through the application's normal `ILogger` pipeline. It is disabled by default and
+does not include request payloads, result payloads, SQL commands, or integration secrets.
+Use the normal ASP.NET Core logging configuration to route or filter the `TickerQ` categories.
+Detailed host logging is separate from per-job execution-log capture and does not consume a
+job's bounded dashboard log tail.
 
 ## Local example
 

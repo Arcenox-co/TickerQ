@@ -1,7 +1,7 @@
 import { ExecutionStatus } from "./ExecutionStatus";
 import { isChainActive } from "@/lib/cron/chain-summary";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Copy, Pencil, Play, X } from "lucide-react";
+import { ArrowLeft, Copy, LayoutTemplate, Pencil, Play, RotateCcw, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { ResizableSidePanel } from "@/components/cron/ResizableSidePanel";
@@ -10,16 +10,20 @@ import { ChainLogsPanel } from "@/components/cron/ChainLogsPanel";
 import { PayloadPreview } from "@/components/cron/PayloadPreview";
 import { EditTimeTickerFields } from "@/components/cron/EditTimeTickerFields";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
+import { SaveDefinitionDialog } from "@/components/cron/SaveDefinitionDialog";
 import { CancelTickerButton } from "@/components/cron/CancelTickerButton";
 import { LockHolder } from "@/components/cron/LockHolder";
 import { ChainDeleteBehaviorControl } from "@/components/cron/ChainDeleteBehaviorControl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { nowAsDatetimeLocal } from "@/components/form-fields/datetime-field";
+import { findDuplicateTemplateName } from "@/lib/cron/saved-definitions";
 import {
   useDuplicateTimeTicker,
   useRunTimeTicker,
   useTimeTicker,
+  useSaveExistingTickerAsTemplate,
+  useDefinitions,
 } from "@/services/hooks";
 import { formatDuration, relativeTime } from "@/lib/cron/format";
 import { isReadOnly } from "@/lib/runtime-config";
@@ -45,10 +49,14 @@ export function TimeTickerDetailPanel({
 }) {
   const [tab, setTab] = useState<"logs" | "edit">("logs");
   const [confirmDup, setConfirmDup] = useState(false);
+  const [confirmRerun, setConfirmRerun] = useState(false);
   const [dupTime, setDupTime] = useState("");
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const readOnly = isReadOnly();
   const runM = useRunTimeTicker();
   const dupM = useDuplicateTimeTicker();
+  const saveTemplateM = useSaveExistingTickerAsTemplate();
+  const templateDefinitions = useDefinitions("Template", "TimeTicker");
 
   // The `ticker` prop is a snapshot of the list row from when the panel was
   // opened. Poll the single-ticker endpoint while the run is still active so
@@ -91,6 +99,18 @@ export function TimeTickerDetailPanel({
       onChanged();
     } catch (err) {
       toast.error("Failed to run", { description: errMsg(err) });
+    }
+  }
+  async function handleRerun() {
+    try {
+      await runM.mutateAsync(t.id);
+      setConfirmRerun(false);
+      toast.success("Ticker re-run started", {
+        description: "The existing ticker record and ID are being reused.",
+      });
+      onChanged();
+    } catch (err) {
+      toast.error("Failed to re-run", { description: errMsg(err) });
     }
   }
   async function handleDuplicate() {
@@ -152,6 +172,17 @@ export function TimeTickerDetailPanel({
         {/* Actions */}
         {!readOnly && (
         <div className="px-5 py-3 border-b border-border flex items-center gap-2">
+          {isChain && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => setSaveTemplateOpen(true)}
+            >
+              <LayoutTemplate className="h-3 w-3 mr-1" />
+              Save template
+            </Button>
+          )}
           {!isRunning &&
             (isPending ? (
               <Button
@@ -165,8 +196,21 @@ export function TimeTickerDetailPanel({
                 Run now
               </Button>
             ) : (
+              <>
+              {!isChain && (
+                <Button
+                  variant="gradient"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={runM.isPending}
+                  onClick={() => setConfirmRerun(true)}
+                >
+                  <RotateCcw className="h-3 w-3 mr-1" />
+                  Re-run
+                </Button>
+              )}
               <Button
-                variant="gradient"
+                variant="outline"
                 size="sm"
                 className="h-7 text-xs"
                 onClick={() => {
@@ -177,6 +221,7 @@ export function TimeTickerDetailPanel({
                 <Copy className="h-3 w-3 mr-1" />
                 Duplicate
               </Button>
+              </>
             ))}
           <CancelTickerButton id={t.id} status={t.status} hasChildren={isChain} onChanged={onChanged} />
         </div>
@@ -200,6 +245,21 @@ export function TimeTickerDetailPanel({
             </div>
           )}
         </div>
+
+        {t.progressPercent != null && (
+          <div className="border-b border-border px-5 py-3">
+            <div className="mb-1.5 flex items-center justify-between gap-3 text-[11px]">
+              <span className="truncate text-muted-foreground">{t.progressMessage || "Job progress"}</span>
+              <span className="shrink-0 font-medium tabular-nums">{Math.round(t.progressPercent)}%</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-surface-2">
+              <div
+                className="h-full rounded-full bg-primary transition-[width] duration-300"
+                style={{ width: `${Math.max(0, Math.min(100, t.progressPercent))}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Description */}
         {!t.parentId && isChain && (
@@ -244,6 +304,21 @@ export function TimeTickerDetailPanel({
         </div>
       </div>
 
+      <ConfirmDialog
+        open={confirmRerun}
+        onOpenChange={setConfirmRerun}
+        title="Re-run this ticker?"
+        description={
+          <>
+            Runs <span className="font-mono font-semibold text-foreground">{bare}</span> again
+            using this ticker’s existing ID. Its previous status, result and progress are replaced;
+            no duplicate ticker is created.
+          </>
+        }
+        confirmLabel="Re-run"
+        isPending={runM.isPending}
+        onConfirm={handleRerun}
+      />
       <ConfirmDialog
         open={confirmDup}
         onOpenChange={setConfirmDup}
@@ -293,6 +368,33 @@ export function TimeTickerDetailPanel({
           </p>
         </div>
       </ConfirmDialog>
+      {isChain && <SaveDefinitionDialog
+        open={saveTemplateOpen}
+        kind="Template"
+        initialName={`${bare} workflow`}
+        pending={saveTemplateM.isPending}
+        validateName={name => findDuplicateTemplateName(templateDefinitions.data ?? [], name)
+          ? "A template with this name already exists."
+          : null}
+        onOpenChange={setSaveTemplateOpen}
+        onSave={async values => {
+          try {
+            await saveTemplateM.mutateAsync({
+              id: t.id,
+              target: "TimeTicker",
+              body: {
+                name: values.name,
+                description: values.description || null,
+                includeRequestData: values.includeRequestData,
+              },
+            });
+            setSaveTemplateOpen(false);
+            toast.success("Template saved");
+          } catch (error) {
+            toast.error("Could not save the template", { description: errMsg(error) });
+          }
+        }}
+      />}
     </ResizableSidePanel>
   );
 }

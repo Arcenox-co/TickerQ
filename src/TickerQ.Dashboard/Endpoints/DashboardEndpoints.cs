@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
@@ -22,6 +24,7 @@ using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Licensing;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.Dashboard.Endpoints;
 
@@ -85,6 +88,7 @@ public static class DashboardEndpoints
         d.MapGet("/time-tickers/{id:guid}/chain", GetTimeTickerChain<TTimeTicker, TCronTicker>);
         d.MapGet("/time-tickers/{id:guid}/children", GetTimeTickerChildren<TTimeTicker, TCronTicker>);
         d.MapGet("/time-tickers/{id:guid}/request", GetTimeTickerRequest<TTimeTicker, TCronTicker>);
+        d.MapGet("/time-tickers/{id:guid}/result", GetTimeTickerResult<TTimeTicker, TCronTicker>);
 
         d.MapPost("/cron-tickers/query", QueryCronTickers<TTimeTicker, TCronTicker>);
         d.MapGet("/cron-tickers/{id:guid}", GetCronTickerById<TTimeTicker, TCronTicker>);
@@ -105,6 +109,9 @@ public static class DashboardEndpoints
         d.MapGet("/nodes", GetNodes<TTimeTicker, TCronTicker>);
         d.MapGet("/nodes/{nodeName}/functions", GetNodeFunctions<TTimeTicker, TCronTicker>);
         d.MapGet("/functions", GetAllFunctions<TTimeTicker, TCronTicker>);
+        d.MapGet("/functions/test-run-chain/{id:guid}", GetTestRunChain);
+        d.MapGet("/definitions", ListDefinitions<TTimeTicker, TCronTicker>);
+        d.MapGet("/definitions/{id:guid}", GetDefinition<TTimeTicker, TCronTicker>);
 
         d.MapGet("/host/status", GetHostStatus<TTimeTicker, TCronTicker>);
         d.MapGet("/host/next-ticker", GetNextTicker<TTimeTicker, TCronTicker>);
@@ -164,10 +171,19 @@ public static class DashboardEndpoints
         w.MapPost("/time-tickers/bulk-delete", BulkDeleteTimeTickers<TTimeTicker, TCronTicker>);
         w.MapPost("/cron-tickers/bulk-delete", BulkDeleteCronTickers<TTimeTicker, TCronTicker>);
         w.MapPost("/executions/bulk-retry", BulkRetryExecutions<TTimeTicker, TCronTicker>);
+        w.MapPost("/functions/test-run", TestRunFunction);
+        w.MapPost("/functions/test-run-chain", TestRunChain);
+        w.MapPost("/definitions", CreateDefinition<TTimeTicker, TCronTicker>);
+        w.MapPut("/definitions/{id:guid}", UpdateDefinition<TTimeTicker, TCronTicker>);
+        w.MapDelete("/definitions/{id:guid}", DeleteDefinition<TTimeTicker, TCronTicker>);
+        w.MapPost("/definitions/from-time-ticker/{id:guid}", CreateDefinitionFromTimeTicker<TTimeTicker, TCronTicker>);
+        w.MapPost("/definitions/from-cron-ticker/{id:guid}", CreateDefinitionFromCronTicker<TTimeTicker, TCronTicker>);
+        w.MapPost("/definitions/{id:guid}/activate", ActivateDraft<TTimeTicker, TCronTicker>);
 
         w.MapPost("/time-tickers", AddTimeTicker<TTimeTicker, TCronTicker>);
         w.MapDelete("/time-tickers/{id:guid}", DeleteTimeTicker<TTimeTicker, TCronTicker>);
         w.MapPost("/time-tickers/{id:guid}/run", RunTimeTickerOnDemand<TTimeTicker, TCronTicker>);
+        w.MapPost("/time-tickers/{id:guid}/retry-from-here", RetryTimeTickerFromHere<TTimeTicker, TCronTicker>);
         w.MapPost("/time-tickers/{id:guid}/duplicate", DuplicateTimeTicker<TTimeTicker, TCronTicker>);
         w.MapPatch("/time-tickers/{id:guid}", UpdateTimeTicker<TTimeTicker, TCronTicker>);
         w.MapPatch("/time-tickers/{id:guid}/delete-behavior", SetChainDeleteBehavior<TTimeTicker, TCronTicker>);
@@ -178,6 +194,7 @@ public static class DashboardEndpoints
         w.MapPatch("/cron-tickers/{id:guid}", UpdateCronTicker<TTimeTicker, TCronTicker>);
         w.MapPost("/cron-tickers/{id:guid}/toggle", ToggleCronTicker<TTimeTicker, TCronTicker>);
         w.MapPost("/cron-tickers/{id:guid}/run", RunCronTickerOnDemand<TTimeTicker, TCronTicker>);
+        w.MapPost("/cron-occurrences/{id:guid}/run", RerunCronOccurrence<TTimeTicker, TCronTicker>);
         w.MapDelete("/cron-tickers/{id:guid}", DeleteCronTicker<TTimeTicker, TCronTicker>);
 
         w.MapDelete("/cron-occurrences/{id:guid}", DeleteCronOccurrence<TTimeTicker, TCronTicker>);
@@ -325,6 +342,7 @@ public static class DashboardEndpoints
             FallbackIntervalChecker = schedulerOptions.FallbackIntervalChecker,
             DefaultExecutionTimeout = schedulerOptions.DefaultExecutionTimeout,
             StaleJobRecoveryEnabled = schedulerOptions.StaleJobRecoveryEnabled,
+            DetailedLoggingEnabled = schedulerOptions.DetailedLoggingEnabled,
             ExecutionLogs = new ExecutionLogConfigResponse
             {
                 Enabled = logs.Enabled, PersistToDatabase = logs.PersistToDatabase, MinimumLevel = logs.MinimumLevel.ToString(),
@@ -438,8 +456,26 @@ public static class DashboardEndpoints
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
+        c.Response.Headers.CacheControl = "no-store";
         var bytes = await DataService<TTimeTicker, TCronTicker>(c).GetTimeTickerRequestAsync(id, c.RequestAborted);
         await WriteJson(c, new TickerRequestPayloadResponse { Payload = bytes }, Json(c));
+    }
+
+    private static async Task GetTimeTickerResult<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        c.Response.Headers.CacheControl = "no-store";
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var result = await persistence.GetTimeTickerResultAsync(id, c.RequestAborted);
+        await WriteJson(c, new TickerResultPayloadResponse
+        {
+            Payload = result?.ToPayloadArray(),
+            Version = result?.Version,
+            MediaType = result?.MediaType,
+            ContractId = result?.ContractId,
+            ContractType = result?.ContractType,
+        }, Json(c));
     }
 
     private static async Task QueryCronTickers<TTimeTicker, TCronTicker>(HttpContext c)
@@ -624,6 +660,8 @@ public static class DashboardEndpoints
         c.Response.Headers.CacheControl = "no-store";
         var options = c.RequestServices.GetService<ExecutionLogOptions>() ?? new();
         body.Storage = !options.Enabled ? "disabled" : options.PersistToDatabase ? "database" : "memory";
+        if (c.RequestServices.GetService<ITickerExecutionLogStore>()?.IsEphemeral(tickerId) == true)
+            body.Storage = "memory";
         var result = c.RequestServices.GetService<ExecutionLogReader>() is { } reader
             ? await reader.ReadAsync(tickerId, c.RequestAborted)
             : new ExecutionLogReadResult(c.RequestServices.GetService<ITickerExecutionLogStore>()?.GetTail(tickerId)
@@ -912,8 +950,10 @@ public static class DashboardEndpoints
         var repository = Repository<TTimeTicker, TCronTicker>(c);
         var affected = 0;
 
-        // Avoid firing the same cron more than once if several of its occurrences are selected.
-        var cronIdsTriggered = new HashSet<Guid>();
+        // Each selected occurrence is revived in place. Deduplicate occurrence IDs without
+        // collapsing separate historical occurrences of the same cron definition.
+        var occurrenceIdsTriggered = new HashSet<Guid>();
+        var cronManager = c.RequestServices.GetRequiredService<ICronTickerManager<TCronTicker>>();
         foreach (var item in body.Items)
         {
             if (string.Equals(item.Type, "TimeTicker", StringComparison.OrdinalIgnoreCase))
@@ -921,14 +961,319 @@ public static class DashboardEndpoints
                 if (await repository.RunTimeTickerOnDemandAsync(item.Id, c.RequestAborted))
                     affected++;
             }
-            else if (item.CronTickerId is { } cronId && cronIdsTriggered.Add(cronId))
+            else if (item.CronTickerId.HasValue && occurrenceIdsTriggered.Add(item.Id))
             {
-                await repository.AddOnDemandCronTickerOccurrenceAsync(cronId, c.RequestAborted);
-                affected++;
+                var result = await cronManager.RerunOccurrenceAsync(item.Id, c.RequestAborted);
+                if (result.IsSucceeded)
+                    affected++;
             }
         }
 
         await WriteJson(c, new BulkActionResponseBody { Affected = affected }, Json(c));
+    }
+
+    private static async Task TestRunFunction(HttpContext c)
+    {
+        var body = await ReadJsonAsync<TestRunRequest>(c, Json(c));
+        if (body == null || string.IsNullOrWhiteSpace(body.Function))
+        {
+            c.Response.StatusCode = 400;
+            await WriteJson(c, new ErrorResponseBody { Error = "Select a function to test." }, Json(c));
+            return;
+        }
+
+        if (TickerChainInfrastructure.IsParallelGroup(body.Function))
+        {
+            c.Response.StatusCode = 400;
+            await WriteJson(c, new ErrorResponseBody { Error = "A structural group is not an executable function." }, Json(c));
+            return;
+        }
+
+        if (!TickerFunctionProvider.TickerFunctions.TryGetValue(body.Function, out var registered) ||
+            !TickerFunctionProvider.TickerFunctionDescriptors.TryGetValue(body.Function, out var descriptor))
+        {
+            c.Response.StatusCode = 404;
+            await WriteJson(c, new ErrorResponseBody { Error = $"TickerFunction '{body.Function}' is not registered on this node." }, Json(c));
+            return;
+        }
+
+        if (TickerFunctionProvider.ResolveNodeName(body.Function) != null)
+        {
+            c.Response.StatusCode = 409;
+            await WriteJson(c, new ErrorResponseBody
+            {
+                Error = "Run test is available only for functions registered on this dashboard host. Remote functions require a durable execution."
+            }, Json(c));
+            return;
+        }
+
+        var validation = TickerRequestPayloadValidator.Validate(body.Function, body.Request);
+        if (!validation.IsValid)
+        {
+            c.Response.StatusCode = 400;
+            await WriteJson(c, new ErrorResponseBody
+            {
+                Error = string.Join("; ", validation.Errors.Select(error => error.ToString()))
+            }, Json(c));
+            return;
+        }
+
+        var timeoutSeconds = Math.Clamp(body.TimeoutSeconds ?? 30, 1, 300);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(c.RequestAborted);
+        timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        var id = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+        var executionContext = c.RequestServices.GetRequiredService<TickerExecutionContext>();
+        var handler = c.RequestServices.GetRequiredService<ITickerExecutionTaskHandler>();
+        var concurrencyGate = c.RequestServices.GetRequiredService<ITickerFunctionConcurrencyGate>();
+        var lifecycle = c.RequestServices.GetService<TickerLifecycleLogger>();
+        var context = new InternalFunctionContext
+        {
+            TickerId = id,
+            ChainRootId = id,
+            RuntimePartitionKey = executionContext.RuntimePartition.StorageKey,
+            FunctionName = body.Function,
+            Type = TickerType.TimeTicker,
+            Status = TickerStatus.InProgress,
+            ExecutionTime = now,
+            TimeoutSeconds = timeoutSeconds,
+            CachedDelegate = registered.Delegate,
+            CachedPriority = registered.Priority,
+            CachedMaxConcurrency = registered.MaxConcurrency,
+            RequestContractVersion = descriptor.ContractVersion,
+            RequestContractFingerprint = descriptor.Request?.Fingerprint,
+            RequestPayload = body.Request,
+            IsTestRun = true,
+        };
+        lifecycle?.Created(id, body.Function, TickerType.TimeTicker, now,
+            executionContext.RuntimePartition.StorageKey, isEphemeral: true);
+        lifecycle?.Queued(context);
+
+        var stopwatch = Stopwatch.StartNew();
+        IDisposable? permit;
+        try
+        {
+            permit = registered.MaxConcurrency > 0
+                ? await concurrencyGate.AcquireAsync(body.Function, registered.MaxConcurrency, timeout.Token)
+                : null;
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !c.RequestAborted.IsCancellationRequested)
+        {
+            stopwatch.Stop();
+            await WriteJson(c, new TestRunResponse
+            {
+                ExecutionId = id,
+                Status = TickerStatus.Cancelled,
+                Success = false,
+                Error = $"The test run could not acquire function capacity within {timeoutSeconds} seconds.",
+                ElapsedMilliseconds = stopwatch.ElapsedMilliseconds,
+            }, Json(c));
+            return;
+        }
+
+        using (permit)
+        {
+            var result = await handler.ExecuteWorkerTaskAsync(context, isDue: false, timeout.Token);
+            lifecycle?.Committed(context);
+            stopwatch.Stop();
+            await WriteJson(c, new TestRunResponse
+            {
+                ExecutionId = id,
+                Status = result.Status,
+                Success = result.Success,
+                Error = result.Error,
+                ElapsedMilliseconds = stopwatch.ElapsedMilliseconds,
+                Result = result.ResultEnvelope?.ToPayloadArray(),
+                ResultMediaType = result.ResultEnvelope?.MediaType,
+                ResultContractId = result.ResultEnvelope?.ContractId,
+            }, Json(c));
+        }
+    }
+
+    private static async Task TestRunChain(HttpContext c)
+    {
+        var body = await ReadJsonAsync<AddTimeTickerChainRequest>(c, Json(c));
+        if (body?.Root == null)
+        {
+            c.Response.StatusCode = 400;
+            await WriteJson(c, new ErrorResponseBody { Error = "A chain root is required." }, Json(c));
+            return;
+        }
+
+        var validationError = ValidateTestChain(body.Root);
+        if (validationError != null)
+        {
+            c.Response.StatusCode = 400;
+            await WriteJson(c, new ErrorResponseBody { Error = validationError }, Json(c));
+            return;
+        }
+
+        var executionContext = c.RequestServices.GetRequiredService<TickerExecutionContext>();
+        var metadata = new Dictionary<Guid, DashboardTestRunStepMetadata>();
+        var root = BuildTestChainContext(body.Root, null, null,
+            executionContext.RuntimePartition.StorageKey, metadata);
+        TickerExecutionContext.CacheFunctionReferences([root]);
+
+        var registry = c.RequestServices.GetRequiredService<DashboardTestRunRegistry>();
+        if (!registry.TryCreate(root, metadata, out var session))
+        {
+            c.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            await WriteJson(c, new ErrorResponseBody
+            {
+                Error = "Too many chain tests are currently running. Wait for one to finish and try again."
+            }, Json(c));
+            return;
+        }
+
+        registry.Start(session, c.RequestServices.GetRequiredService<ITickerExecutionTaskHandler>());
+        c.Response.StatusCode = StatusCodes.Status202Accepted;
+        await WriteJson(c, CreateTestRunChainResponse(session), Json(c));
+    }
+
+    private static async Task GetTestRunChain(HttpContext c, Guid id)
+    {
+        if (!c.RequestServices.GetRequiredService<DashboardTestRunRegistry>()
+                .TryGet(id, out var session))
+        {
+            c.Response.StatusCode = StatusCodes.Status404NotFound;
+            await WriteJson(c, new ErrorResponseBody
+            {
+                Error = "This temporary chain test is no longer available."
+            }, Json(c));
+            return;
+        }
+
+        c.Response.Headers.CacheControl = "no-store";
+        await WriteJson(c, CreateTestRunChainResponse(session), Json(c));
+    }
+
+    private static TestRunChainResponse CreateTestRunChainResponse(DashboardTestRunSession session)
+    {
+        var steps = new List<TestRunChainStepResponse>();
+        var pending = new Stack<InternalFunctionContext>();
+        pending.Push(session.Root);
+        while (pending.TryPop(out var step))
+        {
+            session.Metadata.TryGetValue(step.TickerId, out var metadata);
+            steps.Add(new TestRunChainStepResponse
+            {
+                ExecutionId = step.TickerId,
+                ParentExecutionId = step.ParentId,
+                Function = TickerChainInfrastructure.IsParallelGroup(step.FunctionName)
+                    ? "Group"
+                    : step.FunctionName,
+                Description = metadata?.Description,
+                Status = step.Status,
+                RunCondition = step.ParentId.HasValue ? step.RunCondition : null,
+                Priority = step.CachedPriority,
+                Retries = step.Retries,
+                RetryCount = step.RetryCount,
+                CreatedAtUtc = session.StartedAtUtc,
+                ExecutedAtUtc = step.ExecutedAt == default ? null : step.ExecutedAt,
+                ProgressUpdatedAtUtc = step.ProgressUpdatedAt,
+                ChildCount = step.TimeTickerChildren?.Count ?? 0,
+                Error = step.Status is TickerStatus.Done or TickerStatus.DueDone
+                    ? null
+                    : step.ExceptionDetails,
+                ElapsedMilliseconds = step.ElapsedTime,
+                ProgressPercent = step.ProgressPercent,
+                ProgressMessage = step.ProgressMessage,
+                Result = step.ResultEnvelope?.ToPayloadArray(),
+                ResultMediaType = step.ResultEnvelope?.MediaType,
+                ResultContractId = step.ResultEnvelope?.ContractId,
+                IsGroup = TickerChainInfrastructure.IsParallelGroup(step.FunctionName),
+            });
+            if (step.TimeTickerChildren == null) continue;
+            for (var i = step.TimeTickerChildren.Count - 1; i >= 0; i--)
+                pending.Push(step.TimeTickerChildren[i]);
+        }
+
+        return new TestRunChainResponse
+        {
+            RootExecutionId = session.Id,
+            Completed = session.Completed,
+            StartedAtUtc = session.StartedAtUtc,
+            FinishedAtUtc = session.FinishedAtUtc,
+            Error = session.Error,
+            Success = session.Completed && session.Error == null &&
+                      steps.All(step => step.Status is not (TickerStatus.Failed or TickerStatus.Cancelled)),
+            Steps = steps,
+        };
+    }
+
+    private static string? ValidateTestChain(TimeTickerNodeRequest root)
+    {
+        var pending = new Stack<(TimeTickerNodeRequest Node, int Depth)>();
+        pending.Push((root, 1));
+        var count = 0;
+        while (pending.TryPop(out var item))
+        {
+            if (++count > 500) return "A test chain can contain at most 500 nodes.";
+            if (item.Depth > 20) return "A test chain can contain at most 20 child levels.";
+            var node = item.Node;
+            if (string.IsNullOrWhiteSpace(node.Function))
+                return "Every active chain node must select a function.";
+
+            if (!TickerChainInfrastructure.IsParallelGroup(node.Function))
+            {
+                if (TickerFunctionProvider.ResolveNodeName(node.Function) != null)
+                    return $"Test chain is available only for functions registered on this dashboard host. '{node.Function}' is remote.";
+                if (!TickerFunctionProvider.TickerFunctions.ContainsKey(node.Function) ||
+                    !TickerFunctionProvider.TickerFunctionDescriptors.ContainsKey(node.Function))
+                    return $"TickerFunction '{node.Function}' is not registered on this node.";
+                var payload = TickerRequestPayloadValidator.Validate(node.Function, node.Request);
+                if (!payload.IsValid)
+                    return $"{node.Function}: {string.Join("; ", payload.Errors.Select(error => error.ToString()))}";
+            }
+
+            if (node.Retries is < 0)
+                return $"Retries for '{node.Function}' cannot be negative.";
+            if (node.TimeoutSeconds is < 0)
+                return $"Timeout for '{node.Function}' cannot be negative.";
+            if (node.Children == null) continue;
+            for (var i = node.Children.Count - 1; i >= 0; i--)
+                pending.Push((node.Children[i], item.Depth + 1));
+        }
+        return null;
+    }
+
+    private static InternalFunctionContext BuildTestChainContext(
+        TimeTickerNodeRequest node, Guid? parentId, Guid? rootId, string partition,
+        IDictionary<Guid, DashboardTestRunStepMetadata> metadata)
+    {
+        var id = Guid.NewGuid();
+        var isGroup = TickerChainInfrastructure.IsParallelGroup(node.Function);
+        var descriptor = isGroup
+            ? null
+            : TickerFunctionProvider.TickerFunctionDescriptors[node.Function];
+        var context = new InternalFunctionContext
+        {
+            TickerId = id,
+            ParentId = parentId,
+            ChainRootId = rootId ?? id,
+            ChainGeneration = rootId == null ? Guid.NewGuid() : null,
+            RuntimePartitionKey = partition,
+            FunctionName = node.Function,
+            Type = TickerType.TimeTicker,
+            Status = TickerStatus.Idle,
+            ExecutionTime = DateTime.UtcNow,
+            Retries = Math.Max(0, node.Retries ?? 0),
+            RetryIntervals = node.RetryIntervalsSeconds?.ToArray(),
+            RunCondition = node.RunCondition ?? RunCondition.OnSuccess,
+            TimeoutSeconds = node.TimeoutSeconds is > 0 ? node.TimeoutSeconds : null,
+            RequestPayload = node.Request,
+            RequestContractVersion = descriptor?.ContractVersion,
+            RequestContractFingerprint = descriptor?.Request?.Fingerprint,
+            IsTestRun = true,
+        };
+        metadata[id] = new DashboardTestRunStepMetadata(node.Description);
+        if (node.Children != null)
+        {
+            foreach (var child in node.Children)
+                context.TimeTickerChildren.Add(BuildTestChainContext(
+                    child, id, rootId ?? id, partition, metadata));
+        }
+        return context;
     }
 
     private static async Task RunTimeTickerOnDemand<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
@@ -946,6 +1291,20 @@ public static class DashboardEndpoints
             return;
         }
         c.Response.StatusCode = 204;
+    }
+
+    private static async Task RetryTimeTickerFromHere<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
+        var result = await manager.RetryFromAsync(id, c.RequestAborted);
+        if (!result.IsSucceeded || result.Result == null)
+        {
+            await WriteTickerError(c, result.Exception);
+            return;
+        }
+        await WriteJson(c, new AddTickerResponseBody { Id = result.Result.Id.ToString() }, Json(c));
     }
 
     private static async Task SetChainDeleteBehavior<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
@@ -1174,6 +1533,20 @@ public static class DashboardEndpoints
         c.Response.StatusCode = 204;
     }
 
+    private static async Task RerunCronOccurrence<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var manager = c.RequestServices.GetRequiredService<ICronTickerManager<TCronTicker>>();
+        var result = await manager.RerunOccurrenceAsync(id, c.RequestAborted);
+        if (!result.IsSucceeded)
+        {
+            await WriteTickerError(c, result.Exception);
+            return;
+        }
+        c.Response.StatusCode = 204;
+    }
+
     private static async Task DeleteCronTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
@@ -1192,14 +1565,431 @@ public static class DashboardEndpoints
         c.Response.StatusCode = removed > 0 ? 204 : 404;
     }
 
+    // ===== Saved templates and time-ticker drafts =====
+
+    private static async Task ListDefinitions<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
+        SavedTickerDefinitionKind? kind = Enum.TryParse<SavedTickerDefinitionKind>(
+            c.Request.Query["kind"], true, out var parsedKind) ? parsedKind : null;
+        SavedTickerDefinitionTarget? target = Enum.TryParse<SavedTickerDefinitionTarget>(
+            c.Request.Query["target"], true, out var parsedTarget) ? parsedTarget : null;
+        var rows = await store.ListDefinitionsAsync(kind, target, c.RequestAborted).ConfigureAwait(false);
+        await WriteJson(c, rows.Select(row => ToDefinitionResponse(row, c)).ToList(), Json(c));
+    }
+
+    private static async Task GetDefinition<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
+        var row = await store.GetDefinitionAsync(id, c.RequestAborted).ConfigureAwait(false);
+        if (row == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        await WriteJson(c, ToDefinitionResponse(row, c), Json(c));
+    }
+
+    private static async Task CreateDefinition<TTimeTicker, TCronTicker>(HttpContext c)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<SaveTickerDefinitionRequest>(c, Json(c));
+        string? error = null;
+        if (body == null || !ValidateDefinitionRequest(body, out error))
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await WriteJson(c, new ErrorResponseBody { Error = error ?? "A saved definition is required." }, Json(c));
+            return;
+        }
+        if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
+        if (!await EnsureTemplateNameAvailableAsync(
+                c, store, body.Kind, body.Target, body.Name, null).ConfigureAwait(false)) return;
+        var payload = CopyPayload(body.Payload!, body.IncludeRequestData);
+        var row = new SavedTickerDefinition
+        {
+            Kind = body.Kind,
+            Target = body.Target,
+            Name = body.Name.Trim(),
+            Description = body.Description?.Trim(),
+            IncludesRequestData = body.IncludeRequestData,
+            SchemaVersion = 1,
+            DefinitionJson = JsonSerializer.Serialize(payload, Json(c)),
+        };
+        SavedTickerDefinition created;
+        try { created = await store.CreateDefinitionAsync(row, c.RequestAborted).ConfigureAwait(false); }
+        catch (DuplicateSavedTickerDefinitionNameException ex)
+        {
+            await WriteDefinitionNameConflictAsync(c, ex.Message).ConfigureAwait(false);
+            return;
+        }
+        c.Response.StatusCode = StatusCodes.Status201Created;
+        await WriteJson(c, ToDefinitionResponse(created, c), Json(c));
+    }
+
+    private static async Task UpdateDefinition<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<UpdateTickerDefinitionRequest>(c, Json(c));
+        string? error = null;
+        if (body == null || body.Version <= 0 || !ValidateDefinitionRequest(body, out error))
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await WriteJson(c, new ErrorResponseBody { Error = error ?? "A versioned saved definition is required." }, Json(c));
+            return;
+        }
+        if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
+        if (!await EnsureTemplateNameAvailableAsync(
+                c, store, body.Kind, body.Target, body.Name, id).ConfigureAwait(false)) return;
+        var row = new SavedTickerDefinition
+        {
+            Id = id, Kind = body.Kind, Target = body.Target, Name = body.Name.Trim(),
+            Description = body.Description?.Trim(), IncludesRequestData = body.IncludeRequestData,
+            SchemaVersion = 1,
+            DefinitionJson = JsonSerializer.Serialize(CopyPayload(body.Payload!, body.IncludeRequestData), Json(c)),
+        };
+        SavedTickerDefinition updated;
+        try { updated = await store.UpdateDefinitionAsync(row, body.Version, c.RequestAborted).ConfigureAwait(false); }
+        catch (DuplicateSavedTickerDefinitionNameException ex)
+        {
+            await WriteDefinitionNameConflictAsync(c, ex.Message).ConfigureAwait(false);
+            return;
+        }
+        if (updated == null)
+        {
+            c.Response.StatusCode = StatusCodes.Status409Conflict;
+            await WriteJson(c, new ErrorResponseBody { Error = "This definition changed in another session. Refresh it before saving again." }, Json(c));
+            return;
+        }
+        await WriteJson(c, ToDefinitionResponse(updated, c), Json(c));
+    }
+
+    private static async Task DeleteDefinition<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        if (!long.TryParse(c.Request.Query["version"], out var version) || version <= 0)
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await WriteJson(c, new ErrorResponseBody { Error = "The current definition version is required." }, Json(c));
+            return;
+        }
+        if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
+        c.Response.StatusCode = await store.DeleteDefinitionAsync(id, version, c.RequestAborted).ConfigureAwait(false)
+            ? StatusCodes.Status204NoContent : StatusCodes.Status409Conflict;
+    }
+
+    private static async Task CreateDefinitionFromTimeTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<SaveExistingTickerDefinitionRequest>(c, Json(c));
+        if (body == null || string.IsNullOrWhiteSpace(body.Name))
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+        if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var selected = await persistence.GetTimeTickerById(id, c.RequestAborted).ConfigureAwait(false);
+        if (selected == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        var rootId = selected.ChainRootId ?? selected.Id;
+        var root = rootId == selected.Id ? selected : await persistence.GetTimeTickerById(rootId, c.RequestAborted).ConfigureAwait(false);
+        if (root == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        var payload = new SavedDefinitionPayload
+        {
+            Root = ToNodeRequest(root, body.IncludeRequestData),
+        };
+        if (payload.Root.Children is not { Count: > 0 })
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await WriteJson(c, new ErrorResponseBody
+            {
+                Error = "Templates are available only for chains with at least two jobs.",
+            }, Json(c));
+            return;
+        }
+        if (!await EnsureTemplateNameAvailableAsync(c, store, SavedTickerDefinitionKind.Template,
+                SavedTickerDefinitionTarget.TimeTicker, body.Name, null).ConfigureAwait(false)) return;
+        SavedTickerDefinition created;
+        try { created = await store.CreateDefinitionAsync(new SavedTickerDefinition
+        {
+            Kind = SavedTickerDefinitionKind.Template, Target = SavedTickerDefinitionTarget.TimeTicker,
+            Name = body.Name.Trim(), Description = body.Description?.Trim(),
+            IncludesRequestData = body.IncludeRequestData,
+            DefinitionJson = JsonSerializer.Serialize(payload, Json(c)), SchemaVersion = 1,
+        }, c.RequestAborted).ConfigureAwait(false); }
+        catch (DuplicateSavedTickerDefinitionNameException ex)
+        {
+            await WriteDefinitionNameConflictAsync(c, ex.Message).ConfigureAwait(false);
+            return;
+        }
+        c.Response.StatusCode = StatusCodes.Status201Created;
+        await WriteJson(c, ToDefinitionResponse(created, c), Json(c));
+    }
+
+    private static async Task CreateDefinitionFromCronTicker<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<SaveExistingTickerDefinitionRequest>(c, Json(c));
+        if (body == null || string.IsNullOrWhiteSpace(body.Name))
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+        if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var cron = await persistence.GetCronTickerById(id, c.RequestAborted).ConfigureAwait(false);
+        if (cron == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        var root = new TimeTickerNodeRequest
+        {
+            Function = cron.Function, Description = cron.Description, Retries = cron.Retries,
+            RetryIntervalsSeconds = cron.RetryIntervals, Request = body.IncludeRequestData ? cron.Request : null,
+            OnStale = cron.OnStale, TimeoutSeconds = cron.TimeoutSeconds,
+            DeleteBehavior = cron.Chain?.DeleteBehavior ?? ChainDeleteBehavior.Restrict,
+            Children = cron.Chain?.Children.Select(child => ToNodeRequest(child, body.IncludeRequestData)).ToList()
+                ?? new List<TimeTickerNodeRequest>(),
+        };
+        var payload = new SavedDefinitionPayload
+        {
+            Expression = cron.Expression, SkipIfAlreadyRunning = cron.SkipIfAlreadyRunning, Root = root,
+        };
+        if (root.Children is not { Count: > 0 })
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await WriteJson(c, new ErrorResponseBody
+            {
+                Error = "Templates are available only for chains with at least two jobs.",
+            }, Json(c));
+            return;
+        }
+        if (!await EnsureTemplateNameAvailableAsync(c, store, SavedTickerDefinitionKind.Template,
+                SavedTickerDefinitionTarget.CronTicker, body.Name, null).ConfigureAwait(false)) return;
+        SavedTickerDefinition created;
+        try { created = await store.CreateDefinitionAsync(new SavedTickerDefinition
+        {
+            Kind = SavedTickerDefinitionKind.Template, Target = SavedTickerDefinitionTarget.CronTicker,
+            Name = body.Name.Trim(), Description = body.Description?.Trim(),
+            IncludesRequestData = body.IncludeRequestData,
+            DefinitionJson = JsonSerializer.Serialize(payload, Json(c)), SchemaVersion = 1,
+        }, c.RequestAborted).ConfigureAwait(false); }
+        catch (DuplicateSavedTickerDefinitionNameException ex)
+        {
+            await WriteDefinitionNameConflictAsync(c, ex.Message).ConfigureAwait(false);
+            return;
+        }
+        c.Response.StatusCode = StatusCodes.Status201Created;
+        await WriteJson(c, ToDefinitionResponse(created, c), Json(c));
+    }
+
+    private static async Task ActivateDraft<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var body = await ReadJsonAsync<ActivateTickerDraftRequest>(c, Json(c));
+        if (body == null || body.Version <= 0)
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+        if (!TryGetDefinitionStore<TTimeTicker, TCronTicker>(c, out var store)) return;
+        var persistence = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var row = await store.GetDefinitionAsync(id, c.RequestAborted).ConfigureAwait(false);
+        if (row == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        if (row.Kind != SavedTickerDefinitionKind.Draft || row.Target != SavedTickerDefinitionTarget.TimeTicker)
+        {
+            c.Response.StatusCode = StatusCodes.Status409Conflict;
+            await WriteJson(c, new ErrorResponseBody { Error = "Only a time-ticker draft can be activated." }, Json(c));
+            return;
+        }
+        if (row.ActivatedRootTickerId is { } activatedId)
+        {
+            await WriteJson(c, new AddTimeTickerChainResponseBody { RootId = activatedId.ToString(), CreatedCount = 0 }, Json(c));
+            return;
+        }
+        if (row.ActivationToken is { } existingToken && row.PendingRootTickerId is { } existingRoot)
+        {
+            var published = await persistence.GetTimeTickerById(existingRoot, c.RequestAborted).ConfigureAwait(false);
+            if (published != null)
+            {
+                await store.CompleteDraftActivationAsync(id, existingToken, existingRoot, DateTime.UtcNow, c.RequestAborted)
+                    .ConfigureAwait(false);
+                await WriteJson(c, new AddTimeTickerChainResponseBody
+                {
+                    RootId = existingRoot.ToString(), CreatedCount = 1 + CountDescendants(published),
+                }, Json(c));
+                return;
+            }
+            if (row.ActivationClaimedAtUtc > DateTime.UtcNow.AddMinutes(-5))
+            {
+                c.Response.StatusCode = StatusCodes.Status409Conflict;
+                await WriteJson(c, new ErrorResponseBody { Error = "This draft is already being activated." }, Json(c));
+                return;
+            }
+            await store.ReleaseDraftActivationAsync(id, existingToken, c.RequestAborted).ConfigureAwait(false);
+            row = await store.GetDefinitionAsync(id, c.RequestAborted).ConfigureAwait(false);
+            if (row == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        }
+        if (row.Version != body.Version)
+        {
+            c.Response.StatusCode = StatusCodes.Status409Conflict;
+            await WriteJson(c, new ErrorResponseBody { Error = "This draft changed. Refresh it before activating." }, Json(c));
+            return;
+        }
+        var payload = DeserializeDefinitionPayload(row, c);
+        if (payload?.Root == null)
+        {
+            c.Response.StatusCode = StatusCodes.Status422UnprocessableEntity;
+            await WriteJson(c, new ErrorResponseBody { Error = "The saved draft payload is invalid." }, Json(c));
+            return;
+        }
+        var activationToken = Guid.NewGuid();
+        var pendingRootId = Guid.NewGuid();
+        var claimedAt = DateTime.UtcNow;
+        var claim = await store.TryClaimDraftActivationAsync(id, row.Version, activationToken, pendingRootId,
+            claimedAt, c.RequestAborted).ConfigureAwait(false);
+        if (claim == null)
+        {
+            c.Response.StatusCode = StatusCodes.Status409Conflict;
+            await WriteJson(c, new ErrorResponseBody { Error = "Another session changed or activated this draft." }, Json(c));
+            return;
+        }
+        var root = BuildChainEntity<TTimeTicker>(payload.Root, true, null, pendingRootId);
+        var executionTime = body.ExecutionTime ?? payload.ExecutionTime ?? DateTime.UtcNow;
+        root.ExecutionTime = executionTime < DateTime.UtcNow ? DateTime.UtcNow : executionTime;
+        var createdCount = 1 + CountDescendants(root);
+        var result = await c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>()
+            .AddAsync(root, c.RequestAborted).ConfigureAwait(false);
+        if (!result.IsSucceeded || result.Result == null)
+        {
+            var committed = await persistence.GetTimeTickerById(pendingRootId, c.RequestAborted).ConfigureAwait(false);
+            if (committed == null)
+            {
+                await store.ReleaseDraftActivationAsync(id, activationToken, c.RequestAborted).ConfigureAwait(false);
+                await WriteTickerError(c, result.Exception);
+                return;
+            }
+        }
+        await store.CompleteDraftActivationAsync(id, activationToken, pendingRootId, DateTime.UtcNow, c.RequestAborted)
+            .ConfigureAwait(false);
+        await WriteJson(c, new AddTimeTickerChainResponseBody
+        {
+            RootId = pendingRootId.ToString(), CreatedCount = createdCount,
+        }, Json(c));
+    }
+
+    private static bool TryGetDefinitionStore<TTimeTicker, TCronTicker>(HttpContext c,
+        out ITickerDefinitionStore store)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        store = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>()
+            as ITickerDefinitionStore;
+        if (store != null) return true;
+        c.Response.StatusCode = StatusCodes.Status501NotImplemented;
+        return false;
+    }
+
+    private static bool ValidateDefinitionRequest(SaveTickerDefinitionRequest body, out string error)
+    {
+        error = null;
+        if (string.IsNullOrWhiteSpace(body.Name) || body.Name.Trim().Length > 200)
+            error = "A template or draft name between 1 and 200 characters is required.";
+        else if (body.Description?.Length > 2000)
+            error = "The description cannot exceed 2000 characters.";
+        else if (body.Payload?.Root == null)
+            error = "A root job is required.";
+        else if (body.Kind == SavedTickerDefinitionKind.Template &&
+                 body.Payload.Root.Children is not { Count: > 0 })
+            error = "Templates are available only for chains with at least two jobs.";
+        else if (body.Kind == SavedTickerDefinitionKind.Draft && body.Target != SavedTickerDefinitionTarget.TimeTicker)
+            error = "Drafts are supported only for time tickers. Save a cron configuration as a template instead.";
+        return error == null;
+    }
+
+    private static async Task<bool> EnsureTemplateNameAvailableAsync(HttpContext c, ITickerDefinitionStore store,
+        SavedTickerDefinitionKind kind, SavedTickerDefinitionTarget target, string name, Guid? excludedId)
+    {
+        if (kind != SavedTickerDefinitionKind.Template) return true;
+        var normalized = SavedTickerDefinitionNames.Normalize(name);
+        var definitions = await store.ListDefinitionsAsync(
+            SavedTickerDefinitionKind.Template, target, c.RequestAborted).ConfigureAwait(false);
+        if (!definitions.Any(row => row.Id != excludedId &&
+                SavedTickerDefinitionNames.Normalize(row.Name) == normalized)) return true;
+        await WriteDefinitionNameConflictAsync(c,
+            $"A template named ‘{name.Trim()}’ already exists.").ConfigureAwait(false);
+        return false;
+    }
+
+    private static async Task WriteDefinitionNameConflictAsync(HttpContext c, string message)
+    {
+        c.Response.StatusCode = StatusCodes.Status409Conflict;
+        await WriteJson(c, new ErrorResponseBody { Error = message }, Json(c));
+    }
+
+    private static SavedDefinitionPayload CopyPayload(SavedDefinitionPayload payload, bool includeRequestData) => new()
+    {
+        ExecutionTime = payload.ExecutionTime,
+        Expression = payload.Expression,
+        SkipIfAlreadyRunning = payload.SkipIfAlreadyRunning,
+        Root = payload.Root == null ? null : CopyNode(payload.Root, includeRequestData),
+    };
+
+    private static TimeTickerNodeRequest CopyNode(TimeTickerNodeRequest node, bool includeRequestData) => new()
+    {
+        DeleteBehavior = node.DeleteBehavior, Function = node.Function, Description = node.Description,
+        Retries = node.Retries, Request = includeRequestData ? node.Request?.ToArray() : null,
+        RetryIntervalsSeconds = node.RetryIntervalsSeconds?.ToArray(), RunCondition = node.RunCondition,
+        OnStale = node.OnStale, TimeoutSeconds = node.TimeoutSeconds,
+        Children = node.Children?.Select(child => CopyNode(child, includeRequestData)).ToList(),
+    };
+
+    private static TimeTickerNodeRequest ToNodeRequest<TTimeTicker>(TTimeTicker node, bool includeRequestData)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new() => new()
+    {
+        DeleteBehavior = node.DeleteBehavior, Function = node.Function, Description = node.Description,
+        Retries = node.Retries, Request = includeRequestData ? node.Request?.ToArray() : null,
+        RetryIntervalsSeconds = node.RetryIntervals?.ToArray(), RunCondition = node.RunCondition,
+        OnStale = node.OnStale, TimeoutSeconds = node.TimeoutSeconds,
+        Children = node.GetChildrenForRead().Select(child => ToNodeRequest(child, includeRequestData)).ToList(),
+    };
+
+    private static TimeTickerNodeRequest ToNodeRequest(CronChainNode node, bool includeRequestData) => new()
+    {
+        Function = node.Function, Description = node.Description, Retries = node.Retries,
+        Request = includeRequestData ? node.Request?.ToArray() : null,
+        RetryIntervalsSeconds = node.RetryIntervals?.ToArray(), RunCondition = node.RunCondition,
+        OnStale = node.OnStale, TimeoutSeconds = node.TimeoutSeconds,
+        Children = node.Children?.Select(child => ToNodeRequest(child, includeRequestData)).ToList(),
+    };
+
+    private static SavedTickerDefinitionResponse ToDefinitionResponse(SavedTickerDefinition row, HttpContext c) => new()
+    {
+        Id = row.Id, Kind = row.Kind, Target = row.Target, Name = row.Name, Description = row.Description,
+        IncludesRequestData = row.IncludesRequestData, SchemaVersion = row.SchemaVersion,
+        CreatedAtUtc = row.CreatedAtUtc, UpdatedAtUtc = row.UpdatedAtUtc, Version = row.Version,
+        ActivatedRootTickerId = row.ActivatedRootTickerId, ActivatedAtUtc = row.ActivatedAtUtc,
+        ActivationInProgress = row.ActivationToken.HasValue,
+        Payload = DeserializeDefinitionPayload(row, c),
+    };
+
+    private static SavedDefinitionPayload DeserializeDefinitionPayload(SavedTickerDefinition row, HttpContext c)
+    {
+        try { return JsonSerializer.Deserialize<SavedDefinitionPayload>(row.DefinitionJson, Json(c)); }
+        catch (JsonException) { return null; }
+    }
+
     // ===== Chain helpers (ported from DashboardOperationGrpcService) =====
 
-    private static TTimeTicker BuildChainEntity<TTimeTicker>(TimeTickerNodeRequest node, bool isRoot, Guid? parentId)
+    private static TTimeTicker BuildChainEntity<TTimeTicker>(TimeTickerNodeRequest node, bool isRoot,
+        Guid? parentId, Guid? forcedId = null)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     {
         var entity = new TTimeTicker
         {
-            Id = Guid.NewGuid(),
+            Id = forcedId ?? Guid.NewGuid(),
             Function = node.Function,
             Description = node.Description,
             Retries = node.Retries ?? 0,

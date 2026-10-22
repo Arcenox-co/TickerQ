@@ -19,6 +19,7 @@ export function cronOccurrenceChainPreview(cron: CronTickerFlatDto, occurrence: 
       createdAt: occurrence.createdAt, childCount: node.children?.length ?? 0,
       exceptionMessage: null, skippedReason: null, runCondition: parentId ? node.runCondition : null,
       executedAt: null, description: node.description ?? null, lockHolder: null, lockedAt: null,
+      progressPercent: null, progressMessage: null, progressUpdatedAt: null,
       retryIntervalsSeconds: node.retryIntervals ?? null, onStale: node.onStale,
       timeoutSeconds: node.timeoutSeconds ?? null, deleteBehavior: parentId ? "Cascade" : cron.chain!.deleteBehavior,
     });

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Microsoft.Extensions.Logging;
 
 namespace TickerQ.Utilities;
@@ -11,6 +12,15 @@ public sealed class ExecutionLogOptions
     public bool IncludeLifecycleEvents { get; set; } = true;
     public bool PersistToDatabase { get; set; }
     public LogLevel MinimumLevel { get; set; } = LogLevel.Information;
+    /// <summary>
+    /// Logger category prefixes excluded from per-job capture. EF Core database diagnostics are
+    /// excluded by default so SQL commands, connections, and transactions do not obscure job logs.
+    /// Set to an empty array to capture every category allowed by <see cref="MinimumLevel"/>.
+    /// </summary>
+    public string[] ExcludedCategoryPrefixes { get; set; } =
+    [
+        "Microsoft.EntityFrameworkCore.Database"
+    ];
     public int MaxLinesPerExecution { get; set; } = 200;
     public int MaxMessageBytes { get; set; } = 2048;
     public int MaxBytesPerExecution { get; set; } = 32 * 1024;
@@ -30,6 +40,8 @@ public sealed class ExecutionLogOptions
     {
         if (MinimumLevel < LogLevel.Trace || MinimumLevel > LogLevel.None)
             throw new ArgumentOutOfRangeException(nameof(MinimumLevel));
+        if (ExcludedCategoryPrefixes?.Any(prefix => string.IsNullOrWhiteSpace(prefix)) == true)
+            throw new ArgumentException("Execution log category prefixes cannot be empty.", nameof(ExcludedCategoryPrefixes));
         Bound(MaxLinesPerExecution, 1, 1000, nameof(MaxLinesPerExecution));
         Bound(MaxMessageBytes, 128, Math.Min(16384, MaxBytesPerExecution - 1024), nameof(MaxMessageBytes));
         Bound(MaxBytesPerExecution, 4096, 262144, nameof(MaxBytesPerExecution));

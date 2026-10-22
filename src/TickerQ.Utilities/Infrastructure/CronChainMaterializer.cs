@@ -48,6 +48,12 @@ public static class CronChainMaterializer
                 !Enum.IsDefined(node.OnStale) || node.Retries < 0 ||
                 (node.RetryIntervals?.Any(x => x < 0) ?? false))
                 throw new ArgumentException("Each chain job needs a function and valid run condition, retries and stale policy.");
+            if (TickerChainInfrastructure.IsParallelGroup(node.Function) &&
+                !(node.Children?.Any(child => child != null &&
+                    TickerChainInfrastructure.IsParallelBranchCondition(child.RunCondition)) ?? false))
+                throw new ArgumentException("A parallel group requires at least one parallel branch.");
+            if (TickerChainInfrastructure.IsParallelGroup(node.Function) && node.Request is { Length: > 0 })
+                throw new ArgumentException("A parallel group cannot carry a request payload.");
             foreach (var child in node.Children ?? new()) pending.Push((child, item.Depth + 1));
         }
     }

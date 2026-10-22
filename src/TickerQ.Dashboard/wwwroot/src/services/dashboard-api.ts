@@ -32,6 +32,7 @@ import type {
   TickerLogBatchItem,
   RuntimeDiagnostics,
   TickerRequestPayloadResponse,
+  TickerResultPayloadResponse,
   TimeTickerFlatDto,
   TimeTickerQueryFilter,
   ToggleCronTickerBody,
@@ -41,6 +42,15 @@ import type {
   BulkActionResponse,
   CancelTickerCommand,
   CancellationResponse,
+  TestRunRequest,
+  TestRunChainResponse,
+  TestRunResponse,
+  SavedTickerDefinition,
+  SavedTickerDefinitionKind,
+  SavedTickerDefinitionTarget,
+  SaveTickerDefinitionRequest,
+  UpdateTickerDefinitionRequest,
+  SaveExistingTickerDefinitionRequest,
 } from "./api-types";
 
 const API_BASE = "/api/dashboard";
@@ -191,6 +201,8 @@ export const dashboardApi = {
     get<TimeTickerFlatDto[]>(`/time-tickers/${id}/children`, signal),
   getTimeTickerRequest: (id: string, signal?: AbortSignal) =>
     get<TickerRequestPayloadResponse>(`/time-tickers/${id}/request`, signal),
+  getTimeTickerResult: (id: string, signal?: AbortSignal) =>
+    get<TickerResultPayloadResponse>(`/time-tickers/${id}/result`, signal),
 
   // Cron tickers
   queryCronTickers: (f: CronTickerQueryFilter, signal?: AbortSignal) =>
@@ -241,6 +253,21 @@ export const dashboardApi = {
     ),
   getAllFunctions: (signal?: AbortSignal) =>
     get<FunctionInfoDto[]>("/functions", signal),
+
+  // Reusable templates and non-executable time-ticker drafts
+  getDefinitions: (
+    kind?: SavedTickerDefinitionKind,
+    target?: SavedTickerDefinitionTarget,
+    signal?: AbortSignal
+  ) => {
+    const query = new URLSearchParams();
+    if (kind) query.set("kind", kind);
+    if (target) query.set("target", target);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return get<SavedTickerDefinition[]>(`/definitions${suffix}`, signal);
+  },
+  getDefinition: (id: string, signal?: AbortSignal) =>
+    get<SavedTickerDefinition>(`/definitions/${id}`, signal),
 
   // Host
   getHostStatus: (signal?: AbortSignal) =>
@@ -295,6 +322,18 @@ export const dashboardApi = {
   stopHost: () => post<void>("/host/stop"),
   restartHost: () => post<void>("/host/restart"),
 
+  createDefinition: (body: SaveTickerDefinitionRequest) =>
+    post<SavedTickerDefinition>("/definitions", body),
+  updateDefinition: (id: string, body: UpdateTickerDefinitionRequest) =>
+    put<SavedTickerDefinition>(`/definitions/${id}`, body),
+  deleteDefinition: (id: string, version: number) => del<void>(`/definitions/${id}?version=${version}`),
+  saveTimeTickerAsTemplate: (id: string, body: SaveExistingTickerDefinitionRequest) =>
+    post<SavedTickerDefinition>(`/definitions/from-time-ticker/${id}`, body),
+  saveCronTickerAsTemplate: (id: string, body: SaveExistingTickerDefinitionRequest) =>
+    post<SavedTickerDefinition>(`/definitions/from-cron-ticker/${id}`, body),
+  activateDraft: (id: string, version: number, executionTime?: string | null) =>
+    post<AddTimeTickerChainResponse>(`/definitions/${id}/activate`, { version, executionTime }),
+
   cancelTicker: ({ id, type, running }: CancelTickerCommand) =>
     post<CancellationResponse>(
       `/${type === "TimeTicker" ? "time-tickers" : "cron-occurrences"}/${id}/${running ? "request-cancellation" : "cancel"}`
@@ -314,6 +353,14 @@ export const dashboardApi = {
   bulkRetryExecutions: (items: BulkRetryItem[]) =>
     post<BulkActionResponse>("/executions/bulk-retry", { items }),
   runTimeTicker: (id: string) => post<void>(`/time-tickers/${id}/run`),
+  retryTimeTickerFromHere: (id: string) =>
+    post<AddTickerResponse>(`/time-tickers/${id}/retry-from-here`),
+  testRunFunction: (body: TestRunRequest) =>
+    post<TestRunResponse>("/functions/test-run", body),
+  testRunChain: (body: AddTimeTickerChainRequest) =>
+    post<TestRunChainResponse>("/functions/test-run-chain", body),
+  getTestRunChain: (id: string, signal?: AbortSignal) =>
+    get<TestRunChainResponse>(`/functions/test-run-chain/${id}`, signal),
   duplicateTimeTicker: (id: string, body?: DuplicateTimeTickerRequest) =>
     post<AddTickerResponse>(`/time-tickers/${id}/duplicate`, body),
   updateTimeTicker: (id: string, body: UpdateTimeTickerRequest) =>
@@ -330,6 +377,7 @@ export const dashboardApi = {
   toggleCronTicker: (id: string, body: ToggleCronTickerBody) =>
     post<void>(`/cron-tickers/${id}/toggle`, body),
   runCronTicker: (id: string) => post<void>(`/cron-tickers/${id}/run`),
+  rerunCronOccurrence: (id: string) => post<void>(`/cron-occurrences/${id}/run`),
   deleteCronTicker: (id: string) => del<void>(`/cron-tickers/${id}`),
 
   deleteCronOccurrence: (id: string) => del<void>(`/cron-occurrences/${id}`),

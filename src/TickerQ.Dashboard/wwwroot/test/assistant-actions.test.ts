@@ -37,11 +37,11 @@ for (const change of [{ status: "InProgress" }, { functionName: "Other" }, { exe
   });
 }
 
-test("cron retry targets source definition, keeping old occurrence", async () => {
+test("cron retry revives the exact occurrence without creating another occurrence", async () => {
   const { api, calls } = fakeApi({ getCronOccurrence: { ...current, cronTickerId: "cron-1" } });
   await applyAssistantProposal(proposal({ targetType: "CronOccurrence", cronTickerId: "cron-1" }), api);
-  assert.deepEqual(calls.map(x => x.method), ["getCronOccurrence", "runCronTicker"]);
-  assert.deepEqual(calls[1].args, ["cron-1"]);
+  assert.deepEqual(calls.map(x => x.method), ["getCronOccurrence", "rerunCronOccurrence"]);
+  assert.deepEqual(calls[1].args, ["execution-1"]);
 });
 
 for (const state of ["Idle", "Queued", "InProgress"]) {

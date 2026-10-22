@@ -138,4 +138,55 @@ public class DashboardCronRunNowTests
         await _provider.DidNotReceiveWithAnyArgs().AcquireImmediateCronOccurrencesAsync(default!, default);
         await _notifier.DidNotReceiveWithAnyArgs().AddCronOccurrenceAsync(default, default);
     }
+
+    [Fact]
+    public async Task RerunOccurrence_ReusesPersistedId_WithoutInsertingAnotherOccurrence()
+    {
+        var occurrenceId = Guid.NewGuid();
+        var rerunGeneration = Guid.NewGuid();
+        _provider.AcquireCronOccurrenceOnDemandAsync(
+                occurrenceId, Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
+            .Returns(new CronTickerOccurrenceEntity<CronTickerEntity>
+            {
+                Id = occurrenceId,
+                CronTickerId = _cron.Id,
+                CronTicker = _cron,
+                AcquisitionToken = rerunGeneration,
+                ExecutionTime = DateTime.UtcNow,
+                Status = TickerStatus.InProgress
+            });
+
+        var accepted = await OnDemandCronOccurrenceExecution.RunAsync(
+            _provider, _dispatcher, _notifier, _options.RuntimePartition.StorageKey,
+            occurrenceId, DateTime.UtcNow, CancellationToken.None);
+
+        Assert.True(accepted);
+        await _provider.DidNotReceiveWithAnyArgs()
+            .InsertCronTickerOccurrences(default!, default);
+        await _dispatcher.Received(1).DispatchAsync(
+            Arg.Is<InternalFunctionContext[]>(items =>
+                items.Length == 1 && items[0].TickerId == occurrenceId &&
+                items[0].AcquisitionToken == rerunGeneration &&
+                items[0].Type == TickerType.CronTickerOccurrence),
+            CancellationToken.None);
+        await _notifier.Received(1).UpdateCronOccurrenceAsync(_cron.Id, occurrenceId);
+    }
+
+    [Fact]
+    public async Task RerunOccurrence_LostAcquisition_DoesNotDispatchOrInsert()
+    {
+        var occurrenceId = Guid.NewGuid();
+        _provider.AcquireCronOccurrenceOnDemandAsync(
+                occurrenceId, Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
+            .Returns((CronTickerOccurrenceEntity<CronTickerEntity>)null!);
+
+        var accepted = await OnDemandCronOccurrenceExecution.RunAsync(
+            _provider, _dispatcher, _notifier, _options.RuntimePartition.StorageKey,
+            occurrenceId, DateTime.UtcNow, CancellationToken.None);
+
+        Assert.False(accepted);
+        await _dispatcher.DidNotReceiveWithAnyArgs().DispatchAsync(default!, default);
+        await _provider.DidNotReceiveWithAnyArgs()
+            .InsertCronTickerOccurrences(default!, default);
+    }
 }

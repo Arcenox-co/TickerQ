@@ -43,6 +43,7 @@ namespace TickerQ.EntityFrameworkCore.Customizer
             builder.ApplyConfiguration(new TickerQNodeConfigurations(schema));
             builder.ApplyConfiguration(new TickerQControlCommandConfigurations(schema));
             builder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
+            builder.ApplyConfiguration(new TickerQDefinitionConfigurations(schema));
             if (executionLogs) builder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
 
             // Opt-in assistant chat history tables (AddAssistantHistory()).

@@ -61,6 +61,8 @@
     --status-skipped: 27 90% 48%;
     --status-cancelled: 215 16% 45%;
     --status-queued: 262 83% 52%;
+    --condition-finally: 263 70% 50%;
+    --workflow-sync: 198 88% 38%;
 
     --success: 142 64% 36%;
     --success-foreground: 0 0% 100%;
@@ -128,6 +130,8 @@
     --status-skipped: 27 96% 61%;
     --status-cancelled: 215 16% 65%;
     --status-queued: 253 91% 76%;
+    --condition-finally: 270 95% 75%;
+    --workflow-sync: 193 95% 58%;
 
     --success: 142 71% 45%;
     --success-foreground: 210 40% 98%;
@@ -190,6 +194,8 @@
     --color-status-skipped: hsl(var(--status-skipped));
     --color-status-cancelled: hsl(var(--status-cancelled));
     --color-status-queued: hsl(var(--status-queued));
+    --color-condition-finally: hsl(var(--condition-finally));
+    --color-workflow-sync: hsl(var(--workflow-sync));
 
     --color-success: hsl(var(--success));
     --color-success-foreground: hsl(var(--success-foreground));

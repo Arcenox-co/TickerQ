@@ -21,6 +21,12 @@ namespace TickerQ.Utilities.Interfaces
         Task ReleaseAcquiredTimeTickers(Guid[] timeTickerIds, CancellationToken cancellationToken = default);
         Task<TimeTickerEntity[]> GetEarliestTimeTickers(CancellationToken cancellationToken = default);
         Task<int> UpdateTimeTicker(InternalFunctionContext functionContext, CancellationToken cancellationToken = default);
+        /// <summary>
+        /// Writes progress only when the referenced execution is still InProgress under the same
+        /// acquisition/chain generation. The fail-closed default keeps third-party providers safe.
+        /// </summary>
+        Task<bool> UpdateExecutionProgressAsync(TickerProgressUpdate update,
+            CancellationToken cancellationToken = default) => Task.FromResult(false);
         Task<byte[]> GetTimeTickerRequest(Guid id, CancellationToken cancellationToken);
         Task UpdateTimeTickersWithUnifiedContext(Guid[] timeTickerIds, InternalFunctionContext functionContext, CancellationToken cancellationToken = default);
         /// <summary>
@@ -40,6 +46,27 @@ namespace TickerQ.Utilities.Interfaces
         /// </summary>
         Task<TimeTickerEntity> AcquireTimeTickerOnDemandAsync(Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
             => Task.FromResult<TimeTickerEntity>(null);
+        /// <summary>
+        /// Atomically acquires the persisted chain containing <paramref name="id"/> for an in-place
+        /// retry. The selected step and every affected downstream step are reset under a fresh chain
+        /// generation while completed ancestors and unaffected grouped branches remain durable history.
+        /// The returned acquisition contains the original chain root and its original IDs together
+        /// with the root's pre-retry outcome. Implementations must reject active or incomplete
+        /// chains and return <c>null</c> when another caller wins.
+        /// </summary>
+        Task<TimeTickerChainRetryAcquisition<TTimeTicker>> AcquireTimeTickerChainRetryAsync(
+            Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
+            => Task.FromResult<TimeTickerChainRetryAcquisition<TTimeTicker>>(null);
+        /// <summary>
+        /// Fences a chain retry that was durably acquired but could not begin execution. The
+        /// original root becomes Failed and every still-pending job in that retry generation
+        /// becomes Skipped, so ordinary recovery can never rerun completed ancestors as user code.
+        /// Providers that implement <see cref="AcquireTimeTickerChainRetryAsync"/> must implement
+        /// this operation with the same aggregate/generation compare-and-swap boundary.
+        /// </summary>
+        Task<bool> AbortTimeTickerChainRetryAsync(Guid rootId, Guid generation, string reason,
+            DateTime abortedAt, CancellationToken cancellationToken = default)
+            => Task.FromResult(false);
         /// <summary>
         /// Explicitly validates and repairs persisted TimeTicker chain root/generation metadata.
         /// Malformed parent graphs must fail before any mutation. Providers predating this contract
@@ -468,6 +495,14 @@ namespace TickerQ.Utilities.Interfaces
         Task<int> InsertCronTickerOccurrences(CronTickerOccurrenceEntity<TCronTicker>[] cronTickerOccurrences, CancellationToken cancellationToken);
         Task<int> RemoveCronTickerOccurrences(Guid[] cronTickerOccurrences, CancellationToken cancellationToken);
         Task<CronTickerOccurrenceEntity<TCronTicker>[]> AcquireImmediateCronOccurrencesAsync(Guid[] occurrenceIds, CancellationToken cancellationToken = default);
+        /// <summary>
+        /// Atomically revives one standalone cron occurrence under its existing id. Implementations
+        /// clear prior result, error, progress and ownership state, reject active or chain-backed
+        /// occurrences, and return null when another caller wins.
+        /// </summary>
+        Task<CronTickerOccurrenceEntity<TCronTicker>> AcquireCronOccurrenceOnDemandAsync(
+            Guid occurrenceId, DateTime executionTime, CancellationToken cancellationToken = default)
+            => Task.FromResult<CronTickerOccurrenceEntity<TCronTicker>>(null);
         #endregion
     }
 

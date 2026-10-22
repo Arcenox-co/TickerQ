@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MongoDB.Bson;
@@ -44,6 +45,7 @@ namespace TickerQ.MongoDB.Indexes
             await CreateResultIndexes(cancellationToken).ConfigureAwait(false);
             await CreateNodeFinalizationIndexes(cancellationToken).ConfigureAwait(false);
             await CreateClusterControlIndexes(cancellationToken).ConfigureAwait(false);
+            await CreateDefinitionIndexes(cancellationToken).ConfigureAwait(false);
             await ProbeTransactionsAndMarkReadyAsync(fence, cancellationToken).ConfigureAwait(false);
         }
 
@@ -227,6 +229,47 @@ namespace TickerQ.MongoDB.Indexes
                     keys.Ascending("Partition").Ascending("Kind").Ascending("ExpiresAtUtc"),
                     new CreateIndexOptions { Name = "IX_ClusterControl_Expiry" })
             }, ct);
+        }
+
+        private async Task CreateDefinitionIndexes(CancellationToken ct)
+        {
+            var definitions = await _context.Definitions.Find(Builders<TickerQ.Utilities.Models.SavedTickerDefinition>.Filter.Empty)
+                .ToListAsync(ct).ConfigureAwait(false);
+            var duplicate = definitions
+                .Select(row => new
+                {
+                    Row = row,
+                    Key = TickerQ.Utilities.Models.SavedTickerDefinitionNames.CreateKey(
+                        row.Kind, row.Target, row.Name, row.Id),
+                })
+                .GroupBy(item => new { item.Row.ApplicationNamespaceKey, item.Key })
+                .FirstOrDefault(group => group.Count() > 1);
+            if (duplicate != null)
+                throw new TickerQ.Utilities.Models.DuplicateSavedTickerDefinitionNameException(
+                    duplicate.First().Row.Name);
+            foreach (var item in definitions.Where(row => string.IsNullOrEmpty(row.NameKey)))
+            {
+                var nameKey = TickerQ.Utilities.Models.SavedTickerDefinitionNames.CreateKey(
+                    item.Kind, item.Target, item.Name, item.Id);
+                await _context.Definitions.UpdateOneAsync(
+                    Builders<TickerQ.Utilities.Models.SavedTickerDefinition>.Filter.And(
+                        Builders<TickerQ.Utilities.Models.SavedTickerDefinition>.Filter.Eq(x => x.ApplicationNamespaceKey, item.ApplicationNamespaceKey),
+                        Builders<TickerQ.Utilities.Models.SavedTickerDefinition>.Filter.Eq(x => x.Id, item.Id)),
+                    Builders<TickerQ.Utilities.Models.SavedTickerDefinition>.Update.Set(x => x.NameKey, nameKey),
+                    cancellationToken: ct).ConfigureAwait(false);
+            }
+
+            var keys = Builders<TickerQ.Utilities.Models.SavedTickerDefinition>.IndexKeys;
+            await _context.Definitions.Indexes.CreateManyAsync(new[]
+            {
+                new CreateIndexModel<TickerQ.Utilities.Models.SavedTickerDefinition>(
+                    keys.Ascending(x => x.ApplicationNamespaceKey).Ascending(x => x.Kind)
+                        .Ascending(x => x.Target).Descending(x => x.UpdatedAtUtc),
+                    new CreateIndexOptions { Name = "IX_TickerQDefinitions_List" }),
+                new CreateIndexModel<TickerQ.Utilities.Models.SavedTickerDefinition>(
+                    keys.Ascending(x => x.ApplicationNamespaceKey).Ascending(x => x.NameKey),
+                    new CreateIndexOptions { Name = "UX_TickerQDefinitions_Name", Unique = true }),
+            }, cancellationToken: ct).ConfigureAwait(false);
         }
     }
 }

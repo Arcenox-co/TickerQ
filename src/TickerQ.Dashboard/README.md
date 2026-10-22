@@ -205,9 +205,35 @@ The frontend automatically adapts based on your backend configuration:
 
 That's it! Simple and clean. 🎉
 
+## Saved templates, drafts, and tests
+
+The dashboard can save a complete chain as a reusable template. Templates keep
+the schedule configuration and graph shape; request payloads are optional so teams can avoid
+copying customer data or secrets. Existing time and cron chains expose **Save template**, and the
+chain builder lists saved templates alongside its starter layouts. Saved templates can be opened
+in the chain builder and updated in place with optimistic version checks. Template names are unique
+per application namespace and scheduler type; matching ignores case and repeated whitespace. The
+**Saved work** view can search definitions and sort them by creation date.
+
+Time-ticker drafts are saved definitions, not ticker rows. The scheduler cannot acquire them and
+they do not appear as `Idle` jobs. A draft can be edited and later activated; activation publishes
+the complete time-ticker graph once using a durable, versioned claim that is safe across dashboard
+replicas. Leaving a new time-ticker builder can save the work as a draft; a configured chain can
+also be saved as a template. Cron chains use templates rather than drafts.
+
+**Test once** and **Test chain** execute the selected functions through the normal execution path
+but retain their state only in the bounded test-run registry used by the current dashboard view.
+They do not create a time ticker, cron ticker, or cron occurrence. Use **Run now** when durable
+execution history is required.
+
+EF Core deployments must add the `TickerQDefinitions` table from the current model before starting
+the upgraded runtime. MongoDB provisions its collection/index, Redis uses partition-scoped keys,
+and the in-memory provider retains saved definitions only for the lifetime of the process. See the
+[store upgrade guide](../../docs/upgrading-cron-time-tickers.md#add-saved-templates-and-drafts).
+
 ## Manual cron runs
 
-**Run now** creates a separate occurrence and dispatches it immediately through the scheduler's worker queue. Bulk retry of a cron occurrence uses the same path. Both respect worker capacity and per-function concurrency limits; they do not change the cron expression or replace its next scheduled occurrence.
+**Run now** on a cron definition creates a separate occurrence and dispatches it immediately through the scheduler's worker queue. **Re-run** on an existing occurrence instead revives that occurrence in place, preserving its ID and replacing its previous status, progress, error and result. A recurring-chain occurrence retries its existing durable graph. Neither action changes the cron expression or replaces its next scheduled occurrence.
 
 Successful manual runs finish as **Done**. **DueDone** means overdue work completed successfully through the fallback scanner, for example after an outage. Existing execution history keeps its original status. The scheduler must be running and the license must permit execution to accept an immediate run.
 
@@ -269,9 +295,9 @@ state. Integration proposals retain the configuration version and fail on concur
 edits. Read-only users receive no proposal tools.
 
 A running cancellation requests cooperation through the handler's cancellation token;
-it does not prove that the job stopped. Retrying a cron execution creates a fresh
-occurrence using the current cron definition, while retrying a time ticker re-runs
-that ticker, without resetting an entire chain. Deletion cards explain their permanent
+it does not prove that the job stopped. Retrying a cron occurrence or standalone time
+ticker reuses its persisted execution ID. Retrying a recurring-chain occurrence resets
+and dispatches its existing durable graph. Deletion cards explain their permanent
 effect. Monitors track individual function executions, including chain steps, rather
 than completion of a whole workflow.
 

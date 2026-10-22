@@ -20,7 +20,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
     internal partial class TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker> :
         BasePersistenceProvider<TDbContext, TTimeTicker, TCronTicker>,
-        ITickerPersistenceProvider<TTimeTicker, TCronTicker>
+        ITickerPersistenceProvider<TTimeTicker, TCronTicker>, ITickerDefinitionStore
         where TDbContext : DbContext
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
@@ -1124,6 +1124,66 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .Include(x => x.CronTicker)
                 .ToArrayAsync(ct)
                 .ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<CronTickerOccurrenceEntity<TCronTicker>> AcquireCronOccurrenceOnDemandAsync(
+            Guid occurrenceId, DateTime executionTime, CancellationToken cancellationToken = default)
+        {
+            return await ExecuteRunnableAdmissionAsync(
+                (CronTickerOccurrenceEntity<TCronTicker>)null, async (dbContext, ct) =>
+            {
+                var now = _clock.UtcNow;
+                var acquisitionToken = Guid.NewGuid();
+                var affected = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                                x.Id == occurrenceId && x.ChainRootId == null)
+                    .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
+                    .Where(x => x.Status == TickerStatus.Idle ||
+                                (x.Status == TickerStatus.Queued &&
+                                 (x.LockHolder == null || x.LockHolder == _lockHolder)) ||
+                                ((x.Status == TickerStatus.Done ||
+                                  x.Status == TickerStatus.DueDone ||
+                                  x.Status == TickerStatus.Failed ||
+                                  x.Status == TickerStatus.Cancelled ||
+                                  x.Status == TickerStatus.Skipped) &&
+                                 x.AcquisitionToken == null &&
+                                 (x.LeaseUntil == null || x.LeaseUntil <= now)))
+                    .ExecuteUpdateAsync(setter => setter
+                        .SetProperty(x => x.ExecutionTime, executionTime)
+                        .SetProperty(x => x.Status, TickerStatus.InProgress)
+                        .SetProperty(x => x.LockHolder, _lockHolder)
+                        .SetProperty(x => x.LockedAt, now)
+                        .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
+                        .SetProperty(x => x.AcquisitionToken, acquisitionToken)
+                        .SetProperty(x => x.RetryCount, 0)
+                        .SetProperty(x => x.ExceptionMessage, (string)null)
+                        .SetProperty(x => x.SkippedReason, (string)null)
+                        .SetProperty(x => x.ExecutedAt, (DateTime?)null)
+                        .SetProperty(x => x.ElapsedTime, 0L)
+                        .SetProperty(x => x.StaleRestartCount, 0)
+                        .SetProperty(x => x.ProgressPercent, (double?)null)
+                        .SetProperty(x => x.ProgressMessage, (string)null)
+                        .SetProperty(x => x.ProgressUpdatedAt, (DateTime?)null)
+                        .SetProperty(x => x.UpdatedAt, now), ct)
+                    .ConfigureAwait(false);
+
+                if (affected != 1)
+                    return null;
+
+                await dbContext.Set<CronTickerOccurrenceResultEntity<TCronTicker>>()
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                                x.TickerId == occurrenceId)
+                    .ExecuteDeleteAsync(ct)
+                    .ConfigureAwait(false);
+
+                return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                    .AsNoTracking()
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
+                                x.Id == occurrenceId && x.AcquisitionToken == acquisitionToken)
+                    .Include(x => x.CronTicker)
+                    .SingleAsync(ct)
+                    .ConfigureAwait(false);
             }, cancellationToken).ConfigureAwait(false);
         }
 

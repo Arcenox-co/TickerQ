@@ -13,18 +13,20 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Infrastructure;
 
-internal enum TickerLifecycleEvent : byte { None, Created, Queued, Started, RetryScheduled, Completed, ChainLaunched }
+internal enum TickerLifecycleEvent : byte { None, Created, Queued, Started, RetryScheduled, Completed, ChainLaunched, Progress }
 
 /// <summary>Best-effort lifecycle diagnostics, sharing the application's bounded execution-log tail.</summary>
 internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, ExecutionLogOptions options, ITickerClock clock)
 {
     internal bool Enabled => options.Enabled && options.IncludeLifecycleEvents;
 
-    public void Created(Guid id, string function, TickerType type, DateTime createdAt, string partition)
+    public void Created(Guid id, string function, TickerType type, DateTime createdAt, string partition,
+        bool isEphemeral = false)
     {
         if (!IsEnabled(LogLevel.Information)) return;
         Write(new InternalFunctionContext { TickerId = id, FunctionName = function, Type = type,
-            RuntimePartitionKey = partition }, TickerLifecycleEvent.Created, TickerStatus.Idle,
+            RuntimePartitionKey = partition, IsTestRun = isEphemeral },
+            TickerLifecycleEvent.Created, TickerStatus.Idle,
             type == TickerType.CronTickerOccurrence ? "Cron occurrence created." : "Job created.", createdAt);
     }
 
@@ -56,6 +58,19 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
         if (!IsEnabled(LogLevel.Warning)) return;
         Write(context, TickerLifecycleEvent.RetryScheduled, TickerStatus.InProgress,
             $"Retry {attempt}/{context.Retries} scheduled in {delaySeconds}s." + Reason(context.ExceptionDetails), attempt: attempt);
+    }
+
+    public void Progress(InternalFunctionContext context, TickerProgressUpdate update)
+    {
+        if (!IsEnabled(LogLevel.Information)) return;
+        var percent = update.Percent.ToString("0.##", CultureInfo.InvariantCulture);
+        var message = update.Message?.Trim();
+        var duplicateSuffix = $"{percent}%";
+        if (message?.EndsWith(duplicateSuffix, StringComparison.Ordinal) == true)
+            message = message[..^duplicateSuffix.Length].TrimEnd();
+        var detail = string.IsNullOrWhiteSpace(message) ? "" : $" — {message}";
+        Write(context, TickerLifecycleEvent.Progress, TickerStatus.InProgress,
+            $"Progress {percent}%{detail}", update.UpdatedAtUtc, eventId: Guid.NewGuid());
     }
 
     public void Committed(InternalFunctionContext context)
@@ -107,7 +122,7 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
     }
 
     private void Write(InternalFunctionContext context, TickerLifecycleEvent kind, TickerStatus status,
-        string message, DateTime? timestamp = null, int? attempt = null)
+        string message, DateTime? timestamp = null, int? attempt = null, Guid? eventId = null)
     {
         try
         {
@@ -117,10 +132,11 @@ internal sealed class TickerLifecycleLogger(ITickerExecutionLogStore store, Exec
             // attempt remains distinct, including cron triggers sharing an ID with a chain root.
             store.Add(new TickerExecutionLogLine
             {
-                Id = CreateEventId(context, kind, status, attempt), TickerId = context.TickerId,
+                Id = eventId ?? CreateEventId(context, kind, status, attempt), TickerId = context.TickerId,
                 UnixMs = new DateTimeOffset(DateTime.SpecifyKind(timestamp ?? clock.UtcNow, DateTimeKind.Utc)).ToUnixTimeMilliseconds(),
                 Level = (int)level, Category = "TickerQ.Scheduler", FunctionName = context.FunctionName ?? "",
                 Message = options.Redact == null ? message : options.Redact(message) ?? "",
+                IsEphemeral = context.IsTestRun,
                 LifecycleEvent = kind, Status = status, Attempt = kind == TickerLifecycleEvent.Created ? 0 : (attempt ?? context.RetryCount) + 1
             });
         }

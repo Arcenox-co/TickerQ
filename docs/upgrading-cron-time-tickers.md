@@ -124,7 +124,14 @@ The generated model must include:
 - TimeTicker:
   - nullable `ChainRootId` during rollout/backfill;
   - nullable `ChainGeneration`, preserving the root's exact fencing token during repair;
+  - nullable `ChainRetryFromId` and `ChainRetryPreviousStatus`, which preserve an active
+    in-place chain retry across node failure and are cleared when that retry reaches a terminal state;
+  - nullable `ProgressPercent`, `ProgressMessage` (maximum 500 characters), and
+    `ProgressUpdatedAt` for generation-fenced execution progress;
   - indexes used by parent traversal, chain traversal, retention, and acquisition.
+- CronTickerOccurrence:
+  - nullable `ProgressPercent`, `ProgressMessage` (maximum 500 characters), and
+    `ProgressUpdatedAt` for generation-fenced execution progress.
 - The singleton `TickerQStoreMetadata` row, including schema/data versions, optimistic-concurrency
   `Version`, durable `ActivationEpoch`, `ActivationPhase`, and nullable `ActivationCheckpoint`.
   The metadata `Id` column must allow 80 characters, including the full runtime activation key.
@@ -132,6 +139,12 @@ The generated model must include:
 - The `TickerQNodes` heartbeat table and `TickerQControlCommands` durable control table. Both
   use `ApplicationNamespaceKey` as the leading key/index column; the control command lookup
   index also includes target node, status, and request time.
+- The `TickerQDefinitions` table used by dashboard templates and non-executable time-ticker
+  drafts. Its composite key starts with `ApplicationNamespaceKey`; its list index includes
+  namespace, definition kind, target, and creation time. `NameKey` is required and has a unique
+  index with `ApplicationNamespaceKey`; it prevents equivalent template names from being saved
+  concurrently while allowing draft names to repeat. The JSON column stores configuration only.
+  Drafts never enter the TimeTicker table until activation succeeds.
 
 The repository's ApplicationDbContext, Console, and WebApi samples contain reviewed host-owned
 `ApplicationRuntimePartitioning` migrations and matching snapshots. Consumers must generate and
@@ -189,6 +202,23 @@ These tables contain instance identity and scheduler counters, optional dashboar
 short-lived cancellation commands. They do not contain job payloads or handler results.
 Keep both tables partitioned by `ApplicationNamespaceKey`. Do not make `NodeIdentifier` unique:
 replicas may share a logical node label, while `NodeKey` identifies the individual process.
+
+### Add saved templates and drafts
+
+Generate `TickerQDefinitions` from the current EF model in the same application-owned migration.
+The table stores reusable chain configurations and time-ticker drafts. It does not
+store execution status, locks, logs, or results. Draft activation uses an optimistic version and a
+durable activation claim; this prevents two dashboard nodes from publishing the same draft twice.
+
+Template names are unique within an application namespace and scheduler target. The current model
+stores a normalized, hashed `NameKey` and enforces it with `UX_TickerQDefinitions_Name`. If an
+earlier development migration created `TickerQDefinitions` without that column, add a follow-up
+migration (or recreate the disposable development database) before starting the updated runtime.
+
+Do not model `Draft` as a new `TickerStatus`. A draft is not runnable scheduler work and therefore
+must remain outside `TimeTickers` until the user activates it. Cron definitions can be saved as
+templates, but do not use drafts: the dashboard's **Test once** and **Test chain** actions run the
+selected functions ephemerally without inserting a cron definition or occurrence.
 
 ### Startup and data repair
 

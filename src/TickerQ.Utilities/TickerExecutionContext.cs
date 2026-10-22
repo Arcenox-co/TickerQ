@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using Microsoft.Extensions.Hosting;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities;
@@ -59,7 +60,13 @@ internal class TickerExecutionContext
 
       while (pending.TryPop(out var context))
       {
-         if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
+         if (TickerChainInfrastructure.IsParallelGroup(context.FunctionName))
+         {
+            context.CachedDelegate = TickerChainInfrastructure.ParallelGroupDelegate;
+            context.CachedPriority = TickerTaskPriority.Normal;
+            context.CachedMaxConcurrency = 0;
+         }
+         else if (TickerFunctionProvider.TickerFunctions.TryGetValue(context.FunctionName, out var tickerItem))
          {
             context.CachedDelegate = tickerItem.Delegate;
             context.CachedPriority = tickerItem.Priority;

@@ -10,6 +10,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
 using Xunit;
 
@@ -378,6 +379,181 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
         Assert.Equal(18, acquiredChild.TimeoutSeconds);
         var acquiredGrandchild = Assert.Single(acquiredChild.Children);
         Assert.Equal(19, acquiredGrandchild.TimeoutSeconds);
+    }
+
+    [Fact]
+    public async Task AcquireTimeTickerChainRetry_PreservesIdsAndResetsSelectedGroupDownstreamOnly()
+    {
+        var root = CreateTicker(function: "Prepare");
+        root.Status = TickerStatus.Done;
+        var group = CreateTicker(function: TickerChainInfrastructure.ParallelGroupFunction,
+            parentId: root.Id, useDefaultExecutionTime: false);
+        group.Status = TickerStatus.Failed;
+        group.RunCondition = RunCondition.OnSuccess;
+        var selected = CreateTicker(function: "Charge", parentId: group.Id, useDefaultExecutionTime: false);
+        selected.Status = TickerStatus.Failed;
+        selected.RunCondition = RunCondition.GroupOnSuccess;
+        var selectedChild = CreateTicker(function: "Receipt", parentId: selected.Id, useDefaultExecutionTime: false);
+        selectedChild.Status = TickerStatus.Skipped;
+        selectedChild.RunCondition = RunCondition.OnSuccess;
+        selected.Children.Add(selectedChild);
+        var completedSibling = CreateTicker(function: "Inventory", parentId: group.Id, useDefaultExecutionTime: false);
+        completedSibling.Status = TickerStatus.Done;
+        completedSibling.RunCondition = RunCondition.GroupOnSuccess;
+        var successJoin = CreateTicker(function: "Complete", parentId: group.Id, useDefaultExecutionTime: false);
+        successJoin.Status = TickerStatus.Skipped;
+        successJoin.RunCondition = RunCondition.OnSuccess;
+        var failureJoin = CreateTicker(function: "Compensate", parentId: group.Id, useDefaultExecutionTime: false);
+        failureJoin.Status = TickerStatus.Done;
+        failureJoin.RunCondition = RunCondition.OnFailure;
+        group.Children.Add(selected);
+        group.Children.Add(completedSibling);
+        group.Children.Add(successJoin);
+        group.Children.Add(failureJoin);
+        root.Children.Add(group);
+        await InsertAndTrack(root);
+
+        var acquired = await _provider.AcquireTimeTickerChainRetryAsync(
+            selected.Id, _now, CancellationToken.None);
+
+        Assert.NotNull(acquired);
+        Assert.Equal(TickerStatus.Done, acquired.PreviousRootStatus);
+        Assert.Equal(selected.Id, acquired.SelectedId);
+        Assert.Equal(root.Id, acquired.Root.Id);
+        Assert.Equal(TickerStatus.InProgress, acquired.Root.Status);
+        Assert.Equal(selected.Id, acquired.Root.ChainRetryFromId);
+        Assert.Equal(TickerStatus.Done, acquired.Root.ChainRetryPreviousStatus);
+        var generation = Assert.IsType<Guid>(acquired.Root.ChainGeneration);
+        Assert.Equal(generation, acquired.Root.AcquisitionToken);
+        var acquiredGroup = Assert.Single(acquired.Root.Children);
+        Assert.Equal(group.Id, acquiredGroup.Id);
+        Assert.Equal(TickerStatus.Idle, acquiredGroup.Status);
+        var byId = acquiredGroup.Children.ToDictionary(x => x.Id);
+        Assert.Equal(TickerStatus.Idle, byId[selected.Id].Status);
+        Assert.Equal(TickerStatus.Idle, Assert.Single(byId[selected.Id].Children).Status);
+        Assert.Equal(TickerStatus.Done, byId[completedSibling.Id].Status);
+        Assert.Equal(TickerStatus.Idle, byId[successJoin.Id].Status);
+        Assert.Equal(TickerStatus.Idle, byId[failureJoin.Id].Status);
+        Assert.All(new[] { acquired.Root, acquiredGroup }.Concat(acquiredGroup.Children),
+            row => Assert.Equal(generation, row.ChainGeneration));
+
+        var execution = TimeTickerChainRetryPlanner.BuildExecutionContext(acquired, "test-partition");
+        Assert.True(execution.IsChainRetryRoot);
+        Assert.True(execution.IsChainRetryCoordinator);
+        var executionGroup = Assert.Single(execution.TimeTickerChildren);
+        var executionById = executionGroup.TimeTickerChildren.ToDictionary(x => x.TickerId);
+        Assert.Equal(RunCondition.InProgress, executionById[selected.Id].RunCondition);
+        Assert.True(executionById[completedSibling.Id].IsChainRetryReusedTerminal);
+        Assert.Equal(RunCondition.GroupOnSuccess, executionById[completedSibling.Id].RunCondition);
+        Assert.Null(await _provider.AcquireTimeTickerChainRetryAsync(
+            selected.Id, _now, CancellationToken.None));
+
+        Assert.True(await _provider.AbortTimeTickerChainRetryAsync(
+            root.Id, generation, "Queue admission failed.", _now, CancellationToken.None));
+        var aborted = await _provider.GetTimeTickerById(root.Id);
+        Assert.Equal(TickerStatus.Failed, aborted.Status);
+        Assert.Null(aborted.ChainRetryFromId);
+        Assert.Null(aborted.ChainRetryPreviousStatus);
+        Assert.Equal("Queue admission failed.", aborted.ExceptionMessage);
+        var abortedGroup = Assert.Single(aborted.Children);
+        Assert.Equal(TickerStatus.Skipped, abortedGroup.Status);
+        var abortedById = abortedGroup.Children.ToDictionary(x => x.Id);
+        Assert.Equal(TickerStatus.Skipped, abortedById[selected.Id].Status);
+        Assert.Equal(TickerStatus.Done, abortedById[completedSibling.Id].Status);
+        Assert.Equal(TickerStatus.Skipped, abortedById[successJoin.Id].Status);
+        Assert.Equal(TickerStatus.Skipped, abortedById[failureJoin.Id].Status);
+        Assert.All(new[] { aborted, abortedGroup }.Concat(abortedGroup.Children),
+            row => Assert.Null(row.AcquisitionToken));
+        Assert.False(await _provider.AbortTimeTickerChainRetryAsync(
+            root.Id, generation, "duplicate", _now, CancellationToken.None));
+
+        var groupRetry = await _provider.AcquireTimeTickerChainRetryAsync(
+            group.Id, _now, CancellationToken.None);
+        Assert.NotNull(groupRetry);
+        var groupRetryExecution = Assert.Single(
+            TimeTickerChainRetryPlanner.BuildExecutionContext(groupRetry, "test-partition")
+                .TimeTickerChildren);
+        Assert.Equal(group.Id, groupRetryExecution.TickerId);
+        Assert.All(groupRetryExecution.TimeTickerChildren,
+            child => Assert.False(child.IsChainRetryReusedTerminal));
+    }
+
+    [Fact]
+    public async Task AcquireTimeTickerChainRetry_SelectedGroupOutcome_DoesNotReplaySiblingOutcomes()
+    {
+        var root = CreateTicker(function: "Prepare");
+        root.Status = TickerStatus.Failed;
+        var group = CreateTicker(function: TickerChainInfrastructure.ParallelGroupFunction,
+            parentId: root.Id, useDefaultExecutionTime: false);
+        group.Status = TickerStatus.Failed;
+        group.RunCondition = RunCondition.OnSuccess;
+        var failedBranch = CreateTicker(function: "Charge", parentId: group.Id,
+            useDefaultExecutionTime: false);
+        failedBranch.Status = TickerStatus.Failed;
+        failedBranch.RunCondition = RunCondition.GroupOnSuccess;
+        var selectedOutcome = CreateTicker(function: "NotifyBilling", parentId: group.Id,
+            useDefaultExecutionTime: false);
+        selectedOutcome.Status = TickerStatus.Done;
+        selectedOutcome.RunCondition = RunCondition.OnFailure;
+        var siblingOutcome = CreateTicker(function: "NotifyOperations", parentId: group.Id,
+            useDefaultExecutionTime: false);
+        siblingOutcome.Status = TickerStatus.Done;
+        siblingOutcome.RunCondition = RunCondition.OnFailure;
+        group.Children.Add(failedBranch);
+        group.Children.Add(selectedOutcome);
+        group.Children.Add(siblingOutcome);
+        root.Children.Add(group);
+        await InsertAndTrack(root);
+
+        var acquired = await _provider.AcquireTimeTickerChainRetryAsync(
+            selectedOutcome.Id, _now, CancellationToken.None);
+
+        Assert.NotNull(acquired);
+        var acquiredGroup = Assert.Single(acquired.Root.Children);
+        Assert.Equal(TickerStatus.Failed, acquiredGroup.Status);
+        var persistedById = acquiredGroup.Children.ToDictionary(child => child.Id);
+        Assert.Equal(TickerStatus.Idle, persistedById[selectedOutcome.Id].Status);
+        Assert.Equal(TickerStatus.Done, persistedById[siblingOutcome.Id].Status);
+        Assert.Equal(TickerStatus.Failed, persistedById[failedBranch.Id].Status);
+
+        var execution = TimeTickerChainRetryPlanner.BuildExecutionContext(acquired, "test-partition");
+        var executionGroup = Assert.Single(execution.TimeTickerChildren);
+        Assert.True(executionGroup.IsChainRetryPassThrough);
+        Assert.Equal(TickerStatus.Failed, executionGroup.Status);
+        var selectedExecution = Assert.Single(executionGroup.TimeTickerChildren);
+        Assert.Equal(selectedOutcome.Id, selectedExecution.TickerId);
+        Assert.Equal(RunCondition.InProgress, selectedExecution.RunCondition);
+    }
+
+    [Fact]
+    public async Task AcquireTimeTickerChainRetry_SelectedRoot_ClearsDurableMarkerOnTerminalWrite()
+    {
+        var root = CreateTicker(function: "Prepare");
+        root.Status = TickerStatus.Done;
+        var child = CreateTicker(function: "Notify", parentId: root.Id, useDefaultExecutionTime: false);
+        child.Status = TickerStatus.Done;
+        root.Children.Add(child);
+        await InsertAndTrack(root);
+
+        var acquired = await _provider.AcquireTimeTickerChainRetryAsync(
+            root.Id, _now, CancellationToken.None);
+
+        Assert.NotNull(acquired);
+        var execution = TimeTickerChainRetryPlanner.BuildExecutionContext(acquired, "test-partition");
+        Assert.True(execution.IsChainRetryRoot);
+        Assert.False(execution.IsChainRetryCoordinator);
+        Assert.Equal(TickerStatus.Done, execution.ChainRetryPreviousStatus);
+        execution.ResetUpdateProps()
+            .SetProperty(x => x.Status, TickerStatus.Done)
+            .SetProperty(x => x.ExecutedAt, _now)
+            .SetProperty(x => x.ElapsedTime, 1L)
+            .SetProperty(x => x.ReleaseLock, true);
+
+        Assert.Equal(1, await _provider.UpdateTimeTicker(execution, CancellationToken.None));
+        var persisted = await _provider.GetTimeTickerById(root.Id, CancellationToken.None);
+        Assert.Equal(TickerStatus.Done, persisted.Status);
+        Assert.Null(persisted.ChainRetryFromId);
+        Assert.Null(persisted.ChainRetryPreviousStatus);
     }
 
     [Theory]
@@ -1926,6 +2102,43 @@ public class TickerInMemoryPersistenceProviderTimeTickerTests : IAsyncLifetime
         var retrievedInProgress = await _provider.GetTimeTickerById(inProgressTicker.Id, CancellationToken.None);
         Assert.Equal(TickerStatus.Skipped, retrievedInProgress.Status);
         Assert.Equal("Node is not alive!", retrievedInProgress.SkippedReason);
+    }
+
+    [Fact]
+    public async Task ExecutionProgress_AcceptsCurrentGenerationAndRejectsStaleGeneration()
+    {
+        var ticker = await InsertAndTrack(CreateTicker());
+        var acquired = Assert.Single(await _provider.AcquireImmediateTimeTickersAsync([ticker.Id]));
+        var firstUpdate = new TickerProgressUpdate
+        {
+            TickerId = ticker.Id,
+            Type = TickerType.TimeTicker,
+            ChainRootId = ticker.Id,
+            ChainGeneration = acquired.ChainGeneration,
+            AcquisitionToken = acquired.AcquisitionToken,
+            Percent = 37.5,
+            Message = "Processed 375 records",
+            UpdatedAtUtc = _now.AddSeconds(1)
+        };
+
+        Assert.True(await _provider.UpdateExecutionProgressAsync(firstUpdate));
+        var stored = await _provider.GetTimeTickerById(ticker.Id);
+        Assert.Equal(37.5, stored.ProgressPercent);
+        Assert.Equal("Processed 375 records", stored.ProgressMessage);
+
+        Assert.False(await _provider.UpdateExecutionProgressAsync(new TickerProgressUpdate
+        {
+            TickerId = ticker.Id,
+            Type = TickerType.TimeTicker,
+            ChainRootId = ticker.Id,
+            ChainGeneration = acquired.ChainGeneration,
+            AcquisitionToken = Guid.NewGuid(),
+            Percent = 90,
+            UpdatedAtUtc = _now.AddSeconds(2)
+        }));
+
+        stored = await _provider.GetTimeTickerById(ticker.Id);
+        Assert.Equal(37.5, stored.ProgressPercent);
     }
 
     #endregion

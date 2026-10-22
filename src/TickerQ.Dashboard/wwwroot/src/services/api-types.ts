@@ -17,7 +17,14 @@ export type RunCondition =
   | "OnCancelled"
   | "OnFailureOrCancelled"
   | "OnAnyCompletedStatus"
-  | "InProgress";
+  | "InProgress"
+  | "OnAnyTerminalStatus"
+  | "GroupOnSuccess"
+  | "GroupOnFailure"
+  | "GroupOnCancelled"
+  | "GroupOnFailureOrCancelled"
+  | "GroupOnAnyCompletedStatus"
+  | "GroupOnAnyTerminalStatus";
 
 // Matches the C# enum member names exactly (JsonStringEnumConverter):
 // TimeTicker | CronOccurrence.
@@ -64,6 +71,8 @@ export interface DashboardOptionsResponse {
   defaultExecutionTimeout: string | null;
   /** Configured recovery opt-in; effective recovery also requires provider lease support. */
   staleJobRecoveryEnabled: boolean;
+  /** Additional scheduler decision and recovery logs emitted through ILogger. */
+  detailedLoggingEnabled: boolean;
   /** Effective historical-record retention policy. */
   retention: RetentionConfig;
   executionLogs?: {
@@ -153,6 +162,9 @@ export interface TimeTickerFlatDto {
   status: TickerStatus;
   scheduledFor: string | null;
   elapsedTime: number;
+  progressPercent: number | null;
+  progressMessage: string | null;
+  progressUpdatedAt: string | null;
   retries: number;
   retryCount: number;
   priority: TickerTaskPriority;
@@ -219,6 +231,9 @@ export interface CronOccurrenceFlatDto {
   status: TickerStatus;
   scheduledFor: string;
   elapsedTime: number;
+  progressPercent: number | null;
+  progressMessage: string | null;
+  progressUpdatedAt: string | null;
   retryCount: number;
   exceptionMessage: string | null;
   skippedReason: string | null;
@@ -239,6 +254,9 @@ export interface ExecutionFlatDto {
   status: TickerStatus;
   scheduledFor: string;
   elapsedTime: number;
+  progressPercent: number | null;
+  progressMessage: string | null;
+  progressUpdatedAt: string | null;
   retryCount: number;
   retries: number;
   exceptionMessage: string | null;
@@ -477,10 +495,107 @@ export interface AddTimeTickerChainRequest {
   root: TimeTickerNode;
 }
 
+export type SavedTickerDefinitionKind = "Template" | "Draft";
+export type SavedTickerDefinitionTarget = "TimeTicker" | "CronTicker";
+
+export interface SavedDefinitionPayload {
+  executionTime?: string | null;
+  expression?: string | null;
+  skipIfAlreadyRunning?: boolean | null;
+  root: TimeTickerNode;
+}
+
+export interface SaveTickerDefinitionRequest {
+  kind: SavedTickerDefinitionKind;
+  target: SavedTickerDefinitionTarget;
+  name: string;
+  description?: string | null;
+  includeRequestData: boolean;
+  payload: SavedDefinitionPayload;
+}
+
+export interface UpdateTickerDefinitionRequest extends SaveTickerDefinitionRequest {
+  version: number;
+}
+
+export interface SaveExistingTickerDefinitionRequest {
+  name: string;
+  description?: string | null;
+  includeRequestData: boolean;
+}
+
+export interface SavedTickerDefinition {
+  id: string;
+  kind: SavedTickerDefinitionKind;
+  target: SavedTickerDefinitionTarget;
+  name: string;
+  description: string | null;
+  includesRequestData: boolean;
+  schemaVersion: number;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+  version: number;
+  activatedRootTickerId: string | null;
+  activatedAtUtc: string | null;
+  activationInProgress: boolean;
+  payload: SavedDefinitionPayload;
+}
+
 // ===== Write response bodies =====
 
 export interface AddTickerResponse {
   id: string;
+}
+
+export interface TestRunRequest {
+  function: string;
+  request: string | null;
+  timeoutSeconds?: number;
+}
+
+export interface TestRunResponse {
+  executionId: string;
+  status: TickerStatus;
+  success: boolean;
+  error: string | null;
+  elapsedMilliseconds: number;
+  result: string | null;
+  resultMediaType: string | null;
+  resultContractId: string | null;
+}
+
+export interface TestRunChainStepResponse {
+  executionId: string;
+  parentExecutionId: string | null;
+  function: string;
+  description: string | null;
+  status: TickerStatus;
+  runCondition: RunCondition | null;
+  priority: TickerTaskPriority;
+  retries: number;
+  retryCount: number;
+  createdAtUtc: string;
+  executedAtUtc: string | null;
+  progressUpdatedAtUtc: string | null;
+  childCount: number;
+  error: string | null;
+  elapsedMilliseconds: number;
+  progressPercent: number | null;
+  progressMessage: string | null;
+  result: string | null;
+  resultMediaType: string | null;
+  resultContractId: string | null;
+  isGroup: boolean;
+}
+
+export interface TestRunChainResponse {
+  rootExecutionId: string;
+  success: boolean;
+  completed: boolean;
+  startedAtUtc: string;
+  finishedAtUtc: string | null;
+  error: string | null;
+  steps: TestRunChainStepResponse[];
 }
 
 export interface AddTimeTickerChainResponse {
@@ -490,6 +605,14 @@ export interface AddTimeTickerChainResponse {
 
 export interface TickerRequestPayloadResponse {
   payload: string | null; // base64
+}
+
+export interface TickerResultPayloadResponse {
+  payload: string | null; // base64
+  version: number | null;
+  mediaType: string | null;
+  contractId: string | null;
+  contractType: string | null;
 }
 
 export interface TickerLogLine {

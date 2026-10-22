@@ -2,6 +2,93 @@
 
 A cron schedule can own a chain template. Each scheduled occurrence, dashboard **Run now**, or bulk cron retry creates a separate time-ticker chain. The cron function is the root; its children follow the existing run conditions, retries, timeouts, result propagation, and per-function concurrency limits.
 
+Create chains directly through the existing managers. Repeated `Then` calls form one linear
+path. `ThenMany` creates a durable parallel group after the current step. Each `Add` result can
+continue with its own `Then` or nested `ThenMany` calls. A group continuation starts only after
+every branch subtree reaches a terminal status.
+
+```csharp
+var result = await timeTickerManager.AddChainAsync(
+    chain =>
+    {
+        var parallel = chain
+            .WithDescription("Process invoice")
+            .StartWith<PrepareInvoiceJob, InvoiceRequest>(request)
+            .ThenMany(branches =>
+            {
+                branches.Add<ChargeInvoiceJob>()
+                    .Then<SendReceiptJob>();
+
+                branches.Add<UpdateAccountingJob>();
+            });
+
+        parallel.ThenAfterAll<FinalizeInvoiceJob>();
+        parallel.ThenAfterAnyFailed<RecordInvoiceFailureJob>();
+        parallel.ThenAfterAllCompleted<ReleaseInvoiceResourcesJob>();
+    },
+    cancellationToken);
+```
+
+The parallel continuation methods use the group's aggregate outcome:
+
+- `ThenAfterAll<T>()` runs when every branch subtree succeeds.
+- `ThenAfterAnyFailed<T>()` runs when at least one branch subtree fails.
+- `ThenAfterAnyFailedOrCancelled<T>()` runs after a failure or cancellation.
+- `ThenAfterAllCompleted<T>()` always runs after all branches settle, including skipped branches.
+
+Failure and cancellation continuations wait for the other branches to settle. They do not race
+still-running siblings. Multiple outcome continuations can be attached to the same group by
+keeping the returned `parallel` builder as shown above. When a group contains different terminal
+outcomes, the aggregate precedence is Failed, Cancelled, Skipped, DueDone, then Done.
+
+Use the same shape for recurring work. The cron definition stores the graph as a template and
+creates fresh time tickers for every occurrence.
+
+```csharp
+var result = await cronTickerManager.AddChainAsync(
+    chain => chain
+        .WithExpression("0 0 8 * * *")
+        .WithDescription("Daily invoices")
+        .SkipIfAlreadyRunning()
+        .StartWith<PrepareInvoiceJob>()
+        .Then<ChargeInvoiceJob>()
+        .Then<SendReceiptJob>(),
+    cancellationToken);
+```
+
+The generic overloads resolve functions registered with `MapTicker<T>()`. Generated
+`TickerFunctionRef` values and explicit function names are also accepted. Step options configure
+descriptions, retries, retry intervals, timeouts, stale recovery, and run conditions. The manager
+still performs the normal function, request-contract, graph, and provider validation before it
+saves anything.
+
+Each step is its own durable ticker. If a later step fails, its retry starts from that step;
+already completed parents are not executed again. A child can read its direct parent's committed
+result through `TickerFunctionContext.GetParentResult<T>()`, so intermediate values do not have to
+be rebuilt after a retry or process restart. Parallel branches receive the result from the step
+immediately before their structural group. Join continuations receive that same upstream result;
+branch results are not implicitly merged because their result types may differ.
+
+Use the failed step's existing ID to retry it in place after the chain has settled:
+
+```csharp
+var retried = await timeTickerManager.RetryFromAsync(failedStepId, cancellationToken);
+if (!retried.IsSucceeded)
+    throw retried.Exception;
+```
+
+This preserves every job ID and the original chain. The selected job and its affected downstream
+path run again under a new generation; completed ancestors are traversed without invoking their
+functions. Group outcomes and their success, failure, cancellation, and final continuations are
+calculated again from the new branch outcome.
+
+In the dashboard, selecting the group header and choosing **Retry this group** reruns every
+grouped job and descendant. TickerQ then waits for the group to settle and evaluates its outcome
+jobs again. The chain must be fully settled before either retry operation starts.
+
+The entity API remains available when an application needs to construct or edit the stored model
+directly:
+
 ```csharp
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
@@ -75,5 +162,7 @@ Deploy compatible scheduler nodes together before enabling recurring chains: old
 ## Dashboard and local example
 
 Choose **Cron Tickers → Create recurring chain**, or open an existing cron and choose **Add chain / Edit chain**. Configure the schedule, overlap policy and job tree in the existing visual editor. **Remove chain** asks for confirmation and restores single-function execution for future runs.
+
+Select a job in an executed chain to inspect its direct parent, explicit input request, input from the parent's committed output, and the job's own committed output result. The parent reference opens that parent's details in the same flowchart. Payload panels appear only when the corresponding data exists; result panels include the stored contract when available. For grouped jobs, the parent-input panel resolves through the structural group to the executable step immediately before it. Dashboard payload reads are protected by the configured dashboard authentication and use `Cache-Control: no-store`.
 
 The local license smoke sample includes `--dashboard --example chains --port 5221`. It runs with one worker and launches a three-job chain every 20 seconds, using only in-memory demo work. Supply your license through `--license` or `TICKERQ_LICENSE_PATH`; never commit it.

@@ -97,6 +97,32 @@ public sealed class AcquiredExecutionQueueCapacityTests
     }
 
     [Fact]
+    public async Task ChainRetry_RejectedBeforeExecution_IsAbortedInsteadOfReleasedForNormalRecovery()
+    {
+        var manager = Substitute.For<IInternalTickerManager>();
+        var handler = Substitute.For<ITickerExecutionTaskHandler>();
+        var scheduler = new CapacityScheduler { HasCapacity = true };
+        var license = LicenseTestState.Active();
+        var context = Context();
+        context.IsChainRetryRoot = true;
+        context.IsChainRetryCoordinator = true;
+        context.ChainRootId = context.TickerId;
+        context.ChainGeneration = context.AcquisitionToken;
+        using var queue = new AcquiredExecutionQueue(
+            manager, handler, scheduler, NullLogger.Instance, license);
+        Assert.True(await queue.PublishAsync([context], false, CancellationToken.None));
+        license.Publish(TickerQLicenseState.NotValidated);
+
+        await scheduler.Accepted!(CancellationToken.None);
+
+        await manager.Received(1).AbortTimeTickerChainRetryAsync(context, CancellationToken.None);
+        await manager.DidNotReceiveWithAnyArgs().ReleaseAcquiredResources(default!, default);
+        await handler.DidNotReceiveWithAnyArgs()
+            .ExecuteRegisteredTaskAsync(default!, default, default!, default);
+        Assert.DoesNotContain(Leases(), lease => lease.TickerId == context.TickerId);
+    }
+
+    [Fact]
     public async Task CompletingPublication_DoesNotCancelTheAcceptedExecutionToken()
     {
         var manager = Substitute.For<IInternalTickerManager>();

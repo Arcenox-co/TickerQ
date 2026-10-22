@@ -16,6 +16,8 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
         Id = e.Id, Function = e.Function, Description = e.Description,
         CreatedAt = e.CreatedAt, UpdatedAt = e.UpdatedAt,
         Status = e.Status, ExecutionTime = e.ExecutionTime, ElapsedTime = e.ElapsedTime,
+        ProgressPercent = e.ProgressPercent, ProgressMessage = e.ProgressMessage,
+        ProgressUpdatedAt = e.ProgressUpdatedAt,
         Retries = e.Retries, RetryCount = e.RetryCount, RetryIntervals = e.RetryIntervals,
         ExceptionMessage = e.ExceptionMessage, SkippedReason = e.SkippedReason,
         ParentId = e.ParentId, ChainRootId = e.ChainRootId, OriginCronTickerId = e.OriginCronTickerId,
@@ -39,6 +41,8 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
         {
             Id = e.Id, CronTickerId = e.CronTickerId, ChainRootId = e.ChainRootId, Status = e.Status,
             ExecutionTime = e.ExecutionTime, ElapsedTime = e.ElapsedTime, RetryCount = e.RetryCount,
+            ProgressPercent = e.ProgressPercent, ProgressMessage = e.ProgressMessage,
+            ProgressUpdatedAt = e.ProgressUpdatedAt,
             ExceptionMessage = e.ExceptionMessage, SkippedReason = e.SkippedReason, ExecutedAt = e.ExecutedAt,
             CreatedAt = e.CreatedAt, LockHolder = e.LockHolder, LockedAt = e.LockedAt,
             AcquisitionToken = e.AcquisitionToken,

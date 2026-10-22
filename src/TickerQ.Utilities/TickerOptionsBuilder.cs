@@ -92,6 +92,17 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
+        /// Emits additional scheduler decision and recovery diagnostics through the application's
+        /// normal <c>ILogger</c> pipeline. Detailed logs contain ticker identifiers and function names,
+        /// but never request/result payloads. Disabled by default.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> EnableDetailedLogging(bool enabled = true)
+        {
+            _schedulerOptions.DetailedLoggingEnabled = enabled;
+            return this;
+        }
+
+        /// <summary>
         /// Retention policy for historical terminal ticker records. Disabled by default; configure a
         /// window via <see cref="ConfigureJobRetention"/> to opt in. Never null.
         /// </summary>
@@ -509,6 +520,13 @@ namespace TickerQ.Utilities
 
         /// <summary>Human-readable logical node label used by dashboards, metrics, and heartbeat providers.</summary>
         public string NodeIdentifier { get; set; } = Environment.MachineName;
+
+        /// <summary>
+        /// Enables additional operational diagnostics for scheduler acquisition, queue publication,
+        /// recovery, and restart decisions. Prefer <c>EnableDetailedLogging()</c> on the main options builder.
+        /// Request and result payloads are never included.
+        /// </summary>
+        public bool DetailedLoggingEnabled { get; set; }
 
         /// <summary>Optional friendly node name shown in the dashboard. Defaults to NodeIdentifier.</summary>
         public string NodeDisplayName { get; set; }

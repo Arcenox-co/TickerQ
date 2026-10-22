@@ -28,6 +28,20 @@ public class TickerOptionsBuilderTests
     }
 
     [Fact]
+    public void EnableDetailedLogging_IsAnExplicitReversibleOptIn()
+    {
+        var scheduler = new SchedulerOptionsBuilder();
+        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
+            new TickerExecutionContext(), scheduler);
+
+        Assert.Same(builder, builder.EnableDetailedLogging());
+        Assert.True(scheduler.DetailedLoggingEnabled);
+
+        Assert.Same(builder, builder.EnableDetailedLogging(false));
+        Assert.False(scheduler.DetailedLoggingEnabled);
+    }
+
+    [Fact]
     public void UseReconciliationEpoch_StoresPositiveStableEpoch()
     {
         var executionContext = new TickerExecutionContext();

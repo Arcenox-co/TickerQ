@@ -1,7 +1,7 @@
 import type { RunCondition } from "./run-condition";
 import { parseIntervalsList } from "./status-config.ts";
 import { parseUtc } from "./format.ts";
-import { encodeRequestPayload } from "../request-payload.ts";
+import { decodeRequestPayload, encodeRequestPayload } from "../request-payload.ts";
 import type { ChainDeleteBehavior, StaleAction, TimeTickerFlatDto, TimeTickerNode } from "../../services/api-types";
 
 // ── Editor state for a single chain node ──
@@ -100,4 +100,30 @@ export function chainNodeToRequest(node: ChainNode): TimeTickerNode {
     timeoutSeconds: node.timeoutSeconds > 0 ? node.timeoutSeconds : null,
     children: node.children.filter((c) => c.active).map(chainNodeToRequest),
   };
+}
+
+/** Hydrate a saved template/draft into fresh editor state. Saved definitions
+ * contain configuration only, so every canvas id is regenerated. */
+export function requestToChainNode(
+  node: TimeTickerNode,
+  scheduledAt = "",
+  makeId: () => string = () => `saved-${Math.random().toString(36).slice(2, 9)}`
+): ChainNode {
+  const build = (item: TimeTickerNode, isRoot: boolean): ChainNode => ({
+    id: makeId(),
+    functionName: item.function,
+    description: item.description ?? "",
+    requestJson: item.request ? decodeRequestPayload(item.request) : "",
+    requestValid: true,
+    retries: item.retries ?? 0,
+    retryIntervalsSeconds: item.retryIntervalsSeconds?.join(", ") ?? "",
+    runCondition: item.runCondition ?? "OnSuccess",
+    onStale: item.onStale ?? "Restart",
+    deleteBehavior: isRoot ? (item.deleteBehavior ?? "Cascade") : "Cascade",
+    timeoutSeconds: item.timeoutSeconds ?? 0,
+    active: true,
+    scheduledAt: isRoot ? scheduledAt : "",
+    children: (item.children ?? []).map(child => build(child, false)),
+  });
+  return build(node, true);
 }

@@ -74,6 +74,37 @@ public sealed class DashboardChainSummaryTests
     }
 
     [Fact]
+    public async Task Parallel_group_is_visible_in_the_tree_but_not_counted_as_a_user_job()
+    {
+        var root = new Job { Id = Guid.NewGuid(), Status = TickerStatus.Done };
+        var group = new Job
+        {
+            Id = Guid.NewGuid(),
+            ParentId = root.Id,
+            Function = TickerChainInfrastructure.ParallelGroupFunction,
+            Status = TickerStatus.Failed
+        };
+        var branch = new Job
+        {
+            Id = Guid.NewGuid(),
+            ParentId = group.Id,
+            Function = "branch",
+            Status = TickerStatus.Failed
+        };
+        var service = new TickerDashboardDataService<Job, Cron>(Provider([root, group, branch]));
+
+        var table = Assert.Single((await service.GetTimeTickersFlatAsync(
+            new TimeTickerQueryFilter())).Items);
+        var tree = await service.GetTimeTickerChainAsync(root.Id);
+
+        Assert.Equal(3, tree.Count);
+        Assert.Equal(2, table.ChainSummary.TotalCount);
+        Assert.Equal(1, table.ChainSummary.FailedCount);
+        Assert.Equal(2, tree[0].ChainSummary.TotalCount);
+        Assert.Equal(1, tree[0].ChainSummary.FailedCount);
+    }
+
+    [Fact]
     public async Task Oversized_tree_does_not_report_a_partial_chain_as_completed()
     {
         var root = new Job { Id = Guid.NewGuid(), Status = TickerStatus.Done };

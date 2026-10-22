@@ -47,6 +47,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                 ? "startup-seeder"
                 : "scoped"
             : "legacy";
+    protected DateTime NextLeaseUntil(DateTime now) => now.Add(_schedulerOptions.LeaseDuration);
     protected string ActivationMetadataKey => RuntimeActivationMetadataKey;
     internal string RuntimeActivationMetadataKeyForTest => RuntimeActivationMetadataKey;
     internal RedisKeyBuilder RuntimeKeysForTest => Keys;
@@ -827,6 +828,9 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             context.Status is TickerStatus.Done or TickerStatus.DueDone or TickerStatus.Failed
                 or TickerStatus.Cancelled or TickerStatus.Skipped);
 
+    private static bool IsProgressWrite(InternalFunctionContext context)
+        => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ProgressPercent));
+
     private static bool IsSuccessfulTerminalWrite(InternalFunctionContext context)
         => context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
            context.Status is TickerStatus.Done or TickerStatus.DueDone;
@@ -1205,10 +1209,21 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             count => ticker.RetryCount = count,
             () => { ticker.LockHolder = null; ticker.LockedAt = null; ticker.LeaseUntil = null; ticker.AcquisitionToken = null; },
             at => ticker.UpdatedAt = at);
+        if (context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ProgressPercent)))
+        {
+            ticker.ProgressPercent = context.ProgressPercent;
+            ticker.ProgressMessage = context.ProgressMessage;
+            ticker.ProgressUpdatedAt = context.ProgressUpdatedAt;
+        }
         if (IsFencedTerminalWrite(context))
         {
             ticker.LeaseUntil = null;
             ticker.AcquisitionToken = null;
+            if (context.IsChainRetryRoot && context.ParentId == null)
+            {
+                ticker.ChainRetryFromId = null;
+                ticker.ChainRetryPreviousStatus = null;
+            }
         }
     }
 
@@ -1223,6 +1238,12 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             count => occurrence.RetryCount = count,
             () => { occurrence.LockHolder = null; occurrence.LockedAt = null; occurrence.LeaseUntil = null; occurrence.AcquisitionToken = null; },
             at => occurrence.UpdatedAt = at);
+        if (context.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.ProgressPercent)))
+        {
+            occurrence.ProgressPercent = context.ProgressPercent;
+            occurrence.ProgressMessage = context.ProgressMessage;
+            occurrence.ProgressUpdatedAt = context.ProgressUpdatedAt;
+        }
         if (IsFencedTerminalWrite(context))
         {
             occurrence.LeaseUntil = null;
@@ -1255,10 +1276,15 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             AcquisitionToken = ticker.AcquisitionToken,
             ChainRootId = ticker.ChainRootId,
             ChainGeneration = ticker.ChainGeneration,
+            ChainRetryFromId = ticker.ChainRetryFromId,
+            ChainRetryPreviousStatus = ticker.ChainRetryPreviousStatus,
             ExecutedAt = ticker.ExecutedAt,
             ExceptionMessage = ticker.ExceptionMessage,
             SkippedReason = ticker.SkippedReason,
             ElapsedTime = ticker.ElapsedTime,
+            ProgressPercent = ticker.ProgressPercent,
+            ProgressMessage = ticker.ProgressMessage,
+            ProgressUpdatedAt = ticker.ProgressUpdatedAt,
             OnStale = ticker.OnStale,
             StaleRestartCount = ticker.StaleRestartCount,
             RunCondition = ticker.RunCondition,
@@ -1447,8 +1473,9 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             var ticker = await Serializer.GetAsync<TTimeTicker>(TimeTickerKey(functionContext.TickerId)).ConfigureAwait(false);
             if (ticker == null || ticker.Status == TickerStatus.Cancelled) return 0;
 
-            var fenced = IsFencedTerminalWrite(functionContext);
+            var fenced = IsFencedTerminalWrite(functionContext) || IsProgressWrite(functionContext);
             if (fenced && !functionContext.AcquisitionToken.HasValue) return 0;
+            if (IsProgressWrite(functionContext) && ticker.Status != TickerStatus.InProgress) return 0;
             var expectedUpdatedAt = ticker.UpdatedAt;
             var expectedStatus = fenced ? (int)ticker.Status : -1;
             ApplyFunctionContextToTicker(ticker, functionContext);
@@ -1482,6 +1509,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
 
             var child = FindEmbeddedTimeTicker(root.Children, functionContext.TickerId);
             if (child == null || child.Status == TickerStatus.Cancelled) return 0;
+            if (IsProgressWrite(functionContext) && child.Status != TickerStatus.InProgress) return 0;
 
             var expectedUpdatedAt = root.UpdatedAt;
             var expectedStatus = (int)child.Status;
@@ -2374,8 +2402,9 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         var occurrence = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(CronOccurrenceKey(functionContext.TickerId)).ConfigureAwait(false);
         if (occurrence == null) return;
 
-        var fenced = IsFencedTerminalWrite(functionContext);
+        var fenced = IsFencedTerminalWrite(functionContext) || IsProgressWrite(functionContext);
         if (fenced && !functionContext.AcquisitionToken.HasValue) return;
+        if (IsProgressWrite(functionContext) && occurrence.Status != TickerStatus.InProgress) return;
         var expectedUpdatedAt = occurrence.UpdatedAt;
         var expectedStatus = fenced ? (int)occurrence.Status : -1;
         ApplyFunctionContextToCronOccurrence(occurrence, functionContext);
@@ -2394,6 +2423,34 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                     .ConfigureAwait(false);
             await IndexManager.AddCronOccurrenceIndexesAsync(updated).ConfigureAwait(false);
         }
+    }
+
+    public async Task<bool> UpdateExecutionProgressAsync(
+        TickerProgressUpdate progress, CancellationToken cancellationToken = default)
+    {
+        var context = new InternalFunctionContext
+        {
+            TickerId = progress.TickerId,
+            Type = progress.Type,
+            ParentId = progress.ParentId,
+            ChainRootId = progress.ChainRootId,
+            ChainGeneration = progress.ChainGeneration,
+            AcquisitionToken = progress.AcquisitionToken,
+        }.SetProgress(progress.Percent, progress.Message, progress.UpdatedAtUtc);
+
+        if (progress.Type == TickerType.TimeTicker)
+            return await UpdateTimeTicker(context, cancellationToken).ConfigureAwait(false) == 1;
+
+        var before = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(
+            CronOccurrenceKey(progress.TickerId)).ConfigureAwait(false);
+        if (before == null || before.Status != TickerStatus.InProgress ||
+            before.LockHolder != LockHolder || before.AcquisitionToken != progress.AcquisitionToken)
+            return false;
+        await UpdateCronTickerOccurrence(context, cancellationToken).ConfigureAwait(false);
+        var after = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(
+            CronOccurrenceKey(progress.TickerId)).ConfigureAwait(false);
+        return after?.ProgressUpdatedAt == progress.UpdatedAtUtc &&
+               after.ProgressPercent == progress.Percent;
     }
 
     public async Task ReleaseAcquiredCronTickerOccurrences(Guid[] occurrenceIds, CancellationToken cancellationToken = default)

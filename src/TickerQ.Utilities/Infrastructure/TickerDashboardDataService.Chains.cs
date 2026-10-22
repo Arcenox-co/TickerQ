@@ -16,7 +16,9 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
         public bool Complete { get; set; } = true;
         public int ChildCount => Jobs.Values.Count(x => x.ParentId == Root.Id);
         public ChainExecutionSummaryDto Summary => Complete
-            ? ChainExecutionSummaryDto.FromStatuses(Jobs.Values.Select(x => x.Status))
+            ? ChainExecutionSummaryDto.FromStatuses(Jobs.Values
+                .Where(x => !TickerChainInfrastructure.IsParallelGroup(x.Function))
+                .Select(x => x.Status))
             : new ChainExecutionSummaryDto { Status = ChainExecutionStatus.Unavailable };
     }
 

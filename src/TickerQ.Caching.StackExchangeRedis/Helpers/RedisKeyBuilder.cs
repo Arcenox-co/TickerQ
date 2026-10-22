@@ -54,6 +54,9 @@ internal sealed class RedisKeyBuilder
     internal string TerminalMutationEvidence => Key("terminal:evidence");
     internal string NodesRegistry => Key("nodes:registry");
     internal string NodesRegistryV2 => Key("nodes:registry:v2");
+    internal string DefinitionIds => Key("definitions:ids");
+    internal string Definition(Guid id) => Key($"definitions:{id}");
+    internal string DefinitionName(string nameKey) => Key($"definitions:name:{nameKey}");
     internal string Heartbeat(string owner) => Key($"hb:{owner}");
     internal string TimeTicker(Guid id) => Key($"tt:{id}");
     internal string TimeTickerResult(Guid id) => Key($"tt:{id}:result");

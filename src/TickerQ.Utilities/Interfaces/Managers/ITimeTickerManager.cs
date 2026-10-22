@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Managers;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Interfaces.Managers
@@ -12,6 +13,15 @@ namespace TickerQ.Utilities.Interfaces.Managers
     public interface ITimeTickerManager<TTimeTicker> where TTimeTicker : TimeTickerEntity<TTimeTicker>
     {
         Task<TickerResult<TTimeTicker>> AddAsync(TTimeTicker entity, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Builds and persists a durable job graph. Use Then for a linear path and ThenMany for
+        /// sibling branches. Every step is stored and executed as a normal time ticker.
+        /// </summary>
+        Task<TickerResult<TTimeTicker>> AddChainAsync(
+            Action<TimeTickerChainBuilder<TTimeTicker>> configure,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support fluent chain creation.");
 
         /// <summary>
         /// Validates and tracks a new ticker in the scoped application DbContext configured by
@@ -38,6 +48,13 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// <summary>Atomically admits a root ticker to run now. An active ticker or chain child cannot be acquired. Success means accepted, not completed; AffectedRows is 1.</summary>
         Task<TickerResult<TTimeTicker>> RunNowAsync(Guid id, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support running time tickers on demand.");
+        /// <summary>
+        /// Retries the selected job in its existing chain. Completed ancestors and unaffected grouped
+        /// branches are reused, while the selected job and every affected downstream condition are
+        /// evaluated again under a fresh execution generation. No standalone ticker is created.
+        /// </summary>
+        Task<TickerResult<TTimeTicker>> RetryFromAsync(Guid id, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support retrying a chain from a selected job.");
         /// <summary>Requests cooperative cancellation of one running execution on this host and runtime partition. Use CancelAsync for a pending job. AffectedRows is 1 when signalled, otherwise 0.</summary>
         Task<TickerResult<TTimeTicker>> RequestCancellationAsync(Guid id, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support cancelling time tickers.");

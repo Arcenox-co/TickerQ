@@ -70,6 +70,40 @@ namespace TickerQ.Utilities.Managers
         Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddAsync(TTimeTicker entity, CancellationToken cancellationToken)
             => AddTimeTickerAsync(entity, cancellationToken);
 
+        Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddChainAsync(
+            Action<TimeTickerChainBuilder<TTimeTicker>> configure,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (configure is null) throw new ArgumentNullException(nameof(configure));
+                var builder = new TimeTickerChainBuilder<TTimeTicker>(() => new TTimeTicker());
+                configure(builder);
+                return AddTimeTickerAsync(builder.Build(), cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                return Task.FromResult(new TickerResult<TTimeTicker>(exception));
+            }
+        }
+
+        Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.AddChainAsync(
+            Action<CronTickerChainBuilder<TCronTicker>> configure,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (configure is null) throw new ArgumentNullException(nameof(configure));
+                var builder = new CronTickerChainBuilder<TCronTicker>(() => new TCronTicker());
+                configure(builder);
+                return AddCronTickerAsync(builder.Build(), cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                return Task.FromResult(new TickerResult<TCronTicker>(exception));
+            }
+        }
+
         async Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddOnceAsync(string initIdentifier, TTimeTicker entity, CancellationToken cancellationToken)
         {
             if (entity is null)
@@ -625,6 +659,17 @@ namespace TickerQ.Utilities.Managers
                     return new TickerValidatorException("Unknown chain deletion behavior.");
                 if ((activePath.Count > 0 || current.ParentId.HasValue) && current.DeleteBehavior != ChainDeleteBehavior.Cascade)
                     return new TickerValidatorException("Set deletion behavior on the chain root only.");
+                if (TickerChainInfrastructure.IsParallelGroup(current.Function))
+                {
+                    if (activePath.Count == 0)
+                        return new TickerValidatorException("A parallel group cannot be the root of a time-ticker chain.");
+                    if (!children.Any(child => child != null &&
+                            TickerChainInfrastructure.IsParallelBranchCondition(
+                                child.RunCondition ?? RunCondition.OnAnyCompletedStatus)))
+                        return new TickerValidatorException("A parallel group requires at least one parallel branch.");
+                    if (current.Request is { Length: > 0 })
+                        return new TickerValidatorException("A parallel group cannot carry a request payload.");
+                }
                 if (!activePath.Add(current))
                     return new TickerValidatorException(
                         $"Cyclic time ticker graph detected for TickerFunction '{current.Function}': " +

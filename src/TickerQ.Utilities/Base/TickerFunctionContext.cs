@@ -28,6 +28,9 @@ public class TickerFunctionContext<TRequest> : TickerFunctionContext
         ScheduledFor = tickerFunctionContext.ScheduledFor;
         RequestCancelOperationAction = tickerFunctionContext.RequestCancelOperationAction;
         FunctionName = tickerFunctionContext.FunctionName;
+        IsTestRun = tickerFunctionContext.IsTestRun;
+        RequestPayload = tickerFunctionContext.RequestPayload;
+        ProgressReporter = tickerFunctionContext.ProgressReporter;
         // Result state is shared by reference with the originating base context so a
         // SetResult call on this typed wrapper reaches the single sink the runtime reads,
         // and the direct parent's committed result stays readable through this wrapper.
@@ -42,6 +45,8 @@ public class TickerFunctionContext
 {
     internal AsyncServiceScope ServiceScope { get; set; }
     internal Action RequestCancelOperationAction { get; set; }
+    internal byte[] RequestPayload { get; set; }
+    internal Func<double, string, CancellationToken, Task> ProgressReporter { get; set; }
     public Guid Id { get; internal set; }
     /// <summary>Persistence acquisition generation used only by remote transports for fencing.</summary>
     internal Guid? AcquisitionToken { get; set; }
@@ -70,6 +75,28 @@ public class TickerFunctionContext
     /// </summary>
     public DateTime ScheduledFor { get; internal set; }
     public string FunctionName { get; internal set; }
+    /// <summary>
+    /// True when the dashboard is invoking the function as an ephemeral test. Test runs are not
+    /// represented by a ticker row, but the function body can still perform application side effects.
+    /// </summary>
+    public bool IsTestRun { get; internal set; }
+
+    /// <summary>
+    /// Persists progress for the current execution. Percent must be between 0 and 100. Providers
+    /// reject updates from cancelled, completed, or superseded execution generations.
+    /// </summary>
+    public Task ReportProgressAsync(
+        double percent,
+        string message = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (double.IsNaN(percent) || double.IsInfinity(percent) || percent is < 0 or > 100)
+            throw new ArgumentOutOfRangeException(nameof(percent), "Progress must be between 0 and 100.");
+        if (message?.Length > 500)
+            throw new ArgumentOutOfRangeException(nameof(message), "Progress messages cannot exceed 500 characters.");
+
+        return ProgressReporter?.Invoke(percent, message, cancellationToken) ?? Task.CompletedTask;
+    }
 
     /// <summary>
     /// Shared sink the runtime reads after a successful terminal execution to publish this

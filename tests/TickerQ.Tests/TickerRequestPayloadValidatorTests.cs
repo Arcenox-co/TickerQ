@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
 using Xunit;
 
@@ -124,6 +125,28 @@ public class TickerRequestPayloadValidatorTests : IDisposable
     // ---------------------------------------------------------------
     // Request-less vs required payload semantics
     // ---------------------------------------------------------------
+
+    [Fact]
+    public void ParallelGroup_WithoutPayload_IsValidWithoutFunctionRegistration()
+    {
+        var result = TickerRequestPayloadValidator.Validate(
+            TickerChainInfrastructure.ParallelGroupFunction, null);
+
+        Assert.True(result.IsValid);
+        Assert.Null(result.Value);
+        Assert.Empty(result.Errors);
+    }
+
+    [Fact]
+    public void ParallelGroup_WithPayload_IsRejected()
+    {
+        var result = TickerRequestPayloadValidator.Validate(
+            TickerChainInfrastructure.ParallelGroupFunction, Utf8("{}"));
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors,
+            error => error.Code == TickerRequestValidationErrorCode.PayloadNotAllowed);
+    }
 
     [Fact]
     public void Requestless_EmptyPayload_IsValid_NoValue_NoSchema()

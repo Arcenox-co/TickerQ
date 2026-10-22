@@ -2,7 +2,7 @@ import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
-import { GitBranch, Minus, Pencil, Plus, Power, PowerOff, Trash2 } from "lucide-react";
+import { FolderOpen, GitBranch, Minus, Pencil, Plus, Power, PowerOff, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/cron/PageHeader";
 import { DataTable } from "@/components/cron/DataTable";
@@ -20,6 +20,7 @@ import {
   emptyVolumeData,
 } from "@/components/cron/ExecutionVolumeChart";
 import { CreateCronTickerDialog } from "@/components/cron/CreateCronTickerDialog";
+import { SavedDefinitionsPanel } from "@/components/cron/SavedDefinitionsPanel";
 import { EditCronTickerDialog } from "@/components/cron/EditCronTickerDialog";
 import { nextRunFromExpression } from "@/components/cron/CronExpressionPreview";
 import { describeCronExpression } from "@/lib/cron/description";
@@ -60,6 +61,7 @@ export default function CronTickersPage() {
   const [page, setPage] = useState(1);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [createOpen, setCreateOpen] = useState(false);
+  const [savedOpen, setSavedOpen] = useState(false);
   const [editingCron, setEditingCron] = useState<CronTickerFlatDto | null>(null);
   const [recentlyCreatedId, setRecentlyCreatedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -444,6 +446,7 @@ export default function CronTickersPage() {
         count={data?.totalCount ?? items.length}
         description="Recurring scheduled job definitions."
       >
+        {!readOnly && <Button variant="outline" size="sm" className="h-8 text-xs rounded-lg" onClick={() => setSavedOpen(true)}><FolderOpen className="mr-1.5 h-3 w-3" />Templates</Button>}
         {!readOnly && <Button variant="outline" size="sm" className="h-8 text-xs rounded-lg" onClick={() => navigate("/cron-tickers/new-chain?cron=new")}>Create recurring chain</Button>}
         {!readOnly && (
           <Button
@@ -523,6 +526,8 @@ export default function CronTickersPage() {
           setRecentlyCreatedId(res.id);
         }}
       />
+
+      <SavedDefinitionsPanel open={savedOpen} target="CronTicker" onOpenChange={setSavedOpen} />
 
       <ConfirmDialog
         open={!!pendingToggle}

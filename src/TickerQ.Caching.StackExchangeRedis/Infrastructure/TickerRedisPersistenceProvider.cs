@@ -17,7 +17,7 @@ namespace TickerQ.Caching.StackExchangeRedis.Infrastructure;
 
 internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>,
-    ITickerPersistenceProvider<TTimeTicker, TCronTicker>
+    ITickerPersistenceProvider<TTimeTicker, TCronTicker>, ITickerDefinitionStore
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
@@ -52,6 +52,9 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
     private static readonly string AddTimeTickerOnceScript = LuaScriptLoader.Load("AddTimeTickerOnce");
     private static readonly string DeleteTimeTickerScript = LuaScriptLoader.Load("DeleteTimeTicker");
     private static readonly string SetChainDeleteBehaviorScript = LuaScriptLoader.Load("SetChainDeleteBehavior");
+    private static readonly string RetryTimeTickerChainScript = LuaScriptLoader.Load("RetryTimeTickerChain");
+    private static readonly string AcquireCronOccurrenceOnDemandScript =
+        LuaScriptLoader.Load("AcquireCronOccurrenceOnDemand");
     private static readonly string UpdateCronDefinitionQueueOnlyScript =
         LuaScriptLoader.Load("UpdateCronDefinitionQueueOnly");
     internal Func<Guid, CancellationToken, Task> BeforeTimeTickerConfigurationWriteForTestAsync { get; set; }
@@ -336,6 +339,93 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
             updated++;
         }
         return updated;
+    }
+
+    public async Task<TimeTickerChainRetryAcquisition<TTimeTicker>> AcquireTimeTickerChainRetryAsync(
+        Guid id, DateTime executionTime, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (RuntimeAdmissionMisconfigured) return null;
+        if (IsClusterTopology(Db))
+            throw new NotSupportedException(
+                "Atomic Redis chain retry requires standalone Redis because the aggregate, results, and indexes must share one transaction boundary.");
+
+        var rootId = await FindTimeTickerAggregateIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!rootId.HasValue)
+        {
+            var direct = await Db.KeyExistsAsync(TimeTickerKey(id)).ConfigureAwait(false);
+            if (!direct) return null;
+            rootId = id;
+        }
+        var raw = await Db.StringGetAsync(TimeTickerKey(rootId.Value)).ConfigureAwait(false);
+        if (raw.IsNullOrEmpty) return null;
+        var root = Serializer.DeserializeOrNull<TTimeTicker>(raw.ToString());
+        if (root == null) return null;
+
+        var now = Clock.UtcNow;
+        var plan = TimeTickerChainRetryPlanner.Prepare(
+            root, id, LockHolder, executionTime, now, NextLeaseUntil(now));
+        var resetIds = plan.ResetIds.OrderBy(value => value).ToArray();
+        var keys = new List<RedisKey>
+        {
+            TimeTickerKey(rootId.Value), RuntimeActivationMetadataKey, TimeTickerPendingKey,
+            TimeTickerIdsKey, TimeTickerRetentionSucceededKey, TimeTickerRetentionFailedKey,
+            TimeTickerRetentionCancelledKey, TimeTickerRetentionSkippedKey,
+            TerminalMutationEvidenceKey
+        };
+        keys.AddRange(resetIds.Select(value => (RedisKey)TimeTickerResultKey(value)));
+        var args = new List<RedisValue>
+        {
+            raw, Serializer.Serialize(plan.Root), RuntimeActivationEpoch, RuntimeAdmissionMode,
+            rootId.Value.ToString(), resetIds.Length
+        };
+        args.AddRange(resetIds.Select(value => (RedisValue)$"{(int)TickerType.TimeTicker}:{value:D}"));
+        var changed = (long)await Db.ScriptEvaluateAsync(
+            RetryTimeTickerChainScript, keys.ToArray(), args.ToArray()).ConfigureAwait(false);
+        if (changed != 1) return null;
+        await IndexManager.AddTimeTickerIndexesAsync(plan.Root).ConfigureAwait(false);
+        return new TimeTickerChainRetryAcquisition<TTimeTicker>
+        {
+            Root = plan.Root,
+            SelectedId = plan.SelectedId,
+            PreviousRootStatus = plan.PreviousRootStatus
+        };
+    }
+
+    public async Task<bool> AbortTimeTickerChainRetryAsync(
+        Guid rootId, Guid generation, string reason, DateTime abortedAt,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (RuntimeAdmissionMisconfigured) return false;
+        if (IsClusterTopology(Db))
+            throw new NotSupportedException(
+                "Atomic Redis chain retry abort requires standalone Redis.");
+
+        var raw = await Db.StringGetAsync(TimeTickerKey(rootId)).ConfigureAwait(false);
+        if (raw.IsNullOrEmpty) return false;
+        var root = Serializer.DeserializeOrNull<TTimeTicker>(raw.ToString());
+        if (root == null || !TimeTickerChainRetryPlanner.Abort(
+                root, generation, reason, abortedAt))
+            return false;
+
+        var result = await Db.ScriptEvaluateAsync(
+            UpdateTimeTickerConfigurationScript,
+            new RedisKey[]
+            {
+                TimeTickerKey(rootId), RuntimeActivationMetadataKey, TimeTickerPendingKey,
+                TimeTickerIdsKey, TimeTickerRetentionSucceededKey, TimeTickerRetentionFailedKey,
+                TimeTickerRetentionCancelledKey, TimeTickerRetentionSkippedKey
+            },
+            new RedisValue[]
+            {
+                raw, Serializer.Serialize(root), RuntimeActivationEpoch, RuntimeAdmissionMode,
+                rootId.ToString(), string.Empty, 2,
+                ToScore(abortedAt).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            }).ConfigureAwait(false);
+        if ((long)result != 1) return false;
+        await IndexManager.AddTimeTickerIndexesAsync(root).ConfigureAwait(false);
+        return true;
     }
 
     public async Task<int> SetTimeTickerDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)
@@ -707,6 +797,53 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
         }
 
         return acquired.ToArray();
+    }
+
+    public async Task<CronTickerOccurrenceEntity<TCronTicker>> AcquireCronOccurrenceOnDemandAsync(
+        Guid occurrenceId, DateTime executionTime, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureReconciliationActivationTopology();
+
+        var candidate = await Serializer.GetAsync<CronTickerOccurrenceEntity<TCronTicker>>(
+            CronOccurrenceKey(occurrenceId)).ConfigureAwait(false);
+        if (candidate == null || candidate.CronTickerId == Guid.Empty)
+            return null;
+
+        var now = Clock.UtcNow;
+        var token = Guid.NewGuid();
+        var result = await Db.ScriptEvaluateAsync(AcquireCronOccurrenceOnDemandScript,
+            [(RedisKey)CronOccurrenceKey(occurrenceId),
+             (RedisKey)CronOccurrenceResultKey(occurrenceId),
+             (RedisKey)CronKey(candidate.CronTickerId),
+             TerminalMutationEvidenceKey,
+             (RedisKey)ActivationMetadataKey],
+            [(RedisValue)LockHolder,
+             (RedisValue)now.ToString("O"),
+             (RedisValue)NextLeaseUntil(now).ToString("O"),
+             (RedisValue)token.ToString(),
+             (RedisValue)(int)TickerStatus.InProgress,
+             (RedisValue)executionTime.ToUniversalTime().ToString("O"),
+             (RedisValue)(int)TickerStatus.Idle,
+             (RedisValue)(int)TickerStatus.Queued,
+             (RedisValue)(int)TickerStatus.Done,
+             (RedisValue)(int)TickerStatus.DueDone,
+             (RedisValue)(int)TickerStatus.Failed,
+             (RedisValue)(int)TickerStatus.Cancelled,
+             (RedisValue)(int)TickerStatus.Skipped,
+             (RedisValue)RuntimeActivationEpoch,
+             RuntimeAdmissionMode]).ConfigureAwait(false);
+        if (result.IsNull) return null;
+
+        var occurrence = Serializer.DeserializeOrNull<CronTickerOccurrenceEntity<TCronTicker>>(
+            (string)result);
+        if (occurrence == null) return null;
+        occurrence.CronTicker = await Serializer.GetAsync<TCronTicker>(
+            CronKey(occurrence.CronTickerId)).ConfigureAwait(false);
+        if (occurrence.CronTicker == null) return null;
+
+        await IndexManager.AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
+        return occurrence;
     }
     #endregion
 

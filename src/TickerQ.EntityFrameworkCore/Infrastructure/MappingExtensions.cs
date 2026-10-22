@@ -49,6 +49,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 AcquisitionToken = e.AcquisitionToken,
                 ChainRootId = e.ChainRootId,
                 ChainGeneration = e.ChainGeneration,
+                ChainRetryFromId = e.ChainRetryFromId,
+                ChainRetryPreviousStatus = e.ChainRetryPreviousStatus,
                 RetryCount = e.RetryCount,
                 ExceptionMessage = e.ExceptionMessage,
                 SkippedReason = e.SkippedReason,
@@ -70,6 +72,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     DeleteBehavior = ch.DeleteBehavior,
                     ChainRootId = ch.ChainRootId,
                     ChainGeneration = ch.ChainGeneration,
+                    Status = ch.Status,
                     RunCondition = ch.RunCondition,
                     Children = ch.Children.Where(gch => gch.ExecutionTime == null).Select(gch => new TimeTickerEntity
                     {
@@ -83,6 +86,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                         DeleteBehavior = gch.DeleteBehavior,
                         ChainRootId = gch.ChainRootId,
                         ChainGeneration = gch.ChainGeneration,
+                        Status = gch.Status,
                         Id = gch.Id,
                         RunCondition = gch.RunCondition
                     }).ToArray()
@@ -200,6 +204,14 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 setters.SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime);
             }
 
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ProgressPercent)))
+            {
+                setters
+                    .SetProperty(x => x.ProgressPercent, functionContext.ProgressPercent)
+                    .SetProperty(x => x.ProgressMessage, functionContext.ProgressMessage)
+                    .SetProperty(x => x.ProgressUpdatedAt, functionContext.ProgressUpdatedAt);
+            }
+
             // RETRY COUNT
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.RetryCount)))
             {
@@ -278,6 +290,13 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             // any terminal write or lock release. See UpdateCronTickerOccurrence for rationale.
             ApplyAcquisitionToken(propsToUpdate, functionContext,
                 (setter, token) => setter.SetProperty(x => x.AcquisitionToken, token), setters);
+            if (WritesTerminalStatus(functionContext, propsToUpdate) &&
+                functionContext.IsChainRetryRoot && functionContext.ParentId == null)
+            {
+                setters
+                    .SetProperty(x => x.ChainRetryFromId, (Guid?)null)
+                    .SetProperty(x => x.ChainRetryPreviousStatus, (TickerStatus?)null);
+            }
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ReleaseLock)))
                 setters.SetProperty(x => x.ChainGeneration, (Guid?)null);
 
@@ -310,6 +329,14 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             if (propsToUpdate.Contains(nameof(InternalFunctionContext.ElapsedTime)))
             {
                 setters.SetProperty(x => x.ElapsedTime, functionContext.ElapsedTime);
+            }
+
+            if (propsToUpdate.Contains(nameof(InternalFunctionContext.ProgressPercent)))
+            {
+                setters
+                    .SetProperty(x => x.ProgressPercent, functionContext.ProgressPercent)
+                    .SetProperty(x => x.ProgressMessage, functionContext.ProgressMessage)
+                    .SetProperty(x => x.ProgressUpdatedAt, functionContext.ProgressUpdatedAt);
             }
 
             // RETRY COUNT

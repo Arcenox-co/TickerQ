@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Managers;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Utilities.Interfaces.Managers
@@ -10,6 +11,15 @@ namespace TickerQ.Utilities.Interfaces.Managers
     public interface ICronTickerManager<TCronTicker> where TCronTicker : CronTickerEntity
     {
         Task<TickerResult<TCronTicker>> AddAsync(TCronTicker entity, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Builds and persists a recurring chain. Each cron occurrence creates a fresh durable
+        /// time-ticker graph from this template.
+        /// </summary>
+        Task<TickerResult<TCronTicker>> AddChainAsync(
+            Action<CronTickerChainBuilder<TCronTicker>> configure,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support fluent recurring-chain creation.");
 
         /// <summary>
         /// Validates and tracks a new recurring schedule in the scoped application DbContext
@@ -29,6 +39,14 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// <summary>Creates and admits a fresh occurrence without changing the schedule. Success means accepted, not completed.</summary>
         Task<TickerResult<CronTickerOccurrenceEntity<TCronTicker>>> RunNowAsync(Guid cronTickerId, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support running cron tickers on demand.");
+
+        /// <summary>
+        /// Re-runs an existing occurrence in place. Standalone occurrences keep their occurrence id;
+        /// recurring chains retry their existing durable graph without creating another occurrence.
+        /// </summary>
+        Task<TickerResult<CronTickerOccurrenceEntity<TCronTicker>>> RerunOccurrenceAsync(
+            Guid occurrenceId, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support re-running cron occurrences.");
 
         /// <summary>Requests cooperative cancellation of one occurrence on this host and runtime partition. Pass an occurrence ID, not a cron definition ID. AffectedRows is 1 when signalled, otherwise 0.</summary>
         Task<TickerResult<TCronTicker>> RequestCancellationAsync(Guid occurrenceId, CancellationToken cancellationToken = default)

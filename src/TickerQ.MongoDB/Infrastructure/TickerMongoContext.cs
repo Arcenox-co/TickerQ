@@ -1,6 +1,7 @@
 using MongoDB.Bson;
 using MongoDB.Driver;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Models;
 
 namespace TickerQ.MongoDB.Infrastructure
 {
@@ -18,6 +19,7 @@ namespace TickerQ.MongoDB.Infrastructure
             TickerResults = database.GetCollection<BsonDocument>(prefix + "TickerResults");
             NodeFinalizations = database.GetCollection<BsonDocument>(prefix + "NodeFinalizationOutbox");
             StoreMetadata = database.GetCollection<BsonDocument>(prefix + "StoreMetadata");
+            Definitions = database.GetCollection<SavedTickerDefinition>(prefix + "TickerQDefinitions");
         }
 
         public IMongoDatabase Database { get; }
@@ -27,5 +29,6 @@ namespace TickerQ.MongoDB.Infrastructure
         public IMongoCollection<BsonDocument> TickerResults { get; }
         public IMongoCollection<BsonDocument> NodeFinalizations { get; }
         public IMongoCollection<BsonDocument> StoreMetadata { get; }
+        public IMongoCollection<SavedTickerDefinition> Definitions { get; }
     }
 }

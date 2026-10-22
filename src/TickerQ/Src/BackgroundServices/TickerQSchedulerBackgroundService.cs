@@ -99,6 +99,20 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         Interlocked.Exchange(ref _stopping, 0);
         _acquiredQueue.Resume();
         _taskScheduler.Resume();
+        if (_schedulerOptions.DetailedLoggingEnabled)
+        {
+            _logger.LogInformation(
+                "TickerQ detailed logging enabled. Node {NodeIdentifier}; namespace {ApplicationNamespace}; " +
+                "max concurrency {MaxConcurrency}; acquisition batch {AcquisitionBatchSize}; queue capacity {MaxQueuedExecutions}; " +
+                "workflow capacity {MaxActiveWorkflows}; minimum wait {MinPollingInterval}",
+                _schedulerOptions.NodeIdentifier,
+                _schedulerOptions.ApplicationNamespace ?? "legacy-global",
+                _schedulerOptions.MaxConcurrency,
+                _schedulerOptions.AcquisitionBatchSize,
+                _schedulerOptions.MaxQueuedExecutions,
+                _schedulerOptions.MaxActiveWorkflows,
+                _minPollingInterval);
+        }
         return base.StartAsync(ct);
     }
 
@@ -126,6 +140,8 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 catch (OperationCanceledException) when (_schedulerLoopCancellationTokenSource.Token.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
                 {
                     // This is a restart request - release resources and continue loop
+                    if (_schedulerOptions.DetailedLoggingEnabled)
+                        _logger.LogInformation("TickerQ scheduler loop is restarting after an earlier execution was scheduled");
                     await ReleaseAllResourcesAsync(null);
                     // Small delay to allow resources to be released
                     await Task.Delay(100, stoppingToken);
@@ -178,12 +194,21 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                     if (Volatile.Read(ref _stopping) != 0)
                         return;
 
+                    var candidateCount = _executionContext.Functions.Length;
                     var acquired = await _internalTickerManager
                         .SetTickersInProgress(_executionContext.Functions, cancellationToken)
                         .ConfigureAwait(false);
 
                     var pendingPublication = acquired.OrderBy(x => x.CachedPriority).ToArray();
                     _executionContext.SetFunctions(pendingPublication);
+
+                    if (_schedulerOptions.DetailedLoggingEnabled)
+                    {
+                        _logger.LogInformation(
+                            "TickerQ acquired {AcquiredCount} of {CandidateCount} selected executions for publication: {Executions}",
+                            pendingPublication.Length, candidateCount,
+                            DescribeBatch(pendingPublication));
+                    }
 
                     if (!_licenseState.ExecutionAllowed)
                     {
@@ -207,6 +232,14 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                     _executionContext.SetFunctions(null);
                     var published = await _acquiredQueue.PublishAsync(pendingPublication, false, stoppingToken,
                         waitForCapacity: true).ConfigureAwait(false);
+                    if (_schedulerOptions.DetailedLoggingEnabled)
+                    {
+                        _logger.LogInformation(
+                            published
+                                ? "TickerQ published {ExecutionCount} acquired executions to the host queue"
+                                : "TickerQ could not publish {ExecutionCount} acquired executions; their unstarted generations were released",
+                            pendingPublication.Length);
+                    }
                     if (!_licenseState.ExecutionAllowed) return;
                     if (!published)
                     {
@@ -226,6 +259,13 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
                 await _internalTickerManager.GetNextTickers(cancellationToken);
 
             _executionContext.SetFunctions(functions);
+
+            if (_schedulerOptions.DetailedLoggingEnabled && functions.Length != 0)
+            {
+                _logger.LogInformation(
+                    "TickerQ selected {ExecutionCount} executions; next due in {TimeRemaining}: {Executions}",
+                    functions.Length, timeRemaining, DescribeBatch(functions));
+            }
 
             TimeSpan sleepDuration;
             if (timeRemaining == Timeout.InfiniteTimeSpan || timeRemaining > TimeSpan.FromDays(1))
@@ -296,6 +336,17 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         return TimeSpan.FromSeconds(1);
     }
 
+    private static string DescribeBatch(InternalFunctionContext[] functions)
+    {
+        const int maximum = 5;
+        var sample = functions.Take(maximum)
+            .Select(context => $"{context.Type}:{context.FunctionName}({context.TickerId})");
+        var description = string.Join(", ", sample);
+        return functions.Length > maximum
+            ? $"{description}, +{functions.Length - maximum} more"
+            : description;
+    }
+
     private async Task ReleaseAllResourcesAsync(Exception ex)
     {
         if (ex != null)
@@ -345,6 +396,8 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         // 3. The new task is already due/overdue (ExecutionTime <= now)
         if (nextPlannedOccurrence == null)
         {
+            if (_schedulerOptions.DetailedLoggingEnabled)
+                _logger.LogInformation("TickerQ scheduler restart requested for {ExecutionTime}; no occurrence is currently planned", dateTime.Value);
             _restartThrottle.RequestRestart();
             return;
         }
@@ -354,7 +407,13 @@ internal class TickerQSchedulerBackgroundService : BackgroundService, ITickerQHo
         var diff = nextPlannedOccurrence.Value - newTime;
 
         if (newTime <= now || diff > threshold)
+        {
+            if (_schedulerOptions.DetailedLoggingEnabled)
+                _logger.LogInformation(
+                    "TickerQ scheduler restart requested for {ExecutionTime}; current wake is {NextPlannedOccurrence}",
+                    newTime, nextPlannedOccurrence.Value);
             _restartThrottle.RequestRestart();
+        }
     }
 
     public void Restart()

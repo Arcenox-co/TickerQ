@@ -87,6 +87,28 @@ namespace TickerQ.Utilities.Managers
             _persistenceProvider.SupportsAuthoritativeCronReconciliation;
         public bool SupportsLegacyRuntimePartitionAdoption =>
             _persistenceProvider.SupportsLegacyRuntimePartitionAdoption;
+        public async Task<bool> ReportProgressAsync(TickerProgressUpdate update,
+            CancellationToken cancellationToken = default)
+        {
+            var accepted = await _persistenceProvider
+                .UpdateExecutionProgressAsync(update, cancellationToken).ConfigureAwait(false);
+            if (!accepted || _notificationHubSender == null) return accepted;
+
+            try
+            {
+                if (update.Type == TickerType.CronTickerOccurrence && update.ParentId.HasValue)
+                    await _notificationHubSender.UpdateCronOccurrenceAsync(
+                        update.ParentId.Value, update.TickerId).ConfigureAwait(false);
+                else
+                    await _notificationHubSender.UpdateTimeTickerNotifyAsync(update.TickerId)
+                        .ConfigureAwait(false);
+            }
+            catch
+            {
+                // The durable write is authoritative; a dashboard refresh hint cannot invalidate it.
+            }
+            return true;
+        }
         public Task AdoptLegacyRuntimePartitionAsync(LegacyRuntimePartitionAdoption adoption,
             CancellationToken cancellationToken = default)
             => _persistenceProvider.AdoptLegacyRuntimePartitionAsync(adoption, cancellationToken);
@@ -196,6 +218,19 @@ namespace TickerQ.Utilities.Managers
         {
             chainRootId ??= ticker.ChainRootId ?? ticker.Id;
             chainGeneration ??= ticker.ChainGeneration;
+            if (!ticker.ParentId.HasValue && ticker.ChainRetryFromId.HasValue)
+            {
+                if (!ticker.ChainRetryPreviousStatus.HasValue)
+                    throw new TickerValidatorException(
+                        $"Chain retry {ticker.Id} is missing its durable previous root status.");
+                return TimeTickerChainRetryPlanner.BuildExecutionContext(
+                    new TimeTickerChainRetryAcquisition<TimeTickerEntity>
+                    {
+                        Root = ticker,
+                        SelectedId = ticker.ChainRetryFromId.Value,
+                        PreviousRootStatus = ticker.ChainRetryPreviousStatus.Value
+                    }, _runtimePartitionKey);
+            }
             return TimeTickerContextBuilder.Build(ticker, node => new InternalFunctionContext
             {
                 FunctionName = node.Function,
@@ -436,6 +471,28 @@ namespace TickerQ.Utilities.Managers
                     await _persistenceProvider.UpdateTimeTicker(resource, cancellationToken)
                         .ConfigureAwait(false);
             }
+        }
+
+        public async Task AbortTimeTickerChainRetryAsync(
+            InternalFunctionContext context, CancellationToken cancellationToken = default)
+        {
+            EnsureExactRuntimePartition(context);
+            if (!context.IsChainRetryRoot ||
+                !context.ChainGeneration.HasValue ||
+                context.ChainRootId != context.TickerId)
+                throw new InvalidOperationException("The execution is not an acquired chain retry root.");
+
+            var acknowledged = await _persistenceProvider.AbortTimeTickerChainRetryAsync(
+                    context.TickerId, context.ChainGeneration.Value,
+                    "The chain retry was cancelled before execution started.",
+                    _clock.UtcNow, cancellationToken)
+                .ConfigureAwait(false);
+            if (!acknowledged)
+                throw new TickerResultNotAcknowledgedException(
+                    $"Chain retry {context.TickerId} was not acknowledged for abort.");
+
+            await _notificationHubSender.UpdateTimeTickerNotifyAsync(context.TickerId)
+                .ConfigureAwait(false);
         }
         
         public async Task UpdateTickerAsync(

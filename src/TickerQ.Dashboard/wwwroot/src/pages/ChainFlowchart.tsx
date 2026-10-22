@@ -16,7 +16,7 @@ export default function ChainFlowchartPage() {
   const navigate = useNavigate();
 
   return (
-    <div className="h-[calc(100vh-44px-24px-24px)] -m-6">
+    <div className="h-[calc(100dvh-44px)] -m-4 sm:-m-6">
       <ChainFlowchartView
         rootId={id}
         from={cronId ? "cron-tickers" : from === "executions" ? "executions" : "time-tickers"}

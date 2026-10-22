@@ -16,7 +16,11 @@ namespace TickerQ.Exceptions
 
     internal class ExceptionDetailClassForSerialization
     {
+        public string Type { get; set; }
         public string Message { get; set; }
+        public string Method { get; set; }
+        public string SourceFile { get; set; }
+        public int? SourceLine { get; set; }
         public string StackTrace { get; set; }
     }
 }
