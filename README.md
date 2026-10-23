@@ -32,7 +32,7 @@
 
 <p align="center">
   <a href="https://tickerq.net/docs/5.x/dashboard/tour">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/overview.jpg" alt="TickerQ dashboard showing scheduler health, active nodes, execution statistics, recent jobs, and upcoming work" width="1200" />
+    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/overview-2026-10-23.jpg" alt="TickerQ dashboard showing scheduler health, active nodes, execution statistics, recent jobs, and upcoming work" width="1200" />
   </a>
   <br />
   <sub>The current 5.x dashboard running on a two-node documentation demo. Workspace and certificate identifiers are anonymized.</sub>
