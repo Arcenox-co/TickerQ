@@ -1,3 +1,5 @@
+#nullable enable annotations
+
 using System;
 using System.Threading;
 using System.Threading.Channels;

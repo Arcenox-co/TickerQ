@@ -200,8 +200,8 @@ public sealed class LicenseEnforcementTests
         Assert.True(license.ExecutionAllowed);
         Assert.Contains("runtime continuity only", license.Current.Message);
         // Repeated reads must not flood logs after the first transition to Expired.
-        Assert.Single(logger.ReceivedCalls().Where(call => call.GetMethodInfo().Name == "Log"
-            && Equals(call.GetArguments()[0], LogLevel.Warning)));
+        Assert.Single(logger.ReceivedCalls(), call => call.GetMethodInfo().Name == "Log"
+            && Equals(call.GetArguments()[0], LogLevel.Warning));
     }
 
     private static TickerQLicenseStateProvider MissingLicenseProvider()

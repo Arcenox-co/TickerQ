@@ -14,7 +14,7 @@ public sealed class ExecutionLogPostgreSqlTests
     [PostgreSqlRaceFact]
     public async Task Relational_log_contract_and_concurrent_first_writes_use_the_newest_snapshot()
     {
-        await using var postgres = new PostgreSqlBuilder().WithImage("postgres:17-alpine").Build();
+        await using var postgres = new PostgreSqlBuilder("postgres:17-alpine").Build();
         await postgres.StartAsync();
         var options = new DbContextOptionsBuilder<ExecutionLogPersistenceTests.LogContext>().UseNpgsql(postgres.GetConnectionString()).Options;
         await using (var context = new ExecutionLogPersistenceTests.LogContext(options))

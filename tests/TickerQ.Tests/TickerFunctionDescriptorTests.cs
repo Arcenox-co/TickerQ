@@ -100,7 +100,7 @@ public class TickerFunctionDescriptorTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void ResultContract_BlankTypeName_Throws(string typeName)
+    public void ResultContract_BlankTypeName_Throws(string? typeName)
     {
         Assert.Throws<ArgumentException>(() => new TickerResultContract(typeName));
     }
@@ -109,7 +109,7 @@ public class TickerFunctionDescriptorTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void ResultContract_BlankMediaType_Throws(string mediaType)
+    public void ResultContract_BlankMediaType_Throws(string? mediaType)
     {
         Assert.Throws<ArgumentException>(() =>
             new TickerResultContract("Result", mediaType: mediaType));
@@ -262,7 +262,7 @@ public class TickerFunctionDescriptorTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("  ")]
-    public void Contract_EmptyTypeName_Throws(string typeName)
+    public void Contract_EmptyTypeName_Throws(string? typeName)
     {
         Assert.Throws<ArgumentException>(() => new TickerRequestContract(typeName));
     }
@@ -270,7 +270,7 @@ public class TickerFunctionDescriptorTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    public void Contract_EmptyMediaType_Throws(string mediaType)
+    public void Contract_EmptyMediaType_Throws(string? mediaType)
     {
         Assert.Throws<ArgumentException>(() => new TickerRequestContract("Req", mediaType: mediaType));
     }
@@ -278,7 +278,7 @@ public class TickerFunctionDescriptorTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    public void Contract_EmptySchemaDialect_Throws(string schemaDialect)
+    public void Contract_EmptySchemaDialect_Throws(string? schemaDialect)
     {
         Assert.Throws<ArgumentException>(() => new TickerRequestContract("Req", schemaDialect: schemaDialect));
     }
@@ -341,7 +341,7 @@ public class TickerFunctionDescriptorTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("  ")]
-    public void Example_EmptyKey_Throws(string key)
+    public void Example_EmptyKey_Throws(string? key)
     {
         Assert.Throws<ArgumentException>(() => new TickerRequestExample(key, "summary", "{}"));
     }

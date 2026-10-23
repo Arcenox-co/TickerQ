@@ -443,7 +443,7 @@ public sealed class DashboardOperationGrpcService<TTimeTicker, TCronTicker> : Da
     /// Request, RunCondition) are copied; internal/runtime fields (Status,
     /// RetryCount, ExecutedAt, ElapsedTime, ExceptionMessage, …) start fresh.
     /// </summary>
-    private async Task<TTimeTicker> CloneSubtreeAsync(Guid sourceId, bool isRoot, System.Threading.CancellationToken ct)
+    private async Task<TTimeTicker?> CloneSubtreeAsync(Guid sourceId, bool isRoot, System.Threading.CancellationToken ct)
     {
         var src = await _persistence.GetTimeTickerById(sourceId, ct).ConfigureAwait(false);
         if (src == null) return null;

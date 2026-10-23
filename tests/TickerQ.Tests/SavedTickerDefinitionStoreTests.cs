@@ -48,7 +48,7 @@ public sealed class SavedTickerDefinitionStoreTests : IDisposable
         var claims = await Task.WhenAll(
             _store.TryClaimDraftActivationAsync(draft.Id, draft.Version, Guid.NewGuid(), rootId, _now),
             _store.TryClaimDraftActivationAsync(draft.Id, draft.Version, Guid.NewGuid(), rootId, _now));
-        var winner = Assert.Single(claims.Where(row => row != null));
+        var winner = Assert.Single(claims, row => row != null);
         Assert.NotNull(winner.ActivationToken);
         Assert.Equal(rootId, winner.PendingRootTickerId);
 

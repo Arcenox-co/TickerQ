@@ -7,7 +7,7 @@
         <Description>Dashboard UI for visualizing and monitoring TickerQ scheduled jobs.</Description>
         <PackageTags>dashboard;monitoring;scheduler;ui</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
-        <Nullable>enable</Nullable>
+        <Nullable>annotations</Nullable>
         <IsAotCompatible>true</IsAotCompatible>
     </PropertyGroup>
 

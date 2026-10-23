@@ -2201,7 +2201,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
         var results = await _provider.GetEarliestTimeTickers(CancellationToken.None);
 
-        AssertTimeIdentity(Assert.Single(results.Where(t => t.Id == ticker.Id)));
+        AssertTimeIdentity(Assert.Single(results, t => t.Id == ticker.Id));
     }
 
     [Fact]
@@ -2213,7 +2213,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
         var results = await ToListAsync(_provider.QueueTimedOutTimeTickers(CancellationToken.None));
 
-        AssertTimeIdentity(Assert.Single(results.Where(t => t.Id == ticker.Id)));
+        AssertTimeIdentity(Assert.Single(results, t => t.Id == ticker.Id));
     }
 
     [Fact]
@@ -2240,7 +2240,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
 
         var results = await _provider.GetAllCronTickerExpressions(CancellationToken.None);
 
-        var projected = Assert.Single(results.Where(c => c.Id == cron.Id));
+        var projected = Assert.Single(results, c => c.Id == cron.Id);
         Assert.Equal(88, projected.RequestContractVersion);
         Assert.Equal("sha256:cron-identity", projected.RequestContractFingerprint);
     }

@@ -32,5 +32,16 @@ export default defineConfig(({ command }) => ({
     outDir: "dist",
     assetsDir: "assets",
     sourcemap: true,
+    // The shared shell/vendor entry is currently ~585 kB minified (~182 kB gzip).
+    // Keep a tight project-specific budget while avoiding Vite's generic 500 kB warning.
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      onwarn(warning, warn) {
+        // SignalR and Zod currently publish misplaced PURE annotations. Rollup
+        // safely removes those comments; keep other application/build warnings.
+        if (warning.code === "INVALID_ANNOTATION" && warning.id?.includes("/node_modules/")) return;
+        warn(warning);
+      },
+    },
   },
 }));

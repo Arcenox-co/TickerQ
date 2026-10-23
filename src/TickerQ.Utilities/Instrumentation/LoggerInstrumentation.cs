@@ -1,3 +1,5 @@
+#nullable enable annotations
+
 using System;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
@@ -14,7 +16,7 @@ namespace TickerQ.Utilities.Instrumentation
         {
         }
 
-        public override Activity StartJobActivity(string activityName, InternalFunctionContext context)
+        public override Activity? StartJobActivity(string activityName, InternalFunctionContext context)
             => null;
     }
 }

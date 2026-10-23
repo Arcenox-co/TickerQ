@@ -732,8 +732,8 @@ public sealed class RedisReconciliationActivationEpochTests
         Assert.Equal(2, cron.DefinitionRevision);
         Assert.Equal(1, await provider.RemoveCronTickers([cron.Id], CancellationToken.None));
 
-        var scriptCall = Assert.Single(db.ReceivedCalls().Where(call =>
-            call.GetMethodInfo().Name == nameof(IDatabase.ScriptEvaluateAsync)));
+        var scriptCall = Assert.Single(db.ReceivedCalls(), call =>
+            call.GetMethodInfo().Name == nameof(IDatabase.ScriptEvaluateAsync));
         Assert.Single((RedisKey[])scriptCall.GetArguments()[1]!);
         Assert.Contains(db.ReceivedCalls(), call => call.GetMethodInfo().Name == nameof(IDatabase.KeyDeleteAsync));
         Assert.Contains(db.ReceivedCalls(), call => call.GetMethodInfo().Name == nameof(IDatabase.SetRemoveAsync));

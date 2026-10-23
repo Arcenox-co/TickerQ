@@ -1285,7 +1285,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
 
         var earliest = await _provider.GetEarliestTimeTickers(CancellationToken.None);
 
-        var acquiredRoot = Assert.Single(earliest.Where(t => t.Id == root.Id));
+        var acquiredRoot = Assert.Single(earliest, t => t.Id == root.Id);
         AssertDeepContractIdentity(acquiredRoot, ggcId, gggcId);
     }
 
@@ -1298,7 +1298,7 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
 
         var results = await ToListAsync(_provider.QueueTimedOutTimeTickers(CancellationToken.None));
 
-        var acquiredRoot = Assert.Single(results.Where(t => t.Id == root.Id));
+        var acquiredRoot = Assert.Single(results, t => t.Id == root.Id);
         AssertDeepContractIdentity(acquiredRoot, ggcId, gggcId);
     }
 

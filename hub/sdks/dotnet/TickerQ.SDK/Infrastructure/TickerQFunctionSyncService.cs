@@ -1,3 +1,5 @@
+#nullable enable annotations
+
 using Grpc.Core;
 using Grpc.Net.Client;
 using TickerQ.SDK.Hub;

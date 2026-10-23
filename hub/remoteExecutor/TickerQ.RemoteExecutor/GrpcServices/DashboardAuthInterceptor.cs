@@ -114,7 +114,7 @@ public sealed class DashboardAuthInterceptor : Interceptor
         }
     }
 
-    private static string GetHeader(ServerCallContext context, string key)
+    private static string? GetHeader(ServerCallContext context, string key)
     {
         foreach (var entry in context.RequestHeaders)
         {

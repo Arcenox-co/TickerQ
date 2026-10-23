@@ -7,7 +7,6 @@ using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Base;
 using NSubstitute;
 using NSubstitute.ReceivedExtensions;
-using Microsoft.Extensions.Logging;
 using TickerQ.BackgroundServices;
 using TickerQ.TickerQThreadPool;
 using TickerQ.Utilities;
@@ -177,8 +176,8 @@ public class TickerQFallbackBackgroundServiceTests
         Assert.Equal(2, health.FallbackScanFailures);
         Assert.NotNull(health.LastFallbackFailureUtc);
         Assert.True(health.LastSuccessfulFallbackScanUtc >= health.LastFallbackFailureUtc);
-        Assert.Single(sink.ReceivedCalls().Where(call => call.GetMethodInfo().Name == "Log"
-            && call.GetArguments()[0] is LogLevel.Warning));
+        Assert.Single(sink.ReceivedCalls(), call => call.GetMethodInfo().Name == "Log"
+            && call.GetArguments()[0] is LogLevel.Warning);
     }
 
     [Fact]

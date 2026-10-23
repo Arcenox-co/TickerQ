@@ -25,7 +25,7 @@ namespace TickerQ.Caching.StackExchangeRedis.Tests;
 // Always isolated: these tests never connect to, or flush, an application Redis instance.
 public sealed class ArrayCacheRedisFixture : IAsyncLifetime
 {
-    public RedisContainer Container { get; } = new RedisBuilder().WithImage("redis:7").Build();
+    public RedisContainer Container { get; } = new RedisBuilder("redis:7").Build();
     public IConnectionMultiplexer Connection { get; private set; } = null!;
     public async Task InitializeAsync()
     {

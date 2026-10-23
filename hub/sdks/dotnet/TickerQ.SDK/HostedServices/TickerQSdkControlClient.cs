@@ -1,3 +1,5 @@
+#nullable enable annotations
+
 using System.Net.Http;
 using Grpc.Core;
 using Grpc.Net.Client;
