@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,7 +18,9 @@ namespace TickerQ.Utilities.Infrastructure
     /// Default implementation of <see cref="ITickerDashboardDataService{TTimeTicker,TCronTicker}"/>
     /// that projects entities to flat DTOs using <see cref="ITickerQueryable{T}"/>.
     /// </summary>
-    public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
+    public sealed partial class TickerDashboardDataService<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.PublicProperties)] TTimeTicker,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.PublicProperties)] TCronTicker>
         : ITickerDashboardDataService<TTimeTicker, TCronTicker>
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()

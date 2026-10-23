@@ -102,7 +102,8 @@ def main() -> int:
     parser.add_argument("--version", required=True, help="Exact TickerQ package version")
     parser.add_argument("--framework", required=True, help="Consumer target framework, e.g. net10.0")
     parser.add_argument("--rid", help="NativeAOT runtime identifier for this runner, e.g. linux-x64")
-    parser.add_argument("--aot", action="store_true", help="Also publish and execute the core-only NativeAOT consumer")
+    parser.add_argument("--aot", action="store_true",
+                        help="Also publish and execute the core and dashboard NativeAOT consumers")
     args = parser.parse_args()
     if not args.packages.is_dir():
         parser.error(f"Package directory does not exist: {args.packages}")
@@ -136,7 +137,7 @@ def main() -> int:
                             "DOTNET_NOLOGO": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1"})
         properties = [f"-p:SmokeVersion={args.version}", f"-p:SmokeFramework={args.framework}"]
 
-        for fixture in ("Core", "Optional"):
+        for fixture in ("Core", "DashboardAot", "Optional"):
             destination = workspace / fixture
             shutil.copytree(fixtures / fixture, destination, ignore=shutil.ignore_patterns("bin", "obj"))
             project = destination / f"PackageSmoke.{fixture}.csproj"
@@ -150,18 +151,21 @@ def main() -> int:
                 marker=f"PACKAGE_SMOKE_{fixture.upper()}_OK")
 
         if args.aot:
-            project = workspace / "Core/PackageSmoke.Core.csproj"
             aot_properties = [*properties, "-p:PublishAot=true", "-p:SelfContained=true", "-p:StripSymbols=true"]
-            run(["dotnet", "restore", str(project), "--configfile", str(config), "--no-cache", "-r", args.rid,
-                 *aot_properties], workspace, environment)
-            audit_assets(project, args.version, cache)
-            native_output = workspace / "native"
-            run(["dotnet", "publish", str(project), "--no-restore", "-c", "Release", "-r", args.rid,
-                 "-o", str(native_output), *aot_properties], workspace, environment, timeout=1800)
-            executable = native_output / ("PackageSmoke.Core.exe" if args.rid.startswith("win-") else "PackageSmoke.Core")
-            if not executable.is_file() or (native_output / "PackageSmoke.Core.dll").exists():
-                raise ValueError("NativeAOT did not produce a standalone native executable")
-            run([str(executable)], workspace, environment, timeout=120, marker="PACKAGE_SMOKE_CORE_OK")
+            for fixture in ("Core", "DashboardAot"):
+                project = workspace / fixture / f"PackageSmoke.{fixture}.csproj"
+                run(["dotnet", "restore", str(project), "--configfile", str(config), "--no-cache", "-r", args.rid,
+                     *aot_properties], workspace, environment)
+                audit_assets(project, args.version, cache)
+                native_output = workspace / f"native-{fixture.lower()}"
+                run(["dotnet", "publish", str(project), "--no-restore", "-c", "Release", "-r", args.rid,
+                     "-o", str(native_output), *aot_properties], workspace, environment, timeout=1800)
+                name = f"PackageSmoke.{fixture}"
+                executable = native_output / (f"{name}.exe" if args.rid.startswith("win-") else name)
+                if not executable.is_file() or (native_output / f"{name}.dll").exists():
+                    raise ValueError(f"NativeAOT did not produce a standalone {fixture} executable")
+                run([str(executable)], workspace, environment, timeout=120,
+                    marker=f"PACKAGE_SMOKE_{fixture.upper()}_OK")
 
         succeeded = True
         print(f"Installed-package consumers passed for {args.version}/{args.framework}" + (f" including NativeAOT {args.rid}." if args.aot else "."))

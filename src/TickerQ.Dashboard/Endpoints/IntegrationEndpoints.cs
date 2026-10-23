@@ -18,7 +18,7 @@ internal static class IntegrationEndpoints
 {
     internal static void MapIntegrations(this RouteGroupBuilder reads, RouteGroupBuilder writes, DashboardOptionsBuilder config)
     {
-        reads.MapGet("/integrations", (HttpContext c) => Execute(c, async () =>
+        reads.MapGetAot("/integrations", c => Execute(c, async () =>
         {
             var service = c.RequestServices.GetService<ITickerIntegrationAdminService>();
             var snapshot = service != null
@@ -42,7 +42,7 @@ internal static class IntegrationEndpoints
             }
             await c.Response.WriteAsJsonAsync(snapshot, IntegrationApiJsonContext.Default.IntegrationSnapshot, cancellationToken: c.RequestAborted);
         }));
-        writes.MapPut("/integrations", (HttpContext c) => Execute(c, async () =>
+        writes.MapPutAot("/integrations", c => Execute(c, async () =>
         {
             var service = RequireManagement(c, config);
             if (service == null) return;
@@ -50,18 +50,18 @@ internal static class IntegrationEndpoints
             await service.SaveAsync(request, c.RequestAborted);
             c.Response.StatusCode = StatusCodes.Status204NoContent;
         }));
-        writes.MapPost("/integrations/preview", (HttpContext c) => Execute(c, async () =>
+        writes.MapPostAot("/integrations/preview", c => Execute(c, async () =>
         {
             var service = RequireManagement(c, config);
             if (service == null) return;
             var result = service.Preview(await Read(c, IntegrationApiJsonContext.Default.IntegrationPreviewRequest));
             await c.Response.WriteAsJsonAsync(result, IntegrationApiJsonContext.Default.IntegrationPreviewResponse, cancellationToken: c.RequestAborted);
         }));
-        writes.MapPost("/integrations/destinations/{id:guid}/test", (HttpContext c) => Execute(c, async () =>
+        writes.MapPostAot("/integrations/destinations/{id:guid}/test", c => Execute(c, async () =>
         {
             var service = RequireManagement(c, config);
             if (service == null) return;
-            var id = Guid.Parse((string)c.Request.RouteValues["id"]!);
+            var id = c.RequiredRouteGuid("id");
             var result = await service.TestAsync(id, c.RequestAborted);
             await c.Response.WriteAsJsonAsync(result, IntegrationApiJsonContext.Default.IntegrationDeliveryStatus, cancellationToken: c.RequestAborted);
         }));

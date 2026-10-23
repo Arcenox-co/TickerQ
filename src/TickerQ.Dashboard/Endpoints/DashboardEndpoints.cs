@@ -28,8 +28,6 @@ using TickerQ.Utilities.Models;
 
 namespace TickerQ.Dashboard.Endpoints;
 
-#pragma warning disable IL2026
-#pragma warning disable IL3050
 public static class DashboardEndpoints
 {
     public static void MapDashboardEndpoints<TTimeTicker, TCronTicker>(this IEndpointRouteBuilder endpoints, DashboardOptionsBuilder config)
@@ -37,20 +35,22 @@ public static class DashboardEndpoints
         where TCronTicker : CronTickerEntity, new()
     {
         // Auth endpoints (kept) — these are public + scoped outside the /api group.
-        WithGroupNameIfSet(endpoints.MapGet("/api/auth/info", GetAuthInfo)
+        WithGroupNameIfSet(endpoints.MapGetAot("/api/auth/info", GetAuthInfo)
             .WithName("GetAuthInfo")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous(), config);
 
-        WithGroupNameIfSet(endpoints.MapPost("/api/auth/validate", ValidateAuth)
+        WithGroupNameIfSet(endpoints.MapPostAot("/api/auth/validate", ValidateAuth)
             .WithName("ValidateAuth")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous(), config);
 
-        WithGroupNameIfSet(endpoints.MapGet("/auth/challenge", (DashboardOptionsBuilder dashboardOptions) =>
-            dashboardOptions.Auth.Mode == AuthMode.Host ? Results.Challenge() : Results.Unauthorized())
+        WithGroupNameIfSet(endpoints.MapGetResultAot("/auth/challenge", context =>
+            Task.FromResult<IResult>(context.RequestServices.GetRequiredService<DashboardOptionsBuilder>().Auth.Mode == AuthMode.Host
+                ? Results.Challenge()
+                : Results.Unauthorized()))
             .ExcludeFromDescription()
             .AllowAnonymous(), config);
 
@@ -70,11 +70,11 @@ public static class DashboardEndpoints
         }
 
         // Options (kept): React app reads these on boot for basePath/concurrency/tz.
-        apiGroup.MapGet("/options", GetOptions);
+        apiGroup.MapGetAot("/options", GetOptions);
 
         // Read-only license status for the About page and the global banner. Authenticated exactly like
         // every other read (it sits under /api). Exposes only safe, presentation-ready fields.
-        apiGroup.MapGet("/license", GetLicense);
+        apiGroup.MapGetAot("/license", GetLicense);
 
         // AI assistant — mapped only when configured. Sits under /api so
         // AuthMiddleware gates it; its mutation handlers enforce read-only access.
@@ -83,47 +83,47 @@ public static class DashboardEndpoints
         // ===== Reads — mirror DashboardService proto RPCs =====
         var d = apiGroup.MapGroup("/dashboard");
 
-        d.MapPost("/time-tickers/query", QueryTimeTickers<TTimeTicker, TCronTicker>);
-        d.MapGet("/time-tickers/{id:guid}", GetTimeTickerById<TTimeTicker, TCronTicker>);
-        d.MapGet("/time-tickers/{id:guid}/chain", GetTimeTickerChain<TTimeTicker, TCronTicker>);
-        d.MapGet("/time-tickers/{id:guid}/children", GetTimeTickerChildren<TTimeTicker, TCronTicker>);
-        d.MapGet("/time-tickers/{id:guid}/request", GetTimeTickerRequest<TTimeTicker, TCronTicker>);
-        d.MapGet("/time-tickers/{id:guid}/result", GetTimeTickerResult<TTimeTicker, TCronTicker>);
+        d.MapPostAot("/time-tickers/query", QueryTimeTickers<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/time-tickers/{id:guid}", c => GetTimeTickerById<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        d.MapGetAot("/time-tickers/{id:guid}/chain", c => GetTimeTickerChain<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        d.MapGetAot("/time-tickers/{id:guid}/children", c => GetTimeTickerChildren<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        d.MapGetAot("/time-tickers/{id:guid}/request", c => GetTimeTickerRequest<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        d.MapGetAot("/time-tickers/{id:guid}/result", c => GetTimeTickerResult<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
 
-        d.MapPost("/cron-tickers/query", QueryCronTickers<TTimeTicker, TCronTicker>);
-        d.MapGet("/cron-tickers/{id:guid}", GetCronTickerById<TTimeTicker, TCronTicker>);
+        d.MapPostAot("/cron-tickers/query", QueryCronTickers<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/cron-tickers/{id:guid}", c => GetCronTickerById<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
 
-        d.MapPost("/cron-occurrences/{cronTickerId:guid}/query", QueryCronOccurrences<TTimeTicker, TCronTicker>);
-        d.MapGet("/cron-occurrences/{id:guid}", GetCronOccurrenceById<TTimeTicker, TCronTicker>);
-        d.MapGet("/cron-tickers/{id:guid}/request", GetCronTickerRequest<TTimeTicker, TCronTicker>);
-        d.MapGet("/cron-occurrences/{id:guid}/request", GetCronOccurrenceRequest<TTimeTicker, TCronTicker>);
+        d.MapPostAot("/cron-occurrences/{cronTickerId:guid}/query", c => QueryCronOccurrences<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("cronTickerId")));
+        d.MapGetAot("/cron-occurrences/{id:guid}", c => GetCronOccurrenceById<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        d.MapGetAot("/cron-tickers/{id:guid}/request", c => GetCronTickerRequest<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        d.MapGetAot("/cron-occurrences/{id:guid}/request", c => GetCronOccurrenceRequest<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
 
-        d.MapPost("/executions/query", QueryExecutions<TTimeTicker, TCronTicker>);
+        d.MapPostAot("/executions/query", QueryExecutions<TTimeTicker, TCronTicker>);
 
-        d.MapGet("/stats/overall-statuses", GetOverallStatuses<TTimeTicker, TCronTicker>);
-        d.MapGet("/stats/node-jobs", GetNodeJobs<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/stats/overall-statuses", GetOverallStatuses<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/stats/node-jobs", GetNodeJobs<TTimeTicker, TCronTicker>);
 
-        d.MapGet("/overview/upcoming", GetUpcomingTickers<TTimeTicker, TCronTicker>);
-        d.MapGet("/overview/recent-activity", GetRecentActivity<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/overview/upcoming", GetUpcomingTickers<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/overview/recent-activity", GetRecentActivity<TTimeTicker, TCronTicker>);
 
-        d.MapGet("/nodes", GetNodes<TTimeTicker, TCronTicker>);
-        d.MapGet("/nodes/{nodeName}/functions", GetNodeFunctions<TTimeTicker, TCronTicker>);
-        d.MapGet("/functions", GetAllFunctions<TTimeTicker, TCronTicker>);
-        d.MapGet("/functions/test-run-chain/{id:guid}", GetTestRunChain);
-        d.MapGet("/definitions", ListDefinitions<TTimeTicker, TCronTicker>);
-        d.MapGet("/definitions/{id:guid}", GetDefinition<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/nodes", GetNodes<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/nodes/{nodeName}/functions", c => GetNodeFunctions<TTimeTicker, TCronTicker>(c, c.RequiredRouteString("nodeName")));
+        d.MapGetAot("/functions", GetAllFunctions<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/functions/test-run-chain/{id:guid}", c => GetTestRunChain(c, c.RequiredRouteGuid("id")));
+        d.MapGetAot("/definitions", ListDefinitions<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/definitions/{id:guid}", c => GetDefinition<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
 
-        d.MapGet("/host/status", GetHostStatus<TTimeTicker, TCronTicker>);
-        d.MapGet("/host/next-ticker", GetNextTicker<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/host/status", GetHostStatus<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/host/next-ticker", GetNextTicker<TTimeTicker, TCronTicker>);
 
-        d.MapGet("/graphs/time-tickers", GetTimeTickersGraph<TTimeTicker, TCronTicker>);
-        d.MapGet("/graphs/cron-tickers", GetCronTickersGraph<TTimeTicker, TCronTicker>);
-        d.MapGet("/graphs/cron-tickers/{cronTickerId:guid}", GetCronTickerGraphById<TTimeTicker, TCronTicker>);
-        d.MapGet("/graphs/cron-occurrences/{cronTickerId:guid}", GetCronOccurrencesGraph<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/graphs/time-tickers", GetTimeTickersGraph<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/graphs/cron-tickers", GetCronTickersGraph<TTimeTicker, TCronTicker>);
+        d.MapGetAot("/graphs/cron-tickers/{cronTickerId:guid}", c => GetCronTickerGraphById<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("cronTickerId")));
+        d.MapGetAot("/graphs/cron-occurrences/{cronTickerId:guid}", c => GetCronOccurrencesGraph<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("cronTickerId")));
 
-        d.MapGet("/log-tail/{tickerId:guid}", GetTickerLogTail);
-        d.MapPost("/log-tail/query", GetTickerLogBatch);
-        d.MapGet("/diagnostics", GetRuntimeDiagnostics);
+        d.MapGetAot("/log-tail/{tickerId:guid}", c => GetTickerLogTail(c, c.RequiredRouteGuid("tickerId")));
+        d.MapPostAot("/log-tail/query", GetTickerLogBatch);
+        d.MapGetAot("/diagnostics", GetRuntimeDiagnostics);
 
         // ===== Writes — mirror DashboardOperationService proto RPCs =====
         // Registered on their own sub-group so read-only mode can reject the
@@ -142,7 +142,7 @@ public static class DashboardEndpoints
             if (!license.ExecutionAllowed)
                 return Results.Json(
                     new ErrorResponseBody { Error = license.Message },
-                    Json(invocationContext.HttpContext),
+                    DashboardJsonSerializerContext.Default.ErrorResponseBody,
                     statusCode: StatusCodes.Status403Forbidden);
             return await next(invocationContext);
         });
@@ -159,45 +159,45 @@ public static class DashboardEndpoints
 
         d.MapIntegrations(w, config);
 
-        w.MapPost("/host/start", StartHost<TTimeTicker, TCronTicker>);
-        w.MapPost("/host/stop", StopHost<TTimeTicker, TCronTicker>);
-        w.MapPost("/host/restart", RestartHost<TTimeTicker, TCronTicker>);
+        w.MapPostAot("/host/start", StartHost<TTimeTicker, TCronTicker>);
+        w.MapPostAot("/host/stop", StopHost<TTimeTicker, TCronTicker>);
+        w.MapPostAot("/host/restart", RestartHost<TTimeTicker, TCronTicker>);
 
-        w.MapPost("/tickers/{id:guid}/cancel", CancelTicker<TTimeTicker, TCronTicker>);
-        w.MapPost("/tickers/bulk-cancel", BulkCancelTickers<TTimeTicker, TCronTicker>);
-        w.MapPost("/time-tickers/{id:guid}/cancel", CancelPendingTimeTicker<TTimeTicker, TCronTicker>);
-        w.MapPost("/time-tickers/{id:guid}/request-cancellation", RequestTimeTickerCancellation<TTimeTicker, TCronTicker>);
-        w.MapPost("/cron-occurrences/{id:guid}/request-cancellation", RequestCronOccurrenceCancellation<TTimeTicker, TCronTicker>);
-        w.MapPost("/time-tickers/bulk-delete", BulkDeleteTimeTickers<TTimeTicker, TCronTicker>);
-        w.MapPost("/cron-tickers/bulk-delete", BulkDeleteCronTickers<TTimeTicker, TCronTicker>);
-        w.MapPost("/executions/bulk-retry", BulkRetryExecutions<TTimeTicker, TCronTicker>);
-        w.MapPost("/functions/test-run", TestRunFunction);
-        w.MapPost("/functions/test-run-chain", TestRunChain);
-        w.MapPost("/definitions", CreateDefinition<TTimeTicker, TCronTicker>);
-        w.MapPut("/definitions/{id:guid}", UpdateDefinition<TTimeTicker, TCronTicker>);
-        w.MapDelete("/definitions/{id:guid}", DeleteDefinition<TTimeTicker, TCronTicker>);
-        w.MapPost("/definitions/from-time-ticker/{id:guid}", CreateDefinitionFromTimeTicker<TTimeTicker, TCronTicker>);
-        w.MapPost("/definitions/from-cron-ticker/{id:guid}", CreateDefinitionFromCronTicker<TTimeTicker, TCronTicker>);
-        w.MapPost("/definitions/{id:guid}/activate", ActivateDraft<TTimeTicker, TCronTicker>);
+        w.MapPostAot("/tickers/{id:guid}/cancel", c => CancelTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/tickers/bulk-cancel", BulkCancelTickers<TTimeTicker, TCronTicker>);
+        w.MapPostAot("/time-tickers/{id:guid}/cancel", c => CancelPendingTimeTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/time-tickers/{id:guid}/request-cancellation", c => RequestTimeTickerCancellation<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/cron-occurrences/{id:guid}/request-cancellation", c => RequestCronOccurrenceCancellation<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/time-tickers/bulk-delete", BulkDeleteTimeTickers<TTimeTicker, TCronTicker>);
+        w.MapPostAot("/cron-tickers/bulk-delete", BulkDeleteCronTickers<TTimeTicker, TCronTicker>);
+        w.MapPostAot("/executions/bulk-retry", BulkRetryExecutions<TTimeTicker, TCronTicker>);
+        w.MapPostAot("/functions/test-run", TestRunFunction);
+        w.MapPostAot("/functions/test-run-chain", TestRunChain);
+        w.MapPostAot("/definitions", CreateDefinition<TTimeTicker, TCronTicker>);
+        w.MapPutAot("/definitions/{id:guid}", c => UpdateDefinition<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapDeleteAot("/definitions/{id:guid}", c => DeleteDefinition<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/definitions/from-time-ticker/{id:guid}", c => CreateDefinitionFromTimeTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/definitions/from-cron-ticker/{id:guid}", c => CreateDefinitionFromCronTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/definitions/{id:guid}/activate", c => ActivateDraft<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
 
-        w.MapPost("/time-tickers", AddTimeTicker<TTimeTicker, TCronTicker>);
-        w.MapDelete("/time-tickers/{id:guid}", DeleteTimeTicker<TTimeTicker, TCronTicker>);
-        w.MapPost("/time-tickers/{id:guid}/run", RunTimeTickerOnDemand<TTimeTicker, TCronTicker>);
-        w.MapPost("/time-tickers/{id:guid}/retry-from-here", RetryTimeTickerFromHere<TTimeTicker, TCronTicker>);
-        w.MapPost("/time-tickers/{id:guid}/duplicate", DuplicateTimeTicker<TTimeTicker, TCronTicker>);
-        w.MapPatch("/time-tickers/{id:guid}", UpdateTimeTicker<TTimeTicker, TCronTicker>);
-        w.MapPatch("/time-tickers/{id:guid}/delete-behavior", SetChainDeleteBehavior<TTimeTicker, TCronTicker>);
-        w.MapPost("/time-tickers/chain", AddTimeTickerChain<TTimeTicker, TCronTicker>);
-        w.MapPut("/time-tickers/chain/{rootId:guid}", ReplaceTimeTickerChain<TTimeTicker, TCronTicker>);
+        w.MapPostAot("/time-tickers", AddTimeTicker<TTimeTicker, TCronTicker>);
+        w.MapDeleteAot("/time-tickers/{id:guid}", c => DeleteTimeTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/time-tickers/{id:guid}/run", c => RunTimeTickerOnDemand<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/time-tickers/{id:guid}/retry-from-here", c => RetryTimeTickerFromHere<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/time-tickers/{id:guid}/duplicate", c => DuplicateTimeTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPatchAot("/time-tickers/{id:guid}", c => UpdateTimeTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPatchAot("/time-tickers/{id:guid}/delete-behavior", c => SetChainDeleteBehavior<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/time-tickers/chain", AddTimeTickerChain<TTimeTicker, TCronTicker>);
+        w.MapPutAot("/time-tickers/chain/{rootId:guid}", c => ReplaceTimeTickerChain<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("rootId")));
 
-        w.MapPost("/cron-tickers", AddCronTicker<TTimeTicker, TCronTicker>);
-        w.MapPatch("/cron-tickers/{id:guid}", UpdateCronTicker<TTimeTicker, TCronTicker>);
-        w.MapPost("/cron-tickers/{id:guid}/toggle", ToggleCronTicker<TTimeTicker, TCronTicker>);
-        w.MapPost("/cron-tickers/{id:guid}/run", RunCronTickerOnDemand<TTimeTicker, TCronTicker>);
-        w.MapPost("/cron-occurrences/{id:guid}/run", RerunCronOccurrence<TTimeTicker, TCronTicker>);
-        w.MapDelete("/cron-tickers/{id:guid}", DeleteCronTicker<TTimeTicker, TCronTicker>);
+        w.MapPostAot("/cron-tickers", AddCronTicker<TTimeTicker, TCronTicker>);
+        w.MapPatchAot("/cron-tickers/{id:guid}", c => UpdateCronTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/cron-tickers/{id:guid}/toggle", c => ToggleCronTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/cron-tickers/{id:guid}/run", c => RunCronTickerOnDemand<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/cron-occurrences/{id:guid}/run", c => RerunCronOccurrence<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapDeleteAot("/cron-tickers/{id:guid}", c => DeleteCronTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
 
-        w.MapDelete("/cron-occurrences/{id:guid}", DeleteCronOccurrence<TTimeTicker, TCronTicker>);
+        w.MapDeleteAot("/cron-occurrences/{id:guid}", c => DeleteCronOccurrence<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
     }
 
     // ===== Helpers =====
@@ -1614,7 +1614,9 @@ public static class DashboardEndpoints
             Description = body.Description?.Trim(),
             IncludesRequestData = body.IncludeRequestData,
             SchemaVersion = 1,
-            DefinitionJson = JsonSerializer.Serialize(payload, Json(c)),
+            DefinitionJson = JsonSerializer.Serialize(
+                payload,
+                DashboardJsonSerializerContext.Default.SavedDefinitionPayload),
         };
         SavedTickerDefinition created;
         try { created = await store.CreateDefinitionAsync(row, c.RequestAborted).ConfigureAwait(false); }
@@ -1647,7 +1649,9 @@ public static class DashboardEndpoints
             Id = id, Kind = body.Kind, Target = body.Target, Name = body.Name.Trim(),
             Description = body.Description?.Trim(), IncludesRequestData = body.IncludeRequestData,
             SchemaVersion = 1,
-            DefinitionJson = JsonSerializer.Serialize(CopyPayload(body.Payload!, body.IncludeRequestData), Json(c)),
+            DefinitionJson = JsonSerializer.Serialize(
+                CopyPayload(body.Payload!, body.IncludeRequestData),
+                DashboardJsonSerializerContext.Default.SavedDefinitionPayload),
         };
         SavedTickerDefinition updated;
         try { updated = await store.UpdateDefinitionAsync(row, body.Version, c.RequestAborted).ConfigureAwait(false); }
@@ -1718,7 +1722,10 @@ public static class DashboardEndpoints
             Kind = SavedTickerDefinitionKind.Template, Target = SavedTickerDefinitionTarget.TimeTicker,
             Name = body.Name.Trim(), Description = body.Description?.Trim(),
             IncludesRequestData = body.IncludeRequestData,
-            DefinitionJson = JsonSerializer.Serialize(payload, Json(c)), SchemaVersion = 1,
+            DefinitionJson = JsonSerializer.Serialize(
+                payload,
+                DashboardJsonSerializerContext.Default.SavedDefinitionPayload),
+            SchemaVersion = 1,
         }, c.RequestAborted).ConfigureAwait(false); }
         catch (DuplicateSavedTickerDefinitionNameException ex)
         {
@@ -1773,7 +1780,10 @@ public static class DashboardEndpoints
             Kind = SavedTickerDefinitionKind.Template, Target = SavedTickerDefinitionTarget.CronTicker,
             Name = body.Name.Trim(), Description = body.Description?.Trim(),
             IncludesRequestData = body.IncludeRequestData,
-            DefinitionJson = JsonSerializer.Serialize(payload, Json(c)), SchemaVersion = 1,
+            DefinitionJson = JsonSerializer.Serialize(
+                payload,
+                DashboardJsonSerializerContext.Default.SavedDefinitionPayload),
+            SchemaVersion = 1,
         }, c.RequestAborted).ConfigureAwait(false); }
         catch (DuplicateSavedTickerDefinitionNameException ex)
         {
@@ -1977,7 +1987,12 @@ public static class DashboardEndpoints
 
     private static SavedDefinitionPayload DeserializeDefinitionPayload(SavedTickerDefinition row, HttpContext c)
     {
-        try { return JsonSerializer.Deserialize<SavedDefinitionPayload>(row.DefinitionJson, Json(c)); }
+        try
+        {
+            return JsonSerializer.Deserialize(
+                row.DefinitionJson,
+                DashboardJsonSerializerContext.Default.SavedDefinitionPayload);
+        }
         catch (JsonException) { return null; }
     }
 

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -27,7 +28,11 @@ namespace TickerQ.DependencyInjection
         public static IServiceCollection AddTickerQ(this IServiceCollection services, Action<TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>> optionsBuilder = null)
             => AddTickerQ<TimeTickerEntity, CronTickerEntity>(services, optionsBuilder);
 
-        public static IServiceCollection AddTickerQ<TTimeTicker, TCronTicker>(this IServiceCollection services, Action<TickerOptionsBuilder<TTimeTicker, TCronTicker>> optionsBuilder = null)
+        public static IServiceCollection AddTickerQ<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.PublicProperties)] TTimeTicker,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.PublicProperties)] TCronTicker>(
+            this IServiceCollection services,
+            Action<TickerOptionsBuilder<TTimeTicker, TCronTicker>> optionsBuilder = null)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
             where TCronTicker : CronTickerEntity, new()
         {

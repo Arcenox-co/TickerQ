@@ -151,7 +151,7 @@ jobs:
           dotnet pack src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release --output ./nupkgs
           dotnet pack src/TickerQ.Integrations/TickerQ.Integrations.csproj --configuration Release --output ./nupkgs
 
-      - name: Verify installed packages and NativeAOT core consumer
+      - name: Verify installed packages and NativeAOT consumers
         run: |
           VERSION=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:Version)
           FRAMEWORK=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:TargetFramework)

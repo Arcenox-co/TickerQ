@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -209,8 +211,14 @@ public class DashboardOptionsBuilder
     /// server. When this is not called — or no chat client is configured —
     /// the assistant UI is never rendered and the endpoint isn't mapped.
     /// </summary>
+    [RequiresDynamicCode("The dashboard AI assistant uses runtime tool discovery and is not supported by Native AOT.")]
+    [RequiresUnreferencedCode("The dashboard AI assistant uses runtime tool discovery and is not trimming-safe.")]
     public DashboardOptionsBuilder AddAssistant(Action<AssistantOptionsBuilder> configure)
     {
+        if (!RuntimeFeature.IsDynamicCodeSupported)
+            throw new PlatformNotSupportedException(
+                "TickerQ Dashboard AI assistant requires dynamic code and cannot be enabled in a Native AOT application.");
+
         var builder = new AssistantOptionsBuilder();
         configure(builder);
         Assistant = builder;

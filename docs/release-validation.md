@@ -26,10 +26,12 @@ request/result metadata works with reflection-based JSON disabled. A direct gene
 delegate call checks constructor injection and generated code; no scheduled execution,
 license replacement, certificate fixture, or internal test hook is used.
 
-The managed optional consumer resolves dashboard, integrations and OpenTelemetry wiring,
-checks embedded dashboard assets, and inspects EF/MongoDB/Redis registrations without
-connecting to those stores or sending notifications. NativeAOT publishes and runs only
-the core consumer. This verifies packaging, registration and native startup, not full
-provider behavior or licensed scheduler execution; those remain covered by their
-separate test suites. Successful temporary workspaces are removed; failed ones remain
-at the path printed by the script for diagnosis.
+The dashboard consumer starts a real HTTP host, invokes constructor-injected
+`ITickerFunction` registrations, round-trips typed request metadata, and calls the
+dashboard options endpoint. The managed optional consumer resolves integrations and
+OpenTelemetry wiring, checks embedded dashboard assets, and inspects EF/MongoDB/Redis
+registrations without connecting to those stores or sending notifications. NativeAOT
+publishes and runs both the core and dashboard consumers. This verifies packaging,
+registration and native startup, not full provider behavior or licensed scheduler
+execution; those remain covered by their separate test suites. Successful temporary
+workspaces are removed; failed ones remain at the path printed by the script for diagnosis.

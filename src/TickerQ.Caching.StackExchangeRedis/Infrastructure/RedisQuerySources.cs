@@ -1,5 +1,6 @@
 #nullable disable
 using System.Linq.Expressions;
+using TickerQ.Utilities.Infrastructure;
 using System.Runtime.CompilerServices;
 
 namespace TickerQ.Caching.StackExchangeRedis.Infrastructure;
@@ -76,7 +77,7 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
         while (current is MemberExpression member) current = member.Expression;
         if (current is ConstantExpression && expression.Type == typeof(Guid))
         {
-            id = Expression.Lambda<Func<Guid>>(expression).Compile()();
+            id = Expression.Lambda<Func<Guid>>(expression).CompileAotSafe()();
             return true;
         }
         id = default;

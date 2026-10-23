@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
+using TickerQ.Utilities.Infrastructure;
 using System.Reflection;
 using System.Text.Json.Serialization;
 using TickerQ.Utilities.Enums;
@@ -203,7 +204,7 @@ namespace TickerQ.Utilities.Models
                     Expression.Property(instance, prop),
                     Expression.Convert(val, prop.PropertyType));
                 var lambda = Expression.Lambda<Action<InternalFunctionContext, object>>(assign, instance, val);
-                return (lambda.Compile(), prop.Name);
+                return (lambda.CompileAotSafe(), prop.Name);
             });
 
             cached.Setter(this, value);

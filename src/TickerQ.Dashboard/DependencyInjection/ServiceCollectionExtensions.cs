@@ -49,7 +49,6 @@ namespace TickerQ.Dashboard.DependencyInjection
                 Converters =
                 {
                     new StringToByteArrayConverter(),
-                    new System.Text.Json.Serialization.JsonStringEnumConverter(),
                 },
                 TypeInfoResolverChain = { DashboardJsonSerializerContext.Default }
             };

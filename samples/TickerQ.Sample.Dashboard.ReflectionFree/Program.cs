@@ -4,7 +4,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Base;
 using TickerQ.Sample.Dashboard.ReflectionFree;
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateSlimBuilder(args);
 
 builder.Services.AddTickerQ(options =>
 {
@@ -48,6 +48,14 @@ app.UseTickerQ();
 if (Environment.GetEnvironmentVariable("TICKERQ_AOT_METADATA_PROBE") == "1")
 {
     TickerFunctionProvider.Build();
+    if (!TickerFunctionProvider.TickerFunctions.ContainsKey("Background.CleanupJob")
+        || !TickerFunctionProvider.TickerFunctions.ContainsKey("Orders.ProcessOrderJob"))
+        throw new InvalidOperationException("Native AOT interface-based function registration failed.");
+    await TickerFunctionProvider.TickerFunctions["Background.CleanupJob"].Delegate(
+        CancellationToken.None,
+        app.Services,
+        new TickerFunctionContext());
+
     var typeInfo = TickerFunctionProvider.GetRequestTypeInfo<OrderRequest>("ReflectionFree_TimeJob");
     var payload = TickerHelper.CreateTickerRequest(
         new OrderRequest("aot-probe", 42.5m, new OrderCustomer("buyer@example.com", "AOT Buyer")),

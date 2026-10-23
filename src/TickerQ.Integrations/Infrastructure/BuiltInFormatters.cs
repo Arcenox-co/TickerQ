@@ -67,9 +67,9 @@ internal static class BuiltInPayloads
                 new JsonObject { ["type"] = "header", ["text"] = Text(heading) },
                 new JsonObject { ["type"] = "section", ["fields"] = new JsonArray(fields.Select(f => (JsonNode)new JsonObject
                     { ["type"] = "plain_text", ["text"] = f.Label + "\n" + f.Value }).ToArray()) });
-            if (!string.IsNullOrWhiteSpace(m.Event.Reason)) blocks.Add(new JsonObject { ["type"] = "section", ["text"] = Text(V("reason", m.Event.Reason, 2900)) });
-            blocks.Add(new JsonObject { ["type"] = "context", ["elements"] = new JsonArray(Text(context)) });
-            if (!string.IsNullOrEmpty(m.DashboardUrl)) blocks.Add(new JsonObject
+            if (!string.IsNullOrWhiteSpace(m.Event.Reason)) blocks.Add((JsonNode)new JsonObject { ["type"] = "section", ["text"] = Text(V("reason", m.Event.Reason, 2900)) });
+            blocks.Add((JsonNode)new JsonObject { ["type"] = "context", ["elements"] = new JsonArray(Text(context)) });
+            if (!string.IsNullOrEmpty(m.DashboardUrl)) blocks.Add((JsonNode)new JsonObject
             {
                 ["type"] = "actions", ["elements"] = new JsonArray(new JsonObject
                 {
@@ -84,8 +84,8 @@ internal static class BuiltInPayloads
             var body = new JsonArray(
                 new JsonObject { ["type"] = "TextBlock", ["text"] = heading, ["size"] = "Medium", ["weight"] = "Bolder", ["color"] = V("statusColor"), ["wrap"] = true },
                 new JsonObject { ["type"] = "FactSet", ["facts"] = new JsonArray(fields.Select(f => (JsonNode)new JsonObject { ["title"] = f.Label, ["value"] = f.Value }).ToArray()) });
-            if (!string.IsNullOrWhiteSpace(m.Event.Reason)) body.Add(new JsonObject { ["type"] = "TextBlock", ["text"] = V("reason", m.Event.Reason), ["wrap"] = true, ["separator"] = true });
-            body.Add(new JsonObject { ["type"] = "TextBlock", ["text"] = context, ["size"] = "Small", ["isSubtle"] = true, ["wrap"] = true });
+            if (!string.IsNullOrWhiteSpace(m.Event.Reason)) body.Add((JsonNode)new JsonObject { ["type"] = "TextBlock", ["text"] = V("reason", m.Event.Reason), ["wrap"] = true, ["separator"] = true });
+            body.Add((JsonNode)new JsonObject { ["type"] = "TextBlock", ["text"] = context, ["size"] = "Small", ["isSubtle"] = true, ["wrap"] = true });
             var card = new JsonObject { ["type"] = "AdaptiveCard", ["version"] = "1.2", ["$schema"] = "http://adaptivecards.io/schemas/adaptive-card.json", ["body"] = body };
             if (!string.IsNullOrEmpty(m.DashboardUrl)) card["actions"] = new JsonArray(new JsonObject { ["type"] = "Action.OpenUrl", ["title"] = "Open dashboard", ["url"] = V("dashboardUrl", m.DashboardUrl, 3000) });
             return new() { ["type"] = "message", ["attachments"] = new JsonArray(new JsonObject { ["contentType"] = "application/vnd.microsoft.card.adaptive", ["content"] = card }) };

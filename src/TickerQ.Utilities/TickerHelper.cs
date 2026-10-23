@@ -74,6 +74,42 @@ namespace TickerQ.Utilities
         /// </summary>
         public static bool UseGZipCompression { get; set; } = false;
 
+        /// <summary>
+        /// Prepares an already serialized UTF-8 JSON payload for ticker storage without invoking
+        /// reflection-based JSON serialization. Existing compressed payloads are returned as-is.
+        /// </summary>
+        public static byte[] PrepareTickerRequestJson(byte[] jsonBytes)
+        {
+            ArgumentNullException.ThrowIfNull(jsonBytes);
+
+            if (UseGZipCompression &&
+                jsonBytes.Length >= GZipSignature.Length &&
+                jsonBytes.TakeLast(GZipSignature.Length).SequenceEqual(GZipSignature))
+            {
+                return jsonBytes;
+            }
+
+            if (!UseGZipCompression)
+                return jsonBytes;
+
+            Span<byte> compressedBytes;
+            using (var memoryStream = new MemoryStream())
+            {
+                using (var stream = new GZipStream(memoryStream, CompressionMode.Compress, true))
+                {
+                    stream.Write(jsonBytes);
+                }
+
+                compressedBytes = memoryStream.GetBuffer().AsSpan()[..(int)memoryStream.Length];
+            }
+
+            var result = new byte[compressedBytes.Length + GZipSignature.Length];
+            var resultSpan = result.AsSpan();
+            compressedBytes.CopyTo(resultSpan);
+            GZipSignature.AsSpan().CopyTo(resultSpan[compressedBytes.Length..]);
+            return result;
+        }
+
         [RequiresUnreferencedCode("Legacy request serialization may use reflection metadata. Use the function-aware or JsonTypeInfo overload for trimming/AOT.")]
         [RequiresDynamicCode("Legacy request serialization may require runtime JSON metadata. Use the function-aware or JsonTypeInfo overload for Native AOT.")]
         public static byte[] CreateTickerRequest<T>(T data)
@@ -81,19 +117,7 @@ namespace TickerQ.Utilities
             // If data is already a byte array, short-circuit where possible
             if (data is byte[] existingBytes)
             {
-                // If compression is enabled and data already has the GZip signature, assume it is in the final format
-                if (UseGZipCompression &&
-                    existingBytes.Length >= GZipSignature.Length &&
-                    existingBytes.TakeLast(GZipSignature.Length).SequenceEqual(GZipSignature))
-                {
-                    return existingBytes;
-                }
-
-                // If compression is disabled, treat the provided bytes as the final representation
-                if (!UseGZipCompression)
-                {
-                    return existingBytes;
-                }
+                return PrepareTickerRequestJson(existingBytes);
             }
 
             var serialized = data is byte[] bytes

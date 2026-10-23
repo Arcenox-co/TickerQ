@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup Condition="'$(IsAotCompatible)' == 'true'">
+    <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL2055;IL2062;IL2067;IL2070;IL2072;IL2075;IL2077;IL2078;IL2087;IL2091;IL3050</WarningsAsErrors>
+  </PropertyGroup>
+</Project>

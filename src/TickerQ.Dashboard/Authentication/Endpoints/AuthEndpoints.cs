@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using TickerQ.Dashboard.Endpoints;
 using TickerQ.Dashboard.Authentication.Jwt;
 using TickerQ.Dashboard.Authentication.Schemes;
 using TickerQ.Dashboard.Infrastructure;
@@ -30,7 +31,7 @@ internal static class AuthEndpoints
             s is JwtBearerScheme or CookieAuthScheme);
         if (!hasCredentialScheme) return;
 
-        endpoints.MapPost("/api/auth/login", (Delegate)LoginAsync)
+        endpoints.MapPostResultAot("/api/auth/login", LoginAsync)
             .WithName("Login")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")
@@ -38,13 +39,13 @@ internal static class AuthEndpoints
 
         // Compatibility route name retained, but this is sliding access-token renewal:
         // there is no durable refresh-token store, revocation, or server-side bearer logout.
-        endpoints.MapPost("/api/auth/refresh", (Delegate)RefreshAsync)
+        endpoints.MapPostResultAot("/api/auth/refresh", RefreshAsync)
             .WithName("RenewAccessToken")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous();
 
-        endpoints.MapPost("/api/auth/logout", (Delegate)LogoutAsync)
+        endpoints.MapPostResultAot("/api/auth/logout", LogoutAsync)
             .WithName("Logout")
             .WithTags("TickerQ Dashboard")
             .RequireCors("TickerQ_Dashboard_CORS")

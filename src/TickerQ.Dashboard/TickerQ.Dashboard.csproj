@@ -28,10 +28,9 @@
         <ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
     </ItemGroup>
 
-    <!-- AI assistant (optional feature). The tool-invocation loop is
-         reflection-based, so it is not trim/AOT-clean; the warnings are scoped
-         to the assistant code paths and only matter when a customer both
-         AOT-compiles AND wires up AddAssistant(...). -->
+    <!-- AI assistant (optional feature). Its runtime tool discovery requires dynamic
+         code. AddAssistant is annotated and fails clearly when called from Native AOT;
+         the rest of the dashboard remains trim/AOT compatible. -->
     <ItemGroup>
         <PackageReference Include="Microsoft.Extensions.AI" Version="10.5.1" />
     </ItemGroup>

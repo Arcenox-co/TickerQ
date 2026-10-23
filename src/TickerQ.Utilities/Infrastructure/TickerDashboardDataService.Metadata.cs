@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,7 +12,11 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
 {
     // Explicit projections prevent request payloads, user-defined large columns and
     // navigation graphs from crossing the database boundary for dashboard reads.
-    private static readonly Expression<Func<TTimeTicker, TTimeTicker>> TimeMetadata = e => new TTimeTicker
+    private static readonly Expression<Func<TTimeTicker, TTimeTicker>> TimeMetadata = CreateTimeMetadata();
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "TickerDashboardDataService preserves public constructors and properties on TTimeTicker; the expression binds only those preserved members.")]
+    private static Expression<Func<TTimeTicker, TTimeTicker>> CreateTimeMetadata() => e => new TTimeTicker
     {
         Id = e.Id, Function = e.Function, Description = e.Description,
         CreatedAt = e.CreatedAt, UpdatedAt = e.UpdatedAt,
@@ -27,7 +32,11 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
         ChainGeneration = e.ChainGeneration,
     };
 
-    private static readonly Expression<Func<TCronTicker, TCronTicker>> CronMetadata = e => new TCronTicker
+    private static readonly Expression<Func<TCronTicker, TCronTicker>> CronMetadata = CreateCronMetadata();
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "TickerDashboardDataService preserves public constructors and properties on TCronTicker; the expression binds only those preserved members.")]
+    private static Expression<Func<TCronTicker, TCronTicker>> CreateCronMetadata() => e => new TCronTicker
     {
         Id = e.Id, Function = e.Function, Description = e.Description, Expression = e.Expression,
         CreatedAt = e.CreatedAt, Retries = e.Retries, RetryIntervals = e.RetryIntervals,
@@ -37,7 +46,12 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
     };
 
     private static readonly Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, CronTickerOccurrenceEntity<TCronTicker>>>
-        OccurrenceMetadata = e => new CronTickerOccurrenceEntity<TCronTicker>
+        OccurrenceMetadata = CreateOccurrenceMetadata();
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The occurrence projection binds members declared on the referenced CronTickerOccurrenceEntity type; TCronTicker metadata is preserved by the service constraint.")]
+    private static Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, CronTickerOccurrenceEntity<TCronTicker>>>
+        CreateOccurrenceMetadata() => e => new CronTickerOccurrenceEntity<TCronTicker>
         {
             Id = e.Id, CronTickerId = e.CronTickerId, ChainRootId = e.ChainRootId, Status = e.Status,
             ExecutionTime = e.ExecutionTime, ElapsedTime = e.ElapsedTime, RetryCount = e.RetryCount,
