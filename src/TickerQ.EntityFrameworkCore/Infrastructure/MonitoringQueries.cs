@@ -41,7 +41,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         var time = session.Context.Set<TTimeTicker>().AsNoTracking()
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Function == function);
         var cron = session.Context.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking()
-            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && ids.Contains(x.CronTickerId) && x.ChainRootId == null);
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ChainRootId == null)
+            .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(
+                ids, x => x.CronTickerId));
         var collector = new TickerMonitoringCollector(afterUtc, throughUtc);
         var completedTime = await time
             .Where(x => (x.Status == TickerStatus.Done || x.Status == TickerStatus.DueDone || x.Status == TickerStatus.Failed || x.Status == TickerStatus.Cancelled)

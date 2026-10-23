@@ -881,7 +881,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                     await transaction.RollbackAsync(ct).ConfigureAwait(false);
                     return false;
                 }
-                var query = ApplyTimeTickerGenerationFence(dbContext,
+                var query = ApplyTimeTickerGenerationFence(
                     dbContext.Set<TTimeTicker>().Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                                                            x.Id == functionContext.TickerId), functionContext);
                 if (functionContext.ParentId == null)
@@ -1062,7 +1062,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                     }
                     var query = dbContext.Set<TTimeTicker>().Where(
                         x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Id == functionContext.TickerId);
-                    query = ApplyTimeTickerGenerationFence(dbContext, query, functionContext);
+                    query = ApplyTimeTickerGenerationFence(query, functionContext);
                     if (functionContext.ParentId == null)
                         query = functionContext.AcquisitionToken.HasValue
                             ? query.Where(x => x.LockHolder == _lockHolder &&
@@ -1463,7 +1463,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                             (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
                             x.LockHolder == _lockHolder && x.AcquisitionToken != null);
             if (ids.Length > 0)
-                leaseQuery = leaseQuery.Where(x => ids.Contains(x.Id));
+                leaseQuery = leaseQuery.Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(ids, x => x.Id));
             var leases = await leaseQuery
                 .Select(x => new { x.Id, Token = x.AcquisitionToken.Value })
                 .ToArrayAsync(ct).ConfigureAwait(false);
@@ -1520,12 +1520,14 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 var next = new List<Guid>();
                 foreach (var batch in frontier.Chunk(250))
                 {
-                    var children = await set.Where(x => x.ParentId.HasValue && batch.Contains(x.ParentId.Value))
+                    var children = await set.Where(x => x.ParentId.HasValue)
+                        .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(batch, x => x.ParentId.Value))
                         .Select(x => x.Id).ToArrayAsync(ct).ConfigureAwait(false);
                     next.AddRange(children.Where(seen.Add));
                 }
                 foreach (var batch in next.Chunk(250))
-                    affected += await Cancel(set.Where(x => batch.Contains(x.Id))).ConfigureAwait(false);
+                    affected += await Cancel(set.Where(
+                        EfPredicateBuilder.Contains<TTimeTicker, Guid>(batch, x => x.Id))).ConfigureAwait(false);
                 frontier = next;
             }
             return affected;
@@ -1580,10 +1582,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             var rootId = update.ChainRootId.Value;
             var generation = update.ChainGeneration.Value;
             query = query.Where(x => x.ParentId != null && x.ChainRootId == rootId &&
-                dbContext.Set<TTimeTicker>().Any(root =>
-                    root.ApplicationNamespaceKey == _runtimePartitionKey &&
-                    root.Id == rootId && root.ParentId == null &&
-                    root.ChainGeneration == generation));
+                                     x.ChainGeneration == generation);
         }
 
         var affected = await query.ExecuteUpdateAsync(setters => setters
@@ -1640,7 +1639,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                             x.Status != TickerStatus.Cancelled &&
                             x.Id == functionContexts.TickerId);
 
-            query = ApplyTimeTickerGenerationFence(dbContext, query, functionContexts);
+            query = ApplyTimeTickerGenerationFence(query, functionContexts);
 
             // Fencing: a terminal write from this node must not overwrite a row the
             // stale watchdog already recovered (lock cleared / re-acquired elsewhere).
@@ -1691,18 +1690,18 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     }
 
     private IQueryable<TTimeTicker> ApplyTimeTickerGenerationFence(
-        TDbContext dbContext, IQueryable<TTimeTicker> query, InternalFunctionContext context)
+        IQueryable<TTimeTicker> query, InternalFunctionContext context)
     {
         if (!context.ChainRootId.HasValue || !context.ChainGeneration.HasValue)
             return context.ParentId == null ? query : query.Where(_ => false);
 
         var rootId = context.ChainRootId.Value;
         var generation = context.ChainGeneration.Value;
-        return query.Where(target => target.ChainRootId == rootId &&
-            dbContext.Set<TTimeTicker>().Any(root =>
-                root.ApplicationNamespaceKey == _runtimePartitionKey &&
-                root.Id == rootId && root.ParentId == null &&
-                root.ChainRootId == root.Id && root.ChainGeneration == generation));
+        return context.ParentId == null
+            ? query.Where(target => target.Id == rootId && target.ParentId == null &&
+                                    target.ChainRootId == target.Id && target.ChainGeneration == generation)
+            : query.Where(target => target.ParentId != null && target.ChainRootId == rootId &&
+                                    target.ChainGeneration == generation);
     }
 
     /// <summary>
@@ -1724,8 +1723,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             await ExecuteTimeTickerGraphMutationAsync(true, 0, async (dbContext, ct) =>
             {
-                var query = dbContext.Set<TTimeTicker>().Where(x =>
-                    x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id) && x.Status != TickerStatus.Cancelled);
+                var query = dbContext.Set<TTimeTicker>()
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Status != TickerStatus.Cancelled)
+                    .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(idList, x => x.Id));
                 if (functionContext.ParentId == null)
                 {
                     query = functionContext.AcquisitionToken.HasValue
@@ -1737,7 +1737,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 {
                     if (!await LockCurrentChainGenerationAsync(dbContext, functionContext, ct).ConfigureAwait(false))
                         return 0;
-                    query = ApplyTimeTickerGenerationFence(dbContext,
+                    query = ApplyTimeTickerGenerationFence(
                         query.Where(x => x.ParentId != null), functionContext);
                 }
 
@@ -1752,8 +1752,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var context = session.Context;
         var updateNow = _clock.UtcNow;
-        await context.Set<TTimeTicker>().Where(x =>
-                x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id) && x.Status != TickerStatus.Cancelled)
+        await context.Set<TTimeTicker>()
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.Status != TickerStatus.Cancelled)
+            .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(idList, x => x.Id))
             .ExecuteUpdateAsync(setter => setter.UpdateTimeTicker<TTimeTicker>(
                 functionContext, updateNow, NextLeaseUntil(updateNow)), cancellationToken).ConfigureAwait(false);
     }
@@ -1876,8 +1877,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         // 99% of chains stop at depth 3; in that case we pay one extra
         // sub-millisecond query and return.
         var hasDeeper = await context.AsNoTracking()
-            .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ExecutionTime == null && x.ParentId.HasValue &&
-                           leafIds.Contains(x.ParentId.Value), cancellationToken)
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ExecutionTime == null && x.ParentId.HasValue)
+            .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(leafIds, x => x.ParentId.Value))
+            .AnyAsync(cancellationToken)
             .ConfigureAwait(false);
         if (!hasDeeper)
             return;
@@ -1888,8 +1890,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             cancellationToken.ThrowIfCancellationRequested();
             var levelNodes = await context.AsNoTracking()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ExecutionTime == null && x.ParentId.HasValue &&
-                            frontier.Contains(x.ParentId.Value))
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ExecutionTime == null && x.ParentId.HasValue)
+                .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(frontier, x => x.ParentId.Value))
                 .Select(e => new TimeTickerEntity
                 {
                     Id = e.Id,
@@ -1953,9 +1955,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         for (var offset = 0; offset < descendantIds.Count; offset += batchSize)
         {
             var batch = descendantIds.Skip(offset).Take(batchSize).ToArray();
-            await set.Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && batch.Contains(x.Id) &&
+            await set.Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                                  (x.ChainRootId == null || x.ChainRootId != rootId ||
                                   x.ChainGeneration == null || x.ChainGeneration != generation))
+                .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(batch, x => x.Id))
                 .ExecuteUpdateAsync(setter => setter
                     .SetProperty(x => x.ChainRootId, rootId)
                     .SetProperty(x => x.ChainGeneration, generation)
@@ -2006,8 +2009,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             return;
 
         var hasDeeper = await context.AsNoTracking()
-            .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId.HasValue &&
-                           leafIds.Contains(x.ParentId.Value), cancellationToken)
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId.HasValue)
+            .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(leafIds, x => x.ParentId.Value))
+            .AnyAsync(cancellationToken)
             .ConfigureAwait(false);
         if (!hasDeeper)
             return;
@@ -2017,8 +2021,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         {
             cancellationToken.ThrowIfCancellationRequested();
             var levelNodes = await context.AsNoTracking()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId.HasValue &&
-                            frontier.Contains(x.ParentId.Value))
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId.HasValue)
+                .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(frontier, x => x.ParentId.Value))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
             if (levelNodes.Count == 0)
@@ -2155,7 +2159,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 var acquired = await dbContext.Set<TTimeTicker>()
                     .AsNoTracking()
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                attemptAcquiredIds.Contains(x.Id) && x.AcquisitionToken == acquisitionToken)
+                                x.AcquisitionToken == acquisitionToken)
+                    .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(attemptAcquiredIds, x => x.Id))
                     .Include(x => x.Children.Where(y => y.ExecutionTime == null))
                     .Select(MappingExtensions.ForQueueTimeTickers<TTimeTicker>())
                     .ToArrayAsync(ct)
@@ -2280,8 +2285,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 var resetIds = plan.ResetIds.ToArray();
                 if (resetIds.Length > 0)
                     await dbContext.Set<TimeTickerResultEntity<TTimeTicker>>()
-                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                    resetIds.Contains(x.TickerId))
+                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                        .Where(EfPredicateBuilder.Contains<TimeTickerResultEntity<TTimeTicker>, Guid>(
+                            resetIds, x => x.TickerId))
                         .ExecuteDeleteAsync(ct).ConfigureAwait(false);
                 await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
                 return new TimeTickerChainRetryAcquisition<TTimeTicker>
@@ -2664,8 +2670,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         if (cronIdsRequiringPendingCleanup.Count > 0)
         {
             await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                            cronIdsRequiringPendingCleanup.Contains(x.CronTickerId))
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(
+                    cronIdsRequiringPendingCleanup.ToArray(), x => x.CronTickerId))
                 .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
                 .Where(x => x.LockHolder == null || x.LockHolder == string.Empty)
                 .Where(x => x.AcquisitionToken == null)
@@ -2778,11 +2785,17 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             var fallbackThreshold = now.AddSeconds(-1);  // Recover overdue work missed by normal scheduling.
             var result = new List<CronTickerOccurrenceEntity<TCronTicker>>();
 
+            // Avoid compiling provider-specific navigation updates when this partition has no
+            // occurrences. Some EF providers cannot translate the empty-work update shape.
+            if (!await context.AsNoTracking()
+                    .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, ct)
+                    .ConfigureAwait(false))
+                return result;
+
             // A stale revision can never be restarted under the current definition. Once it is unleased,
             // quarantine it as durable evidence instead of leaving an Idle row stranded forever.
-            await context
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                            x.DefinitionRevision != x.CronTicker.DefinitionRevision)
+            await WhereCronDefinitionIsStale(context, dbContext)
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
                 .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
                 .Where(x => x.LockHolder == null || x.LockHolder == string.Empty)
                 .Where(x => x.AcquisitionToken == null)
@@ -2812,12 +2825,11 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 ct.ThrowIfCancellationRequested();
                 var acquisitionToken = Guid.NewGuid();
 
-                var affected = await context
+                var affected = await WhereCronDefinitionIsCurrent(context, dbContext)
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                                 x.Id == cronTickerOccurrence.Id && x.UpdatedAt == cronTickerOccurrence.UpdatedAt)
                     .Where(x => x.AcquisitionToken == cronTickerOccurrence.AcquisitionToken)
                     .WhereCanAcquire(_lockHolder)
-                    .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
                     .ExecuteUpdateAsync(setter => setter
                         .SetProperty(x => x.LockHolder, _lockHolder)
                         .SetProperty(x => x.LockedAt, now)
@@ -2888,7 +2900,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                             (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
                             x.LockHolder == _lockHolder && x.AcquisitionToken != null);
             if (ids.Length > 0)
-                leaseQuery = leaseQuery.Where(x => ids.Contains(x.Id));
+                leaseQuery = leaseQuery.Where(
+                    EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(ids, x => x.Id));
             var leases = await leaseQuery
                 .Select(x => new { x.Id, Token = x.AcquisitionToken.Value })
                 .ToArrayAsync(ct).ConfigureAwait(false);
@@ -2955,11 +2968,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             return occurrence;
         }
 
-        var affected = await context
+        var affected = await WhereCronDefinitionIsCurrent(context, dbContext)
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                         x.Id == item.NextCronOccurrence.Id && x.ExecutionTime == executionTime)
             .Where(x => x.DefinitionRevision == item.DefinitionRevision)
-            .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
             .WhereCanAcquire(_lockHolder)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(x => x.LockHolder, _lockHolder)
@@ -2996,6 +3008,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     
     public async Task<CronTickerOccurrenceEntity<TCronTicker>> GetEarliestAvailableCronOccurrence(Guid[] ids, CancellationToken cancellationToken = default)
     {
+        if (ids is not { Length: > 0 }) return null;
         using (var admissionSession = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false))
             if (!await IsRunnableAdmissionAllowedAsync(admissionSession.Context, cancellationToken).ConfigureAwait(false)) return null;
         var idList = ids.ToList();
@@ -3004,7 +3017,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
             .AsNoTracking()
             .Include(x => x.CronTicker)
-            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.CronTickerId))
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+            .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(idList, x => x.CronTickerId))
             .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
             // Persisted overdue occurrences remain eligible; keep their original scheduled time.
             .WhereCanAcquire(_lockHolder)
@@ -3013,6 +3027,22 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
     }
+
+    protected IQueryable<CronTickerOccurrenceEntity<TCronTicker>> WhereCronDefinitionIsCurrent(
+        IQueryable<CronTickerOccurrenceEntity<TCronTicker>> query,
+        TDbContext dbContext)
+        => query.Where(occurrence => dbContext.Set<TCronTicker>().Any(cron =>
+            cron.ApplicationNamespaceKey == _runtimePartitionKey &&
+            cron.Id == occurrence.CronTickerId &&
+            cron.DefinitionRevision == occurrence.DefinitionRevision));
+
+    private IQueryable<CronTickerOccurrenceEntity<TCronTicker>> WhereCronDefinitionIsStale(
+        IQueryable<CronTickerOccurrenceEntity<TCronTicker>> query,
+        TDbContext dbContext)
+        => query.Where(occurrence => dbContext.Set<TCronTicker>().Any(cron =>
+            cron.ApplicationNamespaceKey == _runtimePartitionKey &&
+            cron.Id == occurrence.CronTickerId &&
+            cron.DefinitionRevision != occurrence.DefinitionRevision));
     
     public async Task<byte[]> GetCronTickerOccurrenceRequest(Guid tickerId, CancellationToken cancellationToken = default)
     {
@@ -3038,7 +3068,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         var dbContext = session.Context;
         var now = _clock.UtcNow;
         var query = dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id));
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+            .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(idList, x => x.Id));
         if (functionContext.GetPropsToUpdate().Contains(nameof(InternalFunctionContext.Status)) &&
             functionContext.Status == TickerStatus.Idle)
             query = functionContext.AcquisitionToken.HasValue
@@ -3060,11 +3091,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             var winners = new List<Guid>(leases.Count);
             foreach (var lease in leases.Where(x => x.AcquisitionToken.HasValue).Distinct())
             {
-                var affected = await context
+                var affected = await WhereCronDefinitionIsCurrent(context, dbContext)
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                                 x.Id == lease.TickerId && x.Status == TickerStatus.Queued &&
                                 x.LockHolder == _lockHolder && x.AcquisitionToken == lease.AcquisitionToken)
-                    .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
                     .ExecuteUpdateAsync(setter => setter
                         .SetProperty(x => x.Status, TickerStatus.InProgress)
                         .SetProperty(x => x.LeaseUntil, NextLeaseUntil(now))
@@ -3114,8 +3144,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         var idList = timeTickerIds.ToList();
 
         return await dbContext.Set<TTimeTicker>()
-            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id) &&
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                         x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
+            .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(idList, x => x.Id))
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LeaseUntil, leaseUntil), cancellationToken)
             .ConfigureAwait(false);
@@ -3131,8 +3162,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         var idList = occurrenceIds.ToList();
 
         return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id) &&
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                         x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
+            .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(idList, x => x.Id))
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.LeaseUntil, leaseUntil), cancellationToken)
             .ConfigureAwait(false);
@@ -3239,8 +3271,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             var idList = timeTickerIds.ToList();
             held.AddRange(await dbContext.Set<TTimeTicker>()
                 .AsNoTracking()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id) &&
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                             x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
+                .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(idList, x => x.Id))
                 .Select(x => x.Id)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false));
         }
@@ -3250,8 +3283,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             var idList = occurrenceIds.ToList();
             held.AddRange(await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                 .AsNoTracking()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id) &&
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                             x.LockHolder == _lockHolder && x.Status == TickerStatus.InProgress)
+                .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(idList, x => x.Id))
                 .Select(x => x.Id)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false));
         }
@@ -3283,11 +3317,17 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
 
-        await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+        var hasCronOccurrences = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+            .AsNoTracking()
+            .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey, cancellationToken)
+            .ConfigureAwait(false);
+        if (hasCronOccurrences)
+        {
+        await WhereCronDefinitionIsStale(
+                dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>(), dbContext)
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                         (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
                         x.LockHolder != null && x.LockedAt != null && x.LockedAt < staleLockCutoff)
-            .Where(x => x.DefinitionRevision != x.CronTicker.DefinitionRevision)
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.Status, TickerStatus.Skipped)
                 .SetProperty(x => x.SkippedReason,
@@ -3300,11 +3340,11 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
 
-        await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+        await WhereCronDefinitionIsCurrent(
+                dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>(), dbContext)
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                         (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued) &&
                         x.LockHolder != null && x.LockedAt != null && x.LockedAt < staleLockCutoff)
-            .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.Status, TickerStatus.Idle)
                 .SetProperty(x => x.LockHolder, (string)null)
@@ -3317,10 +3357,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         // Expiry is the lease-safe point at which an old in-progress generation can no longer be
         // restarted. Quarantine stale revisions before applying the parent Restart policy so old work
         // never re-enters Idle and becomes eligible under a newer semantic definition.
-        await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+        await WhereCronDefinitionIsStale(
+                dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>(), dbContext)
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                         x.Status == TickerStatus.InProgress && x.LeaseUntil != null && x.LeaseUntil < now)
-            .Where(x => x.DefinitionRevision != x.CronTicker.DefinitionRevision)
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.Status, TickerStatus.Skipped)
                 .SetProperty(x => x.SkippedReason,
@@ -3332,6 +3372,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 .SetProperty(x => x.AcquisitionToken, (Guid?)null)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
+
+        }
 
         // Restart pass first: expired-lease InProgress rows whose policy allows it
         // go back to Idle for any node to re-acquire (fallback picks them up since
@@ -3368,11 +3410,16 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             .ConfigureAwait(false);
 
         // Occurrences take their OnStale policy from the parent cron template.
-        result.RestartedCronOccurrences = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+        if (hasCronOccurrences)
+        {
+        result.RestartedCronOccurrences = await WhereCronDefinitionIsCurrent(
+                dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>(), dbContext)
             .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                         x.Status == TickerStatus.InProgress && x.LeaseUntil != null && x.LeaseUntil < now)
-            .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
-            .Where(x => x.CronTicker.OnStale == StaleAction.Restart && x.StaleRestartCount < maxStaleRestarts)
+            .Where(x => dbContext.Set<TCronTicker>().Any(cron =>
+                            cron.ApplicationNamespaceKey == _runtimePartitionKey &&
+                            cron.Id == x.CronTickerId && cron.OnStale == StaleAction.Restart) &&
+                        x.StaleRestartCount < maxStaleRestarts)
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(x => x.Status, TickerStatus.Idle)
                 .SetProperty(x => x.LockHolder, (string)null)
@@ -3396,6 +3443,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 .SetProperty(x => x.AcquisitionToken, (Guid?)null)
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken)
             .ConfigureAwait(false);
+        }
 
             return result;
         }, cancellationToken).ConfigureAwait(false);

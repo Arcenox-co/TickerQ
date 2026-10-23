@@ -211,7 +211,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
                     var ids = graph.Select(x => x.Id).ToArray();
                     var currentRows = await dbContext.Set<TTimeTicker>().AsNoTracking()
-                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && ids.Contains(x.Id))
+                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                        .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(ids, x => x.Id))
                         .ToDictionaryAsync(x => x.Id, ct).ConfigureAwait(false);
                     if (currentRows.Count != ids.Length ||
                         graph.Any(incoming => !TimeTickerConfigurationSnapshot.Matches(currentRows[incoming.Id], incoming)))
@@ -324,7 +325,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 {
                     var children = await set.AsNoTracking()
                         .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                    x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                                    x.ParentId.HasValue)
+                        .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(frontier, x => x.ParentId.Value))
                         .ToListAsync(cancellationToken).ConfigureAwait(false);
                     var next = new List<TTimeTicker>();
                     foreach (var child in children)
@@ -438,7 +440,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 cancellationToken.ThrowIfCancellationRequested();
                 var childIds = await set.AsNoTracking()
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                                x.ParentId.HasValue)
+                    .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(frontier, x => x.ParentId.Value))
                     .Select(x => x.Id)
                     .ToListAsync(cancellationToken).ConfigureAwait(false);
                 if (childIds.Count == 0) break;
@@ -451,7 +454,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 var ids = levels[i];
                 if (ids.Count > 0)
-                    total += await set.Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && ids.Contains(x.Id))
+                    total += await set.Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                        .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(ids, x => x.Id))
                         .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
             }
             return total;
@@ -610,7 +614,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             // Re-apply the eligibility predicate at delete time so a concurrently reactivated occurrence is
             // skipped; a single ExecuteDelete statement is atomic. Cron DEFINITIONS are never referenced.
             var deleted = await set
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && ids.Contains(x.Id))
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(ids, x => x.Id))
                 .Where(eligible)
                 .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
 
@@ -743,7 +748,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     var remaining = maxNodesPerChain - subtreeSize;
                     var children = await set.AsNoTracking()
                         .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                    x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                                    x.ParentId.HasValue)
+                        .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(frontier, x => x.ParentId.Value))
                         .Select(x => new { x.Id, x.ParentId })
                         .Take(remaining + 1)
                         .ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -770,7 +776,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
                 // Every node must still be eligible (unowned, past cutoff) under this transaction.
                 var eligibleCount = await set.AsNoTracking()
-                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id))
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                    .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(idList, x => x.Id))
                     .Where(eligible)
                     .CountAsync(cancellationToken).ConfigureAwait(false);
                 if (eligibleCount != subtreeSize)
@@ -792,11 +799,13 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                                     x.DeleteBehavior == ChainDeleteBehavior.Restrict), cancellationToken)
                     .ConfigureAwait(false);
                 var hasPhantomChild = await set.AsNoTracking()
-                    .AnyAsync(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                   x.ParentId.HasValue && idList.Contains(x.ParentId.Value) && !idList.Contains(x.Id),
-                        cancellationToken).ConfigureAwait(false);
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.ParentId.HasValue)
+                    .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(idList, x => x.ParentId.Value))
+                    .Where(EfPredicateBuilder.DoesNotContain<TTimeTicker, Guid>(idList, x => x.Id))
+                    .AnyAsync(cancellationToken).ConfigureAwait(false);
                 var currentEdges = await set.AsNoTracking()
-                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id))
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                    .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(idList, x => x.Id))
                     .Select(x => new { x.Id, x.ParentId })
                     .ToListAsync(cancellationToken).ConfigureAwait(false);
                 var exactEdgesStillMatch = currentEdges.Count == subtreeSize
@@ -817,7 +826,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     if (levelIds.Count == 0)
                         continue;
                     deleted += await set
-                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && levelIds.Contains(x.Id))
+                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                        .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(levelIds, x => x.Id))
                         .Where(eligible)
                         .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
                 }
@@ -914,7 +924,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 var ids = cronTickers.Select(x => x.Id).Distinct().ToList();
                 var currentRows = await dbContext.Set<TCronTicker>()
-                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && ids.Contains(x.Id))
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                    .Where(EfPredicateBuilder.Contains<TCronTicker, Guid>(ids, x => x.Id))
                     .ToDictionaryAsync(x => x.Id, ct)
                     .ConfigureAwait(false);
                 var now = _clock.UtcNow;
@@ -955,8 +966,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             var result = await ExecuteRunnableAdmissionAsync(0, async (dbContext, ct) =>
             {
                 var idList = cronTickerIds.ToList();
-                return await dbContext.Set<TCronTicker>().Where(
-                        x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id))
+                return await dbContext.Set<TCronTicker>()
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                    .Where(EfPredicateBuilder.Contains<TCronTicker, Guid>(idList, x => x.Id))
                     .ExecuteDeleteAsync(ct).ConfigureAwait(false);
             }, cancellationToken).ConfigureAwait(false);
             
@@ -1011,7 +1023,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
             var cronIds = cronTickerOccurrences.Select(x => x.CronTickerId).Distinct().ToList();
             var revisions = await dbContext.Set<TCronTicker>()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && cronIds.Contains(x.Id))
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                .Where(EfPredicateBuilder.Contains<TCronTicker, Guid>(cronIds, x => x.Id))
                 .Select(x => new { x.Id, x.DefinitionRevision })
                 .ToDictionaryAsync(x => x.Id, x => x.DefinitionRevision, ct)
                 .ConfigureAwait(false);
@@ -1067,7 +1080,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 var now = _clock.UtcNow;
                 var snapshots = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                     .AsNoTracking()
-                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id))
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                    .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(
+                        idList, x => x.Id))
                     .Where(x => x.Status != TickerStatus.InProgress && x.AcquisitionToken == null &&
                                 (!x.LeaseUntil.HasValue || x.LeaseUntil <= now))
                     .ToListAsync(ct).ConfigureAwait(false);
@@ -1083,7 +1098,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 }
                 if (deletedIds.Count > 0)
                     await dbContext.Set<CronTickerOccurrenceResultEntity<TCronTicker>>()
-                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && deletedIds.Contains(x.TickerId))
+                        .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                        .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceResultEntity<TCronTicker>, Guid>(
+                            deletedIds, x => x.TickerId))
                         .ExecuteDeleteAsync(ct).ConfigureAwait(false);
                 return deletedIds.Count;
             }, cancellationToken).ConfigureAwait(false);
@@ -1100,9 +1117,11 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 var now = _clock.UtcNow;
                 var acquisitionToken = Guid.NewGuid();
                 var idList = occurrenceIds.ToList();
-                var affected = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && idList.Contains(x.Id))
-                .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
+                var affected = await WhereCronDefinitionIsCurrent(
+                        dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>(), dbContext)
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(
+                    idList, x => x.Id))
                 .WhereCanAcquire(_lockHolder)
                 .ExecuteUpdateAsync(setter => setter
                     .SetProperty(x => x.LockHolder, _lockHolder)
@@ -1118,9 +1137,10 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 
                 return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
                 .AsNoTracking()
-                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                            idList.Contains(x.Id) && x.LockHolder == _lockHolder &&
+                .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey && x.LockHolder == _lockHolder &&
                             x.Status == TickerStatus.InProgress && x.AcquisitionToken == acquisitionToken)
+                .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(
+                    idList, x => x.Id))
                 .Include(x => x.CronTicker)
                 .ToArrayAsync(ct)
                 .ConfigureAwait(false);
@@ -1135,10 +1155,10 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             {
                 var now = _clock.UtcNow;
                 var acquisitionToken = Guid.NewGuid();
-                var affected = await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
+                var affected = await WhereCronDefinitionIsCurrent(
+                        dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>(), dbContext)
                     .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
                                 x.Id == occurrenceId && x.ChainRootId == null)
-                    .Where(x => x.DefinitionRevision == x.CronTicker.DefinitionRevision)
                     .Where(x => x.Status == TickerStatus.Idle ||
                                 (x.Status == TickerStatus.Queued &&
                                  (x.LockHolder == null || x.LockHolder == _lockHolder)) ||
