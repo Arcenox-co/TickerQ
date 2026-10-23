@@ -43,10 +43,45 @@ public sealed class CleanupJob : ITickerFunction
 }
 
 public sealed record OrderRequest(string OrderId);
+public sealed record OrderResult(string OrderId, bool Processed);
 
 [JsonSerializable(typeof(OrderRequest))]
+[JsonSerializable(typeof(OrderResult))]
 internal partial class JobJsonContext : JsonSerializerContext;
 ```
+
+`WithJsonContext` is optional in an ordinary managed .NET application. When reflection
+serialization is enabled, TickerQ resolves request metadata through
+`DefaultJsonTypeInfoResolver`. It becomes required when Native AOT or application settings
+disable reflection-based JSON metadata. TickerQ resolves every registered typed function
+during startup and fails with a `No JsonTypeInfo was available` error when the configured
+context is missing a request or declared result type; the failure is not deferred until the
+first job executes.
+
+If the application already owns several generated contexts, combine them instead of creating
+a duplicate context:
+
+```csharp
+using System.Text.Json.Serialization.Metadata;
+
+options.WithJsonContext(JsonTypeInfoResolver.Combine(
+    OrdersJsonContext.Default,
+    BillingJsonContext.Default));
+```
+
+Requestless functions require no application JSON entry. Adding a generated context to a
+managed application is supported, but it is an optimization/compatibility choice rather than
+a normal-runtime requirement.
+
+Use the `JsonTypeInfo<T>` result APIs in trimmed or native applications:
+
+```csharp
+context.SetResult(result, JobJsonContext.Default.OrderResult);
+var parentResult = context.GetParentResult(JobJsonContext.Default.OrderResult);
+```
+
+The convenience `SetResult(value)` and `GetParentResult<T>()` overloads use reflection
+metadata and are not Native-AOT-safe.
 
 When Redis is the operational provider, give the same source-generated context to Redis
 so it can serialize custom ticker and result types without reflection:
