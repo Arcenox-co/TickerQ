@@ -21,7 +21,10 @@ builder.Services.AddTickerQ(options =>
     options.DisableBackgroundServices();
     options.UseLicense(Path.Combine(AppContext.BaseDirectory, "intentionally-missing.tqlicense"));
     options.WithJsonContext(SmokeJsonContext.Default);
-    options.AddDashboard(dashboard => dashboard.AllowAnonymousDashboard().SetReadOnly());
+    options.AddDashboard(dashboard => dashboard
+        .AllowAnonymousDashboard()
+        .SetReadOnly()
+        .ConfigureSignalR(signalR => signalR.Services.AddSingleton<SignalRConfigurationProbe>()));
 });
 builder.Services.MapTicker<InterfaceJob>();
 builder.Services.MapTicker<TypedInterfaceJob, SmokeRequest>();
@@ -32,6 +35,7 @@ await app.StartAsync();
 try
 {
     _ = app.Services.GetRequiredService<ITimeTickerManager<TimeTickerEntity>>();
+    _ = app.Services.GetRequiredService<SignalRConfigurationProbe>();
     Check(TickerFunctionProvider.IsBuilt, "Dashboard host did not publish the function registry.");
     Check(TickerFunctionProvider.TickerFunctions.ContainsKey(nameof(InterfaceJob)),
         "Request-less ITickerFunction registration was trimmed.");
@@ -89,6 +93,8 @@ public sealed class InvocationProbe
 {
     public int Calls { get; set; }
 }
+
+public sealed class SignalRConfigurationProbe { }
 
 public sealed class InterfaceJob(InvocationProbe probe) : ITickerFunction
 {

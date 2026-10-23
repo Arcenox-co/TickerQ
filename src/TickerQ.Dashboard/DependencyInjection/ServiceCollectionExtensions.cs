@@ -58,7 +58,8 @@ namespace TickerQ.Dashboard.DependencyInjection
             services.AddSingleton<DashboardTestRunRegistry>();
 
             services.AddRouting();
-            services.AddSignalR();
+            var signalR = services.AddSignalR();
+            config.SignalRConfiguration?.Invoke(signalR);
 
             // The new authentication system is registered in ServiceExtensions.cs
             // This method is kept for backward compatibility with existing middleware pipeline

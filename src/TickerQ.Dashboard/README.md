@@ -166,6 +166,7 @@ services.AddTickerQ<MyTimeTicker, MyCronTicker>(config =>
 - `EnableForwardedHeaders()` + `TrustForwardedProxy(ip)` / `TrustForwardedNetwork(cidr)` - Honor `X-Forwarded-*` only from trusted proxies/networks
 - `SetBackendDomain(domain)` - Set backend API domain (does **not** by itself grant cross-origin trust — pair with `AllowOrigins`)
 - `SetCorsPolicy(policy)` - Configure a fully custom CORS policy
+- `ConfigureSignalR(signalR => …)` - Add a SignalR scale-out provider for multi-replica deployments
 
 `SetBackendDomain("https://api.example.com")` accepts an HTTP(S) origin, including
 an optional port, without a path, credentials, query or fragment. REST, authentication,
@@ -176,6 +177,36 @@ cookies and the dashboard bearer token when present; cross-origin requests still
 require the backend's explicit `AllowOrigins` configuration, and browser cookie
 SameSite restrictions still apply. Bearer session storage is scoped to the backend
 and mount; upgrading from an unscoped token requires a fresh login.
+
+### SignalR in multi-replica deployments
+
+Dashboard notifications are process-local unless the host configures a SignalR
+scale-out provider. Without one, a job executed by replica B cannot immediately
+notify a browser whose hub connection terminates on replica A. The dashboard performs
+a bounded 30-second consistency refresh so the REST-backed view eventually catches up,
+but production clusters should still configure a backplane or managed SignalR service:
+
+```csharp
+// Host package: Microsoft.AspNetCore.SignalR.StackExchangeRedis
+options.AddDashboard(dashboard =>
+{
+    dashboard.ConfigureSignalR(signalR =>
+        signalR.AddStackExchangeRedis(
+            builder.Configuration.GetConnectionString("SignalRRedis")!,
+            redis => redis.Configuration.ChannelPrefix =
+                StackExchange.Redis.RedisChannel.Literal("tickerq:orders-production")));
+});
+```
+
+Use an isolated Redis channel prefix when several applications share one Redis deployment.
+Redis-backed SignalR also requires load-balancer session affinity because the dashboard
+keeps WebSockets, Server-Sent Events, and long polling available. Azure SignalR Service
+provides the backplane and manages client connections without application-server affinity.
+This SignalR Redis connection is independent of TickerQ's optional persistence/cache
+provider; adding one does not configure the other.
+
+At the reverse proxy, pass WebSocket upgrade headers, disable response buffering for
+Server-Sent Events, and keep the upstream read timeout above the SignalR keep-alive window.
 
 **Other**
 
@@ -201,7 +232,7 @@ The dashboard automatically detects your authentication method:
 The frontend automatically adapts based on your backend configuration:
 - Shows appropriate login UI
 - Handles SignalR authentication 
-- Supports both header and query parameter auth (for WebSockets)
+- Supports both header and query parameter auth (for WebSockets and Server-Sent Events)
 
 That's it! Simple and clean. 🎉
 

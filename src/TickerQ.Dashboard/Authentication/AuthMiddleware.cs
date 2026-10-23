@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
@@ -29,15 +30,13 @@ public class AuthMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        var path = context.Request.Path.Value?.ToLower() ?? "";
+        var path = context.Request.Path.Value?.ToLowerInvariant() ?? "";
 
-        if (IsExcludedPath(path))
-        {
-            await _next(context);
-            return;
-        }
-
-        if (!path.StartsWith("/api/"))
+        // Everything outside /api is the SPA, its assets, or the SignalR hub.
+        // Inside /api, only the exact authentication bootstrap endpoints are
+        // public. Suffix/pattern exclusions here would allow a future API route
+        // such as /api/report.js or /api/jobs/negotiate to bypass authentication.
+        if (!IsApiPath(path) || IsPublicAuthPath(path))
         {
             await _next(context);
             return;
@@ -79,20 +78,13 @@ public class AuthMiddleware
         await _next(context);
     }
 
-    private static bool IsExcludedPath(string path)
-    {
-        return path.Contains("/assets/") ||
-               path.EndsWith(".js") ||
-               path.EndsWith(".css") ||
-               path.EndsWith(".ico") ||
-               path.EndsWith(".png") ||
-               path.EndsWith(".jpg") ||
-               path.EndsWith(".svg") ||
-               path.Contains("/negotiate") ||
-               path == "/api/auth/validate" ||
+    private static bool IsPublicAuthPath(string path)
+        => path == "/api/auth/validate" ||
                path == "/api/auth/info" ||
                path == "/api/auth/login" ||
                path == "/api/auth/refresh" ||
                path == "/api/auth/logout";
-    }
+
+    private static bool IsApiPath(string path)
+        => path == "/api" || path.StartsWith("/api/", StringComparison.Ordinal);
 }

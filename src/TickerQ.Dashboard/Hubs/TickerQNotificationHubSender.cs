@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Logging;
 using TickerQ.Dashboard.Infrastructure;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
@@ -17,78 +18,85 @@ namespace TickerQ.Dashboard.Hubs
     /// server-paginated/sorted, so clients can't apply a pushed row locally
     /// without re-running the same query anyway.
     /// </summary>
-    internal class TickerQNotificationHubSender : ITickerQNotificationHubSender
+    internal sealed class TickerQNotificationHubSender : ITickerQNotificationHubSender, IDisposable
     {
         private readonly IHubContext<TickerQNotificationHub> _hubContext;
+        private readonly ILogger<TickerQNotificationHubSender> _logger;
         private readonly Timer _timeTickerUpdateTimer;
         private int _hasPendingTimeTickerUpdate;
+        private int _disposed;
+        private int _deliveryFailureLogged;
         private static readonly TimeSpan TimeTickerUpdateDebounce = TimeSpan.FromMilliseconds(100);
 
-        public TickerQNotificationHubSender(IHubContext<TickerQNotificationHub> hubContext)
+        public TickerQNotificationHubSender(
+            IHubContext<TickerQNotificationHub> hubContext,
+            ILogger<TickerQNotificationHubSender> logger)
         {
             _hubContext = hubContext ?? throw new ArgumentNullException(nameof(hubContext));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _timeTickerUpdateTimer = new Timer(TimeTickerUpdateCallback, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         }
 
         public Task AddCronTickerNotifyAsync(Guid id)
-            => _hubContext.Clients.All.SendAsync("AddCronTickerNotification", id);
+            => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("AddCronTickerNotification", id));
 
         public Task UpdateCronTickerNotifyAsync(Guid id)
-            => _hubContext.Clients.All.SendAsync("UpdateCronTickerNotification", id);
+            => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("UpdateCronTickerNotification", id));
 
         public Task RemoveCronTickerNotifyAsync(Guid id)
-            => _hubContext.Clients.All.SendAsync("RemoveCronTickerNotification", id);
+            => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("RemoveCronTickerNotification", id));
 
         public Task AddTimeTickerNotifyAsync(Guid id)
-            => _hubContext.Clients.All.SendAsync("AddTimeTickerNotification", id);
+            => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("AddTimeTickerNotification", id));
 
         public Task AddTimeTickersBatchNotifyAsync()
-            => _hubContext.Clients.All.SendAsync("AddTimeTickersBatchNotification");
+            => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("AddTimeTickersBatchNotification"));
 
         public Task UpdateTimeTickerNotifyAsync(Guid id)
-            => _hubContext.Clients.All.SendAsync("UpdateTimeTickerNotification", id);
+            => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("UpdateTimeTickerNotification", id));
 
         public Task RemoveTimeTickerNotifyAsync(Guid id)
-            => _hubContext.Clients.All.SendAsync("RemoveTimeTickerNotification", id);
+            => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("RemoveTimeTickerNotification", id));
 
         public Task CanceledTickerNotifyAsync(Guid id)
-            => _hubContext.Clients.All.SendAsync("CanceledTickerNotification", id);
+            => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("CanceledTickerNotification", id));
 
         public Task AddCronOccurrenceAsync(Guid groupId, Guid occurrenceId)
-            => _hubContext.Clients.Group(groupId.ToString()).SendAsync("AddCronOccurrenceNotification", occurrenceId);
+            => SendSafelyAsync(() => _hubContext.Clients.Group(groupId.ToString("D"))
+                .SendAsync("AddCronOccurrenceNotification", occurrenceId));
 
         public Task UpdateCronOccurrenceAsync(Guid groupId, Guid occurrenceId)
-            => _hubContext.Clients.Group(groupId.ToString()).SendAsync("UpdateCronOccurrenceNotification", occurrenceId);
+            => SendSafelyAsync(() => _hubContext.Clients.Group(groupId.ToString("D"))
+                .SendAsync("UpdateCronOccurrenceNotification", occurrenceId));
 
         public void UpdateActiveThreads(string activeThreads)
         {
             var json = JsonSerializer.SerializeToElement(activeThreads, DashboardJsonSerializerContext.Default.String);
-            _ = _hubContext.Clients.All.SendAsync("GetActiveThreadsNotification", json);
+            _ = SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("GetActiveThreadsNotification", json));
         }
 
         public void UpdateNextOccurrence(DateTime? nextOccurrence)
         {
-            if (nextOccurrence != null)
-            {
-                var json = JsonSerializer.SerializeToElement(nextOccurrence, DashboardJsonSerializerContext.Default.NullableDateTime);
-                _ = _hubContext.Clients.All.SendAsync("GetNextOccurrenceNotification", json);
-            }
+            // Null is a meaningful transition: it clears a previously visible
+            // next occurrence after the last pending job is removed.
+            var json = JsonSerializer.SerializeToElement(nextOccurrence, DashboardJsonSerializerContext.Default.NullableDateTime);
+            _ = SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("GetNextOccurrenceNotification", json));
         }
 
         public void UpdateHostStatus(bool active)
         {
             var json = JsonSerializer.SerializeToElement(active, DashboardJsonSerializerContext.Default.Boolean);
-            _ = _hubContext.Clients.All.SendAsync("GetHostStatusNotification", json);
+            _ = SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("GetHostStatusNotification", json));
         }
 
         public void UpdateHostException(string exceptionMessage)
         {
             var json = JsonSerializer.SerializeToElement(exceptionMessage, DashboardJsonSerializerContext.Default.String);
-            _ = _hubContext.Clients.All.SendAsync("UpdateHostExceptionNotification", json);
+            _ = SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("UpdateHostExceptionNotification", json));
         }
 
         public Task UpdateNodeHeartBeatAsync(JsonElement nodeHeartBeat)
-            => _hubContext.Clients.All.SendAsync("UpdateNodeHeartBeat", nodeHeartBeat);
+            => SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("UpdateNodeHeartBeat", nodeHeartBeat));
 
         public Task UpdateTimeTickerFromInternalFunctionContext<TTimeTicker>(InternalFunctionContext internalFunctionContext)
             where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
@@ -96,9 +104,17 @@ namespace TickerQ.Dashboard.Hubs
             // Debounce high-frequency status transitions (queued → in-progress →
             // done) into one zero-payload broadcast every 100ms. The dashboard
             // refetches the whole list once instead of being hammered.
-            if (Interlocked.Exchange(ref _hasPendingTimeTickerUpdate, 1) == 0)
+            if (Volatile.Read(ref _disposed) == 0 &&
+                Interlocked.Exchange(ref _hasPendingTimeTickerUpdate, 1) == 0)
             {
-                _timeTickerUpdateTimer.Change(TimeTickerUpdateDebounce, Timeout.InfiniteTimeSpan);
+                try
+                {
+                    _timeTickerUpdateTimer.Change(TimeTickerUpdateDebounce, Timeout.InfiniteTimeSpan);
+                }
+                catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+                {
+                    // Host shutdown raced with a final execution update.
+                }
             }
 
             return Task.CompletedTask;
@@ -109,7 +125,8 @@ namespace TickerQ.Dashboard.Hubs
             if (Interlocked.Exchange(ref _hasPendingTimeTickerUpdate, 0) == 0)
                 return;
 
-            _ = _hubContext.Clients.All.SendAsync("UpdateTimeTickerNotification");
+            if (Volatile.Read(ref _disposed) == 0)
+                _ = SendSafelyAsync(() => _hubContext.Clients.All.SendAsync("UpdateTimeTickerNotification"));
         }
 
         public Task UpdateCronOccurrenceFromInternalFunctionContext<TCronTicker>(InternalFunctionContext internalFunctionContext)
@@ -123,9 +140,52 @@ namespace TickerQ.Dashboard.Hubs
             if (internalFunctionContext.ParentId is not { } parentId)
                 return Task.CompletedTask;
 
-            return _hubContext.Clients
-                .Group(parentId.ToString())
-                .SendAsync("UpdateCronOccurrenceNotification", internalFunctionContext.TickerId);
+            return SendSafelyAsync(() => _hubContext.Clients
+                .Group(parentId.ToString("D"))
+                .SendAsync("UpdateCronOccurrenceNotification", internalFunctionContext.TickerId));
+        }
+
+        private Task SendSafelyAsync(Func<Task> send)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return Task.CompletedTask;
+
+            return SendSafelyCoreAsync(send);
+        }
+
+        private async Task SendSafelyCoreAsync(Func<Task> send)
+        {
+            try
+            {
+                await send().ConfigureAwait(false);
+                Volatile.Write(ref _deliveryFailureLogged, 0);
+            }
+            catch (Exception exception)
+            {
+                // Dashboard notifications are cache-invalidation hints. The
+                // REST API remains authoritative and the SPA has a periodic
+                // consistency refresh, so a transport outage must not crash a
+                // scheduler callback or become an unobserved task exception.
+                if (Interlocked.Exchange(ref _deliveryFailureLogged, 1) == 0)
+                {
+                    _logger.LogWarning(exception,
+                        "TickerQ dashboard SignalR notifications are unavailable. " +
+                        "Scheduler work continues and dashboard clients use their consistency refresh.");
+                }
+                else
+                {
+                    _logger.LogDebug(exception, "TickerQ dashboard SignalR notification could not be delivered.");
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            Interlocked.Exchange(ref _hasPendingTimeTickerUpdate, 0);
+            _timeTickerUpdateTimer.Dispose();
         }
     }
 }

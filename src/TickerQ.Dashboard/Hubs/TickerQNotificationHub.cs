@@ -1,11 +1,6 @@
 using System;
-using System.Linq;
-using System.Security.Claims;
-using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using TickerQ.Dashboard.Authentication;
 
@@ -13,18 +8,15 @@ namespace TickerQ.Dashboard.Hubs
 {
     public class TickerQNotificationHub : Hub
     {
-        private readonly IConfiguration _config;
         private readonly ILogger<TickerQNotificationHub> _logger;
         private readonly IAuthService _authService;
         private readonly Infrastructure.Metrics.ITickerQDashboardMetrics _metrics;
 
         public TickerQNotificationHub(
-            IConfiguration config,
             ILogger<TickerQNotificationHub> logger,
             IAuthService authService,
             Infrastructure.Metrics.ITickerQDashboardMetrics metrics)
         {
-            _config = config;
             _logger = logger;
             _authService = authService;
             _metrics = metrics;
@@ -81,11 +73,12 @@ namespace TickerQ.Dashboard.Hubs
                 return;
             }
 
-            await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
+            var normalizedGroupName = NormalizeCronGroupName(groupName);
+            await Groups.AddToGroupAsync(Context.ConnectionId, normalizedGroupName);
             var username = Context.Items["username"]?.ToString();
             
-            _logger.LogDebug("User {Username} joined group {GroupName}", username, groupName);
-            await Clients.Caller.SendAsync("GroupJoined", groupName);
+            _logger.LogDebug("User {Username} joined group {GroupName}", username, normalizedGroupName);
+            await Clients.Caller.SendAsync("GroupJoined", normalizedGroupName);
         }
         
         public async Task LeaveGroup(string groupName)
@@ -96,11 +89,20 @@ namespace TickerQ.Dashboard.Hubs
                 return;
             }
 
-            await Groups.RemoveFromGroupAsync(Context.ConnectionId, groupName);
+            var normalizedGroupName = NormalizeCronGroupName(groupName);
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, normalizedGroupName);
             var username = Context.Items["username"]?.ToString();
             
-            _logger.LogDebug("User {Username} left group {GroupName}", username, groupName);
-            await Clients.Caller.SendAsync("GroupLeft", groupName);
+            _logger.LogDebug("User {Username} left group {GroupName}", username, normalizedGroupName);
+            await Clients.Caller.SendAsync("GroupLeft", normalizedGroupName);
+        }
+
+        internal static string NormalizeCronGroupName(string? groupName)
+        {
+            if (!Guid.TryParse(groupName, out var cronTickerId))
+                throw new HubException("Cron group must be a valid ticker ID.");
+
+            return cronTickerId.ToString("D");
         }
         
         public async Task GetStatus()
