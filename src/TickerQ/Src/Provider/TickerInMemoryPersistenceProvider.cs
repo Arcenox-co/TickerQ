@@ -3481,14 +3481,12 @@ namespace TickerQ.Provider
         public ITickerQueryable<TCronTicker> CronTickersQuery()
         {
             return new InMemoryTickerQueryable<TCronTicker>(_ =>
-                Task.FromResult(ReadGraph(() => CronTickers.Values.ToList())), _ =>
                 Task.FromResult(ReadGraph(() => CronTickers.Values.ToList())));
         }
 
         public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
         {
             return new InMemoryTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>(_ =>
-                Task.FromResult(ReadGraph(() => CronOccurrences.Values.ToList())), _ =>
                 Task.FromResult(ReadGraph(() => CronOccurrences.Values.ToList())));
         }
 

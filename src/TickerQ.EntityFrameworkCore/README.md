@@ -4,6 +4,14 @@ Entity Framework Core integration for [TickerQ](https://github.com/arcenox/Ticke
 
 This package enables persistence of time-based and cron-based jobs using EF Core, allowing for robust tracking, retry logic, and job state management.
 
+## Runtime compatibility
+
+Use this provider with the managed .NET runtime. It is not supported in a Native AOT
+application: EF Core's runtime model construction is unavailable after Native AOT
+publishing, and TickerQ's provider queries are compiled inside the package rather than the
+application's generated model. The TickerQ core scheduler, dashboard, and Redis provider
+have separate verified Native AOT lanes.
+
 ## Retaining job history
 
 EF Core keeps completed time tickers and cron occurrences until they are explicitly

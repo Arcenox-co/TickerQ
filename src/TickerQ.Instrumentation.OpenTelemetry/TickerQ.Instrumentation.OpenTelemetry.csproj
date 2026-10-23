@@ -6,6 +6,7 @@
     <Title>TickerQ OpenTelemetry Instrumentation</Title>
     <Description>OpenTelemetry instrumentation package for TickerQ job scheduler with distributed tracing support</Description>
     <PackageTags>$(PackageTags);OpenTelemetry;Tracing;Instrumentation;Distributed</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>

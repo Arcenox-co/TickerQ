@@ -32,7 +32,7 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
         var snapshots = new Dictionary<Guid, ChainSnapshot>();
         if (rootIds.Length == 0) return snapshots;
         var roots = await ChainMetadataQuery().AsNoTracking()
-            .Where(x => rootIds.Contains(x.Id) && x.ParentId == null)
+            .Where(x => Enumerable.Contains(rootIds, x.Id) && x.ParentId == null)
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
         var owners = new Dictionary<Guid, ChainSnapshot>();
         foreach (var root in roots)
@@ -49,7 +49,7 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
             var parentIds = frontier.Select(x => x.Id).ToArray();
             var limit = snapshots.Count * 500 + 1;
             var stored = await ChainMetadataQuery().AsNoTracking()
-                .Where(x => x.ParentId.HasValue && parentIds.Contains(x.ParentId.Value))
+                .Where(x => x.ParentId.HasValue && Enumerable.Contains(parentIds, x.ParentId.Value))
                 .OrderBy(x => x.Id).Take(limit).ToArrayAsync(cancellationToken).ConfigureAwait(false);
             if (stored.Length == limit)
             {
@@ -97,7 +97,7 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
         if (items.Length == 0) return;
         var ids = items.Select(x => x.Id).ToArray();
         var children = await ChainMetadataQuery()
-            .Where(x => x.ParentId.HasValue && ids.Contains(x.ParentId.Value))
+            .Where(x => x.ParentId.HasValue && Enumerable.Contains(ids, x.ParentId.Value))
             .ToArrayAsync(ct).ConfigureAwait(false);
         var counts = children.GroupBy(x => x.ParentId.Value).ToDictionary(x => x.Key, x => x.Count());
         foreach (var item in items) item.ChildCount = Math.Max(item.ChildCount, counts.GetValueOrDefault(item.Id));

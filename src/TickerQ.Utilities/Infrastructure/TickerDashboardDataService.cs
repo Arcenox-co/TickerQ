@@ -77,7 +77,7 @@ namespace TickerQ.Utilities.Infrastructure
                 query = query.Where(x => x.Function.Contains(filter.FunctionName));
 
             if (filter.Statuses is { Length: > 0 })
-                query = query.Where(x => filter.Statuses.Contains(x.Status));
+                query = query.Where(x => Enumerable.Contains(filter.Statuses, x.Status));
 
             if (filter.ScheduledFrom.HasValue)
                 query = query.Where(x => x.ExecutionTime >= filter.ScheduledFrom);
@@ -170,7 +170,7 @@ namespace TickerQ.Utilities.Infrastructure
             {
                 // One bounded query per level, including one extra row to detect overflow.
                 var children = await ChainMetadataQuery().AsNoTracking()
-                    .Where(x => x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                    .Where(x => x.ParentId.HasValue && Enumerable.Contains(frontier, x.ParentId.Value))
                     .OrderBy(x => x.Id).Take(501 - all.Count).ToArrayAsync(cancellationToken);
                 if (children.Length == 0) break;
                 if (depth >= 20 || all.Count + children.Length > 500 || children.Any(x => !seen.Add(x.Id)))
@@ -247,7 +247,7 @@ namespace TickerQ.Utilities.Infrastructure
                 .Where(x => x.CronTickerId == cronTickerId);
 
             if (filter.Statuses is { Length: > 0 })
-                query = query.Where(x => filter.Statuses.Contains(x.Status));
+                query = query.Where(x => Enumerable.Contains(filter.Statuses, x.Status));
 
             if (filter.ScheduledFrom.HasValue)
                 query = query.Where(x => x.ExecutionTime >= filter.ScheduledFrom);

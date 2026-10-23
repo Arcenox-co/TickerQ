@@ -1,10 +1,9 @@
 # Native AOT
 
-TickerQ's core scheduler, in-memory store, and dashboard can run in a Native AOT
-application. The release check publishes installed `TickerQ`, `TickerQ.Utilities`, and
-`TickerQ.Dashboard` packages, starts the native dashboard host, invokes interface-based
-jobs through their generated registrations, calls a dashboard API endpoint, serves the
-embedded SPA, enforces a protected write, and negotiates a SignalR connection.
+TickerQ's core scheduler, in-memory store, dashboard, Redis operational provider,
+integrations, and OpenTelemetry instrumentation can run in a Native AOT application.
+The release check publishes the installed packages and executes standalone native
+applications instead of validating only project builds.
 
 Use the slim ASP.NET host and disable reflection-based JSON defaults in the application:
 
@@ -49,21 +48,41 @@ public sealed record OrderRequest(string OrderId);
 internal partial class JobJsonContext : JsonSerializerContext;
 ```
 
+When Redis is the operational provider, give the same source-generated context to Redis
+so it can serialize custom ticker and result types without reflection:
+
+```csharp
+options.AddStackExchangeRedis(redis =>
+{
+    redis.Configuration = connectionString;
+    redis.JsonSerializerContext = JobJsonContext.Default;
+});
+```
+
 Methods decorated with `[TickerFunction]` are registered by the source generator and
 are supported as well. `ITickerFunction` is a convenient default because constructor
 dependencies and function boundaries remain explicit.
 
 ## Current support boundary
 
-The verified Native AOT lane covers the core scheduler, the in-memory provider, typed
-payload metadata, both function registration styles, and the dashboard with the AI
-assistant disabled. `AddAssistant` uses runtime tool discovery and fails clearly when
-called from a Native AOT application.
+The verified Native AOT lanes cover:
 
-EF Core, MongoDB, Redis, integrations, and OpenTelemetry packages keep their separate
-managed-runtime validation. Do not assume a provider is Native AOT-supported merely
-because the core application publishes. Add a native runtime test for the exact provider
-and database configuration before deploying that combination.
+- in-memory scheduling, typed payloads, time chains, cron occurrences, cooperative
+  cancellation, and dashboard reads;
+- Redis scheduling, typed payloads, time chains, point reads, and paginated dashboard
+  queries against a real Redis server;
+- encrypted integration settings, redaction, Slack payload preview, and the scheduler's
+  integration event path without sending an outbound webhook; and
+- OpenTelemetry enqueue, execute, and completion activities.
+
+The AI assistant remains unavailable in Native AOT because its runtime tool discovery is
+dynamic. `AddAssistant` fails clearly during configuration in a native application.
+
+`TickerQ.EntityFrameworkCore` and `TickerQ.MongoDB` are supported on the managed .NET
+runtime only. EF Core's default runtime model construction is not available after Native
+AOT publishing, and the current MongoDB driver constructs serializers through runtime
+reflection. TickerQ does not hide those constraints with broad preservation rules because
+that would produce a larger binary without making the provider paths reliably native-safe.
 
 The reference application is
 [`samples/TickerQ.Sample.Dashboard.ReflectionFree`](../samples/TickerQ.Sample.Dashboard.ReflectionFree).
