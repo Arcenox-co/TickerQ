@@ -51,8 +51,9 @@ internal class OpenTelemetryInstrumentation : TickerQBaseLoggerInstrumentation ,
         activity?.SetTag("tickerq.job.type", jobType);
         activity?.SetTag("tickerq.job.function", functionName);
             
-        // Get detailed caller information for OpenTelemetry
-        var callerInfo = string.IsNullOrEmpty(enqueuedFrom) ? CallerInfoHelper.GetCallerInfo(6) : enqueuedFrom;
+        // The scheduler supplies a stable enqueue source. Avoid reconstructing it from
+        // StackFrame.GetMethod: trimmed/native applications cannot rely on that metadata.
+        var callerInfo = string.IsNullOrWhiteSpace(enqueuedFrom) ? "Unknown" : enqueuedFrom;
         activity?.SetTag("tickerq.job.enqueued_from", callerInfo);
             
         base.LogJobEnqueued(jobType, functionName, jobId, callerInfo);

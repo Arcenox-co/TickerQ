@@ -50,7 +50,7 @@ public class TickerResultEnvelopeTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void Constructor_Rejects_BlankMediaType(string mediaType)
+    public void Constructor_Rejects_BlankMediaType(string? mediaType)
         => Assert.Throws<ArgumentException>(
             () => new TickerResultEnvelope(new byte[] { 1 }, 1, mediaType));
 

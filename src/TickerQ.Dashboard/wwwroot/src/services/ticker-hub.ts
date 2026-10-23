@@ -24,6 +24,8 @@ import { CronGroups } from "./cron-groups";
 let connection: HubConnection | null = null;
 const cronGroups = new CronGroups();
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let consistencyTimer: ReturnType<typeof setInterval> | undefined;
+const consistencyRefreshMs = 30_000;
 
 function hubUrl(): string {
   const cfg = getRuntimeConfig();
@@ -62,6 +64,7 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
       // Child changes update aggregate chain progress and inherited lock holders.
       ["cron-occurrences"],
       ["cron-tickers"],
+      ["chain-tickers"],
       ["executions"],
       ["overview"],
       ["stats"],
@@ -77,10 +80,26 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
     inv(
       ["cron-occurrences"],
       ["cron-tickers"],
+      ["chain-tickers"],
       ["executions"],
       ["overview"],
       ["stats"],
       ["graphs"]
+    );
+  const invalidateDashboardAll = () =>
+    inv(
+      ["time-tickers"],
+      ["cron-occurrences"],
+      ["cron-tickers"],
+      ["chain-tickers"],
+      ["executions"],
+      ["overview"],
+      ["stats"],
+      ["graphs"],
+      ["host", "status"],
+      ["host", "next-ticker"],
+      ["nodes"],
+      ["runtime-diagnostics"]
     );
 
   // ---- Time tickers ----
@@ -110,6 +129,7 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
   conn.on("GetActiveThreadsNotification", () => inv(["host", "status"]));
   conn.on("GetNextOccurrenceNotification", () => inv(["host", "next-ticker"]));
   conn.on("UpdateHostExceptionNotification", () => inv(["host", "status"]));
+  conn.on("UpdateNodeHeartBeat", () => inv(["nodes"], ["stats", "node-jobs"]));
 
   const restoreSubscriptions = async () => {
     if (connection !== conn) return;
@@ -136,6 +156,12 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
   const startConnection = async () => {
     try {
       await conn.start();
+      // Logout can race an in-flight initial handshake. Do not leave that old,
+      // authenticated connection running after the singleton has been cleared.
+      if (connection !== conn) {
+        await conn.stop().catch(() => undefined);
+        return;
+      }
       await restoreSubscriptions();
     } catch (err) {
       if (connection !== conn) return;
@@ -157,6 +183,13 @@ export function startTickerHub(qc: QueryClient): HubConnection | null {
   });
 
   connection = conn;
+  // SignalR hints are deliberately best effort. This bounded refresh repairs
+  // missed events after a proxy interruption, a Redis backplane outage, or a
+  // multi-replica deployment that has not configured a backplane yet. React
+  // Query refetches only queries with active observers.
+  consistencyTimer = setInterval(() => {
+    if (connection === conn) invalidateDashboardAll();
+  }, consistencyRefreshMs);
   void startConnection();
   return conn;
 }
@@ -171,6 +204,8 @@ export function getTickerHub(): HubConnection | null {
  * stopped instance won't auto-reconnect.)
  */
 export async function stopTickerHub(): Promise<void> {
+  clearInterval(consistencyTimer);
+  consistencyTimer = undefined;
   if (!connection) return;
   const conn = connection;
   connection = null;

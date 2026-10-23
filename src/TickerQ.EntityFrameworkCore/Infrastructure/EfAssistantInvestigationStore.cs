@@ -360,7 +360,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     .ToDictionary(item => item.functionName, item => item.index, StringComparer.Ordinal);
                 var groupedEntities = functionNames.Count == 0
                     ? []
-                    : await rows.Where(x => functionNames.Contains(x.FunctionName))
+                    : await rows.Where(EfPredicateBuilder.Contains<AssistantInvestigationEntity, string>(
+                            functionNames, x => x.FunctionName))
                         .ToListAsync(cancellationToken);
                 var orderedEntities = groupedEntities
                     .OrderBy(x => groupOrder[x.FunctionName])
@@ -557,7 +558,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .Skip(keep).Select(x => x.Id)
                 .ToListAsync(cancellationToken);
             if (excess.Count > 0)
-                await Investigations.Where(x => excess.Contains(x.Id)).ExecuteDeleteAsync(cancellationToken);
+                await Investigations
+                    .Where(EfPredicateBuilder.Contains<AssistantInvestigationEntity, Guid>(excess, x => x.Id))
+                    .ExecuteDeleteAsync(cancellationToken);
         }
 
         private static Task<int> DismissAsync(IQueryable<AssistantInvestigationEntity> rows,

@@ -228,7 +228,7 @@ public class TickerInMemoryPersistenceProviderCronDeduplicationTests : IAsyncLif
             _provider.AcquireCronOccurrenceOnDemandAsync(
                 occurrenceId, rerunAt, CancellationToken.None));
 
-        var acquired = Assert.Single(attempts.Where(row => row != null));
+        var acquired = Assert.Single(attempts, row => row != null);
         Assert.Equal(occurrenceId, acquired.Id);
         Assert.Equal(TickerStatus.InProgress, acquired.Status);
         Assert.Equal(rerunAt, acquired.ExecutionTime);
@@ -276,14 +276,14 @@ public class TickerInMemoryPersistenceProviderCronDeduplicationTests : IAsyncLif
             var rows = await _provider.GetCronTickers(x => x.Function == "SeedShared", CancellationToken.None);
 
             // The user row is untouched.
-            var persistedUser = Assert.Single(rows.Where(r => r.Id == userId));
+            var persistedUser = Assert.Single(rows, r => r.Id == userId);
             Assert.Equal("0 0 * * *", persistedUser.Expression);
             Assert.Null(persistedUser.RequestContractVersion);
             Assert.Null(persistedUser.RequestContractFingerprint);
             Assert.Equal("", persistedUser.InitIdentifier);
 
             // The seed owns a separate, freshly inserted seeded row.
-            var seededRow = Assert.Single(rows.Where(r => r.Id != userId));
+            var seededRow = Assert.Single(rows, r => r.Id != userId);
             Assert.Equal("0 */5 * * * *", seededRow.Expression);
             Assert.Equal(9, seededRow.RequestContractVersion);
             Assert.Equal("sha256:seed-only", seededRow.RequestContractFingerprint);

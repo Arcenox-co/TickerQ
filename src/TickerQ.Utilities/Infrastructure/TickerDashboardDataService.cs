@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,7 +18,9 @@ namespace TickerQ.Utilities.Infrastructure
     /// Default implementation of <see cref="ITickerDashboardDataService{TTimeTicker,TCronTicker}"/>
     /// that projects entities to flat DTOs using <see cref="ITickerQueryable{T}"/>.
     /// </summary>
-    public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
+    public sealed partial class TickerDashboardDataService<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.PublicProperties)] TTimeTicker,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.PublicProperties)] TCronTicker>
         : ITickerDashboardDataService<TTimeTicker, TCronTicker>
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
@@ -74,7 +77,8 @@ namespace TickerQ.Utilities.Infrastructure
                 query = query.Where(x => x.Function.Contains(filter.FunctionName));
 
             if (filter.Statuses is { Length: > 0 })
-                query = query.Where(x => filter.Statuses.Contains(x.Status));
+                query = query.Where(ScalarMembershipExpression.Contains<TTimeTicker, TickerStatus>(
+                    filter.Statuses, x => x.Status));
 
             if (filter.ScheduledFrom.HasValue)
                 query = query.Where(x => x.ExecutionTime >= filter.ScheduledFrom);
@@ -167,7 +171,8 @@ namespace TickerQ.Utilities.Infrastructure
             {
                 // One bounded query per level, including one extra row to detect overflow.
                 var children = await ChainMetadataQuery().AsNoTracking()
-                    .Where(x => x.ParentId.HasValue && frontier.Contains(x.ParentId.Value))
+                    .Where(x => x.ParentId.HasValue)
+                    .Where(ScalarMembershipExpression.Contains<TTimeTicker, Guid>(frontier, x => x.ParentId.Value))
                     .OrderBy(x => x.Id).Take(501 - all.Count).ToArrayAsync(cancellationToken);
                 if (children.Length == 0) break;
                 if (depth >= 20 || all.Count + children.Length > 500 || children.Any(x => !seen.Add(x.Id)))
@@ -244,7 +249,8 @@ namespace TickerQ.Utilities.Infrastructure
                 .Where(x => x.CronTickerId == cronTickerId);
 
             if (filter.Statuses is { Length: > 0 })
-                query = query.Where(x => filter.Statuses.Contains(x.Status));
+                query = query.Where(ScalarMembershipExpression.Contains<CronTickerOccurrenceEntity<TCronTicker>, TickerStatus>(
+                    filter.Statuses, x => x.Status));
 
             if (filter.ScheduledFrom.HasValue)
                 query = query.Where(x => x.ExecutionTime >= filter.ScheduledFrom);

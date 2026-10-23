@@ -102,7 +102,18 @@ def main() -> int:
     parser.add_argument("--version", required=True, help="Exact TickerQ package version")
     parser.add_argument("--framework", required=True, help="Consumer target framework, e.g. net10.0")
     parser.add_argument("--rid", help="NativeAOT runtime identifier for this runner, e.g. linux-x64")
-    parser.add_argument("--aot", action="store_true", help="Also publish and execute the core-only NativeAOT consumer")
+    parser.add_argument("--aot", action="store_true",
+                        help="Also publish and execute the core and dashboard NativeAOT consumers")
+    parser.add_argument("--license", type=Path,
+                        help="External .tqlicense used to run the licensed scheduler consumer")
+    parser.add_argument("--redis-connection",
+                        help="Connection string for an isolated Redis used by the Redis NativeAOT consumer")
+    parser.add_argument("--ef-sqlite", type=Path,
+                        help="Path for an isolated SQLite database used by the managed EF Core consumer")
+    parser.add_argument("--mongo-connection",
+                        help="Connection string for an isolated MongoDB replica set used by the MongoDB consumer")
+    parser.add_argument("--mongo-database",
+                        help="Isolated database name used by the MongoDB consumer")
     args = parser.parse_args()
     if not args.packages.is_dir():
         parser.error(f"Package directory does not exist: {args.packages}")
@@ -114,6 +125,16 @@ def main() -> int:
         parser.error("--rid is required with --aot and must match the current runner")
     if args.rid and not re.fullmatch(r"[A-Za-z0-9.-]+", args.rid):
         parser.error("Invalid runtime identifier")
+    if args.license is not None and not args.license.is_file():
+        parser.error("--license must point to an existing external certificate")
+    if args.redis_connection is not None and args.license is None:
+        parser.error("--redis-connection requires --license")
+    if args.ef_sqlite is not None and args.license is None:
+        parser.error("--ef-sqlite requires --license")
+    if (args.mongo_connection is None) != (args.mongo_database is None):
+        parser.error("--mongo-connection and --mongo-database must be supplied together")
+    if args.mongo_connection is not None and args.license is None:
+        parser.error("--mongo-connection requires --license")
 
     workspace: Path | None = None
     succeeded = False
@@ -134,9 +155,29 @@ def main() -> int:
         environment.update({"NUGET_PACKAGES": str(cache), "DOTNET_CLI_HOME": str(workspace / "cli"),
                             "NUGET_HTTP_CACHE_PATH": str(workspace / "http-cache"),
                             "DOTNET_NOLOGO": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1"})
+        if args.license is not None:
+            environment["TICKERQ_AOT_LICENSE_PATH"] = str(args.license.resolve())
+        if args.redis_connection is not None:
+            environment["TICKERQ_AOT_REDIS_CONNECTION"] = args.redis_connection
+        if args.ef_sqlite is not None:
+            ef_database = args.ef_sqlite.resolve()
+            ef_database.parent.mkdir(parents=True, exist_ok=True)
+            environment["TICKERQ_EF_SMOKE_DATABASE"] = str(ef_database)
+        if args.mongo_connection is not None:
+            environment["TICKERQ_MONGO_SMOKE_CONNECTION"] = args.mongo_connection
+            environment["TICKERQ_MONGO_SMOKE_DATABASE"] = args.mongo_database
         properties = [f"-p:SmokeVersion={args.version}", f"-p:SmokeFramework={args.framework}"]
 
-        for fixture in ("Core", "Optional"):
+        managed_fixtures = ["Core", "DashboardAot", "Optional", "ObservabilityAot"]
+        if args.license is not None:
+            managed_fixtures.append("SchedulerAot")
+        if args.redis_connection is not None:
+            managed_fixtures.append("RedisAot")
+        if args.ef_sqlite is not None:
+            managed_fixtures.append("EfProvider")
+        if args.mongo_connection is not None:
+            managed_fixtures.append("MongoProvider")
+        for fixture in managed_fixtures:
             destination = workspace / fixture
             shutil.copytree(fixtures / fixture, destination, ignore=shutil.ignore_patterns("bin", "obj"))
             project = destination / f"PackageSmoke.{fixture}.csproj"
@@ -150,18 +191,26 @@ def main() -> int:
                 marker=f"PACKAGE_SMOKE_{fixture.upper()}_OK")
 
         if args.aot:
-            project = workspace / "Core/PackageSmoke.Core.csproj"
             aot_properties = [*properties, "-p:PublishAot=true", "-p:SelfContained=true", "-p:StripSymbols=true"]
-            run(["dotnet", "restore", str(project), "--configfile", str(config), "--no-cache", "-r", args.rid,
-                 *aot_properties], workspace, environment)
-            audit_assets(project, args.version, cache)
-            native_output = workspace / "native"
-            run(["dotnet", "publish", str(project), "--no-restore", "-c", "Release", "-r", args.rid,
-                 "-o", str(native_output), *aot_properties], workspace, environment, timeout=1800)
-            executable = native_output / ("PackageSmoke.Core.exe" if args.rid.startswith("win-") else "PackageSmoke.Core")
-            if not executable.is_file() or (native_output / "PackageSmoke.Core.dll").exists():
-                raise ValueError("NativeAOT did not produce a standalone native executable")
-            run([str(executable)], workspace, environment, timeout=120, marker="PACKAGE_SMOKE_CORE_OK")
+            native_fixtures = ["Core", "DashboardAot", "ObservabilityAot"]
+            if args.license is not None:
+                native_fixtures.append("SchedulerAot")
+            if args.redis_connection is not None:
+                native_fixtures.append("RedisAot")
+            for fixture in native_fixtures:
+                project = workspace / fixture / f"PackageSmoke.{fixture}.csproj"
+                run(["dotnet", "restore", str(project), "--configfile", str(config), "--no-cache", "-r", args.rid,
+                     *aot_properties], workspace, environment)
+                audit_assets(project, args.version, cache)
+                native_output = workspace / f"native-{fixture.lower()}"
+                run(["dotnet", "publish", str(project), "--no-restore", "-c", "Release", "-r", args.rid,
+                     "-o", str(native_output), *aot_properties], workspace, environment, timeout=1800)
+                name = f"PackageSmoke.{fixture}"
+                executable = native_output / (f"{name}.exe" if args.rid.startswith("win-") else name)
+                if not executable.is_file() or (native_output / f"{name}.dll").exists():
+                    raise ValueError(f"NativeAOT did not produce a standalone {fixture} executable")
+                run([str(executable)], workspace, environment, timeout=120,
+                    marker=f"PACKAGE_SMOKE_{fixture.upper()}_OK")
 
         succeeded = True
         print(f"Installed-package consumers passed for {args.version}/{args.framework}" + (f" including NativeAOT {args.rid}." if args.aot else "."))

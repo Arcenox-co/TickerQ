@@ -34,7 +34,7 @@ public sealed class RedisRealScriptFixture : IAsyncLifetime
         var connection = _externalConnection;
         if (string.IsNullOrWhiteSpace(connection))
         {
-            Container = new RedisBuilder().WithImage("redis:7").Build();
+            Container = new RedisBuilder("redis:7").Build();
             await Container.StartAsync();
             connection = Container.GetConnectionString();
         }

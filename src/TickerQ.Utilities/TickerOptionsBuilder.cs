@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
@@ -83,7 +84,15 @@ namespace TickerQ.Utilities
 
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
-        internal Type TickerExceptionHandlerType { get; private set; }
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+        private Type _tickerExceptionHandlerType;
+
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
+        internal Type TickerExceptionHandlerType
+        {
+            get => _tickerExceptionHandlerType;
+            private set => _tickerExceptionHandlerType = value;
+        }
         
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> ConfigureScheduler(Action<SchedulerOptionsBuilder> schedulerOptionsBuilder)
         {
@@ -432,7 +441,9 @@ namespace TickerQ.Utilities
             return this;
         }
         
-        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SetExceptionHandler<THandler>() where THandler : ITickerExceptionHandler
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SetExceptionHandler<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>()
+            where THandler : ITickerExceptionHandler
         {
             TickerExceptionHandlerType = typeof(THandler);
             return this;

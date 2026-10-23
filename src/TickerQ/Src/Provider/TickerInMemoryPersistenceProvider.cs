@@ -1235,7 +1235,7 @@ namespace TickerQ.Provider
 
         public Task<TTimeTicker[]> GetTimeTickers(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken = default)
         {
-            var compiledPredicate = predicate?.Compile();
+            var compiledPredicate = predicate?.CompileAotSafe();
 
             // Materialize the full projection under the read lock so a concurrent chain
             // replacement cannot surface a partially swapped aggregate.
@@ -1260,7 +1260,7 @@ namespace TickerQ.Provider
         public Task<PaginationResult<TTimeTicker>> GetTimeTickersPaginated(Expression<Func<TTimeTicker, bool>> predicate, int pageNumber, int pageSize,
             CancellationToken cancellationToken = default)
         {
-            var compiledPredicate = predicate?.Compile();
+            var compiledPredicate = predicate?.CompileAotSafe();
 
             // Count and page under the read lock so the total and the materialized page
             // reflect a single consistent graph snapshot, never a mid-replacement view.
@@ -2154,7 +2154,7 @@ namespace TickerQ.Provider
 
         public Task<TCronTicker[]> GetCronTickers(Expression<Func<TCronTicker, bool>> predicate, CancellationToken cancellationToken)
         {
-            var compiledPredicate = predicate?.Compile();
+            var compiledPredicate = predicate?.CompileAotSafe();
             var results = ReadGraph(() =>
             {
                 var query = CronTickers.Values.AsEnumerable();
@@ -2169,7 +2169,7 @@ namespace TickerQ.Provider
         public Task<PaginationResult<TCronTicker>> GetCronTickersPaginated(Expression<Func<TCronTicker, bool>> predicate, int pageNumber, int pageSize,
             CancellationToken cancellationToken = default)
         {
-            var compiledPredicate = predicate?.Compile();
+            var compiledPredicate = predicate?.CompileAotSafe();
             var snapshot = ReadGraph(() =>
             {
                 var query = CronTickers.Values.AsEnumerable();
@@ -2596,7 +2596,7 @@ namespace TickerQ.Provider
 
         public Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetAllCronTickerOccurrences(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, CancellationToken cancellationToken = default)
         {
-            var compiledPredicate = predicate?.Compile();
+            var compiledPredicate = predicate?.CompileAotSafe();
             return Task.FromResult(ReadGraph(() =>
             {
                 var query = CronOccurrences.Values.AsEnumerable();
@@ -2608,7 +2608,7 @@ namespace TickerQ.Provider
         public Task<PaginationResult<CronTickerOccurrenceEntity<TCronTicker>>> GetAllCronTickerOccurrencesPaginated(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, int pageNumber, int pageSize,
             CancellationToken cancellationToken = default)
         {
-            var compiledPredicate = predicate?.Compile();
+            var compiledPredicate = predicate?.CompileAotSafe();
             return Task.FromResult(ReadGraph(() =>
             {
                 var query = CronOccurrences.Values.AsEnumerable();
@@ -3481,14 +3481,12 @@ namespace TickerQ.Provider
         public ITickerQueryable<TCronTicker> CronTickersQuery()
         {
             return new InMemoryTickerQueryable<TCronTicker>(_ =>
-                Task.FromResult(ReadGraph(() => CronTickers.Values.ToList())), _ =>
                 Task.FromResult(ReadGraph(() => CronTickers.Values.ToList())));
         }
 
         public ITickerQueryable<CronTickerOccurrenceEntity<TCronTicker>> CronTickerOccurrencesQuery()
         {
             return new InMemoryTickerQueryable<CronTickerOccurrenceEntity<TCronTicker>>(_ =>
-                Task.FromResult(ReadGraph(() => CronOccurrences.Values.ToList())), _ =>
                 Task.FromResult(ReadGraph(() => CronOccurrences.Values.ToList())));
         }
 

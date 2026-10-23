@@ -30,8 +30,7 @@ public sealed class PostgreSqlRaceFactAttribute : FactAttribute
 [Collection("PostgreSql MVCC")]
 public sealed class EfCorePostgreSqlGenerationRaceTests : IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder()
-        .WithImage("postgres:17-alpine")
+    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:17-alpine")
         .WithDatabase("tickerq")
         .WithUsername("postgres")
         .WithPassword("postgres")
@@ -161,11 +160,11 @@ public sealed class EfCorePostgreSqlGenerationRaceTests : IAsyncLifetime
         {
             seed.AddRange(root, child);
             await seed.SaveChangesAsync();
-            await seed.Database.ExecuteSqlRawAsync($$"""
+            var delayTriggerSql = """
                 CREATE OR REPLACE FUNCTION ticker.delay_test_child_update()
                 RETURNS trigger LANGUAGE plpgsql AS $fn$
                 BEGIN
-                    IF NEW."Id" = '{{child.Id}}'::uuid THEN
+                    IF NEW."Id" = '__CHILD_ID__'::uuid THEN
                         PERFORM pg_sleep(1.5);
                     END IF;
                     RETURN NEW;
@@ -175,7 +174,8 @@ public sealed class EfCorePostgreSqlGenerationRaceTests : IAsyncLifetime
                 CREATE TRIGGER delay_test_child_update
                 BEFORE UPDATE ON ticker."TimeTickers"
                 FOR EACH ROW EXECUTE FUNCTION ticker.delay_test_child_update();
-                """);
+                """.Replace("__CHILD_ID__", child.Id.ToString("D"), StringComparison.Ordinal);
+            await seed.Database.ExecuteSqlRawAsync(delayTriggerSql);
         }
 
         var context = new InternalFunctionContext

@@ -1,3 +1,5 @@
+#nullable enable annotations
+
 using Google.Protobuf;
 using TickerQ.Utilities.Models;
 using TickerQ.Worker.V1;

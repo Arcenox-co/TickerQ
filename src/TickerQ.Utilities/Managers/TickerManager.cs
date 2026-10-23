@@ -1079,7 +1079,9 @@ namespace TickerQ.Utilities.Managers
             {
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                 var ids = entities.Select(x => x.Id).ToArray();
-                var saved = await _persistenceProvider.GetTimeTickers(x => ids.Contains(x.Id), timeout.Token).ConfigureAwait(false);
+                var saved = await _persistenceProvider.GetTimeTickers(
+                    ScalarMembershipExpression.Contains<TTimeTicker, Guid>(ids, x => x.Id),
+                    timeout.Token).ConfigureAwait(false);
                 foreach (var row in saved) _lifecycle.CreatedTree(row, _executionContext.RuntimePartition.StorageKey);
             }
             catch { }

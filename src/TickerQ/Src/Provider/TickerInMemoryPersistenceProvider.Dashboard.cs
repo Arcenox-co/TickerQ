@@ -12,7 +12,12 @@ namespace TickerQ.Provider;
 internal partial class TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker> : ITickerDashboardQueryProvider<TTimeTicker>
 {
     public ITickerQueryable<TTimeTicker> TimeTickersDashboardQuery()
-        => new InMemoryTickerQueryable<TTimeTicker>(LoadDashboardTimeRows, LoadDashboardTimeRows);
+        // These rows are already detached, payload-free dashboard snapshots. Advertising
+        // projection would execute the generic member-init expression through the runtime
+        // expression interpreter under Native AOT. That interpreter cannot invoke every
+        // virtual generic entity setter (notably when a value flows through a by-ref call
+        // site), so keep the already-materialized snapshot as the query result.
+        => new InMemoryTickerQueryable<TTimeTicker>(LoadDashboardTimeRows);
 
     private Task<List<TTimeTicker>> LoadDashboardTimeRows(CancellationToken cancellationToken)
     {

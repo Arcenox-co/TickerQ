@@ -222,7 +222,7 @@ public class InternalFunctionContextTests
 
         var updated = context.GetPropsToUpdate();
         Assert.Contains(nameof(InternalFunctionContext.Status), updated);
-        Assert.Equal(1, updated.Count);
+        Assert.Single(updated);
     }
 
     [Fact]

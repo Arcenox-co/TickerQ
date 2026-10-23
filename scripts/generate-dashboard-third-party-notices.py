@@ -20,6 +20,11 @@ FALLBACK_LICENSES = {
         "sha512-0BRqz/uCx3JdrOqiqgFhih/+hfTERaUfCZXFB52uMaZJrKaPRzHzMuqVsJC/V3pt7NozcNXGspjKiQEK+X7P2w==",
     ): "licenses/third-party/dotnet-foundation-mit.txt",
     (
+        "@microsoft/signalr",
+        "10.0.11",
+        "sha512-FulOJ2EEtKvLQcswe/U7v8pzyXyk7Jua5xgWJPPwyQU/2Z9ORvKcVjyO75VvLsem+CJ1ORRexJ+7Bz1FCei2aw==",
+    ): "licenses/third-party/dotnet-foundation-mit.txt",
+    (
         "@radix-ui/number",
         "1.1.1",
         "sha512-MkKCwxlXTgz6CFoJx3pCwn07GKp36+aZyu/u2Ln2VrA5DcdyCZkASEDBTd8x5whTQQL5CiYf4prXKLcgQdv29g==",

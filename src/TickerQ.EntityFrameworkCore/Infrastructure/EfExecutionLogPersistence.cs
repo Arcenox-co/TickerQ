@@ -55,7 +55,8 @@ internal sealed class EfExecutionLogPersistence<TContext>(IServiceProvider servi
         using var lease = await DbContextLease<TContext>.CreateAsync(services, cancellationToken);
         var ids = tickerIds.Select(id => ExecutionLogArchive.StorageId(partitionKey, id)).ToArray();
         return await lease.Context.Set<ExecutionLogArchive>().AsNoTracking()
-            .Where(x => ids.Contains(x.Id) && x.PartitionKey == partitionKey && x.ExpiresAtUtcTicks > nowUtcTicks)
+            .Where(x => x.PartitionKey == partitionKey && x.ExpiresAtUtcTicks > nowUtcTicks)
+            .Where(EfPredicateBuilder.Contains<ExecutionLogArchive, string>(ids, x => x.Id))
             .ToArrayAsync(cancellationToken);
     }
 
@@ -66,7 +67,9 @@ internal sealed class EfExecutionLogPersistence<TContext>(IServiceProvider servi
         var expired = await rows.Where(x => x.PartitionKey == partitionKey && x.ExpiresAtUtcTicks <= nowUtcTicks)
             .OrderBy(x => x.ExpiresAtUtcTicks).Select(x => x.Id).Take(batchSize).ToArrayAsync(cancellationToken);
         // Re-check expiry because an active writer could have refreshed the selected row.
-        if (expired.Length > 0) await rows.Where(x => expired.Contains(x.Id) && x.PartitionKey == partitionKey && x.ExpiresAtUtcTicks <= nowUtcTicks)
+        if (expired.Length > 0) await rows
+            .Where(x => x.PartitionKey == partitionKey && x.ExpiresAtUtcTicks <= nowUtcTicks)
+            .Where(EfPredicateBuilder.Contains<ExecutionLogArchive, string>(expired, x => x.Id))
             .ExecuteDeleteAsync(cancellationToken);
         var excess = await rows.Where(x => x.PartitionKey == partitionKey)
             .OrderByDescending(x => x.UpdatedAtUtcTicks).ThenByDescending(x => x.Id)

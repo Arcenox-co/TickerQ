@@ -6,9 +6,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using TickerQ.Dashboard;
 using TickerQ.Dashboard.DependencyInjection;
+using TickerQ.Dashboard.Hubs;
 using TickerQ.Dashboard.Infrastructure;
+using TickerQ.DependencyInjection;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Tests;
@@ -46,6 +49,42 @@ public sealed class SerializerGlobalPollutionTests
         var chain = hubProtocolOptions.Value.PayloadSerializerOptions.TypeInfoResolverChain;
 
         Assert.DoesNotContain(chain, resolver => ReferenceEquals(resolver, DashboardJsonSerializerContext.Default));
+    }
+
+    [Fact]
+    public void AddDashboardService_AppliesHostSignalRConfiguration()
+    {
+        var invoked = 0;
+        var options = new DashboardOptionsBuilder()
+            .ConfigureSignalR(signalR =>
+            {
+                invoked++;
+                signalR.Services.AddSingleton<SignalRConfigurationMarker>();
+            });
+        var services = new ServiceCollection();
+
+        services.AddDashboardService<TimeTickerEntity, CronTickerEntity>(options);
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Equal(1, invoked);
+        Assert.NotNull(provider.GetService<SignalRConfigurationMarker>());
+    }
+
+    private sealed class SignalRConfigurationMarker { }
+
+    [Fact]
+    public void AddDashboard_ReplacesCoreNoOpNotificationSenderWithoutRegisteringServiceCollection()
+    {
+        var services = new ServiceCollection();
+
+        services.AddTickerQ(options => options
+            .DisableBackgroundServices()
+            .AddDashboard(dashboard => dashboard.AllowAnonymousDashboard()));
+
+        var sender = Assert.Single(services, descriptor =>
+            descriptor.ServiceType == typeof(ITickerQNotificationHubSender));
+        Assert.Equal(typeof(TickerQNotificationHubSender), sender.ImplementationType);
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IServiceCollection));
     }
 
     [Fact]

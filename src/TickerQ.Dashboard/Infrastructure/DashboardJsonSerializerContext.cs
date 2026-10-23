@@ -12,7 +12,8 @@ namespace TickerQ.Dashboard.Infrastructure;
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
-    PropertyNameCaseInsensitive = true)]
+    PropertyNameCaseInsensitive = true,
+    UseStringEnumConverter = true)]
 // Dashboard response DTOs
 [JsonSerializable(typeof(AuthInfoResponse))]
 [JsonSerializable(typeof(AuthValidateResponse))]

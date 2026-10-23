@@ -394,6 +394,20 @@ class LicensePolicyTests(unittest.TestCase):
                     Path(directory),
                 )
 
+    def test_dashboard_notice_fallback_accepts_reviewed_signalr_10_0_11(self) -> None:
+        generator = load_dashboard_notice_generator()
+        with tempfile.TemporaryDirectory() as directory:
+            notices = generator.license_files(
+                "@microsoft/signalr",
+                "10.0.11",
+                "sha512-FulOJ2EEtKvLQcswe/U7v8pzyXyk7Jua5xgWJPPwyQU/2Z9ORvKcVjyO75VvLsem+CJ1ORRexJ+7Bz1FCei2aw==",
+                Path(directory),
+            )
+
+        self.assertEqual(1, len(notices))
+        self.assertIn("dotnet-foundation-mit.txt", notices[0][0])
+        self.assertIn("Copyright (c) .NET Foundation and Contributors", notices[0][1])
+
     def test_public_terms_validator_fails_closed_on_portal_drift(self) -> None:
         validator = load_public_terms_validator()
         agreement = b"agreement-v1.0"

@@ -14,6 +14,7 @@ using TickerQ.Dashboard.Authentication.Endpoints;
 using TickerQ.Dashboard.Authentication.Jwt;
 using TickerQ.Dashboard.Authentication.Schemes;
 using TickerQ.Dashboard.DependencyInjection;
+using TickerQ.Dashboard.Hubs;
 using TickerQ.Utilities.Models;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
@@ -86,6 +87,16 @@ public class DashboardSecurityHardeningTests : IDisposable
         Assert.True((await scheme.TryAuthenticateAsync(context)).IsAuthenticated);
     }
 
+    [Fact]
+    public async Task BasicAuth_AcceptsQueryCredentialsOnServerSentEventsHubPath()
+    {
+        var expected = Convert.ToBase64String(Encoding.UTF8.GetBytes("admin:correct"));
+        var scheme = new BasicAuthScheme { Credentials = expected };
+        var context = HubQueryContext("/tickerq-notification-hub", expected);
+
+        Assert.True((await scheme.TryAuthenticateAsync(context)).IsAuthenticated);
+    }
+
     [Theory]
     [InlineData("/tickerq-notification-hub-evil")]
     [InlineData("/hubs/tickerq-notification-hub")]
@@ -121,6 +132,18 @@ public class DashboardSecurityHardeningTests : IDisposable
 
         Assert.True((await scheme.TryAuthenticateAsync(
             WebSocketContext("/tickerq-notification-hub", token))).IsAuthenticated);
+    }
+
+    [Theory]
+    [InlineData("Jwt")]
+    [InlineData("ApiKey")]
+    [InlineData("Custom")]
+    public async Task QueryCredentialSchemes_AcceptCredentialsOnServerSentEventsHubPath(string schemeName)
+    {
+        var (scheme, token) = CreateQueryCredentialScheme(schemeName);
+
+        Assert.True((await scheme.TryAuthenticateAsync(
+            HubQueryContext("/tickerq-notification-hub", token))).IsAuthenticated);
     }
 
     [Theory]
@@ -160,13 +183,55 @@ public class DashboardSecurityHardeningTests : IDisposable
 
     private static DefaultHttpContext WebSocketContext(string path, string token)
     {
-        var context = new DefaultHttpContext();
-        context.Request.Path = path;
-        context.Request.QueryString = new QueryString("?access_token=" + token);
+        var context = HubQueryContext(path, token);
         var webSocketFeature = NSubstitute.Substitute.For<IHttpWebSocketFeature>();
         webSocketFeature.IsWebSocketRequest.Returns(true);
         context.Features.Set(webSocketFeature);
         return context;
+    }
+
+    private static DefaultHttpContext HubQueryContext(string path, string token)
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Path = path;
+        context.Request.QueryString = new QueryString("?access_token=" + token);
+        return context;
+    }
+
+    [Theory]
+    [InlineData("/api")]
+    [InlineData("/api/report.js")]
+    [InlineData("/api/jobs/negotiate")]
+    public async Task AuthMiddleware_DoesNotTreatApiSuffixesAsPublicAssetsOrHubNegotiation(string path)
+    {
+        var nextCalled = false;
+        var auth = Substitute.For<IAuthService>();
+        auth.AuthenticateAsync(Arg.Any<HttpContext>()).Returns(AuthResult.Failure());
+        var services = new ServiceCollection()
+            .AddSingleton(auth)
+            .AddSingleton(new AuthConfig())
+            .BuildServiceProvider();
+        var context = new DefaultHttpContext { RequestServices = services };
+        context.Request.Path = path;
+        context.Response.Body = Stream.Null;
+        var middleware = new AuthMiddleware(
+            _ => { nextCalled = true; return Task.CompletedTask; },
+            NullLogger<AuthMiddleware>.Instance);
+
+        await middleware.InvokeAsync(context);
+
+        Assert.False(nextCalled);
+        Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public void NotificationHub_NormalizesCronGroupIdsAndRejectsArbitraryGroups()
+    {
+        var id = Guid.NewGuid();
+
+        Assert.Equal(id.ToString("D"), TickerQNotificationHub.NormalizeCronGroupName(id.ToString("B")));
+        Assert.Throws<Microsoft.AspNetCore.SignalR.HubException>(() =>
+            TickerQNotificationHub.NormalizeCronGroupName("operator-created-group"));
     }
 
     [Fact]

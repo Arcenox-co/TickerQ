@@ -27,7 +27,7 @@ namespace TickerQ.Dashboard.Infrastructure
                     // JSON first, then fall back to Base64-decoding. Either way the bytes
                     // must be valid JSON before we hand them to the TickerHelper store path.
                     var jsonBytes = TryGetRawJsonBytes(stringValue) ?? DecodeBase64JsonBytes(stringValue);
-                    return TickerHelper.CreateTickerRequest(jsonBytes);
+                    return TickerHelper.PrepareTickerRequestJson(jsonBytes);
                 }
 
                 case JsonTokenType.StartArray:
@@ -129,7 +129,7 @@ namespace TickerQ.Dashboard.Infrastructure
                         var decoded = bytes.ToArray();
                         // Validate the decoded bytes are JSON before storing them.
                         using (JsonDocument.Parse(decoded)) { }
-                        return TickerHelper.CreateTickerRequest(decoded);
+                        return TickerHelper.PrepareTickerRequestJson(decoded);
 
                     case JsonTokenType.Number:
                         if (!reader.TryGetByte(out var b))

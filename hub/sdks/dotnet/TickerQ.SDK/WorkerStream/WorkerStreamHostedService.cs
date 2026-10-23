@@ -1,3 +1,5 @@
+#nullable enable annotations
+
 using System;
 using System.Collections.Concurrent;
 using System.Net.Http;

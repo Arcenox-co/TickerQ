@@ -214,7 +214,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .Select(c => c.Id)
                 .ToListAsync(cancellationToken);
             if (excess.Count > 0)
-                await Conversations.Where(c => excess.Contains(c.Id)).ExecuteDeleteAsync(cancellationToken);
+                await Conversations
+                    .Where(EfPredicateBuilder.Contains<AssistantConversationEntity, Guid>(excess, c => c.Id))
+                    .ExecuteDeleteAsync(cancellationToken);
         }
 
         private async Task PruneMessagesAsync(Guid conversationId, CancellationToken cancellationToken)
@@ -226,7 +228,9 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .Select(m => m.Id)
                 .ToListAsync(cancellationToken);
             if (excess.Count > 0)
-                await Messages.Where(m => excess.Contains(m.Id)).ExecuteDeleteAsync(cancellationToken);
+                await Messages
+                    .Where(EfPredicateBuilder.Contains<AssistantMessageEntity, Guid>(excess, m => m.Id))
+                    .ExecuteDeleteAsync(cancellationToken);
         }
 
         private static ProposalEnvelope DeserializeEnvelope(string json)

@@ -4,6 +4,13 @@ MongoDB persistence provider for [TickerQ](https://tickerq.net/). Drop-in altern
 
 Uses the official `MongoDB.Driver` directly. No EF Core, no ODM.
 
+## Runtime compatibility
+
+Use this provider with the managed .NET runtime. It is not supported in a Native AOT
+application because the current MongoDB driver creates BSON serializers through runtime
+reflection. The TickerQ core scheduler, dashboard, and Redis provider have separate
+verified Native AOT lanes.
+
 ## Install
 
 ```bash

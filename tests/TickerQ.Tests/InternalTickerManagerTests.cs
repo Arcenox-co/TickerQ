@@ -1231,14 +1231,14 @@ public class InternalTickerManagerTests
 
         Assert.Equal(2, results.Length);
 
-        var timeResult = Assert.Single(results.Where(r => r.Type == TickerType.TimeTicker));
+        var timeResult = Assert.Single(results, r => r.Type == TickerType.TimeTicker);
         Assert.Equal(timeTickerId, timeResult.TickerId);
         Assert.Equal("TimedOutTimeFunc", timeResult.FunctionName);
         Assert.Equal(1, timeResult.Retries);
         Assert.Equal(7, timeResult.RequestContractVersion);
         Assert.Equal("sha256:time-contract", timeResult.RequestContractFingerprint);
 
-        var cronResult = Assert.Single(results.Where(r => r.Type == TickerType.CronTickerOccurrence));
+        var cronResult = Assert.Single(results, r => r.Type == TickerType.CronTickerOccurrence);
         Assert.Equal(cronOccurrenceId, cronResult.TickerId);
         Assert.Equal("TimedOutCronFunc", cronResult.FunctionName);
         Assert.True(cronResult.SkipIfAlreadyRunning);

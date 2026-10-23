@@ -1,3 +1,5 @@
+#nullable enable annotations
+
 using Microsoft.Extensions.Logging;
 
 namespace TickerQ.SDK;

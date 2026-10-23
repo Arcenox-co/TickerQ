@@ -40,7 +40,7 @@
 
 ## Why TickerQ
 
-- **Write jobs in C#.** Use typed requests and compile-time function registration. The core scheduler supports Native AOT.
+- **Write jobs in C#.** Use typed requests and compile-time function registration. The core scheduler and dashboard support [Native AOT](docs/native-aot.md); the AI assistant remains a managed-runtime feature.
 - **Build complete workflows.** Connect jobs with conditional steps, pass results between them, and schedule a fresh chain for every recurring run.
 - **Keep execution under control.** Set retries, priorities, per-host function concurrency, and cron overlap policies. Cancel pending work or request cooperative cancellation of a running job.
 - **Commit jobs with business data.** Stage time jobs and cron schedules in the same EF Core transaction as your application changes.

@@ -3,6 +3,7 @@ using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Models;
 
 namespace TickerQ.Caching.StackExchangeRedis.Infrastructure;
@@ -37,7 +38,7 @@ internal sealed class RedisTickerQueryable<TEntity> : ITickerQueryable<TEntity>,
     public ITickerQueryable<TEntity> Where(Expression<Func<TEntity, bool>> predicate)
     {
         ArgumentNullException.ThrowIfNull(predicate);
-        return Append(new Step { Predicate = predicate, Filter = predicate.Compile() });
+        return Append(new Step { Predicate = predicate, Filter = predicate.CompileAotSafe() });
     }
 
     public ITickerQueryable<TEntity> OrderBy<TKey>(Expression<Func<TEntity, TKey>> selector)
@@ -48,7 +49,7 @@ internal sealed class RedisTickerQueryable<TEntity> : ITickerQueryable<TEntity>,
     private ITickerQueryable<TEntity> Order<TKey>(Expression<Func<TEntity, TKey>> selector, bool descending)
     {
         ArgumentNullException.ThrowIfNull(selector);
-        var compiled = selector.Compile();
+        var compiled = selector.CompileAotSafe();
         return Append(new Step
         {
             SortKey = row => compiled(row),
@@ -70,7 +71,7 @@ internal sealed class RedisTickerQueryable<TEntity> : ITickerQueryable<TEntity>,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(selector);
-        return MaterializeAsync(selector.Compile(), cancellationToken);
+        return MaterializeAsync(selector.CompileAotSafe(), cancellationToken);
     }
 
     private async Task<TResult[]> MaterializeAsync<TResult>(Func<TEntity, TResult> selector, CancellationToken ct)
@@ -114,7 +115,7 @@ internal sealed class RedisTickerQueryable<TEntity> : ITickerQueryable<TEntity>,
         int pageNumber, int pageSize, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(selector);
-        return PaginateAsync(selector.Compile(), pageNumber, pageSize, cancellationToken);
+        return PaginateAsync(selector.CompileAotSafe(), pageNumber, pageSize, cancellationToken);
     }
 
     private async Task<PaginationResult<TResult>> PaginateAsync<TResult>(Func<TEntity, TResult> selector,

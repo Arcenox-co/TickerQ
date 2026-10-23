@@ -6,51 +6,51 @@ The notices below do not license TickerQ itself; TickerQ's terms are in `LICENSE
 
 ## Bundled packages
 
-- `@floating-ui/core@1.7.5` — `MIT` — `sha512-1Ih4WTWyw0+lKyFMcBHGbb5U5FtuHJuujoyyr5zTaWS5EYMeT6Jb2AuDeftsCsEuchO+mM2ij5+q9crhydzLhQ==`
-- `@floating-ui/dom@1.7.6` — `MIT` — `sha512-9gZSAI5XM36880PPMm//9dfiEngYoC6Am2izES1FF406YFsjvyBMmeJ2g4SAju3xWwtuynNRFL2s9hgxpLI5SQ==`
-- `@floating-ui/react-dom@2.1.8` — `MIT` — `sha512-cC52bHwM/n/CxS87FH0yWdngEZrjdtLW/qVruo68qg+prK7ZQ4YGdut2GyDVpoGeAYe/h899rVeOVm6Oi40k2A==`
-- `@floating-ui/utils@0.2.11` — `MIT` — `sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==`
+- `@floating-ui/core@1.8.0` — `MIT` — `sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ==`
+- `@floating-ui/dom@1.8.0` — `MIT` — `sha512-yXSrzeHZBTZadLOlfyhCkJHNeLJnHRnRInwdZ40L7ZiaAtrBwoYlsDrX3v5zB1Utk7CLfzcOVnVVWoXEky7Ceg==`
+- `@floating-ui/react-dom@2.1.9` — `MIT` — `sha512-JDjEFGCpImxDCA7JJKviA0M9+RtmJdj0m/NVU5IMgBK+AmZouAQQ7/+2GLH0GXXY0YMw9oXPB8hKdbPYg5QLYg==`
+- `@floating-ui/utils@0.2.12` — `MIT` — `sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==`
 - `@fontsource-variable/inter@5.3.0` — `OFL-1.1` — `sha512-OupL48va4JNofb97w6NYeF9S7W/kHNKM0Er8Dem5nqi4jeOLrVJDoE8tZEpnMJmtkvNbB1EIPPwHcdkF6b1oUA==`
-- `@hookform/resolvers@5.5.7` — `MIT` — `sha512-CyPCYV8/KlXfEXLWj8HHHhVsR/IZ6Ckm3b/a4fWtO/lRnRK1huqncb8LlAWrmpPRsse5glF5aVuDRMHEr3UGag==`
-- `@microsoft/signalr@10.0.0` — `MIT` — `sha512-0BRqz/uCx3JdrOqiqgFhih/+hfTERaUfCZXFB52uMaZJrKaPRzHzMuqVsJC/V3pt7NozcNXGspjKiQEK+X7P2w==`
-- `@radix-ui/number@1.1.1` — `MIT` — `sha512-MkKCwxlXTgz6CFoJx3pCwn07GKp36+aZyu/u2Ln2VrA5DcdyCZkASEDBTd8x5whTQQL5CiYf4prXKLcgQdv29g==`
-- `@radix-ui/primitive@1.1.3` — `MIT` — `sha512-JTF99U/6XIjCBo0wqkU5sK10glYe27MRRsfwoiq5zzOEZLHU3A3KCMa5X/azekYRCJ0HlwI0crAXS/5dEHTzDg==`
-- `@radix-ui/react-alert-dialog@1.1.15` — `MIT` — `sha512-oTVLkEw5GpdRe29BqJ0LSDFWI3qu0vR1M0mUkOQWDIUnY/QIkLpgDMWuKxP94c2NAC2LGcgVhG1ImF3jkZ5wXw==`
-- `@radix-ui/react-arrow@1.1.7` — `MIT` — `sha512-F+M1tLhO+mlQaOWspE8Wstg+z6PwxwRd8oQ8IXceWz92kfAmalTRf0EjrouQeo7QssEPfCn05B4Ihs1K9WQ/7w==`
-- `@radix-ui/react-checkbox@1.3.3` — `MIT` — `sha512-wBbpv+NQftHDdG86Qc0pIyXk5IR3tM8Vd0nWLKDcX8nNn4nXFOFwsKuqw2okA/1D/mpaAkmuyndrPJTYDNZtFw==`
-- `@radix-ui/react-collection@1.1.7` — `MIT` — `sha512-Fh9rGN0MoI4ZFUNyfFVNU4y9LUz93u9/0K+yLgA2bwRojxM8JU1DyvvMBabnZPBgMWREAJvU2jjVzq+LrFUglw==`
-- `@radix-ui/react-compose-refs@1.1.2` — `MIT` — `sha512-z4eqJvfiNnFMHIIvXP3CY57y2WJs5g2v3X0zm9mEJkrkNv4rDxu+sg9Jh8EkXyeqBkB7SOcboo9dMVqhyrACIg==`
-- `@radix-ui/react-context@1.1.2` — `MIT` — `sha512-jCi/QKUM2r1Ju5a3J64TH2A5SpKAgh0LpknyqdQ4m6DCV0xJ2HG1xARRwNGPQfi1SLdLWZ1OJz6F4OMBBNiGJA==`
-- `@radix-ui/react-dialog@1.1.15` — `MIT` — `sha512-TCglVRtzlffRNxRMEyR36DGBLJpeusFcgMVD9PZEzAKnUs1lKCgX5u9BmC2Yg+LL9MgZDugFFs1Vl+Jp4t/PGw==`
-- `@radix-ui/react-direction@1.1.1` — `MIT` — `sha512-1UEWRX6jnOA2y4H5WczZ44gOOjTEmlqv1uNW4GAJEO5+bauCBhv8snY65Iw5/VOS/ghKN9gr2KjnLKxrsvoMVw==`
-- `@radix-ui/react-dismissable-layer@1.1.11` — `MIT` — `sha512-Nqcp+t5cTB8BinFkZgXiMJniQH0PsUt2k51FUhbdfeKvc4ACcG2uQniY/8+h1Yv6Kza4Q7lD7PQV0z0oicE0Mg==`
-- `@radix-ui/react-dropdown-menu@2.1.16` — `MIT` — `sha512-1PLGQEynI/3OX/ftV54COn+3Sud/Mn8vALg2rWnBLnRaGtJDduNW/22XjlGgPdpcIbiQxjKtb7BkcjP00nqfJw==`
-- `@radix-ui/react-focus-guards@1.1.3` — `MIT` — `sha512-0rFg/Rj2Q62NCm62jZw0QX7a3sz6QCQU0LpZdNrJX8byRGaGVTqbrW9jAoIAHyMQqsNpeZ81YgSizOt5WXq0Pw==`
-- `@radix-ui/react-focus-scope@1.1.7` — `MIT` — `sha512-t2ODlkXBQyn7jkl6TNaw/MtVEVvIGelJDCG41Okq/KwUsJBwQ4XVZsHAVUkK4mBv3ewiAS3PGuUWuY2BoK4ZUw==`
-- `@radix-ui/react-id@1.1.1` — `MIT` — `sha512-kGkGegYIdQsOb4XjsfM97rXsiHaBwco+hFI66oO4s9LU+PLAC5oJ7khdOVFxkhsmlbpUqDAvXw11CluXP+jkHg==`
-- `@radix-ui/react-label@2.1.7` — `MIT` — `sha512-YT1GqPSL8kJn20djelMX7/cTRp/Y9w5IZHvfxQTVHrOqa2yMl7i/UfMqKRU5V7mEyKTrUVgJXhNQPVCG8PBLoQ==`
-- `@radix-ui/react-menu@2.1.16` — `MIT` — `sha512-72F2T+PLlphrqLcAotYPp0uJMr5SjP5SL01wfEspJbru5Zs5vQaSHb4VB3ZMJPimgHHCHG7gMOeOB9H3Hdmtxg==`
-- `@radix-ui/react-popover@1.1.15` — `MIT` — `sha512-kr0X2+6Yy/vJzLYJUPCZEc8SfQcf+1COFoAqauJm74umQhta9M7lNJHP7QQS3vkvcGLQUbWpMzwrXYwrYztHKA==`
-- `@radix-ui/react-popper@1.2.8` — `MIT` — `sha512-0NJQ4LFFUuWkE7Oxf0htBKS6zLkkjBH+hM1uk7Ng705ReR8m/uelduy1DBo0PyBXPKVnBA6YBlU94MBGXrSBCw==`
-- `@radix-ui/react-portal@1.1.9` — `MIT` — `sha512-bpIxvq03if6UNwXZ+HTK71JLh4APvnXntDc6XOX8UVq4XQOVl7lwok0AvIl+b8zgCw3fSaVTZMpAPPagXbKmHQ==`
-- `@radix-ui/react-presence@1.1.5` — `MIT` — `sha512-/jfEwNDdQVBCNvjkGit4h6pMOzq8bHkopq458dPt2lMjx+eBQUohZNG9A7DtO/O5ukSbxuaNGXMjHicgwy6rQQ==`
-- `@radix-ui/react-primitive@2.1.3` — `MIT` — `sha512-m9gTwRkhy2lvCPe6QJp4d3G1TYEUHn/FzJUtq9MjH46an1wJU+GdoGC5VLof8RX8Ft/DlpshApkhswDLZzHIcQ==`
-- `@radix-ui/react-roving-focus@1.1.11` — `MIT` — `sha512-7A6S9jSgm/S+7MdtNDSb+IU859vQqJ/QAtcYQcfFC6W8RS4IxIZDldLR0xqCFZ6DCyrQLjLPsxtTNch5jVA4lA==`
-- `@radix-ui/react-select@2.2.6` — `MIT` — `sha512-I30RydO+bnn2PQztvo25tswPH+wFBjehVGtmagkU78yMdwTwVf12wnAOF+AeP8S2N8xD+5UPbGhkUfPyvT+mwQ==`
-- `@radix-ui/react-slot@1.2.3` — `MIT` — `sha512-aeNmHnBxbi2St0au6VBVC7JXFlhLlOnvIIlePNniyUNAClzmtAUEY8/pBiK3iHjufOlwA+c20/8jngo7xcrg8A==`
-- `@radix-ui/react-switch@1.2.6` — `MIT` — `sha512-bByzr1+ep1zk4VubeEVViV592vu2lHE2BZY5OnzehZqOOgogN80+mNtCqPkhn2gklJqOpxWgPoYTSnhBCqpOXQ==`
-- `@radix-ui/react-tabs@1.1.13` — `MIT` — `sha512-7xdcatg7/U+7+Udyoj2zodtI9H/IIopqo+YOIcZOq1nJwXWBZ9p8xiu5llXlekDbZkca79a/fozEYQXIA4sW6A==`
-- `@radix-ui/react-tooltip@1.2.8` — `MIT` — `sha512-tY7sVt1yL9ozIxvmbtN5qtmH2krXcBCfjEiCgKGLqunJHvgvZG2Pcl2oQ3kbcZARb1BGEHdkLzcYGO8ynVlieg==`
-- `@radix-ui/react-use-callback-ref@1.1.1` — `MIT` — `sha512-FkBMwD+qbGQeMu1cOHnuGB6x4yzPjho8ap5WtbEJ26umhgqVXbhekKUQO+hZEL1vU92a3wHwdp0HAcqAUF5iDg==`
-- `@radix-ui/react-use-controllable-state@1.2.2` — `MIT` — `sha512-BjasUjixPFdS+NKkypcyyN5Pmg83Olst0+c6vGov0diwTEo6mgdqVR6hxcEgFuh4QrAs7Rc+9KuGJ9TVCj0Zzg==`
-- `@radix-ui/react-use-escape-keydown@1.1.1` — `MIT` — `sha512-Il0+boE7w/XebUHyBjroE+DbByORGR9KKmITzbR7MyQ4akpORYP/ZmbhAr0DG7RmmBqoOnZdy2QlvajJ2QA59g==`
-- `@radix-ui/react-use-layout-effect@1.1.1` — `MIT` — `sha512-RbJRS4UWQFkzHTTwVymMTUv8EqYhOp8dOOviLj2ugtTiXRaRQS7GLGxZTLL1jWhMeoSCf5zmcZkqTl9IiYfXcQ==`
-- `@radix-ui/react-use-previous@1.1.1` — `MIT` — `sha512-2dHfToCj/pzca2Ck724OZ5L0EVrr3eHRNsG/b3xQJLA2hZpVCS99bLAX+hm1IHXDEnzU6by5z/5MIY794/a8NQ==`
-- `@radix-ui/react-use-size@1.1.1` — `MIT` — `sha512-ewrXRDTAqAXlkl6t/fkXWNAhFX9I+CkKlw6zjEwk86RSPKwZr3xpBRso655aqYafwtnbpHLj6toFzmd6xdVptQ==`
-- `@radix-ui/react-visually-hidden@1.2.3` — `MIT` — `sha512-pzJq12tEaaIhqjbzpCuv/OypJY/BPavOofm+dbab+MHLajy277+1lLm6JFcGgF5eskJ6mquGirhXY2GD/8u8Ug==`
+- `@hookform/resolvers@5.9.2` — `MIT` — `sha512-RtjTnZqsC38s4NKp2XO3fD8IA5uyN4tB7McQ5C6uiMPcV+WWO8F+wVa3e+BXUpH2ScgxghAlwFRMVqjT9WChAQ==`
+- `@microsoft/signalr@10.0.11` — `MIT` — `sha512-FulOJ2EEtKvLQcswe/U7v8pzyXyk7Jua5xgWJPPwyQU/2Z9ORvKcVjyO75VvLsem+CJ1ORRexJ+7Bz1FCei2aw==`
+- `@radix-ui/number@1.1.3` — `MIT` — `sha512-Road2bidD0uu/1BGDOWNdPI06g0lIRy6IF9GZcIrDK2KGItfor8IQwQa+yM2ERgHM1MmHxaxpTzk0/Jp42lNfA==`
+- `@radix-ui/primitive@1.2.0` — `MIT` — `sha512-KABY+VMIRPJL+Vyzv/335FEhXXD/xDv8BMb1kl48/aXJZMH0LtHCTx5ga5RnxaEP3nZHtmTLf1P9vanmFX46bw==`
+- `@radix-ui/react-alert-dialog@1.2.1` — `MIT` — `sha512-MWC4N7RY+qsbNrFNo7yQ9ZbdoZEW+B5DtpWxJfUnVCqcQxxqqg3qis3RMPTDbCNaTIdHJSn5XDkl9ZdVWXknLg==`
+- `@radix-ui/react-arrow@1.1.17` — `MIT` — `sha512-67jjcVvxjXCCStnTW3Z+M7jmaFMuMR7M2JgpDzH4w7JSRrikmzhjfYgP/09ECb8n7whnsgh1ifJ+Ie96qEj+pQ==`
+- `@radix-ui/react-checkbox@1.4.1` — `MIT` — `sha512-KWtwhh+98ML3seZ9vO9yRY2OwaQG90dCiDAxjpSNY2AaZ3Hik3B0dsk6m0ILywo/no3A9/SozadyPMNweVT8yw==`
+- `@radix-ui/react-collection@1.2.0` — `MIT` — `sha512-+yiQzqcc7Sy7/5s0jrMCjpPRFB3538VNrXPWdTLZhE/SCfgEws4aI6lHWN/vvcnyhHndROWBzqmqB4QBrITZ9Q==`
+- `@radix-ui/react-compose-refs@1.1.5` — `MIT` — `sha512-+48PbAAbq3didjJxa+OaWY2ZwgAKsNiRGyeHKszblZMQ+kcpd9pAaT11cMkGEie0vsOi3QdeTE6d5Fe3Gn61kA==`
+- `@radix-ui/react-context@1.3.0` — `MIT` — `sha512-v5AYEocMISkbJ+1fTXzZpiFv7NRr3D2WiYbLIKf+FkmJ8VkP6d503eV2n34MFussHXY1pcoq3yfJiQH77dc4Mg==`
+- `@radix-ui/react-dialog@1.3.1` — `MIT` — `sha512-+0E4qvVTwjAWra9sEhJ+9BTsvHE00zkUuNw1VGh7S+Gc13dfYk+S1PVQdchWDj+XYHhAai7Z7IpzXVDCGsDplg==`
+- `@radix-ui/react-direction@1.2.0` — `MIT` — `sha512-FtRA52a/r+LKStFT+neLUm+8vSe7wbzkbQGGeU8ixFiwC8NU14Evoq9ATECqL3eGbcUzJR4fyfA4KkK/q6dfqg==`
+- `@radix-ui/react-dismissable-layer@1.2.1` — `MIT` — `sha512-KIfDcAsx+oVylFZ4xryVKusJUrLLhTQmfnJW4kwk4Km5myvhHCrj04hnWWUC166+xD4DHdH8tQGylwYX1h6+Pg==`
+- `@radix-ui/react-dropdown-menu@2.2.1` — `MIT` — `sha512-XsHcmYG2AcqnvTqrOXXWcMrhquEIlqucizuDH1MV/qMRW+DndpBCMvNeTRXOxqmG1H5j89M/+I0/34Zdd+zDcQ==`
+- `@radix-ui/react-focus-guards@1.2.0` — `MIT` — `sha512-MPm5R0iRGUDrDnPNxmLBkv+X7pN4XKzt+MbWJEuJQsH3NFH4omrbpXpucyYCCKTSt+na/ZxGhEWQrWTZ0285cA==`
+- `@radix-ui/react-focus-scope@1.3.1` — `MIT` — `sha512-ugeMhbXt4y5S2T1GnIqbWDKEN962PDwnX1fN0eKOOgf5f63Dh2mn8F1FUySlgW0iF6GiVsRF32DzuDIWTUyQJg==`
+- `@radix-ui/react-id@1.1.4` — `MIT` — `sha512-TMQp2llA+RYn7JcjnrMnz7wN4pcVttPZnRZo52PLQsoLVKzNlVwUeHmfePgTgRluXFvlD3GD5g5MOVVTJCO0qA==`
+- `@radix-ui/react-label@2.1.17` — `MIT` — `sha512-xmj7MN/drx1oUAXkfiFIvyDmGNUIN/omGobvA5oAoNqu9zO2MkISYGZOkBcqSzs/UZXXwV+/3ACRE7q7mGcmkA==`
+- `@radix-ui/react-menu@2.2.1` — `MIT` — `sha512-G34BsU90SBj5foYpz8pQqq/Q0Dlfyyl6KitWEfRwXC0QvfwhWNAwS49DWP2+rRJ0iwv20Z2Qx7Sk+T03bGo5JA==`
+- `@radix-ui/react-popover@1.3.1` — `MIT` — `sha512-ZNxvXRx5W2Wos4fXCXb5lpdqN0Z5chf+mStOUOTr4ik7d+62MRvoe9rzCA/eGNg36lxXqSrKEKmwuZEcUrIstw==`
+- `@radix-ui/react-popper@1.4.0` — `MIT` — `sha512-yCWRvLeGv9Pz3+efwHqGPp70mZ56r3kfIgQVF56Oj2aAa4uP/Tb+IE59wNcc+758rctqbCKx4LbK8II/r7Bn0Q==`
+- `@radix-ui/react-portal@1.2.0` — `MIT` — `sha512-StX7xXnaRU41VvFtMm9zlhVGz8XF6GmWWTXftkQaY+tqVkbs/R9UmAp5mLzHHapk5hM9RMZQvO/3usyIP/g42g==`
+- `@radix-ui/react-presence@1.1.11` — `MIT` — `sha512-Z7/atlkab36Z8hm+V8zYc79r0W+tiOB1o0tun1By94JyadkekLQmtEAnBSP9XKXBNQsStoStS4+gX10JpS5akA==`
+- `@radix-ui/react-primitive@2.2.0` — `MIT` — `sha512-HCTSPMNqv55Qk0IX4geJbpyXazmqulcimwuyjxTkKi29v+QZbG2Zho9BnbBq4YS2PF+KlNb2CXoLz66uUmblkg==`
+- `@radix-ui/react-roving-focus@1.2.1` — `MIT` — `sha512-UwraORzVUeEPMclhO1p0vz0qI+TbdDLO9i+FiOqhJyHKwdpCRCck9yVEscUnAMIzCiuNoQa8D4A9bIpOPXGt6Q==`
+- `@radix-ui/react-select@2.4.1` — `MIT` — `sha512-888ZwW0Md6GyptuqYABRX9nLKgoYfcooCyBBvVaX5Jp3e+8Jp2i4Zo/Uy50Hm+Ysn2JfloQXstW4U36w8teVtg==`
+- `@radix-ui/react-slot@1.5.0` — `MIT` — `sha512-tyYd9ddPXAysAbdbD9eYxgwpCSv6f3PncqVSNKQFSR5lcJVLz3cb/pANDoYrLiHBpXv7skortyUgGUWsYuPPFQ==`
+- `@radix-ui/react-switch@1.4.1` — `MIT` — `sha512-NpBGwc40rY02ZmSvuyeKk0Bvc8ZsNeTMi4qHvJ+ZH4EiYCv0zIXEgdCW4bVdzgIUeP9xxbLJSxKOUfqITYNmkA==`
+- `@radix-ui/react-tabs@1.2.1` — `MIT` — `sha512-hRoJlode+hg5ZNlR+3tkfkUliIybdTpD5lkAvHQ9yaXseGf7XVO9Ib2GPEIOuaJJbo7YWYbNpDDRfo8Dhf6/xA==`
+- `@radix-ui/react-tooltip@1.4.1` — `MIT` — `sha512-NxLFGSFtZ78zVfcoOhTwR1xwqo5qx1Jh8Pw6FMZ9McCaqfRzz7/gIRahs2Oy5XlPgQ+8QkUcKbN5B0U44J/kCg==`
+- `@radix-ui/react-use-callback-ref@1.1.5` — `MIT` — `sha512-Y5GBf4NKeADoXI1geiMlMuMoURT3k9MizzzKhGb/m55H94aGigZ01PIpkvsO6lML13BA6XYAXSJ6gza7vTn5nw==`
+- `@radix-ui/react-use-controllable-state@1.3.0` — `MIT` — `sha512-TAcBI7bw2ljYCbv4+zuTSd6zICu8pRt6SDN2vJ/Z06K2MXh6I9WYFe/A9ovlFDtR5HVHGm5iDxDoABm/++dbKg==`
+- `@radix-ui/react-use-effect-event@0.0.5` — `MIT` — `sha512-7cshFL8HGS/7HEiHH+9kL9HBwp2sa9yX18Knwek6KYWmXwM7pegMgta2AXMQKI+rq3JnfSj9x8wYqFMTdG1Jgg==`
+- `@radix-ui/react-use-is-hydrated@0.1.3` — `MIT` — `sha512-umO/aJ+82CpOnhDZUTbILCQf7kU/g0iv+oGs/Q8jw7IkhWBzaEP4sA268PhFAJTFetbwp3ICc6ktpI4TqtxcIw==`
+- `@radix-ui/react-use-layout-effect@1.1.4` — `MIT` — `sha512-K20DkRkUwDnxEYMBPcg3Y6voLkEy5p5QQmszZgLngKKiC7dzBR/aEuK3w1qlx2JWDUNH6FluahYdgR3BP+QbYw==`
+- `@radix-ui/react-use-size@1.1.5` — `MIT` — `sha512-V1McDQkMGzgivwqdu7u96APs7oi0Jvj9LTzgq3WWrDZqxWdAqU9yZnZQqk5OizGFR8badUQwZsrlao7MOlWYOA==`
+- `@radix-ui/react-visually-hidden@1.2.13` — `MIT` — `sha512-feijiN1oPk4rck4u9Dm9tsU4mT6Wp9oeEEhaz1WUEs1VuqLf8xzsFG+Qk+uWq6TnMH9O+WRECRg0NftyP9E4Fw==`
 - `@reduxjs/toolkit@2.11.2` — `MIT` — `sha512-Kd6kAHTA6/nUpp8mySPqj3en3dm0tdMIgbttnQ1xFMVpufoj+ADi8pXLBsd4xzTRHQa7t/Jv8W5UnCuW4kuWMQ==`
-- `@tanstack/query-core@5.100.10` — `MIT` — `sha512-8UR0yJR+GiQ40m3lPhUr0xbfAupe6GSQiksSBSa9SM2NjezFyxXCIA69/lz8cSoNKZLrw1/PktIyQBJcVeMi3w==`
-- `@tanstack/react-query@5.100.10` — `MIT` — `sha512-FLaZf2RCrA/Zgp4aiu5tG3TyasTRO7aZ99skxQpr3Hg/zXOhu6yq5FZCYQ/tRaJtM9ylnoK8tFK7PolXQadv6Q==`
+- `@tanstack/query-core@5.104.5` — `MIT` — `sha512-Q94gI8Opd+CbdVNOdj8ZCyV8WqLYitrDq1t96Xc8WZT6lY0r5iRnJLXYDxMex7EEf2v+mXvn4FcjaBKSxXZQ9A==`
+- `@tanstack/react-query@5.104.5` — `MIT` — `sha512-RORgFe052U+93weaNuqg7qHq7vNVNzXN/VrXqD4bbAuQCWUqOl2lV5Ui9flWk5CVvMyL/Bh27QWhzwH0aaOx9g==`
 - `@tanstack/react-table@8.21.3` — `MIT` — `sha512-5nNMTSETP4ykGegmVkhjcS8tTLW6Vl4axfEGQN3v0zdHYbK4UfoqfPChclTrJ4EoK9QynqAu9oUf8VEmrpZ5Ww==`
 - `@tanstack/table-core@8.21.3` — `MIT` — `sha512-ldZXEhOBb8Is7xLs01fR3YEc3DERiz5silj8tnGkFZytt1abEvl/GhUmCE0PMLaMPTa3Jk4HbKmRlHmu+gCftg==`
 - `@ungap/structured-clone@1.3.3` — `ISC` — `sha512-60YRaenCQcVjYEKOcG824+DRGGIQ3VKErcBoAEDJZz5bKIs2ZG+X/H9Nk+Q6EVkwJk5QNApxbrc5QtBSwtrXAg==`
@@ -61,8 +61,8 @@ The notices below do not license TickerQ itself; TickerQ's terms are in `LICENSE
 - `clsx@2.1.1` — `MIT` — `sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==`
 - `cmdk@1.1.1` — `MIT` — `sha512-Vsv7kFaXm+ptHDMZ7izaRsP70GgrW9NBNGswt9OZaVBLlE0SNpDq8eu/VGXyF9r7M0azK3Wy7OlYXsuyYLFzHg==`
 - `comma-separated-tokens@2.0.3` — `MIT` — `sha512-Fu4hJdvzeylCfQPp9SGWidpzrMs7tTrlu6Vb8XGaRGck8QSNZJJp538Wrb60Lax4fPwR64ViY468OIUTbRlGZg==`
-- `cron-parser@5.5.0` — `MIT` — `sha512-oML4lKUXxizYswqmxuOCpgFS8BNUJpIu6k/2HVHyaL8Ynnf3wdf9tkns0yRdJLSIjkJ+b0DXHMZEHGpMwjnPww==`
-- `cronstrue@3.14.0` — `MIT` — `sha512-XnW4vuK/jPJjmTyDWiej1Zq36Od7ITwxaV2O1pzHZuyMVvdy7NAvyvIBzybt+idqSpfqYuoDG7uf/ocGtJVWxA==`
+- `cron-parser@5.10.2` — `MIT` — `sha512-JfAYMY0LZaWQTuict8PhtF/ksSnq8xefSDmQUnnoqvkPYkU/y3UP0DTWzJKFBz0P1IXsDG8q0vY3zHkoFZOhvw==`
+- `cronstrue@3.37.0` — `MIT` — `sha512-Nc5PL23nz3HjRcHRc6O7ikCc3lnFM2SQg5nwSDMGOi0jv0g178mUMClgfT6WuOevrEsPOTQCWOaGFV5PKFYymg==`
 - `d3-array@3.2.4` — `ISC` — `sha512-tdQAmyA18i4J7wprpYq8ClcxZy3SC31QMeByyCFyRt7BVHdREQZ5lpzoe5mFEYZUWe+oq8HBvk9JjpibyEV4Jg==`
 - `d3-color@3.1.0` — `ISC` — `sha512-zg/chbXyeBtMQ1LbD/WSoW2DpC3I0mpmPdW+ynRTj/x2DAWYrIY7qeZIHidozwV24m4iavr15lNwIwLxRmOxhA==`
 - `d3-format@3.1.2` — `ISC` — `sha512-AJDdYOdnyRDV5b6ArilzCPPwc1ejkHcoyFarqlPqT7zRYjhavcT3uSrqcMvsgh2CgoPbK3RCwyHaVyxYcP2Arg==`
@@ -84,13 +84,12 @@ The notices below do not license TickerQ itself; TickerQ's terms are in `LICENSE
 - `hast-util-to-jsx-runtime@2.3.6` — `MIT` — `sha512-zl6s8LwNyo1P9uw+XJGvZtdFF1GdAkOg8ujOw+4Pyb76874fLps4ueHXDhXWdk6YHQ6OgUtinliG7RsYvCbbBg==`
 - `hast-util-whitespace@3.0.0` — `MIT` — `sha512-88JUN06ipLwsnv+dVn+OIYOvAuvBMy/Qoi6O7mQHxdPXpjy+Cd6xRkWwux7DKO+4sYILtLBRIKgsdpS2gQc7qw==`
 - `html-url-attributes@3.0.1` — `MIT` — `sha512-ol6UPyBWqsrO6EJySPz2O7ZSr856WDrEzM5zMqp+FJJLGMW35cLYmmZnl0vztAZxRUoNZJFTCohfjuIJ8I4QBQ==`
-- `immer@10.2.0` — `MIT` — `sha512-d/+XTN3zfODyjr89gM3mPq1WNX2B8pYsu7eORitdwyA2sBubnTl3laYlBk4sXY5FUa5qTZGBDPJICVbvqzjlbw==`
-- `immer@11.1.8` — `MIT` — `sha512-/tbkHMW7y10Lx6i1crLjD4/OhNkRG+Fo7byZHtah0547nIeXYcpIXaUh0IAQY6gO5459qpGGYapcEOHtFXkIuA==`
+- `immer@11.2.3` — `MIT` — `sha512-FbR9W6jf7+tvOCuDmOLJy3yStLCvoRDODRARzfeaWmn75+1fW4hFbMv5X5cWgEkxgWcC/eC5Nva00ZV1iv+0EA==`
 - `inline-style-parser@0.2.7` — `MIT` — `sha512-Nb2ctOyNR8DqQoR0OwRG95uNWIC0C1lCgf5Naz5H6Ji72KZ8OcFZLz2P5sNgwlyoJ8Yif11oMuYs5pBQa86csA==`
 - `internmap@2.0.3` — `ISC` — `sha512-5Hh7Y1wQbvY5ooGgPbDaL5iYLAPzMTUrjMulskHLH6wnv/A+1q5rgEaiuqEjB+oxGXIVZs1FF+R/KPN3ZSQYYg==`
 - `is-plain-obj@4.1.0` — `MIT` — `sha512-+Pgi+vMuUNkJyExiMBt5IlFoMyKnr5zhJ4Uspz58WOhBF5QoIZkFyNHIbBAtHwzVAgk5RtndVNsDRN61/mmDqg==`
 - `longest-streak@3.1.0` — `MIT` — `sha512-9Ri+o0JYgehTaVBBDoMqIl8GXtbWg711O3srftcHhZ0dqnETqLaoIK0x17fUw9rFSlK/0NlsKe0Ahhyl5pXE2g==`
-- `lucide-react@1.14.0` — `ISC` — `sha512-+1mdWcfSJVUsaTIjN9zoezmUhfXo5l0vP7ekBMPo3jcS/aIkxHnXqAPsByszMZx/Y8oQBRJxJx5xg+RH3urzxA==`
+- `lucide-react@1.60.0` — `ISC` — `sha512-UqxOW0FgAfDyb9VmjKb6/BkOzW6yfhf/QNboKtS2NDsscnNRW2CDzlyhbMKBQ1ontmcxuIDqHJ2AVgFR3NI+GA==`
 - `luxon@3.7.2` — `MIT` — `sha512-vtEhXh/gNjI9Yg1u4jX/0YVPMvxzHuGgCm6tC5kZyb08yjGWGnqAjGJvcXbqQR2P3MyMEFnRbpcdFS6PBcLqew==`
 - `markdown-table@3.0.4` — `MIT` — `sha512-wiYz4+JrLyb/DqW2hkFJxP7Vd7JuTDm77fvbM8VfEQdmSMqcImWeeRbHwZjBjIFki/VaMK2BhFi7oUUZeM5bqw==`
 - `mdast-util-find-and-replace@3.0.2` — `MIT` — `sha512-Tmd1Vg/m3Xz43afeNxDIhWRtFZgM2VLyaf4vSTYwudTyeuTneoL3qtWMA5jeLyz/O1vDJmmV4QuScFCA2tBPwg==`
@@ -131,30 +130,30 @@ The notices below do not license TickerQ itself; TickerQ's terms are in `LICENSE
 - `micromark-util-subtokenize@2.1.0` — `MIT` — `sha512-XQLu552iSctvnEcgXw6+Sx75GflAPNED1qx7eBJ+wydBb2KCbRZe+NwvIEEMM83uml1+2WSXpBAcp9IUCgCYWA==`
 - `next-themes@0.4.6` — `MIT` — `sha512-pZvgD5L0IEvX5/9GWyHMf3m8BKiVQwsCMHfoFosXtXBMnaS0ZnIJ9ST4b4NqLVKDEm8QBxoNNGNaBv2JNF6XNA==`
 - `property-information@7.2.0` — `MIT` — `sha512-IAtzIB6sUiWaJYrX9smp3V46pBGbBeLFRGdh25kg1334VcBlD8HzhPeNIWQH9zhGmo2itIe25EHt9dQP7G5hmg==`
-- `react@19.2.6` — `MIT` — `sha512-sfWGGfavi0xr8Pg0sVsyHMAOziVYKgPLNrS7ig+ivMNb3wbCBw3KxtflsGBAwD3gYQlE/AEZsTLgToRrSCjb0Q==`
-- `react-dom@19.2.6` — `MIT` — `sha512-0prMI+hvBbPjsWnxDLxlCGyM8PN6UuWjEUCYmZhO67xIV9Xasa/r/vDnq+Xyq4Lo27g8QSbO5YzARu0D1Sps3g==`
-- `react-hook-form@7.83.0` — `MIT` — `sha512-AXt8cMCmx5a7u4uvpb2uRFVrWQhllI4pV+LSykxIac/hjt44TnQkmX9BKuQi2i+LDC62esmiLpilkav+kjVf/A==`
+- `react@19.3.1` — `MIT` — `sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==`
+- `react-dom@19.3.1` — `MIT` — `sha512-Y0bARz53lhEC1NMCASs0/j+faB/zqt3R8hpvg1e8+61ZVJ4UL0UdC4cBbXfZMcIuhrfgeILTLe+ZeBCavQPtKQ==`
+- `react-hook-form@7.90.0` — `MIT` — `sha512-+NdG0FLzCPhFOp2NNxaUYLF9fyZhNjx9FTBBSYWF71/l6BBlmIc/j6xlp3DbaHWLJbIG7Zd8oznA19xJClU97w==`
 - `react-is@19.2.6` — `MIT` — `sha512-XjBR15BhXuylgWGuslhDKqlSayuqvqBX91BP8pauG8kd1zY8kotkNWbXksTCNRarse4kuGbe2kIY05ARtwNIvw==`
 - `react-markdown@10.1.0` — `MIT` — `sha512-qKxVopLT/TyA6BX3Ue5NwabOsAzm0Q7kAPwq6L+wWDwisYs7R8vZ0nRXqq6rkueboxpkjvLGU9fWifiX/ZZFxQ==`
 - `react-redux@9.2.0` — `MIT` — `sha512-ROY9fvHhwOD9ySfrF0wmvu//bKCQ6AeZZq1nJNtbDC+kk5DuSuNX/n6YWYF/SYy7bSba4D4FSz8DJeKY/S/r+g==`
 - `react-remove-scroll@2.7.2` — `MIT` — `sha512-Iqb9NjCCTt6Hf+vOdNIZGdTiH1QSqr27H/Ek9sv/a97gfueI/5h1s3yRi1nngzMUaOOToin5dI1dXKdXiF+u0Q==`
 - `react-remove-scroll-bar@2.3.8` — `MIT` — `sha512-9r+yi9+mgU33AKcj6IbT9oRCO78WriSj6t/cF8DWBZJ9aOGPOTEDvdUDz1FwKim7QXWwmHqtdHnRJfhAxEG46Q==`
-- `react-router@7.15.0` — `MIT` — `sha512-HW9vYwuM8f4yx66Izy8xfrzCM+SBJluoZcCbww9A1TySax11S5Vgw6fi3ZjMONw9J4gQwngL7PzkyIpJJpJ7RQ==`
+- `react-router@7.18.4` — `MIT` — `sha512-PUPQcMhMGRAslLcvtlPz/kmzBEWPhLdgLFrL7pLNepBL6dX0lWj4WD2cUYVgYCuT3jxvghYFg81cDTj44DhetQ==`
 - `react-style-singleton@2.2.3` — `MIT` — `sha512-b6jSvxvVnyptAiLjbkWLE/lOnR4lfTtDAl+eUC7RZy+QQWc6wRzIV2CE6xBuMmDxc2qIihtDCZD5NPOFl7fRBQ==`
-- `recharts@3.8.1` — `MIT` — `sha512-mwzmO1s9sFL0TduUpwndxCUNoXsBw3u3E/0+A+cLcrSfQitSG62L32N69GhqUrrT5qKcAE3pCGVINC6pqkBBQg==`
+- `recharts@3.10.1` — `MIT` — `sha512-QXFrvt6IVcw7eeZCoyXTwkIJAX3Dv1nyVhMicXJ47GsGDDpcN8z6o644DibE9XjpBTThtsomLKnTV6lc+cVFUA==`
 - `redux@5.0.1` — `MIT` — `sha512-M9/ELqF6fy8FwmkpnF0S3YKOqMyoWJ4+CS5Efg2ct3oY9daQvd/Pc71FpGZsVsbl3Cpb+IIcjBDUnnyBdQbq4w==`
 - `redux-thunk@3.1.0` — `MIT` — `sha512-NW2r5T6ksUKXCabzhL9z+h206HQw/NJkcLm1GPImRQ8IzfXwRGqjVhKJGauHirT0DAuyy6hjdnMZaRoAcy0Klw==`
 - `remark-gfm@4.0.1` — `MIT` — `sha512-1quofZ2RQ9EWdeN34S79+KExV1764+wCUGop5CPL1WGdD0ocPpu91lzPGbwWMECpEpd42kJGQwzRfyov9j4yNg==`
 - `remark-parse@11.0.0` — `MIT` — `sha512-FCxlKLNGknS5ba/1lmpYijMUzX2esxW5xQqjWxw2eHFfS2MSdaHVINFmhjo+qN1WhZhNimq0dZATN9pH0IDrpA==`
 - `remark-rehype@11.1.2` — `MIT` — `sha512-Dh7l57ianaEoIpzbp0PC9UKAdCSVklD8E5Rpw7ETfbTl3FqcOOgq5q2LVDhgGCkaBv7p24JXikPdvhhmHvKMsw==`
-- `reselect@5.1.1` — `MIT` — `sha512-K/BG6eIky/SBpzfHZv/dd+9JBFiS4SWV7FIujVyJRux6e45+73RaUHXLmIR1f7WOMaQ0U1km6qwklRQxpJJY0w==`
-- `scheduler@0.27.0` — `MIT` — `sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q==`
-- `sonner@2.0.7` — `MIT` — `sha512-W6ZN4p58k8aDKA4XPcx2hpIQXBRAgyiWVkYhT7CvK6D3iAu7xjvVyhQHg2/iaKJZ1XVJ4r7XuwGL+WGEK37i9w==`
+- `reselect@5.2.0` — `MIT` — `sha512-AgZ3UOZm3YndfrJ4OYjgrT7bmCm/1iqkjvEfH/oYjzh6PD2qw4QuT3jjnXIrpdt4MTpMXclMT3lXbmRY+XRakw==`
+- `scheduler@0.28.0` — `MIT` — `sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==`
+- `sonner@2.0.8` — `MIT` — `sha512-UM/ByIoFra8yzV75n1o0Puu0bw5U/9UNnDacrJNspekBewIfsQ3D6ez1nvlWpt7aTsO6rujQtifBpycwIivqlg==`
 - `space-separated-tokens@2.0.2` — `MIT` — `sha512-PEGlAwrG8yXGXRjW32fGbg66JAlOAwbObuqVoJpv/mRgoWDQfgH1wDPvtzWyUSNAXBGSk8h755YDbbcEy3SH2Q==`
 - `style-to-js@1.1.21` — `MIT` — `sha512-RjQetxJrrUJLQPHbLku6U/ocGtzyjbJMP9lCNK7Ag0CNh690nSH8woqWH9u16nMjYBAok+i7JO1NP2pOy8IsPQ==`
 - `style-to-object@1.0.14` — `MIT` — `sha512-LIN7rULI0jBscWQYaSswptyderlarFkjQ+t79nzty8tcIAceVomEVlLzH5VP4Cmsv6MtKhs7qaAiwlcp+Mgaxw==`
-- `tailwind-merge@3.6.0` — `MIT` — `sha512-uxL7qAVQriqRQPAyK3pj66VqskWqoZ37PW94jwOTwNfq/z9oyu1V+eqrZqtR2+fCiXdYOZe/Modt8GtvqNzu+w==`
-- `tailwindcss@4.3.0` — `MIT` — `sha512-y6nxMGB1nMW9R6k96e5gdIFzcfL/gTJRNaqGes1YvkLnPVXzWgbqFF2yLC0T8G774n24cx3Pe8XrKoniCOAH+Q==`
+- `tailwind-merge@3.7.0` — `MIT` — `sha512-XPPUyAc+cvspz3lHTcR/QgPfW2A0lv/xQNIjX3HGhLR+Nq2lHaLq5MtTesHn8GUr3W3DguT2KT5x3NVgRtYwmA==`
+- `tailwindcss@4.3.3` — `MIT` — `sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==`
 - `trim-lines@3.0.1` — `MIT` — `sha512-kRj8B+YHZCc9kQYdWfJB2/oUl9rA99qbowYYBtr4ui4mZyAQ2JpvVBd/6U2YloATfqBhBTSMhTpgBHtU0Mf3Rg==`
 - `trough@2.2.0` — `MIT` — `sha512-tmMpK00BjZiUyVyvrBK7knerNgmgvcV/KLVyuma/SC+TQN167GrMRciANTz09+k3zW8L8t60jWO1GpfkZdjTaw==`
 - `tslib@2.8.1` — `0BSD` — `sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==`
@@ -170,15 +169,15 @@ The notices below do not license TickerQ itself; TickerQ's terms are in `LICENSE
 - `use-sync-external-store@1.6.0` — `MIT` — `sha512-Pp6GSwGP/NrPIrxVFAIkOQeyw8lFenOHijQWkUTrDvrF4ALqylP2C/KCkeS9dpUM3KvYRQhna5vt7IL95+ZQ9w==`
 - `vfile@6.0.3` — `MIT` — `sha512-KzIbH/9tXat2u30jf+smMwFCsno4wHVdNmzFyL+T/L3UGqqk6JKfVqOFOZEpZSHADH1k40ab6NUIXZq422ov3Q==`
 - `vfile-message@4.0.3` — `MIT` — `sha512-QTHzsGd1EhbZs4AsQ20JX1rC3cOlt/IWJruk893DfLRr57lcnOeMaWG4K0JrRta4mIJZKth2Au3mM3u03/JWKw==`
-- `zod@4.4.3` — `MIT` — `sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==`
+- `zod@4.6.7` — `MIT` — `sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==`
 
 ## License and notice texts
 
-### @floating-ui/core@1.7.5 (MIT)
+### @floating-ui/core@1.8.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @floating-ui/core@1.7.5: LICENSE -----
+----- BEGIN @floating-ui/core@1.8.0: LICENSE -----
 MIT License
 
 Copyright (c) 2021-present Floating UI contributors
@@ -199,13 +198,13 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
------ END @floating-ui/core@1.7.5: LICENSE -----
+----- END @floating-ui/core@1.8.0: LICENSE -----
 
-### @floating-ui/dom@1.7.6 (MIT)
+### @floating-ui/dom@1.8.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @floating-ui/dom@1.7.6: LICENSE -----
+----- BEGIN @floating-ui/dom@1.8.0: LICENSE -----
 MIT License
 
 Copyright (c) 2021-present Floating UI contributors
@@ -226,13 +225,13 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
------ END @floating-ui/dom@1.7.6: LICENSE -----
+----- END @floating-ui/dom@1.8.0: LICENSE -----
 
-### @floating-ui/react-dom@2.1.8 (MIT)
+### @floating-ui/react-dom@2.1.9 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @floating-ui/react-dom@2.1.8: LICENSE -----
+----- BEGIN @floating-ui/react-dom@2.1.9: LICENSE -----
 MIT License
 
 Copyright (c) 2021-present Floating UI contributors
@@ -253,13 +252,13 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
------ END @floating-ui/react-dom@2.1.8: LICENSE -----
+----- END @floating-ui/react-dom@2.1.9: LICENSE -----
 
-### @floating-ui/utils@0.2.11 (MIT)
+### @floating-ui/utils@0.2.12 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @floating-ui/utils@0.2.11: LICENSE -----
+----- BEGIN @floating-ui/utils@0.2.12: LICENSE -----
 MIT License
 
 Copyright (c) 2021-present Floating UI contributors
@@ -280,7 +279,7 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
------ END @floating-ui/utils@0.2.11: LICENSE -----
+----- END @floating-ui/utils@0.2.12: LICENSE -----
 
 ### @fontsource-variable/inter@5.3.0 (OFL-1.1)
 
@@ -382,11 +381,11 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ----- END @fontsource-variable/inter@5.3.0: LICENSE -----
 
-### @hookform/resolvers@5.5.7 (MIT)
+### @hookform/resolvers@5.9.2 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @hookform/resolvers@5.5.7: LICENSE -----
+----- BEGIN @hookform/resolvers@5.9.2: LICENSE -----
 MIT License
 
 Copyright (c) 2019-present Beier(Bill) Luo
@@ -408,13 +407,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @hookform/resolvers@5.5.7: LICENSE -----
+----- END @hookform/resolvers@5.9.2: LICENSE -----
 
-### @microsoft/signalr@10.0.0 (MIT)
+### @microsoft/signalr@10.0.11 (MIT)
 
 Notice source: `reviewed upstream notice (licenses/third-party/dotnet-foundation-mit.txt)`
 
------ BEGIN @microsoft/signalr@10.0.0: reviewed upstream notice (licenses/third-party/dotnet-foundation-mit.txt) -----
+----- BEGIN @microsoft/signalr@10.0.11: reviewed upstream notice (licenses/third-party/dotnet-foundation-mit.txt) -----
 The MIT License (MIT)
 
 Copyright (c) .NET Foundation and Contributors
@@ -438,41 +437,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @microsoft/signalr@10.0.0: reviewed upstream notice (licenses/third-party/dotnet-foundation-mit.txt) -----
+----- END @microsoft/signalr@10.0.11: reviewed upstream notice (licenses/third-party/dotnet-foundation-mit.txt) -----
 
-### @radix-ui/number@1.1.1 (MIT)
-
-Notice source: `reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt)`
-
------ BEGIN @radix-ui/number@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-MIT License
-
-Copyright (c) 2022 WorkOS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END @radix-ui/number@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-
-### @radix-ui/primitive@1.1.3 (MIT)
+### @radix-ui/number@1.1.3 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/primitive@1.1.3: LICENSE -----
+----- BEGIN @radix-ui/number@1.1.3: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -494,13 +465,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/primitive@1.1.3: LICENSE -----
+----- END @radix-ui/number@1.1.3: LICENSE -----
 
-### @radix-ui/react-alert-dialog@1.1.15 (MIT)
+### @radix-ui/primitive@1.2.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-alert-dialog@1.1.15: LICENSE -----
+----- BEGIN @radix-ui/primitive@1.2.0: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -522,13 +493,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-alert-dialog@1.1.15: LICENSE -----
+----- END @radix-ui/primitive@1.2.0: LICENSE -----
 
-### @radix-ui/react-arrow@1.1.7 (MIT)
+### @radix-ui/react-alert-dialog@1.2.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-arrow@1.1.7: LICENSE -----
+----- BEGIN @radix-ui/react-alert-dialog@1.2.1: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -550,13 +521,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-arrow@1.1.7: LICENSE -----
+----- END @radix-ui/react-alert-dialog@1.2.1: LICENSE -----
 
-### @radix-ui/react-checkbox@1.3.3 (MIT)
+### @radix-ui/react-arrow@1.1.17 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-checkbox@1.3.3: LICENSE -----
+----- BEGIN @radix-ui/react-arrow@1.1.17: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -578,13 +549,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-checkbox@1.3.3: LICENSE -----
+----- END @radix-ui/react-arrow@1.1.17: LICENSE -----
 
-### @radix-ui/react-collection@1.1.7 (MIT)
+### @radix-ui/react-checkbox@1.4.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-collection@1.1.7: LICENSE -----
+----- BEGIN @radix-ui/react-checkbox@1.4.1: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -606,69 +577,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-collection@1.1.7: LICENSE -----
+----- END @radix-ui/react-checkbox@1.4.1: LICENSE -----
 
-### @radix-ui/react-compose-refs@1.1.2 (MIT)
-
-Notice source: `reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt)`
-
------ BEGIN @radix-ui/react-compose-refs@1.1.2: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-MIT License
-
-Copyright (c) 2022 WorkOS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END @radix-ui/react-compose-refs@1.1.2: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-
-### @radix-ui/react-context@1.1.2 (MIT)
-
-Notice source: `reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt)`
-
------ BEGIN @radix-ui/react-context@1.1.2: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-MIT License
-
-Copyright (c) 2022 WorkOS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END @radix-ui/react-context@1.1.2: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-
-### @radix-ui/react-dialog@1.1.15 (MIT)
+### @radix-ui/react-collection@1.2.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-dialog@1.1.15: LICENSE -----
+----- BEGIN @radix-ui/react-collection@1.2.0: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -690,41 +605,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-dialog@1.1.15: LICENSE -----
+----- END @radix-ui/react-collection@1.2.0: LICENSE -----
 
-### @radix-ui/react-direction@1.1.1 (MIT)
-
-Notice source: `reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt)`
-
------ BEGIN @radix-ui/react-direction@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-MIT License
-
-Copyright (c) 2022 WorkOS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END @radix-ui/react-direction@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-
-### @radix-ui/react-dismissable-layer@1.1.11 (MIT)
+### @radix-ui/react-compose-refs@1.1.5 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-dismissable-layer@1.1.11: LICENSE -----
+----- BEGIN @radix-ui/react-compose-refs@1.1.5: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -746,13 +633,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-dismissable-layer@1.1.11: LICENSE -----
+----- END @radix-ui/react-compose-refs@1.1.5: LICENSE -----
 
-### @radix-ui/react-dropdown-menu@2.1.16 (MIT)
+### @radix-ui/react-context@1.3.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-dropdown-menu@2.1.16: LICENSE -----
+----- BEGIN @radix-ui/react-context@1.3.0: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -774,13 +661,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-dropdown-menu@2.1.16: LICENSE -----
+----- END @radix-ui/react-context@1.3.0: LICENSE -----
 
-### @radix-ui/react-focus-guards@1.1.3 (MIT)
+### @radix-ui/react-dialog@1.3.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-focus-guards@1.1.3: LICENSE -----
+----- BEGIN @radix-ui/react-dialog@1.3.1: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -802,13 +689,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-focus-guards@1.1.3: LICENSE -----
+----- END @radix-ui/react-dialog@1.3.1: LICENSE -----
 
-### @radix-ui/react-focus-scope@1.1.7 (MIT)
+### @radix-ui/react-direction@1.2.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-focus-scope@1.1.7: LICENSE -----
+----- BEGIN @radix-ui/react-direction@1.2.0: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -830,41 +717,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-focus-scope@1.1.7: LICENSE -----
+----- END @radix-ui/react-direction@1.2.0: LICENSE -----
 
-### @radix-ui/react-id@1.1.1 (MIT)
-
-Notice source: `reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt)`
-
------ BEGIN @radix-ui/react-id@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-MIT License
-
-Copyright (c) 2022 WorkOS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END @radix-ui/react-id@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-
-### @radix-ui/react-label@2.1.7 (MIT)
+### @radix-ui/react-dismissable-layer@1.2.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-label@2.1.7: LICENSE -----
+----- BEGIN @radix-ui/react-dismissable-layer@1.2.1: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -886,13 +745,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-label@2.1.7: LICENSE -----
+----- END @radix-ui/react-dismissable-layer@1.2.1: LICENSE -----
 
-### @radix-ui/react-menu@2.1.16 (MIT)
+### @radix-ui/react-dropdown-menu@2.2.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-menu@2.1.16: LICENSE -----
+----- BEGIN @radix-ui/react-dropdown-menu@2.2.1: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -914,13 +773,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-menu@2.1.16: LICENSE -----
+----- END @radix-ui/react-dropdown-menu@2.2.1: LICENSE -----
 
-### @radix-ui/react-popover@1.1.15 (MIT)
+### @radix-ui/react-focus-guards@1.2.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-popover@1.1.15: LICENSE -----
+----- BEGIN @radix-ui/react-focus-guards@1.2.0: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -942,13 +801,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-popover@1.1.15: LICENSE -----
+----- END @radix-ui/react-focus-guards@1.2.0: LICENSE -----
 
-### @radix-ui/react-popper@1.2.8 (MIT)
+### @radix-ui/react-focus-scope@1.3.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-popper@1.2.8: LICENSE -----
+----- BEGIN @radix-ui/react-focus-scope@1.3.1: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -970,13 +829,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-popper@1.2.8: LICENSE -----
+----- END @radix-ui/react-focus-scope@1.3.1: LICENSE -----
 
-### @radix-ui/react-portal@1.1.9 (MIT)
+### @radix-ui/react-id@1.1.4 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-portal@1.1.9: LICENSE -----
+----- BEGIN @radix-ui/react-id@1.1.4: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -998,13 +857,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-portal@1.1.9: LICENSE -----
+----- END @radix-ui/react-id@1.1.4: LICENSE -----
 
-### @radix-ui/react-presence@1.1.5 (MIT)
+### @radix-ui/react-label@2.1.17 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-presence@1.1.5: LICENSE -----
+----- BEGIN @radix-ui/react-label@2.1.17: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -1026,13 +885,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-presence@1.1.5: LICENSE -----
+----- END @radix-ui/react-label@2.1.17: LICENSE -----
 
-### @radix-ui/react-primitive@2.1.3 (MIT)
+### @radix-ui/react-menu@2.2.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-primitive@2.1.3: LICENSE -----
+----- BEGIN @radix-ui/react-menu@2.2.1: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -1054,13 +913,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-primitive@2.1.3: LICENSE -----
+----- END @radix-ui/react-menu@2.2.1: LICENSE -----
 
-### @radix-ui/react-roving-focus@1.1.11 (MIT)
+### @radix-ui/react-popover@1.3.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-roving-focus@1.1.11: LICENSE -----
+----- BEGIN @radix-ui/react-popover@1.3.1: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -1082,13 +941,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-roving-focus@1.1.11: LICENSE -----
+----- END @radix-ui/react-popover@1.3.1: LICENSE -----
 
-### @radix-ui/react-select@2.2.6 (MIT)
+### @radix-ui/react-popper@1.4.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-select@2.2.6: LICENSE -----
+----- BEGIN @radix-ui/react-popper@1.4.0: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -1110,13 +969,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-select@2.2.6: LICENSE -----
+----- END @radix-ui/react-popper@1.4.0: LICENSE -----
 
-### @radix-ui/react-slot@1.2.3 (MIT)
+### @radix-ui/react-portal@1.2.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-slot@1.2.3: LICENSE -----
+----- BEGIN @radix-ui/react-portal@1.2.0: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -1138,13 +997,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-slot@1.2.3: LICENSE -----
+----- END @radix-ui/react-portal@1.2.0: LICENSE -----
 
-### @radix-ui/react-switch@1.2.6 (MIT)
+### @radix-ui/react-presence@1.1.11 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-switch@1.2.6: LICENSE -----
+----- BEGIN @radix-ui/react-presence@1.1.11: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -1166,13 +1025,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-switch@1.2.6: LICENSE -----
+----- END @radix-ui/react-presence@1.1.11: LICENSE -----
 
-### @radix-ui/react-tabs@1.1.13 (MIT)
+### @radix-ui/react-primitive@2.2.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-tabs@1.1.13: LICENSE -----
+----- BEGIN @radix-ui/react-primitive@2.2.0: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -1194,13 +1053,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-tabs@1.1.13: LICENSE -----
+----- END @radix-ui/react-primitive@2.2.0: LICENSE -----
 
-### @radix-ui/react-tooltip@1.2.8 (MIT)
+### @radix-ui/react-roving-focus@1.2.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-tooltip@1.2.8: LICENSE -----
+----- BEGIN @radix-ui/react-roving-focus@1.2.1: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -1222,41 +1081,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-tooltip@1.2.8: LICENSE -----
+----- END @radix-ui/react-roving-focus@1.2.1: LICENSE -----
 
-### @radix-ui/react-use-callback-ref@1.1.1 (MIT)
-
-Notice source: `reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt)`
-
------ BEGIN @radix-ui/react-use-callback-ref@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-MIT License
-
-Copyright (c) 2022 WorkOS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END @radix-ui/react-use-callback-ref@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-
-### @radix-ui/react-use-controllable-state@1.2.2 (MIT)
+### @radix-ui/react-select@2.4.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-use-controllable-state@1.2.2: LICENSE -----
+----- BEGIN @radix-ui/react-select@2.4.1: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -1278,125 +1109,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-use-controllable-state@1.2.2: LICENSE -----
+----- END @radix-ui/react-select@2.4.1: LICENSE -----
 
-### @radix-ui/react-use-escape-keydown@1.1.1 (MIT)
-
-Notice source: `reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt)`
-
------ BEGIN @radix-ui/react-use-escape-keydown@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-MIT License
-
-Copyright (c) 2022 WorkOS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END @radix-ui/react-use-escape-keydown@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-
-### @radix-ui/react-use-layout-effect@1.1.1 (MIT)
-
-Notice source: `reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt)`
-
------ BEGIN @radix-ui/react-use-layout-effect@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-MIT License
-
-Copyright (c) 2022 WorkOS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END @radix-ui/react-use-layout-effect@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-
-### @radix-ui/react-use-previous@1.1.1 (MIT)
-
-Notice source: `reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt)`
-
------ BEGIN @radix-ui/react-use-previous@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-MIT License
-
-Copyright (c) 2022 WorkOS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END @radix-ui/react-use-previous@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-
-### @radix-ui/react-use-size@1.1.1 (MIT)
-
-Notice source: `reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt)`
-
------ BEGIN @radix-ui/react-use-size@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-MIT License
-
-Copyright (c) 2022 WorkOS
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END @radix-ui/react-use-size@1.1.1: reviewed upstream notice (licenses/third-party/radix-primitives-mit.txt) -----
-
-### @radix-ui/react-visually-hidden@1.2.3 (MIT)
+### @radix-ui/react-slot@1.5.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @radix-ui/react-visually-hidden@1.2.3: LICENSE -----
+----- BEGIN @radix-ui/react-slot@1.5.0: LICENSE -----
 MIT License
 
 Copyright (c) 2022 WorkOS
@@ -1418,7 +1137,287 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @radix-ui/react-visually-hidden@1.2.3: LICENSE -----
+----- END @radix-ui/react-slot@1.5.0: LICENSE -----
+
+### @radix-ui/react-switch@1.4.1 (MIT)
+
+Notice source: `LICENSE`
+
+----- BEGIN @radix-ui/react-switch@1.4.1: LICENSE -----
+MIT License
+
+Copyright (c) 2022 WorkOS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END @radix-ui/react-switch@1.4.1: LICENSE -----
+
+### @radix-ui/react-tabs@1.2.1 (MIT)
+
+Notice source: `LICENSE`
+
+----- BEGIN @radix-ui/react-tabs@1.2.1: LICENSE -----
+MIT License
+
+Copyright (c) 2022 WorkOS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END @radix-ui/react-tabs@1.2.1: LICENSE -----
+
+### @radix-ui/react-tooltip@1.4.1 (MIT)
+
+Notice source: `LICENSE`
+
+----- BEGIN @radix-ui/react-tooltip@1.4.1: LICENSE -----
+MIT License
+
+Copyright (c) 2022 WorkOS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END @radix-ui/react-tooltip@1.4.1: LICENSE -----
+
+### @radix-ui/react-use-callback-ref@1.1.5 (MIT)
+
+Notice source: `LICENSE`
+
+----- BEGIN @radix-ui/react-use-callback-ref@1.1.5: LICENSE -----
+MIT License
+
+Copyright (c) 2022 WorkOS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END @radix-ui/react-use-callback-ref@1.1.5: LICENSE -----
+
+### @radix-ui/react-use-controllable-state@1.3.0 (MIT)
+
+Notice source: `LICENSE`
+
+----- BEGIN @radix-ui/react-use-controllable-state@1.3.0: LICENSE -----
+MIT License
+
+Copyright (c) 2022 WorkOS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END @radix-ui/react-use-controllable-state@1.3.0: LICENSE -----
+
+### @radix-ui/react-use-effect-event@0.0.5 (MIT)
+
+Notice source: `LICENSE`
+
+----- BEGIN @radix-ui/react-use-effect-event@0.0.5: LICENSE -----
+MIT License
+
+Copyright (c) 2022 WorkOS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END @radix-ui/react-use-effect-event@0.0.5: LICENSE -----
+
+### @radix-ui/react-use-is-hydrated@0.1.3 (MIT)
+
+Notice source: `LICENSE`
+
+----- BEGIN @radix-ui/react-use-is-hydrated@0.1.3: LICENSE -----
+MIT License
+
+Copyright (c) 2022 WorkOS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END @radix-ui/react-use-is-hydrated@0.1.3: LICENSE -----
+
+### @radix-ui/react-use-layout-effect@1.1.4 (MIT)
+
+Notice source: `LICENSE`
+
+----- BEGIN @radix-ui/react-use-layout-effect@1.1.4: LICENSE -----
+MIT License
+
+Copyright (c) 2022 WorkOS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END @radix-ui/react-use-layout-effect@1.1.4: LICENSE -----
+
+### @radix-ui/react-use-size@1.1.5 (MIT)
+
+Notice source: `LICENSE`
+
+----- BEGIN @radix-ui/react-use-size@1.1.5: LICENSE -----
+MIT License
+
+Copyright (c) 2022 WorkOS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END @radix-ui/react-use-size@1.1.5: LICENSE -----
+
+### @radix-ui/react-visually-hidden@1.2.13 (MIT)
+
+Notice source: `LICENSE`
+
+----- BEGIN @radix-ui/react-visually-hidden@1.2.13: LICENSE -----
+MIT License
+
+Copyright (c) 2022 WorkOS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END @radix-ui/react-visually-hidden@1.2.13: LICENSE -----
 
 ### @reduxjs/toolkit@2.11.2 (MIT)
 
@@ -1448,11 +1447,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ----- END @reduxjs/toolkit@2.11.2: LICENSE -----
 
-### @tanstack/query-core@5.100.10 (MIT)
+### @tanstack/query-core@5.104.5 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @tanstack/query-core@5.100.10: LICENSE -----
+----- BEGIN @tanstack/query-core@5.104.5: LICENSE -----
 MIT License
 
 Copyright (c) 2021-present Tanner Linsley
@@ -1474,13 +1473,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @tanstack/query-core@5.100.10: LICENSE -----
+----- END @tanstack/query-core@5.104.5: LICENSE -----
 
-### @tanstack/react-query@5.100.10 (MIT)
+### @tanstack/react-query@5.104.5 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN @tanstack/react-query@5.100.10: LICENSE -----
+----- BEGIN @tanstack/react-query@5.104.5: LICENSE -----
 MIT License
 
 Copyright (c) 2021-present Tanner Linsley
@@ -1502,7 +1501,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END @tanstack/react-query@5.100.10: LICENSE -----
+----- END @tanstack/react-query@5.104.5: LICENSE -----
 
 ### @tanstack/react-table@8.21.3 (MIT)
 
@@ -1938,11 +1937,11 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----- END comma-separated-tokens@2.0.3: license -----
 
-### cron-parser@5.5.0 (MIT)
+### cron-parser@5.10.2 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN cron-parser@5.5.0: LICENSE -----
+----- BEGIN cron-parser@5.10.2: LICENSE -----
 The MIT License (MIT)
 
 Copyright (c) 2014-2023 Harri Siirak
@@ -1964,13 +1963,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END cron-parser@5.5.0: LICENSE -----
+----- END cron-parser@5.10.2: LICENSE -----
 
-### cronstrue@3.14.0 (MIT)
+### cronstrue@3.37.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN cronstrue@3.14.0: LICENSE -----
+----- BEGIN cronstrue@3.37.0: LICENSE -----
 The MIT License (MIT)
 
 Copyright (c) 2017 Brady Holt
@@ -1992,7 +1991,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END cronstrue@3.14.0: LICENSE -----
+----- END cronstrue@3.37.0: LICENSE -----
 
 ### d3-array@3.2.4 (ISC)
 
@@ -2508,11 +2507,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ----- END html-url-attributes@3.0.1: license -----
 
-### immer@10.2.0 (MIT)
+### immer@11.2.3 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN immer@10.2.0: LICENSE -----
+----- BEGIN immer@11.2.3: LICENSE -----
 MIT License
 
 Copyright (c) 2017 Michel Weststrate
@@ -2534,35 +2533,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END immer@10.2.0: LICENSE -----
-
-### immer@11.1.8 (MIT)
-
-Notice source: `LICENSE`
-
------ BEGIN immer@11.1.8: LICENSE -----
-MIT License
-
-Copyright (c) 2017 Michel Weststrate
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
------ END immer@11.1.8: LICENSE -----
+----- END immer@11.2.3: LICENSE -----
 
 ### inline-style-parser@0.2.7 (MIT)
 
@@ -2645,11 +2616,11 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----- END longest-streak@3.1.0: license -----
 
-### lucide-react@1.14.0 (ISC)
+### lucide-react@1.60.0 (ISC)
 
 Notice source: `LICENSE`
 
------ BEGIN lucide-react@1.14.0: LICENSE -----
+----- BEGIN lucide-react@1.60.0: LICENSE -----
 ISC License
 
 Copyright (c) 2026 Lucide Icons and Contributors
@@ -2693,7 +2664,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END lucide-react@1.14.0: LICENSE -----
+----- END lucide-react@1.60.0: LICENSE -----
 
 ### luxon@3.7.2 (MIT)
 
@@ -3840,11 +3811,11 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----- END property-information@7.2.0: license -----
 
-### react@19.2.6 (MIT)
+### react@19.3.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN react@19.2.6: LICENSE -----
+----- BEGIN react@19.3.1: LICENSE -----
 MIT License
 
 Copyright (c) Meta Platforms, Inc. and affiliates.
@@ -3866,13 +3837,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END react@19.2.6: LICENSE -----
+----- END react@19.3.1: LICENSE -----
 
-### react-dom@19.2.6 (MIT)
+### react-dom@19.3.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN react-dom@19.2.6: LICENSE -----
+----- BEGIN react-dom@19.3.1: LICENSE -----
 MIT License
 
 Copyright (c) Meta Platforms, Inc. and affiliates.
@@ -3894,13 +3865,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END react-dom@19.2.6: LICENSE -----
+----- END react-dom@19.3.1: LICENSE -----
 
-### react-hook-form@7.83.0 (MIT)
+### react-hook-form@7.90.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN react-hook-form@7.83.0: LICENSE -----
+----- BEGIN react-hook-form@7.90.0: LICENSE -----
 MIT License
 
 Copyright (c) 2019-present Beier(Bill) Luo
@@ -3922,7 +3893,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END react-hook-form@7.83.0: LICENSE -----
+----- END react-hook-form@7.90.0: LICENSE -----
 
 ### react-is@19.2.6 (MIT)
 
@@ -4064,11 +4035,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ----- END react-remove-scroll-bar@2.3.8: reviewed upstream notice (licenses/third-party/react-remove-scroll-bar-mit.txt) -----
 
-### react-router@7.15.0 (MIT)
+### react-router@7.18.4 (MIT)
 
 Notice source: `LICENSE.md`
 
------ BEGIN react-router@7.15.0: LICENSE.md -----
+----- BEGIN react-router@7.18.4: LICENSE.md -----
 MIT License
 
 Copyright (c) React Training LLC 2015-2019
@@ -4092,7 +4063,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END react-router@7.15.0: LICENSE.md -----
+----- END react-router@7.18.4: LICENSE.md -----
 
 ### react-style-singleton@2.2.3 (MIT)
 
@@ -4122,11 +4093,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ----- END react-style-singleton@2.2.3: LICENSE -----
 
-### recharts@3.8.1 (MIT)
+### recharts@3.10.1 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN recharts@3.8.1: LICENSE -----
+----- BEGIN recharts@3.10.1: LICENSE -----
 The MIT License (MIT)
 
 Copyright (c) 2015-present recharts
@@ -4148,7 +4119,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END recharts@3.8.1: LICENSE -----
+----- END recharts@3.10.1: LICENSE -----
 
 ### redux@5.0.1 (MIT)
 
@@ -4292,11 +4263,11 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----- END remark-rehype@11.1.2: license -----
 
-### reselect@5.1.1 (MIT)
+### reselect@5.2.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN reselect@5.1.1: LICENSE -----
+----- BEGIN reselect@5.2.0: LICENSE -----
 The MIT License (MIT)
 
 Copyright (c) 2015-2018 Reselect Contributors
@@ -4318,13 +4289,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END reselect@5.1.1: LICENSE -----
+----- END reselect@5.2.0: LICENSE -----
 
-### scheduler@0.27.0 (MIT)
+### scheduler@0.28.0 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN scheduler@0.27.0: LICENSE -----
+----- BEGIN scheduler@0.28.0: LICENSE -----
 MIT License
 
 Copyright (c) Meta Platforms, Inc. and affiliates.
@@ -4346,13 +4317,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END scheduler@0.27.0: LICENSE -----
+----- END scheduler@0.28.0: LICENSE -----
 
-### sonner@2.0.7 (MIT)
+### sonner@2.0.8 (MIT)
 
 Notice source: `LICENSE.md`
 
------ BEGIN sonner@2.0.7: LICENSE.md -----
+----- BEGIN sonner@2.0.8: LICENSE.md -----
 MIT License
 
 Copyright (c) 2023 Emil Kowalski
@@ -4374,7 +4345,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END sonner@2.0.7: LICENSE.md -----
+----- END sonner@2.0.8: LICENSE.md -----
 
 ### space-separated-tokens@2.0.2 (MIT)
 
@@ -4463,11 +4434,11 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----- END style-to-object@1.0.14: LICENSE -----
 
-### tailwind-merge@3.6.0 (MIT)
+### tailwind-merge@3.7.0 (MIT)
 
 Notice source: `LICENSE.md`
 
------ BEGIN tailwind-merge@3.6.0: LICENSE.md -----
+----- BEGIN tailwind-merge@3.7.0: LICENSE.md -----
 MIT License
 
 Copyright (c) 2021 Dany Castillo
@@ -4489,13 +4460,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END tailwind-merge@3.6.0: LICENSE.md -----
+----- END tailwind-merge@3.7.0: LICENSE.md -----
 
-### tailwindcss@4.3.0 (MIT)
+### tailwindcss@4.3.3 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN tailwindcss@4.3.0: LICENSE -----
+----- BEGIN tailwindcss@4.3.3: LICENSE -----
 MIT License
 
 Copyright (c) Tailwind Labs, Inc.
@@ -4517,7 +4488,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END tailwindcss@4.3.0: LICENSE -----
+----- END tailwindcss@4.3.3: LICENSE -----
 
 ### trim-lines@3.0.1 (MIT)
 
@@ -4937,11 +4908,11 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----- END vfile-message@4.0.3: license -----
 
-### zod@4.4.3 (MIT)
+### zod@4.6.7 (MIT)
 
 Notice source: `LICENSE`
 
------ BEGIN zod@4.4.3: LICENSE -----
+----- BEGIN zod@4.6.7: LICENSE -----
 MIT License
 
 Copyright (c) 2025 Colin McDonnell
@@ -4963,4 +4934,4 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
------ END zod@4.4.3: LICENSE -----
+----- END zod@4.6.7: LICENSE -----

@@ -2,6 +2,10 @@
 
 Optional job alerts for Slack, Teams Workflows, and custom JSON webhooks. Operators manage destinations, function filters, event types, and payload templates in the TickerQ dashboard. Settings are encrypted and saved in the existing operational store, scoped to the application's runtime namespace.
 
+The package is compatible with Native AOT. Release validation covers protected settings,
+redaction, payload preview, and scheduler event delivery through the integration pipeline.
+The validation never sends a real outbound webhook.
+
 ## Enable once in the host
 
 Add `TickerQ.Integrations` alongside the matching versions of TickerQ, the dashboard, and your storage provider. The core scheduler and dashboard do not depend on this package.

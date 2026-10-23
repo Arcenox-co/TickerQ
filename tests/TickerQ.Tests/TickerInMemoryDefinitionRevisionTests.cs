@@ -76,8 +76,8 @@ public sealed class TickerInMemoryDefinitionRevisionTests : IDisposable
                 [new DefinedCronTickerSeed(composedFunction, "*/13 * * * *")]),
             CancellationToken.None);
 
-        var row = Assert.Single(_crons.Values.Where(x =>
-            CronSeedIdentity.CanonicallyEquals(x.Function, composedFunction)));
+        var row = Assert.Single(_crons.Values, x =>
+            CronSeedIdentity.CanonicallyEquals(x.Function, composedFunction));
         Assert.Equal(id, row.Id);
         Assert.Equal(composedNamespace, row.SeedOwnerNamespace);
         Assert.Equal(canonicalKey, row.SeedKey);

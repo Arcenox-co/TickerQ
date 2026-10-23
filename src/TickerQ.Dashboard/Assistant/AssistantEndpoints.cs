@@ -18,6 +18,7 @@ using TickerQ.Utilities.Models;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Integrations;
+using TickerQ.Dashboard.Endpoints;
 
 namespace TickerQ.Dashboard.Assistant;
 
@@ -36,26 +37,23 @@ internal static class AssistantEndpoints
     {
         if (config.Assistant?.IsEnabled != true) return;
 
-        api.MapPost("/assistant/chat", ChatAsync<TTimeTicker, TCronTicker>)
+        api.MapPostAot("/assistant/chat", ChatAsync<TTimeTicker, TCronTicker>)
             .WithTags("TickerQ Dashboard");
 
         // Per-user chat history — active only when the operator registered an
         // IAssistantHistoryStore; otherwise these answer 404 and the SPA
         // falls back to per-browser storage.
-        // (Delegate) cast matters: a (HttpContext) → Task<IResult> method group
-        // otherwise binds to the RequestDelegate overload, which discards the
-        // IResult and returns an empty 200.
-        api.MapGet("/assistant/conversations", (Delegate)ListConversationsAsync).WithTags("TickerQ Dashboard");
-        api.MapGet("/assistant/conversations/{id:guid}", GetConversationAsync).WithTags("TickerQ Dashboard");
-        api.MapDelete("/assistant/conversations/{id:guid}", DeleteConversationAsync).WithTags("TickerQ Dashboard");
-        api.MapPatch("/assistant/proposals/{id:guid}", SetProposalStateAsync).WithTags("TickerQ Dashboard");
-        api.MapGet("/assistant/overview", (Delegate)GetOverviewAsync).WithTags("TickerQ Dashboard");
-        api.MapGet("/assistant/investigations", (Delegate)ListInvestigationsAsync).WithTags("TickerQ Dashboard");
-        api.MapGet("/assistant/investigations/{id:guid}", GetInvestigationAsync).WithTags("TickerQ Dashboard");
-        api.MapPatch("/assistant/investigations/{id:guid}/review", ReviewInvestigationAsync).WithTags("TickerQ Dashboard");
-        api.MapDelete("/assistant/investigations/{id:guid}", (Delegate)DeleteInvestigationAsync)
+        api.MapGetResultAot("/assistant/conversations", ListConversationsAsync).WithTags("TickerQ Dashboard");
+        api.MapGetResultAot("/assistant/conversations/{id:guid}", c => GetConversationAsync(c, c.RequiredRouteGuid("id"))).WithTags("TickerQ Dashboard");
+        api.MapDeleteResultAot("/assistant/conversations/{id:guid}", c => DeleteConversationAsync(c, c.RequiredRouteGuid("id"))).WithTags("TickerQ Dashboard");
+        api.MapPatchResultAot("/assistant/proposals/{id:guid}", c => SetProposalStateAsync(c, c.RequiredRouteGuid("id"))).WithTags("TickerQ Dashboard");
+        api.MapGetResultAot("/assistant/overview", GetOverviewAsync).WithTags("TickerQ Dashboard");
+        api.MapGetResultAot("/assistant/investigations", ListInvestigationsAsync).WithTags("TickerQ Dashboard");
+        api.MapGetResultAot("/assistant/investigations/{id:guid}", c => GetInvestigationAsync(c, c.RequiredRouteGuid("id"))).WithTags("TickerQ Dashboard");
+        api.MapPatchResultAot("/assistant/investigations/{id:guid}/review", c => ReviewInvestigationAsync(c, c.RequiredRouteGuid("id"))).WithTags("TickerQ Dashboard");
+        api.MapDeleteResultAot("/assistant/investigations/{id:guid}", c => DeleteInvestigationAsync(c, c.RequiredRouteGuid("id")))
             .WithTags("TickerQ Dashboard");
-        api.MapDelete("/assistant/investigations", (Delegate)DeleteInvestigationGroupAsync)
+        api.MapDeleteResultAot("/assistant/investigations", DeleteInvestigationGroupAsync)
             .WithTags("TickerQ Dashboard");
     }
 

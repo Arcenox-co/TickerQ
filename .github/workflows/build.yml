@@ -191,7 +191,7 @@ jobs:
           dotnet pack hub/sdks/dotnet/TickerQ.SDK/TickerQ.SDK.csproj --configuration Release --output ./nupkgs
           dotnet pack hub/remoteExecutor/TickerQ.RemoteExecutor/TickerQ.RemoteExecutor.csproj --configuration Release --output ./nupkgs
 
-      - name: Verify installed packages and NativeAOT core consumer
+      - name: Verify installed packages and NativeAOT consumers
         run: |
           VERSION=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:Version)
           FRAMEWORK=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:TargetFramework)

@@ -229,8 +229,8 @@ public abstract class CronChainContract<TTime, TCron>
         var cron = await Schedule(skipIfAlreadyRunning: true);
         var first = await Acquire(cron); var second = await Acquire(cron);
         var results = await Task.WhenAll(Provider.MaterializeCronChainAsync(first, false), Provider.MaterializeCronChainAsync(second, false));
-        Assert.Single(results.Where(x => x == CronChainDispatchResult.Created));
-        Assert.Single(results.Where(x => x == CronChainDispatchResult.Skipped));
+        Assert.Single(results, x => x == CronChainDispatchResult.Created);
+        Assert.Single(results, x => x == CronChainDispatchResult.Skipped);
         Assert.Single(await Provider.GetTimeTickers(x => x.ParentId == null));
     }
 

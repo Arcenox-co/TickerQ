@@ -1,13 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.SignalR;
 using TickerQ.Dashboard.Assistant;
 using TickerQ.Dashboard.Authentication;
 using TickerQ.Dashboard.Authentication.Schemes;
@@ -31,6 +34,7 @@ public class DashboardOptionsBuilder
     internal List<System.Net.IPNetwork> TrustedForwardedNetworks { get; } = [];
     internal List<string> AllowedOrigins { get; } = [];
     internal bool CustomCorsPolicyConfigured { get; set; }
+    internal Action<ISignalRServerBuilder>? SignalRConfiguration { get; private set; }
     internal bool AnonymousDashboardAcknowledged { get; set; }
     internal AssistantOptionsBuilder? Assistant { get; set; }
     internal Func<HttpContext, bool>? IntegrationManagementPredicate { get; private set; }
@@ -89,6 +93,25 @@ public class DashboardOptionsBuilder
             if (!AllowedOrigins.Contains(normalized, StringComparer.OrdinalIgnoreCase))
                 AllowedOrigins.Add(normalized);
         }
+        return this;
+    }
+
+    /// <summary>
+    /// Configure the SignalR server used by the dashboard. Use this hook to add
+    /// a scale-out provider when the application runs on more than one replica,
+    /// for example <c>AddStackExchangeRedis</c> or <c>AddAzureSignalR</c>.
+    /// </summary>
+    /// <remarks>
+    /// The corresponding SignalR provider package must be referenced by the
+    /// host application. SignalR server registration is application-wide, so
+    /// this configuration also applies to other hubs in the same host. A Redis
+    /// backplane also requires load-balancer session
+    /// affinity unless every client is forced to WebSockets with negotiation
+    /// disabled; the TickerQ dashboard keeps transport fallback enabled.
+    /// </remarks>
+    public DashboardOptionsBuilder ConfigureSignalR(Action<ISignalRServerBuilder> configure)
+    {
+        SignalRConfiguration = configure ?? throw new ArgumentNullException(nameof(configure));
         return this;
     }
 
@@ -209,8 +232,14 @@ public class DashboardOptionsBuilder
     /// server. When this is not called — or no chat client is configured —
     /// the assistant UI is never rendered and the endpoint isn't mapped.
     /// </summary>
+    [RequiresDynamicCode("The dashboard AI assistant uses runtime tool discovery and is not supported by Native AOT.")]
+    [RequiresUnreferencedCode("The dashboard AI assistant uses runtime tool discovery and is not trimming-safe.")]
     public DashboardOptionsBuilder AddAssistant(Action<AssistantOptionsBuilder> configure)
     {
+        if (!RuntimeFeature.IsDynamicCodeSupported)
+            throw new PlatformNotSupportedException(
+                "TickerQ Dashboard AI assistant requires dynamic code and cannot be enabled in a Native AOT application.");
+
         var builder = new AssistantOptionsBuilder();
         configure(builder);
         Assistant = builder;

@@ -41,13 +41,14 @@ public class IntegrationEncryptionMigrationTests
 
     private sealed class ConflictingStore(IntegrationSettingsRecord record, IntegrationSettingsRecord winner) : ITickerIntegrationSettingsStore
     {
+        private readonly Guid _expectedVersion = record.Version;
         public IntegrationSettingsRecord Record = record;
         public int Writes;
         public Task<IntegrationSettingsRecord?> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
             => Task.FromResult<IntegrationSettingsRecord?>(Record);
         public Task<bool> SaveIntegrationSettingsAsync(IntegrationSettingsRecord candidate, Guid expectedVersion, CancellationToken cancellationToken = default)
         {
-            Assert.Equal(record.Version, expectedVersion);
+            Assert.Equal(_expectedVersion, expectedVersion);
             Writes++;
             Record = winner;
             return Task.FromResult(false);

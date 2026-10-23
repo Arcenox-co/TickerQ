@@ -1,3 +1,5 @@
+#nullable enable annotations
+
 using System;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
@@ -16,9 +18,9 @@ public abstract class TickerQBaseLoggerInstrumentation
         InstanceIdentifier = instanceIdentifier;
     }
 
-    public abstract Activity StartJobActivity(string activityName, InternalFunctionContext context);
+    public abstract Activity? StartJobActivity(string activityName, InternalFunctionContext context);
 
-    public virtual void LogJobEnqueued(string jobType, string functionName, Guid jobId, string enqueuedFrom = null)
+    public virtual void LogJobEnqueued(string jobType, string functionName, Guid jobId, string? enqueuedFrom = null)
     {
         TickerQMetrics.JobsEnqueued.Add(1, TickerQMetrics.FunctionTag(functionName));
         _logger.LogInformation("TickerQ Job enqueued: {JobType} - {Function} ({JobId}) from {EnqueuedFrom}",

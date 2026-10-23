@@ -1,4 +1,6 @@
-﻿using Microsoft.Extensions.Logging;
+﻿#nullable enable annotations
+
+using Microsoft.Extensions.Logging;
 using System;
 using System.Diagnostics;
 using TickerQ.Utilities.Enums;
@@ -12,7 +14,7 @@ public class ActivitySourceInstrumentation(ILogger<ActivitySourceInstrumentation
 {
   private static readonly ActivitySource ActivitySource = new("TickerQ", "1.0.0");
 
-  public override Activity StartJobActivity(string activityName, InternalFunctionContext context)
+  public override Activity? StartJobActivity(string activityName, InternalFunctionContext context)
   {
     if (ActivitySource.StartActivity(activityName) is not { } activity)
       return null;
@@ -33,7 +35,7 @@ public class ActivitySourceInstrumentation(ILogger<ActivitySourceInstrumentation
     return activity;
   }
 
-  public override void LogJobEnqueued(string jobType, string functionName, Guid jobId, string enqueuedFrom = null)
+  public override void LogJobEnqueued(string jobType, string functionName, Guid jobId, string? enqueuedFrom = null)
   {
     // Get detailed caller information for OpenTelemetry
     var callerInfo = string.IsNullOrEmpty(enqueuedFrom) ? CallerInfoHelper.GetCallerInfo(6) : enqueuedFrom;

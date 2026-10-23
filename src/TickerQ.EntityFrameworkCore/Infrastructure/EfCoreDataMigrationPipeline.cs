@@ -429,8 +429,9 @@ public sealed class TimeTickerChainRootDataMigration<TTimeTicker> : ITickerQData
                 cancellationToken.ThrowIfCancellationRequested();
                 var batch = ids.Skip(offset).Take(batchSize).ToArray();
                 var rootId = group.Key;
-                await context.Set<TTimeTicker>().Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                                                            batch.Contains(x.Id))
+                await context.Set<TTimeTicker>()
+                    .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+                    .Where(EfPredicateBuilder.Contains<TTimeTicker, Guid>(batch, x => x.Id))
                     .ExecuteUpdateAsync(setter => setter.SetProperty(x => x.ChainRootId, rootId), cancellationToken)
                     .ConfigureAwait(false);
             }

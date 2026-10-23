@@ -126,6 +126,37 @@ dashboard.WithAuthentication(auth =>
 > explicit key you supply or an explicit ephemeral dev key. There is no hidden
 > "stable-by-magic" derivation.
 
+## SignalR notifications (multi-instance)
+
+The dashboard's realtime messages are cache-invalidation hints; the REST endpoints remain
+authoritative. A single instance works without additional configuration. In a server farm,
+each default SignalR hub knows only the clients connected to its own process, so configure
+a scale-out provider to deliver a notification from one replica to browsers connected to
+another:
+
+```csharp
+// Requires Microsoft.AspNetCore.SignalR.StackExchangeRedis in the host application.
+dashboard.ConfigureSignalR(signalR =>
+    signalR.AddStackExchangeRedis(
+        builder.Configuration.GetConnectionString("SignalRRedis")!,
+        redis => redis.Configuration.ChannelPrefix =
+            StackExchange.Redis.RedisChannel.Literal("tickerq:orders-production")));
+```
+
+- The SignalR Redis backplane is separate from TickerQ's Redis persistence/cache provider.
+- Give each application an isolated SignalR channel prefix when Redis is shared.
+- Redis scale-out requires load-balancer session affinity with the dashboard's transport
+  fallback. Azure SignalR Service manages this connection routing itself.
+- A 30-second client consistency refresh repairs a missed hint; it is a resilience fallback,
+  not a replacement for a backplane when immediate cross-replica updates matter.
+- Proxies must support WebSocket upgrades, unbuffered Server-Sent Events, and an upstream
+  timeout longer than the SignalR keep-alive window.
+
+Bearer credentials are accepted from the query string only on the exact dashboard hub route.
+Browsers need that path for both WebSockets and Server-Sent Events, whose APIs cannot attach
+the normal Authorization header. Use HTTPS and configure proxy access logs to redact the
+`access_token` query parameter.
+
 ## Token renewal: sliding, not refresh tokens
 
 Session renewal is **sliding access-token renewal**, honestly documented as such. There is

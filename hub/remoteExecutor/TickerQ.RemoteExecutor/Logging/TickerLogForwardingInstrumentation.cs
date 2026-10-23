@@ -31,7 +31,7 @@ internal sealed class TickerLogForwardingInstrumentation : ITickerQInstrumentati
         _sender = sender;
     }
 
-    public Activity StartJobActivity(string activityName, InternalFunctionContext context)
+    public Activity? StartJobActivity(string activityName, InternalFunctionContext context)
         => _inner.StartJobActivity(activityName, context);
 
     public void LogJobEnqueued(string jobType, string functionName, System.Guid jobId, string? enqueuedFrom = null)

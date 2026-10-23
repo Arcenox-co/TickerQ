@@ -98,7 +98,7 @@ public class TickerOptionsBuilderTests
     [InlineData("orders", 0)]
     [InlineData("orders", -1)]
     public void UseLegacyRuntimePartitionAdoption_RejectsMissingOwnerOrNonPositiveEpoch(
-        string owner, long epoch)
+        string? owner, long epoch)
     {
         var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
             new TickerExecutionContext(), new SchedulerOptionsBuilder());
@@ -123,7 +123,7 @@ public class TickerOptionsBuilderTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void UseApplicationNamespace_RejectsMissingNamespace(string value)
+    public void UseApplicationNamespace_RejectsMissingNamespace(string? value)
     {
         var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
             new TickerExecutionContext(), new SchedulerOptionsBuilder());
@@ -168,7 +168,7 @@ public class TickerOptionsBuilderTests
     [InlineData("ProcessOrders", null)]
     [InlineData("ProcessOrders", "")]
     [InlineData("ProcessOrders", "   ")]
-    public void MapLegacyDefinedCronOwnership_RejectsMissingIdentityParts(string function, string owner)
+    public void MapLegacyDefinedCronOwnership_RejectsMissingIdentityParts(string? function, string? owner)
     {
         var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
             new TickerExecutionContext(), new SchedulerOptionsBuilder());

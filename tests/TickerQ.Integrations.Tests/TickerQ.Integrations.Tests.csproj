@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><IsPackable>false</IsPackable></PropertyGroup>
+  <PropertyGroup><ImplicitUsings>enable</ImplicitUsings><Nullable>annotations</Nullable><IsPackable>false</IsPackable></PropertyGroup>
   <ItemGroup>
     <PackageReference Include="NSubstitute" Version="5.3.0" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

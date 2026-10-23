@@ -156,7 +156,7 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
 
     public async Task<TTimeTicker[]> GetTimeTickers(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken)
     {
-        var compiled = predicate?.Compile();
+        var compiled = predicate?.CompileAotSafe();
 
         var list = await Serializer.LoadAllFromSetAsync<TTimeTicker>(
             TimeTickerIdsKey, TimeTickerKey, cancellationToken,
@@ -542,7 +542,7 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
     public async Task<TCronTicker[]> GetCronTickers(Expression<Func<TCronTicker, bool>> predicate, CancellationToken cancellationToken)
     {
         var list = await Serializer.LoadAllFromSetAsync<TCronTicker>(
-            CronIdsKey, CronKey, cancellationToken, predicate?.Compile()).ConfigureAwait(false);
+            CronIdsKey, CronKey, cancellationToken, predicate?.CompileAotSafe()).ConfigureAwait(false);
 
         return list.OrderByDescending(x => x.CreatedAt).ToArray();
     }
@@ -726,7 +726,7 @@ internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronT
     public async Task<CronTickerOccurrenceEntity<TCronTicker>[]> GetAllCronTickerOccurrences(Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, bool>> predicate, CancellationToken cancellationToken = default)
     {
         var list = await Serializer.LoadAllFromSetAsync<CronTickerOccurrenceEntity<TCronTicker>>(
-            CronOccurrenceIdsKey, CronOccurrenceKey, cancellationToken, predicate?.Compile()).ConfigureAwait(false);
+            CronOccurrenceIdsKey, CronOccurrenceKey, cancellationToken, predicate?.CompileAotSafe()).ConfigureAwait(false);
 
         return list.OrderByDescending(x => x.ExecutionTime).ToArray();
     }

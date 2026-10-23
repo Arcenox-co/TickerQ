@@ -30,7 +30,7 @@ jobs:
           --health-retries=15
     steps:
       - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
 
@@ -49,12 +49,12 @@ jobs:
           fi
 
       - name: Setup .NET SDKs
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: ${{ steps.detect.outputs.dotnet_version }}
 
       - name: Setup Node.js 24
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "24"
 
@@ -151,7 +151,7 @@ jobs:
           dotnet pack src/TickerQ.MongoDB/TickerQ.MongoDB.csproj --configuration Release --output ./nupkgs
           dotnet pack src/TickerQ.Integrations/TickerQ.Integrations.csproj --configuration Release --output ./nupkgs
 
-      - name: Verify installed packages and NativeAOT core consumer
+      - name: Verify installed packages and NativeAOT consumers
         run: |
           VERSION=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:Version)
           FRAMEWORK=$(dotnet build src/TickerQ/TickerQ.csproj --getProperty:TargetFramework)
@@ -168,7 +168,7 @@ jobs:
 
       - name: Upload MongoDB test diagnostics and results
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: mongo-test-results
           path: TestResults/Mongo

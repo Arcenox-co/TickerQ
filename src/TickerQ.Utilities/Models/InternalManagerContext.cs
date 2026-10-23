@@ -20,5 +20,5 @@ public class InternalManagerContext(Guid id)
 public class NextCronOccurrence(Guid id, DateTime createdAt)
 {
     public Guid Id { get; set; } = id;
-    public DateTime CreatedAt { get; set; }
+    public DateTime CreatedAt { get; set; } = createdAt;
 }

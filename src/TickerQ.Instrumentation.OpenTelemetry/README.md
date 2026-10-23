@@ -10,7 +10,10 @@ OpenTelemetry instrumentation package for TickerQ job scheduler with distributed
 - **Retry Tracking**: Tracks retry attempts with detailed context
 - **Performance Metrics**: Comprehensive execution time and outcome tracking
 - **Error Tracking**: Detailed exception and cancellation tracking
-- **Caller Information**: Automatic detection of where jobs are enqueued from
+- **Enqueue Source**: Records the stable source supplied by the scheduler
+
+The package is compatible with Native AOT. It does not inspect runtime stack frames to
+reconstruct caller methods because trimmed applications cannot rely on that metadata.
 
 ## Installation
 
@@ -103,7 +106,7 @@ output below.)
 | `tickerq.job.retries` | Maximum retry attempts | `3` |
 | `tickerq.job.parent_id` | Parent job ID (child jobs only) | `parent-job-guid` |
 | `tickerq.job.run_condition` | Run condition (time-ticker children only) | `OnSuccess` |
-| `tickerq.job.enqueued_from` | Where the job was enqueued from | `UserController.CreateUser (Program.cs:42)` |
+| `tickerq.job.enqueued_from` | Stable source supplied by the scheduler | `ExecutionTaskHandler` |
 | `tickerq.job.execution_time_ms` | Execution time in milliseconds (on completion) | `1250` |
 | `tickerq.job.success` | Whether execution was successful (on completion) | `true`, `false` |
 | `tickerq.job.retry_count` | Retry count reached at failure | `2` |
