@@ -126,6 +126,15 @@ namespace TickerQ.Utilities.Interfaces
         
         #region Cron_TickerOccurrence_Core_Methods
         Task<CronTickerOccurrenceEntity<TCronTicker>> GetEarliestAvailableCronOccurrence(Guid[] ids, CancellationToken cancellationToken = default);
+        /// <summary>
+        /// Returns the latest persisted slot per requested cron definition. Used only by definitions
+        /// that opt into bounded latest-slot catch-up. Third-party providers may return an empty map,
+        /// which safely disables catch-up until they implement this capability.
+        /// </summary>
+        Task<IReadOnlyDictionary<Guid, DateTime>> GetLatestCronOccurrenceTimesAsync(
+            IReadOnlyCollection<Guid> cronTickerIds, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyDictionary<Guid, DateTime>>(new Dictionary<Guid, DateTime>());
+        bool SupportsCronCatchUp => false;
         IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueCronTickerOccurrences((DateTime Key, InternalManagerContext[] Items) cronTickerOccurrences, CancellationToken cancellationToken = default);
         IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueTimedOutCronTickerOccurrences(CancellationToken cancellationToken = default);
         Task UpdateCronTickerOccurrence(InternalFunctionContext functionContext, CancellationToken cancellationToken = default);
@@ -137,7 +146,6 @@ namespace TickerQ.Utilities.Interfaces
             CancellationToken cancellationToken = default)
             => Task.FromResult(Array.Empty<Guid>());
         Task ReleaseDeadNodeOccurrenceResources(string instanceIdentifier, CancellationToken cancellationToken = default);
-        Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default) => Task.FromResult(0);
         #endregion
 
         #region Stale_Job_Recovery

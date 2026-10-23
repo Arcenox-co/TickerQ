@@ -24,6 +24,12 @@ namespace TickerQ.Utilities.Entities
         public virtual string LockHolder { get; internal set; }
         public virtual byte[] Request { get; set; }
         public virtual DateTime? ExecutionTime { get; set; }
+        /// <summary>The caller's original instant before a schedule policy moved it forward.</summary>
+        [JsonInclude]
+        public virtual DateTime? RequestedExecutionTime { get; internal set; }
+        /// <summary>Human-readable explanation when a policy moved or skipped this ticker.</summary>
+        [JsonInclude]
+        public virtual string ScheduleAdjustmentReason { get; internal set; }
         [JsonInclude]
         public virtual DateTime? LockedAt { get; internal set; }
         [JsonInclude]

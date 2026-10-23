@@ -71,6 +71,9 @@ export const qk = {
   definitions: (kind?: SavedTickerDefinitionKind, target?: SavedTickerDefinitionTarget) =>
     ["definitions", kind ?? "all", target ?? "all"] as const,
   definition: (id: string) => ["definitions", id] as const,
+  schedulePolicies: ["schedule-policies"] as const,
+  scheduleDateProviders: ["schedule-policies", "date-providers"] as const,
+  schedulePolicyUsage: (id: string) => ["schedule-policies", id, "usage"] as const,
 };
 
 type QO<T> = Omit<UseQueryOptions<T>, "queryKey" | "queryFn">;
@@ -147,6 +150,28 @@ export function useDefinition(id: string | null) {
   return useQuery({
     queryKey: qk.definition(id ?? ""),
     queryFn: ({ signal }) => dashboardApi.getDefinition(id!, signal),
+    enabled: !!id,
+  });
+}
+
+export function useSchedulePolicies() {
+  return useQuery({
+    queryKey: qk.schedulePolicies,
+    queryFn: ({ signal }) => dashboardApi.getSchedulePolicies(signal),
+  });
+}
+
+export function useScheduleDateProviders() {
+  return useQuery({
+    queryKey: qk.scheduleDateProviders,
+    queryFn: ({ signal }) => dashboardApi.getScheduleDateProviders(signal),
+  });
+}
+
+export function useSchedulePolicyUsage(id: string | null) {
+  return useQuery({
+    queryKey: qk.schedulePolicyUsage(id ?? ""),
+    queryFn: ({ signal }) => dashboardApi.getSchedulePolicyUsage(id!, signal),
     enabled: !!id,
   });
 }

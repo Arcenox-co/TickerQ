@@ -156,6 +156,41 @@ public class TickerInMemoryPersistenceProviderTests : IAsyncLifetime
     #region QueueTimedOutCronTickerOccurrences
 
     [Fact]
+    public async Task GetLatestCronOccurrenceTimes_Returns_Maximum_Per_Requested_Cron()
+    {
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        await SetupCronTicker(firstId);
+        await SetupCronTicker(secondId);
+
+        CronTickerOccurrenceEntity<FakeCronTicker> Occurrence(Guid cronId, DateTime executionTime) => new()
+        {
+            Id = Guid.NewGuid(),
+            CronTickerId = cronId,
+            ExecutionTime = executionTime,
+            Status = TickerStatus.Idle,
+            CreatedAt = _now,
+            UpdatedAt = _now
+        };
+
+        var occurrences = new[]
+        {
+            Occurrence(firstId, _now.AddMinutes(1)),
+            Occurrence(firstId, _now.AddMinutes(3)),
+            Occurrence(secondId, _now.AddMinutes(2))
+        };
+        await _provider.InsertCronTickerOccurrences(occurrences, CancellationToken.None);
+        _createdCronOccurrenceIds.AddRange(occurrences.Select(x => x.Id));
+
+        var result = await _provider.GetLatestCronOccurrenceTimesAsync(
+            [firstId, secondId, Guid.NewGuid()], CancellationToken.None);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal(_now.AddMinutes(3), result[firstId]);
+        Assert.Equal(_now.AddMinutes(2), result[secondId]);
+    }
+
+    [Fact]
     public async Task QueueTimedOutCronTickerOccurrences_NoTimedOutOccurrences_YieldsNothing()
     {
         // Arrange: create an occurrence within the 1-second window (not timed out)

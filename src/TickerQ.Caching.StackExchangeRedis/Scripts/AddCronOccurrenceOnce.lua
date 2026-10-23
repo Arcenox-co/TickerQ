@@ -1,9 +1,10 @@
 -- Atomically reserve one logical recurring slot and publish or repair the committed owner.
 -- Redis Lua has no rollback, so all keys, arguments and JSON are validated before mutation.
--- KEYS: definition,candidate occurrence,slot,all ids,reverse ids,pending,activation metadata,selected retention index
+-- KEYS: definition,candidate occurrence,slot,all ids,reverse ids,pending,activation metadata,
+--       selected retention index,latest occurrence per cron
 -- ARGV: candidate id,json,score,expected revision,occurrence key prefix,cron id,idle,queued,first terminal,
 --       exact supported epoch,pending eligible,retention eligible,retention score
-if #KEYS ~= 8 or #ARGV ~= 13 then return redis.error_reply('invalid recurring-slot argument count') end
+if #KEYS ~= 9 or #ARGV ~= 13 then return redis.error_reply('invalid recurring-slot argument count') end
 local function type_ok(key, expected)
   local t = redis.call('TYPE', key)['ok']
   return t == 'none' or t == expected
@@ -11,7 +12,8 @@ end
 if not type_ok(KEYS[1], 'string') or not type_ok(KEYS[2], 'string') or
    not type_ok(KEYS[3], 'string') or not type_ok(KEYS[4], 'set') or
    not type_ok(KEYS[5], 'set') or not type_ok(KEYS[6], 'zset') or
-   not type_ok(KEYS[7], 'hash') or not type_ok(KEYS[8], 'zset') then
+   not type_ok(KEYS[7], 'hash') or not type_ok(KEYS[8], 'zset') or
+   not type_ok(KEYS[9], 'zset') then
   return redis.error_reply('TickerQ recurring-slot key has an incompatible Redis type')
 end
 if redis.call('EXISTS', KEYS[7]) == 0 then
@@ -80,6 +82,8 @@ if existing then
     redis.call('SADD', KEYS[4], existing)
     redis.call('SADD', KEYS[5], existing)
     if ownerStatus == idle or ownerStatus == queued then redis.call('ZADD', KEYS[6], score, existing) end
+    local previous = tonumber(redis.call('ZSCORE', KEYS[9], ARGV[6]) or '')
+    if not previous or score > previous then redis.call('ZADD', KEYS[9], score, ARGV[6]) end
     return {0, existing}
   end
   -- Missing, corrupt, wrong-parent, or terminal owners are tombstones. Release only the
@@ -93,4 +97,6 @@ redis.call('SADD', KEYS[4], occurrenceId)
 redis.call('SADD', KEYS[5], occurrenceId)
 if pendingEligible == 1 then redis.call('ZADD', KEYS[6], score, occurrenceId) end
 if retentionEligible == 1 then redis.call('ZADD', KEYS[8], retentionScore, occurrenceId) end
+local previous = tonumber(redis.call('ZSCORE', KEYS[9], ARGV[6]) or '')
+if not previous or score > previous then redis.call('ZADD', KEYS[9], score, ARGV[6]) end
 return {1, occurrenceId}

@@ -11,7 +11,10 @@ using TickerQ.Integrations.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 Console.WriteLine("[docs-demo] creating host builder");
 var builder = WebApplication.CreateSlimBuilder(args);
@@ -45,6 +48,14 @@ builder.Services.AddTickerQ(options =>
     options.UseApplicationNamespace("tickerq-docs-demo");
     options.UseReconciliationEpoch(1);
     options.EnableDetailedLogging();
+    options.AddScheduleDateProvider<DocsDemoHolidayProvider>();
+    options.UseSchedulePolicySeeder((policies, cancellationToken) => policies.UpsertAsync(
+        SchedulePolicy.Create("Orders operating calendar")
+            .WithDescription("Every day except the annual New Year closure")
+            .InTimeZone("Europe/Tirane")
+            .ExcludeAnnualDate(1, 1)
+            .ExcludeDatesFrom("Albanian public holidays")
+            .Build(), cancellationToken));
 
     options.ConfigureScheduler(scheduler =>
     {
@@ -107,7 +118,7 @@ builder.Services.AddTickerQ(options =>
     {
         dashboard.SetTitle("TickerQ · Orders API");
         dashboard.SetEnvironmentName("Development");
-        dashboard.SetTimeZone(TimeZoneInfo.FindSystemTimeZoneById("Europe/Belgrade"));
+        dashboard.SetTimeZone(TimeZoneInfo.FindSystemTimeZoneById("Europe/Tirane"));
         dashboard.WithAuthentication(auth => auth.AddCookieLogin(cookie =>
         {
             cookie.AddUser("admin", "admin");
@@ -179,6 +190,7 @@ app.MapPost("/demo/seed", async (
     var payloadChain = await timeManager.AddChainAsync(chain => chain
         .WithDescription("Order fulfilment with typed input and committed results")
         .RunAt(now.AddSeconds(2))
+        .WhenMissed(MissedExecutionPolicy.SkipAfter(TimeSpan.FromMinutes(2)))
         .StartWith("DocsDemo.Order.Prepare", payload,
             step => step.Description = "Validate and prepare the order")
         .Then("DocsDemo.Invoice.Create", new DemoInvoiceRequest("Order checkout", false),
@@ -216,6 +228,10 @@ app.MapPost("/demo/seed", async (
     var recurring = await cronManager.AddChainAsync(chain => chain
         .WithExpression("*/30 * * * * *")
         .WithDescription("Refresh order projections every 30 seconds")
+        .InTimeZone("Europe/Tirane")
+        .UsingPolicy("Orders operating calendar")
+        .WhenMissed(MissedExecutionPolicy.SkipAfter(TimeSpan.FromMinutes(2)))
+        .CatchUp(CronCatchUpMode.RunLatest)
         .SkipIfAlreadyRunning()
         .StartWith("DocsDemo.Projection.Load", step => step.Description = "Load changed orders")
         .ThenMany(branches =>
@@ -354,6 +370,18 @@ public sealed class DocsDemoJobs(ILogger<DocsDemoJobs> logger)
         await context.ReportProgressAsync(100, message, cancellationToken);
         logger.LogInformation("{Message} for {TickerId}", message, context.Id);
     }
+}
+
+public sealed class DocsDemoHolidayProvider : IScheduleDateProvider
+{
+    public string Name => "Albanian public holidays";
+
+    public bool IsExcluded(DateOnly localDate) => localDate is
+        { Month: 1, Day: 1 or 2 } or
+        { Month: 11, Day: 28 or 29 };
+
+    public string GetReason(DateOnly localDate) =>
+        $"{localDate:yyyy-MM-dd} is a public holiday in the documentation demo.";
 }
 
 public sealed record DemoOrderRequest(string OrderId, string CustomerEmail, decimal Amount, string Currency);

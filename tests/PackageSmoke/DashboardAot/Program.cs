@@ -6,6 +6,7 @@ using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
 {
@@ -21,6 +22,7 @@ builder.Services.AddTickerQ(options =>
     options.DisableBackgroundServices();
     options.UseLicense(Path.Combine(AppContext.BaseDirectory, "intentionally-missing.tqlicense"));
     options.WithJsonContext(SmokeJsonContext.Default);
+    options.AddScheduleDateProvider<SmokeHolidayProvider>();
     options.AddDashboard(dashboard => dashboard
         .AllowAnonymousDashboard()
         .SetReadOnly()
@@ -42,6 +44,15 @@ try
     Check(TickerFunctionProvider.TickerFunctions.ContainsKey(nameof(TypedInterfaceJob)),
         "Typed ITickerFunction registration was trimmed.");
 
+    var policy = await app.Services.GetRequiredService<ISchedulePolicyManager>().UpsertAsync(
+        SchedulePolicy.Create("Native business hours")
+            .InTimeZone("UTC")
+            .AllowWeekdays(DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday,
+                DayOfWeek.Thursday, DayOfWeek.Friday)
+            .AllowBetween(new TimeOnly(9, 0), new TimeOnly(17, 0))
+            .Build());
+    Check(policy.Version == 1, "Native schedule-policy persistence did not create version one.");
+
     await TickerFunctionProvider.TickerFunctions[nameof(InterfaceJob)].Delegate(
         CancellationToken.None, app.Services, new TickerFunctionContext());
     Check(app.Services.GetRequiredService<InvocationProbe>().Calls == 1,
@@ -59,6 +70,19 @@ try
     Check(response.IsSuccessStatusCode, $"Dashboard options endpoint returned {(int)response.StatusCode}: {responseBody}");
     Check(responseBody.Contains("\"maxConcurrency\"", StringComparison.Ordinal),
         "Dashboard options response did not use the generated response contract.");
+
+    using var policiesResponse = await client.GetAsync("/tickerq/dashboard/api/dashboard/schedule-policies");
+    var policiesBody = await policiesResponse.Content.ReadAsStringAsync();
+    Check(policiesResponse.IsSuccessStatusCode &&
+          policiesBody.Contains("Native business hours", StringComparison.Ordinal),
+        $"Native schedule-policy endpoint returned {(int)policiesResponse.StatusCode}: {policiesBody}");
+
+    using var providersResponse = await client.GetAsync(
+        "/tickerq/dashboard/api/dashboard/schedule-policies/date-providers");
+    var providersBody = await providersResponse.Content.ReadAsStringAsync();
+    Check(providersResponse.IsSuccessStatusCode &&
+          providersBody.Contains("Smoke holidays", StringComparison.Ordinal),
+        $"Native schedule-date-provider endpoint returned {(int)providersResponse.StatusCode}: {providersBody}");
 
     using var blockedWrite = await client.PostAsync("/tickerq/dashboard/api/dashboard/host/start", content: null);
     Check(blockedWrite.StatusCode == System.Net.HttpStatusCode.Forbidden,
@@ -95,6 +119,12 @@ public sealed class InvocationProbe
 }
 
 public sealed class SignalRConfigurationProbe { }
+
+public sealed class SmokeHolidayProvider : IScheduleDateProvider
+{
+    public string Name => "Smoke holidays";
+    public bool IsExcluded(DateOnly localDate) => localDate is { Month: 1, Day: 1 };
+}
 
 public sealed class InterfaceJob(InvocationProbe probe) : ITickerFunction
 {

@@ -49,19 +49,25 @@ internal static partial class CronScheduleCache
     }
 
     public static DateTime? GetNextOccurrenceOrDefault(string expression, DateTime dateTime)
+        => GetNextOccurrenceOrDefault(expression, dateTime, null);
+
+    public static DateTime? GetNextOccurrenceOrDefault(string expression, DateTime dateTime, string timeZoneId)
     {
         var parsed = Get(expression);
 
         if (parsed == null)
             return null;
 
-        var localTime = TimeZoneInfo.ConvertTimeFromUtc(dateTime, TimeZoneInfo);
+        var zone = string.IsNullOrWhiteSpace(timeZoneId)
+            ? TimeZoneInfo
+            : System.TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+        var localTime = System.TimeZoneInfo.ConvertTimeFromUtc(dateTime, zone);
 
         var nextOccurrence = parsed.GetNextOccurrence(localTime);
 
         try
         {
-            var utcDateTime = TimeZoneInfo.ConvertTimeToUtc(nextOccurrence, TimeZoneInfo);
+            var utcDateTime = System.TimeZoneInfo.ConvertTimeToUtc(nextOccurrence, zone);
             return utcDateTime;
         }
         catch (ArgumentException)
@@ -77,11 +83,11 @@ internal static partial class CronScheduleCache
                 candidate = candidate.AddHours(1);
                 try
                 {
-                    var utc = TimeZoneInfo.ConvertTimeToUtc(candidate, TimeZoneInfo);
+                    var utc = System.TimeZoneInfo.ConvertTimeToUtc(candidate, zone);
                     // candidate is valid — get the real next occurrence from here
-                    var local = TimeZoneInfo.ConvertTimeFromUtc(utc, TimeZoneInfo);
+                    var local = System.TimeZoneInfo.ConvertTimeFromUtc(utc, zone);
                     var retryOccurrence = parsed.GetNextOccurrence(local);
-                    return TimeZoneInfo.ConvertTimeToUtc(retryOccurrence, TimeZoneInfo);
+                    return System.TimeZoneInfo.ConvertTimeToUtc(retryOccurrence, zone);
                 }
                 catch (ArgumentException)
                 {

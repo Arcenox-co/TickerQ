@@ -51,6 +51,11 @@ import type {
   SaveTickerDefinitionRequest,
   UpdateTickerDefinitionRequest,
   SaveExistingTickerDefinitionRequest,
+  SchedulePolicy,
+  ScheduleDateProviders,
+  SaveSchedulePolicyRequest,
+  SchedulePolicyPreviewItem,
+  SchedulePolicyUsage,
 } from "./api-types";
 
 const API_BASE = "/api/dashboard";
@@ -269,6 +274,17 @@ export const dashboardApi = {
   getDefinition: (id: string, signal?: AbortSignal) =>
     get<SavedTickerDefinition>(`/definitions/${id}`, signal),
 
+  getSchedulePolicies: (signal?: AbortSignal) =>
+    get<SchedulePolicy[]>("/schedule-policies", signal),
+  getScheduleDateProviders: (signal?: AbortSignal) =>
+    get<ScheduleDateProviders>("/schedule-policies/date-providers", signal),
+  getSchedulePolicy: (id: string, signal?: AbortSignal) =>
+    get<SchedulePolicy>(`/schedule-policies/${id}`, signal),
+  previewSchedulePolicy: (id: string, body: { expression: string; fromUtc: string; count: number; timeZoneId?: string | null }, signal?: AbortSignal) =>
+    post<SchedulePolicyPreviewItem[]>(`/schedule-policies/${id}/preview`, body, signal),
+  getSchedulePolicyUsage: (id: string, signal?: AbortSignal) =>
+    get<SchedulePolicyUsage>(`/schedule-policies/${id}/usage`, signal),
+
   // Host
   getHostStatus: (signal?: AbortSignal) =>
     get<HostStatusDto>("/host/status", signal),
@@ -321,6 +337,13 @@ export const dashboardApi = {
   startHost: () => post<void>("/host/start"),
   stopHost: () => post<void>("/host/stop"),
   restartHost: () => post<void>("/host/restart"),
+
+  createSchedulePolicy: (body: SaveSchedulePolicyRequest) =>
+    post<SchedulePolicy>("/schedule-policies", body),
+  updateSchedulePolicy: (id: string, version: number, body: SaveSchedulePolicyRequest) =>
+    put<SchedulePolicy>(`/schedule-policies/${id}`, { ...body, version }),
+  deleteSchedulePolicy: (id: string, version: number) =>
+    del<void>(`/schedule-policies/${id}?version=${version}`),
 
   createDefinition: (body: SaveTickerDefinitionRequest) =>
     post<SavedTickerDefinition>("/definitions", body),

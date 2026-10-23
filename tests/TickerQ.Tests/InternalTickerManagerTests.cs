@@ -11,6 +11,7 @@ using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Managers;
 using TickerQ.Utilities.Models;
 
@@ -98,7 +99,104 @@ public class InternalTickerManagerTests
         return (tuple.Item1, tuple.Item2);
     }
 
+    private static DateTime? InvokeGetNextCronCandidate(
+        CronTickerEntity cronTicker, DateTime now, DateTime? latestPersisted = null,
+        bool supportsCatchUp = true)
+    {
+        var managerType = typeof(IInternalTickerManager).Assembly
+            .GetType("TickerQ.Utilities.Managers.InternalTickerManager`2")!
+            .MakeGenericType(typeof(FakeTimeTicker), typeof(FakeCronTicker));
+        var method = managerType.GetMethod("GetNextCronCandidate",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return (DateTime?)method!.Invoke(null,
+        [
+            cronTicker,
+            now,
+            Array.Empty<SchedulePolicy>(),
+            new SchedulePolicyEvaluator(),
+            latestPersisted,
+            supportsCatchUp,
+        ]);
+    }
+
     #endregion
+
+    [Fact]
+    public void RunLatest_Selects_Only_The_Latest_Missed_Slot_Inside_The_Window()
+    {
+        var now = new DateTime(2026, 10, 23, 12, 10, 30, DateTimeKind.Utc);
+        var cron = new CronTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "catch-up", Expression = "* * * * *",
+            TimeZoneId = "UTC", CreatedAt = now.AddHours(-1),
+            MissedExecutionAction = MissedExecutionAction.Skip,
+            MaximumLateness = TimeSpan.FromMinutes(5),
+            CatchUpMode = CronCatchUpMode.RunLatest,
+        };
+
+        var candidate = InvokeGetNextCronCandidate(cron, now);
+
+        Assert.Equal(new DateTime(2026, 10, 23, 12, 10, 0, DateTimeKind.Utc), candidate);
+    }
+
+    [Fact]
+    public void RunLatest_Does_Not_Recreate_The_Latest_Persisted_Slot()
+    {
+        var now = new DateTime(2026, 10, 23, 12, 10, 30, DateTimeKind.Utc);
+        var latest = new DateTime(2026, 10, 23, 12, 10, 0, DateTimeKind.Utc);
+        var cron = new CronTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "catch-up", Expression = "* * * * *",
+            TimeZoneId = "UTC", CreatedAt = now.AddHours(-1),
+            MissedExecutionAction = MissedExecutionAction.Skip,
+            MaximumLateness = TimeSpan.FromMinutes(5),
+            CatchUpMode = CronCatchUpMode.RunLatest,
+        };
+
+        var candidate = InvokeGetNextCronCandidate(cron, now, latest);
+
+        Assert.Equal(new DateTime(2026, 10, 23, 12, 11, 0, DateTimeKind.Utc), candidate);
+    }
+
+    [Fact]
+    public void RunLatest_Does_Not_Recreate_A_Persisted_Slot_At_The_Exact_Window_Boundary()
+    {
+        var now = new DateTime(2026, 10, 23, 12, 10, 0, DateTimeKind.Utc);
+        var latest = now.AddMinutes(-5);
+        var cron = new CronTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "catch-up", Expression = "* * * * *",
+            TimeZoneId = "UTC", CreatedAt = now.AddHours(-1),
+            MissedExecutionAction = MissedExecutionAction.Skip,
+            MaximumLateness = TimeSpan.FromMinutes(5),
+            CatchUpMode = CronCatchUpMode.RunLatest,
+        };
+
+        var candidate = InvokeGetNextCronCandidate(cron, now, latest);
+
+        Assert.Equal(now, candidate);
+    }
+
+    [Fact]
+    public void CatchUp_Default_And_Unsupported_Providers_Use_The_Next_Future_Slot()
+    {
+        var now = new DateTime(2026, 10, 23, 12, 10, 30, DateTimeKind.Utc);
+        var cron = new CronTickerEntity
+        {
+            Id = Guid.NewGuid(), Function = "catch-up", Expression = "* * * * *",
+            TimeZoneId = "UTC", CreatedAt = now.AddHours(-1),
+            MissedExecutionAction = MissedExecutionAction.Skip,
+            MaximumLateness = TimeSpan.FromMinutes(5),
+            CatchUpMode = CronCatchUpMode.RunLatest,
+        };
+
+        Assert.Equal(new DateTime(2026, 10, 23, 12, 11, 0, DateTimeKind.Utc),
+            InvokeGetNextCronCandidate(cron, now, supportsCatchUp: false));
+        cron.CatchUpMode = CronCatchUpMode.Skip;
+        Assert.Equal(new DateTime(2026, 10, 23, 12, 11, 0, DateTimeKind.Utc),
+            InvokeGetNextCronCandidate(cron, now));
+    }
 
     #region Helper: create async enumerables for NSubstitute
 

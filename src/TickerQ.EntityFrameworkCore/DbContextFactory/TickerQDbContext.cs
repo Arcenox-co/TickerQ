@@ -45,6 +45,7 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
         modelBuilder.ApplyConfiguration(new TickerQControlCommandConfigurations(schema));
         modelBuilder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
         modelBuilder.ApplyConfiguration(new TickerQDefinitionConfigurations(schema));
+        modelBuilder.ApplyConfiguration(new SchedulePolicyConfigurations(schema));
         modelBuilder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
         modelBuilder.ApplyConfiguration(new AssistantConversationConfigurations(schema));
         modelBuilder.ApplyConfiguration(new AssistantMessageConfigurations(schema));

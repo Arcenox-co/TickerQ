@@ -87,6 +87,37 @@ public sealed class RedisArrayCacheIntegrationTests(ArrayCacheRedisFixture fixtu
             _ => Task.FromResult(Rows("after-deploy")))).Function);
     }
 
+    [Fact]
+    public async Task RealRedis_SchedulePolicy_Crud_Is_Durable_And_Optimistic()
+    {
+        var policyConnection = await ConnectionMultiplexer.ConnectAsync(fixture.Container.GetConnectionString());
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddTickerQ(options =>
+        {
+            options.DisableBackgroundServices();
+            options.UseApplicationNamespace($"redis-policy-{Guid.NewGuid():N}");
+            options.AddStackExchangeRedis(redis => redis.ConnectionMultiplexer = policyConnection);
+        });
+        await using var provider = services.BuildServiceProvider();
+        var policies = provider.GetRequiredService<ISchedulePolicyManager>();
+
+        var created = await policies.CreateAsync(SchedulePolicy.Create("Business hours")
+            .AllowBetween(new TimeOnly(9, 0), new TimeOnly(17, 0))
+            .Build());
+        var stored = Assert.Single(await policies.ListAsync());
+        Assert.Equal(created.Id, stored.Id);
+
+        var replacement = stored.Copy();
+        replacement.Description = "Updated through Redis";
+        var updated = await policies.UpdateAsync(replacement, stored.Version);
+        Assert.Equal(2, updated.Version);
+        Assert.Equal(replacement.Description, (await policies.GetAsync(created.Id)).Description);
+        Assert.Null(await policies.UpdateAsync(replacement, stored.Version));
+        Assert.True(await policies.DeleteAsync(updated.Id, updated.Version));
+        Assert.Empty(await policies.ListAsync());
+    }
+
     public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options);
 
     [Fact]

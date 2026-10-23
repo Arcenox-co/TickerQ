@@ -1,3 +1,4 @@
+using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using TickerQ.Utilities.Entities;
@@ -29,6 +30,19 @@ namespace TickerQ.EntityFrameworkCore.Configurations
 
             builder.HasIndex("ApplicationNamespaceKey", "Expression")
                 .HasDatabaseName("IX_CronTickers_Expression");
+            builder.Property(e => e.TimeZoneId).HasMaxLength(128).IsRequired(false);
+            builder.Property(e => e.SchedulePolicyName).HasMaxLength(200).IsRequired(false);
+            builder.Property(e => e.MissedExecutionAction)
+                .IsRequired().HasDefaultValue(TickerQ.Utilities.Enums.MissedExecutionAction.RunOnce);
+            builder.Property(e => e.MaximumLateness)
+                .HasConversion(
+                    value => value.HasValue ? value.Value.Ticks : (long?)null,
+                    value => value.HasValue ? TimeSpan.FromTicks(value.Value) : (TimeSpan?)null)
+                .IsRequired(false);
+            builder.Property(e => e.CatchUpMode)
+                .IsRequired().HasDefaultValue(TickerQ.Utilities.Enums.CronCatchUpMode.Skip);
+            builder.HasIndex("ApplicationNamespaceKey", "SchedulePolicyName")
+                .HasDatabaseName("IX_CronTickers_SchedulePolicy");
 
             // Index for common lookups by function + expression
             builder.HasIndex("ApplicationNamespaceKey", "Function", "Expression")

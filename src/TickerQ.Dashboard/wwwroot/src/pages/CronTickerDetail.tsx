@@ -15,6 +15,7 @@ import {
 import { CronExpressionPreview } from "@/components/cron/CronExpressionPreview";
 import { EditCronTickerDialog } from "@/components/cron/EditCronTickerDialog";
 import { parseIntervalsList } from "@/lib/cron/status-config";
+import { encodeRequestPayload } from "@/lib/request-payload";
 import { canViewOccurrenceChain } from "@/lib/cron/cron-chain";
 import { isChainActive } from "@/lib/cron/chain-summary";
 import { findDuplicateTemplateName } from "@/lib/cron/saved-definitions";
@@ -393,6 +394,20 @@ function CronTickerDetail({ id }: { id: string }) {
           <span className="font-mono text-[11px] text-foreground">{cron.expression}</span>
           <CronExpressionPreview expression={cron.expression} />
         </div>
+        <span className="text-[11px] text-muted-foreground">{cron.timeZoneId || "Scheduler default time zone"}</span>
+        {cron.schedulePolicyName && (
+          <span className="rounded-md border border-border bg-surface-1 px-2 py-1 text-[11px] text-muted-foreground">
+            {cron.schedulePolicyName}{cron.schedulePolicyVersion ? ` · v${cron.schedulePolicyVersion}` : ""}
+          </span>
+        )}
+        <span className="rounded-md border border-border bg-surface-1 px-2 py-1 text-[11px] text-muted-foreground">
+          {cron.missedExecutionAction === "Skip"
+            ? `Late: skip after ${cron.maximumLatenessSeconds ?? 0}s`
+            : "Late: run once"}
+        </span>
+        <span className="rounded-md border border-border bg-surface-1 px-2 py-1 text-[11px] text-muted-foreground">
+          Downtime: {cron.catchUpMode === "RunLatest" ? "run latest" : "skip missed"}
+        </span>
         {!readOnly && <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setEditingCron(cron)}>
           <Pencil className="mr-1.5 h-3 w-3" />Edit cron
         </Button>}
@@ -538,10 +553,22 @@ function CronTickerDetail({ id }: { id: string }) {
       <EditCronTickerDialog cron={editingCron} open={editingCron !== null} onOpenChange={open => { if (!open) setEditingCron(null); }}
         onSubmit={async values => {
           await updateCronMutation.mutateAsync({ id, body: {
+            function: values.function,
             expression: values.expression, description: values.description ?? "",
             retries: values.retries ?? 0, retryIntervalsSeconds: parseIntervalsList(values.retryIntervalsSeconds ?? "") ?? [],
+            request: values.requestJson?.trim()
+              ? encodeRequestPayload(values.requestJson)
+              : "",
             isEnabled: values.isEnabled, skipIfAlreadyRunning: values.skipIfAlreadyRunning,
             onStale: values.onStale, timeoutSeconds: values.timeoutSeconds ?? 0,
+            timeZoneId: values.timeZoneId,
+            schedulePolicyName: values.schedulePolicyName || null,
+            replaceSchedulePolicy: true,
+            missedExecutionAction: values.missedExecutionAction,
+            maximumLatenessSeconds: values.missedExecutionAction === "Skip"
+              ? values.maximumLatenessSeconds ?? 0
+              : null,
+            catchUpMode: values.catchUpMode,
           } });
         }} />
       {hasChain && <SaveDefinitionDialog

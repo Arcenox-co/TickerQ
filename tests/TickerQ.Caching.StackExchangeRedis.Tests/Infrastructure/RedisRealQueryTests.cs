@@ -15,6 +15,30 @@ namespace TickerQ.Caching.StackExchangeRedis.Tests.Infrastructure;
 public sealed partial class RedisRealScriptTests
 {
     [Fact]
+    public async Task LatestCronOccurrenceTimes_UsesDurableMaxSlotIndex_AfterHistoryIndexRemoval()
+    {
+        var cron = NewCron("latest-slot");
+        await _provider.InsertCronTickers([cron], CancellationToken.None);
+        var earlier = NewOccurrence(cron.Id, BaseNow.AddMinutes(1), TickerStatus.Idle);
+        var latest = NewOccurrence(cron.Id, BaseNow.AddMinutes(3), TickerStatus.Idle);
+        Assert.Equal(2, await _provider.InsertCronTickerOccurrences([earlier, latest], CancellationToken.None));
+
+        Assert.Equal(latest.ExecutionTime.ToUniversalTime().Ticks,
+            await _db.SortedSetScoreAsync(RedisKeyBuilder.CronOccurrenceLatestByCronKey, cron.Id.ToString()));
+
+        // Retention may remove occurrence documents and reverse membership later. The durable
+        // max-slot marker must still prevent RunLatest from recreating an observed logical slot.
+        await _db.KeyDeleteAsync(RedisKeyBuilder.CronOccurrencesByCronKey(cron.Id));
+        await _db.KeyDeleteAsync([
+            RedisKeyBuilder.CronOccurrenceKey(earlier.Id),
+            RedisKeyBuilder.CronOccurrenceKey(latest.Id)
+        ]);
+
+        var result = await _provider.GetLatestCronOccurrenceTimesAsync([cron.Id], CancellationToken.None);
+        Assert.Equal(latest.ExecutionTime, result[cron.Id]);
+    }
+
+    [Fact]
     public async Task Query_ScansLargePayloadsInPages_WithAccurateCountsAndProjection()
     {
         var tickers = Enumerable.Range(0, 420).Select(i => new TimeTickerEntity

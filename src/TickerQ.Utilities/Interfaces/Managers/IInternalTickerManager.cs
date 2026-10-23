@@ -68,7 +68,6 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task UpdateSkipTimeTickersWithUnifiedContextAsync(InternalFunctionContext[] context, CancellationToken cancellationToken = default);
         Task<TimeTickerChainRepairResult> RepairTimeTickerChainsAsync(CancellationToken cancellationToken = default)
             => Task.FromResult(TimeTickerChainRepairResult.Empty);
-        Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default);
         /// <summary>Whether the configured persistence provider supports lease renewal and stale-job recovery.</summary>
         bool SupportsLeaseBasedRecovery => false;
         /// <summary>Renews leases for this node's running tickers; returns the renewed count.</summary>

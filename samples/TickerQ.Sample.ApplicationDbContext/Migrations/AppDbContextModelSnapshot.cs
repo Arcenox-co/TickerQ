@@ -413,6 +413,55 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                     b.ToTable("NodeFinalizationOutbox", "ticker");
                 });
 
+            modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.SchedulePolicyEntity", b =>
+                {
+                    b.Property<string>("ApplicationNamespaceKey")
+                        .HasMaxLength(80)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DefinitionJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NameKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("ApplicationNamespaceKey", "Id");
+
+                    b.HasIndex("ApplicationNamespaceKey", "NameKey")
+                        .IsUnique()
+                        .HasDatabaseName("UX_SchedulePolicies_Name");
+
+                    b.HasIndex("ApplicationNamespaceKey", "UpdatedAtUtc")
+                        .HasDatabaseName("IX_SchedulePolicies_Updated");
+
+                    b.ToTable("SchedulePolicies", "ticker");
+                });
+
             modelBuilder.Entity("TickerQ.EntityFrameworkCore.Entities.TickerQControlCommandEntity", b =>
                 {
                     b.Property<string>("ApplicationNamespaceKey")
@@ -713,6 +762,14 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("BlockedOccurrenceBehavior")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("CatchUpMode")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0);
+
                     b.Property<string>("Chain")
                         .HasColumnType("TEXT");
 
@@ -745,6 +802,14 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                         .HasColumnType("INTEGER")
                         .HasDefaultValue(false);
 
+                    b.Property<long?>("MaximumLateness")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("MissedExecutionAction")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0);
+
                     b.Property<int>("OnStale")
                         .HasColumnType("INTEGER");
 
@@ -770,6 +835,13 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                     b.PrimitiveCollection<string>("RetryIntervals")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("SchedulePolicyName")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("SchedulePolicyVersion")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("SeedKey")
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
@@ -791,6 +863,10 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                     b.Property<bool>("SkipIfAlreadyRunning")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("TimeZoneId")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
                     b.Property<int?>("TimeoutSeconds")
                         .HasColumnType("INTEGER");
 
@@ -801,6 +877,9 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
 
                     b.HasIndex("ApplicationNamespaceKey", "Expression")
                         .HasDatabaseName("IX_CronTickers_Expression");
+
+                    b.HasIndex("ApplicationNamespaceKey", "SchedulePolicyName")
+                        .HasDatabaseName("IX_CronTickers_SchedulePolicy");
 
                     b.HasIndex("ApplicationNamespaceKey", "SeedKey")
                         .IsUnique()
@@ -923,6 +1002,9 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                     b.Property<Guid?>("AcquisitionToken")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("BlockedOccurrenceBehavior")
+                        .HasColumnType("INTEGER");
+
                     b.Property<Guid?>("ChainGeneration")
                         .HasColumnType("TEXT");
 
@@ -973,6 +1055,14 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                     b.Property<DateTime?>("LockedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<long?>("MaximumLateness")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("MissedExecutionAction")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0);
+
                     b.Property<int>("OnStale")
                         .HasColumnType("INTEGER");
 
@@ -1002,6 +1092,9 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                     b.Property<int?>("RequestContractVersion")
                         .HasColumnType("INTEGER");
 
+                    b.Property<DateTime?>("RequestedExecutionTime")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("Retries")
                         .HasColumnType("INTEGER");
 
@@ -1012,6 +1105,17 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("RunCondition")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ScheduleAdjustmentReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SchedulePolicyName")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("SchedulePolicyVersion")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("SkippedReason")
@@ -1038,6 +1142,9 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                         .HasDatabaseName("IX_TimeTicker_ExecutionTime");
 
                     b.HasIndex("ApplicationNamespaceKey", "ParentId");
+
+                    b.HasIndex("ApplicationNamespaceKey", "SchedulePolicyName")
+                        .HasDatabaseName("IX_TimeTicker_SchedulePolicy");
 
                     b.HasIndex("ApplicationNamespaceKey", "OriginCronTickerId", "Status");
 

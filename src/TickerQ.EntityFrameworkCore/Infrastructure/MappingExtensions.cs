@@ -15,6 +15,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             => e => new CronTickerEntity
             {
                 Id = e.Id,
+                CreatedAt = e.CreatedAt,
                 Expression = e.Expression,
                 DefinitionRevision = e.DefinitionRevision,
                 Function = e.Function,
@@ -24,7 +25,14 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Retries = e.Retries,
                 TimeoutSeconds = e.TimeoutSeconds,
                 SkipIfAlreadyRunning = e.SkipIfAlreadyRunning,
-                IsEnabled = e.IsEnabled
+                IsEnabled = e.IsEnabled,
+                TimeZoneId = e.TimeZoneId,
+                SchedulePolicyName = e.SchedulePolicyName,
+                SchedulePolicyVersion = e.SchedulePolicyVersion,
+                BlockedOccurrenceBehavior = e.BlockedOccurrenceBehavior,
+                MissedExecutionAction = e.MissedExecutionAction,
+                MaximumLateness = e.MaximumLateness,
+                CatchUpMode = e.CatchUpMode
             };
 
         internal static Expression<Func<TTimeTicker, TimeTickerEntity>> ForQueueTimeTickers<TTimeTicker>()
@@ -57,6 +65,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 StaleRestartCount = e.StaleRestartCount,
                 ExecutedAt = e.ExecutedAt,
                 ElapsedTime = e.ElapsedTime,
+                MissedExecutionAction = e.MissedExecutionAction,
+                MaximumLateness = e.MaximumLateness,
                 // Filter in the projection: a filtered Include does not constrain
                 // this execution tree. Scheduled children are acquired separately.
                 Children = e.Children.Where(ch => ch.ExecutionTime == null).Select(ch => new TimeTickerEntity

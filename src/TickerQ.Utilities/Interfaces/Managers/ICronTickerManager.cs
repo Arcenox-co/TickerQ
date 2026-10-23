@@ -65,6 +65,18 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task<TickerResult<TCronTicker>> AddAsync<TFunction, TRequest>(string expression, TRequest request, CancellationToken cancellationToken = default)
             where TFunction : class, ITickerFunction<TRequest>
             => throw new NotSupportedException("This manager does not support typed cron creation.");
+
+        /// <summary>Creates a recurring ticker using a typed schedule, time zone and availability policy.</summary>
+        Task<TickerResult<TCronTicker>> AddAsync<TFunction>(CronSchedule schedule,
+            CancellationToken cancellationToken = default)
+            where TFunction : class, ITickerFunction
+            => throw new NotSupportedException("This manager does not support typed cron schedules.");
+
+        /// <summary>Creates a recurring ticker with a typed request and schedule policy.</summary>
+        Task<TickerResult<TCronTicker>> AddAsync<TFunction, TRequest>(CronSchedule schedule, TRequest request,
+            CancellationToken cancellationToken = default)
+            where TFunction : class, ITickerFunction<TRequest>
+            => throw new NotSupportedException("This manager does not support typed cron schedules.");
         
         // Batch operations
         Task<TickerResult<List<TCronTicker>>> AddBatchAsync(List<TCronTicker> entities, CancellationToken cancellationToken = default);

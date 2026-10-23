@@ -5,6 +5,46 @@ seed ownership, non-destructive retirement, pending-occurrence reconciliation, a
 
 The upgrade is additive, but it is not schema-optional. Install the required schema before starting upgraded scheduler nodes.
 
+## Schedule policy schema
+
+Schedule policies add durable calendar definitions and execution evidence. The model is always
+present so enabling the feature later does not require changing TickerQ registration, but an
+existing relational database still needs an application-owned migration before the upgraded binary
+starts.
+
+Generate the migration from the final application model and verify that it adds:
+
+- `SchedulePolicies`, keyed by `ApplicationNamespaceKey` and `Id`;
+- a unique index on `ApplicationNamespaceKey` plus the 64-character `NameKey`;
+- `SchedulePolicyName`, `SchedulePolicyVersion`, and `BlockedOccurrenceBehavior` on both
+  `TimeTickers` and `CronTickers`;
+- `RequestedExecutionTime` and `ScheduleAdjustmentReason` on `TimeTickers`;
+- `TimeZoneId` on `CronTickers`.
+- non-null `MissedExecutionAction` with default `RunOnce` and nullable `MaximumLateness` on both
+  ticker tables;
+- non-null `CatchUpMode` with default `Skip` on `CronTickers`.
+
+The policy table is namespace-scoped even when applications share one physical database. Existing
+ticker rows keep null policy fields and retain their current behavior. Do not synthesize a policy
+name for historical rows.
+
+For a fresh database, `EnsureCreated()` includes this model. `EnsureCreated()` does not alter an
+existing database. Apply the migration before any node writes policy metadata; mixed-version nodes
+do not understand the new scheduling semantics.
+
+MongoDB provisions the namespace/name unique index during normal index initialization. Redis uses
+namespace-scoped keys and needs no schema migration. Every scheduler node must still run the same
+date-provider code for policies that reference `IScheduleDateProvider` implementations.
+
+See [Schedule policies and local-time calendars](schedule-policies.md) for runtime behavior and API
+examples.
+
+`SkipStaleCronOccurrencesOnStartup(...)` and `SchedulerOptionsBuilder.StaleCronOccurrenceThreshold`
+were removed. Their process-wide startup sweep could not express different business requirements
+per schedule and overlapped normal overdue acquisition. Replace them with per-job
+`WhenMissed(MissedExecutionPolicy.SkipAfter(...))`; add `CatchUp(CronCatchUpMode.RunLatest)` only
+when the latest never-persisted cron slot should also run after downtime.
+
 ## Application namespace configuration
 
 Replace `UseDefinedCronApplicationNamespace(...)` with `UseApplicationNamespace(...)` in application

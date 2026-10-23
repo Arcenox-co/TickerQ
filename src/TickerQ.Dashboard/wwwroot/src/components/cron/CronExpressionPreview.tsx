@@ -77,17 +77,22 @@ export function CronExpressionPreview({
   return (
     <p
       className={cn(
-        "text-[11px] text-muted-foreground",
+        "text-muted-foreground",
         stacked
-          ? "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-1.5 gap-y-1 leading-4"
-          : "flex flex-wrap items-center gap-1",
+          ? "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-1.5 gap-y-1 text-[11px] leading-4"
+          : "flex min-w-0 items-center gap-1 whitespace-nowrap text-[10px]",
         className
       )}
     >
       <CalendarClock className={cn("h-3 w-3 text-primary shrink-0", stacked && "mt-0.5")} />
-      <span className="min-w-0 text-foreground/80">{result.description}</span>
-      {!stacked && <span className="text-muted-foreground/40">·</span>}
-      <span className={cn("text-muted-foreground/80", stacked && "col-start-2")}>
+      <span
+        className={cn("min-w-0 text-foreground/80", !stacked && "flex-1 truncate")}
+        title={result.description}
+      >
+        {result.description}
+      </span>
+      {!stacked && <span className="shrink-0 text-muted-foreground/40">·</span>}
+      <span className={cn("text-muted-foreground/80", stacked ? "col-start-2" : "shrink-0")}>
         {stacked ? "Next run:" : "Next:"}{" "}
         <span className="inline-block font-mono tabular-nums text-foreground/80">
           {formatAbsolute(result.next, timezone)}

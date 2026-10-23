@@ -22,6 +22,13 @@ export function cronOccurrenceChainPreview(cron: CronTickerFlatDto, occurrence: 
       progressPercent: null, progressMessage: null, progressUpdatedAt: null,
       retryIntervalsSeconds: node.retryIntervals ?? null, onStale: node.onStale,
       timeoutSeconds: node.timeoutSeconds ?? null, deleteBehavior: parentId ? "Cascade" : cron.chain!.deleteBehavior,
+      schedulePolicyName: parentId ? null : cron.schedulePolicyName,
+      schedulePolicyVersion: parentId ? null : cron.schedulePolicyVersion,
+      blockedOccurrenceBehavior: parentId ? null : cron.blockedOccurrenceBehavior,
+      missedExecutionAction: parentId ? "RunOnce" : cron.missedExecutionAction,
+      maximumLatenessSeconds: parentId ? null : cron.maximumLatenessSeconds,
+      requestedExecutionTime: null,
+      scheduleAdjustmentReason: null,
     });
     node.children?.forEach((child, index) => add(child, `${id}/step-${index}`, id));
   };

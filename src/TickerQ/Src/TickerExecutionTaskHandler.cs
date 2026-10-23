@@ -206,7 +206,67 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
             return;
         }
         EnsureLicensedForExecution();
+        if (ShouldSkipMissedExecution(context, _clock.UtcNow, out var missedReason))
+        {
+            await SkipMissedBeforeExecutionAsync(context, missedReason).ConfigureAwait(false);
+            return;
+        }
         await ExecuteTreeAsync(context, isDue, registeredSource, cancellationToken, isChild: false);
+    }
+
+    internal static bool ShouldSkipMissedExecution(
+        InternalFunctionContext context, DateTime nowUtc, out string reason)
+    {
+        reason = null;
+        if (context.MissedExecutionAction != MissedExecutionAction.Skip ||
+            context.MaximumLateness is not { } maximumLateness)
+            return false;
+
+        var lateness = nowUtc - context.ExecutionTime;
+        if (lateness <= maximumLateness)
+            return false;
+
+        reason = $"Missed execution window: scheduled for {context.ExecutionTime:O}, " +
+                 $"maximum lateness {maximumLateness}, evaluated at {nowUtc:O}.";
+        return true;
+    }
+
+    private async Task SkipMissedBeforeExecutionAsync(InternalFunctionContext context, string reason)
+    {
+        context.ChainRootId ??= context.TickerId;
+        context.ChainGeneration ??= context.AcquisitionToken;
+        var pending = new Stack<(InternalFunctionContext Context, bool Finalize)>();
+        var visited = new HashSet<Guid>();
+        pending.Push((context, false));
+        while (pending.TryPop(out var item))
+        {
+            var current = item.Context;
+            if (!item.Finalize)
+            {
+                if (!visited.Add(current.TickerId)) continue;
+                pending.Push((current, true));
+                if (current.Type != TickerType.CronTickerOccurrence)
+                    foreach (var child in current.TimeTickerChildren)
+                    {
+                        child.ParentId = current.TickerId;
+                        child.ChainRootId = context.ChainRootId;
+                        child.ChainGeneration = context.ChainGeneration;
+                        child.AcquisitionToken = context.AcquisitionToken;
+                        pending.Push((child, false));
+                    }
+                continue;
+            }
+
+            if (current.Status is not (TickerStatus.Idle or TickerStatus.Queued or TickerStatus.InProgress))
+                continue;
+            current.SetStatus(TickerStatus.Skipped)
+                .SetExecutedAt(_clock.UtcNow)
+                .SetElapsedTime(0L)
+                .SetExceptionDetails(reason)
+                .SetResultEnvelope(null);
+            await _internalTickerManager.UpdateTickerAsync(current, CancellationToken.None).ConfigureAwait(false);
+            _tickerQInstrumentation.LogJobSkipped(current.TickerId, current.FunctionName, reason);
+        }
     }
 
     private async Task CancelBeforeExecutionAsync(InternalFunctionContext context)

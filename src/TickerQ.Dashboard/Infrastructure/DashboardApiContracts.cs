@@ -16,6 +16,10 @@ internal sealed class AddTimeTickerRequest
     public int[]? RetryIntervalsSeconds { get; set; }
     public StaleAction? OnStale { get; set; }
     public int? TimeoutSeconds { get; set; }
+    public string? SchedulePolicyName { get; set; }
+    public BlockedOccurrenceBehavior? BlockedOccurrenceBehavior { get; set; }
+    public MissedExecutionAction? MissedExecutionAction { get; set; }
+    public long? MaximumLatenessSeconds { get; set; }
 }
 
 internal sealed class UpdateTimeTickerRequest
@@ -29,6 +33,11 @@ internal sealed class UpdateTimeTickerRequest
     public RunCondition? RunCondition { get; set; }
     public StaleAction? OnStale { get; set; }
     public int? TimeoutSeconds { get; set; }
+    public string? SchedulePolicyName { get; set; }
+    public bool ReplaceSchedulePolicy { get; set; }
+    public BlockedOccurrenceBehavior? BlockedOccurrenceBehavior { get; set; }
+    public MissedExecutionAction? MissedExecutionAction { get; set; }
+    public long? MaximumLatenessSeconds { get; set; }
 }
 
 internal sealed class DuplicateTimeTickerRequest
@@ -49,6 +58,11 @@ internal sealed class AddCronTickerRequest
     public bool? IsEnabled { get; set; }
     public StaleAction? OnStale { get; set; }
     public int? TimeoutSeconds { get; set; }
+    public string? TimeZoneId { get; set; }
+    public string? SchedulePolicyName { get; set; }
+    public MissedExecutionAction? MissedExecutionAction { get; set; }
+    public long? MaximumLatenessSeconds { get; set; }
+    public CronCatchUpMode? CatchUpMode { get; set; }
 }
 
 internal sealed class UpdateCronTickerRequestApi
@@ -65,6 +79,12 @@ internal sealed class UpdateCronTickerRequestApi
     public bool? IsEnabled { get; set; }
     public StaleAction? OnStale { get; set; }
     public int? TimeoutSeconds { get; set; }
+    public string? TimeZoneId { get; set; }
+    public string? SchedulePolicyName { get; set; }
+    public bool ReplaceSchedulePolicy { get; set; }
+    public MissedExecutionAction? MissedExecutionAction { get; set; }
+    public long? MaximumLatenessSeconds { get; set; }
+    public CronCatchUpMode? CatchUpMode { get; set; }
 }
 
 internal sealed class ToggleCronTickerBody
@@ -95,6 +115,48 @@ internal sealed class AddTimeTickerChainRequest
 {
     public System.DateTime ExecutionTime { get; set; }
     public TimeTickerNodeRequest? Root { get; set; }
+    public string? SchedulePolicyName { get; set; }
+    public BlockedOccurrenceBehavior? BlockedOccurrenceBehavior { get; set; }
+    public MissedExecutionAction? MissedExecutionAction { get; set; }
+    public long? MaximumLatenessSeconds { get; set; }
+}
+
+internal class SaveSchedulePolicyRequest
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public string TimeZoneId { get; set; } = "UTC";
+    public ScheduleWeekdays AllowedWeekdays { get; set; } = ScheduleWeekdays.All;
+    public List<ScheduleTimeWindow> AllowedTimeWindows { get; set; } = new();
+    public List<System.DateOnly> ExcludedDates { get; set; } = new();
+    public List<ScheduleAnnualDate> ExcludedAnnualDates { get; set; } = new();
+    public List<string> DateProviderNames { get; set; } = new();
+    public List<string> RequiredPolicyNames { get; set; } = new();
+    public List<string> ExcludedWhenPolicyAllowsNames { get; set; } = new();
+}
+
+internal sealed class UpdateSchedulePolicyRequest : SaveSchedulePolicyRequest
+{
+    public long Version { get; set; }
+}
+
+internal sealed class SchedulePolicyPreviewRequest
+{
+    public string Expression { get; set; } = string.Empty;
+    public System.DateTime FromUtc { get; set; }
+    public int Count { get; set; } = 20;
+    public string? TimeZoneId { get; set; }
+}
+
+internal sealed class SchedulePolicyUsageResponse
+{
+    public int TimeTickerCount { get; set; }
+    public int CronTickerCount { get; set; }
+}
+
+internal sealed class ScheduleDateProvidersResponse
+{
+    public string[] Names { get; set; } = System.Array.Empty<string>();
 }
 
 internal sealed class SavedDefinitionPayload
@@ -102,6 +164,12 @@ internal sealed class SavedDefinitionPayload
     public System.DateTime? ExecutionTime { get; set; }
     public string? Expression { get; set; }
     public bool? SkipIfAlreadyRunning { get; set; }
+    public string? TimeZoneId { get; set; }
+    public string? SchedulePolicyName { get; set; }
+    public BlockedOccurrenceBehavior? BlockedOccurrenceBehavior { get; set; }
+    public MissedExecutionAction? MissedExecutionAction { get; set; }
+    public long? MaximumLatenessSeconds { get; set; }
+    public CronCatchUpMode? CatchUpMode { get; set; }
     public TimeTickerNodeRequest? Root { get; set; }
 }
 

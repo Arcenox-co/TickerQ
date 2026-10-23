@@ -204,4 +204,50 @@ internal partial class TickerManager<TTimeTicker, TCronTicker>
         }
         catch (Exception exception) { return Task.FromResult(new TickerResult<TCronTicker>(exception)); }
     }
+
+    Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.AddAsync<TFunction>(CronSchedule schedule,
+        CancellationToken cancellationToken)
+    {
+        if (schedule is null) return Task.FromResult(new TickerResult<TCronTicker>(
+            new TickerValidatorException("Cron schedule must not be null.")));
+        try
+        {
+            return AddCronTickerAsync(new TCronTicker
+            {
+                Function = TickerFunctionProvider.GetFunctionName<TFunction>(),
+                Expression = schedule.Expression,
+                TimeZoneId = schedule.TimeZoneId,
+                SchedulePolicyName = schedule.SchedulePolicyName,
+                BlockedOccurrenceBehavior = BlockedOccurrenceBehavior.Skip,
+                MissedExecutionAction = schedule.MissedExecution.Action,
+                MaximumLateness = schedule.MissedExecution.MaximumLateness,
+                CatchUpMode = schedule.CatchUpMode,
+            }, cancellationToken);
+        }
+        catch (Exception exception) { return Task.FromResult(new TickerResult<TCronTicker>(exception)); }
+    }
+
+    Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.AddAsync<TFunction, TRequest>(
+        CronSchedule schedule, TRequest request, CancellationToken cancellationToken)
+    {
+        if (schedule is null) return Task.FromResult(new TickerResult<TCronTicker>(
+            new TickerValidatorException("Cron schedule must not be null.")));
+        try
+        {
+            var function = TickerFunctionProvider.GetFunctionName<TFunction>();
+            return AddCronTickerAsync(new TCronTicker
+            {
+                Function = function,
+                Expression = schedule.Expression,
+                TimeZoneId = schedule.TimeZoneId,
+                SchedulePolicyName = schedule.SchedulePolicyName,
+                BlockedOccurrenceBehavior = BlockedOccurrenceBehavior.Skip,
+                MissedExecutionAction = schedule.MissedExecution.Action,
+                MaximumLateness = schedule.MissedExecution.MaximumLateness,
+                CatchUpMode = schedule.CatchUpMode,
+                Request = TickerHelper.CreateTickerRequest(request, function),
+            }, cancellationToken);
+        }
+        catch (Exception exception) { return Task.FromResult(new TickerResult<TCronTicker>(exception)); }
+    }
 }

@@ -2,6 +2,9 @@ import type { ReactNode } from "react";
 import { FormLabel } from "@/components/ui/form";
 import { cn } from "@/lib/utils";
 
+export const COMPACT_FIELD_LABEL_CLASS =
+  "text-[10px] uppercase tracking-wider text-muted-foreground";
+
 export function FieldLabel({
   label,
   required,

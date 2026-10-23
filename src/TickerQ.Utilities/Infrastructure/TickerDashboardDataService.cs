@@ -562,6 +562,13 @@ namespace TickerQ.Utilities.Infrastructure
                 RetryIntervalsSeconds = e.RetryIntervals,
                 OnStale = e.OnStale,
                 TimeoutSeconds = e.TimeoutSeconds,
+                SchedulePolicyName = e.SchedulePolicyName,
+                SchedulePolicyVersion = e.SchedulePolicyVersion,
+                BlockedOccurrenceBehavior = e.BlockedOccurrenceBehavior,
+                RequestedExecutionTime = e.RequestedExecutionTime,
+                ScheduleAdjustmentReason = e.ScheduleAdjustmentReason,
+                MissedExecutionAction = e.MissedExecutionAction,
+                MaximumLatenessSeconds = e.MaximumLateness.HasValue ? checked((long)e.MaximumLateness.Value.TotalSeconds) : null,
             };
         }
 
@@ -597,6 +604,13 @@ namespace TickerQ.Utilities.Infrastructure
                 RetryIntervalsSeconds = c.RetryIntervals,
                 OnStale = c.OnStale,
                 TimeoutSeconds = c.TimeoutSeconds,
+                TimeZoneId = c.TimeZoneId,
+                SchedulePolicyName = c.SchedulePolicyName,
+                SchedulePolicyVersion = c.SchedulePolicyVersion,
+                BlockedOccurrenceBehavior = c.BlockedOccurrenceBehavior,
+                MissedExecutionAction = c.MissedExecutionAction,
+                MaximumLatenessSeconds = c.MaximumLateness.HasValue ? checked((long)c.MaximumLateness.Value.TotalSeconds) : null,
+                CatchUpMode = c.CatchUpMode,
             };
         }
 

@@ -10,6 +10,7 @@ import {
   Info,
   Activity,
   Server,
+  CalendarClock,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -36,6 +37,12 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     items: [
       { path: "/time-tickers", label: "Time Tickers", icon: Clock },
       { path: "/cron-tickers", label: "Cron Tickers", icon: Timer },
+    ],
+  },
+  {
+    label: "Policies",
+    items: [
+      { path: "/schedule-policies", label: "Schedule Policies", icon: CalendarClock },
     ],
   },
   {

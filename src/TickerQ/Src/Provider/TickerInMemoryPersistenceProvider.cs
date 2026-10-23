@@ -19,10 +19,11 @@ namespace TickerQ.Provider
 {
     internal partial class
         TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker> : ITickerPersistenceProvider<TTimeTicker,
-        TCronTicker>, ITickerDefinitionStore
+        TCronTicker>, ITickerDefinitionStore, ISchedulePolicyStore
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
+        public bool SupportsCronCatchUp => true;
         public bool IntegrationSettingsArePersistent => false;
         public Task<TickerQ.Utilities.Integrations.IntegrationSettingsRecord> ReadIntegrationSettingsAsync(CancellationToken cancellationToken = default)
         {
@@ -61,9 +62,11 @@ namespace TickerQ.Provider
         {
             internal readonly object IntegrationLock = new();
             internal readonly object DefinitionsLock = new();
+            internal readonly object SchedulePoliciesLock = new();
             internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationSettings;
             internal TickerQ.Utilities.Integrations.IntegrationSettingsRecord IntegrationMonitoring;
             internal readonly Dictionary<Guid, SavedTickerDefinition> Definitions = new();
+            internal readonly Dictionary<Guid, SchedulePolicy> SchedulePolicies = new();
             internal readonly ConcurrentDictionary<string, TickerQ.Utilities.Cluster.TickerQNodeRecord> Nodes = new(StringComparer.Ordinal);
             internal readonly ConcurrentDictionary<Guid, TickerQ.Utilities.Cluster.TickerQControlCommand> ControlCommands = new();
             internal readonly ConcurrentDictionary<Guid, TTimeTicker> TimeTickers = new();
@@ -2257,6 +2260,20 @@ namespace TickerQ.Provider
             }));
         }
 
+        public Task<IReadOnlyDictionary<Guid, DateTime>> GetLatestCronOccurrenceTimesAsync(
+            IReadOnlyCollection<Guid> cronTickerIds, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (cronTickerIds == null || cronTickerIds.Count == 0)
+                return Task.FromResult<IReadOnlyDictionary<Guid, DateTime>>(new Dictionary<Guid, DateTime>());
+            var ids = cronTickerIds as HashSet<Guid> ?? new HashSet<Guid>(cronTickerIds);
+            return Task.FromResult<IReadOnlyDictionary<Guid, DateTime>>(ReadGraph(() =>
+                CronOccurrences.Values
+                    .Where(x => ids.Contains(x.CronTickerId))
+                    .GroupBy(x => x.CronTickerId)
+                    .ToDictionary(group => group.Key, group => group.Max(x => x.ExecutionTime))));
+        }
+
         public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueCronTickerOccurrences((DateTime Key, InternalManagerContext[] Items) cronTickerOccurrences, [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             await AcquisitionPublicationGate.WaitAsync(cancellationToken);
@@ -2974,39 +2991,6 @@ namespace TickerQ.Provider
             }));
         }
 
-        public Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
-        {
-            if (staleThreshold <= TimeSpan.Zero)
-                return Task.FromResult(0);
-
-            var now = _clock.UtcNow;
-            var cutoff = now - staleThreshold;
-            var count = 0;
-
-            var staleOccurrences = CronOccurrences.Values
-                .Where(x => x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued)
-                .Where(x => x.ExecutionTime < cutoff)
-                .ToArray();
-
-            foreach (var occurrence in staleOccurrences)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (!CronOccurrences.TryGetValue(occurrence.Id, out var current))
-                    continue;
-
-                var updated = CloneCronOccurrence(current);
-                updated.Status = TickerStatus.Skipped;
-                updated.SkippedReason = "Missed: occurrence was pending when the application restarted";
-                updated.UpdatedAt = now;
-
-                if (TryUpdateCronOccurrence(occurrence.Id, updated, current))
-                    count++;
-            }
-
-            return Task.FromResult(count);
-        }
-
         #endregion
 
         #region Helper Methods
@@ -3272,7 +3256,14 @@ namespace TickerQ.Provider
                 OriginCronTickerId = ticker.OriginCronTickerId,
                 OnStale = ticker.OnStale,
                 StaleRestartCount = ticker.StaleRestartCount,
-                TimeoutSeconds = ticker.TimeoutSeconds
+                TimeoutSeconds = ticker.TimeoutSeconds,
+                SchedulePolicyName = ticker.SchedulePolicyName,
+                SchedulePolicyVersion = ticker.SchedulePolicyVersion,
+                BlockedOccurrenceBehavior = ticker.BlockedOccurrenceBehavior,
+                MissedExecutionAction = ticker.MissedExecutionAction,
+                MaximumLateness = ticker.MaximumLateness,
+                RequestedExecutionTime = ticker.RequestedExecutionTime,
+                ScheduleAdjustmentReason = ticker.ScheduleAdjustmentReason
             };
             cloned.ResetChildrenForSnapshot();
 

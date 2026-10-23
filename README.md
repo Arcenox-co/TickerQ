@@ -43,11 +43,18 @@
 - **Write jobs in C#.** Use typed requests and compile-time function registration. The core scheduler and dashboard support [Native AOT](docs/native-aot.md); the AI assistant remains a managed-runtime feature.
 - **Build complete workflows.** Connect jobs with conditional steps, pass results between them, and schedule a fresh chain for every recurring run.
 - **Keep execution under control.** Set retries, priorities, per-host function concurrency, and cron overlap policies. Cancel pending work or request cooperative cancellation of a running job.
+- **Respect business calendars.** Reuse named, time-zone-aware schedule policies for work hours, closure dates, holidays, cron schedules, and one-time jobs.
+- **Control late work explicitly.** Run persisted work once, skip it after a per-job grace window, or catch up only the latest eligible cron slot after downtime.
 - **Commit jobs with business data.** Stage time jobs and cron schedules in the same EF Core transaction as your application changes.
 - **Choose your storage.** Use EF Core, MongoDB, or Redis for persistence, with in-memory storage for development.
 - **Run across application instances.** Coordinate workers through a shared operational store, isolate workloads with application namespaces, and recover interrupted work.
 
 For example, a daily invoice workflow can **prepare invoices → generate PDFs → send them to customers**, with retries and execution history for each step. [Explore recurring chains →](https://tickerq.net/docs/5.x/guides/recurring-chains)
+
+Schedule policies add modern calendar rules without moving date logic into job handlers. A one-time
+job can reject, skip, or move to the next allowed instant, while cron schedules omit blocked
+occurrences in their configured time zone. Per-job missed-execution rules separately decide whether
+late persisted work or the latest missed cron slot should run. [Read the schedule policy guide →](docs/schedule-policies.md)
 
 ## A dashboard for daily operations
 

@@ -30,6 +30,13 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
         LockHolder = e.LockHolder, LockedAt = e.LockedAt, OnStale = e.OnStale,
         TimeoutSeconds = e.TimeoutSeconds, AcquisitionToken = e.AcquisitionToken,
         ChainGeneration = e.ChainGeneration,
+        SchedulePolicyName = e.SchedulePolicyName,
+        SchedulePolicyVersion = e.SchedulePolicyVersion,
+        BlockedOccurrenceBehavior = e.BlockedOccurrenceBehavior,
+        MissedExecutionAction = e.MissedExecutionAction,
+        MaximumLateness = e.MaximumLateness,
+        RequestedExecutionTime = e.RequestedExecutionTime,
+        ScheduleAdjustmentReason = e.ScheduleAdjustmentReason,
     };
 
     private static readonly Expression<Func<TCronTicker, TCronTicker>> CronMetadata = CreateCronMetadata();
@@ -43,6 +50,12 @@ public sealed partial class TickerDashboardDataService<TTimeTicker, TCronTicker>
         Chain = e.Chain, SkipIfAlreadyRunning = e.SkipIfAlreadyRunning,
         IsEnabled = e.IsEnabled, IsSystemPaused = e.IsSystemPaused,
         OnStale = e.OnStale, TimeoutSeconds = e.TimeoutSeconds,
+        TimeZoneId = e.TimeZoneId, SchedulePolicyName = e.SchedulePolicyName,
+        SchedulePolicyVersion = e.SchedulePolicyVersion,
+        BlockedOccurrenceBehavior = e.BlockedOccurrenceBehavior,
+        MissedExecutionAction = e.MissedExecutionAction,
+        MaximumLateness = e.MaximumLateness,
+        CatchUpMode = e.CatchUpMode,
     };
 
     private static readonly Expression<Func<CronTickerOccurrenceEntity<TCronTicker>, CronTickerOccurrenceEntity<TCronTicker>>>

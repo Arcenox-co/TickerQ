@@ -195,6 +195,13 @@ namespace TickerQ.DependencyInjection
             // Register in-memory persistence as fallback — only used when no external provider
             // (EF Core, Redis, SDK) has been configured via ExternalProviderConfigServiceAction above.
             services.TryAddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicker>>();
+            services.TryAddSingleton<ISchedulePolicyStore>(sp =>
+            {
+                var provider = sp.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+                return provider as ISchedulePolicyStore ?? new UnsupportedSchedulePolicyStore(provider.GetType().Name);
+            });
+            services.TryAddSingleton<SchedulePolicyEvaluator>();
+            services.TryAddSingleton<ISchedulePolicyManager, SchedulePolicyManager>();
             services.TryAddSingleton<Utilities.Integrations.ITickerIntegrationSettingsStore>(sp =>
                 sp.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>());
 

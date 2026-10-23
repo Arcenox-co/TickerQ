@@ -407,6 +407,9 @@ public sealed class TimeTickerChainBuilder<TTimeTicker>
     private string _description;
     private DateTime? _executionTime;
     private ChainDeleteBehavior _deleteBehavior = ChainDeleteBehavior.Cascade;
+    private string _schedulePolicyName;
+    private BlockedOccurrenceBehavior _blockedBehavior = BlockedOccurrenceBehavior.Reject;
+    private MissedExecutionPolicy _missedExecution = MissedExecutionPolicy.RunOnce();
 
     internal TimeTickerChainBuilder(Func<TTimeTicker> entityFactory)
         => _entityFactory = entityFactory ?? throw new ArgumentNullException(nameof(entityFactory));
@@ -420,6 +423,24 @@ public sealed class TimeTickerChainBuilder<TTimeTicker>
     public TimeTickerChainBuilder<TTimeTicker> RunAt(DateTime executionTime)
     {
         _executionTime = executionTime;
+        return this;
+    }
+
+    public TimeTickerChainBuilder<TTimeTicker> UsingPolicy(string policyName)
+    {
+        _schedulePolicyName = string.IsNullOrWhiteSpace(policyName) ? null : policyName.Trim();
+        return this;
+    }
+
+    public TimeTickerChainBuilder<TTimeTicker> WhenBlocked(BlockedOccurrenceBehavior behavior)
+    {
+        _blockedBehavior = behavior;
+        return this;
+    }
+
+    public TimeTickerChainBuilder<TTimeTicker> WhenMissed(MissedExecutionPolicy policy)
+    {
+        _missedExecution = policy ?? throw new ArgumentNullException(nameof(policy));
         return this;
     }
 
@@ -523,6 +544,13 @@ public sealed class TimeTickerChainBuilder<TTimeTicker>
         entity.RunCondition = isRoot ? null : definition.RunCondition;
         entity.ParentId = parent?.Id;
         entity.DeleteBehavior = isRoot ? _deleteBehavior : ChainDeleteBehavior.Cascade;
+        if (isRoot)
+        {
+            entity.SchedulePolicyName = _schedulePolicyName;
+            entity.BlockedOccurrenceBehavior = _blockedBehavior;
+            entity.MissedExecutionAction = _missedExecution.Action;
+            entity.MaximumLateness = _missedExecution.MaximumLateness;
+        }
 
         return entity;
     }
@@ -539,6 +567,10 @@ public sealed class CronTickerChainBuilder<TCronTicker>
     private bool _skipIfAlreadyRunning;
     private bool _isEnabled = true;
     private ChainDeleteBehavior _deleteBehavior = ChainDeleteBehavior.Restrict;
+    private string _timeZoneId;
+    private string _schedulePolicyName;
+    private MissedExecutionPolicy _missedExecution = MissedExecutionPolicy.RunOnce();
+    private CronCatchUpMode _catchUpMode = CronCatchUpMode.Skip;
 
     internal CronTickerChainBuilder(Func<TCronTicker> entityFactory)
         => _entityFactory = entityFactory ?? throw new ArgumentNullException(nameof(entityFactory));
@@ -552,6 +584,31 @@ public sealed class CronTickerChainBuilder<TCronTicker>
     public CronTickerChainBuilder<TCronTicker> WithDescription(string description)
     {
         _description = string.IsNullOrWhiteSpace(description) ? null : description.Trim();
+        return this;
+    }
+
+    public CronTickerChainBuilder<TCronTicker> InTimeZone(string timeZoneId)
+    {
+        _timeZoneId = string.IsNullOrWhiteSpace(timeZoneId) ? null : timeZoneId.Trim();
+        return this;
+    }
+
+    public CronTickerChainBuilder<TCronTicker> UsingPolicy(string policyName)
+    {
+        _schedulePolicyName = string.IsNullOrWhiteSpace(policyName) ? null : policyName.Trim();
+        return this;
+    }
+
+    public CronTickerChainBuilder<TCronTicker> WhenMissed(MissedExecutionPolicy policy)
+    {
+        _missedExecution = policy ?? throw new ArgumentNullException(nameof(policy));
+        return this;
+    }
+
+    public CronTickerChainBuilder<TCronTicker> CatchUp(CronCatchUpMode mode)
+    {
+        if (!Enum.IsDefined(typeof(CronCatchUpMode), mode)) throw new ArgumentOutOfRangeException(nameof(mode));
+        _catchUpMode = mode;
         return this;
     }
 
@@ -639,6 +696,12 @@ public sealed class CronTickerChainBuilder<TCronTicker>
         entity.Id = Guid.NewGuid();
         entity.Function = rootFunction;
         entity.Expression = _expression;
+        entity.TimeZoneId = _timeZoneId;
+        entity.SchedulePolicyName = _schedulePolicyName;
+        entity.BlockedOccurrenceBehavior = BlockedOccurrenceBehavior.Skip;
+        entity.MissedExecutionAction = _missedExecution.Action;
+        entity.MaximumLateness = _missedExecution.MaximumLateness;
+        entity.CatchUpMode = _catchUpMode;
         entity.Description = _description ?? _root.Description;
         entity.Request = _root.CreateRequest(rootFunction);
         entity.Retries = _root.Retries;

@@ -33,6 +33,8 @@ namespace TickerQ.Utilities.Managers
         private readonly ITickerQActivationGate _activationGate;
         private readonly ILogger<TickerManager<TTimeTicker, TCronTicker>> _logger;
         private readonly TickerLifecycleLogger _lifecycle;
+        private readonly ISchedulePolicyStore _schedulePolicyStore;
+        private readonly SchedulePolicyEvaluator _schedulePolicyEvaluator;
         private readonly bool _runtimeSchedulerEnabled;
         private readonly string _runtimeActivationScopeKey;
         private readonly long _runtimeActivationEpoch;
@@ -47,7 +49,9 @@ namespace TickerQ.Utilities.Managers
             SchedulerOptionsBuilder schedulerOptions,
             ITickerQActivationGate activationGate,
             ILogger<TickerManager<TTimeTicker, TCronTicker>> logger = null,
-            TickerLifecycleLogger lifecycle = null
+            TickerLifecycleLogger lifecycle = null,
+            ISchedulePolicyStore schedulePolicyStore = null,
+            SchedulePolicyEvaluator schedulePolicyEvaluator = null
             )
         {
             _persistenceProvider = persistenceProvider;
@@ -62,6 +66,8 @@ namespace TickerQ.Utilities.Managers
             _activationGate = activationGate ?? throw new ArgumentNullException(nameof(activationGate));
             _logger = logger ?? NullLogger<TickerManager<TTimeTicker, TCronTicker>>.Instance;
             _lifecycle = lifecycle;
+            _schedulePolicyStore = schedulePolicyStore;
+            _schedulePolicyEvaluator = schedulePolicyEvaluator ?? new SchedulePolicyEvaluator();
         }
 
         Task<TickerResult<TCronTicker>> ICronTickerManager<TCronTicker>.AddAsync(TCronTicker entity, CancellationToken cancellationToken)
@@ -235,6 +241,40 @@ namespace TickerQ.Utilities.Managers
             return AddTimeTickerAsync(entity, cancellationToken);
         }
 
+        Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddAsync<TFunction>(TimeSchedule schedule,
+            CancellationToken cancellationToken)
+        {
+            if (schedule is null) return Task.FromResult(new TickerResult<TTimeTicker>(
+                new TickerValidatorException("Time schedule must not be null.")));
+            return AddTimeTickerAsync(new TTimeTicker
+            {
+                Function = TickerFunctionProvider.GetFunctionName<TFunction>(),
+                ExecutionTime = schedule.ExecutionTime.UtcDateTime,
+                SchedulePolicyName = schedule.SchedulePolicyName,
+                BlockedOccurrenceBehavior = schedule.BlockedBehavior,
+                MissedExecutionAction = schedule.MissedExecution.Action,
+                MaximumLateness = schedule.MissedExecution.MaximumLateness,
+            }, cancellationToken);
+        }
+
+        Task<TickerResult<TTimeTicker>> ITimeTickerManager<TTimeTicker>.AddAsync<TFunction, TRequest>(
+            TimeSchedule schedule, TRequest request, CancellationToken cancellationToken)
+        {
+            if (schedule is null) return Task.FromResult(new TickerResult<TTimeTicker>(
+                new TickerValidatorException("Time schedule must not be null.")));
+            var function = TickerFunctionProvider.GetFunctionName<TFunction>();
+            return AddTimeTickerAsync(new TTimeTicker
+            {
+                Function = function,
+                ExecutionTime = schedule.ExecutionTime.UtcDateTime,
+                SchedulePolicyName = schedule.SchedulePolicyName,
+                BlockedOccurrenceBehavior = schedule.BlockedBehavior,
+                MissedExecutionAction = schedule.MissedExecution.Action,
+                MaximumLateness = schedule.MissedExecution.MaximumLateness,
+                Request = TickerHelper.CreateTickerRequest(request, function),
+            }, cancellationToken);
+        }
+
         Task<TickerResult<List<TCronTicker>>> ICronTickerManager<TCronTicker>.AddBatchAsync(List<TCronTicker> entities, CancellationToken cancellationToken)
             => AddCronTickersBatchAsync(entities, cancellationToken);
 
@@ -259,6 +299,9 @@ namespace TickerQ.Utilities.Managers
             entity.ExecutionTime = entity.ExecutionTime == null
                 ? _clock.UtcNow
                 : ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
+
+            if (await ApplyTimeSchedulePolicyAsync(entity, cancellationToken).ConfigureAwait(false) is { } policyError)
+                return new TickerResult<TTimeTicker>(policyError);
 
             entity.CreatedAt = _clock.UtcNow;
             entity.UpdatedAt = _clock.UtcNow;
@@ -288,7 +331,7 @@ namespace TickerQ.Utilities.Managers
                     await NotifyAsync(() => _notificationHubSender.AddTimeTickerNotifyAsync(entity.Id)).ConfigureAwait(false);
 
                     // Only try to dispatch immediately if dispatcher is enabled (background services running)
-                    if (_dispatcher.IsEnabled && executionTime <= now.AddSeconds(1))
+                    if (_dispatcher.IsEnabled && entity.Status == TickerStatus.Idle && executionTime <= now.AddSeconds(1))
                     {
                         // Acquire and mark InProgress in one provider call
                         var acquired = await _persistenceProvider
@@ -305,7 +348,7 @@ namespace TickerQ.Utilities.Managers
                             await _dispatcher.DispatchAsync(contexts, CancellationToken.None).ConfigureAwait(false);
                         }
                     }
-                    else
+                    else if (entity.Status == TickerStatus.Idle)
                     {
                         _tickerQHostScheduler.RestartIfNeeded(executionTime);
                     }
@@ -331,12 +374,15 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TCronTicker>(
                     new TickerValidatorException($"Cannot find TickerFunction with name {entity?.Function}"));
 
-            if (ValidateAndStampCron(entity, _persistenceProvider.SupportsCronChains) is { } requestError)
+            if (ValidateAndStampCron(entity, _persistenceProvider.SupportsCronChains,
+                    _persistenceProvider.SupportsCronCatchUp) is { } requestError)
                 return new TickerResult<TCronTicker>(requestError);
 
-            if (CronScheduleCache.GetNextOccurrenceOrDefault(entity.Expression, _clock.UtcNow) is not { } nextOccurrence)
+            var nextOccurrence = await GetNextAllowedCronOccurrenceAsync(entity, _clock.UtcNow, cancellationToken)
+                .ConfigureAwait(false);
+            if (nextOccurrence is null)
                 return new TickerResult<TCronTicker>(
-                    new TickerValidatorException($"Cannot parse expression {entity.Expression}"));
+                    new TickerValidatorException($"Cron schedule '{entity.Expression}' has no allowed future occurrence or is invalid."));
 
 
             entity.CreatedAt = _clock.UtcNow;
@@ -351,7 +397,7 @@ namespace TickerQ.Utilities.Managers
                 return await CompleteMutationAsync(new TickerResult<TCronTicker>(entity, affected), async () =>
                 {
                     await NotifyAsync(() => _notificationHubSender.AddCronTickerNotifyAsync(entity.Id)).ConfigureAwait(false);
-                    _tickerQHostScheduler.RestartIfNeeded(nextOccurrence);
+                    _tickerQHostScheduler.RestartIfNeeded(nextOccurrence.Value);
                 }).ConfigureAwait(false);
             }
             catch (Exception e)
@@ -377,6 +423,8 @@ namespace TickerQ.Utilities.Managers
 
             timeTicker.UpdatedAt = _clock.UtcNow;
             timeTicker.ExecutionTime = ConvertToUtcIfNeeded(timeTicker.ExecutionTime.Value);
+            if (await ApplyTimeSchedulePolicyForUpdateAsync(timeTicker, cancellationToken).ConfigureAwait(false) is { } policyError)
+                return new TickerResult<TTimeTicker>(policyError);
 
             try
             {
@@ -410,13 +458,16 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<TCronTicker>(
                     new TickerValidatorException($"Cannot find TickerFunction with name {cronTicker.Function}"));
 
-            if (ValidateAndStampCron(cronTicker, _persistenceProvider.SupportsCronChains) is { } requestError)
+            if (ValidateAndStampCron(cronTicker, _persistenceProvider.SupportsCronChains,
+                    _persistenceProvider.SupportsCronCatchUp) is { } requestError)
                 return new TickerResult<TCronTicker>(requestError);
 
 
-            if (CronScheduleCache.GetNextOccurrenceOrDefault(cronTicker.Expression, _clock.UtcNow) is not { } nextOccurrence)
+            var nextOccurrence = await GetNextAllowedCronOccurrenceAsync(cronTicker, _clock.UtcNow, cancellationToken)
+                .ConfigureAwait(false);
+            if (nextOccurrence is null)
                 return new TickerResult<TCronTicker>(
-                    new TickerValidatorException($"Cannot parse expression {cronTicker.Expression}"));
+                    new TickerValidatorException($"Cron schedule '{cronTicker.Expression}' has no allowed future occurrence or is invalid."));
 
             try
             {
@@ -431,14 +482,14 @@ namespace TickerQ.Utilities.Managers
                     if (_executionContext.Functions.FirstOrDefault(x => x.ParentId == cronTicker.Id) is { } internalFunction)
                     {
                         internalFunction.ResetUpdateProps()
-                            .SetExecutionTime(nextOccurrence);
+                            .SetExecutionTime(nextOccurrence.Value);
 
                         await _persistenceProvider.UpdateCronTickerOccurrence(internalFunction, cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
                         _tickerQHostScheduler.Restart();
                     }
 
-                    _tickerQHostScheduler.RestartIfNeeded(nextOccurrence);
+                    _tickerQHostScheduler.RestartIfNeeded(nextOccurrence.Value);
                 }).ConfigureAwait(false);
             }
             catch (Exception e)
@@ -524,6 +575,8 @@ namespace TickerQ.Utilities.Managers
             newRoot.ExecutionTime = newRoot.ExecutionTime == null
                 ? _clock.UtcNow
                 : ConvertToUtcIfNeeded(newRoot.ExecutionTime.Value);
+            if (await ApplyTimeSchedulePolicyAsync(newRoot, cancellationToken).ConfigureAwait(false) is { } policyError)
+                return new TickerResult<TTimeTicker>(policyError);
             newRoot.CreatedAt = _clock.UtcNow;
             newRoot.UpdatedAt = _clock.UtcNow;
 
@@ -547,7 +600,7 @@ namespace TickerQ.Utilities.Managers
 
                     if (_executionContext.Functions.Any(x => x.TickerId == oldRootId))
                         _tickerQHostScheduler.Restart();
-                    else
+                    else if (newRoot.Status == TickerStatus.Idle)
                         _tickerQHostScheduler.RestartIfNeeded(newRoot.ExecutionTime!.Value);
                 }).ConfigureAwait(false);
             }
@@ -569,6 +622,145 @@ namespace TickerQ.Utilities.Managers
             };
         }
 
+        private async Task<TickerValidatorException> ApplyTimeSchedulePolicyAsync(
+            TTimeTicker root, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(root.SchedulePolicyName))
+            {
+                root.SchedulePolicyName = null;
+                root.SchedulePolicyVersion = null;
+                root.BlockedOccurrenceBehavior = null;
+                root.RequestedExecutionTime = null;
+                root.ScheduleAdjustmentReason = null;
+                return FindChildPolicy(root);
+            }
+
+            if (_schedulePolicyStore == null)
+                return new TickerValidatorException("The configured persistence provider does not support schedule policies.");
+            if (FindChildPolicy(root) is { } childError) return childError;
+
+            var policies = await _schedulePolicyStore.ListSchedulePoliciesAsync(cancellationToken).ConfigureAwait(false);
+            var policy = policies.FirstOrDefault(x => SchedulePolicyNames.Normalize(x.Name) ==
+                                                       SchedulePolicyNames.Normalize(root.SchedulePolicyName));
+            if (policy == null)
+                return new TickerValidatorException($"Schedule policy '{root.SchedulePolicyName}' does not exist.");
+
+            root.SchedulePolicyName = policy.Name;
+            root.SchedulePolicyVersion = policy.Version;
+            var requested = root.ExecutionTime ?? _clock.UtcNow;
+            root.RequestedExecutionTime = requested;
+            var decision = _schedulePolicyEvaluator.Evaluate(policy.Name, requested, policies);
+            if (decision.IsAllowed)
+            {
+                root.ScheduleAdjustmentReason = null;
+                return null;
+            }
+
+            var behavior = root.BlockedOccurrenceBehavior ?? BlockedOccurrenceBehavior.Reject;
+            root.BlockedOccurrenceBehavior = behavior;
+            switch (behavior)
+            {
+                case BlockedOccurrenceBehavior.Reject:
+                    return new TickerValidatorException(
+                        $"Schedule policy '{policy.Name}' blocked {requested:O}: {decision.Reason}");
+                case BlockedOccurrenceBehavior.Skip:
+                    MarkTreeSkipped(root, $"Schedule policy '{policy.Name}': {decision.Reason}", _clock.UtcNow);
+                    root.ScheduleAdjustmentReason = decision.Reason;
+                    return null;
+                case BlockedOccurrenceBehavior.MoveForward:
+                    var moved = _schedulePolicyEvaluator.FindNextAllowed(policy.Name, requested, policies);
+                    if (!moved.NextAllowedAtUtc.HasValue)
+                        return new TickerValidatorException(moved.Reason);
+                    root.ExecutionTime = moved.NextAllowedAtUtc.Value;
+                    root.ScheduleAdjustmentReason = decision.Reason;
+                    return null;
+                default:
+                    return new TickerValidatorException("Unknown blocked-occurrence behavior.");
+            }
+        }
+
+        private async Task<TickerValidatorException> ApplyTimeSchedulePolicyForUpdateAsync(
+            TTimeTicker root, CancellationToken cancellationToken)
+        {
+            if (!root.ParentId.HasValue && root.Id != Guid.Empty)
+            {
+                var current = await _persistenceProvider.GetTimeTickerById(root.Id, cancellationToken)
+                    .ConfigureAwait(false);
+                if (current != null && current.ExecutionTime == root.ExecutionTime &&
+                    SchedulePolicyNames.Normalize(current.SchedulePolicyName) ==
+                    SchedulePolicyNames.Normalize(root.SchedulePolicyName) &&
+                    current.BlockedOccurrenceBehavior == root.BlockedOccurrenceBehavior)
+                {
+                    root.SchedulePolicyName = current.SchedulePolicyName;
+                    root.SchedulePolicyVersion = current.SchedulePolicyVersion;
+                    root.RequestedExecutionTime = current.RequestedExecutionTime;
+                    root.ScheduleAdjustmentReason = current.ScheduleAdjustmentReason;
+                    return FindChildPolicy(root);
+                }
+            }
+
+            return await ApplyTimeSchedulePolicyAsync(root, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static void MarkTreeSkipped(TTimeTicker root, string reason, DateTime now)
+        {
+            var pending = new Stack<TTimeTicker>();
+            pending.Push(root);
+            while (pending.TryPop(out var ticker))
+            {
+                ticker.Status = TickerStatus.Skipped;
+                ticker.ExecutedAt = now;
+                ticker.SkippedReason = reason;
+                foreach (var child in ticker.GetChildrenForRead()) pending.Push(child);
+            }
+        }
+
+        private static TickerValidatorException FindChildPolicy(TTimeTicker root)
+        {
+            var pending = new Stack<TTimeTicker>(root.GetChildrenForRead().Reverse());
+            while (pending.TryPop(out var child))
+            {
+                if (!string.IsNullOrWhiteSpace(child.SchedulePolicyName))
+                    return new TickerValidatorException(
+                        "Schedule policies apply to a chain root. Child steps continue after the chain is admitted.");
+                foreach (var nested in child.GetChildrenForRead()) pending.Push(nested);
+            }
+            return null;
+        }
+
+        private async Task<DateTime?> GetNextAllowedCronOccurrenceAsync(
+            TCronTicker cron, DateTime afterUtc, CancellationToken cancellationToken)
+        {
+            if (!string.IsNullOrWhiteSpace(cron.TimeZoneId))
+            {
+                try { _ = SchedulePolicyEvaluator.ResolveTimeZone(cron.TimeZoneId); }
+                catch (Exception exception) when (exception is TimeZoneNotFoundException or InvalidTimeZoneException)
+                { throw new TickerValidatorException($"Unknown or invalid cron time zone '{cron.TimeZoneId}'."); }
+            }
+
+            if (string.IsNullOrWhiteSpace(cron.SchedulePolicyName))
+            {
+                cron.SchedulePolicyName = null;
+                cron.SchedulePolicyVersion = null;
+                cron.BlockedOccurrenceBehavior = null;
+                return CronScheduleCache.GetNextOccurrenceOrDefault(cron.Expression, afterUtc, cron.TimeZoneId);
+            }
+            if ((cron.BlockedOccurrenceBehavior ?? BlockedOccurrenceBehavior.Skip) != BlockedOccurrenceBehavior.Skip)
+                throw new TickerValidatorException("Cron schedule policies support Skip behavior. MoveForward and Reject are for one-time jobs.");
+            if (_schedulePolicyStore == null)
+                throw new TickerValidatorException("The configured persistence provider does not support schedule policies.");
+            var policies = await _schedulePolicyStore.ListSchedulePoliciesAsync(cancellationToken).ConfigureAwait(false);
+            var policy = policies.FirstOrDefault(x => SchedulePolicyNames.Normalize(x.Name) ==
+                                                       SchedulePolicyNames.Normalize(cron.SchedulePolicyName));
+            if (policy == null)
+                throw new TickerValidatorException($"Schedule policy '{cron.SchedulePolicyName}' does not exist.");
+            cron.SchedulePolicyName = policy.Name;
+            cron.SchedulePolicyVersion = policy.Version;
+            cron.BlockedOccurrenceBehavior = BlockedOccurrenceBehavior.Skip;
+            return _schedulePolicyEvaluator.GetNextAllowedCronOccurrence(
+                cron.Expression, afterUtc, cron.TimeZoneId, policy.Name, policies);
+        }
+
         private Task WaitForMutationAdmissionAsync(CancellationToken cancellationToken)
             => _runtimeSchedulerEnabled &&
                !StartupSeederAdmissionContext.Matches(
@@ -576,8 +768,19 @@ namespace TickerQ.Utilities.Managers
                 ? _activationGate.WaitForActivationAsync(cancellationToken)
                 : Task.CompletedTask;
 
-        internal static TickerValidatorException ValidateAndStampCron(TCronTicker cron, bool supportsCronChains)
+        internal static TickerValidatorException ValidateAndStampCron(
+            TCronTicker cron, bool supportsCronChains, bool supportsCronCatchUp)
         {
+            if (ValidateMissedExecution(cron) is { } missedError) return missedError;
+            if (!Enum.IsDefined(typeof(CronCatchUpMode), cron.CatchUpMode))
+                return new TickerValidatorException("Unknown cron catch-up mode.");
+            if (cron.CatchUpMode == CronCatchUpMode.RunLatest &&
+                (cron.MissedExecutionAction != MissedExecutionAction.Skip || !cron.MaximumLateness.HasValue))
+                return new TickerValidatorException(
+                    "RunLatest cron catch-up requires WhenMissed(MissedExecutionPolicy.SkipAfter(...)) so catch-up has a bounded window.");
+            if (cron.CatchUpMode == CronCatchUpMode.RunLatest && !supportsCronCatchUp)
+                return new TickerValidatorException(
+                    "The configured persistence provider does not support RunLatest cron catch-up.");
             if (ValidateAndStampRequest(cron, cron.Request) is { } error) return error;
             if (cron.Chain == null) return null;
             if (!supportsCronChains)
@@ -602,6 +805,17 @@ namespace TickerQ.Utilities.Managers
             {
                 return new TickerValidatorException(ex.Message);
             }
+        }
+
+        private static TickerValidatorException ValidateMissedExecution(BaseTickerEntity ticker)
+        {
+            if (!Enum.IsDefined(typeof(MissedExecutionAction), ticker.MissedExecutionAction))
+                return new TickerValidatorException("Unknown missed-execution action.");
+            if (ticker.MaximumLateness is { } maximum && maximum < TimeSpan.Zero)
+                return new TickerValidatorException("Maximum lateness cannot be negative.");
+            if (ticker.MissedExecutionAction == MissedExecutionAction.Skip && !ticker.MaximumLateness.HasValue)
+                return new TickerValidatorException("Skip missed executions requires a maximum lateness.");
+            return null;
         }
 
         internal static TickerValidatorException ValidateAndStampRequest(BaseTickerEntity entity, byte[] request)
@@ -657,6 +871,11 @@ namespace TickerQ.Utilities.Managers
                     return new TickerValidatorException("Ticker Children must not be null. Use an empty collection for standalone jobs.");
                 if (!Enum.IsDefined(typeof(ChainDeleteBehavior), current.DeleteBehavior))
                     return new TickerValidatorException("Unknown chain deletion behavior.");
+                if (ValidateMissedExecution(current) is { } missedError)
+                    return missedError;
+                if (activePath.Count > 0 &&
+                    (current.MissedExecutionAction != MissedExecutionAction.RunOnce || current.MaximumLateness.HasValue))
+                    return new TickerValidatorException("Set the missed-execution policy on the chain root only.");
                 if ((activePath.Count > 0 || current.ParentId.HasValue) && current.DeleteBehavior != ChainDeleteBehavior.Cascade)
                     return new TickerValidatorException("Set deletion behavior on the chain root only.");
                 if (TickerChainInfrastructure.IsParallelGroup(current.Function))
@@ -756,6 +975,7 @@ namespace TickerQ.Utilities.Managers
                 return new TickerResult<List<TTimeTicker>>(requestError);
 
             var immediateTickers = new List<Guid>();
+            var errors = new List<Exception>();
             var now = _clock.UtcNow;
             DateTime earliestForNonImmediate = default;
             foreach (var entity in entities)
@@ -766,15 +986,25 @@ namespace TickerQ.Utilities.Managers
                 entity.ExecutionTime ??= now;
                 entity.ExecutionTime = ConvertToUtcIfNeeded(entity.ExecutionTime.Value);
 
+                if (await ApplyTimeSchedulePolicyAsync(entity, cancellationToken).ConfigureAwait(false) is { } policyError)
+                {
+                    errors.Add(policyError);
+                    continue;
+                }
+
                 // Align with single AddTimeTickerAsync: initialize timestamps
                 entity.CreatedAt = now;
                 entity.UpdatedAt = now;
 
-                if (entity.ExecutionTime.Value <= now.AddSeconds(1))
+                if (entity.Status == TickerStatus.Idle && entity.ExecutionTime.Value <= now.AddSeconds(1))
                     immediateTickers.Add(entity.Id);
-                else if (earliestForNonImmediate == default || entity.ExecutionTime <= earliestForNonImmediate)
+                else if (entity.Status == TickerStatus.Idle &&
+                         (earliestForNonImmediate == default || entity.ExecutionTime <= earliestForNonImmediate))
                     earliestForNonImmediate = entity.ExecutionTime.Value;
             }
+
+            if (errors.Count != 0)
+                return new TickerResult<List<TTimeTicker>>(errors[0]);
 
             try
             {
@@ -843,15 +1073,28 @@ namespace TickerQ.Utilities.Managers
                     continue;
                 }
 
-                if (ValidateAndStampCron(entity, _persistenceProvider.SupportsCronChains) is { } requestError)
+                if (ValidateAndStampCron(entity, _persistenceProvider.SupportsCronChains,
+                        _persistenceProvider.SupportsCronCatchUp) is { } requestError)
                 {
                     errors.Add(requestError);
                     continue;
                 }
 
-                if (CronScheduleCache.GetNextOccurrenceOrDefault(entity.Expression, _clock.UtcNow) is not { } nextOccurrence)
+                DateTime? nextOccurrence;
+                try
                 {
-                    errors.Add(new TickerValidatorException($"Cannot parse expression {entity.Expression}"));
+                    nextOccurrence = await GetNextAllowedCronOccurrenceAsync(entity, _clock.UtcNow, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (TickerValidatorException exception)
+                {
+                    errors.Add(exception);
+                    continue;
+                }
+                if (nextOccurrence is null)
+                {
+                    errors.Add(new TickerValidatorException(
+                        $"Cron schedule '{entity.Expression}' has no allowed future occurrence or is invalid."));
                     continue;
                 }
 
@@ -859,7 +1102,7 @@ namespace TickerQ.Utilities.Managers
                 entity.UpdatedAt = _clock.UtcNow;
 
                 validEntities.Add(entity);
-                nextOccurrences.Add(nextOccurrence);
+                nextOccurrences.Add(nextOccurrence.Value);
             }
 
             if (errors.Any())
@@ -918,6 +1161,12 @@ namespace TickerQ.Utilities.Managers
                 timeTicker.UpdatedAt = _clock.UtcNow;
                 timeTicker.ExecutionTime = ConvertToUtcIfNeeded(timeTicker.ExecutionTime.Value);
 
+                if (await ApplyTimeSchedulePolicyForUpdateAsync(timeTicker, cancellationToken).ConfigureAwait(false) is { } policyError)
+                {
+                    errors.Add(policyError);
+                    continue;
+                }
+
                 if (_executionContext.Functions.Any(x => x.TickerId == timeTicker.Id))
                     needsRestart = true;
 
@@ -938,9 +1187,10 @@ namespace TickerQ.Utilities.Managers
                 {
                     if (needsRestart)
                         _tickerQHostScheduler.Restart();
-                    else if (validTickers.Any())
+                    else if (validTickers.Any(x => x.Status == TickerStatus.Idle))
                     {
-                        var earliestExecution = validTickers.Min(t => t.ExecutionTime);
+                        var earliestExecution = validTickers.Where(x => x.Status == TickerStatus.Idle)
+                            .Min(t => t.ExecutionTime);
                         _tickerQHostScheduler.RestartIfNeeded(earliestExecution);
                     }
                 }).ConfigureAwait(false);
@@ -977,15 +1227,28 @@ namespace TickerQ.Utilities.Managers
                     continue;
                 }
 
-                if (ValidateAndStampCron(cronTicker, _persistenceProvider.SupportsCronChains) is { } requestError)
+                if (ValidateAndStampCron(cronTicker, _persistenceProvider.SupportsCronChains,
+                        _persistenceProvider.SupportsCronCatchUp) is { } requestError)
                 {
                     errors.Add(requestError);
                     continue;
                 }
 
-                if (CronScheduleCache.GetNextOccurrenceOrDefault(cronTicker.Expression, _clock.UtcNow) is not { } nextOccurrence)
+                DateTime? nextOccurrence;
+                try
                 {
-                    errors.Add(new TickerValidatorException($"Cannot parse expression {cronTicker.Expression}"));
+                    nextOccurrence = await GetNextAllowedCronOccurrenceAsync(cronTicker, _clock.UtcNow, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (TickerValidatorException exception)
+                {
+                    errors.Add(exception);
+                    continue;
+                }
+                if (nextOccurrence is null)
+                {
+                    errors.Add(new TickerValidatorException(
+                        $"Cron schedule '{cronTicker.Expression}' has no allowed future occurrence or is invalid."));
                     continue;
                 }
 
@@ -993,12 +1256,12 @@ namespace TickerQ.Utilities.Managers
 
                 if (_executionContext.Functions.FirstOrDefault(x => x.ParentId == cronTicker.Id) is { } internalFunction)
                 {
-                    internalFunctionsToUpdate.Add((internalFunction, nextOccurrence));
+                    internalFunctionsToUpdate.Add((internalFunction, nextOccurrence.Value));
                     needsRestart = true;
                 }
 
                 validTickers.Add(cronTicker);
-                nextOccurrences.Add(nextOccurrence);
+                nextOccurrences.Add(nextOccurrence.Value);
             }
 
             if (errors.Any())

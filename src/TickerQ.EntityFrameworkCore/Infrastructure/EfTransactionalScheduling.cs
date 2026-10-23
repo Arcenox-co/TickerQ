@@ -16,6 +16,7 @@ using TickerQ.Utilities;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
 using TickerQ.Utilities.Exceptions;
+using TickerQ.Utilities.Infrastructure;
 using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Managers;
@@ -47,7 +48,7 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
         internal readonly DbContextId Lease = lease;
         internal readonly List<TTimeTicker> Roots = new();
         internal readonly Dictionary<TTimeTicker, NodeStamp[]> Graphs = new(ReferenceEqualityComparer.Instance);
-        internal readonly Dictionary<TCronTicker, Guid> Crons = new(ReferenceEqualityComparer.Instance);
+        internal readonly Dictionary<TCronTicker, CronStamp> Crons = new(ReferenceEqualityComparer.Instance);
         internal TTimeTicker[] SavingRoots = [];
         internal TCronTicker[] SavingCrons = [];
         internal bool Saving;
@@ -56,7 +57,14 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
         internal DbTransaction PreparedTransaction;
     }
 
-    private sealed record NodeStamp(TTimeTicker Entity, Guid Id, Guid? ParentId);
+    private sealed record NodeStamp(TTimeTicker Entity, Guid Id, Guid? ParentId,
+        string SchedulePolicyName, long? SchedulePolicyVersion,
+        BlockedOccurrenceBehavior? BlockedOccurrenceBehavior,
+        MissedExecutionAction MissedExecutionAction, TimeSpan? MaximumLateness);
+    private sealed record CronStamp(Guid Id, string SchedulePolicyName, long? SchedulePolicyVersion,
+        BlockedOccurrenceBehavior? BlockedOccurrenceBehavior, string TimeZoneId,
+        MissedExecutionAction MissedExecutionAction, TimeSpan? MaximumLateness,
+        CronCatchUpMode CatchUpMode);
 
     private State GetState(DbContext context)
     {
@@ -79,11 +87,15 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
         if (TickerManager<TTimeTicker, TCronTicker>.ValidateAndStampTimeTickerGraph([entity]) is { } error)
             throw error;
         NormalizeGraph(entity, null, entity.Id == Guid.Empty ? Guid.NewGuid() : entity.Id, clock.UtcNow);
+        await ApplyStagedTimePolicyAsync(entity, ct).ConfigureAwait(false);
         try
         {
             await context.Set<TTimeTicker>().AddAsync(entity, ct).ConfigureAwait(false);
             state.Roots.Add(entity);
-            state.Graphs.Add(entity, nodes.Select(node => new NodeStamp(node, node.Id, node.ParentId)).ToArray());
+            state.Graphs.Add(entity, nodes.Select(node => new NodeStamp(
+                node, node.Id, node.ParentId, node.SchedulePolicyName,
+                node.SchedulePolicyVersion, node.BlockedOccurrenceBehavior,
+                node.MissedExecutionAction, node.MaximumLateness)).ToArray());
             return entity;
         }
         catch
@@ -108,10 +120,13 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
         entity.ApplicationNamespaceKey = options.RuntimePartition.StorageKey;
         entity.CreatedAt = entity.UpdatedAt = clock.UtcNow;
         entity.DefinitionRevision = 1;
+        await ApplyStagedCronPolicyAsync(entity, ct).ConfigureAwait(false);
         try
         {
             await context.Set<TCronTicker>().AddAsync(entity, ct).ConfigureAwait(false);
-            state.Crons.Add(entity, entity.Id);
+            state.Crons.Add(entity, new CronStamp(entity.Id, entity.SchedulePolicyName,
+                entity.SchedulePolicyVersion, entity.BlockedOccurrenceBehavior, entity.TimeZoneId,
+                entity.MissedExecutionAction, entity.MaximumLateness, entity.CatchUpMode));
             return entity;
         }
         catch
@@ -129,11 +144,122 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
             entity.SeedLastSeenAt != null || entity.RetirementRequestedAt != null ||
             entity.RetiredAt != null || entity.SeedWasEnabledBeforeRetirement != null)
             throw new InvalidOperationException("StageAsync accepts new user-owned cron schedules, not code-owned or retired seeds.");
-        if (TickerManager<TTimeTicker, TCronTicker>.ValidateAndStampCron(entity, supportsCronChains: true) is { } error)
+        if (TickerManager<TTimeTicker, TCronTicker>.ValidateAndStampCron(
+                entity, supportsCronChains: true, supportsCronCatchUp: true) is { } error)
             throw error;
+        if (!string.IsNullOrWhiteSpace(entity.TimeZoneId))
+        {
+            try { _ = SchedulePolicyEvaluator.ResolveTimeZone(entity.TimeZoneId); }
+            catch (Exception exception) when (exception is TimeZoneNotFoundException or InvalidTimeZoneException)
+            { throw new TickerValidatorException($"Unknown or invalid cron time zone '{entity.TimeZoneId}'."); }
+        }
         if (string.IsNullOrWhiteSpace(entity.Expression) ||
-            CronScheduleCache.GetNextOccurrenceOrDefault(entity.Expression, clock.UtcNow) == null)
+            CronScheduleCache.GetNextOccurrenceOrDefault(entity.Expression, clock.UtcNow, entity.TimeZoneId) == null)
             throw new TickerValidatorException($"Cannot parse expression {entity.Expression}");
+    }
+
+    private async Task ApplyStagedTimePolicyAsync(TTimeTicker root, CancellationToken ct)
+    {
+        var descendants = ValidateGraph(root).Skip(1).ToArray();
+        if (descendants.Any(child => !string.IsNullOrWhiteSpace(child.SchedulePolicyName)))
+            throw new TickerValidatorException(
+                "Schedule policies apply to a chain root. Child steps continue after the chain is admitted.");
+
+        if (string.IsNullOrWhiteSpace(root.SchedulePolicyName))
+        {
+            root.SchedulePolicyName = null;
+            root.SchedulePolicyVersion = null;
+            root.BlockedOccurrenceBehavior = null;
+            root.RequestedExecutionTime = null;
+            root.ScheduleAdjustmentReason = null;
+            return;
+        }
+
+        var store = services.GetRequiredService<ISchedulePolicyStore>();
+        var evaluator = services.GetRequiredService<SchedulePolicyEvaluator>();
+        var policies = await store.ListSchedulePoliciesAsync(ct).ConfigureAwait(false);
+        var policy = policies.FirstOrDefault(candidate =>
+            SchedulePolicyNames.Normalize(candidate.Name) == SchedulePolicyNames.Normalize(root.SchedulePolicyName));
+        if (policy == null)
+            throw new TickerValidatorException($"Schedule policy '{root.SchedulePolicyName}' does not exist.");
+
+        root.SchedulePolicyName = policy.Name;
+        root.SchedulePolicyVersion = policy.Version;
+        root.RequestedExecutionTime = root.ExecutionTime ?? clock.UtcNow;
+        var decision = evaluator.Evaluate(policy.Name, root.RequestedExecutionTime.Value, policies);
+        var behavior = root.BlockedOccurrenceBehavior ?? BlockedOccurrenceBehavior.Reject;
+        root.BlockedOccurrenceBehavior = behavior;
+        if (decision.IsAllowed)
+        {
+            root.ScheduleAdjustmentReason = null;
+            return;
+        }
+
+        switch (behavior)
+        {
+            case BlockedOccurrenceBehavior.Reject:
+                throw new TickerValidatorException(
+                    $"Schedule policy '{policy.Name}' blocked {root.RequestedExecutionTime:O}: {decision.Reason}");
+            case BlockedOccurrenceBehavior.MoveForward:
+                var moved = evaluator.FindNextAllowed(policy.Name, root.RequestedExecutionTime.Value, policies);
+                if (!moved.NextAllowedAtUtc.HasValue) throw new TickerValidatorException(moved.Reason);
+                root.ExecutionTime = moved.NextAllowedAtUtc.Value;
+                root.ScheduleAdjustmentReason = decision.Reason;
+                return;
+            case BlockedOccurrenceBehavior.Skip:
+                var reason = $"Schedule policy '{policy.Name}': {decision.Reason}";
+                foreach (var ticker in new[] { root }.Concat(descendants))
+                {
+                    ticker.Status = TickerStatus.Skipped;
+                    ticker.BlockedOccurrenceBehavior = BlockedOccurrenceBehavior.Skip;
+                    ticker.ExecutedAt = clock.UtcNow;
+                    ticker.SkippedReason = reason;
+                }
+                root.ScheduleAdjustmentReason = decision.Reason;
+                return;
+            default:
+                throw new TickerValidatorException("Unknown blocked-occurrence behavior.");
+        }
+    }
+
+    private async Task ApplyStagedCronPolicyAsync(TCronTicker cron, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(cron.SchedulePolicyName))
+        {
+            cron.SchedulePolicyName = null;
+            cron.SchedulePolicyVersion = null;
+            cron.BlockedOccurrenceBehavior = null;
+            return;
+        }
+        if ((cron.BlockedOccurrenceBehavior ?? BlockedOccurrenceBehavior.Skip) != BlockedOccurrenceBehavior.Skip)
+            throw new TickerValidatorException(
+                "Cron schedule policies support Skip behavior. MoveForward and Reject are for one-time jobs.");
+
+        var store = services.GetRequiredService<ISchedulePolicyStore>();
+        var evaluator = services.GetRequiredService<SchedulePolicyEvaluator>();
+        var policies = await store.ListSchedulePoliciesAsync(ct).ConfigureAwait(false);
+        var policy = policies.FirstOrDefault(candidate =>
+            SchedulePolicyNames.Normalize(candidate.Name) == SchedulePolicyNames.Normalize(cron.SchedulePolicyName));
+        if (policy == null)
+            throw new TickerValidatorException($"Schedule policy '{cron.SchedulePolicyName}' does not exist.");
+        cron.SchedulePolicyName = policy.Name;
+        cron.SchedulePolicyVersion = policy.Version;
+        cron.BlockedOccurrenceBehavior = BlockedOccurrenceBehavior.Skip;
+        if (!evaluator.GetNextAllowedCronOccurrence(
+                cron.Expression, clock.UtcNow, cron.TimeZoneId, policy.Name, policies).HasValue)
+            throw new TickerValidatorException(
+                $"Cron schedule '{cron.Expression}' has no allowed future occurrence.");
+    }
+
+    private async Task<DateTime?> GetNextStagedCronOccurrenceAsync(TCronTicker cron, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(cron.SchedulePolicyName))
+            return CronScheduleCache.GetNextOccurrenceOrDefault(
+                cron.Expression, clock.UtcNow, cron.TimeZoneId);
+        var policies = await services.GetRequiredService<ISchedulePolicyStore>()
+            .ListSchedulePoliciesAsync(ct).ConfigureAwait(false);
+        return services.GetRequiredService<SchedulePolicyEvaluator>().GetNextAllowedCronOccurrence(
+            cron.Expression, clock.UtcNow, cron.TimeZoneId, cron.SchedulePolicyName, policies);
     }
 
     private async Task<State> PrepareStagingAsync<TEntity>(TContext context, CancellationToken ct)
@@ -171,8 +297,12 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
         {
             if (node == null || !seen.Add(node) || (node.Id != Guid.Empty && !ids.Add(node.Id)))
                 throw new InvalidOperationException("A staged ticker graph contains a null, duplicate, or cyclic node.");
-            if (node.Status != TickerStatus.Idle || node.AcquisitionToken != null || node.ChainGeneration != null ||
-                node.LockHolder != null || node.LockedAt != null || node.LeaseUntil != null || node.ExecutedAt != null)
+            var policySkipped = node.Status == TickerStatus.Skipped &&
+                                node.BlockedOccurrenceBehavior == BlockedOccurrenceBehavior.Skip &&
+                                !string.IsNullOrWhiteSpace(node.SkippedReason) && node.ExecutedAt.HasValue;
+            if ((!policySkipped && node.Status != TickerStatus.Idle) || node.AcquisitionToken != null ||
+                node.ChainGeneration != null || node.LockHolder != null || node.LockedAt != null ||
+                node.LeaseUntil != null || (!policySkipped && node.ExecutedAt != null))
                 throw new InvalidOperationException("StageAsync accepts new, unexecuted ticker graphs only.");
             node.Children ??= new List<TTimeTicker>();
             nodes.Add(node);
@@ -232,8 +362,13 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
             if (graph.Count != stamps.Length || stamps.Any(stamp =>
                     !graphSet.Contains(stamp.Entity) ||
                     stamp.Entity.Id != stamp.Id || stamp.Entity.ParentId != stamp.ParentId ||
-                    stamp.Entity.Parent?.Id != stamp.ParentId))
-                throw new InvalidOperationException("Construct the complete ticker graph before StageAsync; its identities and parent links cannot change afterward.");
+                    stamp.Entity.Parent?.Id != stamp.ParentId ||
+                    stamp.Entity.SchedulePolicyName != stamp.SchedulePolicyName ||
+                    stamp.Entity.SchedulePolicyVersion != stamp.SchedulePolicyVersion ||
+                    stamp.Entity.BlockedOccurrenceBehavior != stamp.BlockedOccurrenceBehavior ||
+                    stamp.Entity.MissedExecutionAction != stamp.MissedExecutionAction ||
+                    stamp.Entity.MaximumLateness != stamp.MaximumLateness))
+                throw new InvalidOperationException("Construct the complete ticker graph and choose its schedule policy before StageAsync; identities, parent links, and policy metadata cannot change afterward.");
             foreach (var node in graph)
             {
                 if (!nodes.Add(node) || context.Entry(node).State != EntityState.Added ||
@@ -247,9 +382,15 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
         if (TickerManager<TTimeTicker, TCronTicker>.ValidateAndStampTimeTickerGraph(roots) is { } error) throw error;
         foreach (var cron in crons)
         {
-            if (context.Entry(cron).State != EntityState.Added || cron.Id != state.Crons[cron] ||
-                cron.ApplicationNamespaceKey != options.RuntimePartition.StorageKey || cron.DefinitionRevision != 1)
-                throw new InvalidOperationException("The staged cron changed identity, ownership, revision, or tracking state before saving.");
+            var stamp = state.Crons[cron];
+            if (context.Entry(cron).State != EntityState.Added || cron.Id != stamp.Id ||
+                cron.ApplicationNamespaceKey != options.RuntimePartition.StorageKey || cron.DefinitionRevision != 1 ||
+                cron.SchedulePolicyName != stamp.SchedulePolicyName ||
+                cron.SchedulePolicyVersion != stamp.SchedulePolicyVersion ||
+                cron.BlockedOccurrenceBehavior != stamp.BlockedOccurrenceBehavior || cron.TimeZoneId != stamp.TimeZoneId ||
+                cron.MissedExecutionAction != stamp.MissedExecutionAction ||
+                cron.MaximumLateness != stamp.MaximumLateness || cron.CatchUpMode != stamp.CatchUpMode)
+                throw new InvalidOperationException("The staged cron changed identity, ownership, revision, time zone, policy metadata, or tracking state before saving.");
             ValidateCron(cron);
         }
         state.SavingRoots = roots;
@@ -396,7 +537,7 @@ internal sealed class EfTransactionalScheduling<TContext, TTimeTicker, TCronTick
                     }
                 }
                 if (row.IsEnabled && !row.IsSystemPaused &&
-                    CronScheduleCache.GetNextOccurrenceOrDefault(row.Expression, clock.UtcNow) is { } next)
+                    await GetNextStagedCronOccurrenceAsync(row, CancellationToken.None).ConfigureAwait(false) is { } next)
                     services.GetRequiredService<ITickerQHostScheduler>().RestartIfNeeded(next);
                 await services.GetRequiredService<ITickerQNotificationHubSender>().AddCronTickerNotifyAsync(id).ConfigureAwait(false);
             }

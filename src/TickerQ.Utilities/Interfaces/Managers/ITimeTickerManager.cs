@@ -97,5 +97,17 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// </summary>
         Task<TickerResult<TTimeTicker>> AddAsync<TFunction, TRequest>(DateTime? executionTime, TRequest request, CancellationToken cancellationToken = default)
             where TFunction : class, ITickerFunction<TRequest>;
+
+        /// <summary>Schedules a function using a typed one-time schedule and optional availability policy.</summary>
+        Task<TickerResult<TTimeTicker>> AddAsync<TFunction>(TimeSchedule schedule,
+            CancellationToken cancellationToken = default)
+            where TFunction : class, ITickerFunction
+            => throw new NotSupportedException("This manager does not support typed time schedules.");
+
+        /// <summary>Schedules a typed request using a typed one-time schedule and optional availability policy.</summary>
+        Task<TickerResult<TTimeTicker>> AddAsync<TFunction, TRequest>(TimeSchedule schedule, TRequest request,
+            CancellationToken cancellationToken = default)
+            where TFunction : class, ITickerFunction<TRequest>
+            => throw new NotSupportedException("This manager does not support typed time schedules.");
     }
 }

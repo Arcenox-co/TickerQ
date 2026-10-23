@@ -43,6 +43,7 @@ public class TestTickerQDbContext : DbContext
         modelBuilder.ApplyConfiguration(new TickerQControlCommandConfigurations("ticker"));
         modelBuilder.ApplyConfiguration(new IntegrationSettingsConfigurations("ticker"));
         modelBuilder.ApplyConfiguration(new TickerQDefinitionConfigurations("ticker"));
+        modelBuilder.ApplyConfiguration(new SchedulePolicyConfigurations("ticker"));
         base.OnModelCreating(modelBuilder);
     }
 }
@@ -1974,6 +1975,25 @@ public class EfCorePersistenceProviderTests : IAsyncLifetime
         using var ctx = CreateVerifyContext();
         var allOccs = await ctx.Set<CronTickerOccurrenceEntity<CronTickerEntity>>().AsNoTracking().ToListAsync();
         Assert.Equal(2, allOccs.Count);
+    }
+
+    [Fact]
+    public async Task GetLatestCronOccurrenceTimes_Returns_Maximum_Per_Requested_Cron()
+    {
+        var first = CreateCronTicker(function: "first");
+        var second = CreateCronTicker(function: "second");
+        await SeedCronTickers(first, second);
+        await SeedCronOccurrences(
+            CreateCronOccurrence(first.Id, executionTime: _fixedNow.AddMinutes(1)),
+            CreateCronOccurrence(first.Id, executionTime: _fixedNow.AddMinutes(3)),
+            CreateCronOccurrence(second.Id, executionTime: _fixedNow.AddMinutes(2)));
+
+        var result = await _provider.GetLatestCronOccurrenceTimesAsync(
+            [first.Id, second.Id, Guid.NewGuid()], CancellationToken.None);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal(_fixedNow.AddMinutes(3), result[first.Id]);
+        Assert.Equal(_fixedNow.AddMinutes(2), result[second.Id]);
     }
 
     // =========================================================================

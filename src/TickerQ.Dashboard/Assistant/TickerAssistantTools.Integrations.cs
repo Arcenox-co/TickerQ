@@ -81,7 +81,7 @@ internal static partial class TickerAssistantTools
             [Description("Comma-separated existing enabled destination GUIDs.")] string destinationIds,
             [Description("Send a recovery notification when the monitored incident clears.")] bool notifyRecovery,
             [Description("Deadline local time HH:mm; use 08:00 when irrelevant.")] string deadlineLocalTime,
-            [Description("Explicit deadline time zone, e.g. Europe/Belgrade or UTC. Do not infer it from the browser.")] string timeZoneId,
+            [Description("Explicit deadline time zone, e.g. Europe/Berlin or UTC. Do not infer it from the browser.")] string timeZoneId,
             [Description("Deadline grace 0–720 minutes. Default 10.")] int graceMinutes,
             [Description("Long-running threshold 5–604800 seconds. Default 300.")] int durationSeconds,
             [Description("Consecutive failure threshold 2–20. Default 3.")] int failureThreshold,

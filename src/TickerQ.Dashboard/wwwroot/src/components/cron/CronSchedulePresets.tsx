@@ -14,7 +14,7 @@ export function CronSchedulePresets({ onSelect }: { onSelect: (expression: strin
       onChange={(event) => {
         if (event.target.value) onSelect(event.target.value);
       }}
-      className="h-6 max-w-full rounded-md border border-border bg-surface-2 px-2 text-[11px] text-foreground/80 hover:border-primary/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="h-5 w-24 max-w-full shrink-0 rounded-md border border-border bg-surface-2 px-2 text-[10px] leading-none text-foreground/80 hover:border-primary/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <option value="">Presets…</option>
       {PRESETS.map((preset) => (

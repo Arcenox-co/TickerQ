@@ -490,6 +490,12 @@ export default function TimeTickersPage() {
             onStale: values.onStale,
             timeoutSeconds:
               values.timeoutSeconds && values.timeoutSeconds > 0 ? values.timeoutSeconds : null,
+            schedulePolicyName: values.schedulePolicyName || null,
+            blockedOccurrenceBehavior: values.schedulePolicyName ? values.blockedOccurrenceBehavior : null,
+            missedExecutionAction: values.missedExecutionAction,
+            maximumLatenessSeconds: values.missedExecutionAction === "Skip"
+              ? values.maximumLatenessSeconds ?? 0
+              : null,
           });
           setPage(1);
           setRecentlyCreatedId(res.id);

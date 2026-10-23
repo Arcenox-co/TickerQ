@@ -33,6 +33,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
+    public bool SupportsCronCatchUp => true;
     public bool IntegrationSettingsArePersistent => true;
 
     public bool SupportsIntegrationMonitoring => true;
@@ -3028,6 +3029,26 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             .ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyDictionary<Guid, DateTime>> GetLatestCronOccurrenceTimesAsync(
+        IReadOnlyCollection<Guid> cronTickerIds, CancellationToken cancellationToken = default)
+    {
+        if (cronTickerIds == null || cronTickerIds.Count == 0)
+            return new Dictionary<Guid, DateTime>();
+        var ids = cronTickerIds.ToList();
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var set = session.Context.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking();
+        var rows = await set
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+            .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(ids, x => x.CronTickerId))
+            .Where(x => !set.Any(other =>
+                other.ApplicationNamespaceKey == _runtimePartitionKey &&
+                other.CronTickerId == x.CronTickerId && other.ExecutionTime > x.ExecutionTime))
+            .Select(x => new { x.CronTickerId, x.ExecutionTime })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        return rows.GroupBy(x => x.CronTickerId)
+            .ToDictionary(group => group.Key, group => group.Max(x => x.ExecutionTime));
+    }
+
     protected IQueryable<CronTickerOccurrenceEntity<TCronTicker>> WhereCronDefinitionIsCurrent(
         IQueryable<CronTickerOccurrenceEntity<TCronTicker>> query,
         TDbContext dbContext)
@@ -3105,28 +3126,6 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         }, cancellationToken).ConfigureAwait(false);
     }
     
-    public async Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
-    {
-        if (staleThreshold <= TimeSpan.Zero)
-            return 0;
-
-        var now = _clock.UtcNow;
-        var cutoff = now - staleThreshold;
-
-        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var dbContext = session.Context;
-
-        return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                        (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued))
-            .Where(x => x.ExecutionTime < cutoff)
-            .ExecuteUpdateAsync(setter => setter
-                .SetProperty(x => x.Status, TickerStatus.Skipped)
-                .SetProperty(x => x.SkippedReason, "Missed: occurrence was pending when the application restarted")
-                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
-            .ConfigureAwait(false);
-    }
-
     #endregion
 
     #region Stale_Job_Recovery

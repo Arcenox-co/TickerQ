@@ -39,6 +39,7 @@ namespace TickerQ.EntityFrameworkCore.Customizer
             builder.ApplyConfiguration(new TickerQControlCommandConfigurations(schema));
             builder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
             builder.ApplyConfiguration(new TickerQDefinitionConfigurations(schema));
+            builder.ApplyConfiguration(new SchedulePolicyConfigurations(schema));
             builder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
             builder.ApplyConfiguration(new AssistantConversationConfigurations(schema));
             builder.ApplyConfiguration(new AssistantMessageConfigurations(schema));
