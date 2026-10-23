@@ -43,7 +43,7 @@ internal class TickerQStartupValidator : IHostedService
         }
         else if (TickerFunctionProvider.TickerFunctions.Count == 0)
         {
-            const string message = "TickerQ — No ticker functions registered. Ensure you have methods decorated with [TickerFunction].";
+            const string message = "TickerQ — No ticker functions registered. Register an ITickerFunction with MapTicker<T>() or decorate a method with [TickerFunction].";
             _logger.LogWarning(message);
             _executionContext.NotifyCoreAction?.Invoke(message, CoreNotifyActionType.NotifyHostExceptionMessage);
         }

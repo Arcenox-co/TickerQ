@@ -12,7 +12,7 @@ namespace TickerQ.Utilities.Interfaces
 
     /// <summary>
     /// Defines a ticker function without a request payload.
-    /// Implement this interface and register via app.MapTicker&lt;T&gt;().
+    /// Implement this interface and register via builder.Services.MapTicker&lt;T&gt;().
     /// </summary>
     public interface ITickerFunction : ITickerFunctionBase
     {
@@ -21,7 +21,7 @@ namespace TickerQ.Utilities.Interfaces
 
     /// <summary>
     /// Defines a ticker function with a typed request payload.
-    /// Implement this interface and register via app.MapTicker&lt;T&gt;().
+    /// Implement this interface and register via builder.Services.MapTicker&lt;TFunction, TRequest&gt;().
     /// </summary>
     /// <typeparam name="TRequest">The request payload type.</typeparam>
     public interface ITickerFunction<TRequest> : ITickerFunctionBase

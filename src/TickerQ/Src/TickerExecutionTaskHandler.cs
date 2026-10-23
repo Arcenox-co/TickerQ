@@ -558,7 +558,7 @@ internal partial class TickerExecutionTaskHandler : ITickerExecutionTaskHandler
                         }
                         throw new InvalidOperationException(
                             $"Ticker function '{context.FunctionName}' was not found in the registered functions. " +
-                            "Ensure the function is properly decorated with [TickerFunction] attribute and the containing class is registered.");
+                            "Register an ITickerFunction with MapTicker<T>() or decorate a method with [TickerFunction].");
                     }
 
                     // Create service scope - will be disposed automatically via await using
