@@ -42,6 +42,13 @@ builder.Services.AddTickerQ(options =>
     // Physical runtime partition + exact deployment epoch; keep both stable across replicas.
     options.UseApplicationNamespace("dashboard-test-sample");
     options.UseReconciliationEpoch(1);
+    // Cron tickers this app owns; reconciled once per reconciliation epoch, never duplicated.
+    options.SeedCronTickers(crons => crons
+        .Add("Heartbeat", "* * * * *")
+        .Add("CleanupTempFiles", "*/5 * * * *")
+        .Add("FlakyJob", "*/2 * * * *")
+        .Add("DailyReport", "0 0 * * *")
+        .Add("AlwaysFails", "* * * * *"));
     options.AddOperationalStore(efOptions =>
     {
         efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>
@@ -185,7 +192,7 @@ public class SampleJobs
 
     public SampleJobs(ILogger<SampleJobs> logger) => _logger = logger;
 
-    [TickerFunction("Heartbeat", "* * * * *")]
+    [TickerFunction("Heartbeat")]
     public Task Heartbeat(TickerFunctionContext context, CancellationToken ct)
     {
         // ILogger on purpose (not Console) — exercises the in-process log capture
@@ -195,7 +202,7 @@ public class SampleJobs
         return Task.CompletedTask;
     }
 
-    [TickerFunction("CleanupTempFiles", "*/5 * * * *")]
+    [TickerFunction("CleanupTempFiles")]
     public async Task CleanupTempFiles(TickerFunctionContext context, CancellationToken ct)
     {
         _logger.LogInformation("Scanning temp directories…");
@@ -203,7 +210,7 @@ public class SampleJobs
         _logger.LogInformation("Cleaned temp files at {Now:O}", DateTime.UtcNow);
     }
 
-    [TickerFunction("FlakyJob", "*/2 * * * *")]
+    [TickerFunction("FlakyJob")]
     public Task FlakyJob(TickerFunctionContext context, CancellationToken ct)
     {
         _logger.LogInformation("FlakyJob attempt starting…");
@@ -217,7 +224,7 @@ public class SampleJobs
         return Task.CompletedTask;
     }
 
-    [TickerFunction("DailyReport", "0 0 * * *")]
+    [TickerFunction("DailyReport")]
     public async Task DailyReport(TickerFunctionContext context, CancellationToken ct)
     {
         _logger.LogInformation("Generating daily report…");
@@ -227,7 +234,7 @@ public class SampleJobs
 
     // Fails every run → guaranteed Failed rows for testing the Executions
     // page's new Retry button (single retry re-runs the parent cron on demand).
-    [TickerFunction("AlwaysFails", "* * * * *")]
+    [TickerFunction("AlwaysFails")]
     public Task AlwaysFails(TickerFunctionContext context, CancellationToken ct)
     {
         throw new InvalidOperationException("AlwaysFails failed on purpose — use the Retry button on the Executions page.");

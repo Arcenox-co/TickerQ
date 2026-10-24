@@ -35,10 +35,13 @@ namespace TickerQ.Utilities
         internal bool RequestGZipCompressionEnabled { get; set; } = false;
 
         /// <summary>
-        /// Controls whether code-defined cron tickers are seeded on startup.
-        /// Defaults to true.
+        /// Controls whether the cron tickers declared with <see cref="SeedCronTickers(Action{CronTickerSeedBuilder})"/>
+        /// are reconciled on startup. Defaults to true.
         /// </summary>
         internal bool SeedDefinedCronTickers { get; set; } = true;
+
+        /// <summary>Cron ticker declarations, evaluated when a new reconciliation epoch activates.</summary>
+        internal List<Action<CronTickerSeedBuilder, IServiceProvider>> CronTickerSeeds { get; } = new();
         internal long ReconciliationEpoch { get; private set; }
         internal string ApplicationNamespace { get; private set; }
         internal Dictionary<string, string> LegacyDefinedCronOwnership { get; } = new(StringComparer.Ordinal);
@@ -83,6 +86,7 @@ namespace TickerQ.Utilities
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.TimeSeederAction => TimeSeederAction;
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.CronSeederAction => CronSeederAction;
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.SchedulePolicySeederAction => SchedulePolicySeederAction;
+        IReadOnlyList<Action<CronTickerSeedBuilder, IServiceProvider>> ITickerOptionsSeeding.CronTickerSeeds => CronTickerSeeds;
 
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
@@ -199,11 +203,43 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Disable automatic seeding of code-defined cron tickers on startup.
+        /// Skip reconciling the cron tickers declared with <c>SeedCronTickers(...)</c> on startup.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> IgnoreSeedDefinedCronTickers()
         {
             SeedDefinedCronTickers = false;
+            return this;
+        }
+
+        /// <summary>
+        /// Declares the cron tickers this application owns. TickerQ reconciles the full list when a new
+        /// reconciliation epoch activates: each cron is created once, updated in place when its definition
+        /// changes, and retired after the grace period when it is removed. Restarts with the same epoch and
+        /// concurrent replicas never create duplicates. Can be called more than once; declarations combine.
+        /// </summary>
+        /// <example>
+        /// <code>
+        /// options.SeedCronTickers(crons => crons
+        ///     .Add("DailyReport", "0 0 9 * * *", cron => cron.WithRetries(2, 300))
+        ///     .Add("Cleanup", "%Cleanup:Cron%"));
+        /// </code>
+        /// </example>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedCronTickers(Action<CronTickerSeedBuilder> seeds)
+        {
+            if (seeds == null) throw new ArgumentNullException(nameof(seeds));
+            CronTickerSeeds.Add((builder, _) => seeds(builder));
+            return this;
+        }
+
+        /// <summary>
+        /// Declares cron tickers using application services, for example to read expressions from
+        /// configuration. Evaluated at startup when a new reconciliation epoch activates.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedCronTickers(
+            Action<CronTickerSeedBuilder, IServiceProvider> seeds)
+        {
+            if (seeds == null) throw new ArgumentNullException(nameof(seeds));
+            CronTickerSeeds.Add(seeds);
             return this;
         }
 
@@ -411,7 +447,9 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Configure a custom seeder for cron tickers, executed on application startup.
+        /// Configure a custom seeder for cron tickers, executed when a new reconciliation epoch activates.
+        /// Crons added through the manager are not keyed, so they are added again on every epoch.
+        /// Prefer <see cref="SeedCronTickers(Action{CronTickerSeedBuilder})"/> for crons the application owns.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseTickerSeeder(
             Func<ICronTickerManager<TCronTicker>, System.Threading.Tasks.Task> cronSeeder)

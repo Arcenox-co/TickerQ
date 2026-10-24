@@ -237,6 +237,8 @@ export interface CronTickerFlatDto {
   missedExecutionAction: MissedExecutionAction;
   maximumLatenessSeconds: number | null;
   catchUpMode: CronCatchUpMode;
+  /** True when the cron is declared in code with SeedCronTickers. */
+  isSeeded?: boolean;
 }
 
 export interface CronOccurrenceFlatDto {

@@ -95,6 +95,10 @@ builder.Services.AddTickerQ(options =>
     // Epoch 1 must exactly match this deployment's activated reconciliation epoch.
     options.UseApplicationNamespace("dashboard-host-jwt-sample");
     options.UseReconciliationEpoch(1);
+    // Cron tickers this app owns; reconciled once per reconciliation epoch, never duplicated.
+    options.SeedCronTickers(crons => crons
+        .Add("Heartbeat", "* * * * *")
+        .Add("NightlyExport", "0 2 * * *"));
     options.AddOperationalStore(efOptions =>
     {
         efOptions.UseTickerQDbContext<TickerQDbContext>(dbOptions =>
@@ -291,7 +295,7 @@ public class HostJwtJobs
 
     public HostJwtJobs(ILogger<HostJwtJobs> logger) => _logger = logger;
 
-    [TickerFunction("Heartbeat", "* * * * *")]
+    [TickerFunction("Heartbeat")]
     public Task Heartbeat(TickerFunctionContext context, CancellationToken ct)
     {
         // ILogger on purpose (not Console) — exercises the in-process log capture
@@ -300,7 +304,7 @@ public class HostJwtJobs
         return Task.CompletedTask;
     }
 
-    [TickerFunction("NightlyExport", "0 2 * * *")]
+    [TickerFunction("NightlyExport")]
     public async Task NightlyExport(TickerFunctionContext context, CancellationToken ct)
     {
         _logger.LogInformation("Nightly export starting…");

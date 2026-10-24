@@ -84,6 +84,10 @@ internal static class Program
             options.UseLicense(path);
             options.UseApplicationNamespace("license-smoke-test");
             options.UseReconciliationEpoch(1);
+            // Cron tickers this app owns; reconciled once per reconciliation epoch, never duplicated.
+            options.SeedCronTickers(crons => crons
+                .Add("PreviewHeartbeat", "* * * * *")
+                .Add("PreviewDailySummary", "0 2 * * *"));
             options.IgnoreSeedDefinedCronTickers(); // Preview cron functions must not affect the isolated smoke test.
         });
         using var host = builder.Build();

@@ -41,7 +41,8 @@ public class LiteralSafetyAndDeterminismTests
             .Select(token => token.ValueText)
             .ToList();
         Assert.Contains(functionName, literalValues);
-        Assert.Contains(cron, literalValues);
+        // Cron schedules are declared with options.SeedCronTickers(...); an attribute cron is never emitted.
+        Assert.DoesNotContain(cron, literalValues);
         Assert.Contains(serviceKey, literalValues);
     }
 

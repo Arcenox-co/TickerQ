@@ -333,6 +333,28 @@ Do not bulk-set `ChainRootId = ParentId`: that is wrong for grandchildren and de
 
 ## Code-defined CronTicker behavior
 
+### Declaring code-defined crons
+
+Code-defined crons are declared with `options.SeedCronTickers(...)`. `[TickerFunction]` and the
+code-first `WithCron(...)` no longer declare a schedule; using their cron arguments is a compile error.
+
+```csharp
+services.AddTickerQ(options =>
+{
+    options.UseApplicationNamespace("billing-api");
+    options.UseReconciliationEpoch(2);
+    options.SeedCronTickers(crons => crons
+        .Add("GenerateInvoices", "0 0 6 * * *", cron => cron.WithRetries(2, 300))
+        .Add("SendReminders", "%Billing:RemindersCron%"));
+});
+```
+
+Move each `[TickerFunction("Name", "<cron>")]` to `crons.Add("Name", "<cron>")` and remove the cron
+argument from the attribute. The stable identity defaults to the function name, the same identity the
+attribute used, so the existing row keeps its history and dashboard state. Increment the
+reconciliation epoch in the same deployment so the declarations are reconciled. A cron left out of the
+list is retired after the grace period, not deleted, and is restored when it is declared again.
+
 ### Stable ownership
 
 A code-defined cron receives a deterministic ownership key derived from an application namespace plus its stable local definition identity. Configure a stable namespace on every application that seeds code-defined crons, especially when applications share a store:

@@ -1,4 +1,5 @@
 import { ExecutionStatus } from "@/components/cron/ExecutionStatus";
+import { SeededCronBadge } from "@/components/cron/SeededCronBadge";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -383,6 +384,7 @@ function CronTickerDetail({ id }: { id: string }) {
           <span className="font-mono text-sm font-semibold">{bare}</span>
         </div>
         <ChainTypeBadge isChain={!!cron.chain} childCount={cron.chain?.children.length} />
+        {cron.isSeeded ? <SeededCronBadge /> : null}
         <div className="h-4 w-px bg-border" />
         <span className="text-[11px] text-muted-foreground">{stateLabel}</span>
         <PriorityBadge priority={cron.priority} />

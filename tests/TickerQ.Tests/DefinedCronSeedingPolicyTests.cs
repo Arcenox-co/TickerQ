@@ -67,7 +67,10 @@ public class DefinedCronSeedingPolicyTests : IDisposable
             .When(m => m.MigrateDefinedCronTickers(Arg.Any<DefinedCronSeedManifest>(), Arg.Any<CancellationToken>()))
             .Do(ci => captured = ci.Arg<DefinedCronSeedManifest>().Seeds.ToArray());
 
-        await RunInitializer(internalManager);
+        await RunInitializer(internalManager, seeds: crons => crons
+            .Add("Reqless", "* * * * *")
+            .Add("Optional", "* * * * *")
+            .Add("Required", "* * * * *"));
 
         Assert.NotNull(captured);
         var byFunction = captured.ToDictionary(s => s.Function);
@@ -144,7 +147,7 @@ public class DefinedCronSeedingPolicyTests : IDisposable
         // The initializer must thread the host's shutdown token into startup seeding rather than
         // silently swallowing it (the previous code passed a default CancellationToken), so a
         // cancelled host propagates cancellation into provider seeding I/O.
-        await RunInitializer(internalManager, cts.Token);
+        await RunInitializer(internalManager, cts.Token, crons => crons.Add("Reqless", "* * * * *"));
 
         Assert.True(wasObserved, "MigrateDefinedCronTickers was never invoked.");
         Assert.True(observed.IsCancellationRequested,
@@ -152,10 +155,17 @@ public class DefinedCronSeedingPolicyTests : IDisposable
     }
 
     private static async Task RunInitializer(
-        IInternalTickerManager internalManager, CancellationToken cancellationToken = default)
+        IInternalTickerManager internalManager, CancellationToken cancellationToken = default,
+        Action<CronTickerSeedBuilder> seeds = null)
     {
         ActivationEpochTestDouble.Configure(internalManager);
-        var context = new TickerExecutionContext { OptionsSeeding = new TestOptionsSeeding() };
+        var context = new TickerExecutionContext
+        {
+            OptionsSeeding = new TestOptionsSeeding
+            {
+                CronTickerSeeds = seeds == null ? [] : [(builder, _) => seeds(builder)],
+            },
+        };
         var configuration = Substitute.For<IConfiguration>();
 
         var services = new ServiceCollection();
@@ -179,6 +189,7 @@ public class DefinedCronSeedingPolicyTests : IDisposable
         public string ApplicationNamespace => "defined-cron-policy-tests";
         public Func<IServiceProvider, CancellationToken, Task> TimeSeederAction => null;
         public Func<IServiceProvider, CancellationToken, Task> CronSeederAction => null;
+        public IReadOnlyList<Action<CronTickerSeedBuilder, IServiceProvider>> CronTickerSeeds { get; init; } = [];
     }
 
     private static void RegisterFunction(string name)

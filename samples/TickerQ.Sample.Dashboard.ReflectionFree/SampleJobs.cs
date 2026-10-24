@@ -7,7 +7,7 @@ namespace TickerQ.Sample.Dashboard.ReflectionFree;
 // Approach 1: Attribute-based (existing)
 public class SampleJobs
 {
-    [TickerFunction("ReflectionFree_CronJob", "0 */5 * * * *")]
+    [TickerFunction("ReflectionFree_CronJob")]
     public Task CronJobAsync(TickerFunctionContext context)
     {
         Console.WriteLine($"[{DateTime.UtcNow}] Cron job executed! Id={context.Id}");
