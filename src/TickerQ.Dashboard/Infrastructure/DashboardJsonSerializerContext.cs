@@ -155,6 +155,22 @@ namespace TickerQ.Dashboard.Infrastructure;
 [JsonSerializable(typeof(TickerLogBatchRequest))]
 [JsonSerializable(typeof(TickerLogBatchResponse))]
 [JsonSerializable(typeof(RuntimeDiagnosticsResponse))]
+[JsonSerializable(typeof(SchedulePolicy))]
+[JsonSerializable(typeof(List<SchedulePolicy>))]
+[JsonSerializable(typeof(ScheduleTimeWindow))]
+[JsonSerializable(typeof(List<ScheduleTimeWindow>))]
+[JsonSerializable(typeof(ScheduleAnnualDate))]
+[JsonSerializable(typeof(List<ScheduleAnnualDate>))]
+[JsonSerializable(typeof(ScheduleDecision))]
+[JsonSerializable(typeof(SchedulePolicyPreviewItem))]
+[JsonSerializable(typeof(List<SchedulePolicyPreviewItem>))]
+[JsonSerializable(typeof(SaveSchedulePolicyRequest))]
+[JsonSerializable(typeof(UpdateSchedulePolicyRequest))]
+[JsonSerializable(typeof(SchedulePolicyPreviewRequest))]
+[JsonSerializable(typeof(SchedulePolicyUsageResponse))]
+[JsonSerializable(typeof(ScheduleDateProvidersResponse))]
+[JsonSerializable(typeof(ScheduleWeekdays))]
+[JsonSerializable(typeof(BlockedOccurrenceBehavior))]
 internal partial class DashboardJsonSerializerContext : JsonSerializerContext
 {
 }

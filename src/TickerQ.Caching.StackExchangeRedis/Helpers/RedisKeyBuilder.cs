@@ -38,6 +38,7 @@ internal sealed class RedisKeyBuilder
         => Key($"reconciliation:activation:scope:{scopeKey}");
     internal string CronOccurrenceIds => Key("co:ids");
     internal string CronOccurrencePending => Key("co:pending");
+    internal string CronOccurrenceLatestByCron => Key("co:latest-by-cron");
     internal string TimeTickerRetentionSucceeded => Key("tt:retention:succeeded");
     internal string TimeTickerRetentionFailed => Key("tt:retention:failed");
     internal string TimeTickerRetentionCancelled => Key("tt:retention:cancelled");
@@ -57,6 +58,9 @@ internal sealed class RedisKeyBuilder
     internal string DefinitionIds => Key("definitions:ids");
     internal string Definition(Guid id) => Key($"definitions:{id}");
     internal string DefinitionName(string nameKey) => Key($"definitions:name:{nameKey}");
+    internal string SchedulePolicyIds => Key("schedule-policies:ids");
+    internal string SchedulePolicy(Guid id) => Key($"schedule-policies:{id}");
+    internal string SchedulePolicyName(string nameKey) => Key($"schedule-policies:name:{nameKey}");
     internal string Heartbeat(string owner) => Key($"hb:{owner}");
     internal string TimeTicker(Guid id) => Key($"tt:{id}");
     internal string TimeTickerResult(Guid id) => Key($"tt:{id}:result");
@@ -84,6 +88,7 @@ internal sealed class RedisKeyBuilder
         => Legacy.ReconciliationActivationMetadataForScope(scopeKey);
     internal static string CronOccurrenceIdsKey => Legacy.CronOccurrenceIds;
     internal static string CronOccurrencePendingKey => Legacy.CronOccurrencePending;
+    internal static string CronOccurrenceLatestByCronKey => Legacy.CronOccurrenceLatestByCron;
     internal static string TimeTickerRetentionSucceededKey => Legacy.TimeTickerRetentionSucceeded;
     internal static string TimeTickerRetentionFailedKey => Legacy.TimeTickerRetentionFailed;
     internal static string TimeTickerRetentionCancelledKey => Legacy.TimeTickerRetentionCancelled;

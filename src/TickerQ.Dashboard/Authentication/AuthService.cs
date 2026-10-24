@@ -51,6 +51,5 @@ public class AuthService : IAuthService
     {
         Mode = _config.Mode,
         IsEnabled = _config.IsEnabled,
-        SessionTimeoutMinutes = _config.SessionTimeoutMinutes,
     };
 }

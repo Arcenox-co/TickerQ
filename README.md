@@ -32,7 +32,7 @@
 
 <p align="center">
   <a href="https://tickerq.net/docs/5.x/dashboard/tour">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/overview-2026-10-23.jpg" alt="TickerQ dashboard showing scheduler health, active nodes, execution statistics, recent jobs, and upcoming work" width="1200" />
+    <img src="docs/images/dashboard/overview.jpg" alt="TickerQ dashboard showing scheduler health, active nodes, execution statistics, recent jobs, and upcoming work" width="1200" />
   </a>
   <br />
   <sub>The current 5.x dashboard running on a two-node documentation demo. Workspace and certificate identifiers are anonymized.</sub>
@@ -43,11 +43,18 @@
 - **Write jobs in C#.** Use typed requests and compile-time function registration. The core scheduler and dashboard support [Native AOT](docs/native-aot.md); the AI assistant remains a managed-runtime feature.
 - **Build complete workflows.** Connect jobs with conditional steps, pass results between them, and schedule a fresh chain for every recurring run.
 - **Keep execution under control.** Set retries, priorities, per-host function concurrency, and cron overlap policies. Cancel pending work or request cooperative cancellation of a running job.
+- **Respect business calendars.** Reuse named, time-zone-aware schedule policies for work hours, closure dates, holidays, cron schedules, and one-time jobs.
+- **Control late work explicitly.** Run persisted work once, skip it after a per-job grace window, or catch up only the latest eligible cron slot after downtime.
 - **Commit jobs with business data.** Stage time jobs and cron schedules in the same EF Core transaction as your application changes.
 - **Choose your storage.** Use EF Core, MongoDB, or Redis for persistence, with in-memory storage for development.
 - **Run across application instances.** Coordinate workers through a shared operational store, isolate workloads with application namespaces, and recover interrupted work.
 
 For example, a daily invoice workflow can **prepare invoices → generate PDFs → send them to customers**, with retries and execution history for each step. [Explore recurring chains →](https://tickerq.net/docs/5.x/guides/recurring-chains)
+
+Schedule policies add modern calendar rules without moving date logic into job handlers. A one-time
+job can reject, skip, or move to the next allowed instant, while cron schedules omit blocked
+occurrences in their configured time zone. Per-job missed-execution rules separately decide whether
+late persisted work or the latest missed cron slot should run. [Read the schedule policy guide →](docs/schedule-policies.md)
 
 ## A dashboard for daily operations
 
@@ -57,7 +64,7 @@ Understand what is scheduled, what is running, and what needs attention from the
 - **Manage scheduled work:** create and edit jobs, trigger a run, pause cron schedules, and retry or cancel executions.
 - **Diagnose runtime issues:** review scheduler health, execution ownership, registered functions, and retention settings.
 
-The optional **AI assistant** helps you explore jobs and logs in natural language and prepare jobs, schedules, or monitoring rules. It uses your configured model provider; you review and confirm changes before they are applied.
+The optional **AI assistant** helps you explore jobs and logs in natural language and prepare jobs, schedules, schedule policies, or monitoring rules. It uses the model you configure, hosted with an API key or local without one, and shows where messages go. You review and confirm changes before they are applied.
 
 ### Explore the interface
 
@@ -68,7 +75,7 @@ Select a view to expand its current dashboard screenshot.
 
 <p align="center">
   <a href="https://tickerq.net/docs/5.x/guides/job-chaining">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/workflow.jpg" alt="TickerQ workflow flowchart with a parallel group and conditional outcome jobs" width="1200" />
+    <img src="docs/images/dashboard/workflow.jpg" alt="TickerQ workflow flowchart with a parallel group and conditional outcome jobs" width="1200" />
   </a>
 </p>
 
@@ -79,7 +86,7 @@ Select a view to expand its current dashboard screenshot.
 
 <p align="center">
   <a href="https://tickerq.net/docs/5.x/dashboard/saved-work">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/workflow-builder.jpg" alt="TickerQ visual workflow builder with grouped parallel jobs and final outcome steps" width="1200" />
+    <img src="docs/images/dashboard/workflow-builder.jpg" alt="TickerQ visual workflow builder with grouped parallel jobs and final outcome steps" width="1200" />
   </a>
 </p>
 
@@ -90,7 +97,7 @@ Select a view to expand its current dashboard screenshot.
 
 <p align="center">
   <a href="https://tickerq.net/docs/5.x/guides/execution-logs">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/execution-logs.jpg" alt="TickerQ execution details with database-backed lifecycle logs and application failure evidence" width="1200" />
+    <img src="docs/images/dashboard/execution-logs.jpg" alt="TickerQ execution details with database-backed lifecycle logs and application failure evidence" width="1200" />
   </a>
 </p>
 
@@ -101,7 +108,7 @@ Select a view to expand its current dashboard screenshot.
 
 <p align="center">
   <a href="https://tickerq.net/docs/5.x/dashboard/saved-work">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/saved-work.jpg" alt="TickerQ Saved Work page with a one-time draft and reusable chain templates" width="1200" />
+    <img src="docs/images/dashboard/saved-work.jpg" alt="TickerQ Saved Work page with a one-time draft and reusable chain templates" width="1200" />
   </a>
 </p>
 
@@ -112,18 +119,40 @@ Select a view to expand its current dashboard screenshot.
 
 <p align="center">
   <a href="https://tickerq.net/docs/5.x/dashboard/clustering">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/nodes.jpg" alt="TickerQ Nodes page showing active replicas, execution capacity, and an offline node" width="1200" />
+    <img src="docs/images/dashboard/nodes.jpg" alt="TickerQ Nodes page showing two healthy replicas with execution capacity, queues, and versions" width="1200" />
   </a>
 </p>
 
 </details>
 
 <details>
-<summary><strong>AI Operations</strong> — review diagnoses, repeated failure patterns, recoveries, and proposed actions</summary>
+<summary><strong>Schedule policies</strong> — define business hours, holidays, and maintenance windows once and combine them</summary>
+
+<p align="center">
+  <a href="https://tickerq.net/docs/5.x/guides/schedule-policies/business-calendars">
+    <img src="docs/images/dashboard/schedule-policies.jpg" alt="TickerQ Schedule Policies page with business hours, a maintenance window, and a composed payments policy" width="1200" />
+  </a>
+</p>
+
+</details>
+
+<details>
+<summary><strong>AI assistant</strong> — review diagnoses, repeated failure patterns, recoveries, and proposed actions</summary>
 
 <p align="center">
   <a href="https://tickerq.net/docs/5.x/dashboard/ai-assistant">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/ai-operations.jpg" alt="TickerQ AI Operations overview with investigations, recovery signals, and recent failures" width="1200" />
+    <img src="docs/images/dashboard/ai-operations.jpg" alt="TickerQ Assistant overview with investigations, recovery signals, and recent failures" width="1200" />
+  </a>
+</p>
+
+</details>
+
+<details>
+<summary><strong>AI chat</strong> — ask about runs in natural language and confirm proposed changes, with a hosted or local model</summary>
+
+<p align="center">
+  <a href="https://tickerq.net/docs/5.x/dashboard/ai-assistant">
+    <img src="docs/images/dashboard/ai-chat.jpg" alt="TickerQ AI chat with a proposed schedule policy and Confirm and Dismiss actions" width="1200" />
   </a>
 </p>
 
@@ -134,7 +163,7 @@ Select a view to expand its current dashboard screenshot.
 
 <p align="center">
   <a href="https://tickerq.net/docs/5.x/integrations">
-    <img src="https://raw.githubusercontent.com/Arcenox-co/TickerQ/main/docs/images/dashboard/integrations.jpg" alt="TickerQ Integrations page with Slack and custom webhook connections" width="1200" />
+    <img src="docs/images/dashboard/integrations.jpg" alt="TickerQ Integrations page with Slack and custom webhook connections" width="1200" />
   </a>
 </p>
 

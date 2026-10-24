@@ -39,12 +39,14 @@ namespace TickerQ.EntityFrameworkCore.Customizer
             builder.ApplyConfiguration(new TickerQControlCommandConfigurations(schema));
             builder.ApplyConfiguration(new IntegrationSettingsConfigurations(schema));
             builder.ApplyConfiguration(new TickerQDefinitionConfigurations(schema));
+            builder.ApplyConfiguration(new SchedulePolicyConfigurations(schema));
             builder.ApplyConfiguration(new ExecutionLogArchiveConfiguration(schema));
             builder.ApplyConfiguration(new AssistantConversationConfigurations(schema));
             builder.ApplyConfiguration(new AssistantMessageConfigurations(schema));
             builder.ApplyConfiguration(new AssistantInvestigationConfigurations(schema));
             builder.ApplyConfiguration(new AssistantInvestigationLeaseConfigurations(schema));
             builder.ApplyConfiguration(new AssistantInvestigationBudgetConfigurations(schema));
+            TickerProviderModelConventions.Apply(builder, context.Database.ProviderName);
 
             base.Customize(builder, context);
         }

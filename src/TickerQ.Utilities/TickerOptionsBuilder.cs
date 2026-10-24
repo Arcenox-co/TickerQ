@@ -70,6 +70,7 @@ namespace TickerQ.Utilities
         /// Seeding delegate for cron tickers, executed with the application's service provider.
         /// </summary>
         internal Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> CronSeederAction { get; set; }
+        internal Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> SchedulePolicySeederAction { get; set; }
 
         // Explicit interface implementation for ITickerOptionsSeeding
         bool ITickerOptionsSeeding.SeedDefinedCronTickers => SeedDefinedCronTickers;
@@ -81,6 +82,7 @@ namespace TickerQ.Utilities
         LegacyRuntimePartitionAdoption ITickerOptionsSeeding.LegacyRuntimePartitionAdoption => LegacyRuntimePartitionAdoption;
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.TimeSeederAction => TimeSeederAction;
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.CronSeederAction => CronSeederAction;
+        Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.SchedulePolicySeederAction => SchedulePolicySeederAction;
 
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
@@ -197,22 +199,6 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Enables skipping of stale cron occurrences on application startup.
-        /// Idle/Queued occurrences whose execution time is further behind the current
-        /// time than <paramref name="threshold"/> are marked <c>Skipped</c>, preventing
-        /// duplicate executions after a restart (see #776).
-        /// </summary>
-        /// <param name="threshold">
-        /// How far behind the current time an occurrence must be to be considered stale.
-        /// Defaults to 5 seconds when not specified.
-        /// </param>
-        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SkipStaleCronOccurrencesOnStartup(TimeSpan? threshold = null)
-        {
-            _schedulerOptions.StaleCronOccurrenceThreshold = threshold ?? TimeSpan.FromSeconds(5);
-            return this;
-        }
-
-        /// <summary>
         /// Disable automatic seeding of code-defined cron tickers on startup.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> IgnoreSeedDefinedCronTickers()
@@ -231,6 +217,14 @@ namespace TickerQ.Utilities
             ThrowIfRuntimeBindingFrozen();
             if (string.IsNullOrWhiteSpace(applicationNamespace))
                 throw new ArgumentException("A non-empty application namespace is required.", nameof(applicationNamespace));
+            // Same normalization the runtime partition applies, so the limit is checked here with a
+            // message that names the namespace instead of failing later inside cron seed identity.
+            var normalized = applicationNamespace.Trim().Normalize(System.Text.NormalizationForm.FormC);
+            var byteCount = System.Text.Encoding.UTF8.GetByteCount(normalized);
+            if (byteCount > CronSeedIdentity.MaxIdentityUtf8Bytes)
+                throw new ArgumentException(
+                    $"The application namespace must be at most {CronSeedIdentity.MaxIdentityUtf8Bytes} UTF-8 bytes " +
+                    $"after trimming; the configured value is {byteCount} bytes.", nameof(applicationNamespace));
             ApplicationNamespace = applicationNamespace.Trim();
             return this;
         }
@@ -359,6 +353,32 @@ namespace TickerQ.Utilities
             ExternalProviderConfigServiceAction += services =>
             {
                 services.AddSingleton<ITickerQInstrumentation, ActivitySourceInstrumentation>();
+            };
+            return this;
+        }
+
+        /// <summary>Registers a reusable local-date source for schedule policies.</summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> AddScheduleDateProvider<
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TProvider>()
+            where TProvider : class, IScheduleDateProvider
+        {
+            ExternalProviderConfigServiceAction += services =>
+                services.AddSingleton<IScheduleDateProvider, TProvider>();
+            return this;
+        }
+
+        /// <summary>
+        /// Seeds or reconciles named schedule policies before ticker seeders run. Use
+        /// <see cref="ISchedulePolicyManager.UpsertAsync"/> for idempotent code-owned definitions.
+        /// </summary>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseSchedulePolicySeeder(
+            Func<ISchedulePolicyManager, System.Threading.CancellationToken, System.Threading.Tasks.Task> seeder)
+        {
+            if (seeder == null) return this;
+            SchedulePolicySeederAction = async (sp, cancellationToken) =>
+            {
+                var manager = sp.GetRequiredService<ISchedulePolicyManager>();
+                await seeder(manager, cancellationToken).ConfigureAwait(false);
             };
             return this;
         }
@@ -561,17 +581,6 @@ namespace TickerQ.Utilities
         /// Negative values are treated as zero by the scheduling loop.
         /// </summary>
         public TimeSpan MinPollingInterval { get; set; } = TimeSpan.FromSeconds(1);
-        /// <summary>
-        /// How far behind the current time an Idle/Queued cron occurrence must be
-        /// before it is marked <c>Skipped</c> on startup. Occurrences whose
-        /// <c>ExecutionTime</c> is closer to the current time than this threshold
-        /// are left for normal scheduling to pick up.
-        /// <para>
-        /// Disabled by default (<see cref="TimeSpan.Zero"/>). Enable via
-        /// <c>SkipStaleCronOccurrencesOnStartup()</c> on the options builder.
-        /// </para>
-        /// </summary>
-        public TimeSpan StaleCronOccurrenceThreshold { get; set; } = TimeSpan.Zero;
         public TimeZoneInfo SchedulerTimeZone = TimeZoneInfo.Local;
 
         private TimeSpan _definedCronRetirementGracePeriod = TimeSpan.FromHours(24);

@@ -227,6 +227,18 @@ export default function CronTickersPage() {
         ),
       },
       {
+        accessorKey: "timeZoneId",
+        header: "Time zone",
+        cell: ({ row }) => (
+          <span
+            className="block max-w-40 truncate font-mono text-[10px] text-muted-foreground"
+            title={row.original.timeZoneId || "Server local time zone"}
+          >
+            {row.original.timeZoneId || "Server local"}
+          </span>
+        ),
+      },
+      {
         accessorKey: "isEnabled",
         header: "State",
         cell: ({ row }) => {
@@ -522,6 +534,13 @@ export default function CronTickersPage() {
             onStale: values.onStale,
             timeoutSeconds:
               values.timeoutSeconds && values.timeoutSeconds > 0 ? values.timeoutSeconds : null,
+            timeZoneId: values.timeZoneId || null,
+            schedulePolicyName: values.schedulePolicyName || null,
+            missedExecutionAction: values.missedExecutionAction,
+            maximumLatenessSeconds: values.missedExecutionAction === "Skip"
+              ? values.maximumLatenessSeconds ?? 0
+              : null,
+            catchUpMode: values.catchUpMode,
           });
           setPage(1);
           setRecentlyCreatedId(res.id);
@@ -624,14 +643,26 @@ export default function CronTickersPage() {
           await updateMutation.mutateAsync({
             id: editingCron.id,
             body: {
+              function: values.function,
               expression: values.expression,
               description: values.description || null,
               retries: values.retries ?? null,
               retryIntervalsSeconds: parseIntervals(values.retryIntervalsSeconds),
+              request: values.requestJson?.trim()
+                ? encodeRequestPayload(values.requestJson)
+                : "",
               isEnabled: values.isEnabled,
               skipIfAlreadyRunning: values.skipIfAlreadyRunning,
               onStale: values.onStale,
               timeoutSeconds: values.timeoutSeconds ?? 0,
+              timeZoneId: values.timeZoneId,
+              schedulePolicyName: values.schedulePolicyName || null,
+              replaceSchedulePolicy: true,
+              missedExecutionAction: values.missedExecutionAction,
+              maximumLatenessSeconds: values.missedExecutionAction === "Skip"
+                ? values.maximumLatenessSeconds ?? 0
+                : null,
+              catchUpMode: values.catchUpMode,
             },
           });
         }}

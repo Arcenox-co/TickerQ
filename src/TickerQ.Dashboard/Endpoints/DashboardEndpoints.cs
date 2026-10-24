@@ -112,6 +112,11 @@ public static class DashboardEndpoints
         d.MapGetAot("/functions/test-run-chain/{id:guid}", c => GetTestRunChain(c, c.RequiredRouteGuid("id")));
         d.MapGetAot("/definitions", ListDefinitions<TTimeTicker, TCronTicker>);
         d.MapGetAot("/definitions/{id:guid}", c => GetDefinition<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        d.MapGetAot("/schedule-policies", ListSchedulePolicies);
+        d.MapGetAot("/schedule-policies/date-providers", ListScheduleDateProviders);
+        d.MapGetAot("/schedule-policies/{id:guid}", c => GetSchedulePolicy(c, c.RequiredRouteGuid("id")));
+        d.MapPostAot("/schedule-policies/{id:guid}/preview", c => PreviewSchedulePolicy(c, c.RequiredRouteGuid("id")));
+        d.MapGetAot("/schedule-policies/{id:guid}/usage", c => GetSchedulePolicyUsage<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
 
         d.MapGetAot("/host/status", GetHostStatus<TTimeTicker, TCronTicker>);
         d.MapGetAot("/host/next-ticker", GetNextTicker<TTimeTicker, TCronTicker>);
@@ -179,6 +184,9 @@ public static class DashboardEndpoints
         w.MapPostAot("/definitions/from-time-ticker/{id:guid}", c => CreateDefinitionFromTimeTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
         w.MapPostAot("/definitions/from-cron-ticker/{id:guid}", c => CreateDefinitionFromCronTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
         w.MapPostAot("/definitions/{id:guid}/activate", c => ActivateDraft<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
+        w.MapPostAot("/schedule-policies", CreateSchedulePolicy);
+        w.MapPutAot("/schedule-policies/{id:guid}", c => UpdateSchedulePolicy(c, c.RequiredRouteGuid("id")));
+        w.MapDeleteAot("/schedule-policies/{id:guid}", c => DeleteSchedulePolicy(c, c.RequiredRouteGuid("id")));
 
         w.MapPostAot("/time-tickers", AddTimeTicker<TTimeTicker, TCronTicker>);
         w.MapDeleteAot("/time-tickers/{id:guid}", c => DeleteTimeTicker<TTimeTicker, TCronTicker>(c, c.RequiredRouteGuid("id")));
@@ -208,6 +216,171 @@ public static class DashboardEndpoints
             builder.WithGroupName(config.GroupName);
         return builder;
     }
+
+    private static async Task ListSchedulePolicies(HttpContext c)
+    {
+        var policies = await c.RequestServices.GetRequiredService<ISchedulePolicyManager>()
+            .ListAsync(c.RequestAborted).ConfigureAwait(false);
+        await WriteJson(c, policies.ToList(), Json(c));
+    }
+
+    private static async Task ListScheduleDateProviders(HttpContext c)
+    {
+        var names = c.RequestServices.GetServices<IScheduleDateProvider>()
+            .Select(static provider => provider.Name?.Trim())
+            .Where(static name => !string.IsNullOrWhiteSpace(name))
+            .Select(static name => name!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        await WriteJson(c, new ScheduleDateProvidersResponse { Names = names }, Json(c));
+    }
+
+    private static async Task GetSchedulePolicy(HttpContext c, Guid id)
+    {
+        var policy = await c.RequestServices.GetRequiredService<ISchedulePolicyManager>()
+            .GetAsync(id, c.RequestAborted).ConfigureAwait(false);
+        if (policy == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        await WriteJson(c, policy, Json(c));
+    }
+
+    private static async Task PreviewSchedulePolicy(HttpContext c, Guid id)
+    {
+        var body = await ReadJsonAsync<SchedulePolicyPreviewRequest>(c, Json(c));
+        if (body == null || string.IsNullOrWhiteSpace(body.Expression))
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+        var manager = c.RequestServices.GetRequiredService<ISchedulePolicyManager>();
+        var policy = await manager.GetAsync(id, c.RequestAborted).ConfigureAwait(false);
+        if (policy == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        try
+        {
+            var preview = await manager.PreviewCronAsync(policy.Name, body.Expression,
+                body.FromUtc == default ? DateTime.UtcNow : body.FromUtc,
+                body.Count, body.TimeZoneId, c.RequestAborted).ConfigureAwait(false);
+            await WriteJson(c, preview.ToList(), Json(c));
+        }
+        catch (Exception exception) when (exception is ArgumentException or ArgumentOutOfRangeException)
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await WriteJson(c, new ErrorResponseBody { Error = exception.Message }, Json(c));
+        }
+    }
+
+    private static async Task GetSchedulePolicyUsage<TTimeTicker, TCronTicker>(HttpContext c, Guid id)
+        where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
+        where TCronTicker : CronTickerEntity, new()
+    {
+        var policy = await c.RequestServices.GetRequiredService<ISchedulePolicyManager>()
+            .GetAsync(id, c.RequestAborted).ConfigureAwait(false);
+        if (policy == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+        var store = c.RequestServices.GetRequiredService<ITickerPersistenceProvider<TTimeTicker, TCronTicker>>();
+        var timeCountTask = store.TimeTickersQuery().Where(x => x.SchedulePolicyName == policy.Name)
+            .CountAsync(c.RequestAborted);
+        var cronCountTask = store.CronTickersQuery().Where(x => x.SchedulePolicyName == policy.Name)
+            .CountAsync(c.RequestAborted);
+        await Task.WhenAll(timeCountTask, cronCountTask).ConfigureAwait(false);
+        await WriteJson(c, new SchedulePolicyUsageResponse
+        {
+            TimeTickerCount = await timeCountTask.ConfigureAwait(false),
+            CronTickerCount = await cronCountTask.ConfigureAwait(false),
+        }, Json(c));
+    }
+
+    private static async Task CreateSchedulePolicy(HttpContext c)
+    {
+        var body = await ReadJsonAsync<SaveSchedulePolicyRequest>(c, Json(c));
+        if (body == null) { c.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
+        try
+        {
+            var created = await c.RequestServices.GetRequiredService<ISchedulePolicyManager>()
+                .CreateAsync(ToSchedulePolicy(body), c.RequestAborted).ConfigureAwait(false);
+            c.Response.StatusCode = StatusCodes.Status201Created;
+            await WriteJson(c, created, Json(c));
+        }
+        catch (Exception exception) when (exception is TickerValidatorException or DuplicateSchedulePolicyNameException)
+        {
+            c.Response.StatusCode = exception is DuplicateSchedulePolicyNameException
+                ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+            await WriteJson(c, new ErrorResponseBody { Error = exception.Message }, Json(c));
+        }
+    }
+
+    private static async Task UpdateSchedulePolicy(HttpContext c, Guid id)
+    {
+        var body = await ReadJsonAsync<UpdateSchedulePolicyRequest>(c, Json(c));
+        if (body == null) { c.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
+        try
+        {
+            var policy = ToSchedulePolicy(body);
+            policy.Id = id;
+            var updated = await c.RequestServices.GetRequiredService<ISchedulePolicyManager>()
+                .UpdateAsync(policy, body.Version, c.RequestAborted).ConfigureAwait(false);
+            if (updated == null)
+            {
+                c.Response.StatusCode = StatusCodes.Status409Conflict;
+                await WriteJson(c, new ErrorResponseBody
+                {
+                    Error = "The schedule policy changed. Reload it before saving."
+                }, Json(c));
+                return;
+            }
+            await WriteJson(c, updated, Json(c));
+        }
+        catch (Exception exception) when (exception is TickerValidatorException or DuplicateSchedulePolicyNameException)
+        {
+            c.Response.StatusCode = exception is DuplicateSchedulePolicyNameException
+                ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+            await WriteJson(c, new ErrorResponseBody { Error = exception.Message }, Json(c));
+        }
+    }
+
+    private static async Task DeleteSchedulePolicy(HttpContext c, Guid id)
+    {
+        if (!long.TryParse(c.Request.Query["version"], out var version) || version <= 0)
+        {
+            c.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await WriteJson(c, new ErrorResponseBody { Error = "A positive version is required." }, Json(c));
+            return;
+        }
+        try
+        {
+            var deleted = await c.RequestServices.GetRequiredService<ISchedulePolicyManager>()
+                .DeleteAsync(id, version, c.RequestAborted).ConfigureAwait(false);
+            if (deleted)
+            {
+                c.Response.StatusCode = StatusCodes.Status204NoContent;
+                return;
+            }
+            c.Response.StatusCode = StatusCodes.Status409Conflict;
+            await WriteJson(c, new ErrorResponseBody
+            {
+                Error = "The schedule policy no longer exists or changed. Reload before deleting it."
+            }, Json(c));
+        }
+        catch (TickerValidatorException exception)
+        {
+            c.Response.StatusCode = StatusCodes.Status409Conflict;
+            await WriteJson(c, new ErrorResponseBody { Error = exception.Message }, Json(c));
+        }
+    }
+
+    private static SchedulePolicy ToSchedulePolicy(SaveSchedulePolicyRequest body) => new()
+    {
+        Name = body.Name,
+        Description = body.Description,
+        TimeZoneId = body.TimeZoneId,
+        AllowedWeekdays = body.AllowedWeekdays,
+        AllowedTimeWindows = body.AllowedTimeWindows ?? new(),
+        ExcludedDates = body.ExcludedDates ?? new(),
+        ExcludedAnnualDates = body.ExcludedAnnualDates ?? new(),
+        DateProviderNames = body.DateProviderNames ?? new(),
+        RequiredPolicyNames = body.RequiredPolicyNames ?? new(),
+        ExcludedWhenPolicyAllowsNames = body.ExcludedWhenPolicyAllowsNames ?? new(),
+    };
 
     private static Task WriteJson<T>(HttpContext context, T value, JsonSerializerOptions options)
     {
@@ -294,7 +467,6 @@ public static class DashboardEndpoints
             UserId = current.IsAuthenticated ? current.UserId : null,
             Mode = info.Mode.ToString().ToLower(),
             Enabled = info.IsEnabled,
-            SessionTimeout = info.SessionTimeoutMinutes,
             Schemes = schemeNames,
             LoginAvailable = loginAvailable,
             LoginRedirect = config.HostLoginRedirectPath,
@@ -862,6 +1034,10 @@ public static class DashboardEndpoints
             RetryIntervals = body.RetryIntervalsSeconds,
             OnStale = body.OnStale ?? StaleAction.Restart,
             TimeoutSeconds = body.TimeoutSeconds is > 0 ? body.TimeoutSeconds : null,
+            SchedulePolicyName = body.SchedulePolicyName,
+            BlockedOccurrenceBehavior = body.BlockedOccurrenceBehavior,
+            MissedExecutionAction = body.MissedExecutionAction ?? MissedExecutionAction.RunOnce,
+            MaximumLateness = ToMaximumLateness(body.MaximumLatenessSeconds),
         };
 
         var result = await manager.AddAsync(entity, c.RequestAborted);
@@ -1348,6 +1524,18 @@ public static class DashboardEndpoints
         if (body.RunCondition.HasValue)             entity.RunCondition   = body.RunCondition.Value;
         if (body.OnStale.HasValue)                  entity.OnStale        = body.OnStale.Value;
         if (body.TimeoutSeconds.HasValue)           entity.TimeoutSeconds = body.TimeoutSeconds.Value > 0 ? body.TimeoutSeconds.Value : null;
+        if (body.ReplaceSchedulePolicy || body.SchedulePolicyName != null)
+            entity.SchedulePolicyName = string.IsNullOrWhiteSpace(body.SchedulePolicyName) ? null : body.SchedulePolicyName;
+        if (body.BlockedOccurrenceBehavior.HasValue)
+            entity.BlockedOccurrenceBehavior = body.BlockedOccurrenceBehavior;
+        if (body.MissedExecutionAction.HasValue)
+        {
+            entity.MissedExecutionAction = body.MissedExecutionAction.Value;
+            if (body.MissedExecutionAction == MissedExecutionAction.RunOnce && !body.MaximumLatenessSeconds.HasValue)
+                entity.MaximumLateness = null;
+        }
+        if (body.MaximumLatenessSeconds.HasValue)
+            entity.MaximumLateness = ToMaximumLateness(body.MaximumLatenessSeconds);
 
         var result = await manager.UpdateAsync(entity, c.RequestAborted);
         if (!result.IsSucceeded) { await WriteTickerError(c, result.Exception); return; }
@@ -1368,6 +1556,10 @@ public static class DashboardEndpoints
         var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
         var rootEntity = BuildChainEntity<TTimeTicker>(body.Root, isRoot: true, parentId: null);
         rootEntity.ExecutionTime = body.ExecutionTime;
+        rootEntity.SchedulePolicyName = body.SchedulePolicyName;
+        rootEntity.BlockedOccurrenceBehavior = body.BlockedOccurrenceBehavior;
+        rootEntity.MissedExecutionAction = body.MissedExecutionAction ?? MissedExecutionAction.RunOnce;
+        rootEntity.MaximumLateness = ToMaximumLateness(body.MaximumLatenessSeconds);
 
         var createdCount = 1 + CountDescendants(rootEntity);
         var result = await manager.AddAsync(rootEntity, c.RequestAborted);
@@ -1404,6 +1596,10 @@ public static class DashboardEndpoints
         var manager = c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>();
         var newRoot = BuildChainEntity<TTimeTicker>(body.Root, isRoot: true, parentId: null);
         newRoot.ExecutionTime = body.ExecutionTime;
+        newRoot.SchedulePolicyName = body.SchedulePolicyName;
+        newRoot.BlockedOccurrenceBehavior = body.BlockedOccurrenceBehavior;
+        newRoot.MissedExecutionAction = body.MissedExecutionAction ?? MissedExecutionAction.RunOnce;
+        newRoot.MaximumLateness = ToMaximumLateness(body.MaximumLatenessSeconds);
 
         var createdCount = 1 + CountDescendants(newRoot);
         var result = await manager.ReplaceChainAsync(rootId, newRoot, c.RequestAborted);
@@ -1470,6 +1666,14 @@ public static class DashboardEndpoints
             IsEnabled = body.IsEnabled ?? true,
             OnStale = body.OnStale ?? StaleAction.Restart,
             TimeoutSeconds = body.TimeoutSeconds is > 0 ? body.TimeoutSeconds : null,
+            TimeZoneId = body.TimeZoneId,
+            SchedulePolicyName = body.SchedulePolicyName,
+            BlockedOccurrenceBehavior = string.IsNullOrWhiteSpace(body.SchedulePolicyName)
+                ? null
+                : BlockedOccurrenceBehavior.Skip,
+            MissedExecutionAction = body.MissedExecutionAction ?? MissedExecutionAction.RunOnce,
+            MaximumLateness = ToMaximumLateness(body.MaximumLatenessSeconds),
+            CatchUpMode = body.CatchUpMode ?? CronCatchUpMode.Skip,
         };
 
         var result = await manager.AddAsync(entity, c.RequestAborted);
@@ -1505,6 +1709,22 @@ public static class DashboardEndpoints
         if (body.IsEnabled.HasValue)                       entity.IsEnabled      = body.IsEnabled.Value;
         if (body.OnStale.HasValue)                         entity.OnStale        = body.OnStale.Value;
         if (body.TimeoutSeconds.HasValue)                  entity.TimeoutSeconds = body.TimeoutSeconds.Value > 0 ? body.TimeoutSeconds.Value : null;
+        if (body.TimeZoneId != null)                       entity.TimeZoneId = string.IsNullOrWhiteSpace(body.TimeZoneId) ? null : body.TimeZoneId;
+        if (body.ReplaceSchedulePolicy || body.SchedulePolicyName != null)
+            entity.SchedulePolicyName = string.IsNullOrWhiteSpace(body.SchedulePolicyName) ? null : body.SchedulePolicyName;
+        entity.BlockedOccurrenceBehavior = string.IsNullOrWhiteSpace(entity.SchedulePolicyName)
+            ? null
+            : BlockedOccurrenceBehavior.Skip;
+        if (body.MissedExecutionAction.HasValue)
+        {
+            entity.MissedExecutionAction = body.MissedExecutionAction.Value;
+            if (body.MissedExecutionAction == MissedExecutionAction.RunOnce && !body.MaximumLatenessSeconds.HasValue)
+                entity.MaximumLateness = null;
+        }
+        if (body.MaximumLatenessSeconds.HasValue)
+            entity.MaximumLateness = ToMaximumLateness(body.MaximumLatenessSeconds);
+        if (body.CatchUpMode.HasValue)
+            entity.CatchUpMode = body.CatchUpMode.Value;
 
         var result = await manager.UpdateAsync(entity, c.RequestAborted);
         if (!result.IsSucceeded) { await WriteTickerError(c, result.Exception); return; }
@@ -1703,6 +1923,11 @@ public static class DashboardEndpoints
         if (root == null) { c.Response.StatusCode = StatusCodes.Status404NotFound; return; }
         var payload = new SavedDefinitionPayload
         {
+            ExecutionTime = root.ExecutionTime,
+            SchedulePolicyName = root.SchedulePolicyName,
+            BlockedOccurrenceBehavior = root.BlockedOccurrenceBehavior,
+            MissedExecutionAction = root.MissedExecutionAction,
+            MaximumLatenessSeconds = ToMaximumLatenessSeconds(root.MaximumLateness),
             Root = ToNodeRequest(root, body.IncludeRequestData),
         };
         if (payload.Root.Children is not { Count: > 0 })
@@ -1761,7 +1986,12 @@ public static class DashboardEndpoints
         };
         var payload = new SavedDefinitionPayload
         {
-            Expression = cron.Expression, SkipIfAlreadyRunning = cron.SkipIfAlreadyRunning, Root = root,
+            Expression = cron.Expression, SkipIfAlreadyRunning = cron.SkipIfAlreadyRunning,
+            TimeZoneId = cron.TimeZoneId, SchedulePolicyName = cron.SchedulePolicyName,
+            BlockedOccurrenceBehavior = cron.BlockedOccurrenceBehavior, Root = root,
+            MissedExecutionAction = cron.MissedExecutionAction,
+            MaximumLatenessSeconds = ToMaximumLatenessSeconds(cron.MaximumLateness),
+            CatchUpMode = cron.CatchUpMode,
         };
         if (root.Children is not { Count: > 0 })
         {
@@ -1869,6 +2099,10 @@ public static class DashboardEndpoints
         var root = BuildChainEntity<TTimeTicker>(payload.Root, true, null, pendingRootId);
         var executionTime = body.ExecutionTime ?? payload.ExecutionTime ?? DateTime.UtcNow;
         root.ExecutionTime = executionTime < DateTime.UtcNow ? DateTime.UtcNow : executionTime;
+        root.SchedulePolicyName = payload.SchedulePolicyName;
+        root.BlockedOccurrenceBehavior = payload.BlockedOccurrenceBehavior;
+        root.MissedExecutionAction = payload.MissedExecutionAction ?? MissedExecutionAction.RunOnce;
+        root.MaximumLateness = ToMaximumLateness(payload.MaximumLatenessSeconds);
         var createdCount = 1 + CountDescendants(root);
         var result = await c.RequestServices.GetRequiredService<ITimeTickerManager<TTimeTicker>>()
             .AddAsync(root, c.RequestAborted).ConfigureAwait(false);
@@ -1944,8 +2178,25 @@ public static class DashboardEndpoints
         ExecutionTime = payload.ExecutionTime,
         Expression = payload.Expression,
         SkipIfAlreadyRunning = payload.SkipIfAlreadyRunning,
+        TimeZoneId = payload.TimeZoneId,
+        SchedulePolicyName = payload.SchedulePolicyName,
+        BlockedOccurrenceBehavior = payload.BlockedOccurrenceBehavior,
+        MissedExecutionAction = payload.MissedExecutionAction,
+        MaximumLatenessSeconds = payload.MaximumLatenessSeconds,
+        CatchUpMode = payload.CatchUpMode,
         Root = payload.Root == null ? null : CopyNode(payload.Root, includeRequestData),
     };
+
+    private static TimeSpan? ToMaximumLateness(long? seconds)
+    {
+        if (!seconds.HasValue) return null;
+        if (seconds.Value < 0 || seconds.Value > (long)TimeSpan.MaxValue.TotalSeconds)
+            return TimeSpan.FromTicks(-1); // manager validation returns a stable 422 response
+        return TimeSpan.FromSeconds(seconds.Value);
+    }
+
+    private static long? ToMaximumLatenessSeconds(TimeSpan? value)
+        => value.HasValue ? checked((long)value.Value.TotalSeconds) : null;
 
     private static TimeTickerNodeRequest CopyNode(TimeTickerNodeRequest node, bool includeRequestData) => new()
     {

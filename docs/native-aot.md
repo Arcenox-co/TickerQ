@@ -102,8 +102,8 @@ dependencies and function boundaries remain explicit.
 
 The verified Native AOT lanes cover:
 
-- in-memory scheduling, typed payloads, time chains, cron occurrences, cooperative
-  cancellation, and dashboard reads;
+- in-memory scheduling, typed payloads, time chains, cron occurrences, time-zone-aware
+  schedule policies, cooperative cancellation, and dashboard reads/writes;
 - Redis scheduling, typed payloads, time chains, point reads, and paginated dashboard
   queries against a real Redis server;
 - encrypted integration settings, redaction, Slack payload preview, and the scheduler's

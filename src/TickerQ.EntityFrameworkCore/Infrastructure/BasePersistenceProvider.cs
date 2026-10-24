@@ -33,6 +33,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
+    public bool SupportsCronCatchUp => true;
     public bool IntegrationSettingsArePersistent => true;
 
     public bool SupportsIntegrationMonitoring => true;
@@ -358,11 +359,14 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 return false;
             if (current is DbUpdateConcurrencyException or DbException { IsTransient: true })
                 transient = true;
-            // Known serialization/deadlock states guarantee rollback. Do not accept all
-            // class-40 states: 40003 means statement completion is unknown. Drivers expose
-            // these through DbException, without a concrete driver or SQL dependency.
-            if (current is DbException { SqlState: "40001" or "40P01" })
-                rolledBack = true;
+            // Known deadlock/serialization conflicts are safe to replay before commit; those that
+            // guarantee a full rollback are also safe after commit started. Do not accept all
+            // class-40 states: 40003 means statement completion is unknown.
+            if (current is DbException db && RelationalTransactionConflicts.IsConflict(db, out var fullRollback))
+            {
+                transient = true;
+                rolledBack |= fullRollback;
+            }
         }
         // Never replay our fallback after an ambiguous commit: the business mutation may
         // already exist. An explicitly configured EF strategy retains its own retry policy.
@@ -386,9 +390,19 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             };
             // Concurrent first writers may both observe an absent sentinel. Insert-if-missing
             // preserves existing metadata and never flushes a staged caller's pending entities.
-            await metadata.Upsert(sentinel)
-                .On(x => new { x.ApplicationNamespaceKey, x.Id }).NoUpdate()
-                .RunAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await RelationalInsertIfMissing.ExecuteAsync(dbContext, sentinel,
+                        [nameof(TickerQStoreMetadata.ApplicationNamespaceKey), nameof(TickerQStoreMetadata.Id)],
+                        cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (RelationalTransactionConflicts.IsUniqueViolation(exception))
+            {
+                // A concurrent writer created the sentinel first (MERGE-based providers report this
+                // race as a key violation). Retry the transaction; its next snapshot sees the row.
+                throw new DbUpdateConcurrencyException(
+                    "A concurrent writer created the TimeTicker graph mutation sentinel.", exception);
+            }
         }
 
         var locked = await metadata
@@ -2396,6 +2410,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 return false;
             if (current is DbUpdateConcurrencyException or DbException { IsTransient: true })
                 transient = true;
+            if (current is DbException db && RelationalTransactionConflicts.IsConflict(db, out _))
+                transient = true;
             if (current is DbUpdateException)
                 updateFailure = true;
         }
@@ -2960,9 +2976,20 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 DefinitionRevision = item.DefinitionRevision, LockedAt = now,
                 AcquisitionToken = acquisitionToken, CreatedAt = now, UpdatedAt = now
             };
-            var added = await context.Upsert(occurrence)
-                .On(x => new { x.ApplicationNamespaceKey, x.ExecutionTime, x.CronTickerId }).NoUpdate()
-                .RunAsync(cancellationToken).ConfigureAwait(false);
+            int added;
+            try
+            {
+                added = await RelationalInsertIfMissing.ExecuteAsync(dbContext, occurrence,
+                    [nameof(CronTickerOccurrenceEntity<TCronTicker>.ApplicationNamespaceKey),
+                     nameof(CronTickerOccurrenceEntity<TCronTicker>.ExecutionTime),
+                     nameof(CronTickerOccurrenceEntity<TCronTicker>.CronTickerId)],
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (RelationalTransactionConflicts.IsUniqueViolation(exception))
+            {
+                // Another node created this occurrence first; same outcome as an ignored insert.
+                added = 0;
+            }
             if (added <= 0) return null;
             occurrence.CronTicker = CronSnapshot(item);
             return occurrence;
@@ -3026,6 +3053,26 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             .Select(MappingExtensions.ForLatestQueuedCronTickerOccurrence<CronTickerOccurrenceEntity<TCronTicker>, TCronTicker>())
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, DateTime>> GetLatestCronOccurrenceTimesAsync(
+        IReadOnlyCollection<Guid> cronTickerIds, CancellationToken cancellationToken = default)
+    {
+        if (cronTickerIds == null || cronTickerIds.Count == 0)
+            return new Dictionary<Guid, DateTime>();
+        var ids = cronTickerIds.ToList();
+        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var set = session.Context.Set<CronTickerOccurrenceEntity<TCronTicker>>().AsNoTracking();
+        var rows = await set
+            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey)
+            .Where(EfPredicateBuilder.Contains<CronTickerOccurrenceEntity<TCronTicker>, Guid>(ids, x => x.CronTickerId))
+            .Where(x => !set.Any(other =>
+                other.ApplicationNamespaceKey == _runtimePartitionKey &&
+                other.CronTickerId == x.CronTickerId && other.ExecutionTime > x.ExecutionTime))
+            .Select(x => new { x.CronTickerId, x.ExecutionTime })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        return rows.GroupBy(x => x.CronTickerId)
+            .ToDictionary(group => group.Key, group => group.Max(x => x.ExecutionTime));
     }
 
     protected IQueryable<CronTickerOccurrenceEntity<TCronTicker>> WhereCronDefinitionIsCurrent(
@@ -3105,28 +3152,6 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         }, cancellationToken).ConfigureAwait(false);
     }
     
-    public async Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
-    {
-        if (staleThreshold <= TimeSpan.Zero)
-            return 0;
-
-        var now = _clock.UtcNow;
-        var cutoff = now - staleThreshold;
-
-        using var session = await CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var dbContext = session.Context;
-
-        return await dbContext.Set<CronTickerOccurrenceEntity<TCronTicker>>()
-            .Where(x => x.ApplicationNamespaceKey == _runtimePartitionKey &&
-                        (x.Status == TickerStatus.Idle || x.Status == TickerStatus.Queued))
-            .Where(x => x.ExecutionTime < cutoff)
-            .ExecuteUpdateAsync(setter => setter
-                .SetProperty(x => x.Status, TickerStatus.Skipped)
-                .SetProperty(x => x.SkippedReason, "Missed: occurrence was pending when the application restarted")
-                .SetProperty(x => x.UpdatedAt, now), cancellationToken)
-            .ConfigureAwait(false);
-    }
-
     #endregion
 
     #region Stale_Job_Recovery

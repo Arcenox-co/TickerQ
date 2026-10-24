@@ -2,17 +2,17 @@
 -- safely-unleased pending occurrence from the previous revision before publication.
 -- No acquisition can interleave with this script on standalone Redis.
 -- KEYS: definition,definition ids,definition quarantine,byCron,all occurrence ids,pending,
---       occurrence retention x4,occurrence quarantine,activation metadata
+--       occurrence retention x4,occurrence quarantine,activation metadata,latest occurrence per cron
 -- ARGV: cron id,operation,replacement json,reconcile(0/1),now,idle,queued,skipped,reason,
 --       retention score,occurrence prefix,slot prefix,exact supported epoch,allow exact Activating (0/1),
 --       compare-owner (0/1),expected owner namespace,expected seed key,expected definition revision (-1 skips),
 --       scoped | startup-seeder | legacy | invalid runtime admission mode
-if #KEYS ~= 12 or #ARGV ~= 19 then return redis.error_reply('invalid cron mutation argument count') end
+if #KEYS ~= 13 or #ARGV ~= 19 then return redis.error_reply('invalid cron mutation argument count') end
 local function type_ok(key, expected)
     local t = redis.call('TYPE', key)['ok']
     return t == 'none' or t == expected
 end
-local expected = {'string','set','hash','set','set','zset','zset','zset','zset','zset','hash','hash'}
+local expected = {'string','set','hash','set','set','zset','zset','zset','zset','zset','hash','hash','zset'}
 for i = 1, #KEYS do
     if not type_ok(KEYS[i], expected[i]) then
         return redis.error_reply('cron mutation key has an incompatible Redis type')
@@ -207,6 +207,7 @@ if ARGV[2] == 'delete' then
     if redis.call('SCARD', KEYS[4]) ~= 0 then return 0 end
     redis.call('DEL', KEYS[1])
     redis.call('SREM', KEYS[2], ARGV[1])
+    redis.call('ZREM', KEYS[13], ARGV[1])
     return current and 1 or 0
 end
 redis.call('SET', KEYS[1], ARGV[3])

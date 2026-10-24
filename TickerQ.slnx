@@ -48,5 +48,6 @@
     <Project Path="tests/TickerQ.Integrations.Tests/TickerQ.Integrations.Tests.csproj" />
     <Project Path="tests/TickerQ.SourceGenerator.Tests/TickerQ.SourceGenerator.Tests.csproj" />
     <Project Path="tests/TickerQ.Tests/TickerQ.Tests.csproj" />
+    <Project Path="tests/TickerQ.Tests.DiscoveryFixture/TickerQ.Tests.DiscoveryFixture.csproj" />
   </Folder>
 </Solution>

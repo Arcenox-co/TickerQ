@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
 using TickerQ.EntityFrameworkCore.Entities;
 
 namespace TickerQ.EntityFrameworkCore.Tests.Infrastructure;
@@ -41,7 +42,8 @@ public class CronTickerConfigurationTests : IAsyncLifetime
             typeof(TimeTickerResultEntity<TimeTickerEntity>),
             typeof(CronTickerOccurrenceResultEntity<CronTickerEntity>),
             typeof(NodeFinalizationOutboxEntity), typeof(TickerQStoreMetadata),
-            typeof(TickerQNodeEntity), typeof(TickerQControlCommandEntity)
+            typeof(TickerQNodeEntity), typeof(TickerQControlCommandEntity),
+            typeof(SchedulePolicyEntity)
         };
 
         foreach (var clrType in runtimeTypes)
@@ -56,6 +58,38 @@ public class CronTickerConfigurationTests : IAsyncLifetime
                     property.Name is "Status" or "ExecutionTime" or "TickerId" or "CronTickerId")),
                 index => Assert.Equal("ApplicationNamespaceKey", index.Properties[0].Name));
         }
+    }
+
+    [Fact]
+    public void SchedulePolicies_And_TickerReferences_Are_Mapped_For_Migrations()
+    {
+        var policy = _context.Model.FindEntityType(typeof(SchedulePolicyEntity))!;
+        Assert.Equal("SchedulePolicies", policy.GetTableName());
+        Assert.Equal(200, policy.FindProperty(nameof(SchedulePolicyEntity.Name))!.GetMaxLength());
+        Assert.Equal(64, policy.FindProperty(nameof(SchedulePolicyEntity.NameKey))!.GetMaxLength());
+        Assert.True(policy.FindProperty(nameof(SchedulePolicyEntity.Version))!.IsConcurrencyToken);
+        Assert.Contains(policy.GetIndexes(), index => index.IsUnique &&
+            index.Properties.Select(property => property.Name)
+                .SequenceEqual([nameof(SchedulePolicyEntity.ApplicationNamespaceKey), nameof(SchedulePolicyEntity.NameKey)]));
+
+        var time = _context.Model.FindEntityType(typeof(TimeTickerEntity))!;
+        Assert.Equal(200, time.FindProperty(nameof(TimeTickerEntity.SchedulePolicyName))!.GetMaxLength());
+        Assert.NotNull(time.FindProperty(nameof(TimeTickerEntity.RequestedExecutionTime)));
+        Assert.NotNull(time.FindProperty(nameof(TimeTickerEntity.ScheduleAdjustmentReason)));
+        Assert.Equal(MissedExecutionAction.RunOnce,
+            time.FindProperty(nameof(TimeTickerEntity.MissedExecutionAction))!.GetDefaultValue());
+        Assert.Equal(typeof(long?), time.FindProperty(nameof(TimeTickerEntity.MaximumLateness))!
+            .GetTypeMapping().Converter!.ProviderClrType);
+
+        var cron = _context.Model.FindEntityType(typeof(CronTickerEntity))!;
+        Assert.Equal(200, cron.FindProperty(nameof(CronTickerEntity.SchedulePolicyName))!.GetMaxLength());
+        Assert.Equal(128, cron.FindProperty(nameof(CronTickerEntity.TimeZoneId))!.GetMaxLength());
+        Assert.Equal(MissedExecutionAction.RunOnce,
+            cron.FindProperty(nameof(CronTickerEntity.MissedExecutionAction))!.GetDefaultValue());
+        Assert.Equal(CronCatchUpMode.Skip,
+            cron.FindProperty(nameof(CronTickerEntity.CatchUpMode))!.GetDefaultValue());
+        Assert.Equal(typeof(long?), cron.FindProperty(nameof(CronTickerEntity.MaximumLateness))!
+            .GetTypeMapping().Converter!.ProviderClrType);
     }
 
     [Fact]

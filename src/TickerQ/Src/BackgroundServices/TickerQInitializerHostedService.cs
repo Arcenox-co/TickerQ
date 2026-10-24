@@ -155,10 +155,12 @@ internal sealed class TickerQInitializerHostedService : IHostedService
         await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
             "04-finalization-complete", cancellationToken).ConfigureAwait(false);
 
-        if (options?.TimeSeederAction != null || options?.CronSeederAction != null)
+        if (options?.SchedulePolicySeederAction != null || options?.TimeSeederAction != null || options?.CronSeederAction != null)
         {
             using var startupAdmission = Utilities.Models.StartupSeederAdmissionContext.Enter(
                 activationScope.ScopeKey, targetEpoch);
+            if (options.SchedulePolicySeederAction != null)
+                await options.SchedulePolicySeederAction(_serviceProvider, cancellationToken).ConfigureAwait(false);
             if (options.TimeSeederAction != null)
                 await options.TimeSeederAction(_serviceProvider, cancellationToken).ConfigureAwait(false);
             if (options.CronSeederAction != null)
@@ -167,8 +169,8 @@ internal sealed class TickerQInitializerHostedService : IHostedService
         await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
             "05-user-seeding-complete", cancellationToken).ConfigureAwait(false);
 
-        // Prevent restart catch-up of stale pending cron occurrences (#776).
-        await SkipStaleCronOccurrencesAsync(_serviceProvider, cancellationToken).ConfigureAwait(false);
+        // Preserve the activation-protocol phase boundary used by rolling upgrades. Missed work is
+        // now decided per ticker during normal acquisition/execution instead of by a startup sweep.
         await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
             "06-stale-occurrence-handling-complete", cancellationToken).ConfigureAwait(false);
 
@@ -283,13 +285,4 @@ internal sealed class TickerQInitializerHostedService : IHostedService
         }
     }
 
-    private static async Task SkipStaleCronOccurrencesAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
-    {
-        var schedulerOptions = serviceProvider.GetRequiredService<SchedulerOptionsBuilder>();
-        if (schedulerOptions.StaleCronOccurrenceThreshold <= TimeSpan.Zero)
-            return;
-
-        var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
-        await internalTickerManager.SkipStaleCronOccurrencesAsync(schedulerOptions.StaleCronOccurrenceThreshold, cancellationToken);
-    }
 }

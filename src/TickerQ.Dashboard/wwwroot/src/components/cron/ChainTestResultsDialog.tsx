@@ -39,6 +39,13 @@ function toFlowchartTickers(result: TestRunChainResponse): TimeTickerFlatDto[] {
     onStale: "Restart",
     timeoutSeconds: null,
     deleteBehavior: "Cascade",
+    schedulePolicyName: null,
+    schedulePolicyVersion: null,
+    blockedOccurrenceBehavior: null,
+    missedExecutionAction: "RunOnce",
+    maximumLatenessSeconds: null,
+    requestedExecutionTime: null,
+    scheduleAdjustmentReason: null,
     type: "TimeTicker",
   }));
 }

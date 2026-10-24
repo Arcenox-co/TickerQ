@@ -382,9 +382,31 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                 var key = (string)callInfo.ArgAt<RedisKey>(0);
                 var member = (string)callInfo.ArgAt<RedisValue>(1);
                 var score = callInfo.ArgAt<double>(2);
-                if (!_sortedSets.ContainsKey(key)) _sortedSets[key] = new SortedList<double, string>();
-                _sortedSets[key][score] = member;
+                SetSortedSetMemberScore(key, member, score);
                 return true;
+            });
+
+        _db.SortedSetAddAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<double>(),
+                Arg.Any<SortedSetWhen>(), Arg.Any<CommandFlags>())
+            .Returns(callInfo =>
+            {
+                var key = (string)callInfo.ArgAt<RedisKey>(0);
+                var member = (string)callInfo.ArgAt<RedisValue>(1);
+                var score = callInfo.ArgAt<double>(2);
+                var when = callInfo.ArgAt<SortedSetWhen>(3);
+                var current = GetSortedSetMemberScore(key, member);
+                if (when == SortedSetWhen.GreaterThan && current.HasValue && score <= current.Value)
+                    return false;
+                SetSortedSetMemberScore(key, member, score);
+                return true;
+            });
+
+        _db.SortedSetScoreAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<CommandFlags>())
+            .Returns(callInfo =>
+            {
+                var key = (string)callInfo.ArgAt<RedisKey>(0);
+                var member = (string)callInfo.ArgAt<RedisValue>(1);
+                return GetSortedSetMemberScore(key, member);
             });
 
         _db.SortedSetRemoveAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<CommandFlags>())
@@ -550,6 +572,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                     var reverseKey = (string)keys[4];
                     var pendingKey = (string)keys[5];
                     var retentionKey = (string)keys[7];
+                    var latestByCronKey = (string)keys[8];
                     var candidateId = (string)argv[0];
                     var candidateJson = (string)argv[1];
                     var score = double.Parse(argv[2].ToString(), System.Globalization.CultureInfo.InvariantCulture);
@@ -593,6 +616,9 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                                     var ownerStatus = owner.GetProperty("Status").GetInt32();
                                     if (ownerStatus == idle || ownerStatus == queued)
                                         AddSortedSetEntry(pendingKey, Guid.Parse(existingId), new DateTime((long)score, DateTimeKind.Utc));
+                                    var latestScore = GetSortedSetMemberScore(latestByCronKey, cronId);
+                                    if (!latestScore.HasValue || score > latestScore.Value)
+                                        SetSortedSetMemberScore(latestByCronKey, cronId, score);
                                 }
                             }
                             catch (JsonException) { }
@@ -622,6 +648,9 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
                         AddSortedSetEntry(pendingKey, Guid.Parse(candidateId), new DateTime((long)score, DateTimeKind.Utc));
                     if (retentionEligible)
                         AddSortedSetEntry(retentionKey, Guid.Parse(candidateId), new DateTime((long)retentionScore, DateTimeKind.Utc));
+                    var candidateLatestScore = GetSortedSetMemberScore(latestByCronKey, cronId);
+                    if (!candidateLatestScore.HasValue || score > candidateLatestScore.Value)
+                        SetSortedSetMemberScore(latestByCronKey, cronId, score);
                     return RedisResult.Create(new RedisValue[] { 1, candidateId });
                 }
 
@@ -1024,6 +1053,7 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         {
             var removed = _store.Remove(cronEntityKey);
             if (_sets.TryGetValue(idsKey, out var ids)) ids.Remove(id);
+            RemoveSortedSetMember((string)keys[12], id);
             return RedisResult.Create((RedisValue)(removed ? 1 : 0));
         }
         _store[cronEntityKey] = (string)argv[2];
@@ -1164,6 +1194,24 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
             return;
         foreach (var score in entries.Where(x => x.Value == member).Select(x => x.Key).ToArray())
             entries.Remove(score);
+    }
+
+    private double? GetSortedSetMemberScore(string key, string member)
+    {
+        if (!_sortedSets.TryGetValue(key, out var entries))
+            return null;
+        foreach (var entry in entries)
+            if (string.Equals(entry.Value, member, StringComparison.Ordinal))
+                return entry.Key;
+        return null;
+    }
+
+    private void SetSortedSetMemberScore(string key, string member, double score)
+    {
+        RemoveSortedSetMember(key, member);
+        if (!_sortedSets.TryGetValue(key, out var entries))
+            _sortedSets[key] = entries = new SortedList<double, string>();
+        entries[score] = member;
     }
 
     private void SetupKeyOperations()
@@ -2319,6 +2367,32 @@ public class RedisPersistenceProviderTests : IAsyncLifetime
         Assert.Equal(2, result);
         Assert.NotNull(VerifyInStore<CronTickerOccurrenceEntity<CronTickerEntity>>($"{Prefix}:co:{occ1.Id}"));
         Assert.NotNull(VerifyInStore<CronTickerOccurrenceEntity<CronTickerEntity>>($"{Prefix}:co:{occ2.Id}"));
+    }
+
+    [Fact]
+    public async Task GetLatestCronOccurrenceTimes_Returns_Maximum_Per_Requested_Cron()
+    {
+        var first = CreateCronTicker(function: "latest-first");
+        var second = CreateCronTicker(function: "latest-second");
+        SeedCronTicker(first);
+        SeedCronTicker(second);
+        await _provider.InsertCronTickerOccurrences([
+            CreateCronOccurrence(first.Id, executionTime: _fixedNow.AddMinutes(1)),
+            CreateCronOccurrence(first.Id, executionTime: _fixedNow.AddMinutes(3)),
+            CreateCronOccurrence(second.Id, executionTime: _fixedNow.AddMinutes(2))
+        ], CancellationToken.None);
+
+        // The insertion script maintains the max-slot index. Removing the reverse history proves
+        // this lookup stays constant-time and independent from occurrence retention.
+        _sets.Remove($"{Prefix}:cron:{first.Id}:occurrences");
+        _sets.Remove($"{Prefix}:cron:{second.Id}:occurrences");
+
+        var result = await _provider.GetLatestCronOccurrenceTimesAsync(
+            [first.Id, second.Id, Guid.NewGuid()], CancellationToken.None);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal(_fixedNow.AddMinutes(3), result[first.Id]);
+        Assert.Equal(_fixedNow.AddMinutes(2), result[second.Id]);
     }
 
     // =========================================================================

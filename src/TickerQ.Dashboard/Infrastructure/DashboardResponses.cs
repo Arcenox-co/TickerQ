@@ -10,7 +10,6 @@ internal class AuthInfoResponse
     public string? UserId { get; set; }
     public string Mode { get; set; }
     public bool Enabled { get; set; }
-    public int SessionTimeout { get; set; }
 
     /// <summary>
     /// Names of every registered auth scheme in priority order — lets the SPA
@@ -242,4 +241,16 @@ internal class AssistantConfigResponse
 
     /// <summary>True when the host configured bounded source-context resolution.</summary>
     public bool SourceContext { get; set; }
+
+    /// <summary>Provider name reported by the chat client, for example "openai" or "ollama". Empty when unknown.</summary>
+    public string Provider { get; set; }
+
+    /// <summary>Host and port of the model endpoint. Never includes a path, query string, or credentials.</summary>
+    public string Endpoint { get; set; }
+
+    /// <summary>"local" when the model endpoint is on this machine, "remote" when it is not, "unknown" otherwise.</summary>
+    public string Location { get; set; }
+
+    /// <summary>True when a chat client is configured but could not be created.</summary>
+    public bool ConnectionFailed { get; set; }
 }

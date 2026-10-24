@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Control, FieldPath, FieldValues } from "react-hook-form";
 import {
   FormControl,
@@ -14,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { FieldLabel } from "./field-label";
+import { FieldInfo } from "./field-info";
 
 export type SelectOption = {
   value: string;
@@ -30,6 +32,8 @@ export type SelectFieldProps<T extends FieldValues> = {
   options: readonly SelectOption[];
   triggerClassName?: string;
   disabled?: boolean;
+  info?: ReactNode;
+  labelClassName?: string;
 };
 
 export function SelectField<T extends FieldValues>({
@@ -41,6 +45,8 @@ export function SelectField<T extends FieldValues>({
   options,
   triggerClassName,
   disabled,
+  info,
+  labelClassName,
 }: SelectFieldProps<T>) {
   return (
     <FormField
@@ -48,7 +54,12 @@ export function SelectField<T extends FieldValues>({
       name={name}
       render={({ field }) => (
         <FormItem>
-          <FieldLabel label={label} required={required} />
+          <FieldLabel
+            label={label}
+            required={required}
+            className={labelClassName}
+            labelEnd={info ? <FieldInfo>{info}</FieldInfo> : undefined}
+          />
           <Select
             onValueChange={field.onChange}
             value={field.value ? String(field.value) : undefined}

@@ -75,6 +75,79 @@ public class TickerExecutionTaskHandlerTests : IDisposable
         await _internalManager.DidNotReceive().UpdateTickerAsync(Arg.Any<InternalFunctionContext>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task Missed_Time_Chain_Is_Skipped_Before_User_Code_And_All_Descendants_Settle()
+    {
+        var now = new DateTime(2026, 10, 23, 12, 0, 0, DateTimeKind.Utc);
+        _clock.UtcNow.Returns(now);
+        var calls = 0;
+        var root = CreateContext((_, _, _) => { calls++; return Task.CompletedTask; }, TickerType.TimeTicker);
+        root.ExecutionTime = now.AddMinutes(-10);
+        root.MissedExecutionAction = MissedExecutionAction.Skip;
+        root.MaximumLateness = TimeSpan.FromMinutes(5);
+        root.TimeTickerChildren =
+        [
+            CreateContext((_, _, _) => { calls++; return Task.CompletedTask; }, TickerType.TimeTicker),
+        ];
+        root.TimeTickerChildren[0].TimeTickerChildren =
+        [
+            CreateContext((_, _, _) => { calls++; return Task.CompletedTask; }, TickerType.TimeTicker),
+        ];
+
+        await _handler.ExecuteRegisteredTaskAsync(root, false, null!, CancellationToken.None);
+
+        Assert.Equal(0, calls);
+        Assert.All(new[] { root, root.TimeTickerChildren[0], root.TimeTickerChildren[0].TimeTickerChildren[0] },
+            context =>
+            {
+                Assert.Equal(TickerStatus.Skipped, context.Status);
+                Assert.Contains("Missed execution window", context.ExceptionDetails);
+            });
+        await _internalManager.Received(3).UpdateTickerAsync(
+            Arg.Is<InternalFunctionContext>(context => context.Status == TickerStatus.Skipped),
+            CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Missed_Cron_Occurrence_Skips_Only_That_Persisted_Occurrence()
+    {
+        var now = new DateTime(2026, 10, 23, 12, 0, 0, DateTimeKind.Utc);
+        _clock.UtcNow.Returns(now);
+        var childCalls = 0;
+        var occurrence = CreateContext((_, _, _) => throw new InvalidOperationException("must not run"));
+        occurrence.ExecutionTime = now.AddMinutes(-2);
+        occurrence.MissedExecutionAction = MissedExecutionAction.Skip;
+        occurrence.MaximumLateness = TimeSpan.FromMinutes(1);
+        occurrence.TimeTickerChildren =
+        [
+            CreateContext((_, _, _) => { childCalls++; return Task.CompletedTask; }, TickerType.TimeTicker),
+        ];
+
+        await _handler.ExecuteRegisteredTaskAsync(occurrence, false, null!, CancellationToken.None);
+
+        Assert.Equal(TickerStatus.Skipped, occurrence.Status);
+        Assert.Equal(TickerStatus.Idle, occurrence.TimeTickerChildren[0].Status);
+        Assert.Equal(0, childCalls);
+        await _internalManager.Received(1).UpdateTickerAsync(occurrence, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Execution_At_The_Lateness_Boundary_Still_Runs()
+    {
+        var now = new DateTime(2026, 10, 23, 12, 0, 0, DateTimeKind.Utc);
+        _clock.UtcNow.Returns(now);
+        var calls = 0;
+        var context = CreateContext((_, _, _) => { calls++; return Task.CompletedTask; }, TickerType.TimeTicker);
+        context.ExecutionTime = now.AddMinutes(-5);
+        context.MissedExecutionAction = MissedExecutionAction.Skip;
+        context.MaximumLateness = TimeSpan.FromMinutes(5);
+
+        await _handler.ExecuteRegisteredTaskAsync(context, false, null!, CancellationToken.None);
+
+        Assert.Equal(1, calls);
+        Assert.Equal(TickerStatus.Done, context.Status);
+    }
+
     [Theory]
     [InlineData(true, false, false, true)]
     [InlineData(false, false, false, false)]

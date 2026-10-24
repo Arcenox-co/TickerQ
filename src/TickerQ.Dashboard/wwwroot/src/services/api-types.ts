@@ -43,6 +43,10 @@ export interface CancellationResponse {
 
 /** What the stale-job watchdog does if the executing node dies mid-run. */
 export type StaleAction = "Restart" | "Cancel";
+export type BlockedOccurrenceBehavior = "Reject" | "Skip" | "MoveForward";
+export type MissedExecutionAction = "RunOnce" | "Skip";
+export type CronCatchUpMode = "Skip" | "RunLatest";
+export type ScheduleWeekday = "Sunday" | "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday";
 
 export type TickerTaskPriority =
   | "Low"
@@ -181,6 +185,13 @@ export interface TimeTickerFlatDto {
   retryIntervalsSeconds: number[] | null;
   onStale: StaleAction;
   timeoutSeconds: number | null;
+  schedulePolicyName: string | null;
+  schedulePolicyVersion: number | null;
+  blockedOccurrenceBehavior: BlockedOccurrenceBehavior | null;
+  missedExecutionAction: MissedExecutionAction;
+  maximumLatenessSeconds: number | null;
+  requestedExecutionTime: string | null;
+  scheduleAdjustmentReason: string | null;
 }
 
 export interface CronChainNode {
@@ -219,6 +230,13 @@ export interface CronTickerFlatDto {
   retryIntervalsSeconds: number[] | null;
   onStale: StaleAction;
   timeoutSeconds: number | null;
+  timeZoneId: string | null;
+  schedulePolicyName: string | null;
+  schedulePolicyVersion: number | null;
+  blockedOccurrenceBehavior: BlockedOccurrenceBehavior | null;
+  missedExecutionAction: MissedExecutionAction;
+  maximumLatenessSeconds: number | null;
+  catchUpMode: CronCatchUpMode;
 }
 
 export interface CronOccurrenceFlatDto {
@@ -416,6 +434,10 @@ export interface AddTimeTickerRequest {
   retryIntervalsSeconds?: number[] | null;
   onStale?: StaleAction | null;
   timeoutSeconds?: number | null;
+  schedulePolicyName?: string | null;
+  blockedOccurrenceBehavior?: BlockedOccurrenceBehavior | null;
+  missedExecutionAction?: MissedExecutionAction | null;
+  maximumLatenessSeconds?: number | null;
 }
 
 export interface UpdateTimeTickerRequest {
@@ -428,6 +450,11 @@ export interface UpdateTimeTickerRequest {
   runCondition?: RunCondition | null;
   onStale?: StaleAction | null;
   timeoutSeconds?: number | null;
+  schedulePolicyName?: string | null;
+  replaceSchedulePolicy?: boolean;
+  blockedOccurrenceBehavior?: BlockedOccurrenceBehavior | null;
+  missedExecutionAction?: MissedExecutionAction | null;
+  maximumLatenessSeconds?: number | null;
 }
 
 export interface DuplicateTimeTickerRequest {
@@ -446,6 +473,11 @@ export interface AddCronTickerRequest {
   isEnabled?: boolean | null;
   onStale?: StaleAction | null;
   timeoutSeconds?: number | null;
+  timeZoneId?: string | null;
+  schedulePolicyName?: string | null;
+  missedExecutionAction?: MissedExecutionAction | null;
+  maximumLatenessSeconds?: number | null;
+  catchUpMode?: CronCatchUpMode | null;
 }
 
 export interface UpdateCronTickerRequest {
@@ -461,6 +493,12 @@ export interface UpdateCronTickerRequest {
   isEnabled?: boolean | null;
   onStale?: StaleAction | null;
   timeoutSeconds?: number | null;
+  timeZoneId?: string | null;
+  schedulePolicyName?: string | null;
+  replaceSchedulePolicy?: boolean;
+  missedExecutionAction?: MissedExecutionAction | null;
+  maximumLatenessSeconds?: number | null;
+  catchUpMode?: CronCatchUpMode | null;
 }
 
 export interface BulkRetryItem {
@@ -493,6 +531,10 @@ export interface TimeTickerNode {
 export interface AddTimeTickerChainRequest {
   executionTime: string;
   root: TimeTickerNode;
+  schedulePolicyName?: string | null;
+  blockedOccurrenceBehavior?: BlockedOccurrenceBehavior | null;
+  missedExecutionAction?: MissedExecutionAction | null;
+  maximumLatenessSeconds?: number | null;
 }
 
 export type SavedTickerDefinitionKind = "Template" | "Draft";
@@ -502,7 +544,61 @@ export interface SavedDefinitionPayload {
   executionTime?: string | null;
   expression?: string | null;
   skipIfAlreadyRunning?: boolean | null;
+  timeZoneId?: string | null;
+  schedulePolicyName?: string | null;
+  blockedOccurrenceBehavior?: BlockedOccurrenceBehavior | null;
+  missedExecutionAction?: MissedExecutionAction | null;
+  maximumLatenessSeconds?: number | null;
+  catchUpMode?: CronCatchUpMode | null;
   root: TimeTickerNode;
+}
+
+export interface ScheduleTimeWindow {
+  start: string;
+  end: string;
+}
+
+export interface ScheduleAnnualDate {
+  month: number;
+  day: number;
+}
+
+export interface SchedulePolicy {
+  id: string;
+  name: string;
+  description: string | null;
+  timeZoneId: string;
+  /** Flags enum serialized by System.Text.Json, e.g. "Monday, Tuesday, Wednesday". */
+  allowedWeekdays: string;
+  allowedTimeWindows: ScheduleTimeWindow[];
+  excludedDates: string[];
+  excludedAnnualDates: ScheduleAnnualDate[];
+  dateProviderNames: string[];
+  requiredPolicyNames: string[];
+  excludedWhenPolicyAllowsNames: string[];
+  createdAtUtc: string;
+  updatedAtUtc: string;
+  version: number;
+}
+
+export type SaveSchedulePolicyRequest = Omit<SchedulePolicy,
+  "id" | "createdAtUtc" | "updatedAtUtc" | "version">;
+
+export interface SchedulePolicyPreviewItem {
+  requestedAtUtc: string;
+  effectiveAtUtc: string | null;
+  isAllowed: boolean;
+  rule: string;
+  reason: string;
+}
+
+export interface SchedulePolicyUsage {
+  timeTickerCount: number;
+  cronTickerCount: number;
+}
+
+export interface ScheduleDateProviders {
+  names: string[];
 }
 
 export interface SaveTickerDefinitionRequest {

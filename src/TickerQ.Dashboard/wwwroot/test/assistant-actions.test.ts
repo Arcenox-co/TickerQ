@@ -173,3 +173,52 @@ test("server stream errors are propagated instead of silently swallowed", () => 
   assert.deepEqual(parseAssistantEvent('{"type":"done","data":""}'), { type: "done", data: "" });
   assert.throws(() => parseAssistantEvent('{"type":"proposal"}'), /Invalid assistant response/);
 });
+
+const policyDraft = {
+  name: "Orders calendar", description: null, timeZoneId: "Europe/Berlin", allowedWeekdays: "MondayToFriday, Saturday",
+  allowedTimeWindows: [{ start: "06:00:00", end: "14:00:00" }], excludedDates: [], excludedAnnualDates: [{ month: 12, day: 25 }],
+  dateProviderNames: [], requiredPolicyNames: ["Business hours"], excludedWhenPolicyAllowsNames: [],
+};
+
+test("schedule policy create sends the draft unchanged to the create endpoint", async () => {
+  const { api, calls } = fakeApi({ createSchedulePolicy: { id: "policy-1" } });
+  const result = await applyAssistantProposal(proposal({ kind: "createSchedulePolicy", function: "", targetId: null, policy: policyDraft }), api);
+  assert.equal(result.message, "Schedule policy created");
+  assert.equal(result.href, "/schedule-policies");
+  assert.deepEqual(calls.map(x => x.method), ["createSchedulePolicy"]);
+  assert.deepEqual(calls[0].args, [policyDraft]);
+});
+
+test("schedule policy update is pinned to the proposed version", async () => {
+  const { api, calls } = fakeApi({ getSchedulePolicy: { id: "policy-1", version: 3 } });
+  await applyAssistantProposal(proposal({ kind: "updateSchedulePolicy", targetId: "policy-1", expectedVersion: 3, policy: policyDraft }), api);
+  assert.deepEqual(calls.map(x => x.method), ["getSchedulePolicy", "updateSchedulePolicy"]);
+  assert.deepEqual(calls[1].args, ["policy-1", 3, policyDraft]);
+
+  const stale = fakeApi({ getSchedulePolicy: { id: "policy-1", version: 4 } });
+  await assert.rejects(applyAssistantProposal(proposal({ kind: "updateSchedulePolicy", targetId: "policy-1", expectedVersion: 3, policy: policyDraft }), stale.api), /changed since the proposal/);
+  assert.deepEqual(stale.calls.map(x => x.method), ["getSchedulePolicy"]);
+});
+
+test("cron policy change patches only the policy and can remove it", async () => {
+  const cron = { id: "cron-1", functionName: "Orders.Import", expression: "0 * * * *", schedulePolicyName: "Business hours" };
+  const attach = fakeApi({ getCronTicker: cron });
+  const change = { kind: "setCronSchedulePolicy" as const, function: "Orders.Import", expression: "0 * * * *", targetId: "cron-1",
+    currentSchedulePolicyName: "Business hours" };
+  assert.equal((await applyAssistantProposal(proposal({ ...change, schedulePolicyName: "Orders calendar" }), attach.api)).message, "Schedule policy attached");
+  assert.deepEqual(attach.calls[1], { method: "updateCronTicker", args: ["cron-1", { schedulePolicyName: "Orders calendar", replaceSchedulePolicy: true }] });
+
+  const remove = fakeApi({ getCronTicker: cron });
+  assert.equal((await applyAssistantProposal(proposal({ ...change, schedulePolicyName: "" }), remove.api)).message, "Schedule policy removed");
+  assert.deepEqual(remove.calls[1].args, ["cron-1", { schedulePolicyName: null, replaceSchedulePolicy: true }]);
+
+  const stale = fakeApi({ getCronTicker: { ...cron, schedulePolicyName: "Maintenance window" } });
+  await assert.rejects(applyAssistantProposal(proposal({ ...change, schedulePolicyName: "Orders calendar" }), stale.api), /cron definition changed/);
+  assert.deepEqual(stale.calls.map(x => x.method), ["getCronTicker"]);
+});
+
+test("new cron tickers carry a proposed schedule policy", async () => {
+  const { api, calls } = fakeApi();
+  await applyAssistantProposal(proposal({ kind: "createCronTicker", expression: "0 * * * *", retries: 0, targetId: null, schedulePolicyName: "Business hours" }), api);
+  assert.equal((calls[0].args[0] as { schedulePolicyName?: string }).schedulePolicyName, "Business hours");
+});

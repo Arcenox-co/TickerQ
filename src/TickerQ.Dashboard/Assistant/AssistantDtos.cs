@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json.Serialization;
 using TickerQ.Utilities.Models;
 using TickerQ.Utilities.Integrations;
@@ -110,6 +111,64 @@ public sealed class AssistantProposal
     public IntegrationRule? Rule { get; set; }
     public IntegrationMonitor? Monitor { get; set; }
     public List<string> DestinationNames { get; set; } = new();
+
+    /// <summary>Proposed schedule policy (createSchedulePolicy/updateSchedulePolicy).</summary>
+    public AssistantSchedulePolicyDraft? Policy { get; set; }
+
+    /// <summary>The policy as it was when proposed (updateSchedulePolicy only), so the card can show changes.</summary>
+    public AssistantSchedulePolicyDraft? CurrentPolicy { get; set; }
+
+    /// <summary>Optimistic-concurrency version the update was proposed against.</summary>
+    public long? ExpectedVersion { get; set; }
+
+    /// <summary>Policy to attach to a cron ticker; empty removes it (setCronSchedulePolicy, createCronTicker).</summary>
+    public string SchedulePolicyName { get; set; } = "";
+
+    /// <summary>The cron ticker's policy when proposed (setCronSchedulePolicy only).</summary>
+    public string CurrentSchedulePolicyName { get; set; } = "";
+}
+
+/// <summary>
+/// A schedule policy in the same shape as the dashboard's save request, so confirming the card can
+/// send it to the normal create or update endpoint unchanged.
+/// </summary>
+public sealed class AssistantSchedulePolicyDraft
+{
+    public string Name { get; set; } = "";
+    public string? Description { get; set; }
+    public string TimeZoneId { get; set; } = "UTC";
+    public string AllowedWeekdays { get; set; } = "All";
+    public List<AssistantScheduleWindow> AllowedTimeWindows { get; set; } = new();
+    public List<string> ExcludedDates { get; set; } = new();
+    public List<ScheduleAnnualDate> ExcludedAnnualDates { get; set; } = new();
+    public List<string> DateProviderNames { get; set; } = new();
+    public List<string> RequiredPolicyNames { get; set; } = new();
+    public List<string> ExcludedWhenPolicyAllowsNames { get; set; } = new();
+
+    internal static AssistantSchedulePolicyDraft From(SchedulePolicy policy) => new()
+    {
+        Name = policy.Name,
+        Description = policy.Description,
+        TimeZoneId = policy.TimeZoneId,
+        AllowedWeekdays = policy.AllowedWeekdays.ToString(),
+        AllowedTimeWindows = (policy.AllowedTimeWindows ?? new()).Select(w => new AssistantScheduleWindow
+        {
+            Start = w.Start.ToString(@"hh\:mm\:ss", System.Globalization.CultureInfo.InvariantCulture),
+            End = w.End.ToString(@"hh\:mm\:ss", System.Globalization.CultureInfo.InvariantCulture),
+        }).ToList(),
+        ExcludedDates = (policy.ExcludedDates ?? new()).Select(d => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)).ToList(),
+        ExcludedAnnualDates = (policy.ExcludedAnnualDates ?? new()).Select(d => new ScheduleAnnualDate(d.Month, d.Day)).ToList(),
+        DateProviderNames = (policy.DateProviderNames ?? new()).ToList(),
+        RequiredPolicyNames = (policy.RequiredPolicyNames ?? new()).ToList(),
+        ExcludedWhenPolicyAllowsNames = (policy.ExcludedWhenPolicyAllowsNames ?? new()).ToList(),
+    };
+}
+
+/// <summary>A daily window as HH:mm:ss strings, matching the dashboard API.</summary>
+public sealed class AssistantScheduleWindow
+{
+    public string Start { get; set; } = "";
+    public string End { get; set; } = "";
 }
 
 /// <summary>One step of a proposed chain (createChain proposals).</summary>
@@ -136,6 +195,7 @@ public sealed class AssistantChainNode
 [JsonSerializable(typeof(ChatStreamEvent))]
 [JsonSerializable(typeof(AssistantProposal))]
 [JsonSerializable(typeof(AssistantChainNode))]
+[JsonSerializable(typeof(AssistantSchedulePolicyDraft))]
 [JsonSerializable(typeof(AssistantConversationSummary))]
 [JsonSerializable(typeof(List<AssistantConversationSummary>))]
 [JsonSerializable(typeof(AssistantHistoryMessage))]

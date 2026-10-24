@@ -53,6 +53,8 @@ namespace TickerQ.Utilities.Models
         public int[] RetryIntervals { get; set; }
         public bool ReleaseLock { get; set; }
         public DateTime ExecutionTime { get; set; }
+        public MissedExecutionAction MissedExecutionAction { get; set; }
+        public TimeSpan? MaximumLateness { get; set; }
         public double? ProgressPercent { get; set; }
         public string ProgressMessage { get; set; }
         public DateTime? ProgressUpdatedAt { get; set; }

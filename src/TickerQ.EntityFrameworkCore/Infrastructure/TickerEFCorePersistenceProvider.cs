@@ -20,7 +20,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
 {
     internal partial class TickerEfCorePersistenceProvider<TDbContext, TTimeTicker, TCronTicker> :
         BasePersistenceProvider<TDbContext, TTimeTicker, TCronTicker>,
-        ITickerPersistenceProvider<TTimeTicker, TCronTicker>, ITickerDefinitionStore
+        ITickerPersistenceProvider<TTimeTicker, TCronTicker>, ITickerDefinitionStore, ISchedulePolicyStore
         where TDbContext : DbContext
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()

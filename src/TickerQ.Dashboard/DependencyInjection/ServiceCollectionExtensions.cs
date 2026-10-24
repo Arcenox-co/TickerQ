@@ -313,7 +313,7 @@ namespace TickerQ.Dashboard.DependencyInjection
         /// Generates the runtime config JavaScript served as an external file.
         /// Sets window.TickerQConfig, which the SPA reads at startup (base path, auth mode).
         /// </summary>
-        private static string GenerateConfigJs(HttpContext httpContext, string basePath, DashboardOptionsBuilder config)
+        internal static string GenerateConfigJs(HttpContext httpContext, string basePath, DashboardOptionsBuilder config)
         {
             var pathBase = httpContext.Request.PathBase.HasValue
                 ? httpContext.Request.PathBase.Value
@@ -321,6 +321,25 @@ namespace TickerQ.Dashboard.DependencyInjection
 
             var frontendBasePath = CombinePathBase(pathBase, basePath);
             var schedulerOptions = httpContext.RequestServices.GetService<TickerQ.Utilities.SchedulerOptionsBuilder>();
+
+            Assistant.AssistantConnectionInfo assistantConnection = null;
+            var assistantConnectionFailed = false;
+            if (config.Assistant?.IsEnabled == true)
+            {
+                try
+                {
+                    var assistantService = httpContext.RequestServices.GetService<Assistant.TickerAssistantService>();
+                    if (assistantService != null)
+                        assistantConnection = Assistant.AssistantConnectionInfo.Describe(
+                            assistantService.Client, config.Assistant.ModelName);
+                }
+                catch (Exception)
+                {
+                    // The operator's chat client factory threw, for example because an API key is
+                    // missing. Report it instead of failing the whole dashboard configuration.
+                    assistantConnectionFailed = true;
+                }
+            }
 
             var envConfig = new FrontendConfigResponse
             {
@@ -344,7 +363,11 @@ namespace TickerQ.Dashboard.DependencyInjection
                 Assistant = new AssistantConfigResponse
                 {
                     Enabled = config.Assistant?.IsEnabled == true,
-                    Model = config.Assistant?.ModelName ?? "",
+                    Model = assistantConnection?.Model ?? config.Assistant?.ModelName ?? "",
+                    Provider = assistantConnection?.Provider ?? "",
+                    Endpoint = assistantConnection?.Endpoint ?? "",
+                    Location = assistantConnection?.Location ?? Assistant.AssistantConnectionInfo.Unknown,
+                    ConnectionFailed = assistantConnectionFailed,
                     History = config.Assistant?.IsEnabled == true
                               && httpContext.RequestServices.GetService<TickerQ.Utilities.Interfaces.IAssistantHistoryStore>() != null,
                     Investigations = config.Assistant?.IsEnabled == true
@@ -356,7 +379,6 @@ namespace TickerQ.Dashboard.DependencyInjection
                 {
                     Mode = config.Auth.Mode.ToString().ToLower(),
                     Enabled = config.Auth.IsEnabled,
-                    SessionTimeout = config.Auth.SessionTimeoutMinutes,
                     LoginRedirect = config.Auth.HostLoginRedirectPath,
                 }
             };

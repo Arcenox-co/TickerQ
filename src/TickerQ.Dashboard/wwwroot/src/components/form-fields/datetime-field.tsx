@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import type { Control, FieldPath, FieldValues } from "react-hook-form";
 import { X } from "lucide-react";
 import {
@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { FieldLabel } from "./field-label";
+import { FieldInfo } from "./field-info";
 
 /** The current local time formatted as a datetime-local value (with seconds). */
 export function nowAsDatetimeLocal(): string {
@@ -27,6 +28,8 @@ export type DateTimeFieldProps<T extends FieldValues> = {
   label: string;
   required?: boolean;
   description?: string;
+  info?: ReactNode;
+  labelClassName?: string;
 } & Omit<
   ComponentProps<typeof Input>,
   "name" | "value" | "defaultValue" | "onChange" | "type"
@@ -43,6 +46,8 @@ export function DateTimeField<T extends FieldValues>({
   label,
   required,
   description,
+  info,
+  labelClassName,
   ...inputProps
 }: DateTimeFieldProps<T>) {
   return (
@@ -51,7 +56,15 @@ export function DateTimeField<T extends FieldValues>({
       name={name}
       render={({ field }) => (
         <FormItem>
-          {label && <FieldLabel label={label} required={required} htmlFor={inputProps.id} />}
+          {label && (
+            <FieldLabel
+              label={label}
+              required={required}
+              className={labelClassName}
+              htmlFor={inputProps.id}
+              labelEnd={info ? <FieldInfo>{info}</FieldInfo> : undefined}
+            />
+          )}
           <FormControl>
             <div className="relative">
               <Input

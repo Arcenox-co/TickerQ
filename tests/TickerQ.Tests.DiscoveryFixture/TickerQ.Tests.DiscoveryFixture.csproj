@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>annotations</Nullable>
+        <IsPackable>false</IsPackable>
+        <!-- A module initializer in a library is intentional here: it stands in for TickerQ's generated registration. -->
+        <NoWarn>$(NoWarn);CA2255</NoWarn>
+    </PropertyGroup>
+
+</Project>

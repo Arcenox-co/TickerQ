@@ -11,7 +11,10 @@ using TickerQ.Integrations.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Entities;
+using TickerQ.Utilities.Enums;
+using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
+using TickerQ.Utilities.Models;
 
 Console.WriteLine("[docs-demo] creating host builder");
 var builder = WebApplication.CreateSlimBuilder(args);
@@ -45,6 +48,37 @@ builder.Services.AddTickerQ(options =>
     options.UseApplicationNamespace("tickerq-docs-demo");
     options.UseReconciliationEpoch(1);
     options.EnableDetailedLogging();
+    options.AddScheduleDateProvider<DocsDemoHolidayProvider>();
+    options.UseSchedulePolicySeeder(async (policies, cancellationToken) =>
+    {
+        await policies.UpsertAsync(SchedulePolicy.Create("Orders operating calendar")
+            .WithDescription("Every day except the annual New Year closure")
+            .InTimeZone("Europe/Tirane")
+            .ExcludeAnnualDate(1, 1)
+            .ExcludeDatesFrom("Albanian public holidays")
+            .Build(), cancellationToken);
+        await policies.UpsertAsync(SchedulePolicy.Create("Business hours")
+            .WithDescription("Weekday office hours for customer-facing work")
+            .InTimeZone("Europe/Tirane")
+            .AllowWeekdays(DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday, DayOfWeek.Friday)
+            .AllowBetween(new TimeOnly(8, 0), new TimeOnly(18, 0))
+            .ExcludeAnnualDate(12, 25)
+            .Build(), cancellationToken);
+        await policies.UpsertAsync(SchedulePolicy.Create("Maintenance window")
+            .WithDescription("Sunday night database maintenance")
+            .InTimeZone("UTC")
+            .AllowWeekdays(DayOfWeek.Sunday)
+            .AllowBetween(new TimeOnly(1, 0), new TimeOnly(4, 0))
+            .Build(), cancellationToken);
+        await policies.UpsertAsync(SchedulePolicy.Create("Payments settlement")
+            .WithDescription("Settle payments during business hours, never during maintenance or bank holidays")
+            .InTimeZone("Europe/Tirane")
+            .AllowBetween(new TimeOnly(6, 0), new TimeOnly(22, 0))
+            .ExcludeDatesFrom("Albanian public holidays")
+            .Require("Business hours")
+            .ExceptWhen("Maintenance window")
+            .Build(), cancellationToken);
+    });
 
     options.ConfigureScheduler(scheduler =>
     {
@@ -107,7 +141,7 @@ builder.Services.AddTickerQ(options =>
     {
         dashboard.SetTitle("TickerQ · Orders API");
         dashboard.SetEnvironmentName("Development");
-        dashboard.SetTimeZone(TimeZoneInfo.FindSystemTimeZoneById("Europe/Belgrade"));
+        dashboard.SetTimeZone(TimeZoneInfo.FindSystemTimeZoneById("Europe/Tirane"));
         dashboard.WithAuthentication(auth => auth.AddCookieLogin(cookie =>
         {
             cookie.AddUser("admin", "admin");
@@ -115,6 +149,8 @@ builder.Services.AddTickerQ(options =>
             cookie.AllowEphemeralSigningKey = true;
         }));
         dashboard.AllowIntegrationManagement(_ => true);
+        // DOCS_DEMO_ASSISTANT=off shows the dashboard without a connected model.
+        if (Environment.GetEnvironmentVariable("DOCS_DEMO_ASSISTANT") != "off")
         dashboard.AddAssistant(assistant => assistant
             .UseChatClient(new DocsDemoChatClient())
             .WithModelName("Local documentation model")
@@ -179,6 +215,7 @@ app.MapPost("/demo/seed", async (
     var payloadChain = await timeManager.AddChainAsync(chain => chain
         .WithDescription("Order fulfilment with typed input and committed results")
         .RunAt(now.AddSeconds(2))
+        .WhenMissed(MissedExecutionPolicy.SkipAfter(TimeSpan.FromMinutes(2)))
         .StartWith("DocsDemo.Order.Prepare", payload,
             step => step.Description = "Validate and prepare the order")
         .Then("DocsDemo.Invoice.Create", new DemoInvoiceRequest("Order checkout", false),
@@ -216,6 +253,10 @@ app.MapPost("/demo/seed", async (
     var recurring = await cronManager.AddChainAsync(chain => chain
         .WithExpression("*/30 * * * * *")
         .WithDescription("Refresh order projections every 30 seconds")
+        .InTimeZone("Europe/Tirane")
+        .UsingPolicy("Orders operating calendar")
+        .WhenMissed(MissedExecutionPolicy.SkipAfter(TimeSpan.FromMinutes(2)))
+        .CatchUp(CronCatchUpMode.RunLatest)
         .SkipIfAlreadyRunning()
         .StartWith("DocsDemo.Projection.Load", step => step.Description = "Load changed orders")
         .ThenMany(branches =>
@@ -224,6 +265,48 @@ app.MapPost("/demo/seed", async (
             branches.Add("DocsDemo.Projection.Metrics", step => step.Description = "Refresh business metrics");
         }), cancellationToken);
     if (recurring.IsSucceeded) created.Add(new { Kind = "recurring-chain", recurring.Result.Id });
+
+    var dailyReport = await cronManager.AddAsync(new CronTickerEntity
+    {
+        Function = "DocsDemo.Report.Daily",
+        Expression = "0 0 9 * * *",
+        Description = "Email the daily orders report",
+        TimeZoneId = "Europe/Tirane",
+        SchedulePolicyName = "Business hours",
+        Retries = 2,
+    }, cancellationToken);
+    if (dailyReport.IsSucceeded) created.Add(new { Kind = "policy-cron", dailyReport.Result.Id });
+
+    var settlement = await cronManager.AddAsync(new CronTickerEntity
+    {
+        Function = "DocsDemo.Payment.Settle",
+        Expression = "0 */15 * * * *",
+        Description = "Settle captured card payments",
+        TimeZoneId = "Europe/Tirane",
+        SchedulePolicyName = "Payments settlement",
+        Retries = 3,
+    }, cancellationToken);
+    if (settlement.IsSucceeded) created.Add(new { Kind = "composed-policy-cron", settlement.Result.Id });
+
+    var cacheWarm = await cronManager.AddAsync(new CronTickerEntity
+    {
+        Function = "DocsDemo.Cache.Warm",
+        Expression = "0 0 */6 * * *",
+        Description = "Warm the product catalogue cache (paused during migration)",
+        IsEnabled = false,
+    }, cancellationToken);
+    if (cacheWarm.IsSucceeded) created.Add(new { Kind = "disabled-cron", cacheWarm.Result.Id });
+
+    // A one-time job requested outside business hours moves to the next allowed instant.
+    var digest = await timeManager.AddAsync(new TimeTickerEntity
+    {
+        Function = "DocsDemo.Report.Daily",
+        Description = "Send the weekly customer digest",
+        ExecutionTime = NextSaturdayNoon(now),
+        SchedulePolicyName = "Business hours",
+        BlockedOccurrenceBehavior = BlockedOccurrenceBehavior.MoveForward,
+    }, cancellationToken);
+    if (digest.IsSucceeded) created.Add(new { Kind = "moved-by-policy", digest.Result.Id });
 
     var failure = await timeManager.AddAsync(new TimeTickerEntity
     {
@@ -239,6 +322,13 @@ app.MapPost("/demo/seed", async (
 });
 
 app.MapGet("/", () => Results.Redirect("/tickerq/dashboard"));
+
+static DateTime NextSaturdayNoon(DateTime utcNow)
+{
+    var days = ((int)DayOfWeek.Saturday - (int)utcNow.DayOfWeek + 7) % 7;
+    var saturday = utcNow.Date.AddDays(days == 0 ? 7 : days);
+    return DateTime.SpecifyKind(saturday.AddHours(10), DateTimeKind.Utc);
+}
 app.Run($"http://127.0.0.1:{port}");
 
 public sealed class DocsDemoJobs(ILogger<DocsDemoJobs> logger)
@@ -331,6 +421,18 @@ public sealed class DocsDemoJobs(ILogger<DocsDemoJobs> logger)
     public Task Close(TickerFunctionContext context, CancellationToken cancellationToken)
         => RunStep(context, "Workflow closed", cancellationToken);
 
+    [TickerFunction("DocsDemo.Report.Daily")]
+    public Task DailyReport(TickerFunctionContext context, CancellationToken cancellationToken)
+        => RunStep(context, "Daily report sent", cancellationToken);
+
+    [TickerFunction("DocsDemo.Payment.Settle")]
+    public Task Settle(TickerFunctionContext context, CancellationToken cancellationToken)
+        => RunStep(context, "Payments settled", cancellationToken);
+
+    [TickerFunction("DocsDemo.Cache.Warm")]
+    public Task WarmCache(TickerFunctionContext context, CancellationToken cancellationToken)
+        => RunStep(context, "Catalogue cache warmed", cancellationToken);
+
     [TickerFunction("DocsDemo.Projection.Load")]
     public Task LoadProjection(TickerFunctionContext context, CancellationToken cancellationToken)
         => RunStep(context, "Changes loaded", cancellationToken, 350);
@@ -354,6 +456,18 @@ public sealed class DocsDemoJobs(ILogger<DocsDemoJobs> logger)
         await context.ReportProgressAsync(100, message, cancellationToken);
         logger.LogInformation("{Message} for {TickerId}", message, context.Id);
     }
+}
+
+public sealed class DocsDemoHolidayProvider : IScheduleDateProvider
+{
+    public string Name => "Albanian public holidays";
+
+    public bool IsExcluded(DateOnly localDate) => localDate is
+        { Month: 1, Day: 1 or 2 } or
+        { Month: 11, Day: 28 or 29 };
+
+    public string GetReason(DateOnly localDate) =>
+        $"{localDate:yyyy-MM-dd} is a public holiday in the documentation demo.";
 }
 
 public sealed record DemoOrderRequest(string OrderId, string CustomerEmail, decimal Amount, string Currency);

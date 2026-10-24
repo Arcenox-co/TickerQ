@@ -535,30 +535,37 @@ public class MongoPersistenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SkipStaleCronOccurrences_MarksOldRowsAsSkipped()
+    public async Task GetLatestCronOccurrenceTimes_Returns_Maximum_Per_Requested_Cron()
     {
-        var cron = NewCron();
-        await _f.Provider.InsertCronTickers([cron], CancellationToken.None);
+        var first = NewCron("latest-first");
+        var second = NewCron("latest-second");
+        await _f.Provider.InsertCronTickers([first, second], CancellationToken.None);
 
-        var occ = new CronTickerOccurrenceEntity<CronTickerEntity>
+        CronTickerOccurrenceEntity<CronTickerEntity> Occurrence(Guid cronId, DateTime executionTime) => new()
         {
             Id = Guid.NewGuid(),
-            CronTickerId = cron.Id,
-            ExecutionTime = _f.FixedNow.AddSeconds(-60),
-            Status = TickerStatus.Idle,
-            CreatedAt = _f.FixedNow.AddSeconds(-120),
-            UpdatedAt = _f.FixedNow.AddSeconds(-120)
+            CronTickerId = cronId,
+            ExecutionTime = executionTime,
+            Status = TickerStatus.Queued,
+            CreatedAt = _f.FixedNow,
+            UpdatedAt = _f.FixedNow
         };
-        await _f.Provider.InsertCronTickerOccurrences([occ], CancellationToken.None);
 
-        var skipped = await _f.Provider.SkipStaleCronOccurrencesAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
-        Assert.Equal(1, skipped);
+        await _f.Provider.InsertCronTickerOccurrences([
+            Occurrence(first.Id, _f.FixedNow.AddMinutes(1)),
+            Occurrence(first.Id, _f.FixedNow.AddMinutes(3)),
+            Occurrence(second.Id, _f.FixedNow.AddMinutes(2))
+        ], CancellationToken.None);
 
-        var after = await _f.CronTickerOccurrences
-            .Find(Builders<CronTickerOccurrenceEntity<CronTickerEntity>>.Filter.Eq(x => x.Id, occ.Id))
-            .FirstOrDefaultAsync();
-        Assert.Equal(TickerStatus.Skipped, after.Status);
+        var result = await _f.Provider.GetLatestCronOccurrenceTimesAsync(
+            [first.Id, second.Id, Guid.NewGuid()], CancellationToken.None);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal(_f.FixedNow.AddMinutes(3), result[first.Id]);
+        Assert.Equal(_f.FixedNow.AddMinutes(2), result[second.Id]);
     }
+
+
 
     [Fact]
     public async Task IndexProvisioner_IsIdempotent_OnRepeatedCalls()

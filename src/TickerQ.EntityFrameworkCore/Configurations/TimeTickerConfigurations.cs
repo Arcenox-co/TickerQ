@@ -1,3 +1,4 @@
+using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using TickerQ.Utilities.Entities;
@@ -21,6 +22,15 @@ namespace TickerQ.EntityFrameworkCore.Configurations
                 .IsRequired(false);
             builder.Property(x => x.ProgressMessage)
                 .HasMaxLength(500)
+                .IsRequired(false);
+            builder.Property(x => x.SchedulePolicyName).HasMaxLength(200).IsRequired(false);
+            builder.Property(x => x.ScheduleAdjustmentReason).HasMaxLength(1000).IsRequired(false);
+            builder.Property(x => x.MissedExecutionAction)
+                .IsRequired().HasDefaultValue(TickerQ.Utilities.Enums.MissedExecutionAction.RunOnce);
+            builder.Property(x => x.MaximumLateness)
+                .HasConversion(
+                    value => value.HasValue ? value.Value.Ticks : (long?)null,
+                    value => value.HasValue ? TimeSpan.FromTicks(value.Value) : (TimeSpan?)null)
                 .IsRequired(false);
 
             builder.Property(x => x.AcquisitionToken)
@@ -58,6 +68,8 @@ namespace TickerQ.EntityFrameworkCore.Configurations
             
             builder.HasIndex("ApplicationNamespaceKey", "ExecutionTime")
                 .HasDatabaseName("IX_TimeTicker_ExecutionTime");
+            builder.HasIndex("ApplicationNamespaceKey", "SchedulePolicyName")
+                .HasDatabaseName("IX_TimeTicker_SchedulePolicy");
 
             // Index for scheduler queries: many tickers can share the same status/time
             builder.HasIndex("ApplicationNamespaceKey", "Status", "ExecutionTime")

@@ -22,6 +22,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {
+    public bool SupportsCronCatchUp => true;
     protected readonly IDatabase Db;
     protected readonly ITickerClock Clock;
     protected readonly string LockHolder;
@@ -63,6 +64,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
     protected string CronOccurrenceRepairQuarantineKey => Keys.CronOccurrenceRepairQuarantine;
     protected string CronOccurrenceIdsKey => Keys.CronOccurrenceIds;
     protected string CronOccurrencePendingKey => Keys.CronOccurrencePending;
+    protected string CronOccurrenceLatestByCronKey => Keys.CronOccurrenceLatestByCron;
     protected string TimeTickerRetentionSucceededKey => Keys.TimeTickerRetentionSucceeded;
     protected string TimeTickerRetentionFailedKey => Keys.TimeTickerRetentionFailed;
     protected string TimeTickerRetentionCancelledKey => Keys.TimeTickerRetentionCancelled;
@@ -460,7 +462,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         await Db.KeyDeleteAsync(
         [
             TimeTickerIdsKey, TimeTickerPendingKey, CronIdsKey, CronOccurrenceIdsKey,
-            CronOccurrencePendingKey,
+            CronOccurrencePendingKey, CronOccurrenceLatestByCronKey,
             TimeTickerRetentionSucceededKey, TimeTickerRetentionFailedKey,
             TimeTickerRetentionCancelledKey, TimeTickerRetentionSkippedKey,
             CronOccurrenceRetentionSucceededKey, CronOccurrenceRetentionFailedKey,
@@ -498,6 +500,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             if (occurrence == null || occurrence.Id != id || occurrence.CronTickerId == Guid.Empty)
                 throw new InvalidDataException($"Adopted Redis Cron occurrence '{key}' is corrupt or has a mismatched ID.");
             await IndexManager.AddCronOccurrenceIndexesAsync(occurrence).ConfigureAwait(false);
+            await Db.SortedSetAddAsync(CronOccurrenceLatestByCronKey, occurrence.CronTickerId.ToString(),
+                ToScore(occurrence.ExecutionTime), SortedSetWhen.GreaterThan).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
         }
     }
@@ -2030,7 +2034,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
              CronOccurrencesByCronKey(ticker.Id), CronOccurrenceIdsKey, CronOccurrencePendingKey,
              CronOccurrenceRetentionSucceededKey, CronOccurrenceRetentionFailedKey,
              CronOccurrenceRetentionCancelledKey, CronOccurrenceRetentionSkippedKey,
-             CronOccurrenceRepairQuarantineKey, ActivationMetadataKey],
+             CronOccurrenceRepairQuarantineKey, ActivationMetadataKey,
+             CronOccurrenceLatestByCronKey],
             [(RedisValue)ticker.Id.ToString(), (RedisValue)"upsert",
              (RedisValue)Serializer.Serialize(ticker), (RedisValue)(quarantinePending ? "1" : "0"),
              (RedisValue)now.ToString("O"), LuaStatusIdle, LuaStatusQueued, LuaStatusSkipped,
@@ -2069,7 +2074,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
              CronOccurrencesByCronKey(id), CronOccurrenceIdsKey, CronOccurrencePendingKey,
              CronOccurrenceRetentionSucceededKey, CronOccurrenceRetentionFailedKey,
              CronOccurrenceRetentionCancelledKey, CronOccurrenceRetentionSkippedKey,
-             CronOccurrenceRepairQuarantineKey, ActivationMetadataKey],
+             CronOccurrenceRepairQuarantineKey, ActivationMetadataKey,
+             CronOccurrenceLatestByCronKey],
             [(RedisValue)id.ToString(), (RedisValue)"delete", RedisValue.EmptyString,
              (RedisValue)"0", (RedisValue)Clock.UtcNow.ToString("O"), LuaStatusIdle,
              LuaStatusQueued, LuaStatusSkipped, (RedisValue)"unused", (RedisValue)0,
@@ -2091,7 +2097,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
              CronOccurrencesByCronKey(id), CronOccurrenceIdsKey, CronOccurrencePendingKey,
              CronOccurrenceRetentionSucceededKey, CronOccurrenceRetentionFailedKey,
              CronOccurrenceRetentionCancelledKey, CronOccurrenceRetentionSkippedKey,
-             CronOccurrenceRepairQuarantineKey, ActivationMetadataKey],
+             CronOccurrenceRepairQuarantineKey, ActivationMetadataKey,
+             CronOccurrenceLatestByCronKey],
             [(RedisValue)id.ToString(), (RedisValue)"markDeleting", RedisValue.EmptyString,
              (RedisValue)"0", (RedisValue)Clock.UtcNow.ToString("O"), LuaStatusIdle,
              LuaStatusQueued, LuaStatusSkipped, (RedisValue)"unused", (RedisValue)0,
@@ -2185,6 +2192,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             .Select(c => new CronTickerEntity
             {
                 Id = c.Id,
+                CreatedAt = c.CreatedAt,
                 Expression = c.Expression,
                 Function = c.Function,
                 RequestContractVersion = c.RequestContractVersion,
@@ -2193,7 +2201,14 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                 SkipIfAlreadyRunning = c.SkipIfAlreadyRunning,
                 DefinitionRevision = c.DefinitionRevision,
                 TimeoutSeconds = c.TimeoutSeconds,
-                Retries = c.Retries
+                Retries = c.Retries,
+                TimeZoneId = c.TimeZoneId,
+                SchedulePolicyName = c.SchedulePolicyName,
+                SchedulePolicyVersion = c.SchedulePolicyVersion,
+                BlockedOccurrenceBehavior = c.BlockedOccurrenceBehavior,
+                MissedExecutionAction = c.MissedExecutionAction,
+                MaximumLateness = c.MaximumLateness,
+                CatchUpMode = c.CatchUpMode
             })
             .ToArray();
     }
@@ -2239,6 +2254,42 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
         return null;
     }
 
+    public async Task<IReadOnlyDictionary<Guid, DateTime>> GetLatestCronOccurrenceTimesAsync(
+        IReadOnlyCollection<Guid> cronTickerIds, CancellationToken cancellationToken = default)
+    {
+        var result = new Dictionary<Guid, DateTime>();
+        if (cronTickerIds == null) return result;
+        foreach (var cronTickerId in cronTickerIds.Distinct())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var indexedScore = await Db.SortedSetScoreAsync(
+                CronOccurrenceLatestByCronKey, cronTickerId.ToString()).ConfigureAwait(false);
+            if (indexedScore.HasValue)
+            {
+                result[cronTickerId] = new DateTime(checked((long)indexedScore.Value), DateTimeKind.Utc);
+                continue;
+            }
+
+            // Upgrade compatibility: older stores have the reverse membership set but no max-slot
+            // index. Scan that cron once, then retain the maximum even after occurrence history is
+            // pruned so catch-up never republishes an already-observed slot.
+            var members = await Db.SetMembersAsync(CronOccurrencesByCronKey(cronTickerId)).ConfigureAwait(false);
+            if (members.Length == 0) continue;
+            var rows = await Serializer.LoadByIdsAsync<CronTickerOccurrenceEntity<TCronTicker>>(
+                ParseGuidSet(members), CronOccurrenceKey, cancellationToken).ConfigureAwait(false);
+            if (rows.Count == 0) continue;
+            var latest = rows.Max(x => x.ExecutionTime).ToUniversalTime();
+            await Db.SortedSetAddAsync(CronOccurrenceLatestByCronKey, cronTickerId.ToString(),
+                ToScore(latest), SortedSetWhen.GreaterThan).ConfigureAwait(false);
+            var authoritativeScore = await Db.SortedSetScoreAsync(
+                CronOccurrenceLatestByCronKey, cronTickerId.ToString()).ConfigureAwait(false);
+            result[cronTickerId] = authoritativeScore.HasValue
+                ? new DateTime(checked((long)authoritativeScore.Value), DateTimeKind.Utc)
+                : latest;
+        }
+        return result;
+    }
+
     public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueCronTickerOccurrences((DateTime Key, InternalManagerContext[] Items) cronTickerOccurrences, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         EnsureAtomicMigrationTopology();
@@ -2273,7 +2324,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                     [CronKey(item.Id), CronOccurrenceKey(occurrence.Id),
                         CronOccurrenceSlotKey(item.Id, executionTime), CronOccurrenceIdsKey,
                         CronOccurrencesByCronKey(item.Id), CronOccurrencePendingKey,
-                        ActivationMetadataKey, CronOccurrencePendingKey],
+                        ActivationMetadataKey, CronOccurrencePendingKey,
+                        CronOccurrenceLatestByCronKey],
                     [(RedisValue)occurrence.Id.ToString(), Serializer.Serialize(occurrence),
                         (RedisValue)ToScore(executionTime), (RedisValue)authoritative.DefinitionRevision,
                         (RedisValue)$"{Prefix}:co:", (RedisValue)item.Id.ToString(), LuaStatusIdle,
@@ -2351,7 +2403,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             [CronKey(occurrence.CronTickerId), CronOccurrenceKey(occurrence.Id),
                 CronOccurrenceSlotKey(occurrence.CronTickerId, occurrence.ExecutionTime),
                 CronOccurrenceIdsKey, CronOccurrencesByCronKey(occurrence.CronTickerId),
-                CronOccurrencePendingKey, ActivationMetadataKey, retentionKey],
+                CronOccurrencePendingKey, ActivationMetadataKey, retentionKey,
+                CronOccurrenceLatestByCronKey],
             [(RedisValue)occurrence.Id.ToString(), Serializer.Serialize(occurrence),
                 (RedisValue)ToScore(occurrence.ExecutionTime),
                 (RedisValue)occurrence.DefinitionRevision, (RedisValue)$"{Prefix}:co:",

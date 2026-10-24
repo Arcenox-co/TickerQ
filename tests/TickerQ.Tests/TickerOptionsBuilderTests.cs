@@ -132,6 +132,35 @@ public class TickerOptionsBuilderTests
     }
 
     [Fact]
+    public void UseApplicationNamespace_RejectsNamespaceOverTheByteLimitWithNamespaceMessage()
+    {
+        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
+            new TickerExecutionContext(), new SchedulerOptionsBuilder());
+
+        // 300 two-byte characters = 600 UTF-8 bytes, under 512 characters but over 512 bytes.
+        var error = Assert.Throws<ArgumentException>(() =>
+            builder.UseApplicationNamespace(new string('é', 300)));
+
+        Assert.Equal("applicationNamespace", error.ParamName);
+        Assert.Contains("application namespace", error.Message);
+        Assert.Contains("600 bytes", error.Message);
+        Assert.DoesNotContain("Cron seed identity", error.Message);
+    }
+
+    [Fact]
+    public void UseApplicationNamespace_AcceptsNamespaceAtTheByteLimitAfterTrimming()
+    {
+        var executionContext = new TickerExecutionContext();
+        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(
+            executionContext, new SchedulerOptionsBuilder());
+        var atLimit = new string('a', 512);
+
+        builder.UseApplicationNamespace("  " + atLimit + "  ");
+
+        Assert.Equal(atLimit, executionContext.OptionsSeeding.ApplicationNamespace);
+    }
+
+    [Fact]
     public void MapLegacyDefinedCronOwnership_NormalizesAndPublishesAnIdempotentMapping()
     {
         var executionContext = new TickerExecutionContext();
@@ -375,44 +404,6 @@ public class TickerOptionsBuilderTests
 
         Assert.Equal(42, schedulerOptions.MaxConcurrency);
         Assert.Equal("test-node", schedulerOptions.NodeIdentifier);
-    }
-
-    [Fact]
-    public void SkipStaleCronOccurrencesOnStartup_DefaultThreshold_SetsFiveSeconds()
-    {
-        var executionContext = new TickerExecutionContext();
-        var schedulerOptions = new SchedulerOptionsBuilder();
-
-        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(executionContext, schedulerOptions);
-
-        builder.SkipStaleCronOccurrencesOnStartup();
-
-        Assert.Equal(TimeSpan.FromSeconds(5), schedulerOptions.StaleCronOccurrenceThreshold);
-    }
-
-    [Fact]
-    public void SkipStaleCronOccurrencesOnStartup_CustomThreshold_SetsValue()
-    {
-        var executionContext = new TickerExecutionContext();
-        var schedulerOptions = new SchedulerOptionsBuilder();
-
-        var builder = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(executionContext, schedulerOptions);
-
-        builder.SkipStaleCronOccurrencesOnStartup(TimeSpan.FromMinutes(2));
-
-        Assert.Equal(TimeSpan.FromMinutes(2), schedulerOptions.StaleCronOccurrenceThreshold);
-    }
-
-    [Fact]
-    public void SkipStaleCronOccurrencesOnStartup_NotCalled_ThresholdRemainsZero()
-    {
-        var executionContext = new TickerExecutionContext();
-        var schedulerOptions = new SchedulerOptionsBuilder();
-
-        // Don't call SkipStaleCronOccurrencesOnStartup
-        _ = new TickerOptionsBuilder<FakeTimeTicker, FakeCronTicker>(executionContext, schedulerOptions);
-
-        Assert.Equal(TimeSpan.Zero, schedulerOptions.StaleCronOccurrenceThreshold);
     }
 
     [Fact]

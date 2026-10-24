@@ -25,6 +25,8 @@ namespace TickerQ.Utilities.Managers
         private readonly SchedulerOptionsBuilder _schedulerOptions;
         private readonly string _runtimePartitionKey;
         private readonly TickerLifecycleLogger _lifecycle;
+        private readonly ISchedulePolicyStore _schedulePolicyStore;
+        private readonly SchedulePolicyEvaluator _schedulePolicyEvaluator;
 
         public InternalTickerManager(ITickerPersistenceProvider<TTimeTicker, TCronTicker> persistenceProvider,
             ITickerClock clock, ITickerQNotificationHubSender notificationHubSender, SchedulerOptionsBuilder schedulerOptions)
@@ -35,7 +37,9 @@ namespace TickerQ.Utilities.Managers
             ITickerClock clock,
             ITickerQNotificationHubSender notificationHubSender,
             SchedulerOptionsBuilder schedulerOptions,
-            TickerLifecycleLogger lifecycle)
+            TickerLifecycleLogger lifecycle,
+            ISchedulePolicyStore schedulePolicyStore = null,
+            SchedulePolicyEvaluator schedulePolicyEvaluator = null)
         {
             _persistenceProvider = persistenceProvider;
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -43,6 +47,8 @@ namespace TickerQ.Utilities.Managers
             _schedulerOptions = schedulerOptions;
             _lifecycle = lifecycle;
             _runtimePartitionKey = (schedulerOptions.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal).StorageKey;
+            _schedulePolicyStore = schedulePolicyStore ?? persistenceProvider as ISchedulePolicyStore;
+            _schedulePolicyEvaluator = schedulePolicyEvaluator ?? new SchedulePolicyEvaluator();
         }
 
         public async Task<bool> TryDispatchCronChainAsync(InternalFunctionContext context, bool isDue,
@@ -242,6 +248,8 @@ namespace TickerQ.Utilities.Managers
                 Retries = node.Retries,
                 RetryIntervals = node.RetryIntervals,
                 TimeoutSeconds = node.TimeoutSeconds,
+                MissedExecutionAction = node.MissedExecutionAction,
+                MaximumLateness = node.MaximumLateness,
                 ParentId = node.ParentId,
                 AcquisitionToken = node.AcquisitionToken,
                 ChainRootId = chainRootId,
@@ -286,6 +294,8 @@ namespace TickerQ.Utilities.Managers
                     RetryIntervals = occurrence.CronTicker.RetryIntervals,
                     SkipIfAlreadyRunning = occurrence.CronTicker.SkipIfAlreadyRunning,
                     TimeoutSeconds = occurrence.CronTicker.TimeoutSeconds,
+                    MissedExecutionAction = occurrence.CronTicker.MissedExecutionAction,
+                    MaximumLateness = occurrence.CronTicker.MaximumLateness,
                     AcquisitionToken = occurrence.AcquisitionToken,
                     ExecutionTime = occurrence.ExecutionTime
                 });
@@ -315,18 +325,54 @@ namespace TickerQ.Utilities.Managers
                 .GetEarliestAvailableCronOccurrence(cronTickerIds, cancellationToken)
                 .ConfigureAwait(false);
 
-            return EarliestCronTickerGroup(cronTickers, now, earliestAvailableCronOccurrence);
+            IReadOnlyCollection<SchedulePolicy> policies = Array.Empty<SchedulePolicy>();
+            if (cronTickers.Any(x => !string.IsNullOrWhiteSpace(x.SchedulePolicyName)))
+            {
+                if (_schedulePolicyStore == null)
+                    return null; // Fail closed for a third-party provider that cannot resolve the referenced policy.
+                policies = await _schedulePolicyStore.ListSchedulePoliciesAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            IReadOnlyDictionary<Guid, DateTime> latestOccurrenceTimes = new Dictionary<Guid, DateTime>();
+            if (_persistenceProvider.SupportsCronCatchUp)
+            {
+                var catchUpIds = cronTickers
+                    .Where(x => x.CatchUpMode == CronCatchUpMode.RunLatest)
+                    .Select(x => x.Id).ToArray();
+                if (catchUpIds.Length != 0)
+                    latestOccurrenceTimes = await _persistenceProvider
+                        .GetLatestCronOccurrenceTimesAsync(catchUpIds, cancellationToken)
+                        .ConfigureAwait(false);
+            }
+
+            return EarliestCronTickerGroupWithPolicies(cronTickers, now, earliestAvailableCronOccurrence,
+                policies, _schedulePolicyEvaluator, latestOccurrenceTimes,
+                _persistenceProvider.SupportsCronCatchUp);
         }
 
         private static (DateTime Next, InternalManagerContext[] Items)? EarliestCronTickerGroup(CronTickerEntity[] cronTickers, DateTime now, CronTickerOccurrenceEntity<TCronTicker> earliestStored)
+            => EarliestCronTickerGroupWithPolicies(cronTickers, now, earliestStored,
+                Array.Empty<SchedulePolicy>(), new SchedulePolicyEvaluator(),
+                new Dictionary<Guid, DateTime>(), supportsCatchUp: false);
+
+        private static (DateTime Next, InternalManagerContext[] Items)? EarliestCronTickerGroupWithPolicies(
+            CronTickerEntity[] cronTickers, DateTime now,
+            CronTickerOccurrenceEntity<TCronTicker> earliestStored,
+            IReadOnlyCollection<SchedulePolicy> policies,
+            SchedulePolicyEvaluator evaluator,
+            IReadOnlyDictionary<Guid, DateTime> latestOccurrenceTimes,
+            bool supportsCatchUp)
         {
             DateTime? min = null;
             InternalManagerContext first = null;
             List<InternalManagerContext> ties = null;
+            latestOccurrenceTimes ??= new Dictionary<Guid, DateTime>();
 
             foreach (var cronTicker in cronTickers)
             {
-                var next = CronScheduleCache.GetNextOccurrenceOrDefault(cronTicker.Expression, now);
+                latestOccurrenceTimes.TryGetValue(cronTicker.Id, out var latestPersisted);
+                var next = GetNextCronCandidate(cronTicker, now, policies, evaluator,
+                    latestPersisted == default ? null : latestPersisted, supportsCatchUp);
                 if (next is null) continue;
                 
                 if(earliestStored != null && earliestStored.ExecutionTime == next && cronTicker.Id == earliestStored.CronTickerId)
@@ -412,6 +458,51 @@ namespace TickerQ.Utilities.Managers
 
             var finalWinners = ties is null ? [first] : ties.ToArray();
             return (min.Value, finalWinners);
+        }
+
+        private static DateTime? GetNextCronCandidate(
+            CronTickerEntity cronTicker, DateTime now,
+            IReadOnlyCollection<SchedulePolicy> policies, SchedulePolicyEvaluator evaluator,
+            DateTime? latestPersisted, bool supportsCatchUp)
+        {
+            DateTime? Next(DateTime after) => evaluator.GetNextAllowedCronOccurrence(
+                cronTicker.Expression, after, cronTicker.TimeZoneId,
+                cronTicker.SchedulePolicyName, policies);
+
+            if (!supportsCatchUp || cronTicker.CatchUpMode != CronCatchUpMode.RunLatest ||
+                cronTicker.MissedExecutionAction != MissedExecutionAction.Skip ||
+                cronTicker.MaximumLateness is not { } maximumLateness)
+                return Next(now);
+
+            var distanceFromMinimum = now - DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
+            var floor = maximumLateness >= distanceFromMinimum
+                ? DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc)
+                : now - maximumLateness;
+            if (cronTicker.CreatedAt > floor) floor = cronTicker.CreatedAt;
+            var hasPersistedFloor = latestPersisted.HasValue && latestPersisted.Value <= now &&
+                                    latestPersisted.Value >= floor;
+            if (hasPersistedFloor) floor = latestPersisted.Value;
+            else if (floor > DateTime.MinValue) floor = floor.AddTicks(-1);
+
+            var first = Next(floor);
+            if (!first.HasValue || first.Value > now)
+                return Next(now);
+
+            // Find the latest allowed slot without enumerating every second of a long outage.
+            // The predicate “there is an occurrence after this instant and no later than now”
+            // is monotonic, so a tick-level binary search converges on the final slot.
+            var low = floor;
+            var high = now;
+            for (var i = 0; i < 63 && high.Ticks - low.Ticks > 1; i++)
+            {
+                var mid = new DateTime(low.Ticks + ((high.Ticks - low.Ticks) / 2), DateTimeKind.Utc);
+                var candidate = Next(mid);
+                if (candidate.HasValue && candidate.Value <= now) low = mid;
+                else high = mid;
+            }
+
+            var latest = Next(low);
+            return latest.HasValue && latest.Value <= now ? latest : first;
         }
 
         public async Task<InternalFunctionContext[]> SetTickersInProgress(InternalFunctionContext[] resources, CancellationToken cancellationToken = default)
@@ -779,6 +870,8 @@ namespace TickerQ.Utilities.Managers
                     RetryIntervals = timedOutCronTicker.CronTicker.RetryIntervals,
                     SkipIfAlreadyRunning = timedOutCronTicker.CronTicker.SkipIfAlreadyRunning,
                     TimeoutSeconds = timedOutCronTicker.CronTicker.TimeoutSeconds,
+                    MissedExecutionAction = timedOutCronTicker.CronTicker.MissedExecutionAction,
+                    MaximumLateness = timedOutCronTicker.CronTicker.MaximumLateness,
                     ParentId = timedOutCronTicker.CronTickerId,
                     AcquisitionToken = timedOutCronTicker.AcquisitionToken,
                     RequestContractVersion = timedOutCronTicker.CronTicker.RequestContractVersion,
@@ -807,8 +900,6 @@ namespace TickerQ.Utilities.Managers
                 await _persistenceProvider.RemoveTimeTickers([tickerId], cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
-            => await _persistenceProvider.SkipStaleCronOccurrencesAsync(staleThreshold, cancellationToken).ConfigureAwait(false);
 
         public async Task ReleaseDeadNodeResources(string instanceIdentifier, CancellationToken cancellationToken = default)
         {

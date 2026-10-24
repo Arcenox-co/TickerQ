@@ -17,7 +17,7 @@ namespace TickerQ.Caching.StackExchangeRedis.Infrastructure;
 
 internal sealed partial class TickerRedisPersistenceProvider<TTimeTicker, TCronTicker> :
     BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>,
-    ITickerPersistenceProvider<TTimeTicker, TCronTicker>, ITickerDefinitionStore
+    ITickerPersistenceProvider<TTimeTicker, TCronTicker>, ITickerDefinitionStore, ISchedulePolicyStore
     where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
     where TCronTicker : CronTickerEntity, new()
 {

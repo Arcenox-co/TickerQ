@@ -237,7 +237,7 @@ export function AssistantInvestigations({
               ) : null}
             </div>
             <div className="flex-1 overflow-y-auto p-4 sm:p-5 scrollbar-thin">
-              {selected.state === "Completed" ? <div className="rounded-xl border border-border bg-card p-4 text-[12px] leading-relaxed"><ChatMarkdown content={selected.summary} /></div> : <p className="text-[12px] text-muted-foreground">{selected.failureMessage || "This investigation is still processing."}</p>}
+              {selected.state === "Completed" ? <div className="rounded-xl border border-border bg-card p-4 text-[12px] leading-relaxed">{selected.summary ? <ChatMarkdown content={selected.summary} /> : <p className="text-muted-foreground">Investigation completed without a saved summary.</p>}</div> : <p className="text-[12px] text-muted-foreground">{selected.failureMessage || "This investigation is still processing."}</p>}
               {selected.recoveredAt ? <div className="mt-4 flex items-start gap-2 rounded-lg border border-status-success/20 bg-status-success/5 p-3"><CheckCircle2 className="mt-0.5 h-4 w-4 text-status-success" /><div><p className="text-[11px] font-medium text-status-success">A later execution succeeded</p><p className="mt-0.5 text-[10px] text-muted-foreground">Recovery is evidence of a successful later run; an operator can still decide whether the incident is resolved.</p></div></div> : null}
             </div>
             {!readOnly ? (

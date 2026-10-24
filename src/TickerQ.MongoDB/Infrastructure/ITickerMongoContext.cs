@@ -17,5 +17,6 @@ namespace TickerQ.MongoDB.Infrastructure
         IMongoCollection<BsonDocument> NodeFinalizations { get; }
         IMongoCollection<BsonDocument> StoreMetadata { get; }
         IMongoCollection<SavedTickerDefinition> Definitions { get; }
+        IMongoCollection<SchedulePolicy> SchedulePolicies { get; }
     }
 }

@@ -14,6 +14,11 @@ public sealed class IntegrationOptions
     public TimeSpan MonitoringInterval { get; set; } = TimeSpan.FromSeconds(30);
     public int QueueCapacity { get; set; } = 1000;
     public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(10);
+    /// <summary>
+    /// How long shutdown keeps delivering alerts that were already queued, bounded by the host's
+    /// own shutdown deadline. Zero stops immediately and discards queued alerts. Default 10 seconds.
+    /// </summary>
+    public TimeSpan ShutdownDrainTimeout { get; set; } = TimeSpan.FromSeconds(10);
     /// <summary>Opt in only for trusted internal webhook destinations. Redirects are always disabled.</summary>
     public bool AllowPrivateEndpoints { get; set; }
     /// <summary>Optional exact DNS host allowlist; empty allows public HTTPS destinations.</summary>

@@ -347,7 +347,7 @@ The assistant prepares review cards for:
 
 Examples: “Read the logs for the most recent failed execution”; “Run Prepare then
 Publish every weekday at 08:00”; “Alert Operations if GenerateInvoices fails three
-times”; “Monitor GenerateInvoices: finish by 08:00 Europe/Belgrade, with ten minutes
+times”; “Monitor GenerateInvoices: finish by 08:00 Europe/Berlin, with ten minutes
 of grace and a recovery message.”
 
 **Changes require an explicit card action.** One-time jobs and chains use **Save draft**;

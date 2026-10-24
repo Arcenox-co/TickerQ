@@ -28,6 +28,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { FieldInfo } from "@/components/form-fields/field-info";
 import type {
   FunctionInfoDto,
   FunctionRequestContractDto,
@@ -151,6 +152,9 @@ function EditorHeader({
           <FileJson className="h-3.5 w-3.5 text-primary" />
           Request payload
           {contract?.required && <span className="text-status-error">*</span>}
+          <FieldInfo>
+            JSON input passed to the selected function and validated against its request contract.
+          </FieldInfo>
         </div>
         <p className="mt-0.5 text-[10px] text-muted-foreground">
           {contract?.typeName ?? functionInfo?.requestType ?? "Legacy untyped payload"}

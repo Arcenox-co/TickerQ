@@ -1,5 +1,6 @@
 import { parseAssistantEvent } from "../lib/assistant-stream.ts";
 import type { IntegrationRule, IntegrationMonitor } from "./integration-types";
+import type { SaveSchedulePolicyRequest } from "./api-types";
 import { resolveDashboardUrl } from "@/lib/runtime-config";
 import { tokenStore } from "@/lib/auth/token-store";
 
@@ -90,7 +91,8 @@ export interface AssistantProposal {
   proposalId?: string | null;
   kind: "createTimeTicker" | "createTimeTickerDraft" | "createCronTicker" | "updateCronTicker" | "createChain" | "createChainDraft"
     | "createCronChain" | "retryExecution" | "cancelExecution" | "deleteExecution"
-    | "createAlertRule" | "createMonitor";
+    | "createAlertRule" | "createMonitor"
+    | "createSchedulePolicy" | "updateSchedulePolicy" | "setCronSchedulePolicy";
   draftName?: string;
   function: string;
   expression: string;
@@ -114,6 +116,16 @@ export interface AssistantProposal {
   rule?: IntegrationRule | null;
   monitor?: IntegrationMonitor | null;
   destinationNames?: string[];
+  /** Proposed schedule policy, in the shape the save endpoint accepts. */
+  policy?: SaveSchedulePolicyRequest | null;
+  /** The policy as it was when proposed (updates only). */
+  currentPolicy?: SaveSchedulePolicyRequest | null;
+  /** Policy version the update was proposed against. */
+  expectedVersion?: number | null;
+  /** Policy for a new cron ticker or setCronSchedulePolicy; empty means none. */
+  schedulePolicyName?: string;
+  /** The cron ticker's policy when proposed (setCronSchedulePolicy only). */
+  currentSchedulePolicyName?: string;
 }
 
 /** One step of a proposed chain (parsed from AssistantProposal.chainJson). */

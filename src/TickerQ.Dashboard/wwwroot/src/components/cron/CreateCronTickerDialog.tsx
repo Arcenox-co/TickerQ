@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { FlaskConical, Plus, RotateCcw } from "lucide-react";
+import { FlaskConical, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -13,12 +13,15 @@ import {
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
-import { Checkbox } from "@/components/ui/checkbox";
 import { CronOverlapField } from "@/components/cron/CronOverlapField";
 import { CronSchedulePresets } from "@/components/cron/CronSchedulePresets";
 import { TextField } from "@/components/form-fields/text-field";
+import { TextareaField } from "@/components/form-fields/textarea-field";
+import { TimezoneField } from "@/components/form-fields/timezone-field";
+import { COMPACT_FIELD_LABEL_CLASS } from "@/components/form-fields/field-label";
 
 import { NumberField } from "@/components/form-fields/number-field";
+import { DurationField } from "@/components/form-fields/duration-field";
 import {
   SelectField,
   type SelectOption,
@@ -31,7 +34,6 @@ import {
   CronExpressionPreview,
   isValidCronExpression,
 } from "@/components/cron/CronExpressionPreview";
-import { ON_STALE_OPTIONS } from "@/lib/cron/ticker-form-options";
 import type { FunctionInfoDto, TestRunResponse } from "@/services/api-types";
 import { dashboardApi } from "@/services/dashboard-api";
 import { encodeRequestPayload } from "@/lib/request-payload";
@@ -43,6 +45,14 @@ import {
 import { createDraftState, selectFunction } from "@/lib/function-draft";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
 import { SingleJobTestDialog } from "@/components/cron/SingleJobTestDialog";
+import { AdvancedSettings, AdvancedSettingsGroup } from "@/components/cron/AdvancedSettings";
+import { FieldInfo } from "@/components/form-fields/field-info";
+import {
+  CRON_CATCH_UP_OPTIONS,
+  MISSED_EXECUTION_OPTIONS,
+  ON_STALE_OPTIONS,
+} from "@/lib/cron/ticker-form-options";
+import { useSchedulePolicies } from "@/services/hooks";
 import {
   Dialog,
   DialogContent,
@@ -72,6 +82,16 @@ const schema = z.object({
   requestJson: z.string().optional(),
   onStale: z.enum(["Restart", "Cancel"]),
   timeoutSeconds: z.number().int().min(0).max(86400).optional(),
+  timeZoneId: z.string().trim().optional(),
+  schedulePolicyName: z.string().optional(),
+  missedExecutionAction: z.enum(["RunOnce", "Skip"]),
+  maximumLatenessSeconds: z.number().int().min(0).max(31_536_000).optional(),
+  catchUpMode: z.enum(["Skip", "RunLatest"]),
+}).superRefine((values, context) => {
+  if (values.missedExecutionAction === "Skip" && values.maximumLatenessSeconds == null)
+    context.addIssue({ code: "custom", path: ["maximumLatenessSeconds"], message: "Set the allowed lateness." });
+  if (values.catchUpMode === "RunLatest" && values.missedExecutionAction !== "Skip")
+    context.addIssue({ code: "custom", path: ["catchUpMode"], message: "Run latest requires a bounded grace period." });
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -103,16 +123,22 @@ export function CreateCronTickerDialog({
       onStale: "Restart",
       timeoutSeconds: 0,
       skipIfAlreadyRunning: false,
+      timeZoneId: "UTC",
+      schedulePolicyName: "",
+      missedExecutionAction: "RunOnce",
+      maximumLatenessSeconds: 300,
+      catchUpMode: "Skip",
     },
   });
+  const { isDirty, isSubmitting } = form.formState;
 
   const retriesValue = form.watch("retries") ?? 0;
   const intervalsValue = form.watch("retryIntervalsSeconds") ?? "";
   const expressionValue = form.watch("expression") ?? "";
   const selectedFunctionName = form.watch("function");
   const requestJson = form.watch("requestJson") ?? "";
+  const missedExecutionAction = form.watch("missedExecutionAction");
   const selectedFunction = functions.find((item) => item.functionName === selectedFunctionName);
-  const [enabled, setEnabled] = useState(true);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestRunResponse | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
@@ -121,7 +147,16 @@ export function CreateCronTickerDialog({
   const [pendingTestValues, setPendingTestValues] = useState<FormValues | null>(null);
   const draftBook = useRef(createDraftState());
   const requestEditorValid = useRef(true);
+  const schedulePolicies = useSchedulePolicies();
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
+  const [activationPromptOpen, setActivationPromptOpen] = useState(false);
+  const [pendingCreateValues, setPendingCreateValues] = useState<FormValues | null>(null);
+  const [creatingMode, setCreatingMode] = useState<"now" | "later" | null>(null);
+
+  useEffect(() => {
+    if (missedExecutionAction !== "Skip" && form.getValues("catchUpMode") !== "Skip")
+      form.setValue("catchUpMode", "Skip", { shouldDirty: true, shouldValidate: true });
+  }, [form, missedExecutionAction]);
 
   useEffect(() => {
     const selection = selectFunction(
@@ -146,7 +181,6 @@ export function CreateCronTickerDialog({
   function closeAndReset() {
     resetDraftSession();
     form.reset();
-    setEnabled(true);
     setTestResult(null);
     setTestError(null);
     setTestConfirmOpen(false);
@@ -154,6 +188,9 @@ export function CreateCronTickerDialog({
     setTesting(false);
     setPendingTestValues(null);
     setLeavePromptOpen(false);
+    setActivationPromptOpen(false);
+    setPendingCreateValues(null);
+    setCreatingMode(null);
     onOpenChange(false);
   }
 
@@ -162,14 +199,14 @@ export function CreateCronTickerDialog({
       onOpenChange(true);
       return;
     }
-    if (form.formState.isDirty || !enabled) {
+    if (isDirty) {
       setLeavePromptOpen(true);
       return;
     }
     closeAndReset();
   }
 
-  async function handleSubmit(values: FormValues) {
+  function handleSubmit(values: FormValues) {
     if (!requestEditorValid.current) {
       form.setError("requestJson", { type: "validate", message: "Complete or correct the structured JSON field." });
       return;
@@ -179,8 +216,15 @@ export function CreateCronTickerDialog({
       form.setError("requestJson", { type: "validate", message: requestError });
       return;
     }
+    setPendingCreateValues(values);
+    setActivationPromptOpen(true);
+  }
+
+  async function createTicker(isEnabled: boolean) {
+    if (!pendingCreateValues || creatingMode) return;
+    setCreatingMode(isEnabled ? "now" : "later");
     try {
-      await onSubmit?.({ ...values, isEnabled: enabled });
+      await onSubmit?.({ ...pendingCreateValues, isEnabled });
       toast.success("Cron ticker created");
       form.reset();
       closeAndReset();
@@ -188,6 +232,8 @@ export function CreateCronTickerDialog({
       toast.error("Failed to create", {
         description: err instanceof Error ? err.message : "An error occurred",
       });
+    } finally {
+      setCreatingMode(null);
     }
   }
 
@@ -235,9 +281,9 @@ export function CreateCronTickerDialog({
     <Sheet open={open} onOpenChange={handleOpenChange}>
       <SheetContent
         side="right"
-        className="w-[520px] sm:max-w-[520px] bg-surface-0 border-l border-border overflow-y-auto scrollbar-thin p-0 gap-0"
+        className="flex flex-col gap-0 overflow-hidden border-l border-border bg-surface-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[560px]"
       >
-        <div className="px-6 py-5 border-b border-border">
+        <div className="shrink-0 border-b border-border bg-surface-0/95 px-5 py-5 backdrop-blur sm:px-6">
           <SheetTitle className="text-base font-semibold">
             Schedule Cron Ticker
           </SheetTitle>
@@ -246,103 +292,105 @@ export function CreateCronTickerDialog({
           </SheetDescription>
         </div>
 
-        <div className="p-6">
+        <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
           <Form {...form}>
             <form
-              className="flex flex-col"
+              className="flex min-h-full flex-col"
               onSubmit={form.handleSubmit(handleSubmit)}
             >
-              <div className="space-y-4">
-                {functionOptions.length > 0 ? (
-                  <SelectField
-                    control={form.control}
-                    name="function"
-                    label="Function"
-                    required
-                    options={functionOptions}
-                    placeholder="Select a function"
-                  />
-                ) : (
-                  <TextField
-                    control={form.control}
-                    name="function"
-                    label="Function"
-                    required
-                    placeholder="MyFunctionName"
-                  />
-                )}
+              <div className="flex-1 space-y-5 p-4 sm:p-6">
+                <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">
+                  {functionOptions.length > 0 ? (
+                    <SelectField
+                      control={form.control}
+                      name="function"
+                      label="Function"
+                      labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                      info="The registered TickerFunction invoked for every occurrence."
+                      required
+                      options={functionOptions}
+                      placeholder="Select a function"
+                    />
+                  ) : (
+                    <TextField
+                      control={form.control}
+                      name="function"
+                      label="Function"
+                      labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                      info="The registered TickerFunction invoked for every occurrence."
+                      required
+                      placeholder="MyFunctionName"
+                    />
+                  )}
 
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-medium text-foreground">
-                      Cron expression{" "}
-                      <span className="text-status-error">*</span>
-                    </span>
-                    <CronSchedulePresets onSelect={(expression) =>
-                      form.setValue("expression", expression, { shouldValidate: true, shouldDirty: true })
-                    } />
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`flex shrink-0 items-center gap-1 whitespace-nowrap ${COMPACT_FIELD_LABEL_CLASS}`}>
+                        Cron expression <span className="text-status-error">*</span>
+                        <FieldInfo>Defines the recurring fire times interpreted in the selected time zone.</FieldInfo>
+                      </span>
+                      <CronSchedulePresets onSelect={(expression) =>
+                        form.setValue("expression", expression, { shouldValidate: true, shouldDirty: true })
+                      } />
+                    </div>
+                    <div className="pt-0.5">
+                      <TextField
+                        control={form.control}
+                        name="expression"
+                        label=""
+                        placeholder="0 * * * *"
+                      />
+                    </div>
+                    <CronExpressionPreview expression={expressionValue} />
                   </div>
-                  <TextField
-                    control={form.control}
-                    name="expression"
-                    label=""
-                    placeholder="0 * * * *"
-                  />
-                  <CronExpressionPreview expression={expressionValue} />
+
+                  <div className="sm:col-span-2">
+                    <TextareaField
+                      control={form.control}
+                      name="description"
+                      label="Description"
+                      labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                      info="Optional context shown to operators with this recurring job."
+                      placeholder="Add details that help operators understand this recurring job…"
+                      maxLength={2000}
+                      rows={3}
+                      className="min-h-20 resize-y"
+                    />
+                  </div>
                 </div>
 
-                <TextField
+                <TimezoneField
                   control={form.control}
-                  name="description"
-                  label="Description"
-                  placeholder="Optional"
-                  maxLength={2000}
+                  name="timeZoneId"
+                  label="Time zone"
+                  labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                  info="The time zone used to interpret the cron expression."
                 />
 
-                <div className="rounded-lg border border-border/50 bg-surface-0/30 p-3 space-y-2.5">
-                  <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground uppercase tracking-wider">
-                    <RotateCcw className="h-3 w-3" />
-                    Retry policy
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <NumberField
                       control={form.control}
                       name="retries"
                       label="Retries"
+                      labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                      info="Additional attempts after an occurrence reports a failure."
                       min={0}
                       max={100}
                     />
                     <TextField
                       control={form.control}
                       name="retryIntervalsSeconds"
-                      label="Intervals (sec)"
+                      label="Retry delays"
+                      labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                      info="Comma-separated delays applied in order between retry attempts."
                       placeholder={retriesValue > 0 ? "5, 30, 60" : "—"}
                       disabled={retriesValue <= 0}
                     />
                   </div>
-                  <p className="text-[11px] text-muted-foreground/70 italic">
-                    →{" "}
-                    {describeRetryPolicy(
-                      retriesValue,
-                      parseIntervalsList(intervalsValue)
-                    )}
+                  <p className="mt-2 text-[11px] italic text-muted-foreground/70">
+                    → {describeRetryPolicy(retriesValue, parseIntervalsList(intervalsValue))}
                   </p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <SelectField
-                    control={form.control}
-                    name="onStale"
-                    label="If the node dies mid-run"
-                    options={ON_STALE_OPTIONS}
-                  />
-                  <NumberField
-                    control={form.control}
-                    name="timeoutSeconds"
-                    label="Timeout (sec, 0 = none)"
-                    min={0}
-                    max={86400}
-                  />
                 </div>
 
                 <RequestPayloadEditor
@@ -354,39 +402,97 @@ export function CreateCronTickerDialog({
                   error={form.formState.errors.requestJson?.message}
                 />
 
-                <CronOverlapField checked={form.watch("skipIfAlreadyRunning")}
-                  onChange={value => form.setValue("skipIfAlreadyRunning", value, { shouldDirty: true })} />
+                <AdvancedSettings description="Schedule timing, execution controls, and recovery behavior.">
+                  <AdvancedSettingsGroup title="Scheduling">
+                    <SelectField
+                      control={form.control}
+                      name="schedulePolicyName"
+                      label="Schedule policy"
+                      labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                      info="A reusable calendar rule. Cron occurrences outside the allowed calendar are skipped."
+                      options={[{ value: "", label: "No policy" }, ...(schedulePolicies.data ?? []).map(policy => ({ value: policy.name, label: policy.name }))]}
+                    />
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_5rem]">
+                      <SelectField
+                        control={form.control}
+                        name="missedExecutionAction"
+                        label="Late start"
+                        labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                        info="Run late work or skip it after the grace period."
+                        options={MISSED_EXECUTION_OPTIONS}
+                      />
+                      <SelectField
+                        control={form.control}
+                        name="catchUpMode"
+                        label="Catch-up"
+                        labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                        info="Run the latest missed occurrence after downtime."
+                        options={CRON_CATCH_UP_OPTIONS}
+                        disabled={missedExecutionAction !== "Skip"}
+                      />
+                      <DurationField
+                        control={form.control}
+                        name="maximumLatenessSeconds"
+                        label="Grace"
+                        labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                        info="Maximum allowed start delay."
+                        minSeconds={0}
+                        maxSeconds={31_536_000}
+                        disabled={missedExecutionAction !== "Skip"}
+                      />
+                    </div>
+                  </AdvancedSettingsGroup>
 
-                <label className="flex items-center gap-2 text-[12px] text-muted-foreground cursor-pointer select-none">
-                  <Checkbox
-                    checked={enabled}
-                    onCheckedChange={(c) => setEnabled(c === true)}
-                    className="h-3.5 w-3.5"
-                  />
-                  Enabled on create
-                </label>
+                  <AdvancedSettingsGroup title="Execution controls">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <CronOverlapField
+                        checked={form.watch("skipIfAlreadyRunning")}
+                        onChange={value => form.setValue("skipIfAlreadyRunning", value, { shouldDirty: true })}
+                        compact
+                      />
+                      <DurationField
+                        control={form.control}
+                        name="timeoutSeconds"
+                        label="Timeout"
+                        labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                        info="Cancels one function attempt after this duration. Set zero to disable the timeout."
+                        minSeconds={0}
+                        maxSeconds={86_400}
+                      />
+                    </div>
+                  </AdvancedSettingsGroup>
+
+                  <AdvancedSettingsGroup title="Recovery">
+                    <SelectField
+                      control={form.control}
+                      name="onStale"
+                      label="Owner loss"
+                      labelClassName={COMPACT_FIELD_LABEL_CLASS}
+                      info="Restart the attempt on another node, or record it as cancelled after lease loss."
+                      options={ON_STALE_OPTIONS}
+                    />
+                  </AdvancedSettingsGroup>
+                </AdvancedSettings>
               </div>
 
-              <footer className="mt-6 space-y-3 border-t border-border/60 pt-4">
+              <footer className="sticky bottom-0 z-10 flex shrink-0 flex-col gap-3 border-t border-border bg-surface-0/95 px-4 py-4 backdrop-blur sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-fit rounded-lg text-xs"
+                  disabled={testing || isSubmitting}
+                  onClick={() => void prepareTest()}
+                >
+                  <FlaskConical className="mr-1.5 h-3 w-3" />
+                  Test once
+                </Button>
                 <div className="flex flex-wrap items-center justify-end gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8 text-xs rounded-lg"
-                    disabled={testing || form.formState.isSubmitting}
-                    onClick={() => void prepareTest()}
-                  >
-                    <FlaskConical className="h-3 w-3 mr-1.5" />
-                    Test once
-                  </Button>
-                </div>
-                <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/60 pt-3">
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-8 text-xs rounded-lg"
+                    className="h-8 rounded-lg text-xs"
                     onClick={() => handleOpenChange(false)}
                   >
                     Cancel
@@ -395,11 +501,11 @@ export function CreateCronTickerDialog({
                     type="submit"
                     variant="gradient"
                     size="sm"
-                    className="h-8 text-xs rounded-lg"
-                    disabled={form.formState.isSubmitting}
+                    className="h-8 rounded-lg text-xs"
+                    disabled={isSubmitting}
                   >
-                    <Plus className="h-3 w-3 mr-1.5" />
-                    {form.formState.isSubmitting ? "Creating…" : "Create"}
+                    <Plus className="mr-1.5 h-3 w-3" />
+                    {isSubmitting ? "Creating…" : "Create"}
                   </Button>
                 </div>
               </footer>
@@ -408,6 +514,58 @@ export function CreateCronTickerDialog({
         </div>
       </SheetContent>
     </Sheet>
+
+    <Dialog
+      open={activationPromptOpen}
+      onOpenChange={(nextOpen) => {
+        if (!creatingMode) setActivationPromptOpen(nextOpen);
+      }}
+    >
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>When should this cron ticker activate?</DialogTitle>
+          <DialogDescription>
+            Activate it now to begin producing occurrences, or create it inactive and activate it later from the cron ticker details.
+          </DialogDescription>
+        </DialogHeader>
+        {pendingCreateValues && (
+          <div className="rounded-lg border border-border/60 bg-surface-1/50 px-3 py-2.5 text-xs">
+            <div className="font-medium text-foreground">{pendingCreateValues.function}</div>
+            <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+              {pendingCreateValues.expression} · {pendingCreateValues.timeZoneId || "UTC"}
+            </div>
+          </div>
+        )}
+        <DialogFooter className="gap-2 sm:gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={creatingMode !== null}
+            onClick={() => setActivationPromptOpen(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={creatingMode !== null}
+            onClick={() => void createTicker(false)}
+          >
+            {creatingMode === "later" && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            Activate later
+          </Button>
+          <Button
+            type="button"
+            variant="gradient"
+            disabled={creatingMode !== null}
+            onClick={() => void createTicker(true)}
+          >
+            {creatingMode === "now" && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            Activate now
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <ConfirmDialog
       open={testConfirmOpen}

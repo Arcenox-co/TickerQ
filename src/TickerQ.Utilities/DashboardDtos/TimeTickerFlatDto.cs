@@ -41,5 +41,12 @@ namespace TickerQ.Utilities.DashboardDtos
         public StaleAction OnStale { get; set; }
         /// <summary>Max execution time per attempt (seconds); null inherits the global default.</summary>
         public int? TimeoutSeconds { get; set; }
+        public string SchedulePolicyName { get; set; }
+        public long? SchedulePolicyVersion { get; set; }
+        public BlockedOccurrenceBehavior? BlockedOccurrenceBehavior { get; set; }
+        public DateTime? RequestedExecutionTime { get; set; }
+        public string ScheduleAdjustmentReason { get; set; }
+        public MissedExecutionAction MissedExecutionAction { get; set; }
+        public long? MaximumLatenessSeconds { get; set; }
     }
 }

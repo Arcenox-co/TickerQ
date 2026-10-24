@@ -1,7 +1,7 @@
 import { ExecutionStatus } from "./ExecutionStatus";
 import { isChainActive } from "@/lib/cron/chain-summary";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Copy, LayoutTemplate, Pencil, Play, RotateCcw, Sparkles, X } from "lucide-react";
+import { Copy, LayoutTemplate, Pencil, Play, RotateCcw, Sparkles, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -13,7 +13,6 @@ import { EditTimeTickerFields } from "@/components/cron/EditTimeTickerFields";
 import { ConfirmDialog } from "@/components/cron/ConfirmDialog";
 import { SaveDefinitionDialog } from "@/components/cron/SaveDefinitionDialog";
 import { CancelTickerButton } from "@/components/cron/CancelTickerButton";
-import { LockHolder } from "@/components/cron/LockHolder";
 import { ChainDeleteBehaviorControl } from "@/components/cron/ChainDeleteBehaviorControl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,21 +21,122 @@ import { findDuplicateTemplateName } from "@/lib/cron/saved-definitions";
 import {
   useDuplicateTimeTicker,
   useChainTickers,
+  useRetryTimeTickerFromHere,
   useRunTimeTicker,
   useTimeTicker,
   useSaveExistingTickerAsTemplate,
   useDefinitions,
 } from "@/services/hooks";
 import { formatDuration, relativeTime } from "@/lib/cron/format";
+import { STATUS_CONFIG } from "@/lib/cron/status-config";
+import { PARALLEL_GROUP_FUNCTION } from "@/lib/cron/chain-flow-layout";
 import { investigationExecutionId } from "@/lib/assistant-investigation";
 import { isAssistantEnabled, isReadOnly } from "@/lib/runtime-config";
-import type { TimeTickerFlatDto } from "@/services/api-types";
+import { cn } from "@/lib/utils";
+import type { ChainExecutionSummaryDto, TickerStatus, TimeTickerFlatDto } from "@/services/api-types";
 
 const PENDING = ["Idle", "Queued"];
 const ACTIVE = ["Idle", "Queued", "InProgress"];
 
 function errMsg(err: unknown) {
   return err instanceof Error ? err.message : "An error occurred";
+}
+
+function executionOwnerNodeName(value: string) {
+  return value.match(/^(.+):[0-9]+:[0-9a-f]{32}$/i)?.[1] ?? value;
+}
+
+type ChainOutcomeSegment = {
+  key: string;
+  label: string;
+  count: number;
+  status: TickerStatus;
+};
+
+function ChainOutcomeProgress({
+  summary,
+  jobs,
+}: {
+  summary: ChainExecutionSummaryDto | null | undefined;
+  jobs: TimeTickerFlatDto[] | undefined;
+}) {
+  if (!summary || summary.status === "Unavailable" || summary.totalCount <= 0) return null;
+
+  const executableJobs = (jobs ?? []).filter(job => job.functionName !== PARALLEL_GROUP_FUNCTION);
+  const actualCounts = new Map<TickerStatus, number>();
+  for (const job of executableJobs)
+    actualCounts.set(job.status, (actualCounts.get(job.status) ?? 0) + 1);
+
+  const hasCompleteJobSnapshot = executableJobs.length === summary.totalCount;
+  const doneCount = hasCompleteJobSnapshot
+    ? (actualCounts.get("Done") ?? 0) + (actualCounts.get("DueDone") ?? 0)
+    : Math.max(0, summary.finishedCount - summary.failedCount - summary.cancelledCount - summary.skippedCount);
+  const unsettledCount = Math.max(0, summary.totalCount - summary.finishedCount);
+  const allSegments: ChainOutcomeSegment[] = [
+    { key: "done", label: "done", count: doneCount, status: "Done" },
+    { key: "failed", label: "failed", count: summary.failedCount, status: "Failed" },
+    { key: "cancelled", label: "cancelled", count: summary.cancelledCount, status: "Cancelled" },
+    { key: "skipped", label: "skipped", count: summary.skippedCount, status: "Skipped" },
+    {
+      key: "running",
+      label: "running",
+      count: hasCompleteJobSnapshot ? (actualCounts.get("InProgress") ?? 0) : summary.status === "Running" ? unsettledCount : 0,
+      status: "InProgress",
+    },
+    {
+      key: "queued",
+      label: "queued",
+      count: hasCompleteJobSnapshot ? (actualCounts.get("Queued") ?? 0) : summary.status === "Waiting" ? unsettledCount : 0,
+      status: "Queued",
+    },
+    {
+      key: "waiting",
+      label: "waiting",
+      count: hasCompleteJobSnapshot ? (actualCounts.get("Idle") ?? 0) : 0,
+      status: "Idle",
+    },
+  ];
+  const segments = allSegments.filter(segment => segment.count > 0);
+
+  return (
+    <div className="border-b border-border px-5 py-3">
+      <div className="mb-1.5 flex items-center justify-between gap-3 text-[11px]">
+        <span className="font-medium text-foreground">Chain outcome</span>
+        <span className="shrink-0 tabular-nums text-muted-foreground">
+          {summary.finishedCount}/{summary.totalCount} settled
+        </span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={`Chain outcome: ${summary.finishedCount} of ${summary.totalCount} jobs settled`}
+        aria-valuemin={0}
+        aria-valuemax={summary.totalCount}
+        aria-valuenow={summary.finishedCount}
+        className="flex h-2 gap-px overflow-hidden rounded-full bg-surface-2"
+      >
+        {segments.map(segment => (
+          <span
+            key={segment.key}
+            title={`${segment.count} ${segment.label}`}
+            className={cn(
+              "min-w-0 transition-[flex-grow] duration-300",
+              STATUS_CONFIG[segment.status].dot,
+              segment.status === "InProgress" && "animate-pulse motion-reduce:animate-none",
+            )}
+            style={{ flexBasis: 0, flexGrow: segment.count }}
+          />
+        ))}
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+        {segments.map(segment => (
+          <span key={segment.key} className="inline-flex items-center gap-1 whitespace-nowrap">
+            <span className={cn("size-1.5 rounded-full", STATUS_CONFIG[segment.status].dot)} />
+            <span className="tabular-nums">{segment.count}</span> {segment.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export function TimeTickerDetailPanel({
@@ -57,6 +157,7 @@ export function TimeTickerDetailPanel({
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const readOnly = isReadOnly();
   const runM = useRunTimeTicker();
+  const retryChainM = useRetryTimeTickerFromHere();
   const dupM = useDuplicateTimeTicker();
   const saveTemplateM = useSaveExistingTickerAsTemplate();
   const templateDefinitions = useDefinitions("Template", "TimeTicker");
@@ -88,12 +189,16 @@ export function TimeTickerDetailPanel({
   const isPending = PENDING.includes(t.status);
   const isRunning = t.status === "InProgress";
   const isChain = t.childCount > 0;
+  const chainSummary = t.chainSummary ?? chainQ.data?.find(job => job.id === t.id)?.chainSummary;
+  const isRunningChain = isChain && isChainActive(chainSummary);
+  const rerunPending = isChain ? retryChainM.isPending : runM.isPending;
   const investigationId = investigationExecutionId(
     isChain ? (chainQ.data ?? [t]) : [t]
   );
   const canInvestigate = investigationId !== null && isAssistantEnabled();
   const bare = t.functionName;
   const lockHolder = t.lockHolder;
+  const editing = tab === "edit" && isPending;
 
   async function handleRun() {
     try {
@@ -106,10 +211,15 @@ export function TimeTickerDetailPanel({
   }
   async function handleRerun() {
     try {
-      await runM.mutateAsync(t.id);
+      if (isChain)
+        await retryChainM.mutateAsync(t.id);
+      else
+        await runM.mutateAsync(t.id);
       setConfirmRerun(false);
-      toast.success("Ticker re-run started", {
-        description: "The existing ticker record and ID are being reused.",
+      toast.success(isChain ? "Chain re-run started" : "Ticker re-run started", {
+        description: isChain
+          ? "The existing chain and job IDs are being reused."
+          : "The existing ticker record and ID are being reused.",
       });
       onChanged();
     } catch (err) {
@@ -133,14 +243,21 @@ export function TimeTickerDetailPanel({
 
   return (
     <ResizableSidePanel open={!!ticker} onClose={onClose}>
+      {editing ? (
+        <EditTimeTickerFields
+          ticker={t}
+          onCancel={() => setTab("logs")}
+          onSaved={() => {
+            setTab("logs");
+            onChanged();
+          }}
+        />
+      ) : (
       <div className="flex flex-col">
         {/* Header */}
         <div className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="font-mono text-sm font-semibold truncate">{bare}</div>
-            {lockHolder && (
-              <LockHolder value={lockHolder} className="text-muted-foreground/60" />
-            )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {isPending && !readOnly && (
@@ -148,20 +265,12 @@ export function TimeTickerDetailPanel({
                 variant="ghost"
                 size="sm"
                 className="h-7 gap-1 text-xs"
-                onClick={() => setTab((x) => (x === "edit" ? "logs" : "edit"))}
+                onClick={() => setTab("edit")}
               >
-                {tab === "edit" ? (
-                  <>
-                    <ArrowLeft className="h-3 w-3" /> Back
-                  </>
-                ) : (
-                  <>
-                    <Pencil className="h-3 w-3" /> Edit
-                  </>
-                )}
+                <Pencil className="h-3 w-3" /> Edit
               </Button>
             )}
-            <ExecutionStatus status={t.status} summary={t.chainSummary} isChain={isChain} />
+            <ExecutionStatus status={t.status} summary={chainSummary} isChain={isChain} />
             <button
               type="button"
               onClick={onClose}
@@ -200,30 +309,30 @@ export function TimeTickerDetailPanel({
               </Button>
             ) : (
               <>
-              {!isChain && (
+              {!isRunningChain && (
                 <Button
                   variant="gradient"
                   size="sm"
                   className="h-7 text-xs"
-                  disabled={runM.isPending}
+                  disabled={rerunPending}
                   onClick={() => setConfirmRerun(true)}
                 >
                   <RotateCcw className="h-3 w-3 mr-1" />
-                  Re-run
+                  {isChain ? "Re-run chain" : "Re-run"}
                 </Button>
               )}
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => {
-                  setDupTime("");
-                  setConfirmDup(true);
-                }}
-              >
-                <Copy className="h-3 w-3 mr-1" />
-                Duplicate
-              </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    setDupTime("");
+                    setConfirmDup(true);
+                  }}
+                >
+                  <Copy className="h-3 w-3 mr-1" />
+                  Duplicate
+                </Button>
               </>
             ))}
           {canInvestigate && (
@@ -256,85 +365,111 @@ export function TimeTickerDetailPanel({
             label="Retries"
             value={t.retries > 0 ? `${t.retryCount}/${t.retries}` : "—"}
           />
+          {t.schedulePolicyName && (
+            <Meta
+              label="Schedule policy"
+              value={`${t.schedulePolicyName}${t.schedulePolicyVersion ? ` · v${t.schedulePolicyVersion}` : ""}`}
+            />
+          )}
+          <Meta
+            label="Late start"
+            value={t.missedExecutionAction === "Skip"
+              ? `Skip after ${t.maximumLatenessSeconds ?? 0}s`
+              : "Run once when available"}
+          />
           {lockHolder && (
+            <Meta label="Node" value={executionOwnerNodeName(lockHolder) ?? "—"} />
+          )}
+          {t.description && (
             <div className="col-span-3 min-w-0">
-              <p className="text-muted-foreground/60 uppercase tracking-wider mb-1">Node</p>
-              <LockHolder value={lockHolder} showDetails />
+              <p className="mb-1 uppercase tracking-wider text-muted-foreground/60">Comment</p>
+              <p className="whitespace-pre-wrap break-words text-muted-foreground">{t.description}</p>
+            </div>
+          )}
+          {t.requestedExecutionTime && t.requestedExecutionTime !== t.scheduledFor && (
+            <Meta label="Requested" value={relativeTime(t.requestedExecutionTime)} />
+          )}
+          {t.scheduleAdjustmentReason && (
+            <div className="col-span-3 min-w-0">
+              <p className="mb-1 uppercase tracking-wider text-muted-foreground/60">Schedule adjustment</p>
+              <p className="break-words text-muted-foreground">{t.scheduleAdjustmentReason}</p>
             </div>
           )}
         </div>
 
+        {isChain && (
+          <ChainOutcomeProgress summary={chainSummary} jobs={chainQ.data} />
+        )}
+
         {t.progressPercent != null && (
           <div className="border-b border-border px-5 py-3">
             <div className="mb-1.5 flex items-center justify-between gap-3 text-[11px]">
-              <span className="truncate text-muted-foreground">{t.progressMessage || "Job progress"}</span>
+              <span className="font-medium text-foreground">This job</span>
               <span className="shrink-0 font-medium tabular-nums">{Math.round(t.progressPercent)}%</span>
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-surface-2">
               <div
-                className="h-full rounded-full bg-primary transition-[width] duration-300"
+                className={cn(
+                  "h-full rounded-full transition-[width] duration-300",
+                  STATUS_CONFIG[t.status].dot,
+                )}
                 style={{ width: `${Math.max(0, Math.min(100, t.progressPercent))}%` }}
               />
             </div>
+            <p className="mt-1.5 truncate text-[10px] text-muted-foreground">
+              {t.progressMessage || "Job progress"}
+            </p>
           </div>
         )}
 
-        {/* Description */}
+        {/* Chain controls */}
         {!t.parentId && isChain && (
           <div className="px-5 py-3 border-b border-border">
             <ChainDeleteBehaviorControl key={t.id} ticker={t} />
           </div>
         )}
-        {t.description && (
-          <div className="px-5 py-3 border-b border-border text-[12px] text-muted-foreground whitespace-pre-wrap">
-            {t.description}
-          </div>
-        )}
 
         {/* Body */}
         <div className="p-4 space-y-3">
-          {tab === "edit" && isPending ? (
-            <EditTimeTickerFields
-              ticker={t}
-              onCancel={() => setTab("logs")}
-              onSaved={() => {
-                setTab("logs");
-                onChanged();
-              }}
-            />
+          <PayloadPreview kind="time" id={t.id} />
+          {isChain ? (
+            <ChainLogsPanel rootId={t.id} />
           ) : (
-            <>
-              <PayloadPreview kind="time" id={t.id} />
-              {isChain ? (
-                <ChainLogsPanel rootId={t.id} />
-              ) : (
-                <LogsPanel
-                  functionName={bare}
-                  status={t.status}
-                  tickerId={t.id}
-                  exceptionMessage={t.exceptionMessage}
-                  skippedReason={t.skippedReason}
-                  executedAt={t.executedAt}
-                />
-              )}
-            </>
+            <LogsPanel
+              functionName={bare}
+              status={t.status}
+              tickerId={t.id}
+              exceptionMessage={t.exceptionMessage}
+              skippedReason={t.skippedReason}
+              executedAt={t.executedAt}
+            />
           )}
         </div>
       </div>
+      )}
 
       <ConfirmDialog
         open={confirmRerun}
         onOpenChange={setConfirmRerun}
-        title="Re-run this ticker?"
+        title={isChain ? "Re-run this chain?" : "Re-run this ticker?"}
         description={
-          <>
-            Runs <span className="font-mono font-semibold text-foreground">{bare}</span> again
-            using this ticker’s existing ID. Its previous status, result and progress are replaced;
-            no duplicate ticker is created.
-          </>
+          isChain ? (
+            <>
+              Resets and re-evaluates the whole chain from{" "}
+              <span className="font-mono font-semibold text-foreground">{bare}</span>. Existing
+              chain and job IDs are retained; previous statuses, results and progress on the
+              affected path are replaced.
+            </>
+          ) : (
+            <>
+              Runs <span className="font-mono font-semibold text-foreground">{bare}</span> again
+              using this ticker’s existing ID. Its previous status, result and progress are replaced;
+              no duplicate ticker is created.
+            </>
+          )
         }
-        confirmLabel="Re-run"
-        isPending={runM.isPending}
+        confirmLabel={isChain ? "Re-run chain" : "Re-run"}
+        isPending={rerunPending}
         onConfirm={handleRerun}
       />
       <ConfirmDialog

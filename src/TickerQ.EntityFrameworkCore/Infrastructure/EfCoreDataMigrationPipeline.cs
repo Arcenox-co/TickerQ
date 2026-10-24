@@ -142,7 +142,8 @@ public sealed class EfCoreDataMigrationPipeline
                 $"TickerQ EF store is missing the schema required by data migration '{requiredMigration}'. " +
                 "Generate and deploy the consumer-owned migration (for example: " +
                 "'dotnet ef migrations add TickerQProfessionalStoreUpgrade' then 'dotnet ef database update'). " +
-                "The migration must include TickerQStoreMetadata, TickerQNodes, TickerQControlCommands, TickerQDefinitions, ChainRootId, NodeFinalizationOutbox, " +
+                "The migration must include TickerQStoreMetadata, TickerQNodes, TickerQControlCommands, TickerQDefinitions, SchedulePolicies, ChainRootId, NodeFinalizationOutbox, " +
+                "the schedule-policy and missed-execution columns on TimeTickers and CronTickers, " +
                 "and the current additive CronTicker columns/indexes.", ex);
         }
     }
@@ -166,7 +167,7 @@ public sealed class EfCoreDataMigrationPipeline
     private static bool IsSerializationFailure(Exception exception)
     {
         for (var current = exception; current != null; current = current.InnerException)
-            if (current is DbException { SqlState: "40001" })
+            if (current is DbException db && RelationalTransactionConflicts.IsConflict(db, out _))
                 return true;
         return false;
     }
@@ -196,10 +197,16 @@ public sealed class EfCoreDataMigrationPipeline
                 typeof(TickerQControlCommandEntity).GetProperties().Select(x => x.Name).ToArray()),
             Requirement(model.FindEntityType(typeof(TickerQDefinitionEntity)),
                 typeof(TickerQDefinitionEntity).GetProperties().Select(x => x.Name).ToArray()),
+            Requirement(model.FindEntityType(typeof(SchedulePolicyEntity)),
+                typeof(SchedulePolicyEntity).GetProperties().Select(x => x.Name).ToArray()),
             Requirement(cron, "SeedKey", "SeedOwnerNamespace", "SeedManifestEpoch", "DefinitionRevision",
-                "SeedLastSeenAt", "RetirementRequestedAt", "RetiredAt", "SeedWasEnabledBeforeRetirement"),
+                "SeedLastSeenAt", "RetirementRequestedAt", "RetiredAt", "SeedWasEnabledBeforeRetirement",
+                "SchedulePolicyName", "SchedulePolicyVersion", "BlockedOccurrenceBehavior",
+                "MissedExecutionAction", "MaximumLateness", "TimeZoneId", "CatchUpMode"),
             Requirement(occurrence, "DefinitionRevision"),
-            Requirement(time, "ChainRootId", "ChainGeneration")
+            Requirement(time, "ChainRootId", "ChainGeneration",
+                "SchedulePolicyName", "SchedulePolicyVersion", "BlockedOccurrenceBehavior",
+                "MissedExecutionAction", "MaximumLateness", "RequestedExecutionTime", "ScheduleAdjustmentReason")
         };
 
         var helper = context.GetService<ISqlGenerationHelper>();
@@ -283,7 +290,9 @@ public sealed class EfCoreDataMigrationPipeline
             var names = index.Properties.Select(x => x.Name).ToArray();
             return names.Contains("SeedKey") || names.Contains("SeedOwnerNamespace") ||
                    names.Contains("DefinitionRevision") || names.Contains("ChainRootId") ||
-                   names.Contains("AvailableAtUtc") || names.Contains("NodeEpoch");
+                   names.Contains("AvailableAtUtc") || names.Contains("NodeEpoch") ||
+                   // Duplicate policy names must be rejected by the database, not only by the manager.
+                   (index.IsUnique && index.DeclaringEntityType.ClrType == typeof(SchedulePolicyEntity));
         }
     }
 

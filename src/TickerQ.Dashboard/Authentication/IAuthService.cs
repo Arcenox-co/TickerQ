@@ -53,5 +53,4 @@ public class AuthInfo
 {
     public AuthMode Mode { get; set; }
     public bool IsEnabled { get; set; }
-    public int SessionTimeoutMinutes { get; set; }
 }

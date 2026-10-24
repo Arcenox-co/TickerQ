@@ -82,9 +82,17 @@ overdue work independently of that interval. Acquisition checks prevent the two
 paths from restarting an already-running occurrence or taking work owned by another
 live node. Store failures in fallback recovery are logged before retrying.
 
-This recovers existing occurrences; it does not create an occurrence for every cron slot
-missed while the application was offline. Actual start time still depends on available
-workers and concurrency limits.
+By default this recovers existing occurrences once and does not create cron slots missed while the
+application was offline. A ticker can instead bound how late persisted work may start with
+`WhenMissed(MissedExecutionPolicy.SkipAfter(...))`. Time-chain expiry settles the complete graph as
+`Skipped`; cron expiry settles that occurrence without publishing a recurring chain. No user retry
+is consumed because the handler was never entered.
+
+Cron definitions may opt into `CatchUp(CronCatchUpMode.RunLatest)`. This creates at most the latest
+unpublished slot inside the same bounded lateness window after an outage. It never replays the whole
+gap. The durable defaults remain `RunOnce` for a persisted late execution and `Skip` for cron slots
+that were never persisted. See [Schedule policies and local-time calendars](schedule-policies.md#missed-execution-windows).
+Actual start time still depends on available workers and concurrency limits.
 
 The normal scheduler drains due time tickers in bounded batches without applying
 `MinPollingInterval` between successful due acquisitions. It yields between batches and

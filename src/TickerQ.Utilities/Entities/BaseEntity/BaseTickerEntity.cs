@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Text.Json.Serialization;
 using TickerQ.Utilities.Models;
+using TickerQ.Utilities.Enums;
 
 namespace TickerQ.Utilities.Entities.BaseEntity
 {
@@ -29,5 +30,21 @@ namespace TickerQ.Utilities.Entities.BaseEntity
         /// <summary>Canonical request-schema fingerprint accepted at persistence time, when available.</summary>
         [JsonInclude]
         public virtual string RequestContractFingerprint { get; set; }
+
+        /// <summary>Optional named availability policy evaluated before the root is scheduled.</summary>
+        public virtual string SchedulePolicyName { get; set; }
+
+        /// <summary>Policy version observed when this ticker was created or last edited.</summary>
+        [JsonInclude]
+        public virtual long? SchedulePolicyVersion { get; internal set; }
+
+        /// <summary>Action taken when <see cref="SchedulePolicyName"/> blocks a requested instant.</summary>
+        public virtual BlockedOccurrenceBehavior? BlockedOccurrenceBehavior { get; set; }
+
+        /// <summary>Action taken when this root is acquired outside its allowed start window.</summary>
+        public virtual MissedExecutionAction MissedExecutionAction { get; set; } = MissedExecutionAction.RunOnce;
+
+        /// <summary>Maximum delay before <see cref="MissedExecutionAction.Skip"/> applies.</summary>
+        public virtual TimeSpan? MaximumLateness { get; set; }
     }
 }

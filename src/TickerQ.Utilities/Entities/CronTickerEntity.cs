@@ -77,6 +77,8 @@ namespace TickerQ.Utilities.Entities
         public virtual TickerQ.Utilities.Models.CronChainTemplate Chain { get; set; }
 
         public virtual string Expression { get; set; }
+        /// <summary>Optional per-schedule time zone. Null uses the scheduler-wide configured zone.</summary>
+        public virtual string TimeZoneId { get; set; }
         public virtual byte[] Request { get; set; }
         public virtual int Retries { get; set; }
         public virtual int[] RetryIntervals { get; set; }
@@ -86,6 +88,9 @@ namespace TickerQ.Utilities.Entities
         /// False allows overlapping runs. This policy belongs to the cron, not its function.
         /// </summary>
         public virtual bool SkipIfAlreadyRunning { get; set; }
+
+        /// <summary>Controls publication of cron slots that passed while no scheduler was available.</summary>
+        public virtual CronCatchUpMode CatchUpMode { get; set; } = CronCatchUpMode.Skip;
 
         public virtual bool IsEnabled { get; set; } = true;
 

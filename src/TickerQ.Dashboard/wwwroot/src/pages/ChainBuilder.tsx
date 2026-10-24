@@ -12,7 +12,6 @@ import {
   FilePenLine,
   Maximize2,
   Plus,
-  PlayCircle,
   RotateCcw,
   Settings2,
   ShieldAlert,
@@ -40,6 +39,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { FieldInfo } from "@/components/form-fields/field-info";
+import { TimezoneCombobox } from "@/components/form-fields/timezone-field";
+import { formatDuration, parseDuration } from "@/components/form-fields/duration-field";
+import { AdvancedSettings, AdvancedSettingsGroup } from "@/components/cron/AdvancedSettings";
 import {
   Select,
   SelectContent,
@@ -91,11 +95,12 @@ import {
   useCreateDefinition,
   useDefinition,
   useDefinitions,
+  useSchedulePolicies,
   useUpdateDefinition,
 } from "@/services/hooks";
 import { dashboardApi } from "@/services/dashboard-api";
 import { isReadOnly } from "@/lib/runtime-config";
-import type { ChainDeleteBehavior, FunctionInfoDto, SavedDefinitionPayload, SavedTickerDefinitionKind, StaleAction, TestRunChainResponse, TestRunResponse } from "@/services/api-types";
+import type { BlockedOccurrenceBehavior, ChainDeleteBehavior, CronCatchUpMode, FunctionInfoDto, MissedExecutionAction, SavedDefinitionPayload, SavedTickerDefinitionKind, SchedulePolicy, StaleAction, TestRunChainResponse, TestRunResponse } from "@/services/api-types";
 import { SaveDefinitionDialog, type SaveDefinitionValues } from "@/components/cron/SaveDefinitionDialog";
 import { ActivateDraftDialog } from "@/components/cron/ActivateDraftDialog";
 import {
@@ -402,6 +407,81 @@ function formatTestResult(payload: string): string {
   }
 }
 
+function CompactDurationInput({
+  id,
+  valueSeconds,
+  onChange,
+  disabled = false,
+  minSeconds = 0,
+  maxSeconds,
+  ariaLabel,
+}: {
+  id: string;
+  valueSeconds: number;
+  onChange: (seconds: number) => void;
+  disabled?: boolean;
+  minSeconds?: number;
+  maxSeconds?: number;
+  ariaLabel: string;
+}) {
+  const [draft, setDraft] = useState(() =>
+    formatDuration(Number.isFinite(valueSeconds) ? valueSeconds : 0)
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (Number.isFinite(valueSeconds)) {
+      setDraft(formatDuration(valueSeconds));
+    }
+  }, [valueSeconds]);
+
+  function validate(nextDraft: string, showError: boolean) {
+    const parsed = parseDuration(nextDraft);
+    let nextError: string | null = null;
+
+    if (parsed == null) {
+      nextError = "Use a whole number followed by s, m, h, or d.";
+    } else if (parsed < minSeconds) {
+      nextError = `Must be at least ${formatDuration(minSeconds)}.`;
+    } else if (maxSeconds != null && parsed > maxSeconds) {
+      nextError = `Must be no more than ${formatDuration(maxSeconds)}.`;
+    }
+
+    setError(showError ? nextError : null);
+    onChange(nextError ? Number.NaN : (parsed ?? Number.NaN));
+    return nextError == null ? parsed : null;
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <Input
+        id={id}
+        aria-label={ariaLabel}
+        type="text"
+        inputMode="text"
+        autoComplete="off"
+        placeholder="e.g. 5m"
+        disabled={disabled}
+        value={draft}
+        aria-invalid={error ? true : undefined}
+        className="h-9 w-full max-w-40 bg-surface-0 border-border text-xs"
+        onBlur={() => {
+          const parsed = validate(draft, true);
+          if (parsed != null) setDraft(formatDuration(parsed));
+        }}
+        onChange={(event) => {
+          const nextDraft = event.target.value;
+          setDraft(nextDraft);
+          validate(nextDraft, false);
+        }}
+      />
+      {error && (
+        <p className="text-[10px] leading-relaxed text-destructive">{error}</p>
+      )}
+    </div>
+  );
+}
+
 function NodeEditor({
   node,
   isRoot,
@@ -409,6 +489,7 @@ function NodeEditor({
   parallelRole = null,
   functionNames,
   functions,
+  rootSchedule,
   onUpdate,
   onDeactivate,
   onClose,
@@ -419,6 +500,25 @@ function NodeEditor({
   parallelRole?: ParallelChildRole | null;
   functionNames: string[];
   functions: FunctionInfoDto[];
+  rootSchedule?: {
+    policies: SchedulePolicy[];
+    schedulePolicyName: string;
+    blockedOccurrenceBehavior: BlockedOccurrenceBehavior;
+    missedExecutionAction: MissedExecutionAction;
+    maximumLatenessSeconds: number;
+    catchUpMode: CronCatchUpMode;
+    expression: string;
+    timeZoneId: string;
+    skipIfAlreadyRunning: boolean;
+    onSchedulePolicyNameChange: (value: string) => void;
+    onBlockedOccurrenceBehaviorChange: (value: BlockedOccurrenceBehavior) => void;
+    onMissedExecutionActionChange: (value: MissedExecutionAction) => void;
+    onMaximumLatenessSecondsChange: (value: number) => void;
+    onCatchUpModeChange: (value: CronCatchUpMode) => void;
+    onExpressionChange: (value: string) => void;
+    onTimeZoneIdChange: (value: string) => void;
+    onSkipIfAlreadyRunningChange: (value: boolean) => void;
+  };
   onUpdate: (updates: Partial<ChainNode>) => void;
   onDeactivate?: () => void;
   onClose: () => void;
@@ -457,9 +557,9 @@ function NodeEditor({
     <Sheet open onOpenChange={(o) => !o && onClose()}>
       <SheetContent
         side="right"
-        className="flex w-[360px] sm:max-w-[360px] flex-col border-l border-border bg-surface-1 p-0 shadow-none gap-0"
+        className="flex flex-col gap-0 overflow-hidden border-l border-border bg-surface-0 p-0 shadow-none data-[side=right]:w-full data-[side=right]:sm:max-w-[560px]"
       >
-        <SheetHeader className="px-5 pt-5 pb-3 border-b border-border shrink-0">
+        <SheetHeader className="shrink-0 border-b border-border bg-surface-0/95 px-5 py-5 backdrop-blur sm:px-6">
           <SheetTitle className="text-sm font-semibold flex items-center gap-2">
             <Settings2 className="h-4 w-4 text-primary" />
             {isParallelGroup
@@ -479,85 +579,139 @@ function NodeEditor({
                 ? "This job belongs to the group. The group waits for it and its descendants to settle."
                 : parallelRole === "outcome"
                   ? "This final job runs after the group settles when its aggregate condition matches."
-              : "Configure the job's function, start rule, and retries."}
+                  : isRoot
+                    ? "Configure the root function, schedule, payload, and execution behavior."
+                    : "Configure this step's start rule, payload, retries, and execution behavior."}
           </SheetDescription>
         </SheetHeader>
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          <div className="space-y-1.5">
-            <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-              Function
-            </Label>
-            {isParallelGroup ? (
-              <div className="rounded-md border border-status-info/30 bg-status-info/5 px-3 py-2 text-xs">
-                <div className="font-medium text-foreground">Group</div>
-                <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                  Each grouped job evaluates the job before the group, then matching jobs run together. Final jobs use the group's aggregate result.
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 scrollbar-thin sm:p-6">
+          <div className={cn(
+            "grid grid-cols-1 items-start gap-4",
+            isRoot && !isParallelGroup && "sm:grid-cols-2",
+          )}>
+            <div className="min-w-0 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                  Function
+                </Label>
+                {!isParallelGroup && (
+                  <FieldInfo>The registered TickerFunction invoked when this chain step runs.</FieldInfo>
+                )}
+              </div>
+              {isParallelGroup ? (
+                <div className="rounded-md border border-status-info/30 bg-status-info/5 px-3 py-2 text-xs">
+                  <div className="font-medium text-foreground">Group</div>
+                  <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                    Each grouped job evaluates the job before the group, then matching jobs run together. Final jobs use the group's aggregate result.
+                  </div>
+                </div>
+              ) : functionNames.length > 0 ? (
+                <Select
+                  value={node.functionName}
+                  onValueChange={(v) => {
+                    const functionInfo = functions.find((item) => item.functionName === v);
+                    const currentBook = draftBooks.current[node.id] ?? {
+                      ...createDraftState(),
+                      active: node.functionName,
+                    };
+                    const selection = selectFunction(
+                      currentBook,
+                      v,
+                      node.requestJson,
+                      () => initialPayloadForFunction(functionInfo),
+                    );
+                    draftBooks.current[node.id] = selection.state;
+                    onUpdate({
+                      functionName: v,
+                      requestJson: selection.value,
+                      requestValid: true,
+                    });
+                  }}
+                >
+                  <SelectTrigger aria-label="Function" className="h-9 w-full bg-surface-0 border-border text-xs">
+                    <SelectValue placeholder="Select function..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {functionNames.map((fn) => (
+                      <SelectItem key={fn} value={fn} className="text-xs">
+                        {fn}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  aria-label="Function"
+                  value={node.functionName}
+                  placeholder="FunctionName"
+                  onChange={(e) => onUpdate({ functionName: e.target.value })}
+                  className="h-9 bg-surface-0 border-border text-xs"
+                />
+              )}
+            </div>
+
+            {isRoot && !recurring && !isParallelGroup && (
+              <div className="min-w-0 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                    Execution time
+                  </Label>
+                  <FieldInfo>When this one-time chain becomes eligible. Leave empty to run when the chain is created.</FieldInfo>
+                </div>
+                <div className="relative">
+                  <Input
+                    aria-label="Execution time"
+                    type="datetime-local"
+                    value={node.scheduledAt}
+                    onFocus={() => {
+                      if (!node.scheduledAt) onUpdate({ scheduledAt: nowAsDatetimeLocal() });
+                    }}
+                    onChange={(e) => onUpdate({ scheduledAt: e.target.value })}
+                    className="h-9 bg-surface-0 border-border text-xs pr-14"
+                  />
+                  {node.scheduledAt && (
+                    <button
+                      type="button"
+                      aria-label="Clear"
+                      title="Clear (fire at submit time)"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => onUpdate({ scheduledAt: "" })}
+                      className="absolute right-8 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground/60 hover:text-foreground hover:bg-surface-1"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
-            ) : functionNames.length > 0 ? (
-              <Select
-                value={node.functionName}
-                onValueChange={(v) => {
-                  const functionInfo = functions.find((item) => item.functionName === v);
-                  const currentBook = draftBooks.current[node.id] ?? {
-                    ...createDraftState(),
-                    active: node.functionName,
-                  };
-                  const selection = selectFunction(
-                    currentBook,
-                    v,
-                    node.requestJson,
-                    () => initialPayloadForFunction(functionInfo),
-                  );
-                  draftBooks.current[node.id] = selection.state;
-                  onUpdate({
-                    functionName: v,
-                    requestJson: selection.value,
-                    requestValid: true,
-                  });
-                }}
-              >
-                <SelectTrigger aria-label="Function" className="h-9 w-full bg-surface-0 border-border text-xs">
-                  <SelectValue placeholder="Select function..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {functionNames.map((fn) => (
-                    <SelectItem key={fn} value={fn} className="text-xs">
-                      {fn}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <Input
-                aria-label="Function"
-                value={node.functionName}
-                placeholder="FunctionName"
-                onChange={(e) => onUpdate({ functionName: e.target.value })}
-                className="h-9 bg-surface-0 border-border text-xs"
-              />
+            )}
+
+            {isRoot && recurring && !isParallelGroup && rootSchedule && (
+              <div className="min-w-0 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor={`${node.id}-cron-expression`} className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                    Cron expression
+                  </Label>
+                  <CronSchedulePresets onSelect={rootSchedule.onExpressionChange} />
+                </div>
+                <Input
+                  id={`${node.id}-cron-expression`}
+                  value={rootSchedule.expression}
+                  onChange={(event) => rootSchedule.onExpressionChange(event.target.value)}
+                  className="h-9 w-full bg-surface-0 border-border font-mono text-xs"
+                />
+                <CronExpressionPreview expression={rootSchedule.expression} />
+              </div>
             )}
           </div>
 
-          {isRoot && !isParallelGroup && (
-            <div className="space-y-1.5">
-              <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">Chain deletion</Label>
-              <Select value={node.deleteBehavior ?? "Cascade"} onValueChange={(value) => onUpdate({ deleteBehavior: value as ChainDeleteBehavior })}>
-                <SelectTrigger aria-label="Chain deletion behavior" className="h-9 w-full bg-surface-0 border-border text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Cascade">Cascade — delete the whole chain</SelectItem>
-                  <SelectItem value="Restrict">Restrict — wait for children to finish</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] leading-relaxed text-muted-foreground">Restrict waits until every descendant is Done, DueDone, Failed, Cancelled, or Skipped. The restriction lifts automatically; retention ages and active-job safety checks still apply.</p>
-            </div>
-          )}
-
           {!isRoot && !isParallelGroup && (
             <div className="space-y-1.5">
-              <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                Starts when
-              </Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                  Starts when
+                </Label>
+                <FieldInfo>The parent or group result that must match before this step becomes eligible.</FieldInfo>
+              </div>
               <Select
                 value={parallelRole === "branch"
                   ? baseRunCondition(node.runCondition)
@@ -615,30 +769,49 @@ function NodeEditor({
           {!isParallelGroup && (
             <>
               <div className="space-y-1.5">
-                <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                  Description
-                </Label>
-                <Input
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                    Description
+                  </Label>
+                  <FieldInfo>Optional context shown to operators when they inspect this chain step.</FieldInfo>
+                </div>
+                <Textarea
                   aria-label="Description"
-                  type="text"
                   value={node.description}
                   onChange={(e) => onUpdate({ description: e.target.value })}
                   maxLength={2000}
-                  placeholder="Optional"
-                  className="h-9 bg-surface-0 border-border text-xs"
+                  rows={3}
+                  placeholder="Add details that help operators understand this step…"
+                  className="min-h-20 resize-y bg-surface-0 border-border text-xs"
                 />
               </div>
 
-              <div className="rounded-lg border border-border/50 bg-surface-0/30 p-3 space-y-2.5">
-                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
-                  <RotateCcw className="h-3 w-3" />
-                  Retry policy
+              {isRoot && recurring && rootSchedule && (
+                <div className="space-y-1.5 sm:max-w-[calc(50%_-_0.5rem)]">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label htmlFor={`${node.id}-time-zone`} className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                      Time zone
+                    </Label>
+                    <FieldInfo>The time zone used to interpret the cron expression.</FieldInfo>
+                  </div>
+                  <TimezoneCombobox
+                    id={`${node.id}-time-zone`}
+                    value={rootSchedule.timeZoneId}
+                    onChange={rootSchedule.onTimeZoneIdChange}
+                    ariaLabel="Time zone"
+                  />
                 </div>
+              )}
+
+              <div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
-                    <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                      Retries
-                    </Label>
+                    <div className="flex items-center justify-between gap-1">
+                      <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                        Retries
+                      </Label>
+                      <FieldInfo>Additional attempts after this step reports a failure.</FieldInfo>
+                    </div>
                     <Input
                       aria-label="Retries"
                       type="number"
@@ -650,9 +823,12 @@ function NodeEditor({
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                      Intervals (sec)
-                    </Label>
+                    <div className="flex items-center justify-between gap-1">
+                      <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                        Retry delays
+                      </Label>
+                      <FieldInfo>Comma-separated delays applied in order between retry attempts.</FieldInfo>
+                    </div>
                     <Input
                       aria-label="Retry intervals in seconds"
                       type="text"
@@ -673,80 +849,6 @@ function NodeEditor({
                 </p>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                    If stale
-                  </Label>
-                  <Select
-                    value={node.onStale}
-                    onValueChange={(value) => onUpdate({ onStale: value as StaleAction })}
-                  >
-                    <SelectTrigger aria-label="Stale action" className="h-9 w-full bg-surface-0 border-border text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Restart" className="text-xs">Restart</SelectItem>
-                      <SelectItem value="Cancel" className="text-xs">Cancel</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                    Timeout (sec)
-                  </Label>
-                  <Input
-                    aria-label="Timeout in seconds"
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={node.timeoutSeconds}
-                    onChange={(event) => onUpdate({ timeoutSeconds: Number(event.target.value) })}
-                    className="h-9 bg-surface-0 border-border text-xs"
-                  />
-                  <p className="text-[10px] text-muted-foreground/60">0 inherits the scheduler default</p>
-                </div>
-              </div>
-            </>
-          )}
-
-          {isRoot && !recurring && (
-            <div className="space-y-1.5">
-              <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                Schedule
-              </Label>
-              <div className="relative">
-                <Input
-                  aria-label="Schedule"
-                  type="datetime-local"
-                  value={node.scheduledAt}
-                  onFocus={() => {
-                    if (!node.scheduledAt) onUpdate({ scheduledAt: nowAsDatetimeLocal() });
-                  }}
-                  onChange={(e) => onUpdate({ scheduledAt: e.target.value })}
-                  className="h-9 bg-surface-0 border-border text-xs pr-14"
-                />
-                {node.scheduledAt && (
-                  <button
-                    type="button"
-                    aria-label="Clear"
-                    title="Clear (fire at submit time)"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => onUpdate({ scheduledAt: "" })}
-                    className="absolute right-8 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground/60 hover:text-foreground hover:bg-surface-1"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-              <p className="text-[10px] text-muted-foreground/60">
-                Empty fires at submit time
-              </p>
-            </div>
-          )}
-
-          {!isParallelGroup && (
-            <>
               <RequestPayloadEditor
                 key={`${node.id}:${node.functionName}`}
                 functionInfo={functions.find((item) => item.functionName === node.functionName)}
@@ -754,60 +856,199 @@ function NodeEditor({
                 onChange={(requestJson) => onUpdate({ requestJson })}
                 onValidityChange={(requestValid) => onUpdate({ requestValid })}
               />
-              <div className="rounded-lg border border-border/60 bg-surface-0/35 p-3 space-y-2">
+
+              <AdvancedSettings description={isRoot
+                ? "Scheduling, execution limits, recovery, and chain lifecycle behavior."
+                : "Execution limits and recovery behavior for this chain step."}>
+                {isRoot && rootSchedule && (
+                  <AdvancedSettingsGroup title="Scheduling">
+                    <div className={cn("grid grid-cols-1 gap-4", !recurring && "sm:grid-cols-2")}>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">Schedule policy</Label>
+                          <FieldInfo>{recurring
+                            ? "A reusable calendar rule. Cron occurrences outside the allowed calendar are skipped."
+                            : "A reusable calendar rule that allows or blocks the requested execution time."}</FieldInfo>
+                        </div>
+                        <Select value={rootSchedule.schedulePolicyName || "__none"} onValueChange={(value) => rootSchedule.onSchedulePolicyNameChange(value === "__none" ? "" : value)}>
+                          <SelectTrigger aria-label="Schedule policy" className="h-9 w-full bg-surface-0 border-border text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none">No policy</SelectItem>
+                            {rootSchedule.policies.map((policy) => <SelectItem key={policy.id} value={policy.name}>{policy.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {!recurring && (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">If blocked</Label>
+                            <FieldInfo>Reject the chain, preserve it as skipped, or move it to the next allowed time.</FieldInfo>
+                          </div>
+                          <Select value={rootSchedule.blockedOccurrenceBehavior} disabled={!rootSchedule.schedulePolicyName} onValueChange={(value) => rootSchedule.onBlockedOccurrenceBehaviorChange(value as BlockedOccurrenceBehavior)}>
+                            <SelectTrigger aria-label="Blocked schedule action" className="h-9 w-full bg-surface-0 border-border text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Reject">Reject creation</SelectItem>
+                              <SelectItem value="MoveForward">Move forward</SelectItem>
+                              <SelectItem value="Skip">Save as skipped</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                    </div>
+                    <div className={`grid grid-cols-1 gap-4 ${recurring ? "sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_5rem]" : "sm:grid-cols-2"}`}>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">Late start</Label>
+                          <FieldInfo>Run late work or skip it after the grace period.</FieldInfo>
+                        </div>
+                        <Select
+                          value={rootSchedule.missedExecutionAction}
+                          onValueChange={(value) => {
+                            const next = value as MissedExecutionAction;
+                            rootSchedule.onMissedExecutionActionChange(next);
+                            if (next !== "Skip") rootSchedule.onCatchUpModeChange("Skip");
+                          }}
+                        >
+                          <SelectTrigger aria-label="Late start action" className="h-9 w-full bg-surface-0 border-border text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="RunOnce">Run when available</SelectItem>
+                            <SelectItem value="Skip">Skip after grace</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {recurring && (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">Catch-up</Label>
+                            <FieldInfo>Run the latest missed occurrence after downtime.</FieldInfo>
+                          </div>
+                          <Select value={rootSchedule.catchUpMode} disabled={rootSchedule.missedExecutionAction !== "Skip"} onValueChange={(value) => rootSchedule.onCatchUpModeChange(value as CronCatchUpMode)}>
+                            <SelectTrigger aria-label="Downtime catch-up" className="h-9 w-full bg-surface-0 border-border text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Skip">Skip missed</SelectItem>
+                              <SelectItem value="RunLatest">Run latest within grace</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <Label htmlFor={`${node.id}-maximum-lateness`} className="text-[10px] text-muted-foreground uppercase tracking-wider">Grace</Label>
+                          <FieldInfo>Maximum allowed start delay.</FieldInfo>
+                        </div>
+                        <CompactDurationInput id={`${node.id}-maximum-lateness`} ariaLabel="Grace period" valueSeconds={rootSchedule.maximumLatenessSeconds} minSeconds={0} maxSeconds={31_536_000} disabled={rootSchedule.missedExecutionAction !== "Skip"} onChange={rootSchedule.onMaximumLatenessSecondsChange} />
+                      </div>
+                    </div>
+                  </AdvancedSettingsGroup>
+                )}
+
+                <AdvancedSettingsGroup title="Execution limits">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    {isRoot && recurring && rootSchedule && (
+                      <CronOverlapField checked={rootSchedule.skipIfAlreadyRunning} onChange={rootSchedule.onSkipIfAlreadyRunningChange} isChain compact />
+                    )}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <Label htmlFor={`${node.id}-timeout`} className="text-[10px] text-muted-foreground uppercase tracking-wider">Timeout</Label>
+                        <FieldInfo>Cancels one function attempt after this duration. Enter 30s, 5m, 2h, or 1d. Set 0 to inherit the scheduler default.</FieldInfo>
+                      </div>
+                      <CompactDurationInput id={`${node.id}-timeout`} ariaLabel="Timeout" valueSeconds={node.timeoutSeconds} minSeconds={0} maxSeconds={86_400} onChange={(timeoutSeconds) => onUpdate({ timeoutSeconds })} />
+                    </div>
+                  </div>
+                </AdvancedSettingsGroup>
+
+                <AdvancedSettingsGroup title="Recovery">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">Owner loss</Label>
+                      <FieldInfo>Restart this step on another node, or record it as cancelled after lease loss.</FieldInfo>
+                    </div>
+                    <Select value={node.onStale} onValueChange={(value) => onUpdate({ onStale: value as StaleAction })}>
+                      <SelectTrigger aria-label="Stale action" className="h-9 w-full bg-surface-0 border-border text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Restart" className="text-xs">Restart</SelectItem>
+                        <SelectItem value="Cancel" className="text-xs">Cancel</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </AdvancedSettingsGroup>
+
+                {isRoot && (
+                  <AdvancedSettingsGroup title="Lifecycle">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">Delete mode</Label>
+                        <FieldInfo>Choose whether deleting the root removes the whole chain or waits for its descendants to settle.</FieldInfo>
+                      </div>
+                      <Select value={node.deleteBehavior ?? "Cascade"} onValueChange={(value) => onUpdate({ deleteBehavior: value as ChainDeleteBehavior })}>
+                        <SelectTrigger aria-label="Chain deletion behavior" className="h-9 w-full bg-surface-0 border-border text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Cascade">Cascade — delete the whole chain</SelectItem>
+                          <SelectItem value="Restrict">Restrict — wait for children to finish</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </AdvancedSettingsGroup>
+                )}
+              </AdvancedSettings>
+            </>
+          )}
+
+          {!isParallelGroup && testResult && (
+            <div className="space-y-2 rounded-lg border border-border/60 bg-surface-0/35 p-3">
+              <div className={cn(
+                "rounded-md border px-2.5 py-2 text-[10px]",
+                testResult.success
+                  ? "border-status-healthy/30 bg-status-healthy/5 text-status-healthy"
+                  : "border-status-error/30 bg-status-error/5 text-status-error"
+              )}>
+                <div className="font-semibold">
+                  {testResult.success ? "Passed" : testResult.status} · {testResult.elapsedMilliseconds} ms
+                </div>
+                {testResult.result && (
+                  <div className="mt-2 space-y-1 text-muted-foreground">
+                    <div>Result · {testResult.resultMediaType || "application/octet-stream"}</div>
+                    <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all rounded border border-border/60 bg-surface-1/70 p-2 font-mono text-[10px] text-foreground">
+                      {formatTestResult(testResult.result)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+              <LogsPanel
+                functionName={node.functionName}
+                status={testResult.status}
+                tickerId={testResult.executionId}
+                exceptionMessage={testResult.error}
+                skippedReason={testResult.status === "Skipped" ? testResult.error : null}
+              />
+            </div>
+          )}
+        </div>
+        <footer className="sticky bottom-0 z-10 flex shrink-0 flex-col gap-3 border-t border-border bg-surface-0/95 px-4 py-4 backdrop-blur sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div className="flex min-h-8 items-center gap-1.5">
+            {!isParallelGroup && (
+              <>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-8 w-full text-xs"
+                  className="h-8 rounded-lg text-xs"
                   disabled={testing || !node.functionName || !node.requestValid}
                   onClick={() => void runTest()}
                 >
-                  {testing ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : <PlayCircle className="mr-1.5 h-3 w-3" />}
-                  {testing ? "Running test…" : "Test this job"}
+                  {testing ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : <FlaskConical className="mr-1.5 h-3 w-3" />}
+                  {testing ? "Running test…" : "Test once"}
                 </Button>
-                <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-                  Runs once on this node without creating a ticker record. Your function still executes real application code and can cause side effects.
-                </p>
-                {testResult && (
-                  <>
-                    <div className={cn(
-                      "rounded-md border px-2.5 py-2 text-[10px]",
-                      testResult.success
-                        ? "border-status-healthy/30 bg-status-healthy/5 text-status-healthy"
-                        : "border-status-error/30 bg-status-error/5 text-status-error"
-                    )}>
-                      <div className="font-semibold">
-                        {testResult.success ? "Passed" : testResult.status} · {testResult.elapsedMilliseconds} ms
-                      </div>
-                      {testResult.result && (
-                        <div className="mt-2 space-y-1 text-muted-foreground">
-                          <div>Result · {testResult.resultMediaType || "application/octet-stream"}</div>
-                          <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all rounded border border-border/60 bg-surface-1/70 p-2 font-mono text-[10px] text-foreground">
-                            {formatTestResult(testResult.result)}
-                          </pre>
-                        </div>
-                      )}
-                    </div>
-                    <LogsPanel
-                      functionName={node.functionName}
-                      status={testResult.status}
-                      tickerId={testResult.executionId}
-                      exceptionMessage={testResult.error}
-                      skippedReason={testResult.status === "Skipped" ? testResult.error : null}
-                    />
-                  </>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-        {!isRoot && onDeactivate && (
-          <div className="px-5 py-3 border-t border-border shrink-0">
+                <FieldInfo>Runs once on this node without creating a ticker record. The function can still change application data or call external services.</FieldInfo>
+              </>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {!isRoot && onDeactivate && (
             <Button
               variant="outline"
               size="sm"
-              className="w-full h-8 text-xs text-status-error border-status-error/20 hover:bg-status-error/10 hover:text-status-error"
+              className="h-8 rounded-lg border-status-error/20 text-xs text-status-error hover:bg-status-error/10 hover:text-status-error"
               onClick={onDeactivate}
             >
               <Trash2 className="h-3 w-3 mr-1.5" />
@@ -819,8 +1060,12 @@ function NodeEditor({
                     ? "Remove Final Job"
                     : "Remove Job"}
             </Button>
+            )}
+            <Button type="button" variant="gradient" size="sm" className="h-8 rounded-lg text-xs" onClick={onClose}>
+              Done
+            </Button>
           </div>
-        )}
+        </footer>
       </SheetContent>
     </Sheet>
   );
@@ -859,6 +1104,13 @@ function ChainBuilderPageInner() {
   const backPath = recurring ? (existingCronId ? `/cron-tickers/${existingCronId}` : "/cron-tickers") : "/time-tickers";
   const [expression, setExpression] = useState("0 9 * * *");
   const [skipIfAlreadyRunning, setSkipIfAlreadyRunning] = useState(false);
+  const [timeZoneId, setTimeZoneId] = useState("UTC");
+  const [schedulePolicyName, setSchedulePolicyName] = useState("");
+  const [blockedOccurrenceBehavior, setBlockedOccurrenceBehavior] = useState<BlockedOccurrenceBehavior>("Reject");
+  const [missedExecutionAction, setMissedExecutionAction] = useState<MissedExecutionAction>("RunOnce");
+  const [maximumLatenessSeconds, setMaximumLatenessSeconds] = useState(300);
+  const [catchUpMode, setCatchUpMode] = useState<CronCatchUpMode>("Skip");
+  const schedulePolicies = useSchedulePolicies();
   const cronQuery = useCronTicker(existingCronId ?? "");
   const cronPayload = useQuery({
     queryKey: ["cron-tickers", existingCronId, "request"],
@@ -929,12 +1181,25 @@ function ChainBuilderPageInner() {
       if (raw) payloadMap.set(ticker.id, decodeRequestPayload(raw));
     });
     const tree = tickersToChainNode(editTickers, editId, payloadMap);
-    if (tree) { setRoot(tree); setPrefilled(true); }
+    if (tree) {
+      const rootTicker = editTickers.find(ticker => ticker.id === editId);
+      setRoot(tree);
+      setSchedulePolicyName(rootTicker?.schedulePolicyName ?? "");
+      setBlockedOccurrenceBehavior(rootTicker?.blockedOccurrenceBehavior ?? "Reject");
+      setMissedExecutionAction(rootTicker?.missedExecutionAction ?? "RunOnce");
+      setMaximumLatenessSeconds(rootTicker?.maximumLatenessSeconds ?? 300);
+      setPrefilled(true);
+    }
   }
   if (existingCronId && !prefilled && cronQuery.data && cronPayload.isSuccess) {
     setRoot(cronToChainNode(cronQuery.data, cronPayload.data?.payload ?? null));
     setExpression(cronQuery.data.expression);
     setSkipIfAlreadyRunning(cronQuery.data.skipIfAlreadyRunning ?? false);
+    setTimeZoneId(cronQuery.data.timeZoneId ?? "UTC");
+    setSchedulePolicyName(cronQuery.data.schedulePolicyName ?? "");
+    setMissedExecutionAction(cronQuery.data.missedExecutionAction ?? "RunOnce");
+    setMaximumLatenessSeconds(cronQuery.data.maximumLatenessSeconds ?? 300);
+    setCatchUpMode(cronQuery.data.catchUpMode ?? "Skip");
     setPrefilled(true);
   }
   if (draftId && !prefilled && draftQuery.data && fns !== undefined) {
@@ -946,6 +1211,10 @@ function ChainBuilderPageInner() {
       requestToChainNode(saved.payload.root, scheduledAt),
       fns,
     ));
+    setSchedulePolicyName(saved.payload.schedulePolicyName ?? "");
+    setBlockedOccurrenceBehavior(saved.payload.blockedOccurrenceBehavior ?? "Reject");
+    setMissedExecutionAction(saved.payload.missedExecutionAction ?? "RunOnce");
+    setMaximumLatenessSeconds(saved.payload.maximumLatenessSeconds ?? 300);
     setPrefilled(true);
   }
   if (templateId && !prefilled && selectedTemplateQuery.data && selectedTemplateIsValid && fns !== undefined) {
@@ -960,7 +1229,13 @@ function ChainBuilderPageInner() {
     if (recurring) {
       setExpression(saved.payload.expression ?? expression);
       setSkipIfAlreadyRunning(saved.payload.skipIfAlreadyRunning ?? false);
+      setTimeZoneId(saved.payload.timeZoneId ?? "UTC");
     }
+    setSchedulePolicyName(saved.payload.schedulePolicyName ?? "");
+    setBlockedOccurrenceBehavior(saved.payload.blockedOccurrenceBehavior ?? "Reject");
+    setMissedExecutionAction(saved.payload.missedExecutionAction ?? "RunOnce");
+    setMaximumLatenessSeconds(saved.payload.maximumLatenessSeconds ?? 300);
+    setCatchUpMode(saved.payload.catchUpMode ?? "Skip");
     setPrefilled(true);
   }
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -971,6 +1246,8 @@ function ChainBuilderPageInner() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [saveKind, setSaveKind] = useState<SavedTickerDefinitionKind | null>(null);
   const [activateDraftOpen, setActivateDraftOpen] = useState(false);
+  const [cronActivationPromptOpen, setCronActivationPromptOpen] = useState(false);
+  const [cronActivationMode, setCronActivationMode] = useState<"now" | "later" | null>(null);
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
   const [leaveAfterSave, setLeaveAfterSave] = useState(false);
   const [previousRoot, setPreviousRoot] = useState<ChainNode | null>(null);
@@ -979,6 +1256,20 @@ function ChainBuilderPageInner() {
   const [chainTestResult, setChainTestResult] = useState<TestRunChainResponse | null>(null);
   const [chainTestOpen, setChainTestOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const configurationFingerprint = JSON.stringify({
+    root,
+    expression,
+    skipIfAlreadyRunning,
+    timeZoneId,
+    schedulePolicyName,
+    blockedOccurrenceBehavior,
+    missedExecutionAction,
+    maximumLatenessSeconds,
+    catchUpMode,
+  });
+  const initialConfigurationFingerprint = useRef(configurationFingerprint);
+  const hasUnsavedChanges =
+    configurationFingerprint !== initialConfigurationFingerprint.current;
 
   useEffect(() => {
     const executionId = chainTestResult?.rootExecutionId;
@@ -1209,8 +1500,8 @@ function ChainBuilderPageInner() {
       ) {
         return `Retry intervals for "${n.functionName}" must be comma-separated whole numbers between 1 and 3600`;
       }
-      if (!Number.isInteger(n.timeoutSeconds) || n.timeoutSeconds < 0) {
-        return `Timeout for "${n.functionName}" must be a whole number of seconds (0 or greater)`;
+      if (!Number.isInteger(n.timeoutSeconds) || n.timeoutSeconds < 0 || n.timeoutSeconds > 86_400) {
+        return `Timeout for "${n.functionName}" must be between 0 and 1d`;
       }
       const requestError = validateRequestPayload(
         (fns ?? []).find((item) => item.functionName === n.functionName),
@@ -1237,6 +1528,14 @@ function ChainBuilderPageInner() {
           : null,
       expression: recurring ? expression.trim() : null,
       skipIfAlreadyRunning: recurring ? skipIfAlreadyRunning : null,
+      timeZoneId: recurring ? timeZoneId.trim() || "UTC" : null,
+      schedulePolicyName: schedulePolicyName || null,
+      blockedOccurrenceBehavior: schedulePolicyName
+        ? (recurring ? "Skip" : blockedOccurrenceBehavior)
+        : null,
+      missedExecutionAction,
+      maximumLatenessSeconds: missedExecutionAction === "Skip" ? maximumLatenessSeconds : null,
+      catchUpMode: recurring ? catchUpMode : null,
       root: chainNodeToRequest(root),
     };
   }
@@ -1249,6 +1548,15 @@ function ChainBuilderPageInner() {
     }
     if (recurring && !expression.trim()) {
       toast.error("Set a cron expression.");
+      return false;
+    }
+    if (
+      missedExecutionAction === "Skip" &&
+      (!Number.isInteger(maximumLatenessSeconds) ||
+        maximumLatenessSeconds < 0 ||
+        maximumLatenessSeconds > 31_536_000)
+    ) {
+      toast.error("Maximum start delay must be between 0 and 365d.");
       return false;
     }
     return true;
@@ -1352,7 +1660,7 @@ function ChainBuilderPageInner() {
   }
 
   function handleBack() {
-    if (isEditing || existingCronId || !root.functionName) {
+    if (isEditing || existingCronId || !hasUnsavedChanges) {
       navigate(backPath);
       return;
     }
@@ -1360,7 +1668,7 @@ function ChainBuilderPageInner() {
   }
 
 
-  async function handleSubmit() {
+  async function handleSubmit(cronEnabled?: boolean) {
     if (isEditing && (!prefilled || hydrationFailed || !allLoaded)) {
       toast.error("The complete original chain has not loaded. Retry before replacing it.");
       return;
@@ -1374,7 +1682,23 @@ function ChainBuilderPageInner() {
       toast.error("Set a cron expression.");
       return;
     }
+    if (
+      missedExecutionAction === "Skip" &&
+      (!Number.isInteger(maximumLatenessSeconds) ||
+        maximumLatenessSeconds < 0 ||
+        maximumLatenessSeconds > 31_536_000)
+    ) {
+      toast.error("Maximum start delay must be between 0 and 365d.");
+      return;
+    }
     if (existingCronId && (!prefilled || hydrationFailed)) return;
+    if (recurring && !existingCronId && cronEnabled == null) {
+      setCronActivationPromptOpen(true);
+      return;
+    }
+    if (recurring && !existingCronId) {
+      setCronActivationMode(cronEnabled ? "now" : "later");
+    }
     setSubmitting(true);
     try {
       if (recurring) {
@@ -1384,12 +1708,17 @@ function ChainBuilderPageInner() {
           request: node.request ?? "", retries: node.retries ?? 0,
           retryIntervalsSeconds: node.retryIntervalsSeconds ?? [], onStale: node.onStale,
           timeoutSeconds: node.timeoutSeconds ?? 0, skipIfAlreadyRunning,
+          timeZoneId: timeZoneId.trim() || "UTC",
+          schedulePolicyName: schedulePolicyName || null,
+          missedExecutionAction,
+          maximumLatenessSeconds: missedExecutionAction === "Skip" ? maximumLatenessSeconds : null,
+          catchUpMode,
           chain: hasActiveChildren ? chainNodeToCronTemplate(root) : null };
         if (existingCronId) {
           await updateCronMutation.mutateAsync({ id: existingCronId, body: { ...body, replaceChain: true } });
           navigate(`/cron-tickers/${existingCronId}`);
         } else {
-          const created = await addCronMutation.mutateAsync(body);
+          const created = await addCronMutation.mutateAsync({ ...body, isEnabled: cronEnabled ?? true });
           navigate(`/cron-tickers/${created.id}`);
         }
         toast.success(hasActiveChildren
@@ -1403,6 +1732,10 @@ function ChainBuilderPageInner() {
       const body = {
         executionTime,
         root: chainNodeToRequest(root),
+        schedulePolicyName: schedulePolicyName || null,
+        blockedOccurrenceBehavior: schedulePolicyName ? blockedOccurrenceBehavior : null,
+        missedExecutionAction,
+        maximumLatenessSeconds: missedExecutionAction === "Skip" ? maximumLatenessSeconds : null,
       };
       const result = isEditing && editId
         ? await replaceChainMutation.mutateAsync({ rootId: editId, body })
@@ -1420,6 +1753,7 @@ function ChainBuilderPageInner() {
       });
     } finally {
       setSubmitting(false);
+      setCronActivationMode(null);
     }
   }
 
@@ -1653,6 +1987,56 @@ function ChainBuilderPageInner() {
         onClose={() => setChainTestOpen(false)}
       />
 
+      <Dialog
+        open={cronActivationPromptOpen}
+        onOpenChange={(nextOpen) => {
+          if (!submitting) setCronActivationPromptOpen(nextOpen);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>When should this recurring chain activate?</DialogTitle>
+            <DialogDescription>
+              Activate it now to begin producing chain runs, or create it inactive and activate it later from the cron ticker details.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-lg border border-border/60 bg-surface-1/50 px-3 py-2.5 text-xs">
+            <div className="font-medium text-foreground">{root.functionName}</div>
+            <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+              {expression} · {timeZoneId.trim() || "UTC"}
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={submitting}
+              onClick={() => setCronActivationPromptOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={submitting}
+              onClick={() => void handleSubmit(false)}
+            >
+              {cronActivationMode === "later" && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              Activate later
+            </Button>
+            <Button
+              type="button"
+              variant="gradient"
+              disabled={submitting}
+              onClick={() => void handleSubmit(true)}
+            >
+              {cronActivationMode === "now" && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              Activate now
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <ActivateDraftDialog
         open={activateDraftOpen}
         draftName={draftQuery.data?.name}
@@ -1749,27 +2133,6 @@ function ChainBuilderPageInner() {
         </DialogContent>
       </Dialog>
 
-      {recurring && (
-        <section aria-label="Recurring chain settings" className="shrink-0 border-b border-border bg-card px-4 py-2.5">
-          <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-            <div className="min-w-0 space-y-1.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <Label htmlFor="chain-cron-expression" className="text-[11px] text-muted-foreground">Cron schedule</Label>
-                <CronSchedulePresets onSelect={setExpression} />
-              </div>
-              <Input id="chain-cron-expression" value={expression} onChange={e => setExpression(e.target.value)} className="h-7 w-full font-mono text-xs" />
-              <CronExpressionPreview expression={expression} stacked />
-            </div>
-            <div className="min-w-0">
-              <CronOverlapField checked={skipIfAlreadyRunning} onChange={setSkipIfAlreadyRunning} isChain compact />
-            </div>
-          </div>
-          <p className="mt-2 flex items-start gap-1.5 border-t border-border/50 pt-2 text-[11px] leading-4 text-muted-foreground">
-            <GitBranch aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-primary/70" />
-            Each run creates a new chain. Edits affect future runs; existing chains keep their steps.
-          </p>
-        </section>
-      )}
       {/* Hint / Undo bar */}
       {previousRoot ? (
         <div className="flex items-center justify-between px-4 py-2 border-b border-border/50 bg-primary/5 text-[11px] text-primary shrink-0 animate-fade-in">
@@ -2212,6 +2575,25 @@ function ChainBuilderPageInner() {
           parallelRole={selectedParallelRole}
           functionNames={functionNames}
           functions={fns ?? []}
+          rootSchedule={isSelectedRoot ? {
+            policies: schedulePolicies.data ?? [],
+            schedulePolicyName,
+            blockedOccurrenceBehavior,
+            missedExecutionAction,
+            maximumLatenessSeconds,
+            catchUpMode,
+            expression,
+            timeZoneId,
+            skipIfAlreadyRunning,
+            onSchedulePolicyNameChange: setSchedulePolicyName,
+            onBlockedOccurrenceBehaviorChange: setBlockedOccurrenceBehavior,
+            onMissedExecutionActionChange: setMissedExecutionAction,
+            onMaximumLatenessSecondsChange: setMaximumLatenessSeconds,
+            onCatchUpModeChange: setCatchUpMode,
+            onExpressionChange: setExpression,
+            onTimeZoneIdChange: setTimeZoneId,
+            onSkipIfAlreadyRunningChange: setSkipIfAlreadyRunning,
+          } : undefined}
           onUpdate={(updates) => updateNode(selectedId!, updates)}
           onDeactivate={
             isSelectedRoot
@@ -2257,7 +2639,13 @@ function ChainBuilderPageInner() {
                   if (recurring) {
                     setExpression(template.payload.expression ?? expression);
                     setSkipIfAlreadyRunning(template.payload.skipIfAlreadyRunning ?? false);
+                    setTimeZoneId(template.payload.timeZoneId ?? "UTC");
                   }
+                  setSchedulePolicyName(template.payload.schedulePolicyName ?? "");
+                  setBlockedOccurrenceBehavior(template.payload.blockedOccurrenceBehavior ?? "Reject");
+                  setMissedExecutionAction(template.payload.missedExecutionAction ?? "RunOnce");
+                  setMaximumLatenessSeconds(template.payload.maximumLatenessSeconds ?? 300);
+                  setCatchUpMode(template.payload.catchUpMode ?? "Skip");
                   setSelectedId(null);
                   setShowTemplates(false);
                 }}

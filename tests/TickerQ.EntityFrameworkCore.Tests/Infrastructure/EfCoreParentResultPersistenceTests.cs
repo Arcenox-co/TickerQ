@@ -56,7 +56,9 @@ public sealed class EfCoreParentResultPersistenceTests : IAsyncLifetime
         Assert.Equal("CronTickerOccurrenceResults", cron!.GetTableName());
         Assert.Equal(DeleteBehavior.Cascade, Assert.Single(time.GetForeignKeys()).DeleteBehavior);
         Assert.Equal(DeleteBehavior.Cascade, Assert.Single(cron.GetForeignKeys()).DeleteBehavior);
-        Assert.Equal(1024 * 1024, time.FindProperty(nameof(TimeTickerResultEntity<TimeTickerEntity>.Payload))!.GetMaxLength());
+        // The 1 MiB limit is enforced by the write path (see the oversized-payload test below), not as a
+        // column length, which MySQL/MariaDB cannot express for binary columns.
+        Assert.Null(time.FindProperty(nameof(TimeTickerResultEntity<TimeTickerEntity>.Payload))!.GetMaxLength());
     }
 
     [Fact]

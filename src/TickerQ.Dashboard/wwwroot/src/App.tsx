@@ -22,6 +22,7 @@ const LicensePage = lazy(() => import("@/pages/License"));
 const AboutPage = lazy(() => import("@/pages/About"));
 const DiagnosticsPage = lazy(() => import("@/pages/Diagnostics"));
 const NodesPage = lazy(() => import("@/pages/Nodes"));
+const SchedulePoliciesPage = lazy(() => import("@/pages/SchedulePolicies"));
 const LoginPage = lazy(() => import("@/pages/Login"));
 
 export default function App() {
@@ -47,6 +48,7 @@ export default function App() {
           <Route path="time-tickers/new-chain" element={<ChainBuilderPage />} />
           <Route path="time-tickers/:id/flowchart" element={<ChainFlowchartPage />} />
           <Route path="cron-tickers" element={<CronTickersPage />} />
+          <Route path="schedule-policies" element={<SchedulePoliciesPage />} />
           <Route path="cron-tickers/new-chain" element={<ChainBuilderPage />} />
           <Route path="cron-tickers/:id" element={<CronTickerDetailPage />} />
           <Route path="cron-tickers/:id/occurrences/:occurrenceId/flowchart" element={<CronOccurrenceChainPage />} />

@@ -1,4 +1,4 @@
-import { useId, type ComponentProps } from "react";
+import { useId, type ComponentProps, type ReactNode } from "react";
 import type { Control, FieldPath, FieldValues } from "react-hook-form";
 import {
   FormControl,
@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { FieldLabel } from "./field-label";
+import { FieldInfo } from "./field-info";
 
 export type NumberFieldProps<T extends FieldValues> = {
   control: Control<T>;
@@ -16,6 +17,8 @@ export type NumberFieldProps<T extends FieldValues> = {
   description?: string;
   required?: boolean;
   allowNull?: boolean;
+  info?: ReactNode;
+  labelClassName?: string;
 } & Omit<
   ComponentProps<typeof Input>,
   "name" | "value" | "defaultValue" | "onChange" | "onBlur" | "ref" | "type"
@@ -28,6 +31,8 @@ export function NumberField<T extends FieldValues>({
   description,
   required,
   allowNull = false,
+  info,
+  labelClassName,
   ...inputProps
 }: NumberFieldProps<T>) {
   const { id, disabled, className: inputClassName, ...restInput } = inputProps;
@@ -43,7 +48,13 @@ export function NumberField<T extends FieldValues>({
         // source of label→control spacing so fields sharing a two-column row
         // keep their inputs vertically aligned.
         <FormItem>
-          <FieldLabel label={label} required={required} htmlFor={inputId} />
+          <FieldLabel
+            label={label}
+            required={required}
+            className={labelClassName}
+            htmlFor={inputId}
+            labelEnd={info ? <FieldInfo>{info}</FieldInfo> : undefined}
+          />
           <FormControl>
             <Input
               id={inputId}

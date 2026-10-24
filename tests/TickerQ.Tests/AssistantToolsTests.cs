@@ -406,7 +406,7 @@ public class AssistantToolsTests
     }
 
     [Theory]
-    [InlineData("Europe/Belgrade", 3, true)]
+    [InlineData("Europe/Berlin", 3, true)]
     [InlineData("No/SuchZone", 3, false)]
     [InlineData("UTC", 1, false)]
     public async Task Monitor_ValidatesDeadlineAndThresholds(string zone, int threshold, bool valid)

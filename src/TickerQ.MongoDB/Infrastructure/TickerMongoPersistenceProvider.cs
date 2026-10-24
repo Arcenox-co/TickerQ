@@ -20,10 +20,11 @@ using TickerQ.Utilities.Models;
 namespace TickerQ.MongoDB.Infrastructure
 {
     internal sealed partial class TickerMongoPersistenceProvider<TTimeTicker, TCronTicker> :
-        ITickerPersistenceProvider<TTimeTicker, TCronTicker>, ITickerDefinitionStore
+        ITickerPersistenceProvider<TTimeTicker, TCronTicker>, ITickerDefinitionStore, ISchedulePolicyStore
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
+        public bool SupportsCronCatchUp => true;
         private IMongoCollection<BsonDocument> IntegrationSettings => _context.Database.GetCollection<BsonDocument>(
             _context.TimeTickers.CollectionNamespace.CollectionName + "_IntegrationSettings");
         public bool IntegrationSettingsArePersistent => true;
@@ -3123,6 +3124,25 @@ namespace TickerQ.MongoDB.Infrastructure
             return null;
         }
 
+        public async Task<IReadOnlyDictionary<Guid, DateTime>> GetLatestCronOccurrenceTimesAsync(
+            IReadOnlyCollection<Guid> cronTickerIds, CancellationToken cancellationToken = default)
+        {
+            var result = new Dictionary<Guid, DateTime>();
+            if (cronTickerIds == null) return result;
+            foreach (var cronTickerId in cronTickerIds.Distinct())
+            {
+                var row = await _context.CronTickerOccurrences
+                    .Find(InPartition(Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter
+                        .Eq(x => x.CronTickerId, cronTickerId)))
+                    .SortByDescending(x => x.ExecutionTime)
+                    .Limit(1)
+                    .Project(x => x.ExecutionTime)
+                    .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                if (row != default) result[cronTickerId] = row;
+            }
+            return result;
+        }
+
         public async IAsyncEnumerable<CronTickerOccurrenceEntity<TCronTicker>> QueueCronTickerOccurrences(
             (DateTime Key, InternalManagerContext[] Items) cronTickerOccurrences,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -3461,27 +3481,6 @@ namespace TickerQ.MongoDB.Infrastructure
                         cancellationToken: ct).ConfigureAwait(false);
                     return (int)(first.ModifiedCount + second.ModifiedCount);
                 }, cancellationToken).ConfigureAwait(false);
-        }
-
-        public async Task<int> SkipStaleCronOccurrencesAsync(TimeSpan staleThreshold, CancellationToken cancellationToken = default)
-        {
-            if (staleThreshold <= TimeSpan.Zero) return 0;
-            var now = _clock.UtcNow;
-            var cutoff = now - staleThreshold;
-            var fb = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Filter;
-
-            var filter = fb.And(
-                fb.Eq(x => x.ApplicationNamespaceKey, _runtimePartitionKey),
-                fb.In(x => x.Status, new[] { TickerStatus.Idle, TickerStatus.Queued }),
-                fb.Lt(x => x.ExecutionTime, cutoff));
-
-            var update = Builders<CronTickerOccurrenceEntity<TCronTicker>>.Update
-                .Set(x => x.Status, TickerStatus.Skipped)
-                .Set(x => x.SkippedReason, "Missed: occurrence was pending when the application restarted")
-                .Set(x => x.UpdatedAt, now);
-
-            var result = await _context.CronTickerOccurrences.UpdateManyAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-            return (int)result.ModifiedCount;
         }
 
         // ===================================================================

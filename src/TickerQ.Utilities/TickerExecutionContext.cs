@@ -19,6 +19,7 @@ internal interface ITickerOptionsSeeding
     LegacyRuntimePartitionAdoption LegacyRuntimePartitionAdoption => null;
     Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> TimeSeederAction { get; }
     Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> CronSeederAction { get; }
+    Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> SchedulePolicySeederAction => null;
 }
 
 internal class TickerExecutionContext

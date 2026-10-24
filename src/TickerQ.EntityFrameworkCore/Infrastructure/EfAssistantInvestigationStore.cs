@@ -57,17 +57,17 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 Id = investigation.Id == Guid.Empty ? Guid.NewGuid() : investigation.Id,
                 ApplicationNamespace = investigation.ApplicationNamespace,
                 ExecutionId = investigation.ExecutionId,
-                ExecutionType = investigation.ExecutionType ?? "",
+                ExecutionType = RequiredText(investigation.ExecutionType),
                 ChainRootId = investigation.ChainRootId,
-                FunctionName = investigation.FunctionName ?? "",
-                ExecutionStatus = investigation.ExecutionStatus ?? "",
-                Classification = investigation.Classification ?? "Unclassified",
+                FunctionName = RequiredText(investigation.FunctionName),
+                ExecutionStatus = RequiredText(investigation.ExecutionStatus),
+                Classification = RequiredText(investigation.Classification, "Unclassified"),
                 Summary = "",
                 Model = investigation.Model ?? "",
-                Trigger = investigation.Trigger ?? AssistantInvestigationValues.User,
+                Trigger = RequiredText(investigation.Trigger, AssistantInvestigationValues.User),
                 State = AssistantInvestigationValues.Processing,
                 ReviewState = AssistantInvestigationValues.New,
-                EvidenceFingerprint = investigation.EvidenceFingerprint ?? "",
+                EvidenceFingerprint = RequiredText(investigation.EvidenceFingerprint),
                 SourceRepository = investigation.SourceRepository ?? "",
                 SourceRevision = investigation.SourceRevision ?? "",
                 SourcePath = investigation.SourcePath ?? "",
@@ -282,7 +282,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     x.ExecutionId != executionId &&
                     x.EvidenceFingerprint == evidenceFingerprint &&
                     x.State == AssistantInvestigationValues.Completed &&
-                    x.Summary != "")
+                    // Oracle stores an empty string as NULL, so "not empty" must also exclude NULL.
+                    x.Summary != null && x.Summary != "")
                 .OrderByDescending(x => x.CompletedAt)
                 .ThenByDescending(x => x.CreatedAt)
                 .FirstOrDefaultAsync(cancellationToken);
@@ -563,24 +564,34 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                     .ExecuteDeleteAsync(cancellationToken);
         }
 
+        /// <summary>
+        /// Stored in required text columns when a value is missing or redacted. Oracle treats an
+        /// empty string as NULL, so required columns cannot hold "".
+        /// </summary>
+        internal const string MissingText = "-";
+
+        private static string RequiredText(string value, string fallback = MissingText)
+            => string.IsNullOrEmpty(value) ? fallback : value;
+
         private static Task<int> DismissAsync(IQueryable<AssistantInvestigationEntity> rows,
             CancellationToken cancellationToken)
         {
             // Preserve only the namespace/execution claim and timestamps. The diagnosis and
-            // source evidence are removed even though the internal tombstone remains.
+            // source evidence are removed even though the internal tombstone remains. Required
+            // columns get MissingText; tombstones are never returned to callers.
             var now = DateTime.UtcNow;
             return rows.ExecuteUpdateAsync(setters => setters
-                .SetProperty(x => x.ExecutionType, "")
+                .SetProperty(x => x.ExecutionType, MissingText)
                 .SetProperty(x => x.ChainRootId, (Guid?)null)
-                .SetProperty(x => x.FunctionName, "")
-                .SetProperty(x => x.ExecutionStatus, "")
-                .SetProperty(x => x.Classification, "")
+                .SetProperty(x => x.FunctionName, MissingText)
+                .SetProperty(x => x.ExecutionStatus, MissingText)
+                .SetProperty(x => x.Classification, MissingText)
                 .SetProperty(x => x.Summary, "")
                 .SetProperty(x => x.Model, "")
-                .SetProperty(x => x.Trigger, "")
+                .SetProperty(x => x.Trigger, MissingText)
                 .SetProperty(x => x.State, AssistantInvestigationValues.Dismissed)
-                .SetProperty(x => x.ReviewState, "")
-                .SetProperty(x => x.EvidenceFingerprint, "")
+                .SetProperty(x => x.ReviewState, MissingText)
+                .SetProperty(x => x.EvidenceFingerprint, MissingText)
                 .SetProperty(x => x.SourceRepository, "")
                 .SetProperty(x => x.SourceRevision, "")
                 .SetProperty(x => x.SourcePath, "")
@@ -596,6 +607,8 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
                 .SetProperty(x => x.UpdatedAt, now), cancellationToken);
         }
 
+        // Optional text is returned as "" when NULL: Oracle stores "" as NULL, and callers and the
+        // dashboard see the same values on every database.
         private static AssistantInvestigationRecord Map(AssistantInvestigationEntity x) => new()
         {
             Id = x.Id,
@@ -606,19 +619,19 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             FunctionName = x.FunctionName,
             ExecutionStatus = x.ExecutionStatus,
             Classification = x.Classification,
-            Summary = x.Summary,
-            Model = x.Model,
+            Summary = x.Summary ?? "",
+            Model = x.Model ?? "",
             Trigger = x.Trigger,
             State = x.State,
             ReviewState = x.ReviewState,
             EvidenceFingerprint = x.EvidenceFingerprint,
-            SourceRepository = x.SourceRepository,
-            SourceRevision = x.SourceRevision,
-            SourcePath = x.SourcePath,
+            SourceRepository = x.SourceRepository ?? "",
+            SourceRevision = x.SourceRevision ?? "",
+            SourcePath = x.SourcePath ?? "",
             SourceLine = x.SourceLine,
             ConversationId = x.ConversationId,
-            StartedByUserId = x.StartedByUserId,
-            ReviewedByUserId = x.ReviewedByUserId,
+            StartedByUserId = x.StartedByUserId ?? "",
+            ReviewedByUserId = x.ReviewedByUserId ?? "",
             OccurredAt = x.OccurredAt,
             CreatedAt = x.CreatedAt,
             UpdatedAt = x.UpdatedAt,
@@ -626,7 +639,7 @@ namespace TickerQ.EntityFrameworkCore.Infrastructure
             ReviewedAt = x.ReviewedAt,
             RecoveredByExecutionId = x.RecoveredByExecutionId,
             RecoveredAt = x.RecoveredAt,
-            FailureMessage = x.FailureMessage,
+            FailureMessage = x.FailureMessage ?? "",
         };
 
         private static string Limit(string value, int maximum)

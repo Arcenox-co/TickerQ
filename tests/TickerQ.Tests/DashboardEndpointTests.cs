@@ -314,8 +314,7 @@ public class DashboardEndpointTests
         var config = new AuthConfig
         {
             Mode = AuthMode.Basic,
-            BasicCredentials = Convert.ToBase64String(Encoding.UTF8.GetBytes("u:p")),
-            SessionTimeoutMinutes = 120
+            BasicCredentials = Convert.ToBase64String(Encoding.UTF8.GetBytes("u:p"))
         };
         var logger = Substitute.For<ILogger<AuthService>>();
         var svc = new AuthService(config, logger);
@@ -324,7 +323,6 @@ public class DashboardEndpointTests
 
         Assert.Equal(AuthMode.Basic, info.Mode);
         Assert.True(info.IsEnabled);
-        Assert.Equal(120, info.SessionTimeoutMinutes);
     }
 
     [Fact]
@@ -506,15 +504,6 @@ public class DashboardEndpointTests
     }
 
     [Fact]
-    public void WithSessionTimeout_SetsTimeoutMinutes()
-    {
-        var builder = new DashboardOptionsBuilder();
-        builder.WithSessionTimeout(30);
-
-        Assert.Equal(30, builder.Auth.SessionTimeoutMinutes);
-    }
-
-    [Fact]
     public void Validate_DelegatesToAuthConfig()
     {
         var builder = new DashboardOptionsBuilder();
@@ -574,7 +563,7 @@ public class DashboardEndpointTests
     {
         var builder = new DashboardOptionsBuilder();
 
-        var result = builder.AllowAnonymousDashboard().WithSessionTimeout(45);
+        var result = builder.AllowAnonymousDashboard().SetReadOnly(true);
 
         Assert.Same(builder, result);
     }
@@ -592,7 +581,6 @@ public class DashboardEndpointTests
         Assert.Null(config.BasicCredentials);
         Assert.Null(config.ApiKey);
         Assert.Null(config.CustomValidator);
-        Assert.Equal(60, config.SessionTimeoutMinutes);
         Assert.Null(config.HostAuthorizationPolicy);
         Assert.False(config.IsEnabled);
     }
