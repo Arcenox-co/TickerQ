@@ -1073,6 +1073,10 @@ namespace TickerQ.Utilities
                 var internalTickerManager = context.ServiceScope.ServiceProvider.GetService<IInternalTickerManager>();
                 return await internalTickerManager.GetRequestAsync<T>(context.Id, context.Type, cancellationToken);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception e)
             {
                 var logger = context.ServiceScope.ServiceProvider.GetService<ITickerQInstrumentation>();
@@ -1105,6 +1109,10 @@ namespace TickerQ.Utilities
                     return TickerHelper.ReadTickerRequest(context.RequestPayload, typeInfo);
                 var internalTickerManager = context.ServiceScope.ServiceProvider.GetService<IInternalTickerManager>();
                 return await internalTickerManager.GetRequestAsync(context.Id, context.Type, typeInfo, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception e)
             {
