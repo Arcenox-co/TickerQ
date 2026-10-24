@@ -17,6 +17,14 @@ export interface TickerQAssistantConfig {
   automaticInvestigations: boolean;
   /** True when bounded source context is configured server-side. */
   sourceContext: boolean;
+  /** Provider reported by the chat client, for example "openai" or "ollama". Empty when unknown. */
+  provider: string;
+  /** Host and port of the model endpoint; never a path, query string, or credential. */
+  endpoint: string;
+  /** "local" when the model runs on the dashboard host, "remote" when it does not, "unknown" otherwise. */
+  location: "local" | "remote" | "unknown";
+  /** True when a chat client is configured but the server could not create it. */
+  connectionFailed: boolean;
 }
 
 export interface TickerQAuthConfig {
@@ -67,7 +75,10 @@ const DEFAULTS: TickerQRuntimeConfig = {
   readOnly: false,
   timezone: null,
   realtime: { enabled: true, hubPath: "tickerq-notification-hub" },
-  assistant: { enabled: false, model: "", history: false, investigations: false, automaticInvestigations: false, sourceContext: false },
+  assistant: {
+    enabled: false, model: "", history: false, investigations: false, automaticInvestigations: false, sourceContext: false,
+    provider: "", endpoint: "", location: "unknown", connectionFailed: false,
+  },
   auth: null,
 };
 

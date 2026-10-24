@@ -35,7 +35,8 @@ internal static partial class TickerAssistantTools
         TickerQ.Utilities.Infrastructure.TickerQRuntimeDiagnostics? diagnostics = null,
         bool allowIntegrationProposals = true,
         RunInvestigatorOptionsBuilder? runInvestigator = null,
-        IExecutionSourceContextProvider? sourceContextProvider = null)
+        IExecutionSourceContextProvider? sourceContextProvider = null,
+        TickerQ.Utilities.Interfaces.ISchedulePolicyManager? schedulePolicies = null)
         where TTimeTicker : TimeTickerEntity<TTimeTicker>, new()
         where TCronTicker : CronTickerEntity, new()
     {
@@ -79,7 +80,7 @@ internal static partial class TickerAssistantTools
                     if (crons.Count == 0) return "No cron tickers configured.";
                     var sb = new StringBuilder();
                     foreach (var c in crons)
-                        sb.AppendLine($"- {c.FunctionName} | id={c.Id} | expr='{c.Expression}' | enabled={c.IsEnabled} | lastRun={c.LastRunStatus?.ToString() ?? "never"} at {Fmt(c.LastRunAt)} | occurrences={c.OccurrenceCount}");
+                        sb.AppendLine($"- {c.FunctionName} | id={c.Id} | expr='{c.Expression}' | enabled={c.IsEnabled} | schedulePolicy={(string.IsNullOrEmpty(c.SchedulePolicyName) ? "none" : c.SchedulePolicyName)} | lastRun={c.LastRunStatus?.ToString() ?? "never"} at {Fmt(c.LastRunAt)} | occurrences={c.OccurrenceCount}");
                     return sb.ToString();
                 },
                 "list_cron_tickers",
@@ -94,7 +95,7 @@ internal static partial class TickerAssistantTools
                     var occ = await data.GetCronOccurrencesFlatAsync(
                         id, new CronOccurrenceQueryFilter { PageSize = 10, SortDescending = true }, ct);
                     var sb = new StringBuilder();
-                    sb.AppendLine($"Cron '{c.FunctionName}' id={c.Id} expr='{c.Expression}' enabled={c.IsEnabled} retries={c.Retries} desc={c.Description ?? "-"}");
+                    sb.AppendLine($"Cron '{c.FunctionName}' id={c.Id} expr='{c.Expression}' enabled={c.IsEnabled} retries={c.Retries} schedulePolicy={(string.IsNullOrEmpty(c.SchedulePolicyName) ? "none" : c.SchedulePolicyName)} desc={c.Description ?? "-"}");
                     sb.AppendLine("Recent occurrences:");
                     foreach (var o in occ.Items.ToList())
                         sb.AppendLine($"  id={o.Id} chainRoot={o.ChainRootId} | {o.Status} | scheduled {Fmt(o.ScheduledFor)} | executed {Fmt(o.ExecutedAt)} | retries {o.RetryCount} | {ErrorOf(o.ExceptionMessage, o.SkippedReason)}");
@@ -178,13 +179,23 @@ internal static partial class TickerAssistantTools
                     [System.ComponentModel.Description("Standard 5-field cron expression, e.g. '0 6 * * 1-5'.")] string expression,
                     [System.ComponentModel.Description("Retry attempts on failure (0 for none).")] int retries,
                     [System.ComponentModel.Description("Optional short description. Empty allowed.")] string description,
-                    [System.ComponentModel.Description("JSON payload the job receives. Use an empty string when list_functions reports requestType=none; inspect typed functions with get_function_contract.")] string requestJson) =>
+                    [System.ComponentModel.Description("JSON payload the job receives. Use an empty string when list_functions reports requestType=none; inspect typed functions with get_function_contract.")] string requestJson,
+                    [System.ComponentModel.Description("Optional schedule policy name from list_schedule_policies; occurrences outside it are skipped. Empty for none.")] string schedulePolicyName = "") =>
                 {
                     var invalid = await ValidateFunctionPayloadAsync(data, functionName, retries, requestJson, ct);
                     if (invalid != null) return invalid;
 
                     var exprError = ValidateCronExpression(expression);
                     if (exprError != null) return exprError;
+
+                    string policyName = "";
+                    if (!string.IsNullOrWhiteSpace(schedulePolicyName) && !IsClear(schedulePolicyName))
+                    {
+                        if (schedulePolicies == null) return "Schedule policies are not available on this dashboard.";
+                        var policy = await FindPolicyAsync(schedulePolicies, schedulePolicyName, ct);
+                        if (policy == null) return $"No schedule policy named '{schedulePolicyName}'. Use list_schedule_policies.";
+                        policyName = policy.Name;
+                    }
 
                     await emitProposal(new AssistantProposal
                     {
@@ -195,6 +206,7 @@ internal static partial class TickerAssistantTools
                         Description = description ?? "",
                         RequestJson = requestJson ?? "",
                         IsEnabled = true,
+                        SchedulePolicyName = policyName,
                     });
                     return ProposalShown;
                 },
@@ -314,6 +326,7 @@ internal static partial class TickerAssistantTools
                 $"Node-local diagnostics. Fallback last success={diagnostics.LastSuccessfulFallbackScanUtc:O}; last failure={diagnostics.LastFallbackFailureUtc:O}; failures={diagnostics.FallbackScanFailures}. " +
                 $"Log writes available={diagnostics.LogWritesAvailable?.ToString() ?? "unknown"}; last flush={diagnostics.LastSuccessfulLogFlushUtc:O}; write failures={diagnostics.LogWriteFailures}. Missing timestamps mean no observation, not proof of failure.",
                 "get_runtime_diagnostics", "Read this node's overdue recovery and execution-log persistence health. This is not a cluster-wide health check."));
+        if (schedulePolicies != null) AddSchedulePolicyTools(tools, data, schedulePolicies, allowProposals, emitProposal, ct);
         if (integrations != null) AddIntegrationTools(tools, data, integrations, allowProposals && allowIntegrationProposals, emitProposal, ct);
         return tools;
     }

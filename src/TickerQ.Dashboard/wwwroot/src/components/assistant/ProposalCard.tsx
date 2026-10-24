@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Activity, ArrowUpRight, Ban, Bell, CalendarClock, Check, CornerDownRight, Loader2, Pencil, RotateCcw, Timer, Trash2, Workflow, X } from "lucide-react";
+import { Activity, ArrowUpRight, Ban, Bell, CalendarClock, CalendarCog, CalendarPlus, CalendarRange, Check, CornerDownRight, Loader2, Pencil, RotateCcw, Timer, Trash2, Workflow, X } from "lucide-react";
 import cronstrue from "cronstrue";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -9,6 +9,7 @@ import { dashboardApi } from "@/services/dashboard-api";
 import { applyAssistantProposal, type AssistantProposalApplyResult } from "@/lib/apply-assistant-proposal";
 import type { AssistantProposal, ProposalChainNode } from "@/services/assistant-api";
 import { Link } from "react-router-dom";
+import { SchedulePolicyProposal } from "@/components/assistant/SchedulePolicyProposal";
 
 export type ProposalStatus = "pending" | "applied" | "dismissed";
 
@@ -43,6 +44,9 @@ const KIND_META: Record<AssistantProposal["kind"], { title: string; icon: typeof
   deleteExecution: { title: "Delete permanently", icon: Trash2 },
   createAlertRule: { title: "Create alert rule", icon: Bell },
   createMonitor: { title: "Create monitor", icon: Activity },
+  createSchedulePolicy: { title: "Create schedule policy", icon: CalendarPlus },
+  updateSchedulePolicy: { title: "Update schedule policy", icon: CalendarCog },
+  setCronSchedulePolicy: { title: "Change cron schedule policy", icon: CalendarRange },
 };
 
 /**
@@ -72,6 +76,7 @@ export function ProposalCard({
   const chainRoot = ["createChain", "createChainDraft", "createCronChain"].includes(proposal.kind) ? parseChain(proposal.chainJson) : null;
   const destructive = proposal.kind === "deleteExecution";
   const savesDraft = proposal.kind === "createTimeTickerDraft" || proposal.kind === "createChainDraft";
+  const policyProposal = proposal.kind === "createSchedulePolicy" || proposal.kind === "updateSchedulePolicy";
 
   async function confirm() {
     if (confirming.current || status !== "pending") return;
@@ -120,7 +125,11 @@ export function ProposalCard({
         )}
       </div>
 
-      <dl className="space-y-1.5">
+      {policyProposal && proposal.policy ? (
+        <SchedulePolicyProposal policy={proposal.policy} current={proposal.kind === "updateSchedulePolicy" ? proposal.currentPolicy : null} />
+      ) : null}
+
+      <dl className={cn("space-y-1.5", policyProposal && "hidden")}>
         {savesDraft && <Row label="Draft">{proposal.draftName || `${proposal.function} draft`}</Row>}
         {chainRoot ? (
           <Row label="Steps">
@@ -129,6 +138,23 @@ export function ProposalCard({
         ) : (
           <Row label="Function">
             <span className="font-mono">{proposal.function || "All functions"}</span>
+          </Row>
+        )}
+
+        {(proposal.kind === "setCronSchedulePolicy" || (proposal.kind === "createCronTicker" && proposal.schedulePolicyName)) && (
+          <Row label="Policy">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {proposal.kind === "setCronSchedulePolicy" && (
+                <>
+                  <span className="text-muted-foreground line-through">{proposal.currentSchedulePolicyName || "None"}</span>
+                  <span className="text-muted-foreground">→</span>
+                </>
+              )}
+              <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium",
+                proposal.schedulePolicyName ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground")}>
+                {proposal.schedulePolicyName || "No policy"}
+              </span>
+            </div>
           </Row>
         )}
 
@@ -200,7 +226,7 @@ export function ProposalCard({
       {proposal.warning && <p className={cn("mt-3 border-t border-border/60 pt-3 text-xs leading-relaxed", destructive ? "text-destructive" : "text-muted-foreground")}>{proposal.warning}</p>}
       {status === "applied" && result?.href && (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-status-healthy/20 pt-3">
-          <p className="text-[11px] text-muted-foreground">Saved without scheduling. Review it before activation.</p>
+          <p className="text-[11px] text-muted-foreground">{savesDraft ? "Saved without scheduling. Review it before activation." : "Saved. Review it on its page."}</p>
           <Link
             to={result.href}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground transition-opacity hover:opacity-90"

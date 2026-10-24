@@ -37,7 +37,12 @@ Seed the runtime once, then open the dashboard:
 curl -X POST http://127.0.0.1:5290/demo/seed
 ```
 
+The seed adds four schedule policies (two of them composed), cron tickers that use them, a disabled
+cron ticker, and a one-time job that the Business hours policy moves to the next allowed time.
+
 Open `http://127.0.0.1:5290/tickerq/dashboard` and sign in with `admin` / `admin`. Integration
 destinations used for documentation must remain disabled so screenshot preparation never sends an
 external webhook. The bundled `DocsDemoChatClient` is deterministic and makes no network calls;
-replace it with a real `IChatClient` in application code.
+replace it with a real `IChatClient` in application code. It reports itself as a local model, and
+prompts that ask to list or create schedule policies call the dashboard's real tools, so the chat shows
+genuine proposal cards. Set `DOCS_DEMO_ASSISTANT=off` to show the dashboard without a connected model.

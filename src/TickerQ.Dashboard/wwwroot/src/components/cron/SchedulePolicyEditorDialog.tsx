@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  Ban,
   CalendarDays,
+  Check,
   ChevronsUpDown,
   Clock3,
   Layers3,
@@ -51,26 +53,8 @@ import type {
   SaveSchedulePolicyRequest,
   SchedulePolicy,
 } from "@/services/api-types";
-
-const weekdays = [
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-  "Sunday",
-] as const;
-
-function expandedWeekdays(value: string) {
-  if (value === "All") return [...weekdays];
-  if (value === "MondayToFriday") return weekdays.slice(0, 5);
-  if (value === "Weekend") return weekdays.slice(5);
-  return value.split(",").map((item) => item.trim()).filter(
-    (item): item is typeof weekdays[number] =>
-      weekdays.includes(item as typeof weekdays[number]),
-  );
-}
+import { cn } from "@/lib/utils";
+import { expandWeekdays, weekdays } from "@/lib/schedule-weekdays";
 
 function timeValue(value: string) {
   return value?.slice(0, 5) || "09:00";
@@ -145,7 +129,7 @@ export function SchedulePolicyEditorDialog({
     }),
   });
 
-  const selectedDays = expandedWeekdays(form.allowedWeekdays);
+  const selectedDays = expandWeekdays(form.allowedWeekdays);
   const composablePolicies = policies.filter((item) => item.id !== policy?.id);
   const setList = (key: "excludedDates", value: string) =>
     setForm((current) => ({
@@ -218,9 +202,9 @@ export function SchedulePolicyEditorDialog({
                       key={day}
                       type="button"
                       size="sm"
-                      variant={selected ? "secondary" : "outline"}
+                      variant={selected ? "default" : "outline"}
                       aria-pressed={selected}
-                      className="h-8 px-1 text-[11px]"
+                      className={cn("h-9 px-1 text-[11px]", !selected && "text-muted-foreground")}
                       onClick={() => {
                         const next = selected
                           ? selectedDays.filter((item) => item !== day)
@@ -330,7 +314,7 @@ export function SchedulePolicyEditorDialog({
               <Field label="Exact dates" info="Specific dates in YYYY-MM-DD format, separated by commas.">
                 <Input
                   value={form.excludedDates.join(", ")}
-                  placeholder="2026-12-25, 2026-12-31"
+                  placeholder="YYYY-MM-DD, YYYY-MM-DD"
                   onChange={(event) => setList("excludedDates", event.target.value)}
                 />
               </Field>
@@ -339,7 +323,7 @@ export function SchedulePolicyEditorDialog({
                   value={form.excludedAnnualDates.map((item) =>
                     `${String(item.month).padStart(2, "0")}-${String(item.day).padStart(2, "0")}`,
                   ).join(", ")}
-                  placeholder="01-01, 12-25"
+                  placeholder="MM-DD, MM-DD"
                   onChange={(event) => setForm({
                     ...form,
                     excludedAnnualDates: event.target.value
@@ -373,47 +357,42 @@ export function SchedulePolicyEditorDialog({
           </PolicySection>
 
           <PolicySection icon={<Layers3 />} title="Combine policies">
+            <div className="grid gap-2 text-[11px] leading-relaxed text-muted-foreground sm:grid-cols-2">
+              <p className="flex gap-2 rounded-lg border border-status-healthy/25 bg-status-healthy/[0.05] px-3 py-2">
+                <Check className="mt-0.5 size-3.5 shrink-0 text-status-healthy" />
+                <span><strong className="font-semibold text-status-healthy">Require</strong>: a time is allowed only when that policy allows it too.</span>
+              </p>
+              <p className="flex gap-2 rounded-lg border border-status-error/25 bg-status-error/[0.05] px-3 py-2">
+                <Ban className="mt-0.5 size-3.5 shrink-0 text-status-error" />
+                <span><strong className="font-semibold text-status-error">Exclude</strong>: a time is blocked whenever that policy allows it.</span>
+              </p>
+            </div>
             {composablePolicies.length > 0 ? (
               <div className="space-y-2">
+                <p className="text-[11px] text-muted-foreground">
+                  {form.requiredPolicyNames.length} required · {form.excludedWhenPolicyAllowsNames.length} excluded
+                </p>
                 {composablePolicies.map((item) => {
-                  const required = form.requiredPolicyNames.includes(item.name);
-                  const excluded = form.excludedWhenPolicyAllowsNames.includes(item.name);
+                  const mode: CombineMode = form.requiredPolicyNames.includes(item.name)
+                    ? "require"
+                    : form.excludedWhenPolicyAllowsNames.includes(item.name)
+                      ? "exclude"
+                      : "none";
                   return (
-                    <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/70 px-3 py-2">
-                      <span className="min-w-0 truncate text-xs font-medium">{item.name}</span>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <Button
-                          type="button"
-                          size="xs"
-                          variant={required ? "secondary" : "outline"}
-                          aria-pressed={required}
-                          onClick={() => setForm((current) => ({
-                            ...current,
-                            requiredPolicyNames: required
-                              ? current.requiredPolicyNames.filter((name) => name !== item.name)
-                              : [...current.requiredPolicyNames, item.name],
-                            excludedWhenPolicyAllowsNames: current.excludedWhenPolicyAllowsNames.filter((name) => name !== item.name),
-                          }))}
-                        >
-                          Require
-                        </Button>
-                        <Button
-                          type="button"
-                          size="xs"
-                          variant={excluded ? "secondary" : "outline"}
-                          aria-pressed={excluded}
-                          onClick={() => setForm((current) => ({
-                            ...current,
-                            requiredPolicyNames: current.requiredPolicyNames.filter((name) => name !== item.name),
-                            excludedWhenPolicyAllowsNames: excluded
-                              ? current.excludedWhenPolicyAllowsNames.filter((name) => name !== item.name)
-                              : [...current.excludedWhenPolicyAllowsNames, item.name],
-                          }))}
-                        >
-                          Exclude
-                        </Button>
-                      </div>
-                    </div>
+                    <CombinePolicyRow
+                      key={item.id}
+                      policy={item}
+                      mode={mode}
+                      onChange={(next) => setForm((current) => ({
+                        ...current,
+                        requiredPolicyNames: next === "require"
+                          ? [...current.requiredPolicyNames.filter((name) => name !== item.name), item.name]
+                          : current.requiredPolicyNames.filter((name) => name !== item.name),
+                        excludedWhenPolicyAllowsNames: next === "exclude"
+                          ? [...current.excludedWhenPolicyAllowsNames.filter((name) => name !== item.name), item.name]
+                          : current.excludedWhenPolicyAllowsNames.filter((name) => name !== item.name),
+                      }))}
+                    />
                   );
                 })}
               </div>
@@ -441,6 +420,80 @@ export function SchedulePolicyEditorDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+type CombineMode = "none" | "require" | "exclude";
+
+const combineOptions: { mode: CombineMode; label: string }[] = [
+  { mode: "none", label: "Not used" },
+  { mode: "require", label: "Require" },
+  { mode: "exclude", label: "Exclude" },
+];
+
+function CombinePolicyRow({
+  policy,
+  mode,
+  onChange,
+}: {
+  policy: SchedulePolicy;
+  mode: CombineMode;
+  onChange: (mode: CombineMode) => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-2.5 rounded-lg border border-l-4 px-3 py-2.5 transition-colors sm:flex-row sm:items-center sm:justify-between",
+        mode === "require" && "border-status-healthy/40 border-l-status-healthy bg-status-healthy/[0.06]",
+        mode === "exclude" && "border-status-error/40 border-l-status-error bg-status-error/[0.06]",
+        mode === "none" && "border-border/70 border-l-border",
+      )}
+    >
+      <div className="min-w-0">
+        <p className="truncate text-xs font-medium" title={policy.name}>{policy.name}</p>
+        <p
+          className={cn(
+            "mt-0.5 truncate text-[11px]",
+            mode === "require" ? "text-status-healthy" : mode === "exclude" ? "text-status-error" : "text-muted-foreground",
+          )}
+        >
+          {mode === "require"
+            ? "Must also allow the time"
+            : mode === "exclude"
+              ? "Blocks times it allows"
+              : policy.description || policy.timeZoneId}
+        </p>
+      </div>
+      <div
+        role="radiogroup"
+        aria-label={`How ${policy.name} combines with this policy`}
+        className="inline-flex shrink-0 rounded-lg border border-border bg-muted/40 p-0.5"
+      >
+        {combineOptions.map((option) => {
+          const active = option.mode === mode;
+          return (
+            <button
+              key={option.mode}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onChange(option.mode)}
+              className={cn(
+                "inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                !active && "text-muted-foreground hover:bg-background hover:text-foreground",
+                active && option.mode === "none" && "bg-background text-foreground shadow-sm",
+                active && option.mode === "require" && "bg-status-healthy text-background shadow-sm",
+                active && option.mode === "exclude" && "bg-status-error text-background shadow-sm",
+              )}
+            >
+              {option.mode === "require" ? <Check className="size-3" /> : null}
+              {option.mode === "exclude" ? <Ban className="size-3" /> : null}
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

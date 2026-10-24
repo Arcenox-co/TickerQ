@@ -7,7 +7,8 @@ export type AssistantActionApi = Pick<typeof dashboardApi,
   "addTimeTicker" | "addCronTicker" | "addTimeTickerChain" | "createDefinition" | "updateCronTicker" |
   "getTimeTicker" | "getCronOccurrence" | "getCronTicker" | "runTimeTicker" | "rerunCronOccurrence" |
   "cancelTicker" | "deleteTimeTicker" | "deleteCronTicker" | "deleteCronOccurrence" |
-  "getIntegrations" | "saveIntegrations">;
+  "getIntegrations" | "saveIntegrations" |
+  "getSchedulePolicy" | "createSchedulePolicy" | "updateSchedulePolicy">;
 
 export interface AssistantProposalApplyResult {
   message: string;
@@ -67,7 +68,8 @@ export async function applyAssistantProposal(p: AssistantProposal, api: Assistan
       return { message: "Time ticker created" };
     case "createCronTicker":
       await api.addCronTicker({ function: p.function, expression: p.expression, description: p.description || null,
-        retries: p.retries, request: encodeRequestPayload(p.requestJson), isEnabled: p.isEnabled ?? true });
+        retries: p.retries, request: encodeRequestPayload(p.requestJson), isEnabled: p.isEnabled ?? true,
+        ...(p.schedulePolicyName ? { schedulePolicyName: p.schedulePolicyName } : {}) });
       return { message: "Cron ticker created" };
     case "createChain":
     case "createCronChain": {
@@ -145,6 +147,29 @@ export async function applyAssistantProposal(p: AssistantProposal, api: Assistan
         await api.saveIntegrations({ ...config, monitors: [...(config.monitors ?? []), p.monitor] });
       }
       return { message: p.kind === "createAlertRule" ? "Alert rule created" : "Monitor created" };
+    }
+    case "createSchedulePolicy": {
+      if (!p.policy) throw new Error("The proposal has no policy.");
+      await api.createSchedulePolicy(p.policy);
+      return { message: "Schedule policy created", href: "/schedule-policies", linkLabel: "Open schedule policies" };
+    }
+    case "updateSchedulePolicy": {
+      if (!p.policy || !p.targetId || p.expectedVersion == null) throw new Error("The proposal has no policy.");
+      const current = await api.getSchedulePolicy(p.targetId);
+      if (current.version !== p.expectedVersion)
+        throw new Error("The schedule policy changed since the proposal. Request a new proposal.");
+      await api.updateSchedulePolicy(p.targetId, p.expectedVersion, p.policy);
+      return { message: "Schedule policy updated", href: "/schedule-policies", linkLabel: "Open schedule policies" };
+    }
+    case "setCronSchedulePolicy": {
+      if (!p.targetId) throw new Error("The proposal has no target.");
+      const current = await api.getCronTicker(p.targetId);
+      if (current.functionName !== p.function || current.expression !== p.expression ||
+          (current.schedulePolicyName ?? "") !== (p.currentSchedulePolicyName ?? ""))
+        throw new Error("The cron definition changed. Request a new proposal before updating it.");
+      // PATCH only the policy; replaceSchedulePolicy lets an empty name remove it.
+      await api.updateCronTicker(p.targetId, { schedulePolicyName: p.schedulePolicyName || null, replaceSchedulePolicy: true });
+      return { message: p.schedulePolicyName ? "Schedule policy attached" : "Schedule policy removed" };
     }
     default: throw new Error("Unsupported proposal. Request a new one.");
   }

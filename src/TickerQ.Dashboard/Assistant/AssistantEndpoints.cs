@@ -309,7 +309,8 @@ internal static class AssistantEndpoints
             schedulerTimeZone: ctx.RequestServices.GetService<SchedulerOptionsBuilder>()?.SchedulerTimeZone.Id ?? "UTC",
             diagnostics: ctx.RequestServices.GetService<TickerQRuntimeDiagnostics>(),
             runInvestigator: opts.RunInvestigator,
-            sourceContextProvider: assistant.SourceContextProvider);
+            sourceContextProvider: assistant.SourceContextProvider,
+            schedulePolicies: ctx.RequestServices.GetService<ISchedulePolicyManager>());
 
         // Continuing a saved investigation is a live re-read of the same execution, not a new
         // investigation record. Supplying the evidence here also prevents a provider from merely
