@@ -26,6 +26,8 @@ public static class ServiceBuilder
                 services.TryAddEnumerable(ServiceDescriptor.Singleton<IDbContextOptionsConfiguration<TContext>, TickerQOptionsConfiguration<TContext, TTimeTicker, TCronTicker>>());
             }
 
+            services.TryAddEnumerable(ServiceDescriptor.Singleton<IDbContextOptionsConfiguration<TContext>,
+                ProviderCompatibilityOptionsConfiguration<TContext>>());
             services.AddSingleton<ITickerPersistenceProvider<TTimeTicker, TCronTicker>, TickerEfCorePersistenceProvider<TContext, TTimeTicker, TCronTicker>>();
             RegisterTransactionalScheduling<TContext, TTimeTicker, TCronTicker>(services);
             RegisterAssistantHistory<TContext, TTimeTicker, TCronTicker>(builder, services);
@@ -84,6 +86,17 @@ public static class ServiceBuilder
         }
     }
 
+    /// <summary>
+    /// Adds provider-compatibility interceptors to an application DbContext that stores TickerQ data.
+    /// Each interceptor is inert for providers it does not apply to.
+    /// </summary>
+    public sealed class ProviderCompatibilityOptionsConfiguration<TContext> : IDbContextOptionsConfiguration<TContext>
+        where TContext : DbContext
+    {
+        public void Configure(IServiceProvider serviceProvider, DbContextOptionsBuilder optionsBuilder)
+            => optionsBuilder.AddInterceptors(MySqlDeleteAliasInterceptor.Instance);
+    }
+
     public sealed class StagingOptionsConfiguration<TContext, TTimeTicker, TCronTicker>
         : IDbContextOptionsConfiguration<TContext>
         where TContext : DbContext
@@ -106,6 +119,7 @@ public static class ServiceBuilder
             {
                 var optionsBuilder = new DbContextOptionsBuilder<TContext>();
                 optionsAction.Invoke(optionsBuilder);
+                optionsBuilder.AddInterceptors(MySqlDeleteAliasInterceptor.Instance);
                 TickerModelOptionsExtension.Configure(optionsBuilder, builder);
                 optionsBuilder.UseApplicationServiceProvider(sp);
                 return new PooledDbContextFactory<TContext>(optionsBuilder.Options, builder.PoolSize);

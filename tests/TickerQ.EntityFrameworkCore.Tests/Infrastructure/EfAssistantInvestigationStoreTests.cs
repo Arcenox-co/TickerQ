@@ -333,8 +333,98 @@ public sealed class EfAssistantInvestigationStoreTests
         {
             Assert.Empty(row.Summary);
             Assert.Empty(row.SourcePath);
-            Assert.Empty(row.FunctionName);
+            // Required columns hold a placeholder because Oracle cannot store "" in them.
+            Assert.Equal(EfAssistantInvestigationStore<InvestigationContext>.MissingText, row.FunctionName);
+            Assert.Equal(EfAssistantInvestigationStore<InvestigationContext>.MissingText, row.EvidenceFingerprint);
         });
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    public async Task Completed_investigation_without_a_summary_is_not_reused(string? summary)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<InvestigationContext>().UseSqlite(connection).Options;
+        await using var db = new InvestigationContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var store = new EfAssistantInvestigationStore<InvestigationContext>(db, new AssistantHistoryOptions());
+        var fingerprint = new string('C', 64);
+        var id = await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow, fingerprint: fingerprint));
+        await store.CompleteAsync("orders", id!.Value, summary!, "ops-model");
+
+        // Simulate how Oracle reads an empty string back.
+        if (summary == "")
+            await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == id.Value)
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.Summary, (string?)null));
+
+        Assert.Null(await store.FindReusableAsync("orders", fingerprint, Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task Missing_required_text_is_stored_as_a_placeholder()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<InvestigationContext>().UseSqlite(connection).Options;
+        await using var db = new InvestigationContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var store = new EfAssistantInvestigationStore<InvestigationContext>(db, new AssistantHistoryOptions());
+        var seed = Seed("orders", Guid.NewGuid(), DateTime.UtcNow);
+        seed.FunctionName = null!;
+        seed.ExecutionType = "";
+        seed.ExecutionStatus = null!;
+        seed.Classification = "";
+        seed.Trigger = null!;
+
+        var id = await store.TryStartAsync(seed);
+
+        var saved = await store.GetAsync("orders", id!.Value);
+        Assert.NotNull(saved);
+        Assert.Equal(EfAssistantInvestigationStore<InvestigationContext>.MissingText, saved!.FunctionName);
+        Assert.Equal(EfAssistantInvestigationStore<InvestigationContext>.MissingText, saved.ExecutionType);
+        Assert.Equal(EfAssistantInvestigationStore<InvestigationContext>.MissingText, saved.ExecutionStatus);
+        Assert.Equal("Unclassified", saved.Classification);
+        Assert.Equal(AssistantInvestigationValues.User, saved.Trigger);
+    }
+
+    [Fact]
+    public async Task Optional_text_stored_as_null_is_returned_as_empty()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<InvestigationContext>().UseSqlite(connection).Options;
+        await using var db = new InvestigationContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var store = new EfAssistantInvestigationStore<InvestigationContext>(db, new AssistantHistoryOptions());
+        var id = await store.TryStartAsync(Seed("orders", Guid.NewGuid(), DateTime.UtcNow));
+
+        // Oracle stores "" as NULL; the store must return "" on every database.
+        await db.Set<AssistantInvestigationEntity>().Where(x => x.Id == id!.Value)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(x => x.Summary, (string?)null)
+                .SetProperty(x => x.Model, (string?)null)
+                .SetProperty(x => x.SourceRepository, (string?)null)
+                .SetProperty(x => x.SourceRevision, (string?)null)
+                .SetProperty(x => x.SourcePath, (string?)null)
+                .SetProperty(x => x.StartedByUserId, (string?)null)
+                .SetProperty(x => x.ReviewedByUserId, (string?)null)
+                .SetProperty(x => x.FailureMessage, (string?)null));
+
+        var saved = await store.GetAsync("orders", id!.Value);
+        var listed = Assert.Single((await store.ListAsync("orders", new AssistantInvestigationQuery())).Items);
+        foreach (var record in new[] { saved!, listed })
+        {
+            Assert.Equal("", record.Summary);
+            Assert.Equal("", record.Model);
+            Assert.Equal("", record.SourceRepository);
+            Assert.Equal("", record.SourceRevision);
+            Assert.Equal("", record.SourcePath);
+            Assert.Equal("", record.StartedByUserId);
+            Assert.Equal("", record.ReviewedByUserId);
+            Assert.Equal("", record.FailureMessage);
+        }
     }
 
     [Fact]

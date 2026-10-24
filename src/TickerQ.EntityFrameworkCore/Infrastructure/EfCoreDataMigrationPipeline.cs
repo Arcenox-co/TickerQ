@@ -167,7 +167,7 @@ public sealed class EfCoreDataMigrationPipeline
     private static bool IsSerializationFailure(Exception exception)
     {
         for (var current = exception; current != null; current = current.InnerException)
-            if (current is DbException { SqlState: "40001" })
+            if (current is DbException db && RelationalTransactionConflicts.IsConflict(db, out _))
                 return true;
         return false;
     }

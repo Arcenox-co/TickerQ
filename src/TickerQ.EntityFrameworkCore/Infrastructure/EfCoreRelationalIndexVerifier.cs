@@ -13,7 +13,8 @@ internal enum RelationalIndexProvider
     Sqlite,
     SqlServer,
     PostgreSql,
-    MySql
+    MySql,
+    Oracle
 }
 
 internal sealed record RelationalIndexRequirement(
@@ -53,17 +54,20 @@ internal static class EfCoreRelationalIndexVerifier
         if (providerName.Contains("Pomelo", StringComparison.OrdinalIgnoreCase) ||
             providerName.Contains("MySql", StringComparison.OrdinalIgnoreCase))
             return RelationalIndexProvider.MySql;
+        if (providerName.Contains("Oracle", StringComparison.OrdinalIgnoreCase))
+            return RelationalIndexProvider.Oracle;
 
         // Thrown as a schema exception so the migration pipeline surfaces it unchanged instead of
         // wrapping it in the generic "generate a migration" advice, which cannot fix this.
         throw new TickerQStoreSchemaException(
             $"TickerQ cannot verify required relational indexes for provider '{providerName}'. " +
             "Schema/data versions will not be certified. Supported EF Core providers are SQLite, " +
-            "SQL Server, PostgreSQL (Npgsql), and MySQL (Pomelo or MySql.EntityFrameworkCore).",
+            "SQL Server, PostgreSQL (Npgsql), MySQL (Pomelo or MySql.EntityFrameworkCore), and " +
+            "Oracle (Oracle.EntityFrameworkCore).",
             null);
     }
 
-    internal static string GetCatalogQuery(RelationalIndexProvider provider) => provider switch
+    internal static string GetCatalogQuery(RelationalIndexProvider provider, bool cockroachDb = false) => provider switch
     {
         RelationalIndexProvider.Sqlite => """
             SELECT NULL AS "SchemaName", m.tbl_name AS "TableName", m.name AS "IndexName",
@@ -97,7 +101,7 @@ internal static class EfCoreRelationalIndexVerifier
         RelationalIndexProvider.PostgreSql => """
             SELECT ns.nspname AS "SchemaName", tbl.relname AS "TableName", idx.relname AS "IndexName",
                    ix.indisunique AS "IsUnique", ix.indislive AS "IsEnabled",
-                   (ix.indisvalid AND ix.indisready AND
+                   (ix.indisvalid AND {READY} AND
                     position('NULLS NOT DISTINCT' in upper(pg_get_indexdef(ix.indexrelid))) = 0) AS "IsValid",
                    pg_get_expr(ix.indpred, ix.indrelid) AS "FilterDefinition",
                    keys.ordinality AS "Ordinal", att.attname AS "ColumnName"
@@ -112,7 +116,11 @@ internal static class EfCoreRelationalIndexVerifier
             WHERE idx.relname = @name AND tbl.relname = @table
               AND ns.nspname = COALESCE(@schema, 'public')
             ORDER BY keys.ordinality
-            """,
+            """.Replace("{READY}", cockroachDb
+                // CockroachDB's emulated pg_index reports indisready = false for every index,
+                // including primary keys; it exposes only usable indexes there.
+                ? "TRUE"
+                : "ix.indisready", StringComparison.Ordinal),
         RelationalIndexProvider.MySql => """
             /* Catalog fields are mapped by the reader to SchemaName, TableName, IndexName,
                IsUnique, IsEnabled, IsValid, FilterDefinition, Ordinal, and ColumnName.
@@ -124,6 +132,23 @@ internal static class EfCoreRelationalIndexVerifier
             WHERE s.TABLE_SCHEMA = DATABASE() AND s.INDEX_NAME = @name AND s.TABLE_NAME = @table
             ORDER BY s.SEQ_IN_INDEX
             """,
+        // Parameters bind by position (ODP.NET's default), so they appear in name, table, schema
+        // order. Function-based key columns surface as SYS_NC names and are rejected as expressions.
+        RelationalIndexProvider.Oracle => """
+            SELECT i.TABLE_OWNER AS "SchemaName", i.TABLE_NAME AS "TableName", i.INDEX_NAME AS "IndexName",
+                   CASE WHEN i.UNIQUENESS = 'UNIQUE' THEN 1 ELSE 0 END AS "IsUnique",
+                   CASE WHEN i.VISIBILITY = 'VISIBLE'
+                         AND (i.FUNCIDX_STATUS IS NULL OR i.FUNCIDX_STATUS = 'ENABLED') THEN 1 ELSE 0 END AS "IsEnabled",
+                   CASE WHEN i.STATUS IN ('VALID', 'N/A') THEN 1 ELSE 0 END AS "IsValid",
+                   CAST(NULL AS VARCHAR2(1)) AS "FilterDefinition",
+                   c.COLUMN_POSITION AS "Ordinal",
+                   CASE WHEN c.COLUMN_NAME LIKE 'SYS\_NC%' ESCAPE '\' THEN NULL ELSE c.COLUMN_NAME END AS "ColumnName"
+            FROM ALL_INDEXES i
+            JOIN ALL_IND_COLUMNS c ON c.INDEX_OWNER = i.OWNER AND c.INDEX_NAME = i.INDEX_NAME
+            WHERE i.INDEX_NAME = :p_name AND i.TABLE_NAME = :p_table
+              AND i.TABLE_OWNER = COALESCE(:p_schema, SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA'))
+            ORDER BY c.COLUMN_POSITION
+            """,
         _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null)
     };
 
@@ -134,9 +159,11 @@ internal static class EfCoreRelationalIndexVerifier
         CancellationToken cancellationToken)
     {
         var provider = DetectProvider(providerName);
+        var cockroachDb = provider == RelationalIndexProvider.PostgreSql &&
+                          await IsCockroachDbAsync(connection, cancellationToken).ConfigureAwait(false);
         foreach (var requirement in requirements)
         {
-            var installed = await ReadInstalledAsync(connection, provider, requirement, cancellationToken)
+            var installed = await ReadInstalledAsync(connection, provider, requirement, cockroachDb, cancellationToken)
                 .ConfigureAwait(false);
             if (installed == null)
                 throw new InvalidOperationException(
@@ -165,7 +192,10 @@ internal static class EfCoreRelationalIndexVerifier
         if (!string.Equals(requirement.Table, installed.Table, identifierComparison))
             return Fail($"expected table '{requirement.Table}', found '{installed.Table}'", out mismatch);
         var expectedSchema = EffectiveSchema(provider, requirement.Schema);
-        if (!string.Equals(expectedSchema ?? string.Empty, installed.Schema ?? string.Empty,
+        // Oracle resolves an unconfigured schema to the connection's current schema in the catalog query.
+        var schemaResolvedByQuery = provider == RelationalIndexProvider.Oracle && requirement.Schema == null;
+        if (!schemaResolvedByQuery &&
+            !string.Equals(expectedSchema ?? string.Empty, installed.Schema ?? string.Empty,
                 identifierComparison))
             return Fail($"expected schema '{expectedSchema}', found '{installed.Schema}'", out mismatch);
         if (!requirement.Columns.SequenceEqual(installed.Columns,
@@ -205,18 +235,39 @@ internal static class EfCoreRelationalIndexVerifier
         return true;
     }
 
+    /// <summary>
+    /// CockroachDB speaks the PostgreSQL protocol through Npgsql, so it is identified by its server
+    /// version string rather than by EF provider name.
+    /// </summary>
+    internal static async Task<bool> IsCockroachDbAsync(DbConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT version()";
+        var version = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+        return version?.Contains("CockroachDB", StringComparison.OrdinalIgnoreCase) == true;
+    }
+
     private static async Task<InstalledIndexDefinition> ReadInstalledAsync(
         DbConnection connection,
         RelationalIndexProvider provider,
         RelationalIndexRequirement requirement,
+        bool cockroachDb,
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = GetCatalogQuery(provider);
-        AddParameter(command, provider == RelationalIndexProvider.Sqlite ? "$name" : "@name", requirement.Name);
-        AddParameter(command, provider == RelationalIndexProvider.Sqlite ? "$table" : "@table", requirement.Table);
-        if (provider is RelationalIndexProvider.SqlServer or RelationalIndexProvider.PostgreSql)
-            AddParameter(command, "@schema", (object)requirement.Schema ?? DBNull.Value);
+        command.CommandText = GetCatalogQuery(provider, cockroachDb);
+        var prefix = provider switch
+        {
+            RelationalIndexProvider.Sqlite => "$",
+            // "table" is a reserved word in Oracle bind variable names.
+            RelationalIndexProvider.Oracle => ":p_",
+            _ => "@",
+        };
+        AddParameter(command, prefix + "name", requirement.Name);
+        AddParameter(command, prefix + "table", requirement.Table);
+        if (provider is RelationalIndexProvider.SqlServer or RelationalIndexProvider.PostgreSql
+            or RelationalIndexProvider.Oracle)
+            AddParameter(command, prefix + "schema", (object)requirement.Schema ?? DBNull.Value);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         string schema = null;

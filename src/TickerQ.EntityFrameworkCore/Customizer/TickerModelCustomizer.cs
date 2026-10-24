@@ -46,6 +46,7 @@ namespace TickerQ.EntityFrameworkCore.Customizer
             builder.ApplyConfiguration(new AssistantInvestigationConfigurations(schema));
             builder.ApplyConfiguration(new AssistantInvestigationLeaseConfigurations(schema));
             builder.ApplyConfiguration(new AssistantInvestigationBudgetConfigurations(schema));
+            TickerProviderModelConventions.Apply(builder, context.Database.ProviderName);
 
             base.Customize(builder, context);
         }

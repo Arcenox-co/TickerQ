@@ -34,7 +34,10 @@ public sealed class TimeTickerResultConfigurations<TTimeTicker>
         PropertyBuilder<byte[]> payload, PropertyBuilder<string> mediaType,
         PropertyBuilder<string> contractId, PropertyBuilder<string> contractType)
     {
-        payload.IsRequired().HasMaxLength(TickerResultStorage.MaxPayloadBytes);
+        // The 1 MiB limit is enforced before every write. Mapping it as a column length would make
+        // MySQL/MariaDB emit an invalid varbinary(1048576); unbounded maps to each provider's large
+        // binary type (varbinary(max), bytea, longblob, BLOB) without changing the stored data.
+        payload.IsRequired();
         mediaType.IsRequired().HasMaxLength(256);
         contractId.IsRequired(false).HasMaxLength(512);
         contractType.IsRequired(false).HasMaxLength(1024);

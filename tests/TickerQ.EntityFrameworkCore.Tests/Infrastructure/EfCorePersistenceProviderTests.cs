@@ -44,6 +44,8 @@ public class TestTickerQDbContext : DbContext
         modelBuilder.ApplyConfiguration(new IntegrationSettingsConfigurations("ticker"));
         modelBuilder.ApplyConfiguration(new TickerQDefinitionConfigurations("ticker"));
         modelBuilder.ApplyConfiguration(new SchedulePolicyConfigurations("ticker"));
+        // Manual mapping must apply the provider conventions too (a no-op except on Oracle).
+        TickerProviderModelConventions.Apply(modelBuilder, Database.ProviderName);
         base.OnModelCreating(modelBuilder);
     }
 }

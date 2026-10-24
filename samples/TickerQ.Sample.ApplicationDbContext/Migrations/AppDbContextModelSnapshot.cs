@@ -297,7 +297,6 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
 
                     b.Property<byte[]>("Payload")
                         .IsRequired()
-                        .HasMaxLength(1048576)
                         .HasColumnType("BLOB");
 
                     b.HasKey("ApplicationNamespaceKey", "TickerId");
@@ -730,7 +729,6 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
 
                     b.Property<byte[]>("Payload")
                         .IsRequired()
-                        .HasMaxLength(1048576)
                         .HasColumnType("BLOB");
 
                     b.HasKey("ApplicationNamespaceKey", "TickerId");

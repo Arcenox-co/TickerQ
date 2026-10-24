@@ -12,6 +12,22 @@ publishing, and TickerQ's provider queries are compiled inside the package rathe
 application's generated model. The TickerQ core scheduler, dashboard, and Redis provider
 have separate verified Native AOT lanes.
 
+## Supported databases
+
+Scheduler hosts run on SQLite, SQL Server, PostgreSQL, MySQL, MariaDB, CockroachDB,
+YugabyteDB (YSQL), and Oracle Database. Each passes the relational conformance suite in
+`tests/TickerQ.EntityFrameworkCore.Tests/Infrastructure/Conformance`. A few need settings:
+
+- **MySQL / MariaDB:** a schema is a database, so call `SetSchema("<your database>")`.
+- **CockroachDB:** use `SetSchema("public")`; on 25.1+ add `Options=-c autocommit_before_ddl=false`
+  to the connection string used for migrations.
+- **Oracle:** call `SetSchema` with the owning user in uppercase, for example `SetSchema("TICKERQ")`.
+
+Database-specific model adjustments (Oracle's `SeedKeyScope` virtual column and a MySQL-sized
+investigation index) are applied automatically. If you map TickerQ manually with
+`IgnoreModelCustomizer`, call `TickerProviderModelConventions.Apply(modelBuilder, Database.ProviderName)`
+after the TickerQ configurations.
+
 ## Retaining job history
 
 EF Core keeps completed time tickers and cron occurrences until they are explicitly
@@ -144,10 +160,12 @@ Transactional scheduling adds no tables or columns to the current TickerQ schema
 Code-defined cron reconciliation uses stable seed identities and the unique seed index to converge
 on one row when replicas start together. It runs the complete transaction through the EF Core
 execution strategy configured on your `DbContext`, creating a fresh context lease for each attempt.
-Use your database provider's connection-resiliency option (for example, `EnableRetryOnFailure()`
-with SQL Server) for its full transient-error handling. TickerQ also performs bounded retries for
-EF write conflicts and database exceptions marked `IsTransient`; it does not suppress permanent
-failures or override an exhausted provider retry policy.
+A provider connection-resiliency option such as `EnableRetryOnFailure()` remains useful for
+connection-level transient errors. TickerQ also performs bounded retries for EF write conflicts,
+database exceptions marked `IsTransient`, and lock or serialization conflicts it recognizes by
+SQLSTATE (`40001`, `40P01`) or vendor error number (SQL Server 1205 and 3960, MySQL/MariaDB 1213
+and 1205, Oracle ORA-08177, ORA-00060, and ORA-08176). It does not suppress permanent failures or
+override an exhausted provider retry policy.
 
 Provider-owned scheduling and chain mutations also retry transient transaction conflicts with
 bounded backoff and a fresh context and transaction per attempt. Their serializable isolation

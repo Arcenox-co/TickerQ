@@ -12,7 +12,6 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="FlexLabs.EntityFrameworkCore.Upsert" Version="$(DotNetVersion)" />
 		<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="$(DotNetVersion)" />
 		<ProjectReference Include="..\TickerQ.Utilities\TickerQ.Utilities.csproj" />
 	</ItemGroup>

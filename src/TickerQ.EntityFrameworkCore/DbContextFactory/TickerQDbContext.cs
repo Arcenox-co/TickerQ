@@ -52,6 +52,7 @@ public class TickerQDbContext<TTimeTicker, TCronTicker> : DbContext
         modelBuilder.ApplyConfiguration(new AssistantInvestigationConfigurations(schema));
         modelBuilder.ApplyConfiguration(new AssistantInvestigationLeaseConfigurations(schema));
         modelBuilder.ApplyConfiguration(new AssistantInvestigationBudgetConfigurations(schema));
+        TickerProviderModelConventions.Apply(modelBuilder, Database.ProviderName);
 
         base.OnModelCreating(modelBuilder);
     }
