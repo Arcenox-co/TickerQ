@@ -356,7 +356,6 @@ namespace TickerQ.Dashboard.DependencyInjection
                 {
                     Mode = config.Auth.Mode.ToString().ToLower(),
                     Enabled = config.Auth.IsEnabled,
-                    SessionTimeout = config.Auth.SessionTimeoutMinutes,
                     LoginRedirect = config.Auth.HostLoginRedirectPath,
                 }
             };

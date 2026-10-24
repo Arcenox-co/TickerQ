@@ -48,7 +48,14 @@ namespace TickerQ.Utilities.Interfaces.Managers
             Guid occurrenceId, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support re-running cron occurrences.");
 
-        /// <summary>Requests cooperative cancellation of one occurrence on this host and runtime partition. Pass an occurrence ID, not a cron definition ID. AffectedRows is 1 when signalled, otherwise 0.</summary>
+        /// <summary>
+        /// Requests cooperative cancellation of one running occurrence in this runtime partition. Pass an
+        /// occurrence ID, not a cron definition ID. The occurrence is signalled directly when it runs on
+        /// this host; otherwise, when the persistence provider supports cluster control, a cancellation
+        /// command is stored for the owning node, which applies it if it still holds the same attempt.
+        /// Commands expire after about 30 seconds. AffectedRows is 1 when the occurrence was signalled or
+        /// the command was stored, otherwise 0; neither proves that the function has already stopped.
+        /// </summary>
         Task<TickerResult<TCronTicker>> RequestCancellationAsync(Guid occurrenceId, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support cancelling cron occurrences.");
 

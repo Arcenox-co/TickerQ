@@ -22,7 +22,6 @@ export interface TickerQAssistantConfig {
 export interface TickerQAuthConfig {
   mode: string;
   enabled: boolean;
-  sessionTimeout: number;
   /** Host-app login page (Host mode) for the browser round-trip. */
   loginRedirect?: string | null;
 }

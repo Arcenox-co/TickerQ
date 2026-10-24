@@ -68,6 +68,28 @@ internal sealed class IntegrationEngine : BackgroundService, ITickerQFailureNoti
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
     }
 
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        // Stop accepting new events, then let ExecuteAsync finish the queue it already holds.
+        // Its stopping token is still live here, so in-flight sends are not cancelled until the
+        // drain window or the host's shutdown deadline runs out.
+        _queue.Writer.TryComplete();
+        var execute = ExecuteTask;
+        if (execute != null && !execute.IsCompleted && _options.ShutdownDrainTimeout > TimeSpan.Zero)
+        {
+            using var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            drain.CancelAfter(_options.ShutdownDrainTimeout);
+            try { await execute.WaitAsync(drain.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (drain.IsCancellationRequested)
+            {
+                _logger.LogWarning(
+                    "TickerQ integration shutdown drain timed out; {Count} queued notification(s) were not delivered",
+                    _queue.Reader.Count);
+            }
+        }
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     internal async Task DispatchAsync(IntegrationMessage message, CancellationToken ct)
     {
         // Read on dispatch so edits and disabled destinations apply across replicas without restart.

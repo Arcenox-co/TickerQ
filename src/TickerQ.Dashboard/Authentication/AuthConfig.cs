@@ -27,6 +27,10 @@ public class AuthConfig
 
     private AuthMode _mode = AuthMode.None;
 
+    // Set once the single-mode property bag has been turned into a scheme, so repeated
+    // Validate() calls do not mistake that scheme for a conflicting registration.
+    private bool _legacySchemeMaterialized;
+
     /// <summary>
     /// Legacy single-mode property. New code should configure schemes via
     /// <c>WithBasicAuth</c> / <c>WithApiKey</c> / etc. on the builder.
@@ -60,9 +64,6 @@ public class AuthConfig
     /// </summary>
     public string? HostLoginRedirectPath { get; set; }
 
-    /// <summary>Session timeout in minutes (advertised to the SPA via /api/auth/info).</summary>
-    public int SessionTimeoutMinutes { get; set; } = 60;
-
     /// <summary>
     /// JWT options when a <see cref="Schemes.JwtBearerScheme"/> is registered.
     /// Populated by <see cref="AuthSchemeBuilder.AddJwtBearer"/> and consumed
@@ -88,6 +89,16 @@ public class AuthConfig
     /// </summary>
     public void Validate()
     {
+        if (_mode != AuthMode.None && Schemes.Count > 0 && !_legacySchemeMaterialized)
+            throw new InvalidOperationException(
+                $"Dashboard authentication mode '{_mode}' was selected with a single-mode method " +
+                "(WithHostAuthentication, WithBasicAuth(username, password), WithApiKey(key), or " +
+                "WithCustomAuth(Func<string, bool>)), but other schemes are also registered through " +
+                "WithAuthentication(...), WithBasicAuth(validator), WithApiKey(key, headerName), or " +
+                "WithCustomAuth(Func<HttpContext, Task<bool>>). The single-mode method would be ignored. " +
+                "Register every scheme inside WithAuthentication(...) instead, for example " +
+                "auth.AddHost(...).AddCustom(...).");
+
         if (Schemes.Count == 0)
         {
             switch (_mode)
@@ -107,6 +118,7 @@ public class AuthConfig
                     Schemes.Add(new CustomAuthScheme { Validator = CustomValidator });
                     break;
             }
+            _legacySchemeMaterialized = Schemes.Count > 0;
         }
 
         foreach (var scheme in Schemes)

@@ -341,13 +341,6 @@ public class DashboardOptionsBuilder
         return this;
     }
 
-    /// <summary>Set session timeout in minutes</summary>
-    public DashboardOptionsBuilder WithSessionTimeout(int minutes)
-    {
-        Auth.SessionTimeoutMinutes = minutes;
-        return this;
-    }
-    
     /// <summary>Validate the authentication configuration</summary>
     internal void Validate()
     {

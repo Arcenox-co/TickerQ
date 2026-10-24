@@ -145,13 +145,22 @@ internal class TickerQStaleJobRecoveryBackgroundService : BackgroundService
             Utilities.Instrumentation.TickerQMetrics.JobsStaleRecovered.Add(cancelled,
                 new KeyValuePair<string, object>("tickerq.action", "cancel"));
 
-        _notifier.Notify(new Utilities.Models.TickerFailureEvent
+        // Recovery is already persisted; a failing custom notifier must not skip the log below
+        // or surface as a failed sweep.
+        try
         {
-            Kind = "stale_recovered",
-            Reason = $"{restarted} restarted, {cancelled} cancelled after their executing node stopped renewing its lease",
-            OccurredAtUtc = DateTime.UtcNow,
-            Node = _schedulerOptions.NodeIdentifier,
-        });
+            _notifier.Notify(new Utilities.Models.TickerFailureEvent
+            {
+                Kind = "stale_recovered",
+                Reason = $"{restarted} restarted, {cancelled} cancelled after their executing node stopped renewing its lease",
+                OccurredAtUtc = DateTime.UtcNow,
+                Node = _schedulerOptions.NodeIdentifier,
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "TickerQ failure notifier failed for a stale-job recovery summary");
+        }
 
         _logger.LogWarning(
             "Stale-job watchdog recovered {Total} ticker(s) from dead nodes: {RestartedTime} time ticker(s) restarted, {CancelledTime} cancelled; {RestartedCron} cron occurrence(s) restarted, {CancelledCron} cancelled",

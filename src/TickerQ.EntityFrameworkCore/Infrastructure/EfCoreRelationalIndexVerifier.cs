@@ -54,9 +54,13 @@ internal static class EfCoreRelationalIndexVerifier
             providerName.Contains("MySql", StringComparison.OrdinalIgnoreCase))
             return RelationalIndexProvider.MySql;
 
-        throw new InvalidOperationException(
+        // Thrown as a schema exception so the migration pipeline surfaces it unchanged instead of
+        // wrapping it in the generic "generate a migration" advice, which cannot fix this.
+        throw new TickerQStoreSchemaException(
             $"TickerQ cannot verify required relational indexes for provider '{providerName}'. " +
-            "Schema/data versions will not be certified.");
+            "Schema/data versions will not be certified. Supported EF Core providers are SQLite, " +
+            "SQL Server, PostgreSQL (Npgsql), and MySQL (Pomelo or MySql.EntityFrameworkCore).",
+            null);
     }
 
     internal static string GetCatalogQuery(RelationalIndexProvider provider) => provider switch

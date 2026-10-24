@@ -55,7 +55,14 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// </summary>
         Task<TickerResult<TTimeTicker>> RetryFromAsync(Guid id, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support retrying a chain from a selected job.");
-        /// <summary>Requests cooperative cancellation of one running execution on this host and runtime partition. Use CancelAsync for a pending job. AffectedRows is 1 when signalled, otherwise 0.</summary>
+        /// <summary>
+        /// Requests cooperative cancellation of one running execution in this runtime partition. The
+        /// execution is signalled directly when it runs on this host; otherwise, when the persistence
+        /// provider supports cluster control, a cancellation command is stored for the owning node,
+        /// which applies it if it still holds the same attempt. Commands expire after about 30 seconds.
+        /// Use CancelAsync for a pending job. AffectedRows is 1 when the execution was signalled or the
+        /// command was stored, otherwise 0; neither proves that the function has already stopped.
+        /// </summary>
         Task<TickerResult<TTimeTicker>> RequestCancellationAsync(Guid id, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support cancelling time tickers.");
         /// <summary>Changes only the root's deletion policy, including for completed chains.</summary>

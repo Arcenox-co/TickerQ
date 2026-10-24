@@ -314,8 +314,18 @@ namespace TickerQ.Utilities.Managers
                 // Persist first
                 var affected = await _persistenceProvider.AddTimeTickers([entity], cancellationToken: cancellationToken);
                 if (affected <= 0)
-                    return new TickerResult<TTimeTicker>(new TickerValidatorException(
-                        $"TimeTicker '{entity.Id}' was not inserted because it already exists."));
+                {
+                    // Zero rows means either a duplicate ID or a write the store refused to admit
+                    // (for example a superseded reconciliation epoch). Only report a duplicate
+                    // when the row is actually there.
+                    var existing = await _persistenceProvider.GetTimeTickerById(entity.Id, cancellationToken)
+                        .ConfigureAwait(false);
+                    return new TickerResult<TTimeTicker>(new TickerValidatorException(existing != null
+                        ? $"TimeTicker '{entity.Id}' was not inserted because it already exists."
+                        : $"TimeTicker '{entity.Id}' was not inserted because the store did not admit the write. " +
+                          "This host's reconciliation epoch may have been superseded by a newer deployment, " +
+                          "or legacy runtime partition adoption may be in progress."));
+                }
 
                 return await CompleteMutationAsync(new TickerResult<TTimeTicker>(entity, affected), async () =>
                 {

@@ -10,7 +10,6 @@ internal class AuthInfoResponse
     public string? UserId { get; set; }
     public string Mode { get; set; }
     public bool Enabled { get; set; }
-    public int SessionTimeout { get; set; }
 
     /// <summary>
     /// Names of every registered auth scheme in priority order — lets the SPA

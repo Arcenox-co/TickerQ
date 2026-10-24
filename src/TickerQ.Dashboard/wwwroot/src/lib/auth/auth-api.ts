@@ -7,7 +7,6 @@ export interface AuthInfo {
   userId: string | null;
   mode: string;
   enabled: boolean;
-  sessionTimeout: number;
   schemes: string[];
   loginAvailable: boolean;
   /** Host-app login page (Host mode). Full-page redirect target when the session expires. */

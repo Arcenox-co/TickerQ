@@ -467,7 +467,6 @@ public static class DashboardEndpoints
             UserId = current.IsAuthenticated ? current.UserId : null,
             Mode = info.Mode.ToString().ToLower(),
             Enabled = info.IsEnabled,
-            SessionTimeout = info.SessionTimeoutMinutes,
             Schemes = schemeNames,
             LoginAvailable = loginAvailable,
             LoginRedirect = config.HostLoginRedirectPath,

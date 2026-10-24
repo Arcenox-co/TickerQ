@@ -28,6 +28,8 @@ public static class ServiceExtensions
             throw new ArgumentException("AllowedHosts must contain valid host names, or be an empty list.");
         if (options.QueueCapacity is < 1 or > 100000 || options.RequestTimeout < TimeSpan.FromSeconds(1) || options.RequestTimeout > TimeSpan.FromMinutes(1))
             throw new ArgumentException("Use a queue capacity of 1–100,000 and request timeout of 1–60 seconds.");
+        if (options.ShutdownDrainTimeout < TimeSpan.Zero || options.ShutdownDrainTimeout > TimeSpan.FromMinutes(1))
+            throw new ArgumentException("ShutdownDrainTimeout must be between 0 and 60 seconds.");
         if (string.IsNullOrWhiteSpace(options.ApplicationName) || options.ApplicationName.Length > 100 || options.EnvironmentName == null || options.EnvironmentName.Length > 100)
             throw new ArgumentException("Application and environment labels must be at most 100 characters.");
         if (options.DashboardUrl != null && (!Uri.TryCreate(options.DashboardUrl, UriKind.Absolute, out var url) || url.Scheme is not ("https" or "http") || url.UserInfo.Length > 0))
@@ -62,6 +64,10 @@ public static class ServiceExtensions
         services.AddSingleton<IntegrationEngine>();
         services.Replace(ServiceDescriptor.Singleton<ITickerQFailureNotifier>(sp => sp.GetRequiredService<IntegrationEngine>()));
         services.AddSingleton<ITickerIntegrationAdminService>(sp => sp.GetRequiredService<IntegrationEngine>());
-        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<IntegrationEngine>());
+        // Hosts stop services in reverse registration order. AddTickerQ registers the scheduler and
+        // stale-job recovery before provider callbacks run, so registering the engine normally would
+        // stop it first and drop failures raised while those producers drain. Registering it first
+        // keeps it running until every producer has stopped.
+        services.Insert(0, ServiceDescriptor.Singleton<IHostedService>(sp => sp.GetRequiredService<IntegrationEngine>()));
     }
 }

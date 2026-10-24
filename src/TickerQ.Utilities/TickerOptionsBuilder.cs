@@ -217,6 +217,14 @@ namespace TickerQ.Utilities
             ThrowIfRuntimeBindingFrozen();
             if (string.IsNullOrWhiteSpace(applicationNamespace))
                 throw new ArgumentException("A non-empty application namespace is required.", nameof(applicationNamespace));
+            // Same normalization the runtime partition applies, so the limit is checked here with a
+            // message that names the namespace instead of failing later inside cron seed identity.
+            var normalized = applicationNamespace.Trim().Normalize(System.Text.NormalizationForm.FormC);
+            var byteCount = System.Text.Encoding.UTF8.GetByteCount(normalized);
+            if (byteCount > CronSeedIdentity.MaxIdentityUtf8Bytes)
+                throw new ArgumentException(
+                    $"The application namespace must be at most {CronSeedIdentity.MaxIdentityUtf8Bytes} UTF-8 bytes " +
+                    $"after trimming; the configured value is {byteCount} bytes.", nameof(applicationNamespace));
             ApplicationNamespace = applicationNamespace.Trim();
             return this;
         }

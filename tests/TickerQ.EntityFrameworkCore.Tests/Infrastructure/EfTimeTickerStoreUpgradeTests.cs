@@ -192,6 +192,49 @@ public sealed class EfTimeTickerStoreUpgradeTests
     }
 
     [Fact]
+    public async Task Missing_schedule_policy_table_fails_startup_and_names_it()
+    {
+        await using var fixture = await UpgradeFixture.CreateAsync();
+        await fixture.Context.Database.ExecuteSqlRawAsync("DROP TABLE SchedulePolicies");
+
+        var error = await Assert.ThrowsAsync<TickerQStoreSchemaException>(() =>
+            fixture.Pipeline.RunAsync(fixture.Context));
+
+        Assert.Contains("SchedulePolicies", error.Message);
+        fixture.Context.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Context.Set<TickerQStoreMetadata>().AsNoTracking().ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task Missing_missed_execution_column_fails_startup()
+    {
+        await using var fixture = await UpgradeFixture.CreateAsync();
+        await fixture.Context.Database.ExecuteSqlRawAsync("ALTER TABLE TimeTickers DROP COLUMN MaximumLateness");
+
+        var error = await Assert.ThrowsAsync<TickerQStoreSchemaException>(() =>
+            fixture.Pipeline.RunAsync(fixture.Context));
+
+        Assert.Contains("missed-execution columns", error.Message);
+        Assert.Contains("MaximumLateness", error.ToString());
+        fixture.Context.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Context.Set<TickerQStoreMetadata>().AsNoTracking().ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task Missing_unique_schedule_policy_name_index_is_not_certified()
+    {
+        await using var fixture = await UpgradeFixture.CreateAsync();
+        await fixture.Context.Database.ExecuteSqlRawAsync("DROP INDEX UX_SchedulePolicies_Name");
+
+        var error = await Assert.ThrowsAsync<TickerQStoreSchemaException>(() =>
+            fixture.Pipeline.RunAsync(fixture.Context));
+
+        Assert.Contains("UX_SchedulePolicies_Name", error.ToString());
+        fixture.Context.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Context.Set<TickerQStoreMetadata>().AsNoTracking().ToArrayAsync());
+    }
+
+    [Fact]
     public async Task Required_index_name_with_wrong_unique_semantics_is_not_certified()
     {
         await using var fixture = await UpgradeFixture.CreateAsync();

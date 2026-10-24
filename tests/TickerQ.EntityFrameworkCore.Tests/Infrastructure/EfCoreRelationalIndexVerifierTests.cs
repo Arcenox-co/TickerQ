@@ -76,10 +76,12 @@ public sealed class EfCoreRelationalIndexVerifierTests
     [Fact]
     public void Unknown_provider_fails_closed()
     {
-        var error = Assert.Throws<InvalidOperationException>(() =>
+        var error = Assert.Throws<TickerQStoreSchemaException>(() =>
             EfCoreRelationalIndexVerifier.DetectProvider("Example.Unverified.Provider"));
 
         Assert.Contains("cannot verify", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Supported EF Core providers", error.Message);
+        Assert.Null(error.InnerException);
     }
 
     [Theory]
