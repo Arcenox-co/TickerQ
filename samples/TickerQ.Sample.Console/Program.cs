@@ -35,11 +35,17 @@ var host = Host.CreateDefaultBuilder(args)
     })
     .Build();
 
-// Apply the host-owned migration history, including ApplicationRuntimePartitioning.
+// Apply the host-owned migration history.
 using (var scope = host.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<TickerQDbContext>();
+    // SQLite rebuilds tables to change their primary keys, which requires foreign keys to be off.
+    // The pragma only takes effect outside a transaction, so set it on the open connection first.
+    db.Database.OpenConnection();
+    db.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF;");
     db.Database.Migrate();
+    db.Database.ExecuteSqlRaw("PRAGMA foreign_keys = ON;");
+    db.Database.CloseConnection();
 }
 
 // Build function metadata so TickerFunctionProvider.TickerFunctions is initialized

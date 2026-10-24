@@ -45,13 +45,6 @@ per schedule and overlapped normal overdue acquisition. Replace them with per-jo
 `WhenMissed(MissedExecutionPolicy.SkipAfter(...))`; add `CatchUp(CronCatchUpMode.RunLatest)` only
 when the latest never-persisted cron slot should also run after downtime.
 
-## Application namespace configuration
-
-Replace `UseDefinedCronApplicationNamespace(...)` with `UseApplicationNamespace(...)` in application
-configuration. This API rename reflects its scope across both time tickers and cron schedules. Keep
-the same namespace value: the rename itself does not change storage keys, require a database
-migration, or move existing jobs.
-
 ## Guarantees and boundaries
 
 The upgrade is designed around these invariants:
@@ -219,49 +212,16 @@ The generated model must include:
   calls for the same failure pattern, and the budget row enforces one rolling hourly allowance
   across all nodes in the namespace.
 
-The repository's ApplicationDbContext, Console, and WebApi samples contain reviewed host-owned
-`ApplicationRuntimePartitioning` migrations and matching snapshots. Consumers must generate and
+The repository's ApplicationDbContext, Console, and WebApi samples each contain one reviewed
+host-owned `UpgradeTickerQStore` migration from the 10.3 schema, with matching snapshots. It adds the
+new schema and backfills `ChainRootId` for existing time-ticker chains. Consumers must generate and
 review their own equivalent migration; the provider does not own application migration history.
 
+On SQLite, EF Core rebuilds tables to change their primary keys, and that fails while foreign keys are
+enforced. Open the connection, run `PRAGMA foreign_keys = OFF;`, apply the migration, then turn
+foreign keys back on, as the samples do. The pragma has no effect inside a transaction.
+
 On SQL Server, the unique nullable `SeedKey` index must exclude null rows. SQLite and PostgreSQL allow multiple null values in a unique index. Use the generated provider-specific model rather than hard-coding one provider's quoting or filter syntax.
-
-### Widen the activation metadata key
-
-Earlier 5.x models limited `TickerQStoreMetadata.Id` to 64 characters. A runtime activation key
-contains the `tq:runtime:v1:` prefix and a 64-character SHA-256 hash, for a total of **78 characters**.
-PostgreSQL and SQL Server enforce the old limit and reject activation inserts. The corrected model
-allows **80 characters**. Shortening your application namespace will not shorten its hash.
-
-For an existing database, generate a migration using your application's configured provider:
-
-```sh
-dotnet ef migrations add WidenTickerQStoreMetadataKey \
-  --project src/MyApp.Data \
-  --startup-project src/MyApp \
-  --context AppDbContext
-
-dotnet ef migrations script <LAST_DEPLOYED_MIGRATION> WidenTickerQStoreMetadataKey \
-  --project src/MyApp.Data \
-  --startup-project src/MyApp \
-  --context AppDbContext
-
-dotnet ef database update WidenTickerQStoreMetadataKey \
-  --project src/MyApp.Data \
-  --startup-project src/MyApp \
-  --context AppDbContext
-```
-
-Review that the migration widens the existing `Id` column to 80 and preserves its composite
-primary key and all checkpoint rows. Apply it before starting upgraded scheduler replicas.
-Use your actual table/schema mapping and provider-generated SQL (`character varying(80)` on
-PostgreSQL, normally `nvarchar(80)` on SQL Server). The sample `WidenStoreMetadataKey` migrations
-and snapshots target the samples' SQLite provider; SQLite does not enforce string lengths.
-Do not copy their `TEXT` column type into another provider's migration.
-
-Fresh databases created from the corrected model already have the new limit. `EnsureCreated()`
-does not widen an existing database. Do not truncate or rewrite stored keys, delete metadata, or
-recreate the database to apply this change. If application binaries are rolled back, retain the
-widened column; shrinking it to 64 would reject or damage activation keys already written.
 
 ### Add node discovery and control tables
 
@@ -406,7 +366,7 @@ The value is persisted in `SeedOwnerNamespace`; use the same value on every node
 
 Scheduler hosts must configure `UseApplicationNamespace(...)`; startup fails closed when it is omitted. Dashboard/manager-only processes that disable scheduler background services do not participate in activation. Keep the namespace stable for the lifetime of the application. The reconciliation epoch is managed automatically; see [Reconciliation epoch](#reconciliation-epoch).
 
-On the first v2 reconciliation, exactly one legacy code-owned row for a definition may be adopted in place when it has no owner and its key is null, the function/stable-definition ID, or the pre-v2 `namespace:stableDefinitionId` form. Adoption rewrites ownership to the bounded v2 key while preserving the row's primary key and occurrence references. **Unclaimed legacy rows are not adopted automatically.** Reconciliation fails closed before writes when no explicit owner is configured, candidates are duplicated, the local manifest has multiple possible definitions for that function, or another namespaced owner already conflicts. Resolve ownership explicitly before retrying; do not delete historical rows merely to bypass the diagnostic.
+On the first reconciliation, exactly one legacy code-owned row for a definition may be adopted in place when it has no owner and no `SeedKey`, which is how 10.x releases stored seeded crons. Adoption writes the bounded seed key while preserving the row's primary key and occurrence references. **Unclaimed legacy rows are not adopted automatically.** Reconciliation fails closed before writes when no explicit owner is configured, candidates are duplicated, the local manifest has multiple possible definitions for that function, or another namespaced owner already conflicts. Resolve ownership explicitly before retrying; do not delete historical rows merely to bypass the diagnostic.
 
 ### Explicit legacy ownership migration
 

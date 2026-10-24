@@ -59,7 +59,7 @@ public sealed class RelationalConformanceTests
     public async Task Activation_metadata_round_trips_the_full_runtime_key(RelationalConformanceTarget target)
     {
         await using var database = await ConformanceDatabase.CreateAsync(target);
-        await StoreMetadataActivationContract.VerifyAsync(database.Options(), upgradeLegacySchema: false);
+        await StoreMetadataActivationContract.VerifyAsync(database.Options());
     }
 
     [RelationalConformanceTheory]

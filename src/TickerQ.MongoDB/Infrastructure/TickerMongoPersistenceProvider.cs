@@ -2709,14 +2709,9 @@ namespace TickerQ.MongoDB.Infrastructure
             {
                 foreach (var functionGroup in manifest.Seeds.Where(s => s.CanSeed).GroupBy(s => s.Function))
                 {
-                    var documentedLegacyKeys = functionGroup
-                        .SelectMany(seed => CronSeedIdentity.LegacyAdoptionKeys(
-                            manifest.ApplicationNamespace, seed.StableDefinitionId))
-                        .ToHashSet(StringComparer.Ordinal);
                     var legacy = orphans.Where(x => CronSeedIdentity.CanonicallyEquals(x.Function, functionGroup.Key)
                         && x.SeedOwnerNamespace == null
-                        && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                            || documentedLegacyKeys.Contains(x.SeedKey))).ToArray();
+                        && x.SeedKey == null).ToArray();
                     if (legacy.Length == 0) continue;
                     if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
                         throw new InvalidOperationException(
@@ -2781,24 +2776,15 @@ namespace TickerQ.MongoDB.Infrastructure
                     continue;
 
                 var seedKey = manifest.SeedKeyFor(seed);
-                var documentedLegacyKeys = manifest.IsLegacyGlobal
-                    ? Array.Empty<string>()
-                    : CronSeedIdentity.LegacyAdoptionKeys(
-                        manifest.ApplicationNamespace, seed.StableDefinitionId);
-                var acceptedSeedKeys = manifest.IsLegacyGlobal
-                    ? Array.Empty<string>()
-                    : CronSeedIdentity.AcceptedSeedKeys(
-                        manifest.ApplicationNamespace, seed.StableDefinitionId);
 
                 var group = manifest.IsLegacyGlobal
                     ? (byFunction.TryGetValue(seed.Function, out var legacyGroup) ? legacyGroup : null)
                     : existing.Where(x =>
-                            (acceptedSeedKeys.Contains(x.SeedKey, StringComparer.Ordinal)
+                            (string.Equals(x.SeedKey, seedKey, StringComparison.Ordinal)
                              && CronSeedIdentity.CanonicallyEquals(x.SeedOwnerNamespace, manifest.ApplicationNamespace))
                             || (CronSeedIdentity.CanonicallyEquals(x.Function, seed.Function) && x.SeedOwnerNamespace == null
                                 && manifest.MayAdoptLegacy(seed.Function)
-                                && (x.SeedKey == null || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                                    || documentedLegacyKeys.Contains(x.SeedKey, StringComparer.Ordinal))))
+                                && x.SeedKey == null))
                         .OrderBy(x => x.Id).ToList();
                 if (group is { Count: > 0 })
                 {

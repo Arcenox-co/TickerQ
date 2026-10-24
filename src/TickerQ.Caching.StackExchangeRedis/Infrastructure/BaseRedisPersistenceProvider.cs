@@ -1768,11 +1768,7 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
             {
                 var legacy = existingList.Where(x => !string.IsNullOrEmpty(x.InitIdentifier)
                     && CronSeedIdentity.CanonicallyEquals(x.Function, functionGroup.Key) && x.SeedOwnerNamespace == null
-                    && (x.SeedKey == null
-                        || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                        || CronSeedIdentity.LegacyAdoptionKeys(
-                            manifest.ApplicationNamespace, functionGroup.Single().StableDefinitionId)
-                            .Contains(x.SeedKey, StringComparer.Ordinal))).ToArray();
+                    && x.SeedKey == null).ToArray();
                 if (legacy.Length == 0) continue;
                 if (!manifest.TryGetLegacyOwner(functionGroup.Key, out var explicitOwner))
                     throw new InvalidOperationException(
@@ -1840,23 +1836,15 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                 continue;
 
             var seedKey = manifest.SeedKeyFor(seed);
-            var legacyAdoptionKeys = manifest.IsLegacyGlobal
-                ? []
-                : CronSeedIdentity.LegacyAdoptionKeys(manifest.ApplicationNamespace, seed.StableDefinitionId);
-            var acceptedSeedKeys = manifest.IsLegacyGlobal
-                ? []
-                : CronSeedIdentity.AcceptedSeedKeys(manifest.ApplicationNamespace, seed.StableDefinitionId);
 
             var group = manifest.IsLegacyGlobal
                 ? (byFunction.TryGetValue(seed.Function, out var legacyGroup) ? legacyGroup : null)
                 : existingList.Where(x => !string.IsNullOrEmpty(x.InitIdentifier)
-                        && ((acceptedSeedKeys.Contains(x.SeedKey, StringComparer.Ordinal)
+                        && ((string.Equals(x.SeedKey, seedKey, StringComparison.Ordinal)
                              && CronSeedIdentity.CanonicallyEquals(x.SeedOwnerNamespace, manifest.ApplicationNamespace))
                             || (CronSeedIdentity.CanonicallyEquals(x.Function, seed.Function) && x.SeedOwnerNamespace == null
                                 && manifest.MayAdoptLegacy(seed.Function)
-                                && (x.SeedKey == null
-                                    || CronSeedIdentity.CanonicallyEquals(x.SeedKey, x.Function)
-                                    || legacyAdoptionKeys.Contains(x.SeedKey, StringComparer.Ordinal)))))
+                                && x.SeedKey == null)))
                     .OrderBy(x => x.Id).ToList();
 
             if (group is { Count: > 0 })

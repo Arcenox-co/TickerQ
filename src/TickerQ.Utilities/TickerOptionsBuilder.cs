@@ -613,13 +613,33 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
+        /// Assigns a namespace made of <paramref name="applicationName"/> and the host environment, for example
+        /// <c>orders-production</c> or <c>orders-development</c>. Environments sharing one store, such as a developer
+        /// machine connected to a demo database, then never share jobs, schedules, or the reconciliation epoch.
+        /// Every service of one application must run in the same environment name to share its namespace.
+        /// </summary>
+        /// <param name="applicationName">The application's name, shared by all of its services and replicas.</param>
+        /// <param name="environment">The host environment; its <c>EnvironmentName</c> is appended in lower case.</param>
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> UseApplicationNamespace(
+            string applicationName, IHostEnvironment environment)
+        {
+            if (string.IsNullOrWhiteSpace(applicationName))
+                throw new ArgumentException("A non-empty application name is required.", nameof(applicationName));
+            if (environment == null) throw new ArgumentNullException(nameof(environment));
+            if (string.IsNullOrWhiteSpace(environment.EnvironmentName))
+                throw new ArgumentException("The host environment has no EnvironmentName.", nameof(environment));
+            return UseApplicationNamespace(
+                $"{applicationName.Trim()}-{environment.EnvironmentName.Trim().ToLowerInvariant()}");
+        }
+
+        /// <summary>
         /// Maps one legacy, pre-namespace code-defined Cron function to the single application namespace
         /// that is allowed to adopt it in place during reconciliation.
         /// </summary>
         /// <param name="function">The exact registered function name on the legacy row.</param>
         /// <param name="ownerApplicationNamespace">
         /// The stable namespace configured by the owning application with
-        /// <see cref="UseApplicationNamespace"/>.
+        /// <see cref="UseApplicationNamespace(string)"/>.
         /// </param>
         /// <returns>This builder.</returns>
         /// <exception cref="ArgumentException">

@@ -56,15 +56,13 @@ public class SqlServerRuntimeTests
         await EfGraphMutationContentionContract.ConcurrentFirstWritersAndAcquirersAsync(options);
     }
 
-    [SqlServerTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ActivationMetadata_PersistsCompleteRuntimeKey(bool upgradeLegacySchema)
+    [SqlServerFact]
+    public async Task ActivationMetadata_PersistsCompleteRuntimeKey()
     {
         await using var database = new SqlServerTestDatabase();
         var options = new DbContextOptionsBuilder<TestTickerQDbContext>()
             .UseSqlServer(database.ConnectionString).Options;
-        await StoreMetadataActivationContract.VerifyAsync(options, upgradeLegacySchema);
+        await StoreMetadataActivationContract.VerifyAsync(options);
     }
 
     public sealed class CustomSeedTableModelCustomizer(ModelCustomizerDependencies dependencies)

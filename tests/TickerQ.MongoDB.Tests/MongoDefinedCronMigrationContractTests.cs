@@ -72,19 +72,16 @@ public sealed class MongoDefinedCronMigrationContractTests : DefinedCronMigratio
         Assert.NotNull(await Provider.GetCronTickerOccurrenceResultAsync(occurrence.Id));
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task DocumentedLegacySeedKeys_AreAdoptedInPlace(bool namespacedLegacyKey)
+    [Fact]
+    public async Task ReleasedSeededRowWithoutSeedKey_IsAdoptedInPlace()
     {
         const string function = "mongo-documented-legacy-key";
         const string owner = "mongo-legacy-key-owner";
         const string stableId = "stable-definition";
         var id = Guid.NewGuid();
-        var legacyKey = CronSeedIdentity.LegacyAdoptionKeys(owner, stableId)[namespacedLegacyKey ? 0 : 1];
         await Provider.InsertCronTickers([new CronTickerEntity
         {
-            Id = id, Function = function, Expression = "*/5 * * * *", SeedKey = legacyKey,
+            Id = id, Function = function, Expression = "*/5 * * * *", SeedKey = null,
             InitIdentifier = $"MemoryTicker_Seeded_{function}", Request = Array.Empty<byte>(),
             IsEnabled = true, CreatedAt = Now, UpdatedAt = Now
         }], CancellationToken.None);

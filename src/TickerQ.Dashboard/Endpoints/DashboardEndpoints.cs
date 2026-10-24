@@ -470,6 +470,7 @@ public static class DashboardEndpoints
             Schemes = schemeNames,
             LoginAvailable = loginAvailable,
             LoginRedirect = config.HostLoginRedirectPath,
+            LogoutRedirect = config.HostLogoutPath,
         }, Json(context));
     }
 

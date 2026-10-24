@@ -71,7 +71,7 @@ public sealed class RedisDefinedCronMigrationContractTests : DefinedCronMigratio
             Id = Guid.NewGuid(),
             Function = function,
             Expression = "*/5 * * * *",
-            SeedKey = function,
+            SeedKey = null,
             InitIdentifier = $"MemoryTicker_Seeded_{function}",
             Request = [],
             IsEnabled = true,
@@ -90,31 +90,5 @@ public sealed class RedisDefinedCronMigrationContractTests : DefinedCronMigratio
         Assert.Equal(legacy.Id, row.Id);
         Assert.Equal("redis-adopter", row.SeedOwnerNamespace);
         Assert.Equal(CronSeedIdentity.SeedKey("redis-adopter", function), row.SeedKey);
-    }
-
-    [Fact]
-    public async Task Namespaced_v1_key_is_adopted_in_place_by_v2_identity()
-    {
-        const string application = "redis-v2-adopter";
-        const string function = "redis-v1-namespaced-key";
-        var legacy = new CronTickerEntity
-        {
-            Id = Guid.NewGuid(), Function = function, Expression = "*/5 * * * *",
-            SeedKey = $"{application}:{function}", SeedOwnerNamespace = null,
-            InitIdentifier = $"MemoryTicker_Seeded_{function}", Request = [], IsEnabled = true,
-            DefinitionRevision = 3, CreatedAt = FixedNow.AddDays(-1), UpdatedAt = FixedNow.AddDays(-1)
-        };
-        await Provider.InsertCronTickers([legacy], CancellationToken.None);
-
-        await Provider.MigrateDefinedCronTickers(new DefinedCronSeedManifest(application,
-            [new DefinedCronTickerSeed(function, "*/7 * * * *")],
-            new Dictionary<string, string>(StringComparer.Ordinal) { [function] = application }),
-            CancellationToken.None);
-
-        var row = Assert.Single(await Provider.GetCronTickers(x => x.Function == function, CancellationToken.None));
-        Assert.Equal(legacy.Id, row.Id);
-        Assert.Equal(CronSeedIdentity.SeedKey(application, function), row.SeedKey);
-        Assert.Equal(application, row.SeedOwnerNamespace);
-        Assert.Equal(4, row.DefinitionRevision);
     }
 }

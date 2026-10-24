@@ -73,12 +73,15 @@ public sealed class AuthSchemeBuilder
     /// <param name="authorizationPolicy">Optional authorization policy name to require.</param>
     /// <param name="loginRedirectPath">
     /// Optional host-app login page (e.g. <c>/account/login</c>) — see
-    /// <see cref="DashboardOptionsBuilder.WithHostAuthentication(string?, string?)"/>.
+    /// <see cref="DashboardOptionsBuilder.WithHostAuthentication(string?, string?, string?)"/>.
     /// </param>
-    public AuthSchemeBuilder AddHost(string? authorizationPolicy = null, string? loginRedirectPath = null)
+    /// <param name="logoutPath">Optional host-app logout endpoint (e.g. <c>/account/logout</c>).</param>
+    public AuthSchemeBuilder AddHost(string? authorizationPolicy = null, string? loginRedirectPath = null,
+        string? logoutPath = null)
     {
         _config.Schemes.Add(new HostAuthScheme { AuthorizationPolicy = authorizationPolicy });
         if (loginRedirectPath != null) _config.HostLoginRedirectPath = loginRedirectPath;
+        if (logoutPath != null) _config.HostLogoutPath = logoutPath;
         return this;
     }
 

@@ -357,9 +357,6 @@ public sealed class RuntimeScopeAndManifestHardeningTests : IDisposable
         Assert.Equal(
             CronSeedIdentity.SeedKey(composedNamespace, composedDefinition),
             CronSeedIdentity.SeedKey(decomposedNamespace, decomposedDefinition));
-        Assert.Equal(
-            CronSeedIdentity.LegacyAdoptionKeys(composedNamespace, composedDefinition),
-            CronSeedIdentity.LegacyAdoptionKeys(decomposedNamespace, decomposedDefinition));
 
         var manifest = new DefinedCronSeedManifest(decomposedNamespace,
         [

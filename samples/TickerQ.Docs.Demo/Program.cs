@@ -1,4 +1,7 @@
+using System.Security.Claims;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -31,6 +34,9 @@ var keysPath = Environment.GetEnvironmentVariable("DOCS_DEMO_KEYS")
 var sourcePath = Environment.GetEnvironmentVariable("DOCS_DEMO_SOURCE")
     ?? builder.Environment.ContentRootPath;
 var licensePath = Environment.GetEnvironmentVariable("TICKERQ_LICENSE_PATH");
+// DOCS_DEMO_AUTH=host signs in on the demo's own login page and hands the session to the dashboard
+// (WithHostAuthentication). Otherwise the dashboard uses its built-in login.
+var hostLogin = Environment.GetEnvironmentVariable("DOCS_DEMO_AUTH") == "host";
 
 Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
 Directory.CreateDirectory(keysPath);
@@ -38,6 +44,30 @@ Directory.CreateDirectory(keysPath);
 builder.Services.AddDataProtection()
     .SetApplicationName("tickerq-docs-demo")
     .PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+
+if (hostLogin)
+{
+    builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+        .AddCookie(cookie =>
+        {
+            cookie.Cookie.Name = "docs_demo_session";
+            cookie.LoginPath = "/account/login";
+            // The dashboard already sends browser navigations to the login page with a returnUrl, so
+            // challenges from its API calls answer with status codes instead of a login-page redirect.
+            cookie.Events.OnRedirectToLogin = context =>
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return Task.CompletedTask;
+            };
+            cookie.Events.OnRedirectToAccessDenied = context =>
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return Task.CompletedTask;
+            };
+        });
+    builder.Services.AddAuthorization(authorization =>
+        authorization.AddPolicy("DashboardAccess", policy => policy.RequireAuthenticatedUser()));
+}
 
 Console.WriteLine("[docs-demo] configuring TickerQ");
 builder.Services.AddTickerQ(options =>
@@ -141,12 +171,24 @@ builder.Services.AddTickerQ(options =>
         dashboard.SetTitle("TickerQ · Orders API");
         dashboard.SetEnvironmentName("Development");
         dashboard.SetTimeZone(TimeZoneInfo.FindSystemTimeZoneById("Europe/Tirane"));
-        dashboard.WithAuthentication(auth => auth.AddCookieLogin(cookie =>
+        if (hostLogin)
         {
-            cookie.AddUser("admin", "admin");
-            cookie.SecureCookie = false;
-            cookie.AllowEphemeralSigningKey = true;
-        }));
+            // Unauthenticated browser visits go to /account/login?returnUrl=… and come back after sign-in;
+            // Sign out in the dashboard goes to the host's /account/logout.
+            dashboard.WithHostAuthentication("DashboardAccess", "/account/login", "/account/logout");
+            // Show the user's display name rather than the login name.
+            dashboard.UseUserNameClaim("name");
+            dashboard.SetReadOnly(context => !context.User.IsInRole("ops"));
+        }
+        else
+        {
+            dashboard.WithAuthentication(auth => auth.AddCookieLogin(cookie =>
+            {
+                cookie.AddUser("admin", "admin");
+                cookie.SecureCookie = false;
+                cookie.AllowEphemeralSigningKey = true;
+            }));
+        }
         dashboard.AllowIntegrationManagement(_ => true);
         // DOCS_DEMO_ASSISTANT=off shows the dashboard without a connected model.
         if (Environment.GetEnvironmentVariable("DOCS_DEMO_ASSISTANT") != "off")
@@ -179,6 +221,13 @@ using (var scope = app.Services.CreateScope())
     db.Database.Migrate();
 }
 Console.WriteLine("[docs-demo] database migrated");
+
+if (hostLogin)
+{
+    app.UseAuthentication();
+    app.UseAuthorization();
+    MapHostLogin(app);
+}
 
 app.UseTickerQ();
 Console.WriteLine($"[docs-demo] dashboard ready on http://127.0.0.1:{port}/tickerq/dashboard");
@@ -329,6 +378,86 @@ static DateTime NextSaturdayNoon(DateTime utcNow)
     return DateTime.SpecifyKind(saturday.AddHours(10), DateTimeKind.Utc);
 }
 app.Run($"http://127.0.0.1:{port}");
+
+static void MapHostLogin(WebApplication app)
+{
+    // Demo users: admin has full dashboard control, viewer is read-only.
+    var users = new Dictionary<string, (string Password, string Role, string DisplayName)>(StringComparer.Ordinal)
+    {
+        ["admin"] = ("admin", "ops", "Orders Admin"),
+        ["viewer"] = ("viewer", "viewer", "Orders Viewer"),
+    };
+
+    app.MapGet("/account/login", (string? error, string? returnUrl) =>
+        Results.Content(HostLoginPage(error != null, returnUrl), "text/html"));
+
+    app.MapPost("/account/login", async (HttpContext context, string? returnUrl) =>
+    {
+        var form = await context.Request.ReadFormAsync();
+        var username = form["username"].ToString();
+        if (!users.TryGetValue(username, out var user) || user.Password != form["password"].ToString())
+            return Results.Redirect("/account/login?error=1" +
+                (string.IsNullOrEmpty(returnUrl) ? "" : "&returnUrl=" + Uri.EscapeDataString(returnUrl)));
+
+        var identity = new ClaimsIdentity(
+            [
+                new Claim(ClaimTypes.Name, username),
+                new Claim("name", user.DisplayName),
+                new Claim(ClaimTypes.Email, $"{username}@orders.example"),
+                new Claim(ClaimTypes.Role, user.Role)
+            ],
+            CookieAuthenticationDefaults.AuthenticationScheme);
+        await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+
+        // Follow only local return URLs, never absolute ones (open-redirect guard).
+        return Results.Redirect(returnUrl is ['/', not '/', ..] ? returnUrl : "/tickerq/dashboard");
+    });
+
+    app.MapGet("/account/logout", async (HttpContext context) =>
+    {
+        await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+        return Results.Redirect("/account/login");
+    });
+}
+
+static string HostLoginPage(bool error, string? returnUrl) => $$"""
+    <!doctype html>
+    <html lang="en" style="color-scheme: dark">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>Sign in · Orders API</title>
+      <style>
+        body { margin:0; min-height:100vh; display:grid; place-items:center;
+               background:#0b0d10; color:#e6e8ea; font:14px/1.5 system-ui, sans-serif; }
+        form { width:300px; padding:28px; border:1px solid #23272e; border-radius:12px; background:#12151a; }
+        h1   { margin:0 0 4px; font-size:16px; }
+        p    { margin:0 0 18px; color:#8a919c; font-size:12px; }
+        label{ display:block; margin:12px 0 4px; font-size:12px; color:#aab1bb; }
+        input{ width:100%; box-sizing:border-box; padding:8px 10px; border-radius:8px;
+               border:1px solid #2c313a; background:#0b0d10; color:#e6e8ea; }
+        button{ width:100%; margin-top:18px; padding:9px; border:0; border-radius:8px;
+                background:#4f7cff; color:#fff; font-weight:600; cursor:pointer; }
+        .err { margin-top:12px; padding:8px 10px; border-radius:8px; font-size:12px;
+               background:#3a1216; color:#ff8a94; border:1px solid #5c1c23; }
+        .hint{ margin-top:14px; font-size:11px; color:#667; }
+      </style>
+    </head>
+    <body>
+      <form method="post" action="/account/login{{(string.IsNullOrEmpty(returnUrl) ? "" : $"?returnUrl={Uri.EscapeDataString(returnUrl)}")}}">
+        <h1>Orders API</h1>
+        <p>Sign in to the host application. The dashboard uses this session.</p>
+        <label for="u">Username</label>
+        <input id="u" name="username" autocomplete="username" autofocus />
+        <label for="p">Password</label>
+        <input id="p" name="password" type="password" autocomplete="current-password" />
+        {{(error ? """<div class="err">Invalid username or password.</div>""" : "")}}
+        <button type="submit">Sign in</button>
+        <div class="hint">admin / admin (full control) · viewer / viewer (read-only)</div>
+      </form>
+    </body>
+    </html>
+    """;
 
 public sealed class DocsDemoJobs(ILogger<DocsDemoJobs> logger)
 {

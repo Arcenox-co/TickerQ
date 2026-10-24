@@ -97,12 +97,12 @@ public sealed class TickerInMemoryPersistenceProviderSeedOwnershipTests : IAsync
     }
 
     [Fact]
-    public async Task SingleLegacyGlobalSeedKey_IsAdoptedInPlaceByOneNamespace()
+    public async Task SingleReleasedSeededRow_IsAdoptedInPlaceByOneNamespace()
     {
         var fn = Fn("legacy-global");
         var legacy = new FakeCronTicker
         {
-            Id = Guid.NewGuid(), Function = fn, Expression = "*/5 * * * *", SeedKey = fn,
+            Id = Guid.NewGuid(), Function = fn, Expression = "*/5 * * * *", SeedKey = null,
             InitIdentifier = $"MemoryTicker_Seeded_{fn}", CreatedAt = _now, UpdatedAt = _now,
             Request = Array.Empty<byte>()
         };
@@ -117,18 +117,15 @@ public sealed class TickerInMemoryPersistenceProviderSeedOwnershipTests : IAsync
         Assert.Equal(CronSeedIdentity.SeedKey("app-a", fn), row.SeedKey);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task DocumentedLegacySeedKeys_AreAdoptedInPlace(bool namespacedLegacyKey)
+    [Fact]
+    public async Task ReleasedSeededRowWithoutSeedKey_IsAdoptedInPlace()
     {
-        var fn = Fn("documented-legacy-key-" + namespacedLegacyKey);
+        var fn = Fn("released-seeded-row");
         const string owner = "legacy-key-owner";
         const string stableId = "stable-definition";
-        var legacyKey = CronSeedIdentity.LegacyAdoptionKeys(owner, stableId)[namespacedLegacyKey ? 0 : 1];
         var legacy = new FakeCronTicker
         {
-            Id = Guid.NewGuid(), Function = fn, Expression = "*/5 * * * *", SeedKey = legacyKey,
+            Id = Guid.NewGuid(), Function = fn, Expression = "*/5 * * * *", SeedKey = null,
             InitIdentifier = $"MemoryTicker_Seeded_{fn}", CreatedAt = _now, UpdatedAt = _now,
             Request = Array.Empty<byte>()
         };
@@ -156,7 +153,7 @@ public sealed class TickerInMemoryPersistenceProviderSeedOwnershipTests : IAsync
             Id = Guid.NewGuid(),
             Function = canonicalFunction,
             Expression = "*/5 * * * *",
-            SeedKey = rawFunction,
+            SeedKey = null,
             InitIdentifier = $"MemoryTicker_Seeded_{canonicalFunction}",
             CreatedAt = _now,
             UpdatedAt = _now,
@@ -205,7 +202,7 @@ public sealed class TickerInMemoryPersistenceProviderSeedOwnershipTests : IAsync
         var fn = Fn("concurrent-adoption");
         var legacy = new FakeCronTicker
         {
-            Id = Guid.NewGuid(), Function = fn, Expression = "*/5 * * * *", SeedKey = fn,
+            Id = Guid.NewGuid(), Function = fn, Expression = "*/5 * * * *", SeedKey = null,
             InitIdentifier = $"MemoryTicker_Seeded_{fn}", CreatedAt = _now, UpdatedAt = _now,
             Request = Array.Empty<byte>()
         };

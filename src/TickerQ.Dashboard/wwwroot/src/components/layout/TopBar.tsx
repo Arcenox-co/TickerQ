@@ -1,19 +1,15 @@
-import { Eye, LogOut, UserCircle2 } from "lucide-react";
+import { Eye } from "lucide-react";
 import tickerqLogo from "@/assets/tickerq-logo.svg";
 import { TimezoneSelector } from "@/components/layout/TimezoneSelector";
-import { useAuth } from "@/lib/auth/auth-context";
 import { formatApplicationNamespace, formatFriendlyVersion, getRuntimeConfig } from "@/lib/runtime-config";
+import { UserMenu } from "./UserMenu";
 import { WorkspaceLicense } from "./WorkspaceLicense";
 
 export function TopBar({ sidebarCollapsed = false }: { sidebarCollapsed?: boolean }) {
-  const auth = useAuth();
   const cfg = getRuntimeConfig();
   const friendlyVersion = formatFriendlyVersion(cfg.version);
   const environmentName = cfg.environmentName.trim();
   const applicationNamespace = formatApplicationNamespace(cfg.applicationNamespace);
-  const showUser =
-    auth.status === "authenticated" && auth.info?.loginAvailable === true;
-
   return (
     <header className="h-11 flex items-center justify-between gap-2 px-2 sm:px-4 border-b border-border bg-surface-0 shrink-0">
       <div className="flex min-w-0 items-center gap-2 text-sm">
@@ -62,21 +58,7 @@ export function TopBar({ sidebarCollapsed = false }: { sidebarCollapsed?: boolea
           <span className="size-1.5 rounded-full bg-status-healthy animate-pulse-dot" />
           Connected
         </span>
-        {showUser && (
-          <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-border">
-            <UserCircle2 className="hidden sm:block h-3.5 w-3.5 text-muted-foreground/60" />
-            <span className="hidden sm:block max-w-32 truncate text-foreground/80">{auth.username ?? "user"}</span>
-            <button
-              type="button"
-              onClick={() => void auth.logout()}
-              title="Sign out"
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-surface-2 hover:text-foreground transition-colors"
-            >
-              <LogOut className="h-3 w-3" />
-              Sign out
-            </button>
-          </div>
-        )}
+        <UserMenu />
       </div>
     </header>
   );

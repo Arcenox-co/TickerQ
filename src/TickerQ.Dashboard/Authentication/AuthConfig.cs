@@ -65,6 +65,18 @@ public class AuthConfig
     public string? HostLoginRedirectPath { get; set; }
 
     /// <summary>
+    /// Host-app logout endpoint (Host mode only), for example <c>/account/logout</c>. When set, the dashboard
+    /// shows Sign out and sends the browser there, because the host application owns the session.
+    /// </summary>
+    public string? HostLogoutPath { get; set; }
+
+    /// <summary>
+    /// Claim types to show as the signed-in user's name (Host mode), in preference order. The first claim
+    /// with a value wins; otherwise the identity's <c>Name</c>. Empty means the identity's <c>Name</c>.
+    /// </summary>
+    public string[] HostUserNameClaims { get; set; } = System.Array.Empty<string>();
+
+    /// <summary>
     /// JWT options when a <see cref="Schemes.JwtBearerScheme"/> is registered.
     /// Populated by <see cref="AuthSchemeBuilder.AddJwtBearer"/> and consumed
     /// by the service-extension wiring (which requires an explicit signing key

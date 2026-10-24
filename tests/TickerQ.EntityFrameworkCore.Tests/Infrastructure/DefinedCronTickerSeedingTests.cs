@@ -348,21 +348,18 @@ public class DefinedCronTickerSeedingTests : IAsyncLifetime
         Assert.StartsWith("MemoryTicker_Seeded_", seededRow.InitIdentifier);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task DocumentedLegacySeedKeys_AreAdoptedInPlace(bool namespacedLegacyKey)
+    [Fact]
+    public async Task ReleasedSeededRowWithoutSeedKey_IsAdoptedInPlace()
     {
         const string function = "EfDocumentedLegacyKey";
         const string owner = "ef-legacy-key-owner";
         const string stableId = "stable-definition";
         var id = Guid.NewGuid();
-        var legacyKey = CronSeedIdentity.LegacyAdoptionKeys(owner, stableId)[namespacedLegacyKey ? 0 : 1];
         using (var ctx = Ctx())
         {
             ctx.Set<CronTickerEntity>().Add(new CronTickerEntity
             {
-                Id = id, Function = function, Expression = "*/5 * * * *", SeedKey = legacyKey,
+                Id = id, Function = function, Expression = "*/5 * * * *", SeedKey = null,
                 InitIdentifier = $"MemoryTicker_Seeded_{function}", CreatedAt = _now, UpdatedAt = _now,
                 Request = Array.Empty<byte>()
             });

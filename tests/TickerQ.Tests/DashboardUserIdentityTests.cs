@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.Extensions.DependencyInjection;
 using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -31,6 +32,40 @@ public class DashboardUserIdentityTests
         Assert.Equal(first.UserId, (await HostResult("subject", "New name")).UserId);
         Assert.NotEqual(first.UserId, (await HostResult("subject", "Old name", issuer: "other-issuer")).UserId);
         Assert.NotEqual(first.UserId, (await HostResult("subject", "Old name", scheme: "other-scheme")).UserId);
+    }
+
+    [Fact]
+    public async Task ConfiguredNameClaims_AreShownInOrder_AndDoNotChangeTheUserId()
+    {
+        var identity = new ClaimsIdentity(
+            [new Claim("sub", "subject"), new Claim(ClaimTypes.Name, "jdoe"), new Claim("email", "jane@example.com")],
+            "host");
+        var services = new ServiceCollection()
+            .AddSingleton(new AuthConfig { HostUserNameClaims = ["preferred_username", "email"] })
+            .BuildServiceProvider();
+        var context = new DefaultHttpContext { User = new ClaimsPrincipal(identity), RequestServices = services };
+
+        var result = await new HostAuthScheme().TryAuthenticateAsync(context);
+
+        Assert.Equal("jane@example.com", result.Username);
+        var withoutSetting = await new HostAuthScheme().TryAuthenticateAsync(
+            new DefaultHttpContext { User = new ClaimsPrincipal(identity) });
+        Assert.Equal("jdoe", withoutSetting.Username);
+        Assert.NotNull(result.UserId);
+        Assert.Equal(withoutSetting.UserId, result.UserId);
+        Assert.Equal("jdoe", HostAuthScheme.DisplayName(identity, ["missing"]));
+        Assert.Equal("host-user", HostAuthScheme.DisplayName(new ClaimsIdentity([], "host"), null));
+    }
+
+    [Fact]
+    public void UseUserNameClaim_RejectsEmptyClaimTypes()
+    {
+        var options = new TickerQ.Dashboard.DashboardOptionsBuilder();
+
+        Assert.Throws<ArgumentException>(() => options.UseUserNameClaim());
+        Assert.Throws<ArgumentException>(() => options.UseUserNameClaim("email", " "));
+        options.UseUserNameClaim(" email ");
+        Assert.Equal(["email"], options.Auth.HostUserNameClaims);
     }
 
     [Fact]

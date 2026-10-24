@@ -11,6 +11,8 @@ export interface AuthInfo {
   loginAvailable: boolean;
   /** Host-app login page (Host mode). Full-page redirect target when the session expires. */
   loginRedirect: string | null;
+  /** Host-app logout endpoint (Host mode). Sign out navigates here because the host owns the session. */
+  logoutRedirect?: string | null;
 }
 
 export interface LoginResponse {

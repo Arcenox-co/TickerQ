@@ -112,7 +112,8 @@ builder.Services.AddTickerQ(options =>
         // Second arg: unauthenticated browser navigations to the dashboard
         // bounce to this login page with ?returnUrl=… and come back after
         // sign-in. API clients still get plain 401s.
-        dash.WithHostAuthentication("DashboardAccess", "/account/login");
+        // Third arg: the dashboard's Sign out goes to the host's logout endpoint.
+        dash.WithHostAuthentication("DashboardAccess", "/account/login", "/logout");
         // Role-based access level: "ops" members get full control, everyone
         // else is a read-only viewer (mutation UI hidden + writes 403).
         dash.SetReadOnly(ctx => !ctx.User.IsInRole("ops"));
