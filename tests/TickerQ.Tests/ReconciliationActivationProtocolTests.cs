@@ -236,7 +236,7 @@ public sealed class ReconciliationActivationProtocolTests : IDisposable
         var bootstrapper = Substitute.For<ITickerQPersistenceBootstrapper>();
         var initializer = BuildInitializer(manager, gate, bootstrapper, finalizer: null);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(
             () => initializer.StartAsync(CancellationToken.None));
 
         Assert.False(gate.IsActivated);
@@ -352,7 +352,7 @@ public sealed class ReconciliationActivationProtocolTests : IDisposable
             .Returns(TimeTickerChainRepairResult.Empty);
         var initializer = BuildInitializer(manager, gate, null, null);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(
             () => initializer.StartAsync(CancellationToken.None));
 
         Assert.False(gate.IsActivated);

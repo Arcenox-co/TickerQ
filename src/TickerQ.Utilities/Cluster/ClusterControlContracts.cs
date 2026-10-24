@@ -27,6 +27,11 @@ public sealed class TickerQNodeRecord
     public int ActiveWorkflows { get; set; }
     public int WaitingForFunction { get; set; }
     public int RetryingExecutions { get; set; }
+    /// <summary>
+    /// The reconciliation epoch the node executes against, or 0 while it is fenced or after it stopped.
+    /// Fenced nodes use it to tell whether any node still runs the current deployment.
+    /// </summary>
+    public long ActivationEpoch { get; set; }
 }
 
 public sealed class TickerQExecutionOwnership

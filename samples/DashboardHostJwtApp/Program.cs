@@ -92,10 +92,8 @@ builder.Services.AddAuthorization(options =>
 builder.Services.AddTickerQ(options =>
 {
     // This stable value physically partitions every runtime row/result/lock in the shared store.
-    // Epoch 1 must exactly match this deployment's activated reconciliation epoch.
     options.UseApplicationNamespace("dashboard-host-jwt-sample");
-    options.UseReconciliationEpoch(1);
-    // Cron tickers this app owns; reconciled once per reconciliation epoch, never duplicated.
+    // Cron tickers this app owns; created once, updated when the code changes, never duplicated.
     options.SeedCronTickers(crons => crons
         .Add("Heartbeat", "* * * * *")
         .Add("NightlyExport", "0 2 * * *"));

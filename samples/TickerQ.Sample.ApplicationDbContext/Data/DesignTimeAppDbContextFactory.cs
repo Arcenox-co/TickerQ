@@ -19,7 +19,6 @@ public sealed class DesignTimeAppDbContextFactory : IDesignTimeDbContextFactory<
         services.AddTickerQ(options =>
         {
             options.UseApplicationNamespace("application-db-context-sample");
-            options.UseReconciliationEpoch(1);
             options.AddOperationalStore(store =>
                 store.UseApplicationDbContext<AppDbContext>(ConfigurationType.UseModelCustomizer));
         });

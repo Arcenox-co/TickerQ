@@ -23,7 +23,6 @@ dotnet add package TickerQ.MongoDB
 builder.Services.AddTickerQ(options =>
 {
     options.UseApplicationNamespace("orders-api");
-    options.UseReconciliationEpoch(1);
     options.AddOperationalStore(mongoOptions =>
     {
         mongoOptions.UseTickerQMongoClient(
@@ -41,7 +40,6 @@ services.AddSingleton<IMongoClient>(_ => new MongoClient("mongodb://localhost:27
 builder.Services.AddTickerQ(options =>
 {
     options.UseApplicationNamespace("orders-api");
-    options.UseReconciliationEpoch(1);
     options.AddOperationalStore(mongoOptions =>
     {
         mongoOptions.UseExistingMongoClient(databaseName: "tickerq");

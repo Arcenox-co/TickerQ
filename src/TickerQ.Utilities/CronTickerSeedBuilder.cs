@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Managers;
 
@@ -14,9 +13,9 @@ namespace TickerQ.Utilities
     /// </summary>
     public sealed class CronTickerSeedBuilder<TCronTicker> where TCronTicker : CronTickerEntity, new()
     {
-        private readonly List<CronTickerSeedEntry<TCronTicker>> _entries = new();
+        internal const string Kind = "cron ticker";
 
-        internal IReadOnlyList<CronTickerSeedEntry<TCronTicker>> Entries => _entries;
+        internal TickerSeedEntries<CronTickerChainBuilder<TCronTicker>> Entries { get; } = new();
 
         /// <summary>
         /// Seeds a plain cron for a registered function. The function name is the cron's key.
@@ -43,7 +42,10 @@ namespace TickerQ.Utilities
         /// function name is the cron's key.
         /// </summary>
         public CronTickerSeedBuilder<TCronTicker> Add(Action<CronTickerChainBuilder<TCronTicker>> configure)
-            => AddEntry(null, configure);
+        {
+            Entries.Add(null, configure, Kind);
+            return this;
+        }
 
         /// <summary>
         /// Seeds a cron with an explicit stable key, for example to run one function on several
@@ -51,21 +53,9 @@ namespace TickerQ.Utilities
         /// </summary>
         public CronTickerSeedBuilder<TCronTicker> Add(string key, Action<CronTickerChainBuilder<TCronTicker>> configure)
         {
-            if (string.IsNullOrWhiteSpace(key))
-                throw new ArgumentException("A seeded cron key cannot be empty.", nameof(key));
-            return AddEntry(key.Trim(), configure);
-        }
-
-        private CronTickerSeedBuilder<TCronTicker> AddEntry(string key, Action<CronTickerChainBuilder<TCronTicker>> configure)
-        {
-            if (configure == null) throw new ArgumentNullException(nameof(configure));
-            _entries.Add(new CronTickerSeedEntry<TCronTicker>(key, configure));
+            if (key == null) throw new ArgumentNullException(nameof(key));
+            Entries.Add(key, configure, Kind);
             return this;
         }
     }
-
-    internal sealed record CronTickerSeedEntry<TCronTicker>(
-        string Key,
-        Action<CronTickerChainBuilder<TCronTicker>> Configure)
-        where TCronTicker : CronTickerEntity, new();
 }

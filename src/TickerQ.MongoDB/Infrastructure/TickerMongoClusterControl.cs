@@ -123,7 +123,7 @@ internal sealed partial class TickerMongoPersistenceProvider<TTimeTicker, TCronT
         ["FunctionCount"] = x.FunctionCount,
         ["ActiveExecutions"] = x.ActiveExecutions, ["QueuedExecutions"] = x.QueuedExecutions,
         ["ActiveWorkflows"] = x.ActiveWorkflows, ["WaitingForFunction"] = x.WaitingForFunction,
-        ["RetryingExecutions"] = x.RetryingExecutions
+        ["RetryingExecutions"] = x.RetryingExecutions, ["ActivationEpoch"] = x.ActivationEpoch
     };
 
     private BsonDocument CommandDocument(TickerQControlCommand x) => new()
@@ -148,7 +148,8 @@ internal sealed partial class TickerMongoPersistenceProvider<TTimeTicker, TCronT
         FunctionCount = x.TryGetValue("FunctionCount", out var functionCount) ? functionCount.AsInt32 : 0,
         ActiveExecutions = x["ActiveExecutions"].AsInt32,
         QueuedExecutions = x["QueuedExecutions"].AsInt32, ActiveWorkflows = x["ActiveWorkflows"].AsInt32,
-        WaitingForFunction = x["WaitingForFunction"].AsInt32, RetryingExecutions = x["RetryingExecutions"].AsInt32
+        WaitingForFunction = x["WaitingForFunction"].AsInt32, RetryingExecutions = x["RetryingExecutions"].AsInt32,
+        ActivationEpoch = x.TryGetValue("ActivationEpoch", out var epoch) ? epoch.ToInt64() : 0
     };
 
     private static TickerQControlCommand CommandRecord(BsonDocument x) => new()

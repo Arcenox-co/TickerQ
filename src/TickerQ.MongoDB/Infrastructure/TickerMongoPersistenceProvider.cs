@@ -64,7 +64,11 @@ namespace TickerQ.MongoDB.Infrastructure
         private readonly ITickerClock _clock;
         private readonly string _lockHolder;
         private readonly SchedulerOptionsBuilder _schedulerOptions;
-        private readonly long _runtimeActivationEpoch;
+        private readonly long _configuredActivationEpoch;
+        // An automatic epoch is resolved after construction; an explicit one is fixed for the process.
+        private long _runtimeActivationEpoch => _schedulerOptions.AutomaticReconciliationEpoch
+            ? _schedulerOptions.RuntimeActivationEpoch
+            : _configuredActivationEpoch;
         private readonly bool _requiresActivatedRuntimeAdmission;
         private readonly bool _runtimeAdmissionMisconfigured;
         private readonly string _runtimeActivationScopeKey;
@@ -126,7 +130,7 @@ namespace TickerQ.MongoDB.Infrastructure
                                                   optionsBuilder.RuntimeActivationScope != null;
             _runtimeAdmissionMisconfigured = optionsBuilder.RuntimeSchedulerEnabled &&
                                              optionsBuilder.RuntimeActivationScope == null;
-            _runtimeActivationEpoch = _requiresActivatedRuntimeAdmission
+            _configuredActivationEpoch = _requiresActivatedRuntimeAdmission
                 ? optionsBuilder.RuntimeActivationEpoch
                 : optionsBuilder.ReconciliationEpoch;
             _runtimeActivationMetadataId = _requiresActivatedRuntimeAdmission
@@ -672,10 +676,18 @@ namespace TickerQ.MongoDB.Infrastructure
 
         public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
             ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+            => BeginReconciliationActivationEpochAsync(scope, targetEpoch, null, cancellationToken);
+
+        public bool SupportsActivationManifest => true;
+
+        public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, string manifest,
+            CancellationToken cancellationToken = default)
         {
             if (targetEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(targetEpoch));
+            ActivationManifests.Validate(manifest);
             return MutateActivationStateAsync(
-                ActivationMetadataId(scope), targetEpoch, null, ActivationMutation.Begin, cancellationToken);
+                ActivationMetadataId(scope), targetEpoch, null, ActivationMutation.Begin, cancellationToken, manifest);
         }
 
         public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
@@ -740,7 +752,7 @@ namespace TickerQ.MongoDB.Infrastructure
 
         private async Task<ActivationEpochState> MutateActivationStateAsync(
             string activationMetadataId, long targetEpoch, string checkpoint, ActivationMutation mutation,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, string manifest = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (TransactionsKnownUnavailable)
@@ -780,23 +792,26 @@ namespace TickerQ.MongoDB.Infrastructure
                     var phase = (ActivationEpochPhase)current["ActivationPhase"].AsInt32;
                     var currentCheckpoint = ReadOptionalString(current, "ActivationCheckpoint");
                     var version = current["Version"].AsInt64;
+                    var currentState = ToActivationState(current);
 
                     var nextEpoch = epoch;
                     var nextPhase = phase;
                     var nextCheckpoint = currentCheckpoint;
+                    var nextManifest = currentState.Manifest;
+                    var nextManifestHistory = currentState.ManifestHistory;
                     var shouldUpdate = false;
                     switch (mutation)
                     {
-                        case ActivationMutation.Begin when targetEpoch > epoch:
+                        case ActivationMutation.Begin when targetEpoch > epoch ||
+                                                           (targetEpoch == epoch &&
+                                                            phase == ActivationEpochPhase.Pending):
                             shouldUpdate = true;
                             nextEpoch = targetEpoch;
                             nextPhase = ActivationEpochPhase.Activating;
-                            nextCheckpoint = null;
-                            break;
-                        case ActivationMutation.Begin when targetEpoch == epoch &&
-                                                           phase == ActivationEpochPhase.Pending:
-                            shouldUpdate = true;
-                            nextPhase = ActivationEpochPhase.Activating;
+                            if (targetEpoch > epoch) nextCheckpoint = null;
+                            nextManifest = manifest;
+                            nextManifestHistory = ActivationManifests.Advance(
+                                currentState.Manifest, currentState.ManifestHistory, manifest);
                             break;
                         case ActivationMutation.Checkpoint when targetEpoch == epoch &&
                                                                 phase == ActivationEpochPhase.Activating &&
@@ -821,6 +836,9 @@ namespace TickerQ.MongoDB.Infrastructure
                             .Set("ActivationPhase", (int)nextPhase)
                             .Set("ActivationCheckpoint", nextCheckpoint == null
                                 ? BsonNull.Value : (BsonValue)nextCheckpoint)
+                            .Set("ActivationManifest", nextManifest == null
+                                ? BsonNull.Value : (BsonValue)nextManifest)
+                            .Set("ActivationManifestHistory", new BsonArray(nextManifestHistory))
                             .Set("UpdatedAtUtc", _clock.UtcNow)
                             .Inc("Version", 1L), cancellationToken: ct).ConfigureAwait(false);
                     if (result.MatchedCount != 1)
@@ -828,7 +846,8 @@ namespace TickerQ.MongoDB.Infrastructure
 
                     var state = new ActivationEpochState
                     {
-                        Epoch = nextEpoch, Phase = nextPhase, Checkpoint = nextCheckpoint
+                        Epoch = nextEpoch, Phase = nextPhase, Checkpoint = nextCheckpoint,
+                        Manifest = nextManifest, ManifestHistory = nextManifestHistory
                     };
                     if (mutation == ActivationMutation.Commit &&
                         BeforeActivationTransactionCommitForTestAsync != null)
@@ -884,7 +903,12 @@ namespace TickerQ.MongoDB.Infrastructure
                     Epoch = document.GetValue("ActivationEpoch", 0L).ToInt64(),
                     Phase = (ActivationEpochPhase)document.GetValue(
                         "ActivationPhase", (int)ActivationEpochPhase.Pending).ToInt32(),
-                    Checkpoint = ReadOptionalString(document, "ActivationCheckpoint")
+                    Checkpoint = ReadOptionalString(document, "ActivationCheckpoint"),
+                    Manifest = ReadOptionalString(document, "ActivationManifest"),
+                    ManifestHistory = document.TryGetValue("ActivationManifestHistory", out var history) &&
+                                      history.IsBsonArray
+                        ? history.AsBsonArray.Where(x => x.IsString).Select(x => x.AsString).ToArray()
+                        : Array.Empty<string>()
                 };
 
         private static bool CanAdvanceCheckpoint(string current, string requested)

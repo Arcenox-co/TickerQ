@@ -38,7 +38,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 .SetProperty(x => x.QueuedExecutions, node.QueuedExecutions)
                 .SetProperty(x => x.ActiveWorkflows, node.ActiveWorkflows)
                 .SetProperty(x => x.WaitingForFunction, node.WaitingForFunction)
-                .SetProperty(x => x.RetryingExecutions, node.RetryingExecutions), cancellationToken)
+                .SetProperty(x => x.RetryingExecutions, node.RetryingExecutions)
+                .SetProperty(x => x.ActivationEpoch, node.ActivationEpoch), cancellationToken)
             .ConfigureAwait(false);
         if (changed != 0) return;
 
@@ -152,7 +153,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         StartedAtUtc = x.StartedAtUtc, LastSeenAtUtc = x.LastSeenAtUtc, IsRunning = x.IsRunning,
         MaxConcurrency = x.MaxConcurrency, FunctionCount = x.FunctionCount, ActiveExecutions = x.ActiveExecutions,
         QueuedExecutions = x.QueuedExecutions, ActiveWorkflows = x.ActiveWorkflows,
-        WaitingForFunction = x.WaitingForFunction, RetryingExecutions = x.RetryingExecutions
+        WaitingForFunction = x.WaitingForFunction, RetryingExecutions = x.RetryingExecutions,
+        ActivationEpoch = x.ActivationEpoch
     };
 
     private static TickerQNodeRecord ToRecord(TickerQNodeEntity x) => new()
@@ -162,7 +164,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         StartedAtUtc = x.StartedAtUtc, LastSeenAtUtc = x.LastSeenAtUtc, IsRunning = x.IsRunning,
         MaxConcurrency = x.MaxConcurrency, FunctionCount = x.FunctionCount, ActiveExecutions = x.ActiveExecutions,
         QueuedExecutions = x.QueuedExecutions, ActiveWorkflows = x.ActiveWorkflows,
-        WaitingForFunction = x.WaitingForFunction, RetryingExecutions = x.RetryingExecutions
+        WaitingForFunction = x.WaitingForFunction, RetryingExecutions = x.RetryingExecutions,
+        ActivationEpoch = x.ActivationEpoch
     };
 
     private TickerQControlCommandEntity ToEntity(TickerQControlCommand x) => new()

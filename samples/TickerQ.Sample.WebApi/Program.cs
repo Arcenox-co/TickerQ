@@ -16,10 +16,9 @@ builder.Services.AddTickerQ(options =>
     if (!string.IsNullOrWhiteSpace(licensePath))
         options.UseLicense(licensePath);
 
-    // Physical runtime partition + exact epoch. The host-owned
+    // Physical runtime partition. The host-owned
     // ApplicationRuntimePartitioning migration installs the EF ownership shape.
     options.UseApplicationNamespace("web-api-sample");
-    options.UseReconciliationEpoch(1);
     // Existing verified single-owner stores only, for one reviewed rollout:
     // options.UseLegacyRuntimePartitionAdoption("web-api-sample", 1);
     options.AddOperationalStore(efOptions =>

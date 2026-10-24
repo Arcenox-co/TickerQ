@@ -15,10 +15,9 @@ var builder = WebApplication.CreateBuilder(args);
 // No auth on purpose so the read-only behaviour is isolated from login flows.
 builder.Services.AddTickerQ(options =>
 {
-    // Physical runtime partition + exact deployment epoch; both are required in scheduler mode.
+    // Physical runtime partition, required in scheduler mode. TickerQ manages the reconciliation epoch.
     options.UseApplicationNamespace("dashboard-readonly-sample");
-    options.UseReconciliationEpoch(1);
-    // Cron tickers this app owns; reconciled once per reconciliation epoch, never duplicated.
+    // Cron tickers this app owns; created once, updated when the code changes, never duplicated.
     options.SeedCronTickers(crons => crons
         .Add("Heartbeat", "* * * * *")
         .Add("AlwaysFails", "*/2 * * * *"));

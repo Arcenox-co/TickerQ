@@ -46,7 +46,6 @@ builder.Services.AddTickerQ(options =>
         options.UseLicense(licensePath);
 
     options.UseApplicationNamespace("tickerq-docs-demo");
-    options.UseReconciliationEpoch(1);
     options.EnableDetailedLogging();
     options.AddScheduleDateProvider<DocsDemoHolidayProvider>();
     options.UseSchedulePolicySeeder(async (policies, cancellationToken) =>

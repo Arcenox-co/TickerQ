@@ -46,6 +46,19 @@ public class ProviderCompatibilityTests
         Assert.Equal(rolledBack, fullRollback);
     }
 
+    [Fact]
+    public void Conflicts_are_found_inside_execution_strategy_wrappers()
+    {
+        // Npgsql's default execution strategy reports a serialization failure on SaveChanges as an
+        // InvalidOperationException around a DbUpdateException around the driver exception.
+        var wrapped = new InvalidOperationException("An exception has been raised that is likely due to a transient failure.",
+            new DbUpdateException("save failed", new FakeDrivers.NpgsqlLikeException("40001")));
+
+        Assert.True(RelationalTransactionConflicts.IsConflictInChain(wrapped));
+        Assert.False(RelationalTransactionConflicts.IsConflictInChain(
+            new InvalidOperationException("other", new FakeDrivers.NpgsqlLikeException("23505"))));
+    }
+
     [Theory]
     [InlineData(1205, true, true)]   // deadlock victim
     [InlineData(3960, true, true)]   // snapshot update conflict

@@ -15,10 +15,9 @@ var host = Host.CreateDefaultBuilder(args)
         // Configure TickerQ with SQLite operational store (file-based)
         services.AddTickerQ(options =>
         {
-            // Physical runtime partition + exact epoch. The host-owned
+            // Physical runtime partition. The host-owned
             // ApplicationRuntimePartitioning migration installs the EF ownership shape.
             options.UseApplicationNamespace("console-sample");
-            options.UseReconciliationEpoch(1);
             // Existing verified single-owner stores only, for one reviewed rollout:
             // options.UseLegacyRuntimePartitionAdoption("console-sample", 1);
             options.AddOperationalStore(efOptions =>

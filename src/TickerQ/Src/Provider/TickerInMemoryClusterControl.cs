@@ -106,7 +106,8 @@ internal partial class TickerInMemoryPersistenceProvider<TTimeTicker, TCronTicke
         StartedAtUtc = x.StartedAtUtc, LastSeenAtUtc = x.LastSeenAtUtc, IsRunning = x.IsRunning,
         MaxConcurrency = x.MaxConcurrency, FunctionCount = x.FunctionCount, ActiveExecutions = x.ActiveExecutions,
         QueuedExecutions = x.QueuedExecutions, ActiveWorkflows = x.ActiveWorkflows,
-        WaitingForFunction = x.WaitingForFunction, RetryingExecutions = x.RetryingExecutions
+        WaitingForFunction = x.WaitingForFunction, RetryingExecutions = x.RetryingExecutions,
+        ActivationEpoch = x.ActivationEpoch
     };
 
     private static TickerQControlCommand Clone(TickerQControlCommand x) => new()

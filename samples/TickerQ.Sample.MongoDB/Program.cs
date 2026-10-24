@@ -11,9 +11,8 @@ var builder = WebApplication.CreateBuilder(args);
 // A standalone server is suitable only for explicitly documented non-transactional operations.
 builder.Services.AddTickerQ(options =>
 {
-    // Physical document/lock/result partition + exact activated deployment epoch.
+    // Physical document/lock/result partition. TickerQ manages the reconciliation epoch.
     options.UseApplicationNamespace("mongodb-sample");
-    options.UseReconciliationEpoch(1);
     // Existing verified single-owner replica-set/mongos stores only:
     // options.UseLegacyRuntimePartitionAdoption("mongodb-sample", 1);
     options.AddOperationalStore(mongoOptions =>

@@ -14,9 +14,8 @@ builder.ConfigureServices(services =>
 {
     services.AddTickerQ(options =>
     {
-        // Physical process-local runtime partition + exact scheduler activation epoch.
+        // Physical process-local runtime partition. TickerQ manages the reconciliation epoch.
         options.UseApplicationNamespace("worker-service-sample");
-        options.UseReconciliationEpoch(1);
     });
     services.AddHostedService<SampleScheduler>();
 });

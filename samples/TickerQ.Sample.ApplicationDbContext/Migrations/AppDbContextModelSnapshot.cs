@@ -599,6 +599,9 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("TEXT");
 
+                    b.Property<long>("ActivationEpoch")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("ActiveExecutions")
                         .HasColumnType("INTEGER");
 
@@ -676,6 +679,14 @@ namespace TickerQ.Sample.ApplicationDbContext.Migrations
 
                     b.Property<long>("ActivationEpoch")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("ActivationManifest")
+                        .HasMaxLength(48)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ActivationManifestHistory")
+                        .HasMaxLength(1568)
+                        .HasColumnType("TEXT");
 
                     b.Property<int>("ActivationPhase")
                         .HasColumnType("INTEGER");

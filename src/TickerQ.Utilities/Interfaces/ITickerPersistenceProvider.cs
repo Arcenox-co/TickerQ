@@ -375,6 +375,28 @@ namespace TickerQ.Utilities.Interfaces
         Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
             ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
             => throw new NotSupportedException(ReconciliationActivationScopeUnsupportedMessage);
+
+        /// <summary>
+        /// Whether <see cref="BeginReconciliationActivationEpochAsync(ReconciliationActivationScope, long, string, CancellationToken)"/>
+        /// durably records the startup manifest fingerprint with the claim. Automatic reconciliation epochs
+        /// require it; without it a scheduler must configure <c>UseReconciliationEpoch</c>.
+        /// </summary>
+        bool SupportsActivationManifest => false;
+
+        /// <summary>
+        /// Claims <paramref name="targetEpoch"/> like the overload without a manifest and, in the same atomic
+        /// write, records <paramref name="manifest"/> as the epoch's startup fingerprint, moving the previous
+        /// fingerprint into the bounded history (see <see cref="ActivationManifests.Advance"/>). A claim that
+        /// does not write (same epoch already Activating/Activated, or a higher epoch) leaves both untouched,
+        /// so callers compare the returned <see cref="ActivationEpochState.Manifest"/> with their own.
+        /// </summary>
+        Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, string manifest,
+            CancellationToken cancellationToken = default)
+            => manifest == null
+                ? BeginReconciliationActivationEpochAsync(scope, targetEpoch, cancellationToken)
+                : throw new NotSupportedException(
+                    "The configured persistence provider cannot record startup manifests. Configure UseReconciliationEpoch(...) explicitly.");
         Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
             ReconciliationActivationScope scope, long targetEpoch, string checkpoint,
             CancellationToken cancellationToken = default)

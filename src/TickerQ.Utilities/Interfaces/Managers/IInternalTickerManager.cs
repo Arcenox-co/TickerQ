@@ -23,6 +23,19 @@ namespace TickerQ.Utilities.Interfaces.Managers
             CancellationToken cancellationToken = default);
         Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(ReconciliationActivationScope scope,
             long targetEpoch, CancellationToken cancellationToken = default);
+        bool SupportsActivationManifest => false;
+        /// <summary>Whether node heartbeats are stored, so fenced hosts can tell whether a deployment is still alive.</summary>
+        bool SupportsClusterControl => false;
+        Task<IReadOnlyList<Cluster.TickerQNodeRecord>> GetClusterNodesAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<Cluster.TickerQNodeRecord>>(Array.Empty<Cluster.TickerQNodeRecord>());
+        /// <summary>Whether a removed seeded cron requested retirement at or before <paramref name="requestedAtOrBeforeUtc"/> and is not retired yet.</summary>
+        Task<bool> HasDueSeedRetirementsAsync(DateTime requestedAtOrBeforeUtc, CancellationToken cancellationToken = default)
+            => Task.FromResult(false);
+        Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(ReconciliationActivationScope scope,
+            long targetEpoch, string manifest, CancellationToken cancellationToken = default)
+            => manifest == null
+                ? BeginReconciliationActivationEpochAsync(scope, targetEpoch, cancellationToken)
+                : throw new NotSupportedException("The configured manager cannot record startup manifests.");
         Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(ReconciliationActivationScope scope,
             long targetEpoch, string checkpoint, CancellationToken cancellationToken = default);
         Task<ActivationEpochState> CommitReconciliationActivationEpochAsync(ReconciliationActivationScope scope,

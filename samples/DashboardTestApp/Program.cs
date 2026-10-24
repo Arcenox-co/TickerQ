@@ -39,10 +39,9 @@ builder.Services.AddTickerQ(options =>
     if (!string.IsNullOrWhiteSpace(licensePath))
         options.UseLicense(licensePath);
 
-    // Physical runtime partition + exact deployment epoch; keep both stable across replicas.
+    // Physical runtime partition; keep it stable across replicas.
     options.UseApplicationNamespace("dashboard-test-sample");
-    options.UseReconciliationEpoch(1);
-    // Cron tickers this app owns; reconciled once per reconciliation epoch, never duplicated.
+    // Cron tickers this app owns; created once, updated when the code changes, never duplicated.
     options.SeedCronTickers(crons => crons
         .Add("Heartbeat", "* * * * *")
         .Add("CleanupTempFiles", "*/5 * * * *")

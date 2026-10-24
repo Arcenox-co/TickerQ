@@ -81,10 +81,10 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
         _nodeFinalizationOutboxReadiness = serviceProvider.GetService<IEfCoreNodeFinalizationOutboxReadiness>();
         _lockHolder = optionsBuilder.ExecutionOwnerId;
         _schedulerOptions = optionsBuilder;
+        _configuredActivationEpoch = optionsBuilder.RuntimeActivationEpoch;
         _runtimeSchedulerEnabled = optionsBuilder.RuntimeSchedulerEnabled;
         _hasRuntimeActivationScopeBinding = optionsBuilder.HasRuntimeActivationScopeBinding;
         _requiresActivatedRuntimeAdmission = _runtimeSchedulerEnabled && _hasRuntimeActivationScopeBinding;
-        _runtimeActivationEpoch = optionsBuilder.RuntimeActivationEpoch;
         _runtimePartitionKey = (optionsBuilder.RuntimePartition ?? TickerQRuntimePartition.LegacyGlobal).StorageKey;
         _runtimeActivationScopeKey = _hasRuntimeActivationScopeBinding
             ? _schedulerOptions.RuntimeActivationScope?.ScopeKey ?? TickerQStoreMetadata.SingletonId
@@ -255,7 +255,11 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
     private readonly bool _runtimeSchedulerEnabled;
     private readonly bool _hasRuntimeActivationScopeBinding;
     private readonly bool _requiresActivatedRuntimeAdmission;
-    private readonly long _runtimeActivationEpoch;
+    private readonly long _configuredActivationEpoch;
+    // An automatic epoch is resolved after construction; an explicit one is fixed for the process.
+    private long _runtimeActivationEpoch => _schedulerOptions.AutomaticReconciliationEpoch
+        ? _schedulerOptions.RuntimeActivationEpoch
+        : _configuredActivationEpoch;
     protected readonly string _runtimePartitionKey;
     protected string CronExpressionsCacheKey => $"cron:expressions:{_runtimePartitionKey}";
     protected internal Func<CancellationToken, Task> AfterRunnableAdmissionFenceForTestAsync { get; set; }
@@ -598,10 +602,19 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
     public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
         ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+        => BeginReconciliationActivationEpochAsync(scope, targetEpoch, null, cancellationToken);
+
+    public bool SupportsActivationManifest => true;
+
+    public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+        ReconciliationActivationScope scope, long targetEpoch, string manifest,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
         if (targetEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(targetEpoch));
-        return MutateActivationStateAsync(scope.ScopeKey, targetEpoch, null, ActivationMutation.Begin, cancellationToken);
+        ActivationManifests.Validate(manifest);
+        return MutateActivationStateAsync(scope.ScopeKey, targetEpoch, null, ActivationMutation.Begin,
+            cancellationToken, manifest);
     }
 
     public Task<ActivationEpochState> AdvanceReconciliationCheckpointAsync(
@@ -641,7 +654,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
 
     private async Task<ActivationEpochState> MutateActivationStateAsync(
         string scopeKey, long targetEpoch, string checkpoint, ActivationMutation mutation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string manifest = null)
     {
         const int maxAttempts = 16;
         for (var attempt = 0; attempt < maxAttempts; attempt++)
@@ -673,6 +686,7 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         Id = scopeKey,
                         ActivationEpoch = targetEpoch,
                         ActivationPhase = ActivationEpochPhase.Activating,
+                        ActivationManifest = manifest,
                         Version = 1,
                         UpdatedAtUtc = _clock.UtcNow
                     };
@@ -686,18 +700,21 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 long nextEpoch = metadata.ActivationEpoch;
                 var nextPhase = metadata.ActivationPhase;
                 string nextCheckpoint = metadata.ActivationCheckpoint;
+                var nextManifest = metadata.ActivationManifest;
+                var nextManifestHistory = metadata.ActivationManifestHistory;
                 switch (mutation)
                 {
-                    case ActivationMutation.Begin when targetEpoch > metadata.ActivationEpoch:
+                    case ActivationMutation.Begin when targetEpoch > metadata.ActivationEpoch ||
+                                                       (targetEpoch == metadata.ActivationEpoch &&
+                                                        metadata.ActivationPhase == ActivationEpochPhase.Pending):
                         shouldUpdate = true;
                         nextEpoch = targetEpoch;
                         nextPhase = ActivationEpochPhase.Activating;
-                        nextCheckpoint = null;
-                        break;
-                    case ActivationMutation.Begin when targetEpoch == metadata.ActivationEpoch &&
-                                                       metadata.ActivationPhase == ActivationEpochPhase.Pending:
-                        shouldUpdate = true;
-                        nextPhase = ActivationEpochPhase.Activating;
+                        if (targetEpoch > metadata.ActivationEpoch) nextCheckpoint = null;
+                        nextManifest = manifest;
+                        nextManifestHistory = ActivationManifests.JoinHistory(ActivationManifests.Advance(
+                            metadata.ActivationManifest,
+                            ActivationManifests.SplitHistory(metadata.ActivationManifestHistory), manifest));
                         break;
                     case ActivationMutation.Checkpoint when targetEpoch == metadata.ActivationEpoch &&
                                                             metadata.ActivationPhase == ActivationEpochPhase.Activating &&
@@ -725,6 +742,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                         .SetProperty(x => x.ActivationEpoch, nextEpoch)
                         .SetProperty(x => x.ActivationPhase, nextPhase)
                         .SetProperty(x => x.ActivationCheckpoint, nextCheckpoint)
+                        .SetProperty(x => x.ActivationManifest, nextManifest)
+                        .SetProperty(x => x.ActivationManifestHistory, nextManifestHistory)
                         .SetProperty(x => x.Version, metadata.Version + 1)
                         .SetProperty(x => x.UpdatedAtUtc, _clock.UtcNow), cancellationToken)
                     .ConfigureAwait(false);
@@ -737,12 +756,17 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                 metadata.ActivationEpoch = nextEpoch;
                 metadata.ActivationPhase = nextPhase;
                 metadata.ActivationCheckpoint = nextCheckpoint;
+                metadata.ActivationManifest = nextManifest;
+                metadata.ActivationManifestHistory = nextManifestHistory;
                 metadata.Version++;
                 await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
                 return ToActivationState(metadata);
             }
             catch (DbUpdateConcurrencyException) when (attempt + 1 < maxAttempts) { }
             catch (DbUpdateException) when (attempt + 1 < maxAttempts) { }
+            // Replicas starting together race for the first activation row; PostgreSQL reports the loser
+            // as a serialization failure wrapped by the provider's execution strategy.
+            catch (Exception ex) when (attempt + 1 < maxAttempts && RelationalTransactionConflicts.IsConflictInChain(ex)) { }
 
             await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(50, attempt + 1)), cancellationToken)
                 .ConfigureAwait(false);
@@ -773,7 +797,9 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
             {
                 Epoch = metadata.ActivationEpoch,
                 Phase = metadata.ActivationPhase,
-                Checkpoint = metadata.ActivationCheckpoint
+                Checkpoint = metadata.ActivationCheckpoint,
+                Manifest = metadata.ActivationManifest,
+                ManifestHistory = ActivationManifests.SplitHistory(metadata.ActivationManifestHistory)
             };
 
     private enum ActivationMutation { Begin, Checkpoint, Commit }

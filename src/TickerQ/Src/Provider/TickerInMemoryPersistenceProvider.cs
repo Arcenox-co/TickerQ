@@ -192,7 +192,12 @@ namespace TickerQ.Provider
         private readonly int _fallbackBatchSize;
         private readonly int _acquisitionBatchSize;
         private readonly TimeSpan _retirementGracePeriod;
-        private readonly long _reconciliationEpoch;
+        private readonly SchedulerOptionsBuilder _schedulerOptions;
+        private readonly long _configuredReconciliationEpoch;
+        // An automatic epoch is resolved after construction; an explicit one is fixed for the process.
+        private long _reconciliationEpoch => _schedulerOptions is { AutomaticReconciliationEpoch: true }
+            ? _schedulerOptions.ReconciliationEpoch
+            : _configuredReconciliationEpoch;
         private readonly string _runtimeActivationScopeKey;
         private readonly bool _runtimeScopeBindingConfigured;
         private readonly bool _runtimeSchedulerEnabled;
@@ -206,7 +211,8 @@ namespace TickerQ.Provider
             _acquisitionBatchSize = optionsBuilder?.AcquisitionBatchSize ?? 100;
             _leaseDuration = optionsBuilder?.LeaseDuration ?? TimeSpan.FromMinutes(1);
             _retirementGracePeriod = optionsBuilder?.DefinedCronRetirementGracePeriod ?? TimeSpan.FromHours(24);
-            _reconciliationEpoch = optionsBuilder?.ReconciliationEpoch ?? 1;
+            _schedulerOptions = optionsBuilder;
+            _configuredReconciliationEpoch = optionsBuilder?.ReconciliationEpoch ?? 1;
             _runtimeScopeBindingConfigured = optionsBuilder?.HasRuntimeActivationScopeBinding ?? false;
             _runtimeSchedulerEnabled = optionsBuilder?.RuntimeSchedulerEnabled ?? true;
             _runtimeActivationScopeKey = optionsBuilder?.RuntimeActivationScope?.ScopeKey;
@@ -438,10 +444,18 @@ namespace TickerQ.Provider
                 ? state : ActivationEpochState.PreEpoch));
         }
 
+        public bool SupportsActivationManifest => true;
+
         public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
             ReconciliationActivationScope scope, long targetEpoch, CancellationToken cancellationToken = default)
+            => BeginReconciliationActivationEpochAsync(scope, targetEpoch, null, cancellationToken);
+
+        public Task<ActivationEpochState> BeginReconciliationActivationEpochAsync(
+            ReconciliationActivationScope scope, long targetEpoch, string manifest,
+            CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            ActivationManifests.Validate(manifest);
             return Task.FromResult(WriteGraph(() =>
             {
                 var state = ScopedActivationEpochs.TryGetValue(scope.ScopeKey, out var current)
@@ -449,7 +463,13 @@ namespace TickerQ.Provider
                 if (state.Epoch > targetEpoch ||
                     (state.Epoch == targetEpoch && state.Phase is ActivationEpochPhase.Activating or ActivationEpochPhase.Activated))
                     return state;
-                state = new ActivationEpochState { Epoch = targetEpoch, Phase = ActivationEpochPhase.Activating };
+                state = new ActivationEpochState
+                {
+                    Epoch = targetEpoch,
+                    Phase = ActivationEpochPhase.Activating,
+                    Manifest = manifest,
+                    ManifestHistory = ActivationManifests.Advance(state.Manifest, state.ManifestHistory, manifest)
+                };
                 ScopedActivationEpochs[scope.ScopeKey] = state;
                 return state;
             }));
@@ -468,7 +488,8 @@ namespace TickerQ.Provider
                 {
                     state = new ActivationEpochState
                     {
-                        Epoch = targetEpoch, Phase = ActivationEpochPhase.Activating, Checkpoint = checkpoint
+                        Epoch = targetEpoch, Phase = ActivationEpochPhase.Activating, Checkpoint = checkpoint,
+                        Manifest = state.Manifest, ManifestHistory = state.ManifestHistory
                     };
                     ScopedActivationEpochs[scope.ScopeKey] = state;
                 }
@@ -490,7 +511,8 @@ namespace TickerQ.Provider
                     return state;
                 state = new ActivationEpochState
                 {
-                    Epoch = targetEpoch, Phase = ActivationEpochPhase.Activated, Checkpoint = state.Checkpoint
+                    Epoch = targetEpoch, Phase = ActivationEpochPhase.Activated, Checkpoint = state.Checkpoint,
+                    Manifest = state.Manifest, ManifestHistory = state.ManifestHistory
                 };
                 ScopedActivationEpochs[scope.ScopeKey] = state;
                 return state;
