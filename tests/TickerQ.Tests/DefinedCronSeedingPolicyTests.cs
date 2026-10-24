@@ -49,55 +49,6 @@ public class DefinedCronSeedingPolicyTests : IDisposable
     }
 
     [Fact]
-    public async Task Seeding_BlocksRequired_And_CarriesIdentity_ForRequestlessAndOptional()
-    {
-        RegisterFunction("Reqless");
-        RegisterFunction("Optional");
-        RegisterFunction("Required");
-        RegisterDescriptors(
-            new TickerFunctionDescriptor("Reqless", TickerTaskPriority.Normal, "* * * * *"),
-            new TickerFunctionDescriptor("Optional", TickerTaskPriority.Normal, "* * * * *", 1,
-                new TickerRequestContract("Sample.Opt", required: false, schemaJson: SchemaJson)),
-            new TickerFunctionDescriptor("Required", TickerTaskPriority.Normal, "* * * * *", 1,
-                new TickerRequestContract("Sample.Req", required: true, schemaJson: SchemaJson)));
-
-        var internalManager = Substitute.For<IInternalTickerManager>();
-        DefinedCronTickerSeed[] captured = null;
-        internalManager
-            .When(m => m.MigrateDefinedCronTickers(Arg.Any<DefinedCronSeedManifest>(), Arg.Any<CancellationToken>()))
-            .Do(ci => captured = ci.Arg<DefinedCronSeedManifest>().Seeds.ToArray());
-
-        await RunInitializer(internalManager, seeds: crons => crons
-            .Add("Reqless", "* * * * *")
-            .Add("Optional", "* * * * *")
-            .Add("Required", "* * * * *"));
-
-        Assert.NotNull(captured);
-        var byFunction = captured.ToDictionary(s => s.Function);
-
-        // Required is retained only as a cleanup command so providers can remove a previously seeded row.
-        Assert.Equal(3, captured.Length);
-        var required = byFunction["Required"];
-        Assert.False(required.CanSeed);
-        Assert.Equal(TickerFunctionProvider.TickerFunctionDescriptors["Required"].Request!.Fingerprint,
-            required.RequestContractFingerprint);
-
-        // Request-less carries the authoritative version with a null fingerprint.
-        var reqless = byFunction["Reqless"];
-        Assert.True(reqless.CanSeed);
-        Assert.Equal(1, reqless.RequestContractVersion);
-        Assert.Null(reqless.RequestContractFingerprint);
-
-        // Optional-typed carries version + the descriptor's authoritative fingerprint.
-        var optionalDescriptor = TickerFunctionProvider.TickerFunctionDescriptors["Optional"];
-        var optional = byFunction["Optional"];
-        Assert.True(optional.CanSeed);
-        Assert.Equal(optionalDescriptor.ContractVersion, optional.RequestContractVersion);
-        Assert.False(string.IsNullOrEmpty(optional.RequestContractFingerprint));
-        Assert.Equal(optionalDescriptor.Request!.Fingerprint, optional.RequestContractFingerprint);
-    }
-
-    [Fact]
     public void SeedIdentity_IsNamespaced_AndStableAcrossSemanticChanges()
     {
         var appA = CronSeedIdentity.SeedKey("orders", "Reqless");
@@ -147,24 +98,44 @@ public class DefinedCronSeedingPolicyTests : IDisposable
         // The initializer must thread the host's shutdown token into startup seeding rather than
         // silently swallowing it (the previous code passed a default CancellationToken), so a
         // cancelled host propagates cancellation into provider seeding I/O.
-        await RunInitializer(internalManager, cts.Token, crons => crons.Add("Reqless", "* * * * *"));
+        await RunInitializer(internalManager, cts.Token,
+            (_, _) => Task.FromResult<IReadOnlyList<DefinedCronTickerSeed>>([new DefinedCronTickerSeed("Reqless", "* * * * *")]));
 
         Assert.True(wasObserved, "MigrateDefinedCronTickers was never invoked.");
         Assert.True(observed.IsCancellationRequested,
             "Host cancellation token was not forwarded to MigrateDefinedCronTickers.");
     }
 
+    [Fact]
+    public async Task Schedule_policies_are_seeded_before_cron_seeds_are_built()
+    {
+        var internalManager = Substitute.For<IInternalTickerManager>();
+        var order = new List<string>();
+
+        await RunInitializer(internalManager, default,
+            (_, _) =>
+            {
+                order.Add("crons");
+                return Task.FromResult<IReadOnlyList<DefinedCronTickerSeed>>([]);
+            },
+            (_, _) =>
+            {
+                order.Add("policies");
+                return Task.CompletedTask;
+            });
+
+        Assert.Equal(["policies", "crons"], order);
+    }
+
     private static async Task RunInitializer(
         IInternalTickerManager internalManager, CancellationToken cancellationToken = default,
-        Action<CronTickerSeedBuilder> seeds = null)
+        Func<IServiceProvider, CancellationToken, Task<IReadOnlyList<DefinedCronTickerSeed>>> seeds = null,
+        Func<IServiceProvider, CancellationToken, Task> policies = null)
     {
         ActivationEpochTestDouble.Configure(internalManager);
         var context = new TickerExecutionContext
         {
-            OptionsSeeding = new TestOptionsSeeding
-            {
-                CronTickerSeeds = seeds == null ? [] : [(builder, _) => seeds(builder)],
-            },
+            OptionsSeeding = new TestOptionsSeeding { CronTickerSeedFactory = seeds, SchedulePolicySeederAction = policies },
         };
         var configuration = Substitute.For<IConfiguration>();
 
@@ -189,7 +160,8 @@ public class DefinedCronSeedingPolicyTests : IDisposable
         public string ApplicationNamespace => "defined-cron-policy-tests";
         public Func<IServiceProvider, CancellationToken, Task> TimeSeederAction => null;
         public Func<IServiceProvider, CancellationToken, Task> CronSeederAction => null;
-        public IReadOnlyList<Action<CronTickerSeedBuilder, IServiceProvider>> CronTickerSeeds { get; init; } = [];
+        public Func<IServiceProvider, CancellationToken, Task<IReadOnlyList<DefinedCronTickerSeed>>> CronTickerSeedFactory { get; init; }
+        public Func<IServiceProvider, CancellationToken, Task> SchedulePolicySeederAction { get; init; }
     }
 
     private static void RegisterFunction(string name)

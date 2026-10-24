@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using TickerQ.Utilities.Entities;
 
 namespace TickerQ.Utilities.Models
 {
@@ -73,6 +74,28 @@ namespace TickerQ.Utilities.Models
         public int? TimeoutSeconds { get; }
 
         /// <summary>
+        /// The full cron definition from <c>SeedCronTickers</c>: time zone, policy, request, chain, and
+        /// late-start, catch-up, overlap, and stale settings. Null for legacy seeds.
+        /// </summary>
+        internal DefinedCronDefinition Definition { get; private init; }
+
+        /// <summary>Returns <paramref name="copy"/> carrying a detached copy of this seed's definition.</summary>
+        internal DefinedCronTickerSeed WithDefinition(DefinedCronTickerSeed copy)
+            => new(copy.Function, copy.Expression, copy.RequestContractVersion, copy.RequestContractFingerprint,
+                copy.CanSeed, copy.StableDefinitionId, copy.Retries, copy.RetryIntervals, copy.TimeoutSeconds)
+            {
+                Definition = Definition?.Clone(),
+            };
+
+        /// <summary>Creates a seed from a cron that already passed the cron manager's validation.</summary>
+        internal static DefinedCronTickerSeed FromValidatedCron(string stableDefinitionId, CronTickerEntity cron)
+            => new(cron.Function, cron.Expression, cron.RequestContractVersion, cron.RequestContractFingerprint,
+                canSeed: true, stableDefinitionId, cron.Retries, cron.RetryIntervals, cron.TimeoutSeconds)
+            {
+                Definition = DefinedCronDefinition.From(cron),
+            };
+
+        /// <summary>
         /// Validates and canonicalizes the complete seed contract at the manifest ingress boundary.
         /// Keeping this in one place ensures every manifest constructor and provider sees equivalent,
         /// detached values rather than caller-owned or merely syntactically valid input.
@@ -120,7 +143,10 @@ namespace TickerQ.Utilities.Models
             var timeoutSeconds = seed.TimeoutSeconds is <= 0 ? 0 : seed.TimeoutSeconds;
 
             return new DefinedCronTickerSeed(function, expression, seed.RequestContractVersion, fingerprint,
-                seed.CanSeed, stableDefinitionId, seed.Retries, retryIntervals, timeoutSeconds);
+                seed.CanSeed, stableDefinitionId, seed.Retries, retryIntervals, timeoutSeconds)
+            {
+                Definition = seed.Definition?.Clone(),
+            };
         }
 
         /// <summary>
@@ -142,7 +168,8 @@ namespace TickerQ.Utilities.Models
                && ((RetryIntervals == null && other.RetryIntervals == null)
                    || (RetryIntervals != null && other.RetryIntervals != null
                        && RetryIntervals.AsSpan().SequenceEqual(other.RetryIntervals)))
-               && TimeoutSeconds == other.TimeoutSeconds;
+               && TimeoutSeconds == other.TimeoutSeconds
+               && (Definition == null ? other.Definition == null : Definition.Equals(other.Definition));
 
         public override bool Equals(object obj) => obj is DefinedCronTickerSeed other && Equals(other);
 
@@ -160,6 +187,7 @@ namespace TickerQ.Utilities.Models
                 foreach (var interval in RetryIntervals)
                     hash.Add(interval);
             hash.Add(TimeoutSeconds);
+            hash.Add(Definition);
             return hash.ToHashCode();
         }
     }

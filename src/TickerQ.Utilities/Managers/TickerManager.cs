@@ -778,6 +778,27 @@ namespace TickerQ.Utilities.Managers
                 ? _activationGate.WaitForActivationAsync(cancellationToken)
                 : Task.CompletedTask;
 
+        /// <summary>
+        /// Validates a cron declared with SeedCronTickers using the same rules as AddChainAsync: registered
+        /// functions, request contracts for every step, chain shape, late-start and catch-up settings, time
+        /// zone, an existing schedule policy, and at least one allowed future occurrence. Stamps contract
+        /// identity and the policy's canonical name and revision. Does not wait for mutation admission,
+        /// because seeding runs while startup activation is in progress.
+        /// </summary>
+        internal async Task ValidateSeededCronAsync(TCronTicker cron, CancellationToken cancellationToken)
+        {
+            if (!TickerFunctionProvider.TickerFunctions.ContainsKey(cron.Function))
+                throw new TickerValidatorException($"Cannot find TickerFunction with name {cron.Function}");
+            if (cron.Chain is { Children.Count: 0 })
+                cron.Chain = null;
+            if (ValidateAndStampCron(cron, _persistenceProvider.SupportsCronChains,
+                    _persistenceProvider.SupportsCronCatchUp) is { } error)
+                throw error;
+            if (await GetNextAllowedCronOccurrenceAsync(cron, _clock.UtcNow, cancellationToken).ConfigureAwait(false) is null)
+                throw new TickerValidatorException(
+                    $"Cron schedule '{cron.Expression}' has no allowed future occurrence or is invalid.");
+        }
+
         internal static TickerValidatorException ValidateAndStampCron(
             TCronTicker cron, bool supportsCronChains, bool supportsCronCatchUp)
         {

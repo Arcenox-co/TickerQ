@@ -20,7 +20,8 @@ internal interface ITickerOptionsSeeding
     Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> TimeSeederAction { get; }
     Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> CronSeederAction { get; }
     Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task> SchedulePolicySeederAction => null;
-    IReadOnlyList<Action<CronTickerSeedBuilder, IServiceProvider>> CronTickerSeeds => Array.Empty<Action<CronTickerSeedBuilder, IServiceProvider>>();
+    /// <summary>Builds and validates the crons declared with SeedCronTickers; null when none are declared.</summary>
+    Func<IServiceProvider, CancellationToken, System.Threading.Tasks.Task<IReadOnlyList<DefinedCronTickerSeed>>> CronTickerSeedFactory => null;
 }
 
 internal class TickerExecutionContext

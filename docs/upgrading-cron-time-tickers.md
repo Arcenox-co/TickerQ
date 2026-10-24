@@ -344,10 +344,22 @@ services.AddTickerQ(options =>
     options.UseApplicationNamespace("billing-api");
     options.UseReconciliationEpoch(2);
     options.SeedCronTickers(crons => crons
-        .Add("GenerateInvoices", "0 0 6 * * *", cron => cron.WithRetries(2, 300))
-        .Add("SendReminders", "%Billing:RemindersCron%"));
+        .Add("SendReminders", "%Billing:RemindersCron%")
+        .Add(cron => cron
+            .WithExpression("0 0 6 * * 1-5")
+            .InTimeZone("Europe/Berlin")
+            .UsingPolicy("Business hours")
+            .StartWith("GenerateInvoices", step => { step.Retries = 2; step.RetryIntervals = [300]; })
+            .Then("SendInvoices")));
 });
 ```
+
+`Add("Function", "<cron>")` seeds a plain cron. `Add(cron => ...)` uses the same builder as
+`ICronTickerManager.AddChainAsync`, so a seeded cron can set a time zone, schedule policy, request,
+retries, late-start and catch-up rules, overlap, and chain steps. Startup validates every seed with the
+manager's rules; a missing function, a schedule policy that does not exist, or an expression with no
+allowed future occurrence stops startup. Schedule policies from `UseSchedulePolicySeeder` are seeded
+first, so a seeded cron may use them.
 
 Move each `[TickerFunction("Name", "<cron>")]` to `crons.Add("Name", "<cron>")` and remove the cron
 argument from the attribute. The stable identity defaults to the function name, the same identity the

@@ -2806,41 +2806,15 @@ namespace TickerQ.MongoDB.Infrastructure
                         materiallyChanged = true;
                     }
 
-                    if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
+                    // Expression, contract identity (seeded rows only), retries, timeout, and the full
+                    // SeedCronTickers definition. Applied to the loaded copy, then written field by field.
+                    var seedChange = DefinedCronSeedApplier.Apply(cron, seed, !string.IsNullOrEmpty(cron.InitIdentifier));
+                    if (seedChange.Changed)
                     {
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.Expression, seed.Expression));
+                        AddSeedDefinitionSets(cron, sets);
                         materiallyChanged = true;
-                        definitionChanged = true;
                     }
-
-                    if (!string.IsNullOrEmpty(cron.InitIdentifier)
-                        && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
-                    {
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.RequestContractVersion, seed.RequestContractVersion));
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.RequestContractFingerprint, seed.RequestContractFingerprint));
-                        materiallyChanged = true;
-                        definitionChanged = true;
-                    }
-
-                    if (cron.Retries != seed.Retries)
-                    {
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.Retries, seed.Retries));
-                        materiallyChanged = true;
-                        definitionChanged = true;
-                    }
-                    if (!(cron.RetryIntervals ?? Array.Empty<int>()).SequenceEqual(
-                            seed.RetryIntervals ?? Array.Empty<int>()))
-                    {
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.RetryIntervals, seed.RetryIntervals));
-                        materiallyChanged = true;
-                        definitionChanged = true;
-                    }
-                    if (cron.TimeoutSeconds != seed.TimeoutSeconds)
-                    {
-                        sets.Add(Builders<TCronTicker>.Update.Set(x => x.TimeoutSeconds, seed.TimeoutSeconds));
-                        materiallyChanged = true;
-                        definitionChanged = true;
-                    }
+                    definitionChanged |= seedChange.DefinitionChanged;
 
                     if (definitionChanged)
                     {
@@ -2921,13 +2895,8 @@ namespace TickerQ.MongoDB.Infrastructure
                         InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
                         CreatedAt = now,
                         UpdatedAt = now,
-                        Request = Array.Empty<byte>(),
-                        RequestContractVersion = seed.RequestContractVersion,
-                        RequestContractFingerprint = seed.RequestContractFingerprint,
-                        Retries = seed.Retries,
-                        RetryIntervals = seed.RetryIntervals,
-                        TimeoutSeconds = seed.TimeoutSeconds
                     };
+                    DefinedCronSeedApplier.Initialize(entity, seed);
                     Stamp(entity);
 
                     try
@@ -5398,5 +5367,30 @@ namespace TickerQ.MongoDB.Infrastructure
             }
             return collected;
         }
+
+    // Writes every field DefinedCronSeedApplier may change; unchanged fields are rewritten with their
+    // current values, which keeps the update a single atomic, revision-guarded operation.
+    private static void AddSeedDefinitionSets(TCronTicker cron, List<UpdateDefinition<TCronTicker>> sets)
+    {
+        var u = Builders<TCronTicker>.Update;
+        sets.Add(u.Set(x => x.Expression, cron.Expression));
+        sets.Add(u.Set(x => x.RequestContractVersion, cron.RequestContractVersion));
+        sets.Add(u.Set(x => x.RequestContractFingerprint, cron.RequestContractFingerprint));
+        sets.Add(u.Set(x => x.Retries, cron.Retries));
+        sets.Add(u.Set(x => x.RetryIntervals, cron.RetryIntervals));
+        sets.Add(u.Set(x => x.TimeoutSeconds, cron.TimeoutSeconds));
+        sets.Add(u.Set(x => x.TimeZoneId, cron.TimeZoneId));
+        sets.Add(u.Set(x => x.SchedulePolicyName, cron.SchedulePolicyName));
+        sets.Add(u.Set(x => x.SchedulePolicyVersion, cron.SchedulePolicyVersion));
+        sets.Add(u.Set(x => x.BlockedOccurrenceBehavior, cron.BlockedOccurrenceBehavior));
+        sets.Add(u.Set(x => x.MissedExecutionAction, cron.MissedExecutionAction));
+        sets.Add(u.Set(x => x.MaximumLateness, cron.MaximumLateness));
+        sets.Add(u.Set(x => x.CatchUpMode, cron.CatchUpMode));
+        sets.Add(u.Set(x => x.SkipIfAlreadyRunning, cron.SkipIfAlreadyRunning));
+        sets.Add(u.Set(x => x.OnStale, cron.OnStale));
+        sets.Add(u.Set(x => x.Request, cron.Request));
+        sets.Add(u.Set(x => x.Chain, cron.Chain));
+        sets.Add(u.Set(x => x.Description, cron.Description));
+    }
     }
 }

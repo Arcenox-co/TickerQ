@@ -2587,42 +2587,11 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                     changed = true;
                 }
 
-                if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
-                {
-                    cron.Expression = seed.Expression;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                // Reconcile the authoritative contract identity onto seeded rows only.
-                if (!string.IsNullOrEmpty(cron.InitIdentifier)
-                    && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
-                {
-                    cron.RequestContractVersion = seed.RequestContractVersion;
-                    cron.RequestContractFingerprint = seed.RequestContractFingerprint;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                if (cron.Retries != seed.Retries)
-                {
-                    cron.Retries = seed.Retries;
-                    changed = true;
-                    definitionChanged = true;
-                }
-                if (!(cron.RetryIntervals ?? Array.Empty<int>()).SequenceEqual(
-                        seed.RetryIntervals ?? Array.Empty<int>()))
-                {
-                    cron.RetryIntervals = seed.RetryIntervals;
-                    changed = true;
-                    definitionChanged = true;
-                }
-                if (cron.TimeoutSeconds != seed.TimeoutSeconds)
-                {
-                    cron.TimeoutSeconds = seed.TimeoutSeconds;
-                    changed = true;
-                    definitionChanged = true;
-                }
+                // Expression, contract identity (seeded rows only), retries, timeout, and the full
+                // SeedCronTickers definition: time zone, policy, request, chain, late start, catch-up, overlap.
+                var seedChange = DefinedCronSeedApplier.Apply(cron, seed, !string.IsNullOrEmpty(cron.InitIdentifier));
+                changed |= seedChange.Changed;
+                definitionChanged |= seedChange.DefinitionChanged;
 
                 if (definitionChanged)
                 {
@@ -2671,13 +2640,8 @@ internal abstract partial class BasePersistenceProvider<TDbContext, TTimeTicker,
                     InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
                     CreatedAt = now,
                     UpdatedAt = now,
-                    Request = Array.Empty<byte>(),
-                    RequestContractVersion = seed.RequestContractVersion,
-                    RequestContractFingerprint = seed.RequestContractFingerprint,
-                    Retries = seed.Retries,
-                    RetryIntervals = seed.RetryIntervals,
-                    TimeoutSeconds = seed.TimeoutSeconds
                 };
+                DefinedCronSeedApplier.Initialize(entity, seed);
                 await cronSet.AddAsync(entity, cancellationToken).ConfigureAwait(false);
             }
         }

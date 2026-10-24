@@ -140,11 +140,16 @@ internal sealed class TickerQInitializerHostedService : IHostedService
             "02-chain-repair-complete", cancellationToken).ConfigureAwait(false);
 
         var options = _executionContext.OptionsSeeding;
-        if (options == null || options.SeedDefinedCronTickers)
+        // Schedule policies are seeded before crons so a seeded cron can use a seeded policy; seeded
+        // crons are validated against the policies that exist at this point.
+        if (options?.SchedulePolicySeederAction != null || options == null || options.SeedDefinedCronTickers)
         {
             using var startupAdmission = Utilities.Models.StartupSeederAdmissionContext.Enter(
                 activationScope.ScopeKey, targetEpoch);
-            await SeedDefinedCronTickers(_serviceProvider, cancellationToken).ConfigureAwait(false);
+            if (options?.SchedulePolicySeederAction != null)
+                await options.SchedulePolicySeederAction(_serviceProvider, cancellationToken).ConfigureAwait(false);
+            if (options == null || options.SeedDefinedCronTickers)
+                await SeedDefinedCronTickers(_serviceProvider, cancellationToken).ConfigureAwait(false);
         }
         await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
             "03-definition-reconciliation-complete", cancellationToken).ConfigureAwait(false);
@@ -155,12 +160,10 @@ internal sealed class TickerQInitializerHostedService : IHostedService
         await CheckpointAsync(internalTickerManager, activationScope, targetEpoch,
             "04-finalization-complete", cancellationToken).ConfigureAwait(false);
 
-        if (options?.SchedulePolicySeederAction != null || options?.TimeSeederAction != null || options?.CronSeederAction != null)
+        if (options?.TimeSeederAction != null || options?.CronSeederAction != null)
         {
             using var startupAdmission = Utilities.Models.StartupSeederAdmissionContext.Enter(
                 activationScope.ScopeKey, targetEpoch);
-            if (options.SchedulePolicySeederAction != null)
-                await options.SchedulePolicySeederAction(_serviceProvider, cancellationToken).ConfigureAwait(false);
             if (options.TimeSeederAction != null)
                 await options.TimeSeederAction(_serviceProvider, cancellationToken).ConfigureAwait(false);
             if (options.CronSeederAction != null)
@@ -233,8 +236,10 @@ internal sealed class TickerQInitializerHostedService : IHostedService
     private static async Task SeedDefinedCronTickers(IServiceProvider serviceProvider, CancellationToken cancellationToken)
     {
         var internalTickerManager = serviceProvider.GetRequiredService<IInternalTickerManager>();
-        var functionsToSeed = BuildDefinedCronSeeds(serviceProvider);
         var options = serviceProvider.GetRequiredService<TickerExecutionContext>().OptionsSeeding;
+        var functionsToSeed = options?.CronTickerSeedFactory == null
+            ? new List<Utilities.Models.DefinedCronTickerSeed>()
+            : (await options.CronTickerSeedFactory(serviceProvider, cancellationToken).ConfigureAwait(false)).ToList();
         var applicationNamespace = options?.ApplicationNamespace;
         if (applicationNamespace == null)
             await internalTickerManager.MigrateDefinedCronTickers(functionsToSeed.ToArray(), cancellationToken);
@@ -250,84 +255,5 @@ internal sealed class TickerQInitializerHostedService : IHostedService
             await internalTickerManager.MigrateDefinedCronTickers(
                 new Utilities.Models.DefinedCronSeedManifest(applicationNamespace, functionsToSeed, ownership), cancellationToken);
         }
-    }
-
-
-    /// <summary>
-    /// Builds the defined-cron manifest from <c>SeedCronTickers(...)</c> declarations. Function attributes
-    /// and registration builders no longer declare crons, so this is the only source of seeded crons.
-    /// </summary>
-    internal static List<Utilities.Models.DefinedCronTickerSeed> BuildDefinedCronSeeds(IServiceProvider serviceProvider)
-    {
-        var options = serviceProvider.GetRequiredService<TickerExecutionContext>().OptionsSeeding;
-        var builder = new CronTickerSeedBuilder();
-        foreach (var declare in options?.CronTickerSeeds ?? Array.Empty<Action<CronTickerSeedBuilder, IServiceProvider>>())
-            declare(builder, serviceProvider);
-
-        var configuration = serviceProvider.GetService<IConfiguration>();
-        var logger = serviceProvider.GetService<Microsoft.Extensions.Logging.ILoggerFactory>()
-            ?.CreateLogger("TickerQ.Seeding");
-        var descriptors = TickerFunctionProvider.TickerFunctionDescriptors;
-        var seeds = new List<Utilities.Models.DefinedCronTickerSeed>(builder.Seeds.Count);
-
-        foreach (var declared in builder.Seeds)
-        {
-            if (!TickerFunctionProvider.TickerFunctions.ContainsKey(declared.Function))
-                throw new InvalidOperationException(
-                    $"Seeded cron ticker '{declared.Key}' targets function '{declared.Function}', which is not registered. " +
-                    "Check the [TickerFunction] name or the function registration.");
-
-            var expression = ResolveSeedExpression(declared, configuration);
-
-            // Resolve the authoritative contract identity so seeded rows carry it and stay under
-            // execution-time drift enforcement (Build() has already run).
-            int? contractVersion = null;
-            string fingerprint = null;
-            var canSeed = true;
-            if (descriptors.TryGetValue(declared.Function, out var descriptor))
-            {
-                var contract = descriptor.Request;
-
-                // Seeded crons have no payload. Required contracts cannot be satisfied, and an incomplete
-                // optional identity cannot participate in drift enforcement. Such seeds become cleanup
-                // commands so providers can remove a previously seeded row instead of persisting an invalid one.
-                canSeed = contract is not { Required: true }
-                    && (contract == null || !string.IsNullOrWhiteSpace(contract.Fingerprint));
-                if (!canSeed)
-                    Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
-                        "Seeded cron ticker {Key} was not created: function {Function} requires a request payload, " +
-                        "and seeded crons have none. Create it with the cron manager and a request instead.",
-                        declared.Key, declared.Function);
-
-                contractVersion = descriptor.ContractVersion;
-                fingerprint = contract?.Fingerprint;
-            }
-
-            seeds.Add(new Utilities.Models.DefinedCronTickerSeed(
-                declared.Function, expression, contractVersion, fingerprint, canSeed,
-                stableDefinitionId: declared.Key, retries: declared.Retries,
-                retryIntervals: declared.RetryIntervals, timeoutSeconds: declared.TimeoutSeconds));
-        }
-
-        return seeds;
-    }
-
-    private static string ResolveSeedExpression(CronTickerSeedDefinition declared, IConfiguration configuration)
-    {
-        var expression = declared.Expression;
-        if (expression.Length > 2 && expression[0] == '%' && expression[^1] == '%')
-        {
-            var key = expression[1..^1];
-            var resolved = configuration?[key];
-            if (string.IsNullOrWhiteSpace(resolved))
-                throw new InvalidOperationException(
-                    $"Seeded cron ticker '{declared.Key}' uses configuration key '{key}', which has no value.");
-            expression = resolved.Trim();
-        }
-
-        if (!Utilities.CronExpression.TryParse(expression, out _))
-            throw new InvalidOperationException(
-                $"Seeded cron ticker '{declared.Key}' has an invalid cron expression '{expression}'.");
-        return expression;
     }
 }

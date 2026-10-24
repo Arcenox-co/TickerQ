@@ -2007,40 +2007,13 @@ namespace TickerQ.Provider
                             canonical.UpdatedAt = now;
                         }
 
-                        if (!string.Equals(canonical.Expression, seed.Expression, StringComparison.Ordinal))
-                        {
-                            canonical.Expression = seed.Expression;
+                        // Expression, contract identity (seeded rows only), retries, timeout, and the full
+                        // SeedCronTickers definition: time zone, policy, request, chain, late start, catch-up, overlap.
+                        var seedChange = DefinedCronSeedApplier.Apply(
+                            canonical, seed, !string.IsNullOrEmpty(canonical.InitIdentifier));
+                        if (seedChange.Changed)
                             canonical.UpdatedAt = now;
-                            definitionChanged = true;
-                        }
-
-                        // Reconcile authoritative contract identity onto seeded rows only; legacy/dashboard
-                        // rows (no seed InitIdentifier) keep their own identity.
-                        if (!string.IsNullOrEmpty(canonical.InitIdentifier)
-                            && !seed.MatchesIdentity(canonical.RequestContractVersion, canonical.RequestContractFingerprint))
-                        {
-                            canonical.RequestContractVersion = seed.RequestContractVersion;
-                            canonical.RequestContractFingerprint = seed.RequestContractFingerprint;
-                            canonical.UpdatedAt = now;
-                            definitionChanged = true;
-                        }
-
-                        if (canonical.Retries != seed.Retries)
-                        {
-                            canonical.Retries = seed.Retries;
-                            definitionChanged = true;
-                        }
-                        if (!(canonical.RetryIntervals ?? Array.Empty<int>()).SequenceEqual(
-                                seed.RetryIntervals ?? Array.Empty<int>()))
-                        {
-                            canonical.RetryIntervals = seed.RetryIntervals;
-                            definitionChanged = true;
-                        }
-                        if (canonical.TimeoutSeconds != seed.TimeoutSeconds)
-                        {
-                            canonical.TimeoutSeconds = seed.TimeoutSeconds;
-                            definitionChanged = true;
-                        }
+                        definitionChanged |= seedChange.DefinitionChanged;
 
                         if (definitionChanged)
                         {
@@ -2086,13 +2059,8 @@ namespace TickerQ.Provider
                             InitIdentifier = $"MemoryTicker_Seeded_{seed.Function}",
                             CreatedAt = now,
                             UpdatedAt = now,
-                            Request = Array.Empty<byte>(),
-                            RequestContractVersion = seed.RequestContractVersion,
-                            RequestContractFingerprint = seed.RequestContractFingerprint,
-                            Retries = seed.Retries,
-                            RetryIntervals = seed.RetryIntervals,
-                            TimeoutSeconds = seed.TimeoutSeconds
                         };
+                        DefinedCronSeedApplier.Initialize(cronTicker, seed);
 
                         // Atomic converge: a concurrent reconcile computing the same deterministic id wins
                         // the slot and both observers see exactly one row.

@@ -159,8 +159,8 @@ namespace TickerQ.Utilities.Models
         public bool IsOrphanedSeedKey(string seedKey) => !_desiredSeedKeys.Contains(seedKey);
 
         private static DefinedCronTickerSeed CloneSeed(DefinedCronTickerSeed seed)
-            => new(seed.Function, seed.Expression, seed.RequestContractVersion,
+            => seed.WithDefinition(new DefinedCronTickerSeed(seed.Function, seed.Expression, seed.RequestContractVersion,
                 seed.RequestContractFingerprint, seed.CanSeed, seed.StableDefinitionId, seed.Retries,
-                seed.RetryIntervals?.ToArray(), seed.TimeoutSeconds);
+                seed.RetryIntervals?.ToArray(), seed.TimeoutSeconds));
     }
 }

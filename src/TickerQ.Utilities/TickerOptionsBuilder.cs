@@ -41,7 +41,7 @@ namespace TickerQ.Utilities
         internal bool SeedDefinedCronTickers { get; set; } = true;
 
         /// <summary>Cron ticker declarations, evaluated when a new reconciliation epoch activates.</summary>
-        internal List<Action<CronTickerSeedBuilder, IServiceProvider>> CronTickerSeeds { get; } = new();
+        internal List<Action<CronTickerSeedBuilder<TCronTicker>, IServiceProvider>> CronTickerSeeds { get; } = new();
         internal long ReconciliationEpoch { get; private set; }
         internal string ApplicationNamespace { get; private set; }
         internal Dictionary<string, string> LegacyDefinedCronOwnership { get; } = new(StringComparer.Ordinal);
@@ -86,7 +86,7 @@ namespace TickerQ.Utilities
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.TimeSeederAction => TimeSeederAction;
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.CronSeederAction => CronSeederAction;
         Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task> ITickerOptionsSeeding.SchedulePolicySeederAction => SchedulePolicySeederAction;
-        IReadOnlyList<Action<CronTickerSeedBuilder, IServiceProvider>> ITickerOptionsSeeding.CronTickerSeeds => CronTickerSeeds;
+        Func<IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task<IReadOnlyList<DefinedCronTickerSeed>>> ITickerOptionsSeeding.CronTickerSeedFactory => BuildCronTickerSeedsAsync;
 
         internal Action<IServiceCollection> ExternalProviderConfigServiceAction { get; set; }
         internal Action<IServiceCollection> DashboardServiceAction { get; set; }
@@ -212,19 +212,24 @@ namespace TickerQ.Utilities
         }
 
         /// <summary>
-        /// Declares the cron tickers this application owns. TickerQ reconciles the full list when a new
-        /// reconciliation epoch activates: each cron is created once, updated in place when its definition
-        /// changes, and retired after the grace period when it is removed. Restarts with the same epoch and
-        /// concurrent replicas never create duplicates. Can be called more than once; declarations combine.
+        /// Declares the cron tickers this application owns, with the same builder as
+        /// <c>ICronTickerManager.AddChainAsync</c>. TickerQ reconciles the full list when a new reconciliation
+        /// epoch activates: each cron is created once, updated in place when its definition changes, and
+        /// retired after the grace period when it is removed. Restarts with the same epoch and concurrent
+        /// replicas never create duplicates. Can be called more than once; declarations combine.
         /// </summary>
         /// <example>
         /// <code>
         /// options.SeedCronTickers(crons => crons
-        ///     .Add("DailyReport", "0 0 9 * * *", cron => cron.WithRetries(2, 300))
-        ///     .Add("Cleanup", "%Cleanup:Cron%"));
+        ///     .Add("Heartbeat", "* * * * *")
+        ///     .Add(cron => cron
+        ///         .WithExpression("0 0 9 * * 1-5")
+        ///         .InTimeZone("Europe/Berlin")
+        ///         .UsingPolicy("Business hours")
+        ///         .StartWith("DailyReport", step => step.Retries = 2)));
         /// </code>
         /// </example>
-        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedCronTickers(Action<CronTickerSeedBuilder> seeds)
+        public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedCronTickers(Action<CronTickerSeedBuilder<TCronTicker>> seeds)
         {
             if (seeds == null) throw new ArgumentNullException(nameof(seeds));
             CronTickerSeeds.Add((builder, _) => seeds(builder));
@@ -236,11 +241,85 @@ namespace TickerQ.Utilities
         /// configuration. Evaluated at startup when a new reconciliation epoch activates.
         /// </summary>
         public TickerOptionsBuilder<TTimeTicker, TCronTicker> SeedCronTickers(
-            Action<CronTickerSeedBuilder, IServiceProvider> seeds)
+            Action<CronTickerSeedBuilder<TCronTicker>, IServiceProvider> seeds)
         {
             if (seeds == null) throw new ArgumentNullException(nameof(seeds));
             CronTickerSeeds.Add(seeds);
             return this;
+        }
+
+        /// <summary>
+        /// Builds and validates every declared cron with the cron manager's rules. Runs at startup after
+        /// schedule policies are seeded, so a seeded cron may use a seeded policy.
+        /// </summary>
+        internal async System.Threading.Tasks.Task<IReadOnlyList<DefinedCronTickerSeed>> BuildCronTickerSeedsAsync(
+            IServiceProvider serviceProvider, System.Threading.CancellationToken cancellationToken)
+        {
+            var declarations = new CronTickerSeedBuilder<TCronTicker>();
+            foreach (var declare in CronTickerSeeds)
+                declare(declarations, serviceProvider);
+            if (declarations.Entries.Count == 0)
+                return Array.Empty<DefinedCronTickerSeed>();
+
+            var manager = serviceProvider.GetRequiredService<ICronTickerManager<TCronTicker>>()
+                as Managers.TickerManager<TTimeTicker, TCronTicker>
+                ?? throw new InvalidOperationException("Seeded cron tickers require the built-in cron manager.");
+            var configuration = serviceProvider.GetService<Microsoft.Extensions.Configuration.IConfiguration>();
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            var seeds = new List<DefinedCronTickerSeed>(declarations.Entries.Count);
+
+            foreach (var entry in declarations.Entries)
+            {
+                TCronTicker cron;
+                try
+                {
+                    var builder = new Managers.CronTickerChainBuilder<TCronTicker>(() => new TCronTicker());
+                    entry.Configure(builder);
+                    cron = builder.Build();
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    throw new InvalidOperationException(
+                        $"Seeded cron ticker '{entry.Key ?? "(unnamed)"}' could not be built: {exception.Message}", exception);
+                }
+
+                var key = entry.Key ?? cron.Function;
+                if (!keys.Add(key))
+                    throw new InvalidOperationException(
+                        $"A cron ticker with key '{key}' is already seeded. Use Add(\"key\", cron => ...) to seed the same function on several schedules.");
+
+                cron.Expression = ResolveSeedExpression(key, cron.Expression, configuration);
+                try
+                {
+                    await manager.ValidateSeededCronAsync(cron, cancellationToken).ConfigureAwait(false);
+                }
+                catch (TickerQ.Utilities.Exceptions.TickerValidatorException exception)
+                {
+                    throw new InvalidOperationException($"Seeded cron ticker '{key}' is invalid: {exception.Message}", exception);
+                }
+
+                seeds.Add(DefinedCronTickerSeed.FromValidatedCron(key, cron));
+            }
+
+            return seeds;
+        }
+
+        private static string ResolveSeedExpression(string key, string expression,
+            Microsoft.Extensions.Configuration.IConfiguration configuration)
+        {
+            if (expression is { Length: > 2 } && expression[0] == '%' && expression[^1] == '%')
+            {
+                var configurationKey = expression[1..^1];
+                var resolved = configuration?[configurationKey];
+                if (string.IsNullOrWhiteSpace(resolved))
+                    throw new InvalidOperationException(
+                        $"Seeded cron ticker '{key}' uses configuration key '{configurationKey}', which has no value.");
+                expression = resolved.Trim();
+            }
+
+            if (!CronExpression.TryParse(expression, out _))
+                throw new InvalidOperationException($"Seeded cron ticker '{key}' has an invalid cron expression '{expression}'.");
+            return expression;
         }
 
         /// <summary>

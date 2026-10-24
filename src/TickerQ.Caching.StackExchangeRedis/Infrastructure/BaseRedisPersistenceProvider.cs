@@ -1877,44 +1877,11 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                     changed = true;
                 }
 
-                if (!string.Equals(cron.Expression, seed.Expression, StringComparison.Ordinal))
-                {
-                    cron.Expression = seed.Expression;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                // Reconcile authoritative contract identity onto seeded rows only; legacy/dashboard
-                // rows (no seed InitIdentifier) keep their own identity.
-                if (!string.IsNullOrEmpty(cron.InitIdentifier)
-                    && !seed.MatchesIdentity(cron.RequestContractVersion, cron.RequestContractFingerprint))
-                {
-                    cron.RequestContractVersion = seed.RequestContractVersion;
-                    cron.RequestContractFingerprint = seed.RequestContractFingerprint;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                if (cron.Retries != seed.Retries)
-                {
-                    cron.Retries = seed.Retries;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                if (!(cron.RetryIntervals ?? []).SequenceEqual(seed.RetryIntervals ?? []))
-                {
-                    cron.RetryIntervals = seed.RetryIntervals;
-                    changed = true;
-                    definitionChanged = true;
-                }
-
-                if (cron.TimeoutSeconds != seed.TimeoutSeconds)
-                {
-                    cron.TimeoutSeconds = seed.TimeoutSeconds;
-                    changed = true;
-                    definitionChanged = true;
-                }
+                // Expression, contract identity (seeded rows only), retries, timeout, and the full
+                // SeedCronTickers definition: time zone, policy, request, chain, late start, catch-up, overlap.
+                var seedChange = DefinedCronSeedApplier.Apply(cron, seed, !string.IsNullOrEmpty(cron.InitIdentifier));
+                changed |= seedChange.Changed;
+                definitionChanged |= seedChange.DefinitionChanged;
 
                 if (definitionChanged)
                 {
@@ -1985,13 +1952,8 @@ internal abstract class BaseRedisPersistenceProvider<TTimeTicker, TCronTicker>
                     InitIdentifier = $"{seedPrefix}{seed.Function}",
                     CreatedAt = now,
                     UpdatedAt = now,
-                    Request = [],
-                    RequestContractVersion = seed.RequestContractVersion,
-                    RequestContractFingerprint = seed.RequestContractFingerprint,
-                    Retries = seed.Retries,
-                    RetryIntervals = seed.RetryIntervals,
-                    TimeoutSeconds = seed.TimeoutSeconds
                 };
+                DefinedCronSeedApplier.Initialize(entity, seed);
                 await WriteCronDefinitionAtomicAsync(entity, cancellationToken, allowActivating: true,
                     expectedDefinitionRevision: 0).ConfigureAwait(false);
             }

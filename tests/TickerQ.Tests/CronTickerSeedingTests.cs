@@ -6,13 +6,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using NSubstitute;
-using TickerQ.BackgroundServices;
+using TickerQ.DependencyInjection;
 using TickerQ.Utilities;
 using TickerQ.Utilities.Base;
 using TickerQ.Utilities.Entities;
 using TickerQ.Utilities.Enums;
-using TickerQ.Utilities.Infrastructure;
+using TickerQ.Utilities.Interfaces;
 using TickerQ.Utilities.Interfaces.Managers;
 using TickerQ.Utilities.Models;
 using Xunit;
@@ -20,15 +19,20 @@ using Xunit;
 namespace TickerQ.Tests;
 
 /// <summary>
-/// Cron tickers are seeded only from options.SeedCronTickers(...). The function attribute and the
-/// code-first registration builder no longer declare crons.
+/// Cron tickers are seeded only from options.SeedCronTickers(...), using the recurring-chain builder and
+/// the cron manager's validation. The function attribute and WithCron(...) no longer declare crons.
 /// </summary>
 [Collection("TickerFunctionProviderState")]
-public class CronTickerSeedingTests : IDisposable
+public sealed class CronTickerSeedingTests : IDisposable
 {
+    private readonly string _prefix = "seed" + Guid.NewGuid().ToString("N")[..8] + ".";
+    private readonly string _namespace = "seed-tests-" + Guid.NewGuid().ToString("N")[..8];
+
     public CronTickerSeedingTests() => ResetProvider();
 
     public void Dispose() => ResetProvider();
+
+    private string Fn(string name) => _prefix + name;
 
     [Fact]
     public void Attribute_cron_constructor_is_a_compile_error()
@@ -40,190 +44,239 @@ public class CronTickerSeedingTests : IDisposable
         Assert.NotNull(obsolete);
         Assert.True(obsolete!.IsError);
         Assert.Contains("SeedCronTickers", obsolete.Message);
-
-        var supported = typeof(TickerFunctionAttribute).GetConstructor(
-            [typeof(string), typeof(TickerTaskPriority), typeof(int)]);
-        Assert.NotNull(supported);
-        Assert.Null(supported!.GetCustomAttribute<ObsoleteAttribute>());
+        Assert.Null(typeof(TickerFunctionAttribute)
+            .GetConstructor([typeof(string), typeof(TickerTaskPriority), typeof(int)])!
+            .GetCustomAttribute<ObsoleteAttribute>());
     }
 
     [Fact]
     public void Registration_builder_WithCron_is_a_compile_error()
     {
-        var withCron = typeof(TickerFunctionBuilder).GetMethod(nameof(TickerFunctionBuilder.WithCron));
-        var obsolete = withCron?.GetCustomAttribute<ObsoleteAttribute>();
+        var obsolete = typeof(TickerFunctionBuilder).GetMethod(nameof(TickerFunctionBuilder.WithCron))
+            ?.GetCustomAttribute<ObsoleteAttribute>();
 
         Assert.NotNull(obsolete);
         Assert.True(obsolete!.IsError);
     }
 
     [Fact]
-    public void Builder_defaults_the_key_to_the_function_and_maps_retries_and_timeout()
+    public async Task Nothing_is_seeded_unless_declared()
     {
-        var builder = new CronTickerSeedBuilder()
-            .Add("DailyReport", "0 0 9 * * *", cron => cron
-                .WithRetries(2, 300, 900)
-                .WithTimeout(TimeSpan.FromSeconds(90.5)))
-            .Add("DailyReport", "0 0 18 * * *", cron => cron.WithKey("DailyReport:evening"));
+        Register(("RegistryCron", "* * * * *"));
 
-        var morning = builder.Seeds[0];
-        Assert.Equal("DailyReport", morning.Key);
-        Assert.Equal(2, morning.Retries);
-        Assert.Equal([300, 900], morning.RetryIntervals);
-        Assert.Equal(91, morning.TimeoutSeconds);
+        var seeds = await BuildSeeds(_ => { });
 
-        var evening = builder.Seeds[1];
-        Assert.Equal("DailyReport:evening", evening.Key);
-        Assert.Equal(0, evening.Retries);
-        Assert.Null(evening.RetryIntervals);
-        Assert.Null(evening.TimeoutSeconds);
+        Assert.Empty(seeds);
     }
 
     [Fact]
-    public void Builder_rejects_duplicate_keys_and_invalid_settings()
+    public async Task Shorthand_and_chain_builder_seeds_carry_the_full_definition()
     {
-        var builder = new CronTickerSeedBuilder().Add("DailyReport", "0 0 9 * * *");
+        Register(("Heartbeat", null), ("Report", null), ("Email", null), ("Archive", null), ("Done", null));
+        var services = Services(options => options.SeedCronTickers(crons => crons
+            .Add(Fn("Heartbeat"), "* * * * *")
+            .Add(cron => cron
+                .WithExpression("0 0 9 * * *")
+                .InTimeZone("Europe/Berlin")
+                .UsingPolicy("business HOURS")
+                .SkipIfAlreadyRunning()
+                .WithDescription("Daily report")
+                .Enabled(false)
+                .StartWith(Fn("Report"), step => { step.Retries = 2; step.RetryIntervals = [300]; })
+                .ThenMany(branches =>
+                {
+                    branches.Add(Fn("Email"));
+                    branches.Add(Fn("Archive"));
+                })
+                .ThenAfterAll(Fn("Done")))
+            .Add("evening", cron => cron.WithExpression("0 0 18 * * *").StartWith(Fn("Report")))));
+        await CreatePolicy(services, "Business hours");
 
-        var duplicate = Assert.Throws<InvalidOperationException>(() => builder.Add("DailyReport", "0 0 10 * * *"));
-        Assert.Contains("WithKey", duplicate.Message);
-        Assert.Throws<ArgumentException>(() => builder.Add(" ", "* * * * *"));
-        Assert.Throws<ArgumentException>(() => builder.Add("Other", " "));
-        Assert.Throws<ArgumentOutOfRangeException>(() => builder.Add("Other", "* * * * *", c => c.WithRetries(-1)));
-        Assert.Throws<ArgumentOutOfRangeException>(() => builder.Add("Other", "* * * * *", c => c.WithRetries(1, -5)));
-        Assert.Throws<ArgumentOutOfRangeException>(() => builder.Add("Other", "* * * * *", c => c.WithTimeout(TimeSpan.Zero)));
+        var seeds = await BuildSeeds(services);
+
+        Assert.Equal([Fn("Heartbeat"), Fn("Report"), "evening"], seeds.Select(seed => seed.StableDefinitionId));
+        var heartbeat = seeds[0];
+        Assert.Null(heartbeat.Definition!.Chain);
+        Assert.Null(heartbeat.Definition.SchedulePolicyName);
+
+        var report = seeds[1];
+        Assert.Equal(2, report.Retries);
+        Assert.Equal([300], report.RetryIntervals);
+        Assert.Equal("Europe/Berlin", report.Definition!.TimeZoneId);
+        Assert.Equal("Business hours", report.Definition.SchedulePolicyName);
+        Assert.NotNull(report.Definition.SchedulePolicyVersion);
+        Assert.Equal(BlockedOccurrenceBehavior.Skip, report.Definition.BlockedOccurrenceBehavior);
+        Assert.True(report.Definition.SkipIfAlreadyRunning);
+        Assert.Equal("Daily report", report.Definition.Description);
+        Assert.False(report.Definition.IsEnabled);
+        var group = Assert.Single(report.Definition.Chain!.Children);
+        Assert.Equal(2, group.Children.Count(child => child.Function != Fn("Done")));
     }
 
     [Fact]
-    public void Options_builder_combines_declarations_from_several_calls()
+    public async Task A_policy_that_does_not_exist_fails_startup()
     {
-        var options = new TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>(
-            new TickerExecutionContext(), new SchedulerOptionsBuilder());
-        options.SeedCronTickers(crons => crons.Add("A", "* * * * *"));
-        options.SeedCronTickers((crons, _) => crons.Add("B", "* * * * *"));
+        Register(("Report", null));
 
-        var builder = new CronTickerSeedBuilder();
-        foreach (var declare in ((ITickerOptionsSeeding)options).CronTickerSeeds)
-            declare(builder, null!);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => BuildSeeds(options =>
+            options.SeedCronTickers(crons => crons.Add(cron => cron
+                .WithExpression("0 0 9 * * *").UsingPolicy("Missing policy").StartWith(Fn("Report"))))));
 
-        Assert.Equal(["A", "B"], builder.Seeds.Select(seed => seed.Function));
+        Assert.Contains($"Seeded cron ticker '{Fn("Report")}' is invalid", error.Message);
+        Assert.Contains("Schedule policy 'Missing policy' does not exist", error.Message);
     }
 
     [Fact]
-    public void A_function_with_a_registry_cron_is_not_seeded_unless_declared()
+    public async Task A_policy_that_never_allows_the_expression_fails_startup()
     {
-        Register("LegacyCron", "* * * * *");
-        Register("Declared", null);
-        TickerFunctionProvider.Build();
+        Register(("Report", null));
+        var services = Services(options => options.SeedCronTickers(crons => crons.Add(cron => cron
+            .WithExpression("0 0 12 * * *").UsingPolicy("Mornings").StartWith(Fn("Report")))));
+        await services.GetRequiredService<ISchedulePolicyManager>().UpsertAsync(
+            SchedulePolicy.Create("Mornings").AllowBetween(new TimeOnly(8, 0), new TimeOnly(10, 0)).Build());
 
-        var seeds = TickerQInitializerHostedService.BuildDefinedCronSeeds(
-            Services(crons => crons.Add("Declared", "0 */5 * * * *", c => c.WithRetries(3, 60))));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => BuildSeeds(services));
 
-        var seed = Assert.Single(seeds);
-        Assert.Equal("Declared", seed.Function);
-        Assert.Equal("Declared", seed.StableDefinitionId);
-        Assert.Equal("0 */5 * * * *", seed.Expression);
-        Assert.Equal(3, seed.Retries);
-        Assert.Equal([60], seed.RetryIntervals);
-        Assert.True(seed.CanSeed);
-    }
-
-    [Fact]
-    public void Configuration_placeholders_are_resolved_at_startup()
-    {
-        Register("Reports", null);
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["Reports:Cron"] = "*/10 * * * *" })
-            .Build();
-        TickerFunctionProvider.Build();
-
-        var seed = Assert.Single(TickerQInitializerHostedService.BuildDefinedCronSeeds(
-            Services(crons => crons.Add("Reports", "%Reports:Cron%"), configuration)));
-
-        Assert.Equal("*/10 * * * *", seed.Expression);
+        Assert.Contains("has no allowed future occurrence", error.Message);
     }
 
     [Theory]
-    [InlineData("Missing", "* * * * *", "not registered")]
-    [InlineData("Reports", "%Reports:Missing%", "has no value")]
-    [InlineData("Reports", "not a cron", "invalid cron expression")]
-    public void Startup_fails_clearly_for_bad_seeds(string function, string expression, string message)
+    [InlineData("Missing", "* * * * *", "is invalid")]
+    [InlineData("Report", "%Reports:Missing%", "has no value")]
+    [InlineData("Report", "not a cron", "invalid cron expression")]
+    public async Task Bad_seeds_fail_startup_clearly(string function, string expression, string message)
     {
-        Register("Reports", null);
-        TickerFunctionProvider.Build();
+        Register(("Report", null));
 
-        var error = Assert.Throws<InvalidOperationException>(() =>
-            TickerQInitializerHostedService.BuildDefinedCronSeeds(Services(crons => crons.Add(function, expression))));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => BuildSeeds(options =>
+            options.SeedCronTickers(crons => crons.Add(Fn(function), expression))));
 
         Assert.Contains(message, error.Message);
     }
 
     [Fact]
-    public async Task Startup_reconciles_only_declared_crons()
+    public async Task Duplicate_keys_fail_startup()
     {
-        Register("LegacyCron", "* * * * *");
-        Register("Declared", null);
-        var internalManager = Substitute.For<IInternalTickerManager>();
-        ActivationEpochTestDouble.Configure(internalManager);
-        DefinedCronTickerSeed[]? captured = null;
-        internalManager
-            .When(m => m.MigrateDefinedCronTickers(Arg.Any<DefinedCronSeedManifest>(), Arg.Any<CancellationToken>()))
-            .Do(call => captured = call.Arg<DefinedCronSeedManifest>().Seeds.ToArray());
+        Register(("Report", null));
 
-        var context = new TickerExecutionContext
-        {
-            OptionsSeeding = new TestOptionsSeeding
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => BuildSeeds(options =>
+            options.SeedCronTickers(crons => crons
+                .Add(Fn("Report"), "* * * * *")
+                .Add(cron => cron.WithExpression("0 0 9 * * *").StartWith(Fn("Report"))))));
+
+        Assert.Contains("already seeded", error.Message);
+    }
+
+    [Fact]
+    public async Task Configuration_placeholders_and_service_overload_are_resolved()
+    {
+        Register(("Report", null), ("Export", null));
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                CronTickerSeeds = [(crons, _) => crons.Add("Declared", "0 0 9 * * *")],
-            },
-        };
-        var configuration = Substitute.For<IConfiguration>();
-        var services = new ServiceCollection();
-        services.AddSingleton(context);
-        services.AddSingleton(configuration);
-        services.AddSingleton(internalManager);
-        services.AddSingleton(new SchedulerOptionsBuilder());
-        var provider = services.BuildServiceProvider();
+                ["Reports:Cron"] = "*/10 * * * *",
+                ["Export:Cron"] = "0 0 1 * * *",
+            })
+            .Build();
 
-        await new TickerQInitializerHostedService(context, provider, configuration, LicenseTestState.Active())
-        {
-            InitializationRequested = true
-        }.StartAsync(CancellationToken.None);
+        var seeds = await BuildSeeds(Services(options => options
+            .SeedCronTickers(crons => crons.Add(Fn("Report"), "%Reports:Cron%"))
+            .SeedCronTickers((crons, services) => crons.Add(
+                Fn("Export"), services.GetRequiredService<IConfiguration>()["Export:Cron"]!)), configuration));
 
-        Assert.NotNull(captured);
-        Assert.Equal(["Declared"], captured!.Select(seed => seed.Function));
+        Assert.Equal(["*/10 * * * *", "0 0 1 * * *"], seeds.Select(seed => seed.Expression));
+    }
+
+    [Fact]
+    public async Task Reconciling_the_same_seeds_again_creates_no_duplicate_and_updates_in_place()
+    {
+        Register(("Report", null), ("Email", null));
+        var services = Services(options => options.SeedCronTickers(crons => crons.Add(cron => cron
+            .WithExpression("0 0 9 * * *")
+            .InTimeZone("Europe/Berlin")
+            .Enabled(false)
+            .StartWith(Fn("Report"), step => step.Retries = 1)
+            .Then(Fn("Email")))));
+        var provider = services.GetRequiredService<ITickerPersistenceProvider<TimeTickerEntity, CronTickerEntity>>();
+        var scope = new ReconciliationActivationScope(_namespace);
+        await provider.BeginReconciliationActivationEpochAsync(scope, 1, CancellationToken.None);
+        using var admission = StartupSeederAdmissionContext.Enter(scope.ScopeKey, 1);
+        var seeds = await BuildSeeds(services);
+
+        await provider.MigrateDefinedCronTickers(new DefinedCronSeedManifest(_namespace, seeds.ToList()));
+        var created = Assert.Single(await provider.GetCronTickers(c => c.Function == Fn("Report"), CancellationToken.None));
+        Assert.Equal("Europe/Berlin", created.TimeZoneId);
+        Assert.Equal(1, created.Retries);
+        Assert.False(created.IsEnabled);
+        Assert.Equal(Fn("Email"), Assert.Single(created.Chain!.Children).Function);
+
+        // An operator enables it in the dashboard; reconciling the same list again changes nothing.
+        created.IsEnabled = true;
+        await provider.UpdateCronTickers([created], CancellationToken.None);
+        await provider.MigrateDefinedCronTickers(new DefinedCronSeedManifest(_namespace, seeds.ToList()));
+        var again = Assert.Single(await provider.GetCronTickers(c => c.Function == Fn("Report"), CancellationToken.None));
+        Assert.Equal(created.Id, again.Id);
+        Assert.True(again.IsEnabled);
+        var revision = again.DefinitionRevision;
+
+        // A changed definition updates the same row and bumps its revision.
+        var changed = await BuildSeeds(Services(options => options.SeedCronTickers(crons => crons.Add(cron => cron
+            .WithExpression("0 0 9 * * *")
+            .InTimeZone("Europe/Tirane")
+            .StartWith(Fn("Report"), step => step.Retries = 3)
+            .Then(Fn("Email"))))));
+        await provider.MigrateDefinedCronTickers(new DefinedCronSeedManifest(_namespace, changed.ToList()));
+        var updated = Assert.Single(await provider.GetCronTickers(c => c.Function == Fn("Report"), CancellationToken.None));
+        Assert.Equal(created.Id, updated.Id);
+        Assert.Equal("Europe/Tirane", updated.TimeZoneId);
+        Assert.Equal(3, updated.Retries);
+        Assert.True(updated.IsEnabled);
+        Assert.True(updated.DefinitionRevision > revision);
     }
 
     [Fact]
     public void Dashboard_marks_seeded_crons()
     {
-        Assert.True(TickerDashboardDataService<TimeTickerEntity, CronTickerEntity>.IsSeededCron(
+        Assert.True(Utilities.Infrastructure.TickerDashboardDataService<TimeTickerEntity, CronTickerEntity>.IsSeededCron(
             new CronTickerEntity { SeedKey = "tq:cron-seed:v2:abc" }));
-        Assert.False(TickerDashboardDataService<TimeTickerEntity, CronTickerEntity>.IsSeededCron(
+        Assert.False(Utilities.Infrastructure.TickerDashboardDataService<TimeTickerEntity, CronTickerEntity>.IsSeededCron(
             new CronTickerEntity()));
     }
 
-    private static IServiceProvider Services(Action<CronTickerSeedBuilder> seeds, IConfiguration? configuration = null)
+    private IServiceProvider Services(Action<TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>> configure,
+        IConfiguration? configuration = null)
     {
         var services = new ServiceCollection();
-        services.AddSingleton(new TickerExecutionContext
+        services.AddLogging();
+        services.AddSingleton(configuration ?? new ConfigurationBuilder().Build());
+        services.AddTickerQ(options =>
         {
-            OptionsSeeding = new TestOptionsSeeding { CronTickerSeeds = [(builder, _) => seeds(builder)] },
+            options.UseApplicationNamespace(_namespace);
+            options.UseReconciliationEpoch(1);
+            configure(options);
         });
-        if (configuration != null) services.AddSingleton(configuration);
         return services.BuildServiceProvider();
     }
 
-    private static void Register(string name, string? cron)
+    private Task<IReadOnlyList<DefinedCronTickerSeed>> BuildSeeds(
+        Action<TickerOptionsBuilder<TimeTickerEntity, CronTickerEntity>> configure)
+        => BuildSeeds(Services(configure));
+
+    private static async Task<IReadOnlyList<DefinedCronTickerSeed>> BuildSeeds(IServiceProvider services)
     {
-        TickerFunctionProvider.RegisterFunctions(
-            new Dictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>
-            {
-                [name] = (cron ?? string.Empty, TickerTaskPriority.Normal, NoOp, 1)
-            });
-        TickerFunctionProvider.RegisterDescriptors(new Dictionary<string, TickerFunctionDescriptor>
-        {
-            [name] = new(name, TickerTaskPriority.Normal, cron),
-        });
+        var factory = services.GetRequiredService<TickerExecutionContext>().OptionsSeeding.CronTickerSeedFactory;
+        return await factory(services, CancellationToken.None);
+    }
+
+    private static Task CreatePolicy(IServiceProvider services, string name)
+        => services.GetRequiredService<ISchedulePolicyManager>().UpsertAsync(SchedulePolicy.Create(name).Build());
+
+    private void Register(params (string Name, string? Cron)[] functions)
+    {
+        TickerFunctionProvider.RegisterFunctions(functions.ToDictionary(
+            f => Fn(f.Name),
+            f => (f.Cron ?? string.Empty, TickerTaskPriority.Normal, (TickerFunctionDelegate)NoOp, 1)));
+        TickerFunctionProvider.Build();
     }
 
     private static Task NoOp(CancellationToken ct, IServiceProvider sp, TickerFunctionContext c) => Task.CompletedTask;
@@ -246,15 +299,5 @@ public class CronTickerSeedingTests : IDisposable
         type.GetField("_runtimeRequestRegistrations", flags)!.SetValue(null, null);
         ((System.Collections.IList)type.GetField("_pendingDescriptors", flags)!.GetValue(null)!).Clear();
         type.GetProperty("IsBuilt", flags)!.SetValue(null, false);
-    }
-
-    private sealed class TestOptionsSeeding : ITickerOptionsSeeding
-    {
-        public bool SeedDefinedCronTickers => true;
-        public long ReconciliationEpoch => 1;
-        public string ApplicationNamespace => "cron-seeding-tests";
-        public Func<IServiceProvider, CancellationToken, Task>? TimeSeederAction => null;
-        public Func<IServiceProvider, CancellationToken, Task>? CronSeederAction => null;
-        public IReadOnlyList<Action<CronTickerSeedBuilder, IServiceProvider>> CronTickerSeeds { get; init; } = [];
     }
 }

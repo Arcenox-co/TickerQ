@@ -381,4 +381,66 @@ public class DefinedCronTickerSeedingTests : IAsyncLifetime
         Assert.Equal(owner, row.SeedOwnerNamespace);
         Assert.Equal(CronSeedIdentity.SeedKey(owner, stableId), row.SeedKey);
     }
+
+    [Fact]
+    public async Task SeededDefinition_IsStoredAndUpdatedInPlace_WithoutChangingTheEnabledState()
+    {
+        static CronTickerEntity Definition(string zone, string child) => new()
+        {
+            Function = "Report",
+            Expression = "0 0 9 * * *",
+            TimeZoneId = zone,
+            SchedulePolicyName = "Business hours",
+            SchedulePolicyVersion = 3,
+            BlockedOccurrenceBehavior = BlockedOccurrenceBehavior.Skip,
+            MissedExecutionAction = MissedExecutionAction.Skip,
+            MaximumLateness = TimeSpan.FromMinutes(10),
+            SkipIfAlreadyRunning = true,
+            Description = "Daily report",
+            IsEnabled = false,
+            Retries = 2,
+            RetryIntervals = [300],
+            Request = [1, 2, 3],
+            Chain = new CronChainTemplate { Children = { new CronChainNode { Function = child } } },
+        };
+
+        await _provider.MigrateDefinedCronTickers(
+            new[] { DefinedCronTickerSeed.FromValidatedCron("Report", Definition("Europe/Berlin", "Email")) },
+            CancellationToken.None);
+
+        Guid id;
+        long revision;
+        using (var ctx = Ctx())
+        {
+            var row = await ctx.Set<CronTickerEntity>().SingleAsync(c => c.Function == "Report");
+            Assert.Equal("Europe/Berlin", row.TimeZoneId);
+            Assert.Equal("Business hours", row.SchedulePolicyName);
+            Assert.Equal(3, row.SchedulePolicyVersion);
+            Assert.Equal(MissedExecutionAction.Skip, row.MissedExecutionAction);
+            Assert.Equal(TimeSpan.FromMinutes(10), row.MaximumLateness);
+            Assert.True(row.SkipIfAlreadyRunning);
+            Assert.Equal("Daily report", row.Description);
+            Assert.False(row.IsEnabled);
+            Assert.Equal([1, 2, 3], row.Request);
+            Assert.Equal("Email", Assert.Single(row.Chain!.Children).Function);
+
+            // An operator enables the cron in the dashboard.
+            row.IsEnabled = true;
+            await ctx.SaveChangesAsync();
+            id = row.Id;
+            revision = row.DefinitionRevision;
+        }
+
+        await _provider.MigrateDefinedCronTickers(
+            new[] { DefinedCronTickerSeed.FromValidatedCron("Report", Definition("Europe/Tirane", "Archive")) },
+            CancellationToken.None);
+
+        using var verify = Ctx();
+        var updated = await verify.Set<CronTickerEntity>().AsNoTracking().SingleAsync(c => c.Function == "Report");
+        Assert.Equal(id, updated.Id);
+        Assert.Equal("Europe/Tirane", updated.TimeZoneId);
+        Assert.Equal("Archive", Assert.Single(updated.Chain!.Children).Function);
+        Assert.True(updated.IsEnabled);
+        Assert.True(updated.DefinitionRevision > revision);
+    }
 }
