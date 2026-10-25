@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
@@ -91,6 +92,44 @@ namespace TickerQ.Utilities.Interfaces.Managers
         /// </summary>
         Task<TickerOutcome> WaitForCompletionAsync(Guid id, TimeSpan timeout, CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support waiting for ticker completion.");
+
+        /// <summary>
+        /// Reads one time ticker in this application namespace, with its chain steps in Children.
+        /// Returns null when it does not exist (or retention has removed it).
+        /// </summary>
+        Task<TTimeTicker> GetAsync(Guid id, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support reading time tickers.");
+
+        /// <summary>
+        /// Lists every standalone job and chain root in this application namespace, newest first, with
+        /// chain steps in Children.
+        /// </summary>
+        Task<IReadOnlyList<TTimeTicker>> ListAsync(CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support listing time tickers.");
+
+        /// <summary>
+        /// Lists the standalone jobs and chain roots that match <paramref name="predicate"/>, newest first,
+        /// with chain steps in Children. Chain steps are not matched on their own: a predicate on a step's
+        /// function finds nothing unless its root also matches.
+        /// </summary>
+        Task<IReadOnlyList<TTimeTicker>> ListAsync(Expression<Func<TTimeTicker, bool>> predicate,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support listing time tickers.");
+
+        /// <summary>Lists the standalone jobs and chain roots of <typeparamref name="TFunction"/>, newest first.</summary>
+        Task<IReadOnlyList<TTimeTicker>> ListAsync<TFunction>(CancellationToken cancellationToken = default)
+            where TFunction : class, ITickerFunctionBase
+            => throw new NotSupportedException("This manager does not support listing time tickers.");
+
+        /// <summary>
+        /// Deletes the standalone jobs and chain roots that match <paramref name="predicate"/>, together with
+        /// their chain steps. Running or leased work is not deleted, and neither is a Restrict chain with
+        /// unfinished steps. Use <c>_ => true</c> to delete every ticker in this application namespace.
+        /// AffectedRows is the number of rows deleted, chain steps included.
+        /// </summary>
+        Task<TickerResult<TTimeTicker>> DeleteAsync(Expression<Func<TTimeTicker, bool>> predicate,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support deleting time tickers by filter.");
 
         /// <summary>Changes only the root's deletion policy, including for completed chains.</summary>
         Task<TickerResult<TTimeTicker>> SetDeleteBehaviorAsync(Guid rootId, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)

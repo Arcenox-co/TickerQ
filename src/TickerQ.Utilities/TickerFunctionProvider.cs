@@ -45,12 +45,12 @@ namespace TickerQ.Utilities
         // Type → function name mapping for manager.AddAsync<T>() lookups
         private static readonly Dictionary<Type, string> _typeMappings = new();
 
-        // Legacy compatibility mirror fields. These are assigned individually and are NOT claimed to
-        // be atomically co-published; the atomic unit is the snapshot below. Retained only so existing
-        // callers keep compiling/reading.
-        public static FrozenDictionary<string, (string, Type)> TickerFunctionRequestTypes = FrozenDictionary<string, (string, Type)>.Empty;
-        public static FrozenDictionary<string, (string RequestType, string RequestExampleJson)> TickerFunctionRequestInfos = FrozenDictionary<string, (string RequestType, string RequestExampleJson)>.Empty;
-        public static FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> TickerFunctions = FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>.Empty;
+        // Legacy compatibility mirrors. These are assigned individually and are NOT claimed to be
+        // atomically co-published; the atomic unit is the snapshot below. Retained only so existing
+        // callers keep reading them; only Build() and registration can replace them.
+        public static FrozenDictionary<string, (string, Type)> TickerFunctionRequestTypes { get; private set; } = FrozenDictionary<string, (string, Type)>.Empty;
+        public static FrozenDictionary<string, (string RequestType, string RequestExampleJson)> TickerFunctionRequestInfos { get; private set; } = FrozenDictionary<string, (string RequestType, string RequestExampleJson)>.Empty;
+        public static FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)> TickerFunctions { get; private set; } = FrozenDictionary<string, (string cronExpression, TickerTaskPriority Priority, TickerFunctionDelegate Delegate, int MaxConcurrency)>.Empty;
 
         // The one canonical, self-consistent registry snapshot — published as a single unit.
         private static TickerFunctionRegistrySnapshot _snapshot = TickerFunctionRegistrySnapshot.Empty;

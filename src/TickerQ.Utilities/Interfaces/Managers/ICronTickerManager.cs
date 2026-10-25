@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
@@ -109,6 +110,34 @@ namespace TickerQ.Utilities.Interfaces.Managers
         Task<TickerOutcome> WaitForCompletionAsync(Guid occurrenceId, TimeSpan timeout,
             CancellationToken cancellationToken = default)
             => throw new NotSupportedException("This manager does not support waiting for occurrence completion.");
+
+        /// <summary>Reads one cron ticker in this application namespace. Returns null when it does not exist.</summary>
+        Task<TCronTicker> GetAsync(Guid id, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support reading cron tickers.");
+
+        /// <summary>Lists every cron ticker in this application namespace, seeded ones included.</summary>
+        Task<IReadOnlyList<TCronTicker>> ListAsync(CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support listing cron tickers.");
+
+        /// <summary>Lists the cron tickers in this application namespace that match <paramref name="predicate"/>.</summary>
+        Task<IReadOnlyList<TCronTicker>> ListAsync(Expression<Func<TCronTicker, bool>> predicate,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support listing cron tickers.");
+
+        /// <summary>Lists the cron tickers of <typeparamref name="TFunction"/>.</summary>
+        Task<IReadOnlyList<TCronTicker>> ListAsync<TFunction>(CancellationToken cancellationToken = default)
+            where TFunction : class, ITickerFunctionBase
+            => throw new NotSupportedException("This manager does not support listing cron tickers.");
+
+        /// <summary>
+        /// Deletes the cron tickers that match <paramref name="predicate"/>, with their occurrences. Crons
+        /// declared with SeedCronTickers are kept: their code owns them, so remove them from the seed instead.
+        /// Use <c>_ => true</c> to delete every other cron in this application namespace. AffectedRows is the
+        /// number of cron tickers deleted.
+        /// </summary>
+        Task<TickerResult<TCronTicker>> DeleteAsync(Expression<Func<TCronTicker, bool>> predicate,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("This manager does not support deleting cron tickers by filter.");
 
         // Batch operations
         Task<TickerResult<List<TCronTicker>>> AddBatchAsync(List<TCronTicker> entities, CancellationToken cancellationToken = default);

@@ -103,11 +103,11 @@ public class TickerEndpointRegistrationTests : IDisposable
         var type = typeof(TickerFunctionProvider);
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public;
 
-        type.GetField("TickerFunctions", flags)!.SetValue(null,
+        type.GetProperty("TickerFunctions", flags)!.SetValue(null,
             System.Collections.Frozen.FrozenDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>.Empty);
-        type.GetField("TickerFunctionRequestTypes", flags)!.SetValue(null,
+        type.GetProperty("TickerFunctionRequestTypes", flags)!.SetValue(null,
             System.Collections.Frozen.FrozenDictionary<string, (string, Type)>.Empty);
-        type.GetField("TickerFunctionRequestInfos", flags)!.SetValue(null,
+        type.GetProperty("TickerFunctionRequestInfos", flags)!.SetValue(null,
             System.Collections.Frozen.FrozenDictionary<string, (string, string)>.Empty);
         type.GetField("_snapshot", flags)!.SetValue(null, TickerFunctionRegistrySnapshot.Empty);
         type.GetField("_functionRegistrations", flags)!.SetValue(null, null);

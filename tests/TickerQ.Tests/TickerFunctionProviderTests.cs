@@ -41,11 +41,11 @@ public class TickerFunctionProviderTests : IDisposable
         var type = typeof(TickerFunctionProvider);
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public;
 
-        type.GetField("TickerFunctions", flags)!.SetValue(null,
+        type.GetProperty("TickerFunctions", flags)!.SetValue(null,
             System.Collections.Frozen.FrozenDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>.Empty);
-        type.GetField("TickerFunctionRequestTypes", flags)!.SetValue(null,
+        type.GetProperty("TickerFunctionRequestTypes", flags)!.SetValue(null,
             System.Collections.Frozen.FrozenDictionary<string, (string, Type)>.Empty);
-        type.GetField("TickerFunctionRequestInfos", flags)!.SetValue(null,
+        type.GetProperty("TickerFunctionRequestInfos", flags)!.SetValue(null,
             System.Collections.Frozen.FrozenDictionary<string, (string, string)>.Empty);
         type.GetField("_snapshot", flags)!.SetValue(null, TickerFunctionRegistrySnapshot.Empty);
         type.GetField("_functionRegistrations", flags)!.SetValue(null, null);
@@ -55,6 +55,19 @@ public class TickerFunctionProviderTests : IDisposable
         type.GetField("_runtimeResultRegistrations", flags)!.SetValue(null, null);
         ((System.Collections.IList)type.GetField("_pendingDescriptors", flags)!.GetValue(null)!).Clear();
         type.GetProperty("IsBuilt", flags)!.SetValue(null, false);
+    }
+
+    [Theory]
+    [InlineData(nameof(TickerFunctionProvider.TickerFunctions))]
+    [InlineData(nameof(TickerFunctionProvider.TickerFunctionRequestTypes))]
+    [InlineData(nameof(TickerFunctionProvider.TickerFunctionRequestInfos))]
+    public void Registry_mirrors_cannot_be_replaced_from_outside(string name)
+    {
+        var property = typeof(TickerFunctionProvider).GetProperty(name, BindingFlags.Public | BindingFlags.Static);
+
+        Assert.NotNull(property);
+        Assert.NotNull(property!.GetGetMethod());
+        Assert.Null(property.GetSetMethod());
     }
 
     private static Task NoOpDelegate(CancellationToken ct, IServiceProvider sp, TickerQ.Utilities.Base.TickerFunctionContext ctx)

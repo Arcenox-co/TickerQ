@@ -88,7 +88,7 @@ public class TickerDashboardFunctionsCanonicalTests : IDisposable
             ["Canon.Job"] = ("Legacy.Wrong.Type", "{\"legacy\":999}")
         });
         typeof(TickerFunctionProvider)
-            .GetField("TickerFunctionRequestTypes", BindingFlags.Static | BindingFlags.Public)!
+            .GetProperty("TickerFunctionRequestTypes", BindingFlags.Static | BindingFlags.Public)!
             .SetValue(null, new Dictionary<string, (string, Type)>
             {
                 ["Canon.Job"] = ("Legacy.Reflected.Type", typeof(int))
@@ -223,7 +223,7 @@ public class TickerDashboardFunctionsCanonicalTests : IDisposable
             // Inject a legacy-only request-type entry (no matching descriptor) to prove membership is
             // sourced solely from the descriptor table — a legacy ghost must never appear.
             typeof(TickerFunctionProvider)
-                .GetField("TickerFunctionRequestTypes", BindingFlags.Static | BindingFlags.Public)!
+                .GetProperty("TickerFunctionRequestTypes", BindingFlags.Static | BindingFlags.Public)!
                 .SetValue(null, new Dictionary<string, (string, Type)>
                 {
                     ["Fluent.Typed.Job"] = (typeof(DashboardFluentRequest).FullName!, typeof(DashboardFluentRequest)),
@@ -254,11 +254,11 @@ public class TickerDashboardFunctionsCanonicalTests : IDisposable
         var type = typeof(TickerFunctionProvider);
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public;
 
-        type.GetField("TickerFunctions", flags)!.SetValue(null,
+        type.GetProperty("TickerFunctions", flags)!.SetValue(null,
             System.Collections.Frozen.FrozenDictionary<string, (string, TickerTaskPriority, TickerFunctionDelegate, int)>.Empty);
-        type.GetField("TickerFunctionRequestTypes", flags)!.SetValue(null,
+        type.GetProperty("TickerFunctionRequestTypes", flags)!.SetValue(null,
             System.Collections.Frozen.FrozenDictionary<string, (string, Type)>.Empty);
-        type.GetField("TickerFunctionRequestInfos", flags)!.SetValue(null,
+        type.GetProperty("TickerFunctionRequestInfos", flags)!.SetValue(null,
             System.Collections.Frozen.FrozenDictionary<string, (string, string)>.Empty);
         type.GetField("_snapshot", flags)!.SetValue(null, TickerFunctionRegistrySnapshot.Empty);
         type.GetField("_functionRegistrations", flags)!.SetValue(null, null);

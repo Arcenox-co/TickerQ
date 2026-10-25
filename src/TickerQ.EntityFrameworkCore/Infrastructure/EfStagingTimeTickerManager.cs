@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
@@ -47,6 +48,16 @@ internal sealed class EfStagingTimeTickerManager<TTimeTicker>(
         => inner.GetOutcomeAsync(id, cancellationToken);
     public Task<TickerOutcome> WaitForCompletionAsync(Guid id, TimeSpan timeout, CancellationToken cancellationToken = default)
         => inner.WaitForCompletionAsync(id, timeout, cancellationToken);
+    public Task<TTimeTicker> GetAsync(Guid id, CancellationToken cancellationToken = default)
+        => inner.GetAsync(id, cancellationToken);
+    public Task<IReadOnlyList<TTimeTicker>> ListAsync(CancellationToken cancellationToken = default)
+        => inner.ListAsync(cancellationToken);
+    public Task<IReadOnlyList<TTimeTicker>> ListAsync(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken = default)
+        => inner.ListAsync(predicate, cancellationToken);
+    public Task<IReadOnlyList<TTimeTicker>> ListAsync<TFunction>(CancellationToken cancellationToken = default)
+        where TFunction : class, ITickerFunctionBase => inner.ListAsync<TFunction>(cancellationToken);
+    public Task<TickerResult<TTimeTicker>> DeleteAsync(Expression<Func<TTimeTicker, bool>> predicate, CancellationToken cancellationToken = default)
+        => inner.DeleteAsync(predicate, cancellationToken);
     public Task<TickerResult<TTimeTicker>> RequestCancellationAsync(Guid id, CancellationToken cancellationToken = default)
         => inner.RequestCancellationAsync(id, cancellationToken);
     public Task<TickerResult<TTimeTicker>> SetDeleteBehaviorAsync(Guid id, ChainDeleteBehavior behavior, CancellationToken cancellationToken = default)

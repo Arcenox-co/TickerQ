@@ -48,6 +48,37 @@ public class TickerResultTests
         Assert.Equal(3, result.AffectedRows);
     }
 
+    [Fact]
+    public void EnsureSuccess_ReturnsTheSameResult_WhenSucceeded()
+    {
+        var result = CreateResultWithRows("value", 3);
+
+        Assert.Same(result, result.EnsureSuccess());
+        Assert.Equal(0, CreateAffectedRowsResult(0).EnsureSuccess().AffectedRows);
+    }
+
+    [Fact]
+    public void EnsureSuccess_RethrowsTheOriginalException_WithItsStackTrace()
+    {
+        InvalidOperationException original;
+        try { throw new InvalidOperationException("store unavailable"); }
+        catch (InvalidOperationException exception) { original = exception; }
+        var result = CreateFailureResult(original);
+
+        var thrown = Assert.Throws<InvalidOperationException>(() => result.EnsureSuccess());
+
+        Assert.Same(original, thrown);
+        Assert.Contains(nameof(EnsureSuccess_RethrowsTheOriginalException_WithItsStackTrace), thrown.StackTrace);
+    }
+
+    [Fact]
+    public void EnsureSuccess_Throws_WhenAFailureHasNoException()
+    {
+        var result = CreateFailureResult(null!);
+
+        Assert.Throws<InvalidOperationException>(() => result.EnsureSuccess());
+    }
+
     // Use reflection to create instances since constructors are internal
     private static TickerResult<string> CreateSuccessResult(string value)
     {

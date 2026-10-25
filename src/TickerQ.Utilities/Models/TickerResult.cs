@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Runtime.ExceptionServices;
 
 namespace TickerQ.Utilities.Models
 {
@@ -23,5 +24,19 @@ namespace TickerQ.Utilities.Models
         public readonly int AffectedRows;
         public readonly TEntity Result;
         public readonly Exception Exception;
+
+        /// <summary>
+        /// Throws <see cref="Exception"/>, with its original stack trace, when the operation failed; otherwise
+        /// returns this result so calls can be chained: <c>(await manager.AddAsync(job)).EnsureSuccess()</c>.
+        /// A failure without an exception throws <see cref="InvalidOperationException"/>.
+        /// </summary>
+        public TickerResult<TEntity> EnsureSuccess()
+        {
+            if (IsSucceeded)
+                return this;
+            if (Exception != null)
+                ExceptionDispatchInfo.Capture(Exception).Throw();
+            throw new InvalidOperationException("The TickerQ operation failed.");
+        }
     }
 }

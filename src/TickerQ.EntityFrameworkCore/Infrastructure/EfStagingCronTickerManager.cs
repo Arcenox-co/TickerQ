@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using TickerQ.Utilities.Entities;
@@ -52,6 +53,16 @@ internal sealed class EfStagingCronTickerManager<TCronTicker>(
         => inner.GetOutcomeAsync(occurrenceId, cancellationToken);
     public Task<TickerOutcome> WaitForCompletionAsync(Guid occurrenceId, TimeSpan timeout, CancellationToken cancellationToken = default)
         => inner.WaitForCompletionAsync(occurrenceId, timeout, cancellationToken);
+    public Task<TCronTicker> GetAsync(Guid id, CancellationToken cancellationToken = default)
+        => inner.GetAsync(id, cancellationToken);
+    public Task<IReadOnlyList<TCronTicker>> ListAsync(CancellationToken cancellationToken = default)
+        => inner.ListAsync(cancellationToken);
+    public Task<IReadOnlyList<TCronTicker>> ListAsync(Expression<Func<TCronTicker, bool>> predicate, CancellationToken cancellationToken = default)
+        => inner.ListAsync(predicate, cancellationToken);
+    public Task<IReadOnlyList<TCronTicker>> ListAsync<TFunction>(CancellationToken cancellationToken = default)
+        where TFunction : class, ITickerFunctionBase => inner.ListAsync<TFunction>(cancellationToken);
+    public Task<TickerResult<TCronTicker>> DeleteAsync(Expression<Func<TCronTicker, bool>> predicate, CancellationToken cancellationToken = default)
+        => inner.DeleteAsync(predicate, cancellationToken);
     public Task<TickerResult<List<TCronTicker>>> AddBatchAsync(List<TCronTicker> entities, CancellationToken cancellationToken = default)
         => inner.AddBatchAsync(entities, cancellationToken);
     public Task<TickerResult<List<TCronTicker>>> UpdateBatchAsync(List<TCronTicker> entities, CancellationToken cancellationToken = default)

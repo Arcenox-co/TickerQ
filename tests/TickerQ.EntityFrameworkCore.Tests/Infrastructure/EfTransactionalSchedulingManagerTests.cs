@@ -90,6 +90,35 @@ public sealed partial class EfTransactionalSchedulingTests
     }
 
     [Fact]
+    public async Task Get_list_and_delete_tickers_through_the_staging_wrappers()
+    {
+        TickerFunctionProvider.RegisterTypeMapping(typeof(TransactionalTestJob), "transactional-test");
+        await using var h = new Harness();
+        await h.InitializeAsync();
+        var time = h.Services.GetRequiredService<ITimeTickerManager<TimeTickerEntity>>();
+        var cron = h.Services.GetRequiredService<ICronTickerManager<CronTickerEntity>>();
+        var runAt = DateTime.UtcNow.AddHours(1);
+        var job = (await time.AddAsync(new TimeTickerEntity { Function = "transactional-test", ExecutionTime = runAt })).EnsureSuccess();
+        var other = (await time.AddAsync(new TimeTickerEntity { Function = "transactional-test", ExecutionTime = runAt.AddHours(1) })).EnsureSuccess();
+        var recurring = (await cron.AddAsync(new CronTickerEntity { Function = "transactional-test", Expression = "0 * * * *" })).EnsureSuccess();
+
+        Assert.Equal("transactional-test", (await time.GetAsync(job.Result.Id))!.Function);
+        Assert.Null(await time.GetAsync(Guid.NewGuid()));
+        Assert.Equal(2, (await time.ListAsync()).Count);
+        Assert.Equal(2, (await time.ListAsync<TransactionalTestJob>()).Count);
+        Assert.Equal(other.Result.Id, Assert.Single(await time.ListAsync(x => x.ExecutionTime > runAt)).Id);
+        Assert.Equal("0 * * * *", (await cron.GetAsync(recurring.Result.Id))!.Expression);
+        Assert.Equal(recurring.Result.Id, Assert.Single(await cron.ListAsync<TransactionalTestJob>()).Id);
+        Assert.Single(await cron.ListAsync(x => x.Expression == "0 * * * *"));
+
+        var deleted = (await time.DeleteAsync(x => x.ExecutionTime > runAt)).EnsureSuccess();
+        Assert.Equal(1, deleted.AffectedRows);
+        Assert.Equal(1, (await time.DeleteAsync(x => x.Function == "transactional-test")).EnsureSuccess().AffectedRows);
+        Assert.Equal(1, (await cron.DeleteAsync(x => x.Function == "transactional-test")).EnsureSuccess().AffectedRows);
+        Assert.Equal((0, 0), await h.Counts());
+    }
+
+    [Fact]
     public async Task Next_cron_occurrences_through_the_staging_wrapper()
     {
         await using var h = new Harness();
