@@ -468,6 +468,9 @@ namespace TickerQ.Dashboard.DependencyInjection
         /// This method detects and strips the PathBase prefix at request time so routing works regardless
         /// of middleware ordering.
         /// </summary>
+        /// <summary>HttpContext item holding the application's path base, before the dashboard prefix was added.</summary>
+        internal const string ApplicationPathBaseItem = "TickerQ.ApplicationPathBase";
+
         private static void MapPathBaseAware(this IApplicationBuilder app, string basePath, Action<IApplicationBuilder> configuration)
         {
             var branchBuilder = app.New();
@@ -495,7 +498,9 @@ namespace TickerQ.Dashboard.DependencyInjection
                     var originalPath = context.Request.Path;
                     var originalPathBase = context.Request.PathBase;
 
-                    // Mirror Map() behavior: move the matched segment from Path to PathBase
+                    // Mirror Map() behavior: move the matched segment from Path to PathBase. Keep the
+                    // application's own path base for redirects that belong to the host, such as its login page.
+                    context.Items[ApplicationPathBaseItem] = originalPathBase;
                     context.Request.PathBase = originalPathBase.Add(matchedPath);
                     context.Request.Path = remainingPath;
 

@@ -14,6 +14,7 @@ using Microsoft.Extensions.Logging;
 using TickerQ.Dashboard.Assistant;
 using TickerQ.Dashboard.Authentication;
 using TickerQ.Dashboard.Authentication.Endpoints;
+using TickerQ.Dashboard.DependencyInjection;
 using TickerQ.Dashboard.Infrastructure;
 using TickerQ.Utilities;
 using TickerQ.Utilities.DashboardDtos;
@@ -47,10 +48,9 @@ public static class DashboardEndpoints
             .RequireCors("TickerQ_Dashboard_CORS")
             .AllowAnonymous(), config);
 
-        WithGroupNameIfSet(endpoints.MapGetResultAot("/auth/challenge", context =>
-            Task.FromResult<IResult>(context.RequestServices.GetRequiredService<DashboardOptionsBuilder>().Auth.Mode == AuthMode.Host
-                ? Results.Challenge()
-                : Results.Unauthorized()))
+        // Host mode: starts the host application's sign-in (its login page or identity provider) and
+        // returns to the dashboard afterwards. The login screen uses it when no login path is configured.
+        WithGroupNameIfSet(endpoints.MapGetResultAot("/auth/challenge", HostSignInChallenge)
             .ExcludeFromDescription()
             .AllowAnonymous(), config);
 
@@ -472,6 +472,33 @@ public static class DashboardEndpoints
             LoginRedirect = config.HostLoginRedirectPath,
             LogoutRedirect = config.HostLogoutPath,
         }, Json(context));
+    }
+
+    internal static async Task<IResult> HostSignInChallenge(HttpContext context)
+    {
+        if (context.RequestServices.GetRequiredService<DashboardOptionsBuilder>().Auth.Mode != AuthMode.Host)
+            return Results.Unauthorized();
+        var dashboardRoot = context.Request.PathBase.Add("/").Value;
+        // A signed-in user goes straight back; challenging again would loop through the login page.
+        if (context.User.Identities.Any(identity => identity.IsAuthenticated))
+            return Results.LocalRedirect(dashboardRoot);
+
+        // The host's handler builds its login URL from PathBase, which inside the dashboard includes the
+        // dashboard prefix. Challenge with the application's own path base so /account/login stays
+        // /account/login, and come back to the dashboard afterwards.
+        var dashboardPathBase = context.Request.PathBase;
+        if (context.Items.TryGetValue(ServiceCollectionExtensions.ApplicationPathBaseItem, out var applicationPathBase) &&
+            applicationPathBase is PathString pathBase)
+            context.Request.PathBase = pathBase;
+        try
+        {
+            await context.ChallengeAsync(new AuthenticationProperties { RedirectUri = dashboardRoot });
+        }
+        finally
+        {
+            context.Request.PathBase = dashboardPathBase;
+        }
+        return Results.Empty;
     }
 
     private static async Task ValidateAuth(HttpContext context)
